@@ -7,13 +7,18 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tracing::info;
 
+use super::detect::{
+    DetectorState, Step, Tick, TickContext, TickOutput, publish_agent_process_detected_event,
+    publish_state_changed_event,
+};
+use super::exit_arbiter::PaneExitArbiter;
 use super::launch::LaunchKind;
 use super::launch_status::LaunchWatch;
-use super::process_probe::*;
+use super::process_probe::probe_foreground_process;
 use super::teardown::ChildLiveness;
 use super::terminal::PaneTerminal;
 use crate::events::EventSender;
-use crate::render_signal::RenderSignal;
+use crate::render_signal::{PaneRenderSlot, RenderSignal};
 use shepr_core::layout::PaneId;
 use shepr_platform::Pid;
 
@@ -21,11 +26,15 @@ use shepr_platform::Pid;
 pub(super) struct DetectionHandles {
     pub(super) terminal: Arc<PaneTerminal>,
     pub(super) child_liveness: Arc<ChildLiveness>,
+    /// The pane's ending, once decided, stops detection: see `live`.
+    pub(super) exit_arbiter: Arc<PaneExitArbiter>,
     pub(super) lifecycle_authority: Arc<AtomicBool>,
     pub(super) reset: Arc<Notify>,
     pub(super) events: EventSender,
     pub(super) render_notify: Arc<Notify>,
     pub(super) render_dirty: Arc<RenderSignal>,
+    /// This pane's coalescing state in `render_dirty`.
+    pub(super) pty_render: PaneRenderSlot,
 }
 
 /// Async scheduling and publication surround one blocking job per tick. All
@@ -67,7 +76,7 @@ impl DetectionTask {
                 pane_id,
                 handles,
                 detector: DetectorState::new(Instant::now(), launch_purpose),
-                next_wake: crate::limits::PROCESS_RECHECK_NO_AGENT,
+                next_wake: super::detect::PROCESS_RECHECK_NO_AGENT,
                 cancelled: Arc::new(AtomicBool::new(false)),
             };
             task.run().await;
@@ -78,12 +87,15 @@ impl DetectionTask {
     async fn run(mut self) {
         let _cancel_on_drop = CancelOnDrop(Arc::clone(&self.cancelled));
         loop {
-            if self.handles.child_liveness.wait_completed() {
+            if self.handles.child_liveness.wait_completed()
+                || self.handles.exit_arbiter.is_decided()
+            {
                 return;
             }
             tokio::select! {
                 _ = tokio::time::sleep(self.next_wake) => {}
                 _ = self.handles.reset.notified() => self.detector.reset(),
+                () = self.handles.exit_arbiter.cancelled() => return,
             }
             let (task, output) = match self.blocking_tick().await {
                 Ok(result) => result,
@@ -123,9 +135,13 @@ impl DetectionTask {
 
     // Keep checkpoints around side effects as well as observations: a single
     // observe around the whole tick would validate its return value only after
-    // stale work had already cleared OSC evidence or restored the theme.
+    // stale work had already cleared OSC evidence or restored the theme. The
+    // pane's decided ending is a lock-free flag, so a checkpoint costs no more
+    // than the cancellation flag beside it.
     fn live(&self, pid: Pid) -> bool {
-        !self.cancelled.load(Ordering::Acquire) && self.handles.child_liveness.is_live_process(pid)
+        !self.cancelled.load(Ordering::Acquire)
+            && !self.handles.exit_arbiter.is_decided()
+            && self.handles.child_liveness.is_live_process(pid)
     }
 
     fn tick(&mut self, now: Instant) -> Option<TickOutput> {
@@ -146,39 +162,42 @@ impl DetectionTask {
         let content_seq = self
             .handles
             .terminal
-            .core
-            .lock()
-            .map_or(0, |core| core.detection_content_seq);
+            .detection_seq()
+            .map_or(0, super::DetectionSeq::get);
         if !self.live(pid) {
             return None;
         }
         let lifecycle_authority_active = self.handles.lifecycle_authority.load(Ordering::Acquire);
-        let observations = |observation| DetectorObservations {
+        let tick = TickContext::new(
             now,
-            foreground_group: foreground_pgid,
+            foreground_pgid,
             content_seq,
             lifecycle_authority_active,
             theme_restore_candidate,
-            observation,
-        };
-        let mut output = self.detector.tick(&observations(TickObservation::Begin));
-        if output.probe {
-            let probe = probe_foreground_process(pid, foreground_pgid);
-            if !self.live(pid) {
-                return None;
+        );
+        let mut process_change = None;
+        let step = match self.detector.begin(tick) {
+            Tick::Done(output) => Step::Done(output),
+            Tick::NeedsScreen(screen) => Step::NeedsScreen(screen),
+            Tick::NeedsProbe(probe_tick) => {
+                let probe = probe_foreground_process(pid, foreground_pgid);
+                if !self.live(pid) {
+                    return None;
+                }
+                let (change, step) = probe_tick.resume(&mut self.detector, &probe);
+                process_change = Some(change);
+                step
             }
-            output = self
-                .detector
-                .tick(&observations(TickObservation::Probe(probe)));
-        }
-        let process_change = output.process_change.take();
+        };
         if let Some(change) = &process_change {
             if change.should_clear_osc_evidence {
-                clear_osc_evidence_for_agent_transition(&self.handles.terminal);
+                // Drops retained OSC evidence after the detector confirms a
+                // transition away from an identified agent.
+                self.handles.terminal.clear_agent_osc_state();
             }
             if change.agent_changed {
                 info!(
-                    pane = self.pane_id.raw(),
+                    pane = %self.pane_id,
                     previous_agent = ?change.previous_agent,
                     agent = ?change.agent,
                     process = ?change.process_name,
@@ -192,32 +211,34 @@ impl DetectionTask {
         }
         if self.handles.terminal.has_theme_restore_candidate()
             && self.live(pid)
-            && self
-                .handles
-                .terminal
-                .maybe_restore_host_terminal_theme(self.pane_id, &self.handles.child_liveness)
+            && super::runtime::maybe_restore_host_terminal_theme(
+                &self.handles.terminal,
+                self.pane_id,
+                &self.handles.child_liveness,
+            )
             && self.live(pid)
             && self
                 .handles
                 .render_dirty
-                .request_pty_coalesced(self.pane_id, &self.handles.terminal.render_queued)
+                .request_pty_coalesced(self.pane_id, &self.handles.pty_render)
         {
             self.handles.render_notify.notify_one();
         }
         if !self.live(pid) {
             return None;
         }
-        if output.screen {
-            let inputs = self.handles.terminal.agent_detection_inputs();
-            if !self.live(pid) {
-                return None;
+        let mut output = match step {
+            Step::Done(output) => output,
+            Step::NeedsScreen(screen) => {
+                let inputs = self.handles.terminal.agent_detection_inputs();
+                if !self.live(pid) {
+                    return None;
+                }
+                screen.resume(&mut self.detector, &inputs)
             }
-            output = self
-                .detector
-                .tick(&observations(TickObservation::Screen(inputs)));
-        }
-        // Screen resume produces a new output. Keep the identity transition
-        // from the probe so it is published before the resulting state.
+        };
+        // The identity transition from the probe is published before the
+        // state the screen resulted in.
         output.process_change = process_change;
         // The output is evidence from this completed tick, so check child
         // liveness again after all potentially blocking terminal work.
@@ -234,13 +255,17 @@ mod tests {
         DetectionTask {
             pane_id: shepr_test_fixtures::fixed_pane_id(1),
             handles: DetectionHandles {
-                terminal: Arc::new(PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0))),
+                terminal: Arc::new(PaneTerminal::new(shepr_vt::Terminal::new(
+                    shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+                    shepr_core::scrollback::ScrollbackBudget::new(0),
+                ))),
                 child_liveness: Arc::new(ChildLiveness::running_with_handle(Arc::new(
                     shepr_platform::ProcessHandle::open(
                         shepr_platform::Pid::new(std::process::id()).expect("test pid"),
                     )
                     .expect("current process handle"),
                 ))),
+                exit_arbiter: Arc::default(),
                 lifecycle_authority: Arc::new(AtomicBool::new(false)),
                 reset: Arc::new(Notify::new()),
                 events: EventSender::runtime(
@@ -250,6 +275,7 @@ mod tests {
                 ),
                 render_notify: Arc::new(Notify::new()),
                 render_dirty: Arc::new(RenderSignal::new()),
+                pty_render: PaneRenderSlot::default(),
             },
             detector: DetectorState::new(Instant::now(), LaunchKind::Fresh),
             next_wake: Duration::ZERO,
@@ -293,5 +319,29 @@ mod tests {
         let guard = CancelOnDrop(Arc::clone(&task.cancelled));
         drop(guard);
         assert!(task.tick(Instant::now()).is_none());
+    }
+
+    #[test]
+    fn a_decided_ending_stops_a_tick_before_it_waits_for_the_core() {
+        let mut task = task();
+        let terminal = Arc::clone(&task.handles.terminal);
+        let _core = terminal.core.lock().expect("lock core");
+        task.handles
+            .exit_arbiter
+            .decide(crate::pane::exit_arbiter::RecordedEnding::Silent);
+        assert!(task.tick(Instant::now()).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_decided_ending_ends_the_detection_loop() {
+        let task = task();
+        let arbiter = Arc::clone(&task.handles.exit_arbiter);
+        let detection = tokio::spawn(task.run());
+        tokio::task::yield_now().await;
+        arbiter.decide(crate::pane::exit_arbiter::RecordedEnding::Silent);
+        tokio::time::timeout(Duration::from_secs(5), detection)
+            .await
+            .expect("detection loop stops once the pane has ended")
+            .expect("detection task");
     }
 }

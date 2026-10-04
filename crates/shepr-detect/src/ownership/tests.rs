@@ -3785,3 +3785,34 @@ fn a_parked_start_is_recorded_until_process_evidence_promotes_it() {
     );
     assert_eq!(terminal.last_unapplied_hook_report(), None);
 }
+
+#[test]
+fn an_expired_parked_start_is_no_longer_recorded_as_parked() {
+    let mut terminal = test_terminal();
+    let t0 = Instant::now();
+    let kimi = ReportOrigin::parse("shepr:kimi", "kimi").expect("test origin");
+    let start = ReportedSessionStart::Known(AgentSessionStartSource::Startup);
+
+    let outcome = terminal.report_session_start_outcome_at(
+        &kimi,
+        shepr_agent::resume::AgentSessionRef::id("kimi-root"),
+        Some(10),
+        start,
+        t0,
+    );
+    assert_eq!(outcome, HookOutcome::Parked);
+    assert!(terminal.last_unapplied_hook_report().is_some());
+
+    terminal.set_detected_state_with_screen_signals_at(
+        Some(Agent::Kimi),
+        AgentState::Idle,
+        false,
+        false,
+        t0 + crate::limits::PARKED_START_LIFETIME + Duration::from_nanos(1),
+    );
+    assert!(
+        terminal.persisted_agent_session().is_none(),
+        "an expired start is not promoted"
+    );
+    assert_eq!(terminal.last_unapplied_hook_report(), None);
+}

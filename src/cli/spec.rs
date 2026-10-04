@@ -3,6 +3,12 @@
 //! matches into typed arguments before dispatching to a handler. Value
 //! validation lives here as value parsers, so a bad value is a usage error
 //! (exit 2) instead of a transport error.
+//!
+//! This clap schema is deliberately the only parser and there is no separate
+//! declarative invocation model beside it. The typed parsers read
+//! `ArgMatches` through ids spelled from shepr-launch's `COMMAND_` and
+//! `FLAG_` constants, and `matches.rs` rejects an id the spec never declared,
+//! so a spec and a parser that disagree fail loudly instead of drifting.
 
 use clap::{Arg, ArgAction, Command, ValueHint};
 

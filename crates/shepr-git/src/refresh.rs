@@ -62,20 +62,21 @@ struct ComputedRefresh<T> {
 
 /// The status cache and the refresh algorithm over it: explicit invalidation,
 /// clearing, and refreshes whose results are committed whole or not at all.
+/// Only the worker thread owns one; nothing outside this crate sees it.
 #[derive(Debug, Default)]
-pub struct GitRefresher {
+pub(crate) struct GitRefresher {
     cache: GitStatusCache,
 }
 
 impl GitRefresher {
     /// Drops every cached miss, so the next refresh looks again at each cwd
     /// that had no readable repository instead of waiting out its retry delay.
-    pub fn invalidate(&mut self) {
+    pub(crate) fn invalidate(&mut self) {
         self.cache.mark_due();
     }
 
     /// Forgets every cached entry and every reported read error.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.cache.clear();
     }
 
@@ -92,7 +93,7 @@ impl GitRefresher {
     /// left it, since nothing was written. A panic while committing may have
     /// written part of the pass, so the cache is cleared and the next refresh
     /// rebuilds it.
-    pub fn refresh<T>(
+    pub(crate) fn refresh<T>(
         &mut self,
         targets: Vec<RefreshTarget<T>>,
         progress: &RefreshProgress,

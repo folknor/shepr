@@ -4,13 +4,17 @@ use ratatui::{
     text::Span,
 };
 
-pub(in crate::shell) use super::token_definitions::{
+pub(in crate::shell::sidebar) use super::token_definitions::{
     AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
     agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::shell::presentation::text::rendered_text_width;
 use shepr_config::theme::Palette;
+
+/// Minimum height retained by each section of the expanded sidebar.
+const MIN_EXPANDED_SIDEBAR_SECTION_ROWS: u16 = 3;
 
 /// Workspace share of the expanded sidebar, constrained before rendering.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -29,16 +33,12 @@ impl SectionSplit {
     }
 }
 
-pub(in crate::shell) fn display_width(text: &str) -> usize {
-    crate::shell::presentation::render::rendered_text_width(text)
-}
-
 fn sidebar_sections_can_split(height: u16) -> bool {
     height >= 6
 }
 
 fn truncate_end(text: &str, max_width: usize) -> String {
-    if display_width(text) <= max_width {
+    if rendered_text_width(text) <= max_width {
         return text.to_string();
     }
     if max_width == 0 {
@@ -51,7 +51,7 @@ fn truncate_end(text: &str, max_width: usize) -> String {
     let mut prefix = String::new();
     let mut width = 0usize;
     for grapheme in text.graphemes(true) {
-        let grapheme_width = display_width(grapheme);
+        let grapheme_width = rendered_text_width(grapheme);
         if width.saturating_add(grapheme_width) > max_width.saturating_sub(1) {
             break;
         }
@@ -80,8 +80,8 @@ fn sidebar_section_heights(total_height: u16, split_ratio: SectionSplit) -> (u16
     )]
     let workspace_height = ((total_height as f32) * split_ratio.get()).round() as u16;
     let workspace_height = workspace_height.clamp(
-        crate::limits::MIN_EXPANDED_SIDEBAR_SECTION_ROWS,
-        total_height.saturating_sub(crate::limits::MIN_EXPANDED_SIDEBAR_SECTION_ROWS),
+        MIN_EXPANDED_SIDEBAR_SECTION_ROWS,
+        total_height.saturating_sub(MIN_EXPANDED_SIDEBAR_SECTION_ROWS),
     );
     (
         workspace_height,
@@ -124,14 +124,14 @@ pub(in crate::shell) fn sidebar_section_divider_rect(
 }
 
 #[derive(Clone, Copy)]
-pub(in crate::shell) struct TokenStyles {
-    pub(in crate::shell) state_text: Style,
-    pub(in crate::shell) primary: Style,
-    pub(in crate::shell) secondary: Style,
-    pub(in crate::shell) terminal_title: Style,
+pub(in crate::shell::sidebar) struct TokenStyles {
+    pub(in crate::shell::sidebar) state_text: Style,
+    pub(in crate::shell::sidebar) primary: Style,
+    pub(in crate::shell::sidebar) secondary: Style,
+    pub(in crate::shell::sidebar) terminal_title: Style,
 }
 
-pub(in crate::shell) fn resolved_token_spans(
+pub(in crate::shell::sidebar) fn resolved_token_spans(
     resolved: &[ResolvedToken],
     state_glyph: crate::shell::presentation::status::StatusGlyph,
     styles: TokenStyles,
@@ -141,10 +141,10 @@ pub(in crate::shell) fn resolved_token_spans(
     let fixed_widths = resolved
         .iter()
         .map(|token| match &token.kind {
-            ResolvedTokenKind::StateIcon => display_width(state_glyph.text),
+            ResolvedTokenKind::StateIcon => rendered_text_width(state_glyph.text),
             ResolvedTokenKind::GitStatus { ahead, behind } => {
-                usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
-                    + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
+                usize::from(*ahead > 0) * rendered_text_width(&format!("↑{ahead}"))
+                    + usize::from(*behind > 0) * rendered_text_width(&format!("↓{behind}"))
                     + usize::from(*ahead > 0 && *behind > 0)
             }
             _ => 0,
@@ -159,7 +159,7 @@ pub(in crate::shell) fn resolved_token_spans(
             | ResolvedTokenKind::Pane(text)
             | ResolvedTokenKind::Agent(text)
             | ResolvedTokenKind::TerminalTitle(text)
-            | ResolvedTokenKind::Branch(text) => display_width(text),
+            | ResolvedTokenKind::Branch(text) => rendered_text_width(text),
             _ => 0,
         })
         .collect::<Vec<_>>();
@@ -176,7 +176,7 @@ pub(in crate::shell) fn resolved_token_spans(
         let separators = indices
             .windows(2)
             .map(|pair| {
-                display_width(super::token_definitions::separator(
+                rendered_text_width(super::token_definitions::separator(
                     &resolved[pair[0]],
                     &resolved[pair[1]],
                 ))
@@ -209,7 +209,7 @@ pub(in crate::shell) fn resolved_token_spans(
     let separator_width = visible_indices
         .windows(2)
         .map(|pair| {
-            display_width(super::token_definitions::separator(
+            rendered_text_width(super::token_definitions::separator(
                 &resolved[pair[0]],
                 &resolved[pair[1]],
             ))
@@ -375,8 +375,8 @@ mod split_tests {
             3,
         );
 
-        assert_eq!(super::display_width(title), 7);
+        assert_eq!(super::rendered_text_width(title), 7);
         assert_eq!(spans[0].content.as_ref(), "\u{2764}\u{fe0f}…");
-        assert_eq!(super::display_width(spans[0].content.as_ref()), 3);
+        assert_eq!(super::rendered_text_width(spans[0].content.as_ref()), 3);
     }
 }

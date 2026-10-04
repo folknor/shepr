@@ -30,23 +30,6 @@ pub(crate) const MAX_U16_DECIMAL_DIGITS: usize = 5;
 /// for the bytes the wire format adds around capability data.
 pub(crate) const XTGETTCAP_REPLY_OVERHEAD_BYTES: usize = 8;
 
-/// Minimum columns used when converting a byte scrollback budget to lines, so
-/// a zero-sized caller input cannot make the estimated line size zero.
-pub(crate) const MIN_SCROLLBACK_COLUMNS: usize = 1;
-
-/// Minimum cell bytes used in the scrollback estimate to keep division safe
-/// even if the cell representation ever becomes zero-sized.
-pub(crate) const MIN_SCROLLBACK_CELL_BYTES: usize = 1;
-
-/// Minimum line count retained for any non-zero scrollback byte budget. This
-/// keeps tiny byte budgets useful for scrolling, even on wide panes.
-pub(crate) const MIN_SCROLLBACK_LINES: usize = 1_000;
-
-/// Maximum line count produced from a byte scrollback budget. The byte budget
-/// alone does not bound heap-held cell extras or history retained across a
-/// widening resize, so this caps the core's retained row count.
-pub(crate) const MAX_SCROLLBACK_LINES: usize = 1_000_000;
-
 /// Maximum OSC 52 clipboard payload accepted from a child terminal. The
 /// ceiling permits large text selections while bounding the payload that
 /// the parser hands to its caller.
@@ -64,7 +47,10 @@ pub(crate) const MAX_OSC_RAW_BYTES: usize = 2 * 4 * MAX_CLIPBOARD_BYTES.div_ceil
 /// title uncapped and `CSI 22 t` clones it onto a title stack up to 4096 deep,
 /// so a title of up to `MAX_OSC_RAW_BYTES` pushed repeatedly (5 bytes per push)
 /// would hold gigabytes per pane. The cap is far above what any title display
-/// or detection needs; a longer title is cut on a character boundary.
+/// or detection needs; a longer title is cut on a character boundary. This is a
+/// resource limit on parser input, not a display rule: what a displayable
+/// title is, and the shorter character caps on what is retained or shown, live
+/// in `shepr_term::title` and its callers.
 pub(crate) const MAX_TITLE_BYTES: usize = 4 * KIBIBYTE_BYTES;
 
 /// Maximum active keyboard-mode stack depth accepted by the adapter. The

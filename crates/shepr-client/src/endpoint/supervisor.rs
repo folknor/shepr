@@ -7,10 +7,62 @@ use std::time::{Duration, Instant};
 
 use super::{ClientEndpointId, ClientEndpointStatus, EndpointFailureStatus};
 use crate::events::ClientLoopEvent;
-pub(crate) use crate::limits::MAX_RETRY_DELAY;
-use crate::limits::{
-    ATTEMPT_BUDGET, ATTENTION_RETRY_DELAY, INITIAL_RETRY_DELAY, STABLE_CONNECTION_PERIOD,
-};
+
+/// Initial reconnect delay before exponential backoff.
+///
+/// The delay retries quickly after a transient local or SSH failure.
+const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
+/// Every endpoint, Local or configured machine, retries at least this often, so an open
+/// client picks a machine up promptly once it is reachable again; a longer backoff would
+/// leave it offline long after it came back.
+///
+/// An attempt's own failure schedules the next one from when that attempt started, not
+/// from when it gave up, and no attempt runs longer than `ATTEMPT_BUDGET`. Together they
+/// keep the promise with an attempt already in flight: from any moment, the next attempt
+/// starts once the current one ends or its retry delay (counted from its start) is up,
+/// whichever is later, within the retry bound.
+pub(crate) const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+/// A connection stable for this interval resets its accumulated retry state.
+///
+/// The interval distinguishes a durable connection from a brief success between failures.
+const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
+/// Same bound as `MAX_RETRY_DELAY`, for the same prompt-retry guarantee.
+const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
+/// The longest one connection attempt may run: the SSH discovery commands, the bridge and
+/// the endpoint handshake all stop at this deadline. Without it an attempt against a host
+/// that stalls could hold the endpoint indefinitely (each discovery command may
+/// take one SSH command timeout, the handshake
+/// `REMOTE_HANDSHAKE_READ_TIMEOUT`), and the next attempt waited for it, which broke the
+/// retry bound. `do_handshake_for_endpoint` takes this deadline and stops at whichever
+/// of it and the handshake timeout comes first.
+///
+/// A healthy attempt needs far less: every discovery command already had
+/// to fit a cold SSH connect into one SSH command timeout. It stays below
+/// `MAX_RETRY_DELAY` to leave room for tearing a timed-out bridge down.
+///
+/// The budget is the same for every attempt, including one that has to run full
+/// discovery of the remote executable. With a valid disk hint, the first connection
+/// uses two SSH round trips: one to verify the installed client and sibling server,
+/// then one to start the bridge and carry the handshake. The handshake checks the
+/// running server's identity, so the connector does not issue a separate server-status
+/// query. Once the executable is verified, an ordinary reconnect uses only the bridge
+/// round trip and handshake.
+/// The case that can overrun is a cache miss or a stale remembered path on a slow link
+/// without connection sharing, where each of discovery's several round trips and the
+/// bridge each need their own cold connect.
+/// That case is handled by resuming, not by a larger budget: the machine connector
+/// keeps completed discovery steps when an attempt ends on a transient network failure
+/// or a full-round-trip timeout that may be waiting for authentication. SSH process
+/// failures and remote command errors clear that progress. It also keeps a freshly
+/// discovered executable when only the bridge ran out of time. No discovery round trip
+/// may take longer than one SSH command timeout, and the budget, which
+/// `shepr_remote` defines as that timeout plus a fixed slack, exceeds it, so every
+/// attempt that starts with discovery completes at least one, and discovery
+/// finishes after a bounded number of attempts;
+/// after that the bridge and the handshake need to fit one attempt, as on every
+/// ordinary reconnect. A larger discovery budget would stretch the retry bound exactly where
+/// the link is slowest, and would still fail on an even slower link.
+const ATTEMPT_BUDGET: Duration = shepr_remote::SSH_CONNECTION_ATTEMPT_BUDGET;
 
 // An attempt, and so the retry that follows it, must fit the retry bound.
 const _: () = assert!(ATTEMPT_BUDGET.as_millis() < MAX_RETRY_DELAY.as_millis());
@@ -24,14 +76,14 @@ pub(crate) struct EndpointConnectOptions {
 pub(crate) enum EndpointSupervisorEvent {
     Status {
         endpoint_id: ClientEndpointId,
-        generation: u64,
+        generation: shepr_protocol::ConnectionGeneration,
         status: EndpointFailureStatus,
         message: shepr_launch::EndpointFailure,
         connector: Option<OwnedConnector>,
     },
     Connected {
         endpoint_id: ClientEndpointId,
-        generation: u64,
+        generation: shepr_protocol::ConnectionGeneration,
         connection: crate::endpoint::connection_io::EndpointConnectionIo,
         connector: Option<OwnedConnector>,
     },
@@ -142,7 +194,9 @@ impl ReconnectState {
 
 pub(crate) struct EndpointSupervisors {
     endpoints: HashMap<ClientEndpointId, ReconnectState>,
-    next_generation: shepr_protocol::ConnectionGeneration,
+    /// The newest generation issued: the reserved launch generation until a
+    /// background attempt takes its successor.
+    last_generation: shepr_protocol::ConnectionGeneration,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -150,7 +204,7 @@ impl EndpointSupervisors {
     /// Reserves the first generation for the foreground Local attempt at launch.
     /// Background attempts start at its successor, including when Local failed.
     pub(crate) const fn initial_local_generation() -> shepr_protocol::ConnectionGeneration {
-        shepr_protocol::ConnectionGeneration::new(1)
+        shepr_protocol::ConnectionGeneration::FIRST
     }
 
     /// Supervises one SSH endpoint per connector, keyed by its machine label. The
@@ -162,7 +216,7 @@ impl EndpointSupervisors {
     ) -> io::Result<Self> {
         let mut supervisors = Self {
             endpoints: HashMap::new(),
-            next_generation: shepr_protocol::ConnectionGeneration::new(2),
+            last_generation: Self::initial_local_generation(),
             shutdown: Arc::new(AtomicBool::new(false)),
         };
         for connector in connectors {
@@ -201,7 +255,7 @@ impl EndpointSupervisors {
         &mut self,
         path: PathBuf,
         mismatch_guidance: Arc<str>,
-        generation: Option<u64>,
+        generation: Option<shepr_protocol::ConnectionGeneration>,
         now: Instant,
     ) {
         let mut state = ReconnectState::new(
@@ -211,7 +265,7 @@ impl EndpointSupervisors {
             },
             now,
         );
-        state.generation = generation.map(Into::into);
+        state.generation = generation;
         if generation.is_some() {
             state.next_attempt = None;
         }
@@ -235,7 +289,7 @@ impl EndpointSupervisors {
             // a generation is never reused. Running out is unreachable (one per
             // connection attempt); should it happen, the endpoint stops
             // retrying rather than issuing a duplicate.
-            let Some(following_generation) = self.next_generation.checked_next() else {
+            let Some(generation) = self.last_generation.checked_next() else {
                 tracing::error!(
                     endpoint = ?endpoint_id,
                     "connection generations exhausted; not starting another attempt"
@@ -262,9 +316,8 @@ impl EndpointSupervisors {
             state.in_flight = true;
             state.attempt_started = Some(now);
             state.next_attempt = None;
-            let generation = self.next_generation.get();
-            state.generation = Some(generation.into());
-            self.next_generation = following_generation;
+            state.generation = Some(generation);
+            self.last_generation = generation;
             let endpoint_id = endpoint_id.clone();
             let event_tx = event_tx.clone();
             let shutdown = Arc::clone(&self.shutdown);
@@ -356,13 +409,13 @@ impl EndpointSupervisors {
     pub(crate) fn return_connector(
         &mut self,
         endpoint_id: &ClientEndpointId,
-        generation: u64,
+        generation: shepr_protocol::ConnectionGeneration,
         connector: Option<OwnedConnector>,
     ) {
         let Some(state) = self.endpoints.get_mut(endpoint_id) else {
             return;
         };
-        if state.generation != Some(generation.into()) {
+        if state.generation != Some(generation) {
             return;
         }
         let ConnectTarget::Ssh { connector: owned } = &mut state.target else {
@@ -376,14 +429,14 @@ impl EndpointSupervisors {
     pub(crate) fn record_status(
         &mut self,
         endpoint_id: &ClientEndpointId,
-        generation: u64,
+        generation: shepr_protocol::ConnectionGeneration,
         status: ClientEndpointStatus,
         now: Instant,
     ) -> bool {
         let Some(state) = self.endpoints.get_mut(endpoint_id) else {
             return false;
         };
-        if state.generation != Some(generation.into()) {
+        if state.generation != Some(generation) {
             return false;
         }
         // An attempt's own outcome counts its retry delay from when it started, so time
@@ -445,7 +498,7 @@ fn connect_once(
     target: &mut AttemptTarget,
     options: EndpointConnectOptions,
     endpoint_id: ClientEndpointId,
-    generation: u64,
+    generation: shepr_protocol::ConnectionGeneration,
     deadline: Instant,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
@@ -521,7 +574,7 @@ fn establish(
     link: EndpointLink<'_>,
     options: EndpointConnectOptions,
     endpoint_id: ClientEndpointId,
-    generation: u64,
+    generation: shepr_protocol::ConnectionGeneration,
     deadline: Instant,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
@@ -579,7 +632,7 @@ impl EndpointSupervisors {
     pub(crate) fn disconnected(
         &mut self,
         endpoint_id: &ClientEndpointId,
-        generation: u64,
+        generation: shepr_protocol::ConnectionGeneration,
         now: Instant,
     ) -> bool {
         self.record_status(
@@ -594,6 +647,7 @@ impl EndpointSupervisors {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::test_generation as generation;
 
     fn machine() -> shepr_config::MachineConfig {
         shepr_config::MachineConfig {
@@ -641,7 +695,7 @@ mod tests {
             .endpoints
             .get_mut(&id)
             .expect("test precondition");
-        state.generation = Some(shepr_protocol::ConnectionGeneration::new(2));
+        state.generation = Some(generation(2));
         let ConnectTarget::Ssh { connector, .. } = &mut state.target else {
             panic!("a configured machine must have an SSH target");
         };
@@ -658,7 +712,7 @@ mod tests {
         assert!(!has_connector(&supervisors));
 
         // The current generation's connector goes back to its endpoint.
-        supervisors.return_connector(&id, 2, Some(connector));
+        supervisors.return_connector(&id, generation(2), Some(connector));
         assert!(has_connector(&supervisors));
 
         // A stale generation's connector is dropped, not installed.
@@ -671,12 +725,12 @@ mod tests {
             panic!("a configured machine must have an SSH target");
         };
         let connector = connector.take().expect("connector was returned");
-        supervisors.return_connector(&id, 3, Some(connector));
+        supervisors.return_connector(&id, generation(3), Some(connector));
         assert!(!has_connector(&supervisors));
 
         // Only a panicked attempt returns nothing, and a panic ends the
         // client, so nothing is rebuilt.
-        supervisors.return_connector(&id, 2, None);
+        supervisors.return_connector(&id, generation(2), None);
         assert!(!has_connector(&supervisors));
     }
 
@@ -691,21 +745,31 @@ mod tests {
             .endpoints
             .get_mut(&id)
             .expect("test precondition")
-            .generation = Some(shepr_protocol::ConnectionGeneration::new(2));
+            .generation = Some(generation(2));
         for attempt in 1..=5 {
             let connected = now + Duration::from_secs(attempt * 20);
-            assert!(supervisors.record_status(&id, 2, ClientEndpointStatus::Online, connected));
+            assert!(supervisors.record_status(
+                &id,
+                generation(2),
+                ClientEndpointStatus::Online,
+                connected
+            ));
             let failed = connected + Duration::from_secs(15);
-            assert!(supervisors.disconnected(&id, 2, failed));
+            assert!(supervisors.disconnected(&id, generation(2), failed));
             assert_eq!(
                 supervisors.endpoints[&id].next_attempt,
                 Some(failed + INITIAL_RETRY_DELAY * (1 << (attempt - 1)))
             );
         }
         let connected = now + Duration::from_secs(200);
-        assert!(supervisors.record_status(&id, 2, ClientEndpointStatus::Online, connected));
+        assert!(supervisors.record_status(
+            &id,
+            generation(2),
+            ClientEndpointStatus::Online,
+            connected
+        ));
         let failed = connected + Duration::from_secs(60);
-        assert!(supervisors.disconnected(&id, 2, failed));
+        assert!(supervisors.disconnected(&id, generation(2), failed));
         assert_eq!(
             supervisors.endpoints[&id].next_attempt,
             Some(failed + INITIAL_RETRY_DELAY)
@@ -730,9 +794,9 @@ mod tests {
             .endpoints
             .get_mut(&id)
             .expect("test precondition")
-            .generation = Some(shepr_protocol::ConnectionGeneration::new(2));
+            .generation = Some(generation(2));
         for _ in 0..20 {
-            assert!(supervisors.disconnected(&id, 2, now));
+            assert!(supervisors.disconnected(&id, generation(2), now));
             assert!(
                 supervisors.endpoints[&id]
                     .next_attempt
@@ -752,9 +816,14 @@ mod tests {
             .endpoints
             .get_mut(&id)
             .expect("test precondition")
-            .generation = Some(shepr_protocol::ConnectionGeneration::new(9));
+            .generation = Some(generation(9));
 
-        assert!(supervisors.record_status(&id, 9, ClientEndpointStatus::Attention, now));
+        assert!(supervisors.record_status(
+            &id,
+            generation(9),
+            ClientEndpointStatus::Attention,
+            now
+        ));
         assert_eq!(
             supervisors.endpoints[&id].next_attempt,
             Some(now + ATTENTION_RETRY_DELAY)
@@ -762,7 +831,12 @@ mod tests {
         assert!(supervisors.supervises(&id));
 
         let retry_at = now + ATTENTION_RETRY_DELAY;
-        assert!(supervisors.record_status(&id, 9, ClientEndpointStatus::Reconnecting, retry_at,));
+        assert!(supervisors.record_status(
+            &id,
+            generation(9),
+            ClientEndpointStatus::Reconnecting,
+            retry_at,
+        ));
         assert_eq!(
             supervisors.endpoints[&id].next_attempt,
             Some(retry_at + INITIAL_RETRY_DELAY)
@@ -785,7 +859,7 @@ mod tests {
                 .endpoints
                 .get_mut(&id)
                 .expect("test precondition");
-            state.generation = Some(shepr_protocol::ConnectionGeneration::new(9));
+            state.generation = Some(generation(9));
             state.in_flight = true;
         }
         assert_eq!(supervisors.next_retry_deadline(), None);
@@ -794,7 +868,12 @@ mod tests {
             .get_mut(&id)
             .expect("test precondition")
             .in_flight = false;
-        assert!(supervisors.record_status(&id, 9, ClientEndpointStatus::Attention, now));
+        assert!(supervisors.record_status(
+            &id,
+            generation(9),
+            ClientEndpointStatus::Attention,
+            now
+        ));
         assert_eq!(
             supervisors.next_retry_deadline(),
             Some(now + ATTENTION_RETRY_DELAY)
@@ -825,11 +904,11 @@ mod tests {
                 state.in_flight = true;
                 state.attempt_started = Some(started);
                 state.next_attempt = None;
-                state.generation = Some(shepr_protocol::ConnectionGeneration::new(7));
+                state.generation = Some(generation(7));
             }
             let promised_at = started + Duration::from_millis(10);
             let gave_up = started + ATTEMPT_BUDGET;
-            assert!(supervisors.record_status(&id, 7, status, gave_up));
+            assert!(supervisors.record_status(&id, generation(7), status, gave_up));
             let next = supervisors.endpoints[&id]
                 .next_attempt
                 .expect("a failed attempt is retried");
@@ -1031,10 +1110,15 @@ mod tests {
         let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
         let mut supervisors = supervisors_for(&env, &[], now);
-        supervisors.add_local(PathBuf::from("local.sock"), Arc::from(""), Some(1), now);
+        supervisors.add_local(
+            PathBuf::from("local.sock"),
+            Arc::from(""),
+            Some(generation(1)),
+            now,
+        );
         assert!(supervisors.record_status(
             &ClientEndpointId::Local,
-            1,
+            generation(1),
             ClientEndpointStatus::Attention,
             now
         ));
@@ -1049,19 +1133,24 @@ mod tests {
         let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
         let mut supervisors = supervisors_for(&env, &[machine()], now);
-        supervisors.add_local(PathBuf::from("local.sock"), Arc::from(""), Some(1), now);
+        supervisors.add_local(
+            PathBuf::from("local.sock"),
+            Arc::from(""),
+            Some(generation(1)),
+            now,
+        );
         assert!(
             supervisors.endpoints[&ClientEndpointId::Local]
                 .next_attempt
                 .is_none()
         );
-        assert!(!supervisors.disconnected(&ClientEndpointId::Local, 0, now));
+        assert!(!supervisors.disconnected(&ClientEndpointId::Local, generation(0), now));
         assert!(
             supervisors.endpoints[&ClientEndpointId::Local]
                 .next_attempt
                 .is_none()
         );
-        assert!(supervisors.disconnected(&ClientEndpointId::Local, 1, now));
+        assert!(supervisors.disconnected(&ClientEndpointId::Local, generation(1), now));
         assert_eq!(
             supervisors.endpoints[&ClientEndpointId::Local].next_attempt,
             Some(now + INITIAL_RETRY_DELAY)
@@ -1082,16 +1171,26 @@ mod tests {
             .endpoints
             .get_mut(&endpoint_id)
             .expect("test precondition")
-            .generation = Some(shepr_protocol::ConnectionGeneration::new(4));
-        assert!(supervisors.record_status(&endpoint_id, 4, ClientEndpointStatus::Online, now));
-        assert!(!supervisors.disconnected(&endpoint_id, 3, now));
+            .generation = Some(generation(4));
+        assert!(supervisors.record_status(
+            &endpoint_id,
+            generation(4),
+            ClientEndpointStatus::Online,
+            now
+        ));
+        assert!(!supervisors.disconnected(&endpoint_id, generation(3), now));
         assert!(supervisors.endpoints[&endpoint_id].next_attempt.is_none());
-        assert!(supervisors.disconnected(&endpoint_id, 4, now));
+        assert!(supervisors.disconnected(&endpoint_id, generation(4), now));
         assert_eq!(
             supervisors.endpoints[&endpoint_id].next_attempt,
             Some(now + INITIAL_RETRY_DELAY)
         );
-        assert!(supervisors.record_status(&endpoint_id, 4, ClientEndpointStatus::Attention, now));
+        assert!(supervisors.record_status(
+            &endpoint_id,
+            generation(4),
+            ClientEndpointStatus::Attention,
+            now
+        ));
         assert_eq!(
             supervisors.endpoints[&endpoint_id].next_attempt,
             Some(now + Duration::from_secs(30))

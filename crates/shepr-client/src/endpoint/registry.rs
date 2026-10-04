@@ -6,8 +6,13 @@ use std::time::Instant;
 use super::ClientEndpointId;
 use super::connection_io::{EndpointReadActivity, NativeEndpointTransport};
 use super::health::{EndpointHealth, HealthAction};
-use crate::limits::ENDPOINT_DETACH_FLUSH_TIMEOUT;
-use shepr_protocol::ClientMessage;
+use crate::deadline::Deadline;
+use shepr_protocol::{ClientMessage, ConnectionGeneration};
+
+/// Deadline for the best-effort Detach flush while the endpoint registry is dropping.
+///
+/// A brief flush gives the courtesy message a chance to leave before shutdown disconnects.
+const ENDPOINT_DETACH_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
 pub trait EndpointTransport: Send {
     fn send(&mut self, message: &ClientMessage) -> io::Result<()>;
@@ -34,7 +39,7 @@ pub(crate) struct EndpointConnection {
 #[derive(Clone, Debug)]
 pub(crate) struct EndpointTransportFailure {
     pub(crate) endpoint_id: ClientEndpointId,
-    pub(crate) generation: u64,
+    pub(crate) generation: ConnectionGeneration,
     pub(crate) kind: io::ErrorKind,
     pub(crate) failure: shepr_launch::EndpointFailure,
 }
@@ -71,7 +76,11 @@ impl EndpointRegistry {
     }
 
     /// A registry whose Local slot is a server socket on this host, connected at `now`.
-    pub fn new_at(local: impl EndpointTransport + 'static, generation: u64, now: Instant) -> Self {
+    pub fn new_at(
+        local: impl EndpointTransport + 'static,
+        generation: ConnectionGeneration,
+        now: Instant,
+    ) -> Self {
         let mut registry = Self::empty();
         registry.insert(ClientEndpointId::Local, local, generation, true, now);
         registry
@@ -93,7 +102,7 @@ impl EndpointRegistry {
         &mut self,
         endpoint_id: ClientEndpointId,
         transport: impl EndpointTransport + 'static,
-        generation: u64,
+        generation: ConnectionGeneration,
         viewed: bool,
         now: Instant,
     ) {
@@ -106,7 +115,7 @@ impl EndpointRegistry {
         &mut self,
         endpoint_id: ClientEndpointId,
         transport: NativeEndpointTransport,
-        generation: u64,
+        generation: ConnectionGeneration,
         viewed: bool,
         now: Instant,
     ) {
@@ -125,7 +134,7 @@ impl EndpointRegistry {
         &mut self,
         endpoint_id: ClientEndpointId,
         transport: impl EndpointTransport + 'static,
-        generation: u64,
+        generation: ConnectionGeneration,
         viewed: bool,
         read_activity: Option<Arc<EndpointReadActivity>>,
         now: Instant,
@@ -140,7 +149,7 @@ impl EndpointRegistry {
             endpoint_id,
             EndpointConnection {
                 transport: Box::new(transport),
-                generation: generation.into(),
+                generation,
                 viewed,
                 health,
                 read_activity,
@@ -151,19 +160,25 @@ impl EndpointRegistry {
         }
     }
 
-    pub(crate) fn accepts(&self, endpoint_id: &ClientEndpointId, generation: u64) -> bool {
-        self.connections.get(endpoint_id).is_some_and(|connection| {
-            connection.generation == shepr_protocol::ConnectionGeneration::new(generation)
-        })
+    pub(crate) fn accepts(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        generation: ConnectionGeneration,
+    ) -> bool {
+        self.connections
+            .get(endpoint_id)
+            .is_some_and(|connection| connection.generation == generation)
     }
 
-    pub(crate) fn mark_ready(&mut self, endpoint_id: &ClientEndpointId, generation: u64) {
+    pub(crate) fn mark_ready(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: ConnectionGeneration,
+    ) {
         if let Some(health) = self
             .connections
             .get_mut(endpoint_id)
-            .filter(|connection| {
-                connection.generation == shepr_protocol::ConnectionGeneration::new(generation)
-            })
+            .filter(|connection| connection.generation == generation)
             .and_then(|connection| connection.health.as_mut())
         {
             health.ready();
@@ -367,7 +382,7 @@ impl EndpointRegistry {
         let error = writer_error.as_ref().unwrap_or(error);
         let failure = EndpointTransportFailure {
             endpoint_id: endpoint_id.clone(),
-            generation: connection.generation.get(),
+            generation: connection.generation,
             kind: error.kind(),
             failure: shepr_launch::EndpointFailure::from_error(error),
         };
@@ -390,8 +405,7 @@ impl EndpointRegistry {
 impl Drop for EndpointRegistry {
     fn drop(&mut self) {
         // clock-io-ok: bound the best-effort Detach flush during shutdown.
-        let deadline =
-            crate::limits::Deadline::after(Instant::now(), ENDPOINT_DETACH_FLUSH_TIMEOUT);
+        let deadline = Deadline::after(Instant::now(), ENDPOINT_DETACH_FLUSH_TIMEOUT);
         // Send one courtesy Detach per connection. An interactive detach may already have
         // queued it, in which case the drop path only flushes and disconnects that connection.
         // A server also treats the closed connection as this client leaving, so a Detach that
@@ -415,15 +429,13 @@ impl EndpointRegistry {
     pub(crate) fn received(
         &mut self,
         endpoint_id: &ClientEndpointId,
-        generation: u64,
+        generation: ConnectionGeneration,
         now: Instant,
     ) {
         if let Some(connection) = self
             .connections
             .get_mut(endpoint_id)
-            .filter(|connection| {
-                connection.generation == shepr_protocol::ConnectionGeneration::new(generation)
-            })
+            .filter(|connection| connection.generation == generation)
             .filter(|connection| connection.read_activity.is_none())
             && let Some(health) = connection.health.as_mut()
         {
@@ -431,7 +443,7 @@ impl EndpointRegistry {
         }
     }
 
-    pub fn new(local: impl EndpointTransport + 'static, generation: u64) -> Self {
+    pub fn new(local: impl EndpointTransport + 'static, generation: ConnectionGeneration) -> Self {
         // clock-io-ok: this test-only constructor stands in for the client launch.
         Self::new_at(local, generation, Instant::now())
     }
@@ -451,6 +463,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::tests::test_generation as generation;
 
     struct FakeTransport {
         sent: Arc<Mutex<Vec<ClientMessage>>>,
@@ -503,7 +516,7 @@ mod tests {
                     sent: Arc::new(Mutex::new(Vec::new())),
                     error: None,
                 },
-                1,
+                generation(1),
             );
             registry.fail(&ClientEndpointId::Local, &io::Error::other(failure));
             let failures = registry.take_failures();
@@ -525,7 +538,7 @@ mod tests {
                 sent: Arc::clone(&local_sent),
                 error: None,
             },
-            1,
+            generation(1),
         );
         let ssh_id = ClientEndpointId::Ssh(profile());
         registry.insert(
@@ -534,7 +547,7 @@ mod tests {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 error: Some(io::ErrorKind::BrokenPipe),
             },
-            2,
+            generation(2),
             true,
             Instant::now(),
         );
@@ -565,14 +578,14 @@ mod tests {
                     .expect("test machine label"),
             )
         }
-        fn insert(registry: &mut EndpointRegistry, index: usize, generation: u64) {
+        fn insert(registry: &mut EndpointRegistry, index: usize, position: u64) {
             registry.insert(
                 endpoint_id(index),
                 FakeTransport {
                     sent: Arc::new(Mutex::new(Vec::new())),
                     error: None,
                 },
-                generation,
+                generation(position),
                 false,
                 Instant::now(),
             );
@@ -609,7 +622,10 @@ mod tests {
         }
         let first = &failures[0];
         assert_eq!(first.endpoint_id, endpoint_id(0));
-        assert_eq!((first.generation, first.kind), (2, io::ErrorKind::TimedOut));
+        assert_eq!(
+            (first.generation, first.kind),
+            (generation(2), io::ErrorKind::TimedOut)
+        );
     }
 
     #[test]
@@ -619,7 +635,7 @@ mod tests {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 error: None,
             },
-            1,
+            generation(1),
         );
         let ssh_id = ClientEndpointId::Ssh(profile());
         registry.insert(
@@ -628,7 +644,7 @@ mod tests {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 error: None,
             },
-            2,
+            generation(2),
             true,
             Instant::now(),
         );
@@ -640,7 +656,7 @@ mod tests {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 error: None,
             },
-            3,
+            generation(3),
             false,
             Instant::now(),
         );
@@ -659,7 +675,7 @@ mod tests {
                 sent: Arc::clone(&sent),
                 error: None,
             },
-            2,
+            generation(2),
             false,
             Instant::now(),
         );
@@ -677,7 +693,7 @@ mod tests {
                 sent: Arc::clone(&sent),
                 error: None,
             },
-            1,
+            generation(1),
         );
         assert!(
             socket
@@ -687,8 +703,8 @@ mod tests {
 
         // Taken after the insert, so the connection's health clock started earlier.
         let now = Instant::now();
-        let ping_at = now + crate::limits::HEARTBEAT_INTERVAL;
-        let expire_at = ping_at + crate::limits::HEARTBEAT_TIMEOUT;
+        let ping_at = now + crate::endpoint::health::HEARTBEAT_INTERVAL;
+        let expire_at = ping_at + crate::endpoint::health::HEARTBEAT_TIMEOUT;
 
         socket.tick_health(ping_at);
         socket.tick_health(expire_at);
@@ -704,7 +720,7 @@ mod tests {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 error: None,
             },
-            1,
+            generation(1),
         );
         let ssh_id = ClientEndpointId::Ssh(profile());
         let sent = Arc::new(Mutex::new(Vec::new()));
@@ -714,19 +730,20 @@ mod tests {
                 sent: Arc::clone(&sent),
                 error: None,
             },
-            2,
+            generation(2),
             false,
             Instant::now(),
         );
         let now = Instant::now();
-        registry.tick_health(now + crate::limits::HEARTBEAT_INTERVAL);
+        registry.tick_health(now + crate::endpoint::health::HEARTBEAT_INTERVAL);
         assert!(matches!(
             sent.lock().expect("test precondition").as_slice(),
             [ClientMessage::HealthPing]
         ));
 
         registry.tick_health(
-            now + crate::limits::HEARTBEAT_INTERVAL + crate::limits::HEARTBEAT_TIMEOUT,
+            now + crate::endpoint::health::HEARTBEAT_INTERVAL
+                + crate::endpoint::health::HEARTBEAT_TIMEOUT,
         );
         assert!(registry.connection(&ssh_id).is_none());
         assert_eq!(registry.take_failures()[0].kind, io::ErrorKind::TimedOut);
@@ -739,7 +756,7 @@ mod tests {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 error: None,
             },
-            1,
+            generation(1),
         );
         let ssh_id = ClientEndpointId::Ssh(profile());
         registry.insert(
@@ -748,14 +765,18 @@ mod tests {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 error: None,
             },
-            2,
+            generation(2),
             false,
             Instant::now(),
         );
         let now = Instant::now();
-        registry.mark_ready(&ssh_id, 2);
-        registry.received(&ssh_id, 2, now + crate::limits::HEARTBEAT_INTERVAL);
-        registry.tick_health(now + crate::limits::HEARTBEAT_TIMEOUT);
+        registry.mark_ready(&ssh_id, generation(2));
+        registry.received(
+            &ssh_id,
+            generation(2),
+            now + crate::endpoint::health::HEARTBEAT_INTERVAL,
+        );
+        registry.tick_health(now + crate::endpoint::health::HEARTBEAT_TIMEOUT);
         assert!(registry.connection(&ssh_id).is_some());
     }
 
@@ -771,7 +792,7 @@ mod tests {
                 sent: Arc::clone(sent),
                 error: None,
             },
-            2,
+            generation(2),
             false,
             Some(Arc::clone(&activity)),
             now,
@@ -786,7 +807,7 @@ mod tests {
         let now = Instant::now();
         let activity = insert_with_reader(&mut registry, &sent, now);
         let ssh_id = ClientEndpointId::Ssh(profile());
-        let ping_at = now + crate::limits::HEARTBEAT_INTERVAL;
+        let ping_at = now + crate::endpoint::health::HEARTBEAT_INTERVAL;
         registry.tick_health(ping_at);
         assert!(matches!(
             sent.lock().expect("test precondition").as_slice(),
@@ -797,7 +818,7 @@ mod tests {
         // the loop never processes them, and the next timer wake comes long after.
         activity.record(now + Duration::from_millis(1), true);
         activity.record(ping_at + Duration::from_millis(1), false);
-        registry.tick_health(ping_at + crate::limits::HEARTBEAT_TIMEOUT);
+        registry.tick_health(ping_at + crate::endpoint::health::HEARTBEAT_TIMEOUT);
         assert!(registry.connection(&ssh_id).is_some());
         assert!(registry.take_failures().is_empty());
     }
@@ -811,7 +832,7 @@ mod tests {
         let mut registry = EndpointRegistry::empty();
         let sent = Arc::new(Mutex::new(Vec::new()));
         insert_with_reader(&mut registry, &sent, now);
-        registry.tick_health(now + crate::limits::HEARTBEAT_TIMEOUT);
+        registry.tick_health(now + crate::endpoint::health::HEARTBEAT_TIMEOUT);
         assert!(registry.connection(&ssh_id).is_none());
         assert_eq!(registry.take_failures()[0].kind, io::ErrorKind::TimedOut);
 
@@ -821,15 +842,15 @@ mod tests {
         let activity = insert_with_reader(&mut registry, &sent, now);
         let snapshot_at = now + Duration::from_millis(1);
         activity.record(snapshot_at, true);
-        let ping_at = snapshot_at + crate::limits::HEARTBEAT_INTERVAL;
+        let ping_at = snapshot_at + crate::endpoint::health::HEARTBEAT_INTERVAL;
         sent.lock().expect("test precondition").clear();
         registry.tick_health(ping_at);
         assert!(matches!(
             sent.lock().expect("test precondition").as_slice(),
             [ClientMessage::HealthPing]
         ));
-        registry.received(&ssh_id, 2, ping_at + Duration::from_secs(1));
-        registry.tick_health(ping_at + crate::limits::HEARTBEAT_TIMEOUT);
+        registry.received(&ssh_id, generation(2), ping_at + Duration::from_secs(1));
+        registry.tick_health(ping_at + crate::endpoint::health::HEARTBEAT_TIMEOUT);
         assert!(registry.connection(&ssh_id).is_none());
         assert_eq!(registry.take_failures()[0].kind, io::ErrorKind::TimedOut);
     }
@@ -842,14 +863,14 @@ mod tests {
         let activity = insert_with_reader(&mut registry, &sent, now);
         assert_eq!(
             registry.next_service_deadline(now),
-            Some(now + crate::limits::HEARTBEAT_INTERVAL)
+            Some(now + crate::endpoint::health::HEARTBEAT_INTERVAL)
         );
 
         let received_at = now + Duration::from_millis(1);
         activity.record(received_at, true);
         assert_eq!(
             registry.next_service_deadline(now),
-            Some(received_at + crate::limits::HEARTBEAT_INTERVAL)
+            Some(received_at + crate::endpoint::health::HEARTBEAT_INTERVAL)
         );
     }
 
@@ -862,7 +883,7 @@ mod tests {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 error: Some(io::ErrorKind::BrokenPipe),
             },
-            1,
+            generation(1),
             now,
         );
         assert_eq!(registry.next_service_deadline(now), None);
@@ -887,7 +908,7 @@ mod tests {
                 sent: Arc::clone(&local_sent),
                 error: None,
             },
-            1,
+            generation(1),
         );
         registry.insert(
             ClientEndpointId::Ssh(profile()),
@@ -895,7 +916,7 @@ mod tests {
                 sent: Arc::clone(&remote_sent),
                 error: None,
             },
-            2,
+            generation(2),
             false,
             Instant::now(),
         );
@@ -920,7 +941,7 @@ mod tests {
                 sent: Arc::clone(&sent),
                 error: None,
             },
-            1,
+            generation(1),
         );
 
         assert_eq!(
@@ -946,18 +967,24 @@ mod tests {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 error: None,
             },
-            7,
+            generation(7),
         );
-        assert!(registry.accepts(&ClientEndpointId::Local, 7));
-        assert!(!registry.accepts(&ClientEndpointId::Local, 6));
+        assert!(registry.accepts(&ClientEndpointId::Local, generation(7)));
+        assert!(!registry.accepts(&ClientEndpointId::Local, generation(6)));
     }
     #[test]
     fn send_viewed_reaches_only_viewed_connections() {
         let local = crate::tests::endpoint_choice::RecordingTransport::default();
         let other = crate::tests::endpoint_choice::RecordingTransport::default();
         let id = ClientEndpointId::Ssh(profile());
-        let mut registry = EndpointRegistry::new(local.clone(), 1);
-        registry.insert(id.clone(), other.clone(), 7, false, Instant::now());
+        let mut registry = EndpointRegistry::new(local.clone(), generation(1));
+        registry.insert(
+            id.clone(),
+            other.clone(),
+            generation(7),
+            false,
+            Instant::now(),
+        );
         let msg = ClientMessage::ClientShellFocus { focused: true };
         registry.send_viewed(&msg);
         assert_eq!(local.take(), vec![msg.clone()]);
@@ -972,8 +999,14 @@ mod tests {
         let local = crate::tests::endpoint_choice::RecordingTransport::default();
         let other = crate::tests::endpoint_choice::RecordingTransport::default();
         let id = ClientEndpointId::Ssh(profile());
-        let mut registry = EndpointRegistry::new(local.clone(), 1);
-        registry.insert(id.clone(), other.clone(), 7, true, Instant::now());
+        let mut registry = EndpointRegistry::new(local.clone(), generation(1));
+        registry.insert(
+            id.clone(),
+            other.clone(),
+            generation(7),
+            true,
+            Instant::now(),
+        );
         other.fail_next();
         registry.send_viewed(&ClientMessage::ClientShellFocus { focused: true });
         assert_eq!(local.take().len(), 1);
@@ -995,7 +1028,13 @@ mod tests {
             })
             .collect();
         for (id, transport) in ids.iter().zip(&transports) {
-            registry.insert(id.clone(), transport.clone(), 7, true, Instant::now());
+            registry.insert(
+                id.clone(),
+                transport.clone(),
+                generation(7),
+                true,
+                Instant::now(),
+            );
         }
         assert_eq!(
             registry

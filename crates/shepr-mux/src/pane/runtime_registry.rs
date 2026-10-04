@@ -1,16 +1,20 @@
 use std::collections::HashMap;
 
 use super::PaneRuntime;
-use shepr_protocol::TerminalId;
+use shepr_core::layout::PaneId;
 
-/// Server-owned live terminal runtimes, keyed by durable terminal id.
+/// Server-owned live pane runtimes, keyed by the pane they run.
+///
+/// A runtime exists only for a live pane: removing a pane removes and shuts
+/// down its runtime, and an agent resume replaces the runtime under the same
+/// `PaneId`.
 ///
 /// This sits outside `AppState` so pure state can stay focused on workspace,
 /// pane, and terminal metadata while the server/application layer owns PTYs,
 /// parser backends, detector tasks, and channels.
 #[derive(Default)]
 pub struct PaneRuntimeRegistry {
-    runtimes: HashMap<TerminalId, PaneRuntime>,
+    runtimes: HashMap<PaneId, PaneRuntime>,
 }
 
 impl PaneRuntimeRegistry {
@@ -18,20 +22,20 @@ impl PaneRuntimeRegistry {
         Self::default()
     }
 
-    pub fn get(&self, terminal_id: &TerminalId) -> Option<&PaneRuntime> {
-        self.runtimes.get(terminal_id)
+    pub fn get(&self, pane: &PaneId) -> Option<&PaneRuntime> {
+        self.runtimes.get(pane)
     }
 
-    pub fn get_mut(&mut self, terminal_id: &TerminalId) -> Option<&mut PaneRuntime> {
-        self.runtimes.get_mut(terminal_id)
+    pub fn get_mut(&mut self, pane: &PaneId) -> Option<&mut PaneRuntime> {
+        self.runtimes.get_mut(pane)
     }
 
-    pub fn insert(&mut self, terminal_id: TerminalId, runtime: PaneRuntime) -> Option<PaneRuntime> {
-        self.runtimes.insert(terminal_id, runtime)
+    pub fn insert(&mut self, pane: PaneId, runtime: PaneRuntime) -> Option<PaneRuntime> {
+        self.runtimes.insert(pane, runtime)
     }
 
-    pub fn remove(&mut self, terminal_id: &TerminalId) -> Option<PaneRuntime> {
-        self.runtimes.remove(terminal_id)
+    pub fn remove(&mut self, pane: &PaneId) -> Option<PaneRuntime> {
+        self.runtimes.remove(pane)
     }
 
     pub fn clear(&mut self) {
@@ -43,15 +47,15 @@ impl PaneRuntimeRegistry {
     }
 }
 
-impl From<HashMap<TerminalId, PaneRuntime>> for PaneRuntimeRegistry {
-    fn from(runtimes: HashMap<TerminalId, PaneRuntime>) -> Self {
+impl From<HashMap<PaneId, PaneRuntime>> for PaneRuntimeRegistry {
+    fn from(runtimes: HashMap<PaneId, PaneRuntime>) -> Self {
         Self { runtimes }
     }
 }
 
 impl IntoIterator for PaneRuntimeRegistry {
-    type Item = (TerminalId, PaneRuntime);
-    type IntoIter = std::collections::hash_map::IntoIter<TerminalId, PaneRuntime>;
+    type Item = (PaneId, PaneRuntime);
+    type IntoIter = std::collections::hash_map::IntoIter<PaneId, PaneRuntime>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.runtimes.into_iter()
@@ -60,7 +64,7 @@ impl IntoIterator for PaneRuntimeRegistry {
 
 #[cfg(test)]
 impl PaneRuntimeRegistry {
-    pub fn drain(&mut self) -> impl Iterator<Item = (TerminalId, PaneRuntime)> + '_ {
+    pub fn drain(&mut self) -> impl Iterator<Item = (PaneId, PaneRuntime)> + '_ {
         self.runtimes.drain()
     }
 }

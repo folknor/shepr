@@ -1,7 +1,11 @@
 use crate::endpoint::ClientEndpointId;
+use crate::shell::config::ClientShellConfig;
+use crate::shell::ledger::Ticket;
+use crate::shell::overlays::Overlay;
+use crate::shell::overlays::help::HelpOverlay;
+use crate::shell::overlays::rename::{RenameOverlay, RenameTarget};
 use crate::shell::state::{
-    ClientRenameTarget, ClientShellAction, ClientShellConfig, ClientShellEndpointError,
-    ClientShellMode, ClientShellOverlay, ClientShellRequest,
+    ClientShellAction, ClientShellEndpointError, ClientShellMode, ClientShellRequest,
 };
 use shepr_config::ClientConfig;
 use shepr_protocol::command::EndpointCommand;
@@ -10,9 +14,7 @@ use shepr_term::key::TerminalKey;
 use shepr_termio::input::KeybindAction;
 use shepr_termio::input::raw_input::RawInputEvent;
 
-use crate::shell::state::{
-    ClientHelpOverlay, ClientRenameOverlay, ClientShellInput, ClientShellState,
-};
+use crate::shell::state::{ClientShellInput, ClientShellState};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use shepr_protocol::command::EndpointReply;
@@ -32,7 +34,14 @@ fn shell(field: usize) -> ClientShellState {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(frame, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        frame,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 30).expect("initial shell");
     match field {
         0 => state.open_new_workspace_overlay(&mut ClientShellInput::default()),
@@ -43,10 +52,9 @@ fn shell(field: usize) -> ClientShellState {
             state.handle_input_bytes(b"/");
         }
         4 => {
-            state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
-                query: TextEditor::default(),
+            state.overlay = Some(Overlay::Help(HelpOverlay {
                 search_focused: true,
-                scroll: 0,
+                ..HelpOverlay::default()
             }));
         }
         5 => {
@@ -60,12 +68,12 @@ fn shell(field: usize) -> ClientShellState {
 
 fn editor(state: &mut ClientShellState) -> &mut TextEditor {
     match state.overlay.as_mut() {
-        Some(ClientShellOverlay::Rename(v)) => &mut v.input,
-        Some(ClientShellOverlay::Navigator(v)) => &mut v.query,
-        Some(ClientShellOverlay::Help(v)) => &mut v.query,
+        Some(Overlay::Rename(v)) => &mut v.input,
+        Some(Overlay::Navigator(v)) => &mut v.query,
+        Some(Overlay::Help(v)) => &mut v.query,
         _ => {
             &mut state
-                .copy_mode
+                .copy
                 .as_mut()
                 .expect("copy mode")
                 .search
@@ -98,9 +106,7 @@ fn all_six_fields_route_shared_text_editing() {
 
 /// Opens the new-workspace prompt and returns the checkout-root request it
 /// sent, with its request id and the overlay's matching id.
-fn open_new_workspace(
-    state: &mut ClientShellState,
-) -> (shepr_protocol::RequestId, shepr_protocol::RequestId, String) {
+fn open_new_workspace(state: &mut ClientShellState) -> (shepr_protocol::RequestId, Ticket, String) {
     let mut outcome = ClientShellInput::default();
     state.open_new_workspace_overlay(&mut outcome);
     let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
@@ -112,10 +118,10 @@ fn open_new_workspace(
             request.command
         );
     };
-    let Some(ClientShellOverlay::Rename(ClientRenameOverlay {
+    let Some(Overlay::Rename(RenameOverlay {
         target:
-            ClientRenameTarget::NewWorkspace {
-                label_lookup: Some(lookup_id),
+            RenameTarget::NewWorkspace {
+                label_lookup: Some(lookup),
                 ..
             },
         ..
@@ -125,7 +131,7 @@ fn open_new_workspace(
     };
     (
         request.id.clone(),
-        lookup_id.clone(),
+        *lookup,
         params.cwd.display_text().into_owned(),
     )
 }
@@ -140,7 +146,13 @@ fn checkout_root_answer(root: Option<&str>) -> EndpointReply {
 #[test]
 fn new_workspace_label_comes_from_the_endpoint_and_stale_answers_are_ignored() {
     let mut state = shell(0);
-    let boot_id = state.snapshot.as_deref().expect("snapshot").boot_id.clone();
+    let boot_id = state
+        .endpoints
+        .active
+        .snapshot()
+        .expect("snapshot")
+        .boot_id
+        .clone();
     let (stale_request, stale_id, cwd) = open_new_workspace(&mut state);
     assert_eq!(cwd, "/repo");
 
@@ -167,7 +179,13 @@ fn new_workspace_label_comes_from_the_endpoint_and_stale_answers_are_ignored() {
 #[test]
 fn new_workspace_label_answer_keeps_a_user_edit_and_a_failure_keeps_the_suggestion() {
     let mut state = shell(0);
-    let boot_id = state.snapshot.as_deref().expect("snapshot").boot_id.clone();
+    let boot_id = state
+        .endpoints
+        .active
+        .snapshot()
+        .expect("snapshot")
+        .boot_id
+        .clone();
     let (request, _, _) = open_new_workspace(&mut state);
     *editor(&mut state) = TextEditor::from("mine");
     state.answer_request(
@@ -240,30 +258,30 @@ fn cursor_movement_preserves_filter_selection_and_scroll() {
         let mut state = shell(field);
         *editor(&mut state) = TextEditor::from("ab");
         match state.overlay.as_mut().expect("overlay") {
-            ClientShellOverlay::Navigator(v) => {
+            Overlay::Navigator(v) => {
                 v.scroll = 3;
                 v.selected = Some(crate::shell::navigation::location::Location::pane(
                     ClientEndpointId::Local,
                     test_pane_id("w1:p1"),
                 ));
             }
-            ClientShellOverlay::Help(v) => v.scroll = 3,
+            Overlay::Help(v) => v.scroll = 3,
             _ => unreachable!(),
         }
         press(&mut state, KeyCode::Home, KeyModifiers::NONE);
         press(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL); // Empty kill must not refresh results.
         match state.overlay.as_ref().expect("overlay") {
-            ClientShellOverlay::Navigator(v) => {
+            Overlay::Navigator(v) => {
                 assert_eq!(v.scroll, 3);
                 assert!(v.selected.is_some());
             }
-            ClientShellOverlay::Help(v) => assert_eq!(v.scroll, 3),
+            Overlay::Help(v) => assert_eq!(v.scroll, 3),
             _ => unreachable!(),
         }
         press(&mut state, KeyCode::Char('k'), KeyModifiers::CONTROL);
         match state.overlay.as_ref().expect("overlay") {
-            ClientShellOverlay::Navigator(v) => assert!(v.selected.is_none()),
-            ClientShellOverlay::Help(v) => assert_eq!(v.scroll, 0),
+            Overlay::Navigator(v) => assert!(v.selected.is_none()),
+            Overlay::Help(v) => assert_eq!(v.scroll, 0),
             _ => unreachable!(),
         }
     }
@@ -280,7 +298,7 @@ fn escape_preserves_help_overlay_with_generated_text() {
     assert!(result.repaint);
     assert!(result.requests.is_empty());
     assert!(result.actions.is_empty());
-    let Some(ClientShellOverlay::Help(help)) = &state.overlay else {
+    let Some(Overlay::Help(help)) = &state.overlay else {
         panic!("Escape should leave help open");
     };
     assert!(!help.search_focused);
@@ -292,7 +310,7 @@ fn escape_preserves_help_overlay_with_generated_text() {
 fn focused_filters_keep_ctrl_n_p_navigation_and_literal_commands() {
     for field in [3, 4] {
         let mut state = shell(field);
-        if let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() {
+        if let Some(Overlay::Navigator(navigator)) = state.overlay.as_mut() {
             navigator.selected = None;
         }
         state.compose(106, 30).expect("filter frame");
@@ -335,7 +353,7 @@ fn copy_search_owns_prefix_but_parked_prompt_does_not_steal_input() {
     let mut state = shell(5);
     *editor(&mut state) = TextEditor::from("ab");
     press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
-    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
     state.handle_raw_events(vec![RawInputEvent::Paste("X".into())]);
     assert_eq!(editor(&mut state).as_str(), "aXb");
     state.open_rename_pane_overlay();
@@ -344,17 +362,17 @@ fn copy_search_owns_prefix_but_parked_prompt_does_not_steal_input() {
     assert_eq!(editor(&mut state).as_str(), "name");
     state.overlay = None;
     assert_eq!(editor(&mut state).as_str(), "aXb");
-    state.mode = ClientShellMode::Terminal;
+    state.mode.set(ClientShellMode::Terminal);
     assert!(!state.modal_paste_target_active());
     let input = state.handle_raw_events(vec![RawInputEvent::Paste("terminal".into())]);
     assert!(
         matches!(&input.requests[..], [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. })] if matches!(&events[..], [ClientPaneInputEvent::Paste(text)] if text == "terminal"))
     );
     assert_eq!(editor(&mut state).as_str(), "aXb");
-    state.mode = ClientShellMode::Copy;
+    state.mode.set(ClientShellMode::Copy);
     press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
     press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
-    assert_eq!(state.mode, ClientShellMode::Prefix);
+    assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
 }
 
 #[test]
@@ -368,7 +386,7 @@ fn every_field_renders_long_unicode_across_resize_without_mutation() {
             for (width, height) in [(120, 40), (60, 20), (12, 6), (1, 1), (120, 40)] {
                 let before = editor(&mut state).clone();
                 if let Some(frame) = state.compose(width, height)
-                    && let Some(cursor) = frame.cursor.as_ref().filter(|cursor| cursor.visible)
+                    && let Some(cursor) = frame.cursor().filter(|cursor| cursor.visible)
                 {
                     assert!(cursor.x < width && cursor.y < height, "field {field}");
                 }

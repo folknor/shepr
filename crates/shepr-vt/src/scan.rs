@@ -1,7 +1,9 @@
 //! Byte-level scanner for the few control sequences vte never hands to a
 //! `Handler`, but shepr must answer or track: OSC 7 / OSC 9;9 / OSC 1337
 //! CurrentDir working-directory reports, OSC 9;4 progress (agent detection
-//! evidence), CSI ? 996 n, CSI 16 t, XTGETTCAP
+//! evidence), the bodies of complete OSCs while capture is on (the pane's
+//! opt-in OSC debug log, which therefore sees the framing the terminal
+//! used), CSI ? 996 n, CSI 16 t, XTGETTCAP
 //! (`ESC P + q`), `CSI ? 3 J`, and the modifyOtherKeys spellings vte drops
 //! (`CSI > m`, `CSI > 4 n`, `CSI > 4 ; Pv m` with Pv above 2).
 //!
@@ -45,9 +47,78 @@ pub enum WorkingDirectoryReport {
     Path(Vec<u8>),
 }
 
-/// Raw ConEmu OSC 9;4 payload, including its `4` command byte.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProgressReport(pub Vec<u8>);
+/// The state of a ConEmu `OSC 9 ; 4 ; state ; percent` progress report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressState {
+    /// 0: the progress indicator is removed.
+    Remove,
+    /// 1: normal progress with a percentage.
+    Normal,
+    /// 2: error.
+    Error,
+    /// 3: indeterminate progress.
+    Indeterminate,
+    /// 4: paused or warning.
+    Paused,
+}
+
+impl ProgressState {
+    fn from_code(code: u16) -> Option<Self> {
+        Some(match code {
+            0 => Self::Remove,
+            1 => Self::Normal,
+            2 => Self::Error,
+            3 => Self::Indeterminate,
+            4 => Self::Paused,
+            _ => return None,
+        })
+    }
+
+    /// The state's ConEmu code.
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Remove => 0,
+            Self::Normal => 1,
+            Self::Error => 2,
+            Self::Indeterminate => 3,
+            Self::Paused => 4,
+        }
+    }
+}
+
+/// A ConEmu `OSC 9 ; 4` progress report, parsed once by the scanner. A report
+/// whose state is missing or not one of the five ConEmu states is not a
+/// progress report. A percentage that is absent or not a decimal `u8` is
+/// `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Progress {
+    pub state: ProgressState,
+    pub percent: Option<u8>,
+}
+
+impl Progress {
+    fn parse(payload: &[u8]) -> Option<Self> {
+        let mut params = payload.strip_prefix(b"4;")?.split(|byte| *byte == b';');
+        let state = ProgressState::from_code(parse_decimal(params.next()?)?)?;
+        let percent = params
+            .next()
+            .and_then(parse_decimal)
+            .and_then(|percent| u8::try_from(percent).ok());
+        Some(Self { state, percent })
+    }
+}
+
+/// The canonical `4;state[;percent]` spelling, which is what detection
+/// manifests match.
+impl std::fmt::Display for Progress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "4;{}", self.state.code())?;
+        if let Some(percent) = self.percent {
+            write!(f, ";{percent}")?;
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ScanEvent {
@@ -64,8 +135,11 @@ pub(super) enum ScanEvent {
     Xtgettcap(Vec<Vec<u8>>),
     /// Working-directory report payload, exactly as sent.
     WorkingDirectory(WorkingDirectoryReport),
-    /// ConEmu progress report: the OSC 9 payload after `9;`, starting `4`.
-    Progress(ProgressReport),
+    /// ConEmu progress report (`OSC 9 ; 4 ; state ; percent`).
+    Progress(Progress),
+    /// The body of a complete OSC, exactly as the parser framed it. Only
+    /// emitted while body capture is on (the pane's opt-in OSC debug log).
+    OscBody(Vec<u8>),
     /// CSI ? 3 J: the DECSED spelling of ED3 (erase scrollback). vte only
     /// dispatches `CSI 3 J`, but programs (Droid among them) emit this form.
     EraseScrollback,
@@ -103,9 +177,15 @@ pub(super) struct Scanner {
     osc_raw_bytes: usize,
     /// The current OSC passed `MAX_OSC_RAW_BYTES` and the parser was ended.
     osc_cut: bool,
+    /// Emit every complete OSC body as [`ScanEvent::OscBody`].
+    capture_osc_bodies: bool,
 }
 
 impl Scanner {
+    pub(super) fn set_capture_osc_bodies(&mut self, capture: bool) {
+        self.capture_osc_bodies = capture;
+    }
+
     pub(super) fn has_oversized_osc(&self) -> bool {
         self.state == State::Osc && self.osc_cut
     }
@@ -334,6 +414,12 @@ impl Scanner {
             return;
         }
         let body = self.buffer.as_slice();
+        if self.capture_osc_bodies {
+            events.push(ScannedEvent {
+                end: index + 1,
+                event: ScanEvent::OscBody(body.to_vec()),
+            });
+        }
         let report = body
             .strip_prefix(b"7;")
             .map(|value| WorkingDirectoryReport::Uri(value.to_vec()))
@@ -355,13 +441,10 @@ impl Scanner {
         // ConEmu progress is `OSC 9 ; 4 ; state ; percent`. Every other OSC 9
         // is an iTerm2-style notification (or ConEmu's other subcommands),
         // which must not overwrite progress evidence.
-        if let Some(payload) = body
-            .strip_prefix(b"9;")
-            .filter(|payload| *payload == b"4" || payload.starts_with(b"4;"))
-        {
+        if let Some(progress) = body.strip_prefix(b"9;").and_then(Progress::parse) {
             events.push(ScannedEvent {
                 end: index + 1,
-                event: ScanEvent::Progress(ProgressReport(payload.to_vec())),
+                event: ScanEvent::Progress(progress),
             });
         }
     }
@@ -708,12 +791,92 @@ mod tests {
         assert_eq!(
             scanned_events(bytes),
             vec![
-                ScanEvent::Progress(ProgressReport(b"4;3;50".to_vec())),
-                ScanEvent::Progress(ProgressReport(b"4".to_vec())),
+                ScanEvent::Progress(Progress {
+                    state: ProgressState::Indeterminate,
+                    percent: Some(50),
+                }),
                 ScanEvent::WorkingDirectory(WorkingDirectoryReport::Path(b"/tmp".to_vec())),
             ]
         );
         assert_chunk_equivalence(bytes);
+    }
+
+    #[test]
+    fn progress_parses_state_and_percent_once() {
+        let progress = |payload: &[u8]| Progress::parse(payload);
+        assert_eq!(
+            progress(b"4;3;"),
+            Some(Progress {
+                state: ProgressState::Indeterminate,
+                percent: None,
+            })
+        );
+        assert_eq!(
+            progress(b"4;0;0"),
+            Some(Progress {
+                state: ProgressState::Remove,
+                percent: Some(0),
+            })
+        );
+        // Grok's busy spelling has no valid percentage.
+        assert_eq!(
+            progress(b"4;1;-1"),
+            Some(Progress {
+                state: ProgressState::Normal,
+                percent: None,
+            })
+        );
+        assert_eq!(progress(b"4"), None);
+        assert_eq!(progress(b"4;"), None);
+        assert_eq!(progress(b"4;9;1"), None);
+        assert_eq!(progress(b"42"), None);
+        let text = |payload: &[u8]| progress(payload).map(|progress| progress.to_string());
+        assert_eq!(text(b"4;3;").as_deref(), Some("4;3"));
+        assert_eq!(text(b"4;1;40").as_deref(), Some("4;1;40"));
+        assert_eq!(text(b"4;0;0").as_deref(), Some("4;0;0"));
+    }
+
+    #[test]
+    fn osc_bodies_are_emitted_only_when_captured() {
+        let bytes: &[u8] = b"\x1bPignored\x1b]0;not-osc\x07\x1b\\\x1b]9;a\x1b\\\x1b]2;b\x1b[m\x1b]0;c\x18d\x1b]0;e\x01f\x07";
+        let mut scanner = Scanner::default();
+        assert!(scanner.scan(bytes).is_empty());
+
+        // The DCS ends at its ESC, so the OSC after it is real. An ESC ends an
+        // OSC whatever follows it, and CAN ends one too.
+        let mut scanner = Scanner::default();
+        scanner.set_capture_osc_bodies(true);
+        let bodies: Vec<Vec<u8>> = scanner
+            .scan(bytes)
+            .into_iter()
+            .filter_map(|event| match event.event {
+                ScanEvent::OscBody(body) => Some(body),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            bodies,
+            vec![
+                b"0;not-osc".to_vec(),
+                b"9;a".to_vec(),
+                b"2;b".to_vec(),
+                b"0;c".to_vec(),
+                b"0;ef".to_vec(),
+            ]
+        );
+    }
+
+    #[test]
+    fn osc_bodies_split_across_chunks_are_whole() {
+        let mut scanner = Scanner::default();
+        scanner.set_capture_osc_bodies(true);
+        assert!(scanner.scan(b"\x1b]21337;stat").is_empty());
+        let events = scanner.scan(b"us=working\x1b\\");
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].event,
+            ScanEvent::OscBody(b"21337;status=working".to_vec())
+        );
     }
 
     #[test]

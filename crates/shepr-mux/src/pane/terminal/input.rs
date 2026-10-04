@@ -159,63 +159,12 @@ impl PaneTerminal {
         position: shepr_term::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        let core = self.core.lock().ok()?;
-        let terminal = &core.terminal;
-        let protocol = modes.mouse_protocol()?;
-        let cell_encoding = match protocol.encoding {
-            shepr_vt::MouseEncoding::Default => shepr_term::mouse::MouseProtocolEncoding::Default,
-            shepr_vt::MouseEncoding::Utf8 => shepr_term::mouse::MouseProtocolEncoding::Utf8,
-            shepr_vt::MouseEncoding::Sgr => shepr_term::mouse::MouseProtocolEncoding::Sgr,
-        };
-        // Reports are 1-based. Pixel positions already arrive 1-based; cell
-        // positions are shifted here. Under SGR-pixels (mode 1016) a cell
-        // position is mapped to the top-left pixel of that cell using the same
-        // integer cell pitch the pixel fallback below uses, so the child maps
-        // it straight back to the cell. Only when the pane has no pixel
-        // geometry at all is the cell sent as-is in SGR form: the child can't
-        // know a cell size either then, and a report beats a dropped click.
-        let cell_pitch = || {
-            let cols = u32::from(terminal.cols());
-            let rows = u32::from(terminal.rows());
-            let width_px = terminal.width_px();
-            let height_px = terminal.height_px();
-            (cols > 0 && rows > 0 && width_px > 0 && height_px > 0)
-                .then(|| ((width_px / cols).max(1), (height_px / rows).max(1)))
-        };
-        let (encoding, x, y) = match position {
-            shepr_term::mouse::Position::Cell { column, row } if protocol.pixels_requested => {
-                match cell_pitch() {
-                    Some((cell_width, cell_height)) => (
-                        shepr_term::mouse::MouseProtocolEncoding::SgrPixels,
-                        u32::from(column)
-                            .saturating_mul(cell_width)
-                            .saturating_add(1),
-                        u32::from(row).saturating_mul(cell_height).saturating_add(1),
-                    ),
-                    None => (
-                        shepr_term::mouse::MouseProtocolEncoding::Sgr,
-                        u32::from(column) + 1,
-                        u32::from(row) + 1,
-                    ),
-                }
-            }
-            shepr_term::mouse::Position::Cell { column, row } => {
-                (cell_encoding, u32::from(column) + 1, u32::from(row) + 1)
-            }
-            shepr_term::mouse::Position::Pixels { x, y } if protocol.pixels_requested => {
-                (shepr_term::mouse::MouseProtocolEncoding::SgrPixels, x, y)
-            }
-            shepr_term::mouse::Position::Pixels { x, y } => {
-                let cols = u32::from(terminal.cols());
-                let rows = u32::from(terminal.rows());
-                let (cell_width, cell_height) = cell_pitch()?;
-                (
-                    cell_encoding,
-                    (x.saturating_sub(1) / cell_width).min(cols - 1) + 1,
-                    (y.saturating_sub(1) / cell_height).min(rows - 1) + 1,
-                )
-            }
-        };
-        shepr_term::mouse::encode_mouse_event(kind, x, y, modifiers, protocol.mode, encoding)
+        shepr_term::mouse::encode_pane_mouse_report(
+            kind,
+            position,
+            modifiers,
+            modes.mouse_protocol()?,
+            modes.pixel_mouse(),
+        )
     }
 }

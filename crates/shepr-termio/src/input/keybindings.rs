@@ -12,10 +12,10 @@ pub enum KeybindDispatch {
 
 macro_rules! define_keybinding_actions {
     (
-        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
+        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
     ) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum KeybindAction {
@@ -47,10 +47,10 @@ pub fn resolve_non_indexed_action(
 ) -> Option<KeybindAction> {
     macro_rules! resolve_actions {
         (
-            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
+            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
         ) => {
             $(
                 if action_matches(&keybinds.$action_field, key, dispatch) {
@@ -73,20 +73,19 @@ pub fn resolve_indexed_action(
     for exact_modifiers in [true, false] {
         macro_rules! resolve_indexed {
             (
-                actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-                navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-                navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+                actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
+                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+                navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+                navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
             ) => {
                 $(
                     for binding in &keybinds.$indexed_field {
                         let dispatch_matches = match dispatch {
-                            KeybindDispatch::Direct => binding.trigger.is_direct(),
-                            KeybindDispatch::Prefix => binding.trigger.is_prefix(),
+                            KeybindDispatch::Direct => binding.is_direct(),
+                            KeybindDispatch::Prefix => binding.is_prefix(),
                         };
                         if dispatch_matches
-                            && binding.trigger.chord().modifiers_match_exactly(key)
-                                == exact_modifiers
+                            && binding.modifiers_match_exactly(key) == exact_modifiers
                             && let Some(index) = binding.matched_index(key)
                         {
                             return Some(KeybindAction::$indexed_variant(index));
@@ -137,11 +136,11 @@ mod tests {
 
     #[test]
     fn clear_pane_is_unbound_by_default_and_configurable() {
-        let default = crate::test_config::validated("").live_keybinds();
+        let default = crate::test_config::validated("").live_keybinds().clone();
         assert!(default.keybinds.clear_pane.bindings.is_empty());
         let config =
             crate::test_config::validated("[keys]\nclear_pane = [\"super+k\", \"prefix+ctrl+k\"]");
-        let keybinds = config.live_keybinds().keybinds;
+        let keybinds = config.live_keybinds().keybinds.clone();
         assert!(matches!(
             resolve_direct_binding(
                 &keybinds,
@@ -169,7 +168,8 @@ mod tests {
     fn one_shared_resolver_handles_direct_prefix_and_indexed_bindings() {
         let keybinds = crate::test_config::validated("[keys]\nnext_workspace = \"ctrl+n\"\n")
             .live_keybinds()
-            .keybinds;
+            .keybinds
+            .clone();
 
         let direct = TerminalKey::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
         assert!(matches!(
@@ -192,7 +192,10 @@ mod tests {
 
     #[test]
     fn prefix_resolution_uses_shared_generated_character_fallback() {
-        let keybinds = crate::test_config::validated("").live_keybinds().keybinds;
+        let keybinds = crate::test_config::validated("")
+            .live_keybinds()
+            .keybinds
+            .clone();
         let key = TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
             .with_generated_text(Some("?".to_owned()));
 

@@ -7,13 +7,14 @@ use std::{
 
 use bytes::Bytes;
 use shepr_core::layout::PaneId;
+use shepr_platform::Wait;
 use tracing::{debug, error, warn};
 
 use crate::{
     child_io::ChildIoSendError,
     fd,
     limits::{
-        ACTOR_IDLE_POLL_MS, ACTOR_INBOX_MAX_BYTES, ACTOR_INBOX_MAX_ITEMS,
+        ACTOR_IDLE_POLL, ACTOR_INBOX_MAX_BYTES, ACTOR_INBOX_MAX_ITEMS,
         MAX_WRITE_FAILURE_DRAIN_CHUNKS, MAX_WRITE_STEPS_PER_PUMP, PTY_READ_BUFFER_BYTES,
     },
 };
@@ -138,6 +139,16 @@ struct QueuedResize {
     terminal_responses: Vec<Bytes>,
 }
 
+/// What the inbox did with one terminal reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponsePush {
+    /// The reply is queued (an empty reply needs no queueing and counts too).
+    Queued,
+    /// The inbox was full, so the reply was dropped. `first` marks the first
+    /// drop since the inbox began, the only one reported as it happens.
+    Dropped { first: bool },
+}
+
 impl PtyIoInbox {
     fn next_order(&mut self) -> u64 {
         let order = self.next_order;
@@ -197,9 +208,9 @@ impl PtyIoInbox {
         Ok(())
     }
 
-    fn push_terminal_response(&mut self, bytes: Bytes) -> (bool, bool) {
+    fn push_terminal_response(&mut self, bytes: Bytes) -> ResponsePush {
         if bytes.is_empty() {
-            return (true, false);
+            return ResponsePush::Queued;
         }
         // Only a child that has stopped reading fills the inbox, and a reply
         // it will read late is worth little, so an overflowing reply is
@@ -208,7 +219,9 @@ impl PtyIoInbox {
         // DA1 sentinel behind a dropped answer tells the child the answer is
         // not coming rather than leaving it waiting).
         if !self.reserve(bytes.len(), 1) {
-            return (false, self.note_terminal_response_drop());
+            return ResponsePush::Dropped {
+                first: self.note_terminal_response_drop(),
+            };
         }
         let order = self.next_order();
         let id = self.next_entry_id();
@@ -217,7 +230,7 @@ impl PtyIoInbox {
             order,
             write: PendingWrite::TerminalResponse(bytes),
         });
-        (true, false)
+        ResponsePush::Queued
     }
 
     fn note_terminal_response_drop(&mut self) -> bool {
@@ -368,10 +381,9 @@ impl PtyIoActorHandle {
         let mut queued = false;
         let mut should_report_drop = false;
         for response in responses {
-            let (accepted, first_drop_count) = inbox.push_terminal_response(response);
-            queued = accepted || queued;
-            if !accepted {
-                should_report_drop |= first_drop_count;
+            match inbox.push_terminal_response(response) {
+                ResponsePush::Queued => queued = true,
+                ResponsePush::Dropped { first } => should_report_drop |= first,
             }
         }
         let reported_drop_count = if should_report_drop {
@@ -436,14 +448,14 @@ impl PtyIoActorHandle {
 
 fn report_terminal_response_drops(pane_id: PaneId, dropped_responses: u64) {
     warn!(
-        pane = pane_id.raw(),
+        pane = %pane_id,
         dropped_responses, "PTY terminal reply inbox is full; dropped terminal replies"
     );
 }
 
 fn report_terminal_response_drop_total(pane_id: PaneId, total_dropped_responses: u64) {
     warn!(
-        pane = pane_id.raw(),
+        pane = %pane_id,
         total_dropped_responses, "PTY actor stopped after dropping terminal replies"
     );
 }
@@ -488,7 +500,7 @@ impl PtyIoActor {
             resize_failure_logged: false,
         };
         std::thread::Builder::new()
-            .name(format!("shepr-pty-{}", config.pane_id.raw()))
+            .name(format!("shepr-pty-{}", config.pane_id))
             .spawn(move || runner.run())
             .map_err(|err| std::io::Error::other(err.to_string()))?;
 
@@ -502,7 +514,7 @@ trait PtyIo {
         pty: RawFd,
         wake: RawFd,
         writable: bool,
-        timeout: i32,
+        wait: Wait,
     ) -> std::io::Result<fd::PtyWakeReadiness>;
     fn drain(&mut self, wake: RawFd) -> std::io::Result<()>;
     fn resize(&mut self, pty: RawFd, resize: PtyResize) -> std::io::Result<()>;
@@ -516,9 +528,9 @@ impl PtyIo for SystemPtyIo {
         pty: RawFd,
         wake: RawFd,
         writable: bool,
-        timeout: i32,
+        wait: Wait,
     ) -> std::io::Result<fd::PtyWakeReadiness> {
-        fd::poll_pty_and_wake(pty, wake, writable, timeout)
+        fd::poll_pty_and_wake(pty, wake, writable, wait)
     }
 
     fn drain(&mut self, wake: RawFd) -> std::io::Result<()> {
@@ -610,7 +622,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
         if let Some(on_reader_exit) = on_reader_exit {
             on_reader_exit(exit);
         }
-        debug!(pane = pane_id.raw(), "PTY actor exiting");
+        debug!(pane = %pane_id, "PTY actor exiting");
     }
 
     fn run_loop(&mut self) {
@@ -620,7 +632,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
             }
             if (self.core_broken)() {
                 error!(
-                    pane = self.pane_id.raw(),
+                    pane = %self.pane_id,
                     "terminal core is broken by a panic elsewhere; closing the pane"
                 );
                 self.raise_exit(ReaderExit::Panicked);
@@ -642,14 +654,14 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                 self.file.as_raw_fd(),
                 self.wake_read_fd.as_raw_fd(),
                 writable,
-                ACTOR_IDLE_POLL_MS,
+                Wait::After(ACTOR_IDLE_POLL),
             ) {
                 Ok(readiness) => {
                     if readiness.wake_ready
                         && let Err(err) = self.io.drain(self.wake_read_fd.as_raw_fd())
                     {
                         error!(
-                            pane = self.pane_id.raw(),
+                            pane = %self.pane_id,
                             error = %err,
                             "PTY actor wake drain failed; closing the pane"
                         );
@@ -664,7 +676,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                             ReadOutcome::Closed => break,
                             ReadOutcome::WouldBlock if readiness.pty_error => {
                                 error!(
-                                    pane = self.pane_id.raw(),
+                                    pane = %self.pane_id,
                                     "PTY reported an error with nothing to read; closing the pane"
                                 );
                                 self.raise_exit(ReaderExit::IoFailed);
@@ -684,7 +696,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                 }
                 Err(err) => {
                     error!(
-                        pane = self.pane_id.raw(),
+                        pane = %self.pane_id,
                         error = %err,
                         "PTY actor poll failed; closing the pane"
                     );
@@ -759,11 +771,11 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
             // A failure that cannot clear would repeat on every resize, so
             // only the first one per pane is a warning.
             if self.resize_failure_logged {
-                debug!(pane = self.pane_id.raw(), error = %err, "PTY resize failed");
+                debug!(pane = %self.pane_id, error = %err, "PTY resize failed");
             } else {
                 self.resize_failure_logged = true;
                 warn!(
-                    pane = self.pane_id.raw(),
+                    pane = %self.pane_id,
                     error = %err,
                     "PTY resize failed; the child keeps its previous window size"
                 );
@@ -778,7 +790,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
     /// child's last output reaches the terminal. Bounded so a peer that keeps
     /// producing output cannot hold the actor here.
     fn handle_write_failure(&mut self, err: &std::io::Error) {
-        debug!(pane = self.pane_id.raw(), error = %err, "PTY actor stopping after a write failure");
+        debug!(pane = %self.pane_id, error = %err, "PTY actor stopping after a write failure");
         // Raised first, so the drain's own ending cannot lower it.
         self.raise_exit(exit_for_pty_error(err));
         for _ in 0..MAX_WRITE_FAILURE_DRAIN_CHUNKS {
@@ -805,13 +817,13 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                 let exit = exit_for_pty_error(&err);
                 if exit == ReaderExit::Closed {
                     debug!(
-                        pane = self.pane_id.raw(),
+                        pane = %self.pane_id,
                         error = %err,
                         "PTY actor read ended after the child closed its terminal"
                     );
                 } else {
                     error!(
-                        pane = self.pane_id.raw(),
+                        pane = %self.pane_id,
                         error = %err,
                         "PTY actor read failed; closing the pane"
                     );
@@ -839,7 +851,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                         Ok(result) => result,
                         Err(payload) => {
                             error!(
-                                pane = self.pane_id.raw(),
+                                pane = %self.pane_id,
                                 panic = shepr_core::panic_message(
                                     &*payload,
                                     "non-string panic payload"
@@ -854,7 +866,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                     PtyReadResult::Effects(effects) => effects,
                     PtyReadResult::CoreBroken => {
                         error!(
-                            pane = self.pane_id.raw(),
+                            pane = %self.pane_id,
                             "terminal core is broken by an earlier panic; closing the pane"
                         );
                         self.raise_exit(ReaderExit::Panicked);
@@ -869,9 +881,10 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                 let mut should_report_drop = false;
                 if !inbox.shutdown {
                     for response in terminal_responses {
-                        let (accepted, first_drop) = inbox.push_terminal_response(response);
-                        if !accepted {
-                            should_report_drop |= first_drop;
+                        if let ResponsePush::Dropped { first } =
+                            inbox.push_terminal_response(response)
+                        {
+                            should_report_drop |= first;
                         }
                     }
                 }
@@ -895,7 +908,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                     ));
                     if let Err(payload) = effects_result {
                         error!(
-                            pane = self.pane_id.raw(),
+                            pane = %self.pane_id,
                             panic =
                                 shepr_core::panic_message(&*payload, "non-string panic payload"),
                             "PTY post-read effects panicked; closing the pane"
@@ -961,13 +974,13 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
             Err(err) => {
                 if pty_master_error_means_child_closed(&err) {
                     debug!(
-                        pane = self.pane_id.raw(),
+                        pane = %self.pane_id,
                         error = %err,
                         "PTY actor write ended after the child closed its terminal"
                     );
                 } else {
                     error!(
-                        pane = self.pane_id.raw(),
+                        pane = %self.pane_id,
                         error = %err,
                         "PTY actor write failed; closing the pane"
                     );
@@ -1016,7 +1029,7 @@ use std::sync::mpsc as std_mpsc;
 struct TestPtyIo {
     poll_observer: Option<std_mpsc::Sender<()>>,
     resize_pty: Box<dyn FnMut(RawFd, PtyResize) -> std::io::Result<()> + Send>,
-    poll_pty_and_wake: fn(RawFd, RawFd, bool, i32) -> std::io::Result<fd::PtyWakeReadiness>,
+    poll_pty_and_wake: fn(RawFd, RawFd, bool, Wait) -> std::io::Result<fd::PtyWakeReadiness>,
     drain_wake_fd: fn(RawFd) -> std::io::Result<()>,
 }
 
@@ -1039,12 +1052,12 @@ impl PtyIo for TestPtyIo {
         pty: RawFd,
         wake: RawFd,
         writable: bool,
-        timeout: i32,
+        wait: Wait,
     ) -> std::io::Result<fd::PtyWakeReadiness> {
         if let Some(observer) = &self.poll_observer {
             observer.send(()).ok();
         }
-        (self.poll_pty_and_wake)(pty, wake, writable, timeout)
+        (self.poll_pty_and_wake)(pty, wake, writable, wait)
     }
 
     fn drain(&mut self, wake: RawFd) -> std::io::Result<()> {
@@ -1597,7 +1610,7 @@ mod tests {
     #[test]
     fn actor_open_pty_handles_io_resize_and_slave_close() {
         let crate::backend::OpenedPty { master, slave } = crate::backend::open_pty_with_geometry(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
         )
         .expect("open PTY pair");
         let control_master = master.try_clone().expect("clone PTY master for ioctl");
@@ -1631,7 +1644,11 @@ mod tests {
         assert_eq!(output, b"pty-output");
 
         handle.resize(
-            shepr_core::geometry::PaneGeometry::new(100, 40, 1_000, 20),
+            shepr_core::geometry::PaneGeometry::with_cell(
+                100,
+                40,
+                shepr_core::geometry::CellPx::new(1_000, 20),
+            ),
             || vec![Bytes::from_static(b"resize-ok\n")],
         );
         wait_readable(slave.as_raw_fd()).expect("actor applies resize and writes its reply");
@@ -1786,7 +1803,11 @@ mod tests {
         let mut inbox = PtyIoInbox::default();
         assert_eq!(
             inbox.replace_resize(
-                shepr_core::geometry::PaneGeometry::new(80, 24, 8, 16),
+                shepr_core::geometry::PaneGeometry::with_cell(
+                    80,
+                    24,
+                    shepr_core::geometry::CellPx::new(8, 16)
+                ),
                 vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
             ),
             None
@@ -1808,18 +1829,18 @@ mod tests {
 
         assert_eq!(
             inbox.push_terminal_response(Bytes::from_static(b"first")),
-            (false, true)
+            ResponsePush::Dropped { first: true }
         );
         assert_eq!(
             inbox.push_terminal_response(Bytes::from_static(b"second")),
-            (false, false)
+            ResponsePush::Dropped { first: false }
         );
         assert_eq!(inbox.terminal_response_drops, 2);
         assert_eq!(inbox.mark_terminal_response_drops_reported(), Some(2));
         assert_eq!(inbox.mark_terminal_response_drops_reported(), None);
         assert_eq!(
             inbox.push_terminal_response(Bytes::from_static(b"third")),
-            (false, false)
+            ResponsePush::Dropped { first: false }
         );
         assert_eq!(inbox.mark_terminal_response_drops_reported(), Some(3));
     }
@@ -1829,12 +1850,20 @@ mod tests {
         let (_runner, handle, _peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
         handle.write_terminal_response(|| Some(Bytes::from_static(b"before")));
         handle.resize(
-            shepr_core::geometry::PaneGeometry::new(80, 20, 8, 16),
+            shepr_core::geometry::PaneGeometry::with_cell(
+                80,
+                20,
+                shepr_core::geometry::CellPx::new(8, 16),
+            ),
             || vec![Bytes::from_static(b"old")],
         );
         handle.write_terminal_response(|| Some(Bytes::from_static(b"middle")));
         handle.resize(
-            shepr_core::geometry::PaneGeometry::new(120, 40, 9, 18),
+            shepr_core::geometry::PaneGeometry::with_cell(
+                120,
+                40,
+                shepr_core::geometry::CellPx::new(9, 18),
+            ),
             || vec![Bytes::from_static(b"new")],
         );
 
@@ -1844,7 +1873,11 @@ mod tests {
                 .latest_resize
                 .as_ref()
                 .map(|resize| resize.resize.geometry),
-            Some(shepr_core::geometry::PaneGeometry::new(120, 40, 9, 18))
+            Some(shepr_core::geometry::PaneGeometry::with_cell(
+                120,
+                40,
+                shepr_core::geometry::CellPx::new(9, 18)
+            ))
         );
         assert_eq!(
             inbox
@@ -1921,7 +1954,11 @@ mod tests {
         runner.io.resize_pty = Box::new(|_, _| Ok(()));
         handle.write_terminal_response(|| Some(Bytes::from_static(b"earlier")));
         handle.resize(
-            shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
+            shepr_core::geometry::PaneGeometry::with_cell(
+                100,
+                40,
+                shepr_core::geometry::CellPx::new(9, 18),
+            ),
             || vec![Bytes::from_static(b"resize")],
         );
         handle.write_terminal_response(|| Some(Bytes::from_static(b"later")));
@@ -1947,7 +1984,11 @@ mod tests {
         });
         handle.write_terminal_response(|| Some(Bytes::from_static(b"earlier")));
         handle.resize(
-            shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
+            shepr_core::geometry::PaneGeometry::with_cell(
+                100,
+                40,
+                shepr_core::geometry::CellPx::new(9, 18),
+            ),
             || vec![Bytes::from_static(b"reply")],
         );
         handle
@@ -1995,7 +2036,11 @@ mod tests {
         );
 
         handle.resize(
-            shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
+            shepr_core::geometry::PaneGeometry::with_cell(
+                100,
+                40,
+                shepr_core::geometry::CellPx::new(9, 18),
+            ),
             Vec::new,
         );
         runner.pump().expect("pump with blocked input");

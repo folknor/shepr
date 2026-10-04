@@ -45,6 +45,7 @@ use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Line;
 use alacritty_terminal::term::Term;
+use shepr_core::scrollback::HistoryLines;
 
 #[derive(Debug, Default)]
 pub(super) struct RowOrigin {
@@ -123,13 +124,14 @@ impl RowOrigin {
         &mut self,
         term: &Term<T>,
         lines: usize,
-        history_limit: usize,
+        history_limit: HistoryLines,
     ) {
         let Some(anchor) = self.anchor.as_mut() else {
             return;
         };
         anchor.pushed = anchor.pushed.saturating_add(lines);
-        if history_limit != 0 && anchor.pushed.saturating_add(per_call_limit(term)) >= history_limit
+        if !history_limit.is_none()
+            && anchor.pushed.saturating_add(per_call_limit(term)) >= history_limit.get()
         {
             self.finish(term, history_limit);
             self.begin(term);
@@ -151,7 +153,9 @@ impl RowOrigin {
     /// Constant time unless the history is at its limit; then it walks one
     /// row per line the batch pushed into history, which the batch already
     /// paid for when it scrolled them.
-    pub(super) fn finish<T: EventListener>(&mut self, term: &Term<T>, history_limit: usize) {
+    pub(super) fn finish<T: EventListener>(&mut self, term: &Term<T>, history_limit: HistoryLines) {
+        let none = history_limit.is_none();
+        let history_limit = history_limit.get();
         let Some(anchor) = self.anchor.take() else {
             return;
         };
@@ -168,7 +172,7 @@ impl RowOrigin {
         // the handler accounts for itself, so a history below its limit
         // cannot have lost a line. Without any scrollback nothing is
         // tracked (see the module docs).
-        if history_limit == 0 || history < history_limit {
+        if none || history < history_limit {
             return;
         }
         // Every line retained when the batch began is counted as gone when

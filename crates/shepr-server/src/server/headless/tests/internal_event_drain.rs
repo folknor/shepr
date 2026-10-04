@@ -7,8 +7,8 @@ fn headless_internal_event_drain_is_bounded_per_tick() {
     let mut server = test_headless_server();
     for _ in 0..=crate::app::APP_EVENT_DRAIN_LIMIT {
         server
-            .app
-            .event_tx
+            .outputs
+            .event_sender()
             .try_send(AppEvent::GitStatusRefreshed {
                 outcome: shepr_git::RefreshOutcome::empty(),
             })
@@ -16,26 +16,26 @@ fn headless_internal_event_drain_is_bounded_per_tick() {
     }
 
     assert!(!server.drain_internal_events_with_forwarding());
-    assert_eq!(server.app.event_rx.len(), 1);
+    assert_eq!(server.outputs.queued_events(), 1);
     assert!(!server.drain_internal_events_with_forwarding());
-    assert!(server.app.event_rx.is_empty());
+    assert!(server.outputs.no_queued_events());
     shutdown_test_runtimes(&mut server);
 }
 
 #[test]
 fn unchanged_git_status_drain_clears_in_flight_without_rendering() {
     let mut server = test_headless_server();
-    server.app.git_refresh.git_refresh_in_flight = true;
+    server.app.test_mark_git_refresh_in_flight();
     server
-        .app
-        .event_tx
+        .outputs
+        .event_sender()
         .try_send(AppEvent::GitStatusRefreshed {
             outcome: shepr_git::RefreshOutcome::empty(),
         })
         .expect("test precondition");
 
     assert!(!server.drain_internal_events_with_forwarding());
-    assert!(!server.app.git_refresh.git_refresh_in_flight);
+    assert!(!server.app.git_refresh_in_flight());
     shutdown_test_runtimes(&mut server);
 }
 
@@ -43,22 +43,18 @@ fn unchanged_git_status_drain_clears_in_flight_without_rendering() {
 async fn full_internal_event_queue_eventually_applies_working_to_idle_transition() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("test");
-    let pane_id = workspace.root_pane();
-    server.app.state.test_set_workspaces(vec![workspace]);
-    server.app.state.ensure_test_terminals();
-    server.app.state.set_bookmark_index(Some(0));
+    let pane_id = workspace.tree().root();
+    server
+        .app
+        .test_state_mut()
+        .test_set_workspaces(vec![workspace]);
+    server.app.test_state_mut().seed_bookmark_index(Some(0));
 
-    let terminal_id = server.app.state.workspaces[0]
-        .pane_state(pane_id)
-        .expect("test precondition")
-        .attached_terminal_id
-        .clone();
     server.app.insert_idle_test_runtime(pane_id);
-    let now = server.app.clock.now;
+    let now = server.app.clock().now;
     let working = server.app.from_pane_runtime(
         pane_id,
-        AppEvent::StateChanged {
-            pane_id,
+        shepr_mux::events::RuntimeEvent::StateChanged {
             agent: Some(Agent::Pi),
             detection: shepr_detect::Detection::new(AgentState::Working, false),
             process_exited: false,
@@ -69,10 +65,10 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
     assert_eq!(
         server
             .app
-            .state
-            .terminals
-            .get(&terminal_id)
-            .expect("test precondition")
+            .state()
+            .pane(pane_id)
+            .expect("pane exists")
+            .terminal()
             .ownership()
             .state(),
         AgentState::Working
@@ -80,20 +76,19 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
 
     for _ in 0..crate::app::APP_EVENT_CHANNEL_CAPACITY {
         server
-            .app
-            .event_tx
+            .outputs
+            .event_sender()
             .try_send(AppEvent::GitStatusRefreshed {
                 outcome: shepr_git::RefreshOutcome::empty(),
             })
             .expect("test precondition");
     }
 
-    let tx = server.app.event_tx.clone();
-    let now = server.app.clock.now;
+    let tx = server.outputs.event_sender();
+    let now = server.app.clock().now;
     let send = tx.send(server.app.from_pane_runtime(
         pane_id,
-        AppEvent::StateChanged {
-            pane_id,
+        shepr_mux::events::RuntimeEvent::StateChanged {
             agent: Some(Agent::Pi),
             detection: shepr_detect::Detection::new(AgentState::Idle, false),
             process_exited: false,
@@ -121,10 +116,10 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
     for _ in 0..max_drains {
         if server
             .app
-            .state
-            .terminals
-            .get(&terminal_id)
-            .expect("test precondition")
+            .state()
+            .pane(pane_id)
+            .expect("pane exists")
+            .terminal()
             .ownership()
             .state()
             == AgentState::Idle
@@ -137,10 +132,10 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
     assert_eq!(
         server
             .app
-            .state
-            .terminals
-            .get(&terminal_id)
-            .expect("test precondition")
+            .state()
+            .pane(pane_id)
+            .expect("pane exists")
+            .terminal()
             .ownership()
             .state(),
         AgentState::Idle,
@@ -152,14 +147,10 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
 #[tokio::test]
 async fn checkout_root_requests_are_limited_by_running_workers() {
     let mut server = test_headless_server();
-    server
-        .app
-        .state
-        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new(
-            "checkout-limit",
-        )]);
-    server.app.state.ensure_test_terminals();
-    server.app.state.set_bookmark_index(Some(0));
+    server.app.test_state_mut().test_set_workspaces(vec![
+        shepr_mux::workspace::Workspace::test_new("checkout-limit"),
+    ]);
+    server.app.test_state_mut().seed_bookmark_index(Some(0));
     let (control, _render) = connect_matching_test_shell(&mut server, 811);
     let _snapshot = client_shell_snapshot(&control);
     let client_id = ClientId::test_new(811);
@@ -177,11 +168,11 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
         Ok(Some("/checkout".into()))
     }));
 
-    for index in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
+    for _ in 0..crate::server::headless::worker::MAX_WORKER_COMPLETION_BACKLOG {
         server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
-            request_id: format!("checkout-{index}").into(),
+            request_id: shepr_protocol::RequestId::allocate(),
             command: Box::new(EndpointCommand::WorkspaceCheckoutRoot(
                 shepr_protocol::command::WorkspaceCheckoutRootParams { cwd: "/".into() },
             )),
@@ -191,10 +182,11 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
             .expect("checkout worker should start within the limit");
     }
 
+    let over_limit = shepr_protocol::RequestId::allocate();
     server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id,
-        request_id: "checkout-over-limit".into(),
+        request_id: over_limit.clone(),
         command: Box::new(EndpointCommand::WorkspaceCheckoutRoot(
             shepr_protocol::command::WorkspaceCheckoutRootParams { cwd: "/".into() },
         )),
@@ -202,7 +194,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
     let replies = &server.clients[&client_id].outbox;
     assert_eq!(
         replies.held_reply_count(),
-        crate::limits::MAX_WORKER_COMPLETION_BACKLOG + 1
+        crate::server::headless::worker::MAX_WORKER_COMPLETION_BACKLOG + 1
     );
     assert!(matches!(
         replies.held_reply_message(replies.held_reply_count() - 1),
@@ -210,15 +202,15 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
             request_id,
             result: Err(shepr_protocol::command::EndpointError::Busy(message)),
             ..
-        }) if request_id.as_str() == "checkout-over-limit" && message.contains("limit")
+        }) if request_id == over_limit && message.contains("limit")
     ));
 
-    for _ in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
+    for _ in 0..crate::server::headless::worker::MAX_WORKER_COMPLETION_BACKLOG {
         release_tx
             .send(())
             .expect("checkout workers should be waiting");
     }
-    for _ in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
+    for _ in 0..crate::server::headless::worker::MAX_WORKER_COMPLETION_BACKLOG {
         let completion = tokio::time::timeout(Duration::from_secs(1), server.workers.recv())
             .await
             .expect("checkout worker should complete after release")
@@ -236,20 +228,16 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
 #[test]
 fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
     let mut server = test_headless_server();
-    server
-        .app
-        .state
-        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new(
-            "checkout-backlog",
-        )]);
-    server.app.state.ensure_test_terminals();
-    server.app.state.set_bookmark_index(Some(0));
+    server.app.test_state_mut().test_set_workspaces(vec![
+        shepr_mux::workspace::Workspace::test_new("checkout-backlog"),
+    ]);
+    server.app.test_state_mut().seed_bookmark_index(Some(0));
     let (control, _render) = connect_matching_test_shell(&mut server, 812);
     let _snapshot = client_shell_snapshot(&control);
     let client_id = ClientId::test_new(812);
     let boot_id = server.client_shell_boot_id.clone();
 
-    for index in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
+    for index in 0..crate::server::headless::worker::MAX_WORKER_COMPLETION_BACKLOG {
         server
             .workers
             .enqueue(worker::WorkerCompletion::CheckoutRoot {
@@ -258,16 +246,17 @@ fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
                     seq: crate::server::outbox::ReplySeq::test_new(index as u64),
                 },
                 boot_id: boot_id.clone(),
-                request_id: format!("queued-{index}").into(),
+                request_id: shepr_protocol::RequestId::allocate(),
                 home: None,
                 result: Ok(None),
             });
     }
 
+    let queued_limit = shepr_protocol::RequestId::allocate();
     server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id,
-        request_id: "checkout-queued-limit".into(),
+        request_id: queued_limit.clone(),
         command: Box::new(EndpointCommand::WorkspaceCheckoutRoot(
             shepr_protocol::command::WorkspaceCheckoutRootParams { cwd: "/".into() },
         )),
@@ -280,7 +269,7 @@ fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
             request_id,
             result: Err(shepr_protocol::command::EndpointError::Busy(message)),
             ..
-        }) if request_id.as_str() == "checkout-queued-limit" && message.contains("limit")
+        }) if request_id == queued_limit && message.contains("limit")
     ));
     shutdown_test_runtimes(&mut server);
 }

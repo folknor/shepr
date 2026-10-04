@@ -23,8 +23,8 @@ impl App {
             // A workspace that vanished since the client chose it falls back to
             // the default, like the client with none to follow.
             WorkspaceCreateSource::Follow(workspace_id) => {
-                match self.resolve_workspace_id(workspace_id) {
-                    Some(index) => self.resolved_new_workspace_cwd(index),
+                match self.state.workspace(workspace_id) {
+                    Some(_) => self.resolved_new_workspace_cwd(workspace_id),
                     None => self.resolve_new_terminal_cwd(None),
                 }
             }
@@ -38,24 +38,24 @@ impl App {
             .map_err(|err| {
                 EndpointError::ResourceFailure(format!("the workspace could not be created: {err}"))
             })?;
-        let index = outcome.workspace_index;
+        let workspace_id = outcome.workspace_id;
         if let Some(label) = normalized_user_label(params.label)
-            && let Some(workspace) = self.state.workspaces.get_mut(index)
+            && let Some(workspace) = self.state.workspaces.get_mut(&workspace_id)
         {
-            workspace.set_custom_name(label);
-            crate::logging::workspace_renamed(&workspace.id);
+            workspace.set_custom_name(Some(label));
+            crate::logging::workspace_renamed(&workspace.id());
         }
         let effects = EndpointEffects::from(&outcome);
-        let Some(workspace_id) = self.public_workspace_id(index) else {
+        if self.state.workspace(&workspace_id).is_none() {
             return internal_with_effects("the new workspace is unavailable", effects);
-        };
+        }
         Handled::navigating_with_effects(EndpointReply::Done, workspace_id, effects)
     }
 
     /// Moves the requester onto the workspace, even when it already views it.
     pub(super) fn handle_workspace_focus(&mut self, target: &WorkspaceTarget) -> HandlerResult {
-        let index = self.endpoint_workspace(&target.workspace_id)?;
-        let Some(workspace) = self.workspace_info(index) else {
+        let id = self.endpoint_workspace(&target.workspace_id)?;
+        let Some(workspace) = self.workspace_info(&id) else {
             return Err(workspace_missing(&target.workspace_id).into());
         };
         Handled::navigating(
@@ -68,13 +68,13 @@ impl App {
         &mut self,
         params: WorkspaceRenameParams,
     ) -> HandlerResult {
-        let index = self.endpoint_workspace(&params.workspace_id)?;
+        let id = self.endpoint_workspace(&params.workspace_id)?;
         let outcome = self
             .state
-            .rename_workspace(index, normalized_user_label(params.label))
+            .rename_workspace(&id, normalized_user_label(params.label))
             .ok_or_else(|| workspace_missing(&params.workspace_id))?;
         let effects = outcome.into();
-        let Some(workspace) = self.workspace_info(index) else {
+        let Some(workspace) = self.workspace_info(&id) else {
             return Err(HandlerError {
                 error: workspace_missing(&params.workspace_id),
                 effects,
@@ -85,13 +85,15 @@ impl App {
     }
 
     pub(super) fn handle_workspace_move(&mut self, params: &WorkspaceMoveParams) -> HandlerResult {
-        let index = self.endpoint_workspace(&params.workspace_id)?;
-        // Resolve the anchor against the live order, never a client's old slot.
-        let insert_index = match &params.before_workspace_id {
-            Some(anchor) => self.endpoint_workspace(anchor)?,
-            None => self.state.workspaces.len(),
-        };
-        let outcome = self.state.move_workspace_outcome(index, insert_index);
+        self.endpoint_workspace(&params.workspace_id)?;
+        // The anchor is a stable id, resolved against the live order by the
+        // set, never a client's old slot.
+        if let Some(anchor) = &params.before_workspace_id {
+            self.endpoint_workspace(anchor)?;
+        }
+        let outcome = self
+            .state
+            .move_workspace(&params.workspace_id, params.before_workspace_id.as_ref());
         let effects = outcome.into();
         Handled::done_with_effects(effects)
     }
@@ -100,9 +102,9 @@ impl App {
         &mut self,
         params: &WorkspaceCloseParams,
     ) -> HandlerResult {
-        let index = self.endpoint_workspace(&params.workspace_id)?;
-        let effects = if let Some(outcome) = self.state.close_workspace_at(index) {
-            self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
+        let id = self.endpoint_workspace(&params.workspace_id)?;
+        let effects = if let Some(outcome) = self.state.close_workspace(&id) {
+            self.shutdown_detached_pane_runtimes(&outcome.removed);
             EndpointEffects::from(&outcome)
         } else {
             EndpointEffects::default()
@@ -119,10 +121,9 @@ mod tests {
     use shepr_config::ServerConfig;
     use shepr_mux::workspace::Workspace;
     use shepr_protocol::WorkspaceId;
-    use shepr_term::host::HostCellSize;
 
-    fn app() -> App {
-        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+    fn app() -> crate::app::TestApp {
+        let mut app = App::new(&ServerConfig::default());
         app.set_test_shell(super::super::test_support::exiting_test_command());
         app
     }
@@ -147,13 +148,14 @@ mod tests {
         let mut app = app();
         app.state
             .test_set_workspaces(vec![Workspace::test_new("spaces")]);
-        app.state.ensure_test_terminals();
-        let followed = app.state.workspaces[0].id;
+        let followed = app.state.ws(0).id();
 
         // The split pane becomes the focused pane, away from the root pane.
         let root_public = app
-            .public_pane_id(0, app.state.workspaces[0].root_pane())
-            .expect("test precondition");
+            .state
+            .pane(app.state.ws(0).tree().root())
+            .expect("test precondition")
+            .public_id();
         app.handle_pane_split(
             &shepr_protocol::command::PaneSplitParams {
                 pane_id: root_public,
@@ -167,18 +169,12 @@ mod tests {
 
         let focused_scratch = crate::test_support::ScratchDir::new("ws-follow");
         let focused_cwd = focused_scratch.to_path_buf();
-        let ws = &app.state.workspaces[0];
-        let root_cwd = ws.identity_cwd.clone();
-        let focused_pane = ws.focused_pane_id();
-        assert_ne!(focused_pane, ws.root_pane());
-        let terminal_id = ws
-            .terminal_id(focused_pane)
-            .cloned()
-            .expect("test precondition");
+        let ws = app.state.ws(0);
+        let root_cwd = ws.identity_cwd().to_path_buf();
+        let focused_pane = ws.tree().focused();
+        assert_ne!(focused_pane, ws.tree().root());
         app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
+            .terminal_mut(focused_pane)
             .set_cwd(shepr_mux::UsableCwd::new(focused_cwd.clone()).expect("test cwd is usable"));
 
         let handled = app
@@ -189,7 +185,7 @@ mod tests {
             .expect("the workspace is created");
 
         assert_eq!(handled.reply, EndpointReply::Done);
-        let created_cwd = &app.state.workspaces[1].identity_cwd;
+        let created_cwd = app.state.ws(1).identity_cwd();
         assert_eq!(canonical(created_cwd), canonical(&focused_cwd));
         assert_ne!(canonical(created_cwd), canonical(&root_cwd));
         shutdown_test_runtimes(&mut app);
@@ -204,24 +200,17 @@ mod tests {
             Workspace::test_new("first"),
             Workspace::test_new("source"),
         ]);
-        app.state.ensure_test_terminals();
         // The bookmark is on another workspace: creation follows the named one.
-        app.state.set_bookmark_index(Some(0));
+        app.state.seed_bookmark_index(Some(0));
         shutdown_test_runtimes(&mut app);
 
         let source_scratch = crate::test_support::ScratchDir::new("ws-source");
         let source_cwd = source_scratch.to_path_buf();
-        let pane_id = app.state.workspaces[1].focused_pane_id();
-        let terminal_id = app.state.workspaces[1]
-            .terminal_id(pane_id)
-            .cloned()
-            .expect("test precondition");
+        let pane_id = app.state.ws(1).tree().focused();
         app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
+            .terminal_mut(pane_id)
             .set_cwd(shepr_mux::UsableCwd::new(source_cwd.clone()).expect("test cwd is usable"));
-        let source_workspace_id = app.public_workspace_id(1).expect("test precondition");
+        let source_workspace_id = app.state.ws(1).id();
         let ctx = EndpointContext::without_geometry();
 
         let followed = app
@@ -232,11 +221,11 @@ mod tests {
             .expect("follow creates");
         assert_eq!(
             followed.navigate,
-            app.public_workspace_id(2),
+            Some(app.state.ws(2).id()),
             "creation navigates the requester to the new workspace"
         );
         assert_eq!(
-            canonical(&app.state.workspaces[2].identity_cwd),
+            canonical(app.state.ws(2).identity_cwd()),
             canonical(&source_cwd)
         );
 
@@ -247,14 +236,14 @@ mod tests {
         app.handle_workspace_create(create(WorkspaceCreateSource::Follow(vanished)), &ctx)
             .expect("a vanished follow falls back to the default");
         assert_eq!(
-            canonical(&app.state.workspaces[3].identity_cwd),
+            canonical(app.state.ws(3).identity_cwd()),
             canonical(&default_cwd)
         );
 
         app.handle_workspace_create(create(WorkspaceCreateSource::Default), &ctx)
             .expect("default creates");
         assert_eq!(
-            canonical(&app.state.workspaces[4].identity_cwd),
+            canonical(app.state.ws(4).identity_cwd()),
             canonical(&default_cwd)
         );
 
@@ -266,7 +255,7 @@ mod tests {
             .expect("an explicit cwd creates");
         assert_eq!(captured.reply, EndpointReply::Done);
         assert_eq!(
-            canonical(&app.state.workspaces[5].identity_cwd),
+            canonical(app.state.ws(5).identity_cwd()),
             canonical(&source_cwd)
         );
         shutdown_test_runtimes(&mut app);
@@ -280,11 +269,8 @@ mod tests {
         app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Off;
         app.state.settings.pane_scrollbars = false;
         let geometry = SpawnGeometry {
-            area: ratatui::layout::Rect::new(0, 0, 100, 30),
-            cell_size: HostCellSize {
-                width_px: 9,
-                height_px: 18,
-            },
+            area: shepr_core::geometry::Rect::new(0, 0, 100, 30),
+            cell: shepr_core::geometry::CellPx::new(9, 18),
         };
 
         let handled = app
@@ -296,23 +282,24 @@ mod tests {
             )
             .expect("the workspace is created");
 
-        let workspace = &app.state.workspaces[0];
-        assert_eq!(handled.navigate.as_ref(), Some(&workspace.id));
-        let runtime = app.test_runtime(workspace.root_pane());
+        let workspace = app.state.ws(0);
+        assert_eq!(handled.navigate, Some(workspace.id()));
+        let runtime = app.test_runtime(workspace.tree().root());
         assert_eq!(
             runtime.grid_size(),
             shepr_core::geometry::GridSize::clamped(100, 30)
         );
         assert_eq!(
-            runtime.pixel_size(),
-            Some(shepr_mux::pane::PanePixelSize {
-                width: 100 * 9,
-                height: 30 * 18
-            }),
+            runtime
+                .read()
+                .pixel_mouse()
+                .extent()
+                .map(|extent| (extent.width().get(), extent.height().get())),
+            Some((100 * 9, 30 * 18)),
             "the first window size already has pixel dimensions"
         );
         // Recorded at creation, before any geometry pass has run.
-        assert_eq!(app.state.workspace_spawn_geometry(0), Some(geometry));
+        assert_eq!(app.state.ws(0).spawn_geometry(), Some(geometry));
         shutdown_test_runtimes(&mut app);
     }
 
@@ -324,7 +311,7 @@ mod tests {
             Workspace::test_new("two"),
             Workspace::test_new("three"),
         ]);
-        let moved_id = app.public_workspace_id(0).expect("test precondition");
+        let moved_id = app.state.ws(0).id();
 
         let handled = app
             .handle_workspace_move(&WorkspaceMoveParams {
@@ -335,11 +322,8 @@ mod tests {
 
         assert_eq!(handled.reply, EndpointReply::Done);
         assert_eq!(handled.navigate, None);
-        assert_eq!(
-            app.public_workspace_id(2).expect("test precondition"),
-            moved_id
-        );
-        assert_eq!(app.state.workspaces[2].display_name(), "one");
+        assert_eq!(app.state.ws(2).id(), moved_id);
+        assert_eq!(app.state.ws(2).display_name(), "one");
     }
 
     #[test]
@@ -347,18 +331,16 @@ mod tests {
         let mut app = app();
         app.state
             .test_set_workspaces(vec![Workspace::test_new("one"), Workspace::test_new("two")]);
-        let moved_id = app.public_workspace_id(0).expect("test precondition");
+        let moved_id = app.state.ws(0).id();
 
+        let anchor_id = app.state.ws(1).id();
         app.handle_workspace_move(&WorkspaceMoveParams {
             workspace_id: moved_id,
-            before_workspace_id: app.public_workspace_id(1),
+            before_workspace_id: Some(anchor_id),
         })
         .expect("a no-op move succeeds");
-        assert_eq!(
-            app.public_workspace_id(0).expect("test precondition"),
-            moved_id
-        );
-        assert_eq!(app.state.workspaces[0].display_name(), "one");
+        assert_eq!(app.state.ws(0).id(), moved_id);
+        assert_eq!(app.state.ws(0).display_name(), "one");
 
         let missing = shepr_protocol::WorkspaceId::from_number(usize::MAX).expect("nonzero");
         assert!(
@@ -380,30 +362,30 @@ mod tests {
             Workspace::test_new("last"),
         ]);
         let command = WorkspaceMoveParams {
-            workspace_id: app.public_workspace_id(0).expect("source"),
-            before_workspace_id: app.public_workspace_id(2),
+            workspace_id: app.state.ws(0).id(),
+            before_workspace_id: Some(app.state.ws(2).id()),
         };
         // Another client moves the anchor after the first client's snapshot.
-        assert!(app.state.move_workspace(2, 4));
+        let anchor = app.state.ws(2).id();
+        assert!(app.state.move_workspace(&anchor, None).changed());
         app.handle_workspace_move(&command)
             .expect("live anchor resolves");
-        assert_eq!(app.state.workspaces[2].display_name(), "source");
-        assert_eq!(app.state.workspaces[3].display_name(), "anchor");
+        assert_eq!(app.state.ws(2).display_name(), "source");
+        assert_eq!(app.state.ws(3).display_name(), "anchor");
         // Another client then closes the anchor. No other workspace substitutes.
-        app.state.workspaces.remove(3);
-        app.state.test_reindex_panes();
+        app.state.close_workspace(&anchor);
         let order = app
             .state
             .workspaces
             .iter()
-            .map(|ws| ws.display_name().clone())
+            .map(|ws| ws.display_name().to_owned())
             .collect::<Vec<_>>();
         assert!(app.handle_workspace_move(&command).is_err());
         assert_eq!(
             app.state
                 .workspaces
                 .iter()
-                .map(|ws| ws.display_name().clone())
+                .map(|ws| ws.display_name().to_owned())
                 .collect::<Vec<_>>(),
             order
         );
@@ -416,8 +398,7 @@ mod tests {
         closing.test_split(shepr_core::layout::Direction::Horizontal);
         app.state
             .test_set_workspaces(vec![closing, Workspace::test_new("survivor")]);
-        app.state.ensure_test_terminals();
-        let workspace_id = app.public_workspace_id(0).expect("test precondition");
+        let workspace_id = app.state.ws(0).id();
 
         let handled = app
             .handle_workspace_close(&WorkspaceCloseParams { workspace_id })
@@ -425,7 +406,7 @@ mod tests {
 
         assert_eq!(handled.reply, EndpointReply::Done);
         assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].display_name(), "survivor");
+        assert_eq!(app.state.ws(0).display_name(), "survivor");
     }
 
     #[test]
@@ -434,7 +415,7 @@ mod tests {
         app.state
             .test_set_workspaces(vec![Workspace::test_new("one"), Workspace::test_new("two")]);
         app.state.session_dirty = false;
-        let target = app.public_workspace_id(1).expect("test precondition");
+        let target = app.state.ws(1).id();
 
         let handled = app
             .handle_workspace_focus(&WorkspaceTarget {
@@ -503,22 +484,27 @@ mod tests {
     }
 
     #[test]
-    fn workspace_info_for_a_stale_index_is_none() {
+    fn workspace_info_for_a_closed_workspace_is_none() {
         let mut app = app();
         app.state
-            .test_set_workspaces(vec![Workspace::test_new("one")]);
+            .test_set_workspaces(vec![Workspace::test_new("one"), Workspace::test_new("two")]);
+        let closed = app.state.ws(1).id();
+        let open = app.state.ws(0).id();
+        assert!(app.workspace_info(&closed).is_some());
 
-        assert!(app.workspace_info(0).is_some());
-        assert!(app.workspace_info(1).is_none());
+        app.state.close_workspace(&closed);
+
+        assert!(app.workspace_info(&open).is_some());
+        assert!(app.workspace_info(&closed).is_none());
     }
 
     #[test]
     fn workspace_rename_uses_the_shared_dirty_schedule() {
         let mut app = app();
-        app.persist_for_test();
+        app.persist();
         app.state
             .test_set_workspaces(vec![Workspace::test_new("before")]);
-        let workspace_id = app.public_workspace_id(0).expect("test precondition");
+        let workspace_id = app.state.ws(0).id();
         let sample = crate::app::AppClock {
             now: app.clock.now + std::time::Duration::from_secs(2),
             wall_now: app.clock.wall_now,
@@ -537,7 +523,7 @@ mod tests {
         assert!(!app.state.session_dirty);
         assert_eq!(
             app.session_saver.autosave_deadline(),
-            Some(sample.now + crate::limits::SESSION_SAVE_DEBOUNCE)
+            Some(sample.now + crate::app::session::SESSION_SAVE_DEBOUNCE)
         );
     }
 }

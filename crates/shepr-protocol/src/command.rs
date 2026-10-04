@@ -104,13 +104,8 @@ pub struct PaneInputSetParams {
     pub right_click: PaneRightClickTarget,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PaneDirection {
-    Left,
-    Right,
-    Up,
-    Down,
-}
+/// Pane navigation uses the layout's own cardinal direction.
+pub use shepr_core::layout::NavDirection as PaneDirection;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaneSwapParams {
@@ -133,17 +128,14 @@ pub struct PaneZoomParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayoutSetSplitRatioParams {
     pub workspace_id: WorkspaceId,
-    /// Exact pane membership of the two children, captured when dragging starts.
+    /// The split's address and the layout epoch the surface published it with.
+    /// The server refuses the command when its epoch has moved on.
     #[serde(
-        serialize_with = "crate::codec::serialize_bounded_vec::<{ crate::MAX_SURFACE_PANES }, _, _>",
-        deserialize_with = "crate::codec::deserialize_bounded_vec::<{ crate::MAX_SURFACE_PANES }, _, _>"
+        serialize_with = "crate::codec::serialize_bounded_vec::<{ crate::MAX_SURFACE_SPLIT_PATH }, _, _>",
+        deserialize_with = "crate::codec::deserialize_bounded_vec::<{ crate::MAX_SURFACE_SPLIT_PATH }, _, _>"
     )]
-    pub first_panes: Vec<PublicPaneId>,
-    #[serde(
-        serialize_with = "crate::codec::serialize_bounded_vec::<{ crate::MAX_SURFACE_PANES }, _, _>",
-        deserialize_with = "crate::codec::deserialize_bounded_vec::<{ crate::MAX_SURFACE_PANES }, _, _>"
-    )]
-    pub second_panes: Vec<PublicPaneId>,
+    pub path: Vec<shepr_core::layout::SplitBranch>,
+    pub epoch: shepr_core::layout::LayoutEpoch,
     pub ratio: shepr_core::layout::SplitRatio,
 }
 
@@ -183,46 +175,19 @@ pub struct PaneSelectionReadParams {
     pub cursor: PaneTextPoint,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PaneLineMotion {
-    End,
-    FirstNonBlank,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PaneWordMotion {
-    NextStart,
-    PreviousStart,
-    NextEnd,
-    NextBigStart,
-    PreviousBigStart,
-    NextBigEnd,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PaneParagraphMotion {
-    Previous,
-    Next,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PaneCopyMotion {
-    Line(PaneLineMotion),
-    Word(PaneWordMotion),
-    Paragraph(PaneParagraphMotion),
-}
+// The copy motions and search direction are the terminal's own vocabulary
+// (`shepr-term`), carried on the wire as they are.
+pub use shepr_term::copy_motion::CopyMotion as PaneCopyMotion;
+pub use shepr_term::copy_motion::LineMotion as PaneLineMotion;
+pub use shepr_term::copy_motion::ParagraphMotion as PaneParagraphMotion;
+pub use shepr_term::copy_motion::SearchDirection as PaneCopySearchDirection;
+pub use shepr_term::copy_motion::WordMotion as PaneWordMotion;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneCopyMotionParams {
     pub pane_id: PublicPaneId,
     pub cursor: PaneTextPoint,
     pub motion: PaneCopyMotion,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PaneCopySearchDirection {
-    Forward,
-    Backward,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -608,7 +573,7 @@ impl std::fmt::Display for EndpointError {
             | Self::Unavailable(message) => f.write_str(message),
             Self::WorkspaceGone(id) => write!(f, "workspace {id} not found"),
             Self::PaneGone(id) => write!(f, "pane {id} not found"),
-            Self::SplitGone => f.write_str("split children not found"),
+            Self::SplitGone => f.write_str("split not found"),
             Self::AlternateScreen(_) => f.write_str("the pane is on the alternate screen"),
             Self::ShuttingDown => f.write_str("the server is shutting down"),
             Self::StaleBoot => f.write_str("the command was aimed at a previous server boot"),

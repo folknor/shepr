@@ -77,6 +77,13 @@ impl ClientState {
         self.presentation_dirty = PresentationDirty::Pane;
     }
 
+    /// Shows an endpoint notice and presents the chrome. It decides nothing about what is
+    /// shown: the choice already says that.
+    pub(super) fn present_notice(&mut self, notice: &shell::EndpointNotice) {
+        self.shell.receive_endpoint_unavailable(notice);
+        self.mark_chrome_dirty();
+    }
+
     pub(super) fn queue_surface_patch(&mut self, patch: shell::ClientComposedSurfacePatch) {
         if self.presentation_dirty == PresentationDirty::Clean
             && self.pending_surface_patch.is_none()
@@ -200,7 +207,7 @@ impl ClientState {
         };
         let Some(encoded) =
             self.blit_encoder
-                .encode_patch(&rows, patch.cursor.clone(), self.draw_host_cursor)
+                .encode_patch(&rows, patch.cursor.as_ref(), self.draw_host_cursor)
         else {
             return Ok(SurfacePatchPresentation::FullFrameRequired);
         };
@@ -432,10 +439,13 @@ impl ClientState {
         Self {
             blit_encoder: render_ansi::BlitEncoder::new(),
             output_writer: Box::new(io::sink()),
-            host_modes: terminal_setup::HostModes::new(false, false),
+            host_modes: terminal_setup::HostModes::new(false),
             host_theme_updates: Vec::new(),
             settings: ClientSettings::from_config(&config),
-            reported_geometry: shepr_core::geometry::HostGeometry::new(100, 30, 0, 0, false),
+            reported_geometry: shepr_core::geometry::HostGeometry::new(
+                shepr_core::geometry::GridSize::clamped(100, 30),
+                shepr_core::geometry::HostCell::Unknown,
+            ),
             shell: Box::new(shell::ClientShellState::new(
                 shell::ClientShellConfig::from_validated_config(&config),
             )),
@@ -465,6 +475,21 @@ mod tests {
     use shepr_surface::ratatui_conversion::FrameDataExt as _;
     use std::sync::{Arc, Mutex};
 
+    #[test]
+    fn an_interrupted_machine_switch_names_the_machine_and_reads_as_one_sentence() {
+        let buildbox = endpoint::ClientEndpointId::Ssh(
+            shepr_config::MachineLabel::parse("buildbox").expect("machine label"),
+        );
+        assert_eq!(
+            shell::EndpointNotice::new(
+                buildbox,
+                shell::EndpointNoticeKind::MoveInterrupted("connection was lost; reconnecting"),
+            )
+            .body(),
+            "machine switch interrupted: buildbox connection was lost; reconnecting"
+        );
+    }
+
     #[derive(Clone)]
     struct SharedWriter(Arc<Mutex<Vec<u8>>>);
 
@@ -489,7 +514,6 @@ mod tests {
             fg: WireColor::Reset,
             bg: WireColor::Reset,
             style: WireStyle::default(),
-            skip: false,
             hyperlink: None,
         }
     }
@@ -502,7 +526,8 @@ mod tests {
             &Buffer::with_lines(["a"]),
             None,
             &[],
-        );
+        )
+        .expect("test buffer is a valid frame");
 
         state.present_frame(frame);
         let frame_bytes = output.lock().expect("test output lock");

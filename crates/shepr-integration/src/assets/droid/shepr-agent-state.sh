@@ -7,10 +7,15 @@
 
 set -eu
 
+# Every exit path of the hook ends here, so the agent always sees a clean exit.
+finish() {
+  exit 0
+}
+
 action="${1:-}"
 hook_input_file="$(mktemp "${TMPDIR:-/tmp}/shepr-droid-hook.XXXXXX")" || {
   cat >/dev/null 2>/dev/null || true
-  exit 0
+  finish
 }
 trap 'rm -f "$hook_input_file"' 0
 trap 'exit 0' HUP INT TERM
@@ -18,25 +23,34 @@ cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in
   session) ;;
-  *) exit 0 ;;
+  *) finish ;;
 esac
-
 # Shared agent configs contain release hooks only. Dev panes use detection.
-[ "${SHEPR_BUILD_PROFILE:-}" = "release" ] || exit 0
-[ "${SHEPR_ENV:-}" = "1" ] || exit 0
-[ -n "${SHEPR_SOCKET_PATH:-}" ] || exit 0
-[ -n "${SHEPR_PANE_ID:-}" ] || exit 0
-command -v python3 >/dev/null 2>&1 || exit 0
+[ "${SHEPR_BUILD_PROFILE:-}" = "release" ] || finish
+[ "${SHEPR_ENV:-}" = "1" ] || finish
+[ -n "${SHEPR_SOCKET_PATH:-}" ] || finish
+[ -n "${SHEPR_PANE_ID:-}" ] || finish
+command -v python3 >/dev/null 2>&1 || finish
 
 # A python failure must not fail the hook: under `set -eu` it would exit
 # non-zero with a traceback on stderr, which the agent may show to the user.
-SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" python3 - 2>/dev/null <<'PY' || true
+SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" SHEPR_HOOK_SEQ="${hook_seq:-}" python3 - 2>/dev/null <<'PY' || true
 import json
 import os
 import socket
 import time
 
-source = "shepr:droid"
+SOURCE = "shepr:droid"
+AGENT = "droid"
+METHOD_SESSION = "pane.report_agent_session"
+METHOD_STATE = "pane.report_agent"
+ACTION_SESSION = "session"
+SOCKET_WAIT_SECONDS = 0.5
+# The hook events this integration is registered for, per action and in all.
+EVENTS_BY_ACTION = {"session": ("SessionStart",)}
+EVENTS = ("SessionStart",)
+
+action = os.environ.get("SHEPR_ACTION", "")
 pane_id = os.environ.get("SHEPR_PANE_ID")
 socket_path = os.environ.get("SHEPR_SOCKET_PATH")
 hook_input_file = os.environ.get("SHEPR_HOOK_INPUT_FILE")
@@ -44,48 +58,82 @@ hook_input_file = os.environ.get("SHEPR_HOOK_INPUT_FILE")
 if not pane_id or not socket_path:
     raise SystemExit(0)
 
-hook_input = {}
-if hook_input_file:
+# Some hooks are stamped by the shell the moment they start, so interpreter
+# startup jitter cannot reorder near-simultaneous events. `date` without %N
+# support prints a literal N; fall back to our own clock then, and for every
+# hook the shell does not stamp.
+raw_seq = os.environ.get("SHEPR_HOOK_SEQ", "")
+report_seq = int(raw_seq) if raw_seq.isdigit() else time.time_ns()
+
+
+def read_hook_input():
+    if not hook_input_file:
+        return {}
     try:
         with open(hook_input_file, encoding="utf-8") as handle:
             content = handle.read()
-        if content.strip():
-            hook_input = json.loads(content)
+        if not content.strip():
+            return {}
+        parsed = json.loads(content)
     except Exception:
-        hook_input = {}
-# A valid JSON body that is not an object (a list, a string, null) carries no
-# fields we can read; treat it as empty.
-if not isinstance(hook_input, dict):
-    hook_input = {}
+        return {}
+    # A valid JSON body that is not an object (a list, a string, null) carries
+    # no fields we can read; treat it as empty.
+    return parsed if isinstance(parsed, dict) else {}
 
-session_id = hook_input.get("session_id")
-if not isinstance(session_id, str) or not session_id:
-    raise SystemExit(0)
 
-report_seq = time.time_ns()
-request_id = f"{source}:{report_seq}"
-request = {
-    "id": request_id,
-    "method": "pane.report_agent_session",
-    "params": {
-        "pane_id": pane_id,
-        "source": source,
-        "agent": "droid",
-        "agent_session_id": session_id,
-        "seq": report_seq,
-    },
-}
+hook_input = read_hook_input()
 
-try:
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(0.5)
-    client.connect(socket_path)
-    client.sendall((json.dumps(request) + "\n").encode())
+
+def first_text(*keys):
+    for key in keys:
+        value = hook_input.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def send(method, params):
+    request = {
+        "id": f"{SOURCE}:{report_seq}",
+        "method": method,
+        "params": {
+            "pane_id": pane_id,
+            "source": SOURCE,
+            "agent": AGENT,
+            "seq": report_seq,
+            **params,
+        },
+    }
     try:
-        client.recv(4096)
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(SOCKET_WAIT_SECONDS)
+        client.connect(socket_path)
+        client.sendall((json.dumps(request) + "\n").encode())
+        try:
+            client.recv(4096)
+        except Exception:
+            pass
+        client.close()
     except Exception:
         pass
-    client.close()
-except Exception:
-    pass
+
+
+def report_session(session_id, session_start_source=None):
+    params = {"agent_session_id": session_id}
+    if session_start_source:
+        params["session_start_source"] = session_start_source
+    send(METHOD_SESSION, params)
+
+
+def report_state(state, session_id):
+    send(METHOD_STATE, {"state": state, "agent_session_id": session_id})
+
+
+session_id = first_text("session_id")
+if not session_id:
+    raise SystemExit(0)
+report_session(session_id)
 PY
+
+finish

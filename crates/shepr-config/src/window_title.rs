@@ -5,11 +5,7 @@ pub(crate) fn default_window_title() -> String {
 }
 
 pub fn sanitize_window_title_text(value: &str) -> Option<String> {
-    let sanitized = value
-        .chars()
-        .filter(|ch| !matches!(*ch, '\u{1b}' | '\u{7}' | '\u{9c}') && !ch.is_control())
-        .take(MAX_WINDOW_TITLE_CHARS)
-        .collect::<String>()
+    let sanitized = shepr_term::title::sanitize_title(value, MAX_WINDOW_TITLE_CHARS)
         .trim()
         .to_string();
     (!sanitized.is_empty()).then_some(sanitized)

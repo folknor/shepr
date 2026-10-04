@@ -113,7 +113,8 @@ pub enum UnappliedHookDisposition {
 /// The pane's most recent hook report that was parked or rejected, kept so
 /// detect explain can say why a report changed nothing. A later applied
 /// report from the same source clears it, as does process evidence promoting
-/// a parked report of that source; a later unapplied report replaces it.
+/// a parked report of that source and the expiry of that source's parked
+/// start; a later unapplied report replaces it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnappliedHookReport {
     pub origin: ReportOrigin,
@@ -172,11 +173,8 @@ struct CheckpointCandidate {
 /// candidate: an ordinary save never uses it.
 #[derive(Debug, Clone, Copy)]
 pub enum CheckpointContext {
-    /// The pane's child ended for `reason` at `ended_at`.
-    PaneEnding {
-        reason: shepr_platform::ChildExitReason,
-        ended_at: Instant,
-    },
+    /// A pane ending that needs a checkpoint was recorded at `ended_at`.
+    PaneEnding { ended_at: Instant },
     /// The server received its first termination signal at `signaled_at`;
     /// pane deaths after it are not processed, so the final save resolves
     /// candidates near it instead.
@@ -199,7 +197,7 @@ pub struct AgentOwnership {
     // integration source.
     hook_sources: HashMap<AgentSource, HookSourceState>,
     state: AgentState,
-    last_agent_state_change_seq: Option<u64>,
+    last_agent_state_change_seq: Option<shepr_agent::StateChangeSeq>,
     process_evidence: AgentProcessEvidence,
     checkpoint_candidate: Option<CheckpointCandidate>,
     /// Diagnostic only: the last report that changed nothing and why. No

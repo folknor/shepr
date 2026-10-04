@@ -15,44 +15,18 @@
 
 Dead code, dead state, test-only twins of production rules, public surface
 that exists only for tests, unused dependencies and stale documentation. Each
-entry is a deletion or a rewording rather than a redesign. Unverified: the
-raw reports are in the commit that precedes this file's.
+entry is a deletion or a rewording rather than a redesign.
 
 ## Dead code and dead state
 
-## CLN-023 - The client shell has no item-level visibility pass
+## CLN-023 - The client shell's visibility pass is unfinished
 
-Every item in `crates/shepr-client/src/shell/` is either `pub(crate)` or the
-blanket `pub(in crate::shell)`, none narrower, even where only the parent
-module uses it. `OverlayRender`, `render_client_overlay`, `render_global_menu`
-and `render_context_menu` in `overlays/mod.rs` are `pub(crate)` with callers
-only inside the shell, as are most items in `endpoints.rs`, `state.rs` and
-`sidebar/token_definitions.rs`. (`fixed_keys.rs` and `selection_render.rs` are
-the exceptions to "none narrower".) An item-level visibility pass would make
-the module tree mean something. Spec: `notes/spec-shell-render.md` landing 9.
-(wave-7 review)
-
-## CLN-031 - Leftovers from the eleventh light-loop wave
-
-- `crates/shepr-platform/src/config_file.rs`: `create_config_temporary` and
-  `write_config_temporary` are used only by platform tests now that the agent
-  integration publishes through `PreparedFile`.
-- `crates/shepr-platform/src/publish_file.rs`: `publish_file()` has no caller;
-  the module has no tests of its own (hard-link no-clobber, withdraw on
-  directory-sync failure, symlink refusal); the non-replace path uses
-  `hard_link`, which fails on filesystems without hard links.
-- `crates/shepr-remote/src/remote/machine_ssh.rs`: `MachineProbe::ensure_ssh`
-  duplicates `ensure_managed_ssh_config` for the connector state.
-- `crates/shepr-server/src/app/api/detect.rs`: `handle_detect_capture` repeats
-  `json_pane`'s parse and error because it needs the parsed id.
-- `crates/shepr-protocol/src/identity.rs`: `RequestId::allocate` uses a plain
-  `fetch_add` that would wrap at `u64::MAX` (unreachable, but undocumented now).
-- `crates/shepr-protocol/src/ids.rs`: the comment above the public-number
-  helpers states a plan (keep the exports until a mux test changes) rather than
-  a fact; the mux workspace test could assert through the public id types and
-  the helpers could narrow.
-
-(wave-11 review and gate)
+The narrowing pass covered `endpoints.rs`, `state.rs`, `ledger.rs`, `copy/`,
+`overlays/mod.rs` and `sidebar/`. Still open: `view/`, `presentation/`,
+`notices/`, `navigation/`, `input/` and `transitions.rs` keep blanket
+`pub(in crate::shell)` items, item by item, and several `CopySession` fields
+stay shell-wide only because tests in `shell/tests/` read them (moving those
+tests into `copy/` lets them narrow). No dead-code sweep followed the pass.
 
 ## CLN-032 - Leftovers from the bug round
 
@@ -60,61 +34,39 @@ the module tree mean something. Spec: `notes/spec-shell-render.md` landing 9.
   may have no production caller now that the remote bridge host classifies
   launch errors itself; `running_server_status` still turns `Unresponsive`
   into `io::Error::other`, dropping the typed error.
-- `crates/shepr-server/src/app/actions/events.rs`: the private
-  `HookReportKind`, used only as a log tag, duplicates
-  `shepr_detect::ownership::HookReportKind`.
-- `crates/shepr-git/src/refresh.rs`: `GitRefresher` is public but used only
-  inside shepr-git.
 
-(bug round)
+## CLN-033 - Leftovers the specs did not reach
 
-## CLN-033 - Leftovers the specs absorb
+Unverified after the spec landings: check each before acting.
 
-Small findings of the spec writers that a spec landing already deletes; listed
-so they are not hunted again before then.
-
-- `notes/spec-data-model.md`: `PaneRemovalCommit::Stale` and its warning are
-  unreachable (both phases always run in one call); `capture_preserved_layout`'s
-  pane-count check guards a pane that cannot exist; `commit_new_pane`'s focus
-  knob is dead; `Workspace::mark_identity_undiscovered` has no production
-  caller; `resolved_identity_cwd_from` returns an `Option` that is always
-  `Some`; `Workspace::test_from_pane` silently overwrites the record's public
-  number with `FIRST`; `AppState::move_workspace` is `pub` beside
-  `pub(crate)` siblings.
-- `notes/spec-app-loop.md`: `AppState::clock_now` is read only by one test;
-  `test_headless_server` duplicates `HeadlessServer::new`'s field list; the
-  headless test submodule declarations carry redundant `cfg(test)` and `path`
-  attributes, one missing its `cfg`; runtime events are admitted twice on the
-  pane-exit path; `observe_projection_change` gives the loop arbitrary `&mut
-  App` access.
-- `notes/spec-pixel-geometry.md`: mux's "pixels without 1016" encoder branch is
-  dead; `PaneGeometry::cell_width` and `cell_height` are dead;
-  `PaneRuntime::current_size()` is an alias of `grid_size()`; host cell values
-  are validated twice.
-- `notes/spec-shell-requests.md`: the "endpoint not active" drop branches in
-  `dispatch.rs` and `settle_expired_endpoint_commands` never find a ledger
-  entry (every change of presented endpoint resets the ledger first), and
-  `DropReason::Interrupted`'s doc describes that unreachable case;
-  `dispatch_client_shell_actions` returns a `Result` that never fails;
-  `focus_endpoint_target` throws away its outcome's repaint;
-  `ScrollLanes::sent` overwrites the whole lane, relying on callers never
-  sending with a flight out; `endpoint_choice_mut()` is public only for the
-  netside test.
-- `notes/spec-shell-render.md`: about 790 lines of navigator tests live in
-  `shell/tests/copy.rs` (moved in landing 7).
+- `crates/shepr-mux/src/workspace.rs`: `Workspace::test_from_pane` may still
+  overwrite the record's public number with `FIRST`;
+  `resolved_identity_cwd_from_root_pane` returns a plain path now, check its
+  callers' leftover `?`.
+- `crates/shepr-mux/src/pane/runtime.rs`: `PaneRuntime::current_size()` and the
+  server test fixture's `current_size` may duplicate `grid_size()`.
+- `crates/shepr-client/src/shell/endpoints.rs`: `endpoint_choice_mut()` is
+  public only for the netside test.
+- Runtime events may be admitted twice on the server's pane-exit path.
 
 ## CLN-034 - Shell leftovers outside the render spec
 
+Unverified after the render spec landed: check each before acting.
+
 - `ClientShellConfig::agent_panel_sort` is changed at runtime and duplicates
   `agent_panel_sort_chrome`.
-- `compose` commits before the host write, so a failed write can start a
+- The composition commits before the host write, so a failed write can start a
   notice's lifetime for a frame never shown.
 - `handle_resize` writes the size twice.
 
-(spec C findings)
-
 ## Test-only twins and test seams in production
 
-## Unused dependencies and edges
+## CLN-035 - A resumed runtime's focus-in has no test
 
-## Stale documentation
+`sync_pane_focus_after` re-sends focus-in to panes whose runtime an agent
+resume replaced, but no test covers it: the resume launches a real PTY shell,
+which only accepts the focus report once it has turned on focus reporting, and
+nothing lets a test observe a launched runtime's input. A seam for that (or a
+way to pre-enable focus reporting) would let
+`a_resumed_runtime_in_a_focused_pane_is_told_focus_in` be written.
+(app-loop spec)

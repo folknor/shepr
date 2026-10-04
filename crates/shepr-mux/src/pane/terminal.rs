@@ -1,7 +1,3 @@
-use crate::limits::{
-    COPY_MODE_WORD_SEPARATORS, DEFAULT_DETECTION_ROWS, MERGE_MAX_BYTES, MERGE_MAX_ROWS,
-    SCAN_CHUNK_ROWS, SYNCHRONIZED_OUTPUT_FLUSH_MARGIN,
-};
 pub use shepr_term::ScrollMetrics;
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
@@ -18,13 +14,19 @@ use tracing::{debug, error, warn};
 
 use shepr_core::layout::PaneId;
 use shepr_protocol::{CellData, FrameData, GridCellWidth, WireColor, WireStyle, WireStyleFlags};
-use shepr_vt::{AbsRow, Point, ScreenRow, ViewportRow};
+use shepr_vt::{AbsRow, Point, ScreenRow};
 
+use super::agent_osc::AgentOscStateTracker;
 use super::cursor::decscusr_cursor_shape;
-use super::osc::{
-    AgentOscStateTracker, OscDebugTracker, current_transient_default_color_owner,
-    parse_reported_cwd, restore_host_terminal_theme_if_needed,
-};
+use super::osc_debug::{self, OscDebugEvent};
+use super::osc7::parse_reported_cwd;
+
+/// Default screen depth sampled for agent detection when no caller supplies
+/// one; it covers a conventional terminal viewport.
+const DEFAULT_DETECTION_ROWS: usize = 24;
+/// Slack after synchronized output's deadline before a follow-up render, so
+/// the terminal can finish its batch.
+const SYNCHRONIZED_OUTPUT_FLUSH_MARGIN: Duration = Duration::from_millis(5);
 
 /// A cell position in terminal text, on a stable absolute row: output and
 /// history eviction never make it name another line.
@@ -45,11 +47,11 @@ pub struct TerminalTextMatch {
     pub scan_screen: shepr_vt::ActiveScreen,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalSearchDirection {
-    Forward,
-    Backward,
-}
+pub use shepr_term::copy_motion::CopyMotion as TerminalCopyMotion;
+pub use shepr_term::copy_motion::LineMotion as TerminalLineMotion;
+pub use shepr_term::copy_motion::ParagraphMotion as TerminalParagraphMotion;
+pub use shepr_term::copy_motion::SearchDirection as TerminalSearchDirection;
+pub use shepr_term::copy_motion::WordMotion as TerminalWordMotion;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalSearchCase {
@@ -120,35 +122,6 @@ impl TerminalSearchWindow {
             total: 0,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalLineMotion {
-    End,
-    FirstNonBlank,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalWordMotion {
-    NextStart,
-    PreviousStart,
-    NextEnd,
-    NextBigStart,
-    PreviousBigStart,
-    NextBigEnd,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalParagraphMotion {
-    Previous,
-    Next,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TerminalCopyMotion {
-    Line(TerminalLineMotion),
-    Word(TerminalWordMotion),
-    Paragraph(TerminalParagraphMotion),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -252,10 +225,10 @@ pub struct TerminalDirtyPatch {
 pub struct TerminalDirtyPatchSnapshot {
     /// `None` means the terminal is clean. Unavailable reads return an error.
     pub patch: Option<TerminalDirtyPatch>,
-    pub content_revision: u64,
+    pub content_revision: ContentRevision,
     pub scroll_metrics: ScrollMetrics,
     pub mouse_reporting: bool,
-    pub sgr_pixel_mouse: bool,
+    pub pixel_mouse: shepr_term::mouse::PanePixelMouse,
     pub alternate_screen_active: bool,
 }
 
@@ -283,9 +256,6 @@ pub(crate) enum RenderRequest {
     After(Duration),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct DefaultColorGeneration(pub(crate) u64);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProcessBytesEffects {
     pub render_request: RenderRequest,
@@ -310,7 +280,6 @@ pub(crate) struct PaneTerminal {
     /// not treat a poisoned lock as a successful mutation: operations without
     /// a failure return log their skipped operation once per pane.
     pub core: TerminalCore,
-    pub render_queued: std::sync::Arc<AtomicBool>,
     /// Set when parsing output (a read, or a synchronized update flushed by
     /// its timeout) leaves the terminal on the other screen than before, and
     /// cleared by the server once it has re-applied the pane's workspace
@@ -318,6 +287,10 @@ pub(crate) struct PaneTerminal {
     /// compares the active screen once per read, not per byte, and stores
     /// only on an actual flip; the server reads it without the core lock.
     screen_flipped: AtomicBool,
+    /// Whether a synchronized update is open, as of the last mutation recorded
+    /// through `commit_mutation`. Written under the core lock, read without it;
+    /// a stale read at worst sends the caller on to the locked check.
+    synchronized_output: AtomicBool,
     /// Set on production construction so mutations without a pane-id
     /// argument can identify their owner in a failure report.
     pane_id: Option<PaneId>,
@@ -330,53 +303,49 @@ pub(crate) struct PaneTerminal {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AgentDetectionInputs {
     pub screen_text: String,
-    pub osc_title: String,
-    pub osc_progress: String,
+    /// The latest OSC 0/2 title, `None` when none was seen or it was cleared.
+    pub osc_title: Option<String>,
+    /// The latest OSC 9;4 report in its canonical `4;state[;percent]`
+    /// spelling, `None` when none was seen.
+    pub osc_progress: Option<String>,
 }
 
 pub(crate) struct PaneTerminalCore {
-    /// Render-visible mutations advance this while holding the core lock.
-    /// Stored revisions are even. A full surface spans several core holds;
-    /// the server marks its revision odd if output changed during drawing.
-    /// A retained patch reads its cells and revision under one hold.
-    pub content_revision: u64,
-    /// Live output, completed synchronized updates, clears and resizes only.
-    /// Viewport and host presentation changes do not invalidate screen scans.
-    pub detection_content_seq: u64,
+    /// Every counter below advances only in `record_mutation` (the default
+    /// colour generation in `note_default_color_change`, which belongs to the
+    /// same effects pass), while holding the core lock. Callers outside that
+    /// pass reach it through `PaneTerminal::commit_mutation`, which also
+    /// refreshes the lock-free synchronized-output mirror.
+    content_revision: ContentRevision,
+    detection_seq: DetectionSeq,
     /// Runs during the next dirty-patch collection attempt, even if it falls
     /// back; see
     /// `PaneRuntime::on_next_dirty_collection`.
-    pub dirty_collection_hook: Option<Box<dyn FnOnce() + Send>>,
-    pub terminal: shepr_vt::Terminal,
-    // This is an equality token paired with the active flag under one hold.
-    // Poison is represented by None in synchronized_output_state, never by
-    // an invented epoch. Keeping that read atomic is the important invariant.
-    synchronized_output_epoch: u64,
-    /// Bumped by every resize that changes the grid. A taller grid pulls
-    /// history rows back onto the screen, where the child can rewrite them,
-    /// so history formatted before a resize may no longer match its rows
-    /// (`history.rs`).
-    history_epoch: u64,
-    pub render_state: shepr_vt::RenderState,
-    pub host_terminal_theme: shepr_term::host::TerminalTheme,
+    dirty_collection_hook: Option<Box<dyn FnOnce() + Send>>,
+    pub(super) terminal: shepr_vt::Terminal,
+    // Paired with the active flag under one hold; see `SyncState`. Poison is
+    // `SyncState::Poisoned`, never an invented epoch. Keeping that read atomic
+    // is the important invariant.
+    synchronized_output_epoch: SyncEpoch,
+    history_epoch: HistoryEpoch,
+    pub(super) render_state: shepr_vt::RenderState,
+    pub(super) host_terminal_theme: shepr_term::host::TerminalTheme,
     /// Process group of the foreground program that last overrode a default
     /// colour (OSC 10/11); its overrides are dropped once the shell is back
     /// in the foreground. `None` while no override is in effect.
-    pub transient_default_color_owner_pgid: Option<shepr_platform::Pgid>,
-    // Raw only inside the core; effects carry DefaultColorGeneration so an
-    // owner probe cannot be mistaken for another kind of generation.
-    default_color_generation: u64,
-    pub(super) osc_debug_tracker: OscDebugTracker,
+    transient_default_color_owner_pgid: Option<shepr_platform::Pgid>,
+    default_color_generation: DefaultColorGeneration,
     pub(super) agent_osc_state: AgentOscStateTracker,
-    /// The server's host name as resolved at its startup, `None` when it
-    /// could not be: OSC 7 `file://` reports naming it are this machine's.
+    /// The server's host names as resolved at its startup, `None` when they
+    /// could not be: OSC 7 `file://` reports naming either are this machine's.
     /// Shared by every pane, so construction clones only the `Arc`.
-    pub(super) local_host: Option<std::sync::Arc<str>>,
+    pub(super) local_host: Option<std::sync::Arc<shepr_platform::HostNames>>,
 }
 
 /// Record the meaning of a mutation once, rather than choosing counters at
-/// every parser, timer and presentation call site. These counters stay raw at
-/// the detection and persistence boundaries, which consume equality tokens.
+/// every parser, timer and presentation call site. The counters are typed
+/// (`counters.rs`); the detection and persistence boundaries read them through
+/// accessors that hand out only equality tokens.
 #[derive(Clone, Copy)]
 #[expect(
     variant_size_differences,
@@ -395,42 +364,123 @@ enum CoreMutation<'a> {
     },
     Presentation,
     Clear,
+    /// The child set a default colour (OSC 10/11). Advances only the
+    /// generation an owner probe is checked against: the output or flush that
+    /// carried it is recorded as its own mutation.
+    DefaultColorSet,
 }
 
 impl PaneTerminalCore {
     fn record_mutation(&mut self, mutation: CoreMutation<'_>) {
-        self.content_revision = self.content_revision.wrapping_add(2);
-        let (detection_changed, sync_changes, grid_changed) = match mutation {
+        // How far each counter moves, besides the content revision, which
+        // every other mutation advances once.
+        let (detection_bumps, sync_steps, grid_changed) = match mutation {
+            CoreMutation::DefaultColorSet => {
+                self.default_color_generation.advance();
+                return;
+            }
             CoreMutation::Output {
                 bytes,
                 flushed,
                 sync_changed,
-            } => {
-                super::agent_detection::observe_detection_content_change(
-                    bytes,
-                    &mut self.detection_content_seq,
-                );
-                (flushed, u64::from(flushed) + u64::from(sync_changed), false)
-            }
-            CoreMutation::SyncFlush => (true, 1, false),
+            } => (
+                u8::from(!bytes.is_empty()) + u8::from(flushed),
+                u8::from(flushed) + u8::from(sync_changed),
+                false,
+            ),
+            CoreMutation::SyncFlush => (1, 1, false),
             CoreMutation::Resize {
                 grid_changed,
                 sync_changed,
-            } => (true, u64::from(sync_changed), grid_changed),
-            CoreMutation::Clear => (true, 0, false),
-            CoreMutation::Presentation => (false, 0, false),
+            } => (1, u8::from(sync_changed), grid_changed),
+            CoreMutation::Clear => (1, 0, false),
+            CoreMutation::Presentation => (0, 0, false),
         };
-        if detection_changed {
-            super::agent_detection::mark_detection_content_changed(&mut self.detection_content_seq);
+        self.content_revision.advance();
+        for _ in 0..detection_bumps {
+            self.detection_seq.bump();
         }
-        self.synchronized_output_epoch = self.synchronized_output_epoch.wrapping_add(sync_changes);
+        self.synchronized_output_epoch.advance(sync_steps);
         if grid_changed {
-            self.history_epoch = self.history_epoch.wrapping_add(1);
+            self.history_epoch.advance();
         }
+    }
+
+    /// The detector's token for this core's screen content.
+    pub(super) fn detection_seq(&self) -> DetectionSeq {
+        self.detection_seq
+    }
+
+    fn sync_state(&self) -> SyncState {
+        if self.terminal.sync_update_buffering() {
+            SyncState::Active
+        } else {
+            SyncState::Idle(self.synchronized_output_epoch)
+        }
+    }
+
+    /// The foreground group whose default-colour overrides are due for a
+    /// restore check: one is recorded, the host theme is known to restore to,
+    /// and the main screen is showing (the alternate screen defers the
+    /// restore). The process half of the policy lives on the runtime side.
+    fn theme_restore_owner(&self) -> Option<shepr_platform::Pgid> {
+        let owner = self.transient_default_color_owner_pgid?;
+        if self.host_terminal_theme.is_empty()
+            || self.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate
+        {
+            return None;
+        }
+        Some(owner)
     }
 }
 
+/// The result of drawing one pane's screen, decided in the same terminal-core
+/// hold as the cells: a caller never pre-checks synchronized output and then
+/// draws, because the two could disagree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneDraw {
+    /// The screen was drawn. The stamp names the state it was drawn from, read
+    /// in the same hold: the synchronized-output epoch and the content
+    /// revision. Later reads of the pane's metadata are compared against it.
+    Drawn {
+        sync_epoch: SyncEpoch,
+        content_revision: ContentRevision,
+    },
+    /// A synchronized update is open: nothing was drawn, and the frame is not
+    /// drawable until the update ends.
+    Deferred,
+    /// The core lock is poisoned: nothing was drawn. The PTY actor closes the
+    /// pane shortly.
+    Unreadable,
+}
+
+/// The pane's cursor read in one terminal-core hold, with the synchronized
+/// output gate decided in that hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorRead {
+    Shown(TerminalCursorState),
+    /// A synchronized update is open: the cursor is not drawable.
+    Deferred,
+    /// The core is unreadable or has no cursor to report.
+    Unavailable,
+}
+
 impl PaneTerminal {
+    /// Records a core mutation and refreshes the lock-free synchronized-output
+    /// mirror in the same hold. Every mutation recorded under the core lock
+    /// goes through here, so the mirror cannot miss one.
+    fn commit_mutation(&self, core: &mut PaneTerminalCore, mutation: CoreMutation<'_>) {
+        core.record_mutation(mutation);
+        self.mirror_synchronized_output(core);
+    }
+
+    /// Stores whether a synchronized update is open, for readers that must not
+    /// take the core lock. Called with the core lock held.
+    fn mirror_synchronized_output(&self, core: &PaneTerminalCore) {
+        self.synchronized_output
+            .store(core.terminal.sync_update_buffering(), Ordering::Release);
+    }
+
     /// Records an active-screen flip across one parse. Relaxed is enough: the
     /// render wake the same parse raises orders it before the server's read.
     fn note_screen_flip(&self, before: shepr_vt::ActiveScreen, after: shepr_vt::ActiveScreen) {
@@ -453,7 +503,7 @@ impl PaneTerminal {
         if !self.mutation_failure_reported.swap(true, Ordering::Relaxed) {
             if let Some(pane_id) = self.pane_id {
                 error!(
-                    pane = pane_id.raw(),
+                    pane = %pane_id,
                     ?operation,
                     "terminal core lock poisoned; mutation was not applied"
                 );
@@ -472,7 +522,7 @@ impl PaneTerminal {
             .swap(true, Ordering::Relaxed)
         {
             warn!(
-                pane = pane_id.raw(),
+                pane = %pane_id,
                 bytes, "dropped oversized OSC 52 clipboard store"
             );
         }
@@ -501,6 +551,18 @@ impl PaneTerminal {
     /// single atomic load, taking no lock: the PTY actor asks on every loop.
     pub(crate) fn core_poisoned(&self) -> bool {
         self.core.is_poisoned()
+    }
+
+    /// The detector's token for the screen content; `None` when the core is
+    /// poisoned.
+    pub(crate) fn detection_seq(&self) -> Option<DetectionSeq> {
+        Some(self.core.lock().ok()?.detection_seq())
+    }
+
+    /// The render revision, for a reader that compares it across holds.
+    /// `None` when the core is poisoned.
+    pub(crate) fn content_revision(&self) -> Option<ContentRevision> {
+        Some(self.core.lock().ok()?.content_revision)
     }
 
     pub(crate) fn dimensions(&self) -> Option<shepr_core::geometry::GridSize> {
@@ -542,11 +604,14 @@ impl PaneTerminal {
 }
 
 mod backend;
+mod counters;
 mod helpers;
 mod history;
 mod input;
 mod text;
 
+pub use counters::{ContentRevision, DetectionSeq, SyncEpoch, SyncState};
+pub(crate) use counters::{DefaultColorGeneration, HistoryEpoch};
 pub use history::{HistoryPiece, HistoryUnavailable, PaneHistoryCache, PaneHistorySource};
 pub use input::WheelRouting;
 

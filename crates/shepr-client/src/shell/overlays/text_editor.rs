@@ -16,7 +16,7 @@ pub(in crate::shell) fn render(
     for x in area.x..area.right() {
         buffer[(x, area.y)].set_symbol(" ").set_style(style);
     }
-    crate::shell::presentation::render::put_text(buffer, area.x, area.y, area.width, text, style);
+    crate::shell::presentation::text::put_text(buffer, area.x, area.y, area.width, text, style);
     Some(shepr_protocol::CursorState {
         x: area.x + cursor,
         y: area.y,

@@ -6,7 +6,7 @@ impl App {
         &mut self,
         params: PaneReportAgentParams,
     ) -> shepr_api::error::ApiResult {
-        let (_ws_idx, pane_id) = self.json_pane(&params.pane_id)?;
+        let pane_id = self.json_pane(&params.pane_id)?;
         let (origin, session_ref) = Self::parse_agent_report_identity(
             &params.source,
             &params.agent,
@@ -14,14 +14,14 @@ impl App {
             params.agent_session_path,
         )?;
         let sample = self.hook_clock_sample();
-        self.handle_state_event(crate::app::events::StateEvent::HookStateReported {
+        self.handle_api_report(crate::app::events::ApiReport::hook_state(
             pane_id,
             sample,
-            session_ref,
             origin,
-            state: detect_state_from_api(params.state),
-            seq: params.seq,
-        });
+            detect_state_from_api(params.state),
+            params.seq,
+            session_ref,
+        ));
 
         // A parked or rejected report is still answered with success: hooks
         // are fire-and-forget, and the admission outcome is logged where it
@@ -33,7 +33,7 @@ impl App {
         &mut self,
         params: PaneReportAgentSessionParams,
     ) -> shepr_api::error::ApiResult {
-        let (_ws_idx, pane_id) = self.json_pane(&params.pane_id)?;
+        let pane_id = self.json_pane(&params.pane_id)?;
         let (origin, session_ref) = Self::parse_agent_report_identity(
             &params.source,
             &params.agent,
@@ -60,14 +60,14 @@ impl App {
             None => ReportedSessionStart::Omitted,
         };
         let sample = self.hook_clock_sample();
-        self.handle_state_event(crate::app::events::StateEvent::AgentSessionReported {
+        self.handle_api_report(crate::app::events::ApiReport::agent_session(
             pane_id,
             sample,
-            session_ref,
             origin,
-            seq: params.seq,
+            params.seq,
+            session_ref,
             session_start_source,
-        });
+        ));
 
         success(ResponseResult::Ok {})
     }
@@ -75,10 +75,7 @@ impl App {
     /// The server clock a hook report is admitted at, as the event path
     /// samples it for queued reports.
     fn hook_clock_sample(&self) -> shepr_detect::ownership::HookClockSample {
-        shepr_detect::ownership::HookClockSample {
-            monotonic: self.clock.now,
-            wall: self.clock.wall_now,
-        }
+        self.clock.hook_sample()
     }
 
     /// Decode the wire identity once; internal events carry its resolved owner.
@@ -160,10 +157,7 @@ mod tests {
     #[test]
     fn hook_reports_distinguish_malformed_and_missing_pane_ids() {
         let _env = IsolatedEnv::new();
-        let app = App::new(
-            &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Suspended,
-        );
+        let app = App::new(&shepr_config::ServerConfig::default());
         assert_eq!(
             app.json_pane("bad").expect_err("malformed pane id").code,
             ApiErrorCode::InvalidPaneId,
@@ -253,7 +247,7 @@ mod tests {
         let asset = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../shepr-integration/src/assets/claude/shepr-agent-state.sh");
         let source = std::fs::read_to_string(&asset).expect("read Claude integration asset");
-        let broken = source.replacen("\"agent\": \"claude\"", "\"agent\": \"codex\"", 1);
+        let broken = source.replacen("AGENT = \"claude\"", "AGENT = \"codex\"", 1);
         assert_ne!(broken, source, "mutation probe must change the asset");
         let broken_path = scratch.join("broken-claude-state.sh");
         std::fs::write(&broken_path, broken).expect("write broken asset copy in scratch");

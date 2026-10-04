@@ -1110,8 +1110,11 @@ mod tests {
         assert!(wait_for_lease_release(&lease_path, soon()).expect("absent lease"));
         assert!(!lease_path.try_exists().expect("test precondition"));
 
-        let held =
-            shepr_platform::ipc::acquire_flock_lock(&lease_path, false).expect("hold the lease");
+        let held = shepr_platform::ipc::acquire_flock_lock(
+            &lease_path,
+            shepr_platform::ipc::LockWait::FailIfHeld,
+        )
+        .expect("hold the lease");
         assert!(!wait_for_lease_release(&lease_path, soon()).expect("held lease"));
         drop(held);
         assert!(wait_for_lease_release(&lease_path, soon()).expect("released lease"));
@@ -1166,8 +1169,11 @@ mod tests {
         let scratch = ScratchDir::new("stop-lease-socket");
         let path = scratch.join("server.sock");
         let lease_path = scratch.join("session.lock");
-        let held_lease =
-            shepr_platform::ipc::acquire_flock_lock(&lease_path, false).expect("lease");
+        let held_lease = shepr_platform::ipc::acquire_flock_lock(
+            &lease_path,
+            shepr_platform::ipc::LockWait::FailIfHeld,
+        )
+        .expect("lease");
         // Answers the stop, then keeps listening without answering a ping.
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind socket");
         let (held_tx, held_rx) = std::sync::mpsc::channel();

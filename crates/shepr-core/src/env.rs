@@ -172,7 +172,7 @@ env_vocabulary! {
         /// `XDG_RUNTIME_DIR`: the runtime tree's parent; it has no default.
         XdgRuntimeDir => "XDG_RUNTIME_DIR", PaneEnvPolicy::Allowed,
         /// `SHELL`: the inherited shell used when `terminal.default_shell` is
-        /// empty. An unusable or unrecognized value, or one with surrounding
+        /// unset. An unusable or unrecognized value, or one with surrounding
         /// whitespace, fails the launch; unset or empty means `/bin/sh`.
         Shell => "SHELL", PaneEnvPolicy::Allowed,
         /// `PATH`: the inherited executable search path used to resolve the

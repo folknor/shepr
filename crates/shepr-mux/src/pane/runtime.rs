@@ -3,6 +3,7 @@ mod input;
 mod read;
 mod read_effects;
 mod spawn;
+mod theme;
 
 pub use cwd::PaneCwdProbe;
 use cwd::*;
@@ -10,13 +11,7 @@ pub use read::PaneRead;
 
 use read_effects::*;
 pub use spawn::{LaunchPresentation, PaneLaunchRequest, PaneLauncher, PaneSpawnHandles};
-
-/// The pane's text area in pixels, bounded by PTY winsize limits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PanePixelSize {
-    pub width: u32,
-    pub height: u32,
-}
+pub(super) use theme::maybe_restore_host_terminal_theme;
 
 use std::sync::{
     Arc, Condvar, Mutex,
@@ -29,18 +24,18 @@ use tokio::sync::{Notify, mpsc};
 use tracing::{error, warn};
 
 use super::PaneClearError;
-use super::exit_arbiter::{PaneEnding, PaneExitArbiter};
+use super::exit_arbiter::{PaneExitArbiter, RecordedEnding};
 use super::launch::*;
 use super::process_probe::*;
 use super::teardown::*;
 use super::terminal::{
-    DefaultColorGeneration, PaneTerminal, ProcessBytesEffects, ProcessBytesResult, RenderRequest,
-    TerminalDirtyPatchSnapshot,
+    ContentRevision, DefaultColorGeneration, PaneTerminal, ProcessBytesEffects, ProcessBytesResult,
+    RenderRequest, SyncState, TerminalDirtyPatchSnapshot,
 };
 use super::*;
 use crate::UsableCwd;
 use crate::events::AppEvent;
-use crate::render_signal::RenderSignal;
+use crate::render_signal::{PaneRenderSlot, RenderSignal};
 use crate::workspace::SurfaceChange;
 use shepr_core::layout::PaneId;
 use shepr_pty::ChildIo;
@@ -188,14 +183,13 @@ impl PaneRuntime {
     /// signal a detection task would wait on; with none running, the caller
     /// may watch it to see the resets the runtime is asked for.
     pub fn with_child_io(
-        cols: u16,
-        rows: u16,
-        scrollback_limit_bytes: usize,
+        geometry: shepr_core::geometry::PaneGeometry,
+        scrollback: shepr_core::scrollback::ScrollbackBudget,
         screen: &[u8],
         io: Box<dyn ChildIo>,
         detection_reset: Arc<Notify>,
     ) -> Self {
-        let mut terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
+        let mut terminal = shepr_vt::Terminal::new(geometry, scrollback);
         terminal.write(screen);
         discard_initial_terminal_effects(&mut terminal);
         Self {
@@ -205,7 +199,7 @@ impl PaneRuntime {
             pane_id: PaneId::alloc(),
             terminal: Arc::new(PaneTerminal::new(terminal)),
             io,
-            current_size: shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0),
+            current_size: geometry,
             child_liveness: Arc::new(ChildLiveness::launched_without_child()),
             // No child, so no teardown is ever started through this tracker.
             teardown_tracker: Arc::default(),
@@ -246,12 +240,11 @@ impl PaneRuntime {
 
     /// A full draw spans multiple core holds. Only unchanged, available reads
     /// certify its cells; retained patches collect everything in one hold.
-    pub fn surface_content_revision(before: Option<u64>, after: u64) -> u64 {
-        if before == Some(after) && after.is_multiple_of(2) {
-            after
-        } else {
-            after | 1
-        }
+    pub fn surface_content_revision(
+        before: Option<ContentRevision>,
+        after: Option<ContentRevision>,
+    ) -> ContentRevision {
+        ContentRevision::certify(before, after)
     }
 
     /// Resize if the dimensions actually changed.
@@ -347,10 +340,10 @@ impl Drop for PaneRuntime {
         // Decided before anything is torn down, so the exits the teardown
         // causes publish nothing. An observer that already decided keeps its
         // publication, which the generation check then sorts out.
-        self.exit_arbiter.decide(PaneEnding::Silent);
-        let owns_child_process = self.io.owns_child_process();
+        self.exit_arbiter.decide(RecordedEnding::Silent);
+        let backing = self.io.child_backing();
         self.io.shutdown();
-        if owns_child_process {
+        if backing == shepr_pty::ChildBacking::Process {
             super::teardown::shutdown_pane_processes(
                 self.pane_id,
                 Arc::clone(&self.child_liveness),
@@ -419,9 +412,8 @@ impl PaneRuntime {
         let (io, rx) = shepr_test_fixtures::ChannelChildIo::new(channel_capacity);
         (
             Self::with_child_io(
-                cols,
-                rows,
-                scrollback_limit_bytes,
+                shepr_core::geometry::PaneGeometry::cells_only(cols, rows),
+                shepr_core::scrollback::ScrollbackBudget::new(scrollback_limit_bytes),
                 bytes,
                 Box::new(io),
                 Arc::new(Notify::new()),
@@ -456,33 +448,31 @@ mod tests {
         exit: ReaderExit,
         arbiter: &Arc<PaneExitArbiter>,
         grace: std::time::Duration,
-    ) -> Option<(shepr_platform::ChildExitReason, bool)> {
+    ) -> Option<(PaneEndReason, bool)> {
         let before = arbiter.ending();
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         reader_exit_callback(pane_id, Arc::clone(arbiter), grace)(exit);
         let after = arbiter.ending();
         match after {
-            Some(PaneEnding::Observed {
-                reason,
+            Some(RecordedEnding::Observed {
+                ending,
                 child_exit_confirmed,
                 ..
-            }) if after != before => Some((reason, child_exit_confirmed)),
+            }) if after != before => Some((ending.reason(), child_exit_confirmed)),
             _ => None,
         }
     }
 
-    fn unconfirmed(
-        reason: shepr_platform::ChildExitReason,
-    ) -> Option<(shepr_platform::ChildExitReason, bool)> {
+    fn unconfirmed(reason: PaneEndReason) -> Option<(PaneEndReason, bool)> {
         Some((reason, false))
     }
 
     static REAPED_AT: std::sync::LazyLock<std::time::Instant> =
         std::sync::LazyLock::new(std::time::Instant::now);
 
-    fn reaped() -> PaneEnding {
-        PaneEnding::Observed {
-            reason: shepr_platform::ChildExitReason::Exited,
+    fn reaped() -> RecordedEnding {
+        RecordedEnding::Observed {
+            ending: PaneEnding::new(PaneEndReason::Exited),
             child_exit_confirmed: true,
             ended_at: *REAPED_AT,
         }
@@ -503,7 +493,7 @@ mod tests {
         let grace = std::time::Duration::from_millis(10);
         assert_eq!(
             reader_exit(ReaderExit::Closed, &arbiter, grace),
-            unconfirmed(shepr_platform::ChildExitReason::TerminalClosed)
+            unconfirmed(PaneEndReason::TerminalClosed)
         );
         assert!(
             !arbiter.decide(reaped()),
@@ -516,7 +506,7 @@ mod tests {
         let arbiter = Arc::new(PaneExitArbiter::default());
         assert_eq!(
             reader_exit(ReaderExit::IoFailed, &arbiter, std::time::Duration::ZERO),
-            unconfirmed(shepr_platform::ChildExitReason::ReaderIoFailed)
+            unconfirmed(PaneEndReason::ReaderIoFailed)
         );
     }
 
@@ -528,7 +518,7 @@ mod tests {
             ReaderExit::ShutdownRequested,
         ] {
             let arbiter = Arc::new(PaneExitArbiter::default());
-            arbiter.decide(PaneEnding::Silent);
+            arbiter.decide(RecordedEnding::Silent);
             assert_eq!(
                 reader_exit(exit, &arbiter, std::time::Duration::ZERO),
                 None,
@@ -550,23 +540,8 @@ mod tests {
         );
         assert_eq!(arbiter.ending(), None);
     }
-    use shepr_agent::Agent;
     use shepr_pty::PtyCommand;
     use shepr_test_support::fixture::{self, Held, Signal, Step};
-
-    fn shell_probe(
-        previous_agent: Option<Agent>,
-        identified_agent: Option<Agent>,
-        foreground_is_pane_shell: bool,
-        process_exit_reported: bool,
-    ) -> ForegroundShellProbe {
-        ForegroundShellProbe {
-            previous_agent,
-            identified_agent,
-            foreground_is_pane_shell,
-            process_exit_reported,
-        }
-    }
 
     /// Poisons the core by panicking on another thread while it holds the
     /// mutex; the join reports that panic instead of catching it here.
@@ -601,20 +576,20 @@ mod tests {
             runtime.terminal.core.try_lock(),
             Err(crate::pane::terminal::TerminalCoreTryLockError::Poisoned)
         ));
-        assert!(!runtime.read().content_seq().is_multiple_of(2));
+        assert_eq!(runtime.read().content_revision(), None);
     }
 
     #[tokio::test]
     async fn output_writer_holds_the_core_without_announcing_an_unwritten_mutation() {
         let (runtime, _rx) = PaneRuntime::test_with_channel(20, 4);
         let writer = runtime.output_writer();
-        let before = runtime.read().content_seq();
+        let before = runtime.read().content_revision();
         let write = writer.begin();
         assert!(writer.try_begin().is_none());
         drop(write);
-        assert_eq!(runtime.read().content_seq(), before);
+        assert_eq!(runtime.read().content_revision(), before);
         writer.try_begin().expect("unlocked core").write(b"hello");
-        assert!(runtime.read().content_seq() > before);
+        assert!(runtime.read().content_revision() > before);
         assert!(runtime.visible_text().contains("hello"));
     }
 
@@ -632,28 +607,31 @@ mod tests {
         let (runtime, _rx) =
             PaneRuntime::test_with_channel_and_scrollback_bytes(20, 4, 100_000, &[], 4);
         runtime.test_process_pty_bytes(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
-        let before = runtime.read().content_seq();
+        let before = runtime.read().content_revision();
         runtime.scroll_up(1);
         let snapshot = runtime
             .read()
             .collect_dirty_patch_snapshot(20, 4)
             .expect("snapshot");
-        assert!(snapshot.content_revision > before);
-        assert_eq!(snapshot.content_revision, runtime.read().content_seq());
+        assert!(Some(snapshot.content_revision) > before);
+        assert_eq!(
+            Some(snapshot.content_revision),
+            runtime.read().content_revision()
+        );
         assert_eq!(
             Some(snapshot.scroll_metrics),
             runtime.read().scroll_metrics()
         );
-        let before_theme = snapshot.content_revision;
+        let before_theme = Some(snapshot.content_revision);
         runtime
             .terminal
             .apply_host_terminal_theme(shepr_term::host::TerminalTheme::default());
-        assert!(runtime.read().content_seq() > before_theme);
-        let before_appearance = runtime.read().content_seq();
+        assert!(runtime.read().content_revision() > before_theme);
+        let before_appearance = runtime.read().content_revision();
         let _ = runtime
             .terminal
             .apply_host_terminal_appearance(Some(shepr_term::host::HostAppearance::Dark));
-        assert!(runtime.read().content_seq() > before_appearance);
+        assert!(runtime.read().content_revision() > before_appearance);
     }
 
     #[tokio::test]
@@ -665,14 +643,14 @@ mod tests {
             b"old\r\nold\r\nold\r\nold\r\nold\r\n\x1b[32m$ abcdefghijklmnop\x1b[1A\x1b[4G\x1b[",
             4,
         );
-        let before = runtime.read().content_seq();
+        let before = runtime.read().content_revision();
         runtime.scroll_up(1);
         runtime.clear_screen().expect("test precondition");
         let snapshot = runtime
             .read()
             .collect_dirty_patch_snapshot(10, 5)
             .expect("test precondition");
-        assert!(snapshot.content_revision > before);
+        assert!(Some(snapshot.content_revision) > before);
         assert!(snapshot.patch.is_some());
         let metrics = runtime.read().scroll_metrics().expect("test precondition");
         assert_eq!(metrics.max_offset_from_bottom, 0);
@@ -694,28 +672,15 @@ mod tests {
             b"one\r\ntwo\r\nthree\r\nfour\r\nfive\x1b[?1049halt app",
         );
         let before = runtime.visible_text();
-        let content_seq = runtime.read().content_seq();
-        let detection_content_seq = runtime
-            .terminal
-            .core
-            .lock()
-            .expect("core")
-            .detection_content_seq;
+        let content_revision = runtime.read().content_revision();
+        let detection_seq = runtime.terminal.detection_seq();
         assert_eq!(
             runtime.clear_screen(),
             Err(PaneClearError::AlternateScreenActive)
         );
         assert_eq!(runtime.visible_text(), before);
-        assert_eq!(runtime.read().content_seq(), content_seq);
-        assert_eq!(
-            runtime
-                .terminal
-                .core
-                .lock()
-                .expect("core")
-                .detection_content_seq,
-            detection_content_seq
-        );
+        assert_eq!(runtime.read().content_revision(), content_revision);
+        assert_eq!(runtime.terminal.detection_seq(), detection_seq);
         runtime.test_process_pty_bytes(b"\x1b[?1049l");
         assert!(runtime.recent_unwrapped_text(100).contains("one"));
         runtime.clear_screen().expect("test precondition");
@@ -736,10 +701,14 @@ mod tests {
             .collect_dirty_patch_snapshot(20, 4)
             .expect("mode snapshot");
         assert!(snapshot.patch.is_none());
-        assert_eq!(snapshot.content_revision, runtime.read().content_seq());
-        assert!(snapshot.content_revision.is_multiple_of(2));
+        assert_eq!(
+            Some(snapshot.content_revision),
+            runtime.read().content_revision()
+        );
+        assert!(snapshot.content_revision.is_stable());
         assert!(snapshot.mouse_reporting);
-        assert!(snapshot.sgr_pixel_mouse);
+        assert!(snapshot.pixel_mouse.requested());
+        assert_eq!(snapshot.pixel_mouse, runtime.read().pixel_mouse());
         assert!(!snapshot.alternate_screen_active);
 
         runtime.test_process_pty_bytes(b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\");
@@ -771,7 +740,7 @@ mod tests {
             .expect("scrolled snapshot");
         assert_eq!(scrolled.scroll_metrics.offset_from_bottom, 1);
         runtime.scroll_reset();
-        runtime.resize(shepr_core::geometry::PaneGeometry::new(24, 5, 0, 0));
+        runtime.resize(shepr_core::geometry::PaneGeometry::cells_only(24, 5));
         let resized = runtime
             .read()
             .collect_dirty_patch_snapshot(24, 5)
@@ -779,7 +748,7 @@ mod tests {
         let metrics = resized.scroll_metrics;
         assert_eq!(metrics.offset_from_bottom, 0);
         assert_eq!(metrics.viewport_rows, 5);
-        assert!(resized.content_revision.is_multiple_of(2));
+        assert!(resized.content_revision.is_stable());
         let Some(patch) = resized.patch else {
             panic!("resize must dirty the viewport");
         };
@@ -820,9 +789,12 @@ mod tests {
         let other = std::path::PathBuf::from("/");
         // Fill the channel so the first cwd report cannot be queued.
         events
-            .try_send(AppEvent::TerminalCwdReported {
+            .try_send(AppEvent::Runtime {
                 pane_id: runtime.pane_id,
-                cwd: UsableCwd::new(other).expect("root is usable"),
+                generation: runtime.generation,
+                event: Box::new(crate::events::RuntimeEvent::TerminalCwdReported {
+                    cwd: UsableCwd::new(other).expect("root is usable"),
+                }),
             })
             .expect("test precondition");
 
@@ -1001,7 +973,7 @@ mod tests {
     fn arbitrated_ending_closes_detector_admission_without_child_exit() {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         assert!(!runtime.detector_observations_ended());
-        assert!(runtime.exit_arbiter.decide(PaneEnding::Silent));
+        assert!(runtime.exit_arbiter.decide(RecordedEnding::Silent));
         assert!(!runtime.child_has_exited());
         assert!(runtime.detector_observations_ended());
     }
@@ -1093,7 +1065,7 @@ mod tests {
         );
         let cmd = PtyCommand::interactive_shell(&fixture::resolved_shell(&program), false);
         let mut spawned = shepr_pty::backend::spawn_pty(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
             &cmd,
             Box::new(drop),
         )
@@ -1160,13 +1132,17 @@ mod tests {
     #[tokio::test]
     async fn an_update_left_open_by_a_quiet_child_is_flushed_by_the_timeout_task() {
         let pane_id = shepr_test_fixtures::fixed_pane_id(7);
-        let terminal = Arc::new(PaneTerminal::new(shepr_vt::Terminal::new(20, 5, 0)));
+        let terminal = Arc::new(PaneTerminal::new(shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        )));
         let (events, _events_rx) = mpsc::channel(8);
         let effects = Arc::new(PaneReadEffects {
             pane_id,
             terminal: Arc::clone(&terminal),
             render_notify: Arc::new(Notify::new()),
             render_dirty: Arc::new(RenderSignal::new()),
+            pty_render: PaneRenderSlot::default(),
             cwd: Arc::default(),
             events: crate::events::EventSender::runtime(
                 events,
@@ -1193,18 +1169,17 @@ mod tests {
             .await
             .expect("the timeout task requests a render");
         assert!(!terminal.synchronized_output_active());
-        assert_eq!(
-            effects.terminal.core.lock().expect("core").content_revision,
-            4
-        );
+        // Two render-visible mutations advanced the revision from its start.
+        let mut two_mutations = ContentRevision::default();
+        two_mutations.advance();
+        two_mutations.advance();
+        assert_eq!(effects.terminal.content_revision(), Some(two_mutations));
         assert_eq!(
             effects
                 .terminal
-                .core
-                .lock()
-                .expect("core")
-                .detection_content_seq,
-            2
+                .detection_seq()
+                .map(crate::pane::terminal::DetectionSeq::get),
+            Some(2)
         );
         assert!(effects.render_dirty.is_pending());
     }
@@ -1318,7 +1293,7 @@ mod tests {
             ],
         );
         let mut cmd = PtyCommand::interactive_shell(&fixture::resolved_shell(&process), false);
-        cmd.cwd(scratch.path());
+        cmd.cwd(&shepr_core::absolute_path::AbsolutePath::new(scratch.path()).expect("absolute"));
         cmd.env(shepr_core::env::ChildEnv::Term, "xterm-ghostty");
         cmd.env(shepr_core::env::ChildEnv::Colorterm, "falsecolor");
         apply_pane_terminal_env(&mut cmd);
@@ -1328,7 +1303,7 @@ mod tests {
         );
 
         let mut spawned = shepr_pty::backend::spawn_pty(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
             &cmd,
             Box::new(drop),
         )
@@ -1353,10 +1328,10 @@ mod tests {
             PaneShellConfig::new(&resolved, true),
             crate::pane::LaunchKind::Fresh,
         );
-        cmd.cwd(scratch.path());
+        cmd.cwd(&shepr_core::absolute_path::AbsolutePath::new(scratch.path()).expect("absolute"));
 
         let mut spawned = shepr_pty::backend::spawn_pty(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
             &cmd,
             Box::new(drop),
         )
@@ -1399,7 +1374,7 @@ mod tests {
             crate::pane::LaunchKind::Fresh,
         );
         let mut spawned = shepr_pty::backend::spawn_pty(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
             &cmd,
             Box::new(drop),
         )
@@ -1435,7 +1410,7 @@ mod tests {
             crate::pane::LaunchKind::Fresh,
         );
         let mut spawned = shepr_pty::backend::spawn_pty(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
             &cmd,
             Box::new(drop),
         )
@@ -1644,12 +1619,12 @@ mod tests {
         let mut runtime =
             PaneRuntime::test_with_scrollback_bytes(80, 45, 20_000_000, history.as_bytes());
 
-        runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 21, 0, 0));
+        runtime.resize(shepr_core::geometry::PaneGeometry::cells_only(80, 21));
         let snapshot = runtime.recent_unwrapped_text(usize::MAX);
         assert!(snapshot.contains("00001 "));
         assert!(snapshot.contains("02000 "));
 
-        runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 45, 0, 0));
+        runtime.resize(shepr_core::geometry::PaneGeometry::cells_only(80, 45));
 
         assert_eq!(
             runtime.current_size(),
@@ -1675,7 +1650,10 @@ mod tests {
     #[tokio::test]
     async fn focus_events_are_forwarded_when_enabled() {
         let (io, mut rx) = shepr_test_fixtures::ChannelChildIo::new(4);
-        let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+        let mut terminal = shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        );
         terminal.write(b"\x1b[?1004h");
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         let terminal = Arc::new(PaneTerminal::new(terminal));
@@ -1684,7 +1662,7 @@ mod tests {
             pane_id,
             terminal,
             io: Box::new(io),
-            current_size: shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0),
+            current_size: shepr_core::geometry::PaneGeometry::cells_only(24, 80),
             child_liveness: Arc::new(ChildLiveness::absent()),
             teardown_tracker: Arc::default(),
             exit_arbiter: Arc::default(),
@@ -1704,7 +1682,10 @@ mod tests {
     #[tokio::test]
     async fn focus_events_are_suppressed_when_disabled() {
         let (io, mut rx) = shepr_test_fixtures::ChannelChildIo::new(4);
-        let terminal = shepr_vt::Terminal::new(80, 24, 0);
+        let terminal = shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        );
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         let terminal = Arc::new(PaneTerminal::new(terminal));
         let runtime = PaneRuntime {
@@ -1712,7 +1693,7 @@ mod tests {
             pane_id,
             terminal,
             io: Box::new(io),
-            current_size: shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0),
+            current_size: shepr_core::geometry::PaneGeometry::cells_only(24, 80),
             child_liveness: Arc::new(ChildLiveness::absent()),
             teardown_tracker: Arc::default(),
             exit_arbiter: Arc::default(),
@@ -1741,161 +1722,19 @@ mod tests {
         assert_eq!(rx.recv().await, Some(Bytes::from_static(b"\x1b[?997;2n")));
     }
 
-    #[test]
-    fn foreground_shell_reports_process_exit_before_clearing_agent() {
-        assert_eq!(
-            foreground_shell_agent_action(shell_probe(Some(Agent::Codex), None, true, false)),
-            ForegroundShellAgentAction::ReportProcessExit
-        );
-        assert_eq!(
-            foreground_shell_agent_action(shell_probe(Some(Agent::Codex), None, true, true)),
-            ForegroundShellAgentAction::ClearAgent
-        );
-    }
-
-    #[test]
-    fn same_agent_after_reported_exit_is_a_replacement_process() {
-        assert_eq!(
-            foreground_shell_agent_action(shell_probe(
-                Some(Agent::Pi),
-                Some(Agent::Pi),
-                false,
-                true,
-            )),
-            ForegroundShellAgentAction::ReportReplacementProcess
-        );
-    }
-
-    #[test]
-    fn unknown_non_shell_foreground_job_is_not_immediate_clear_signal() {
-        assert_eq!(
-            foreground_shell_agent_action(shell_probe(Some(Agent::Claude), None, false, false,)),
-            ForegroundShellAgentAction::ObserveProbe
-        );
-    }
-
     #[tokio::test]
     async fn agent_transition_clears_retained_osc_evidence() {
         let runtime = PaneRuntime::test_with_screen_bytes(80, 24, b"");
         runtime.test_process_pty_bytes(b"\x1b]2;startup title\x1b\\\x1b]9;4;1;\x1b\\");
 
         let inputs = runtime.read().agent_detection_inputs();
-        assert_eq!(inputs.osc_title, "startup title");
-        assert_eq!(inputs.osc_progress, "4;1;");
+        assert_eq!(inputs.osc_title.as_deref(), Some("startup title"));
+        assert_eq!(inputs.osc_progress.as_deref(), Some("4;1"));
 
-        clear_osc_evidence_for_agent_transition(&runtime.terminal);
+        runtime.terminal.clear_agent_osc_state();
         let inputs = runtime.read().agent_detection_inputs();
-        assert_eq!(inputs.osc_title, "");
-        assert_eq!(inputs.osc_progress, "");
-    }
-
-    #[test]
-    fn reported_process_exit_clears_before_unknown_foreground_probe() {
-        assert_eq!(
-            foreground_shell_agent_action(shell_probe(Some(Agent::Claude), None, false, true,)),
-            ForegroundShellAgentAction::ClearAgent
-        );
-    }
-
-    #[test]
-    fn foreground_agent_job_is_not_clear_signal() {
-        assert_eq!(
-            foreground_shell_agent_action(shell_probe(
-                Some(Agent::Claude),
-                Some(Agent::OpenCode),
-                true,
-                false,
-            )),
-            ForegroundShellAgentAction::ObserveProbe
-        );
-    }
-
-    fn foreground_process(pid: u32, name: &str) -> shepr_platform::ForegroundProcess {
-        shepr_platform::ForegroundProcess {
-            pid: test_pid(pid),
-            name: name.to_string(),
-            argv: None,
-        }
-    }
-
-    fn test_pid(value: u32) -> shepr_platform::Pid {
-        shepr_platform::Pid::new(value).expect("test process id")
-    }
-
-    fn test_pgid(value: u32) -> shepr_platform::Pgid {
-        shepr_platform::Pgid::new(value).expect("test process group")
-    }
-
-    #[test]
-    fn identifiable_foreground_leader_wins_over_other_job_members() {
-        let job = shepr_platform::ForegroundJob {
-            process_group_id: test_pgid(99),
-            processes: vec![
-                foreground_process(99, "codex"),
-                foreground_process(100, "claude"),
-            ],
-        };
-
-        let result =
-            probe_foreground_process_from_jobs(test_pid(42), Some(test_pgid(99)), None, || {
-                Some(job)
-            });
-
-        assert_eq!(result.agent(), Some(Agent::Codex));
-        assert_eq!(result.process_name(), Some("codex"));
-    }
-
-    #[test]
-    fn unidentified_leader_job_falls_through_to_foreground_job() {
-        let leader_job = shepr_platform::ForegroundJob {
-            process_group_id: test_pgid(99),
-            processes: vec![foreground_process(99, "some_vm")],
-        };
-        let foreground_job = shepr_platform::ForegroundJob {
-            process_group_id: test_pgid(99),
-            processes: vec![
-                foreground_process(99, "some_vm"),
-                foreground_process(100, "codex"),
-            ],
-        };
-
-        let result = probe_foreground_process_from_jobs(
-            test_pid(42),
-            Some(test_pgid(99)),
-            Some(&leader_job),
-            || Some(foreground_job),
-        );
-
-        assert_eq!(result.agent(), Some(Agent::Codex));
-        assert_eq!(result.process_name(), Some("codex"));
-    }
-
-    #[test]
-    fn transient_process_miss_keeps_current_agent_detected() {
-        let mut presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
-
-        let changed = presence.observe_process_probe(None);
-
-        assert!(!changed, "one miss should not clear the detected agent");
-        assert_eq!(presence.current_agent(), Some(Agent::Pi));
-    }
-
-    #[test]
-    fn agent_only_clears_after_confirmation_misses() {
-        let mut presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
-
-        for attempt in 1..AGENT_MISS_CONFIRMATION_ATTEMPTS {
-            let changed = presence.observe_process_probe(None);
-            assert!(
-                !changed,
-                "miss {attempt} should stay in the confirmation window"
-            );
-            assert_eq!(presence.current_agent(), Some(Agent::Pi));
-        }
-
-        let changed = presence.observe_process_probe(None);
-        assert!(changed, "last confirmation miss should clear the agent");
-        assert_eq!(presence.current_agent(), None);
+        assert_eq!(inputs.osc_title, None);
+        assert_eq!(inputs.osc_progress, None);
     }
 
     #[tokio::test]
@@ -1940,69 +1779,5 @@ mod tests {
         )
         .await
         .expect("re-entering active authority should notify detection reset");
-    }
-
-    #[tokio::test]
-    async fn state_changed_event_waits_for_queue_space_instead_of_dropping() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let pane_id = shepr_test_fixtures::fixed_pane_id(42);
-
-        tx.try_send(AppEvent::GitStatusRefreshed {
-            outcome: shepr_git::RefreshOutcome::empty(),
-        })
-        .expect("test precondition");
-
-        let publish = publish_state_changed_event(
-            crate::events::EventSender::runtime(
-                tx.clone(),
-                pane_id,
-                crate::events::RuntimeGeneration::alloc(),
-            ),
-            StateChangedUpdate {
-                agent: Some(Agent::Pi),
-                detection: shepr_detect::Detection::Idle { visible: false },
-                process_exited: false,
-                observed_at: std::time::Instant::now(),
-            },
-        );
-        tokio::pin!(publish);
-
-        let blocked = tokio::time::timeout(std::time::Duration::from_millis(20), async {
-            (&mut publish).await;
-        })
-        .await;
-        assert!(
-            blocked.is_err(),
-            "publisher should wait for queue space instead of dropping StateChanged"
-        );
-
-        let first = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
-            .await
-            .expect("queue should yield first event")
-            .expect("sender still alive");
-        assert!(matches!(first, AppEvent::GitStatusRefreshed { .. }));
-
-        tokio::time::timeout(std::time::Duration::from_millis(50), async {
-            (&mut publish).await;
-        })
-        .await
-        .expect("publisher should complete once queue space is available");
-
-        let second = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
-            .await
-            .expect("queue should yield second event")
-            .expect("sender still alive");
-        let AppEvent::Runtime { event, .. } = second else {
-            panic!("runtime envelope required");
-        };
-        assert!(matches!(
-            *event,
-            crate::events::RuntimeEvent::StateChanged {
-                agent: Some(Agent::Pi),
-                detection: shepr_detect::Detection::Idle { visible: false },
-                process_exited: false,
-                observed_at: _,
-            }
-        ));
     }
 }

@@ -1,10 +1,11 @@
 //! Endpoint-qualified rows shared by aggregate navigation surfaces.
 
 use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
+use crate::shell::config::ClientShellConfig;
 use crate::shell::endpoints::{ClientShellEndpoint, EndpointState};
 use crate::shell::navigation::location::Location;
-use crate::shell::state::{
-    ClientNavigatorFilter, ClientNavigatorOverlay, ClientNavigatorRow, ClientShellConfig,
+use crate::shell::overlays::navigator::{
+    ClientNavigatorFilter, ClientNavigatorRow, NavigatorOverlay,
 };
 use std::collections::HashMap;
 
@@ -289,7 +290,7 @@ impl NavigatorIndex {
     pub(in crate::shell) fn rows(
         &self,
         active_endpoint_id: &ClientEndpointId,
-        navigator: &ClientNavigatorOverlay,
+        navigator: &NavigatorOverlay,
     ) -> Vec<ClientNavigatorRow> {
         let query = navigator.query.trim().to_lowercase();
         let words = query.split_whitespace().collect::<Vec<_>>();
@@ -366,7 +367,7 @@ fn filter_status(filter: ClientNavigatorFilter, status: shepr_protocol::AgentSta
 
 pub(in crate::shell) fn navigator_selected_index(
     rows: &[ClientNavigatorRow],
-    navigator: &ClientNavigatorOverlay,
+    navigator: &NavigatorOverlay,
 ) -> Option<usize> {
     match navigator.selected.as_ref() {
         Some(target) => rows
@@ -384,7 +385,7 @@ pub(in crate::shell) fn navigator_selected_index(
 
 pub(in crate::shell) fn selected_navigator_target(
     rows: &[ClientNavigatorRow],
-    navigator: &ClientNavigatorOverlay,
+    navigator: &NavigatorOverlay,
 ) -> Option<Location> {
     navigator_selected_index(rows, navigator).map(|index| rows[index].target.clone())
 }
@@ -393,7 +394,7 @@ pub(in crate::shell) fn selected_navigator_target(
 pub(in crate::shell) fn navigator_rows(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
-    navigator: &ClientNavigatorOverlay,
+    navigator: &NavigatorOverlay,
 ) -> Vec<ClientNavigatorRow> {
     NavigatorIndex::build(endpoints).rows(active_endpoint_id, navigator)
 }

@@ -1,7 +1,7 @@
 use clap::ArgMatches;
 
 use shepr_api::client::{ApiClient, ApiClientError};
-use shepr_api::schema::Request;
+use shepr_api::schema::{Request, ResponseResult};
 use shepr_launch::invocation::{
     COMMAND_CLIENT, COMMAND_DETECT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS,
 };
@@ -214,12 +214,27 @@ fn resolve_app_paths() -> CliResult<shepr_paths::AppPaths> {
     shepr_paths::AppPaths::resolve().map_err(CliError::from)
 }
 
-fn send_request(paths: &shepr_paths::AppPaths, request: &Request) -> CliResult<serde_json::Value> {
+/// Sends one request to the local server and decodes the response envelope
+/// through shepr-api's schema: the typed result, or the server's error
+/// response as [`CliError::Response`]. Commands match on the result variant
+/// they asked for and never probe the JSON.
+fn send_request(paths: &shepr_paths::AppPaths, request: &Request) -> CliResult<ResponseResult> {
     let client = ApiClient::local(paths);
     ensure_server_build_matches(paths, &client, &request.id)?;
     client
-        .request_value(request)
+        .request(request)
+        .map(|success| success.result)
         .map_err(|err| map_server_not_running_or_io(paths, err, &request.id, &client))
+}
+
+/// The failure for a successful response whose result is not the variant the
+/// command asked for.
+fn unexpected_result(result: &ResponseResult) -> CliError {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("unexpected api result: {result:?}"),
+    )
+    .into()
 }
 
 fn ensure_server_build_matches(
@@ -279,14 +294,12 @@ fn map_server_not_running_or_io(
                 ),
             })
         }
-        err => api_client_error_to_io(err).into(),
-    }
-}
-
-fn api_client_error_to_io(err: ApiClientError) -> std::io::Error {
-    match err {
-        ApiClientError::Io(err) => err,
-        err => std::io::Error::other(err),
+        ApiClientError::ErrorResponse(response) => CliError::Response(response),
+        ApiClientError::Io(err) => err.into(),
+        err @ (ApiClientError::Json(_) | ApiClientError::EmptyResponse) => {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, err).into()
+        }
+        err @ ApiClientError::UnexpectedResult(_) => std::io::Error::other(err).into(),
     }
 }
 

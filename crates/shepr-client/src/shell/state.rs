@@ -2,30 +2,22 @@
 //! redact their contents in `Debug`; other types here may carry typed or pasted
 //! text (queued keys and clipboard bytes), so log ids, lengths or kinds instead.
 
-use crate::shell::ledger::DropReason;
-use crate::shell::presentation::surfaces::Pairing;
+use crate::shell::ledger::ClientShellEndpointRequest;
 
-use crate::endpoint::{ClientEndpointBootKey, ClientEndpointId};
-use crate::shell::endpoints::{ClientEndpointFocusTarget, Endpoints, MachineHit, local_endpoint};
-use crate::shell::input::copy_mode::CopyPipeline;
-use crate::shell::input::word_selection::ClientWordSelection;
+use crate::endpoint::ClientEndpointId;
+use crate::shell::copy::CopySession;
+use crate::shell::endpoints::{Endpoints, local_endpoint};
+use crate::shell::input::pointer::Pointer;
+use crate::shell::input::selection::MouseSelection;
 use crate::shell::ledger::Ledger;
-use shepr_protocol::{ClientMessage, ClientShellSnapshot, ClientSurfaceSize, PaneSurfaceFrame};
-use std::collections::HashSet;
-use std::sync::Arc;
+use shepr_protocol::{ClientMessage, ClientSurfaceSize, PaneSurfaceFrame};
 
+use crate::shell::config::{ClientShellConfig, ClientShellLayout};
 use crate::shell::input::scroll_lanes::ScrollLanes;
-use crate::shell::navigation::location::{Location, PinnedLocation};
+use crate::shell::navigation::location::Location;
 use crate::shell::navigation::workspace_navigation::PendingWorkspaceHighlight;
-use crate::shell::presentation::surfaces::PaneSurfaces;
-use ratatui::layout::Rect;
-use shepr_config::theme::Palette;
-use shepr_config::{LiveKeybindConfig, SidebarCollapsedModeConfig, SpacesSidebarConfig};
-use shepr_termio::text_editor::TextEditor;
-
-use crate::shell::presentation::surfaces;
-
-use crate::shell::sidebar::preferences;
+use crate::shell::overlays::{Overlay, OverlayKind};
+use crate::shell::presentation::Presentation;
 
 /// User-entered text stored in shell state, with redacted debug output.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -94,223 +86,6 @@ impl std::ops::BitOrAssign for Repaint {
     }
 }
 
-pub struct ClientShellConfig {
-    pub(in crate::shell) sidebar_width: shepr_config::SidebarWidth,
-    pub(in crate::shell) sidebar_bounds: shepr_config::SidebarBounds,
-    pub(in crate::shell) sidebar_start_collapsed: bool,
-    pub(in crate::shell) sidebar_collapsed_mode: SidebarCollapsedModeConfig,
-    pub(in crate::shell) spaces: SpacesSidebarConfig,
-    pub(in crate::shell) agents: shepr_config::AgentsSidebarConfig,
-    pub(in crate::shell) agent_panel_sort: shepr_config::AgentPanelSortConfig,
-    pub(in crate::shell) status_indicators: shepr_config::StatusIndicatorStyle,
-    pub(in crate::shell) copy_on_select: bool,
-    pub(in crate::shell) palette: Palette,
-    pub(in crate::shell) keybinds: LiveKeybindConfig,
-    pub(in crate::shell) prompt_new_workspace_name: bool,
-    pub(in crate::shell) confirm_close: bool,
-    pub(in crate::shell) mouse_capture: bool,
-    pub(in crate::shell) mouse_scroll_lines: u16,
-    pub(in crate::shell) right_click_passthrough_modifiers: Option<crossterm::event::KeyModifiers>,
-    pub(in crate::shell) redraw_on_focus_gained: bool,
-    pub(in crate::shell) preferences_path: Option<std::path::PathBuf>,
-    pub(in crate::shell) preferences: preferences::ClientChromePreferences,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::shell) struct ClientShellLayout {
-    pub sidebar: Rect,
-    pub pane_surface: Rect,
-}
-
-#[derive(Default)]
-pub(in crate::shell) struct ShellHitMap {
-    pub(in crate::shell) machines: Vec<MachineHit>,
-    pub(in crate::shell) workspaces: Vec<WorkspaceHit>,
-    pub(in crate::shell) workspace_body: Rect,
-    pub(in crate::shell) workspace_scrollbar: Rect,
-    pub(in crate::shell) workspace_scroll_metrics: Option<shepr_term::scroll::ListScroll>,
-    pub(in crate::shell) workspace_max_scroll: usize,
-    pub(in crate::shell) panes: Vec<PaneHit>,
-    pub(in crate::shell) pane_splits: Vec<PaneSplitHit>,
-    pub(in crate::shell) agent_hits: Vec<AgentHit>,
-    pub(in crate::shell) agent_body: Rect,
-    pub(in crate::shell) agent_scrollbar: Rect,
-    pub(in crate::shell) agent_scroll_metrics: Option<shepr_term::scroll::ListScroll>,
-    pub(in crate::shell) agent_max_scroll: usize,
-    pub(in crate::shell) agent_sort_toggle: Rect,
-    pub(in crate::shell) sidebar_divider: Rect,
-    pub(in crate::shell) sidebar_section_divider: Rect,
-    pub(in crate::shell) sidebar_toggle: Rect,
-    pub(in crate::shell) new_workspace: Rect,
-    pub(in crate::shell) global_launcher: Rect,
-    pub(in crate::shell) notification_toast: Rect,
-    pub(in crate::shell) global_menu_rows: Vec<(Rect, usize)>,
-    pub(in crate::shell) context_menu_rows: Vec<(Rect, usize)>,
-    pub(in crate::shell) overlay_primary: Rect,
-    pub(in crate::shell) overlay_clear: Rect,
-    pub(in crate::shell) overlay_cancel: Rect,
-    pub(in crate::shell) navigator_popup: Rect,
-    pub(in crate::shell) navigator_search: Rect,
-    pub(in crate::shell) navigator_rows: Vec<(Rect, Location)>,
-    pub(in crate::shell) navigator_scrollbar: Rect,
-    pub(in crate::shell) navigator_scroll_metrics: Option<shepr_term::scroll::ListScroll>,
-    pub(in crate::shell) help_popup: Rect,
-    pub(in crate::shell) help_scrollbar: Rect,
-    pub(in crate::shell) help_scroll_metrics: Option<shepr_term::scroll::ListScroll>,
-    pub(in crate::shell) help_max_scroll: usize,
-}
-
-#[derive(Clone)]
-pub(in crate::shell) struct PaneHit {
-    pub(in crate::shell) rect: Rect,
-    pub(in crate::shell) inner_rect: Rect,
-    pub(in crate::shell) scrollbar_rect: Option<Rect>,
-    pub(in crate::shell) scroll: Option<shepr_term::ScrollMetrics>,
-    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
-    pub(in crate::shell) mouse_reporting: bool,
-    pub(in crate::shell) sgr_pixel_mouse: bool,
-    pub(in crate::shell) pixel_width: u32,
-    pub(in crate::shell) pixel_height: u32,
-}
-
-impl PaneHit {
-    pub(in crate::shell) fn from_wire(
-        pane: &shepr_protocol::PaneSurfacePane,
-        origin: (u16, u16),
-        clip: Rect,
-    ) -> Option<Self> {
-        let offset = |rect: shepr_protocol::SurfaceRect| {
-            Rect::new(
-                origin.0.saturating_add(rect.x),
-                origin.1.saturating_add(rect.y),
-                rect.width,
-                rect.height,
-            )
-        };
-        let inner_rect = offset(pane.inner_rect);
-        let visible_inner = inner_rect.intersection(clip);
-        if visible_inner.is_empty() {
-            return None;
-        }
-        let clipped = inner_rect != visible_inner;
-        Some(Self {
-            rect: offset(pane.rect).intersection(clip),
-            inner_rect: visible_inner,
-            scrollbar_rect: pane
-                .scrollbar_rect
-                .map(offset)
-                .map(|rect| rect.intersection(clip))
-                .filter(|rect| !rect.is_empty()),
-            scroll: pane.scroll,
-            pane_id: pane.pane_id,
-            mouse_reporting: pane.mouse_reporting,
-            sgr_pixel_mouse: pane.sgr_pixel_mouse,
-            pixel_width: if clipped { 0 } else { pane.pixel_width },
-            pixel_height: if clipped { 0 } else { pane.pixel_height },
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::shell) struct AgentHit {
-    pub(in crate::shell) rect: Rect,
-    pub(in crate::shell) location: Location,
-}
-
-/// Effects committed by the last successful composition. Patches must preserve both
-/// the cells painted over pane output and compose's replacement of the pane cursor.
-#[derive(Default)]
-pub(in crate::shell) struct LastComposition {
-    pub(in crate::shell) pane_cells_occluded: bool,
-    pub(in crate::shell) pane_cursor_overridden: bool,
-}
-
-#[derive(Clone)]
-pub(in crate::shell) struct PaneSplitHit {
-    pub(in crate::shell) direction: shepr_protocol::PaneSurfaceSplitDirection,
-    pub(in crate::shell) pos: u16,
-    pub(in crate::shell) area: Rect,
-    pub(in crate::shell) hit_rect: Rect,
-    pub(in crate::shell) path: Vec<shepr_core::geometry::SplitBranch>,
-    pub(in crate::shell) topology_signature: u64,
-}
-
-pub(in crate::shell) struct ClientPaneMouseGesture {
-    pub(in crate::shell) hit: PaneHit,
-    pub(in crate::shell) button: crossterm::event::MouseButton,
-    pub(in crate::shell) stripped_modifiers: crossterm::event::KeyModifiers,
-    pub(in crate::shell) last_event: crossterm::event::MouseEvent,
-    pub(in crate::shell) last_position: shepr_protocol::ClientMousePosition,
-}
-
-pub(in crate::shell) struct ClientWorkspacePress {
-    pub(in crate::shell) location: Location,
-    pub(in crate::shell) start_column: u16,
-    pub(in crate::shell) start_row: u16,
-}
-
-pub(in crate::shell) enum ClientChromeDrag {
-    /// Dragging the sidebar edge. The width follows the pointer, but the endpoint is resized
-    /// once, on release: each resize reflows every PTY, and one per column crossed would make
-    /// every pane redraw repeatedly mid-drag.
-    SidebarWidth {
-        resize_pending: bool,
-    },
-    SidebarSection,
-    WorkspaceScrollbar {
-        grab_row_offset: u16,
-    },
-    AgentScrollbar {
-        grab_row_offset: u16,
-    },
-    HelpScrollbar {
-        grab_row_offset: u16,
-    },
-    NavigatorScrollbar {
-        grab_row_offset: u16,
-    },
-    Workspace {
-        source_workspace_id: shepr_protocol::WorkspaceId,
-        target: Option<(Option<shepr_protocol::WorkspaceId>, u16)>,
-    },
-    PaneSplit {
-        first_panes: Vec<shepr_protocol::PublicPaneId>,
-        second_panes: Vec<shepr_protocol::PublicPaneId>,
-        hit: PaneSplitHit,
-        workspace_id: shepr_protocol::WorkspaceId,
-        grab_offset: i32,
-        last_sent_ratio: Option<shepr_core::layout::SplitRatio>,
-        throttle: crate::shell::input::mouse::Throttle,
-    },
-    PaneScrollbar {
-        hit: PaneHit,
-        grab_row_offset: u16,
-        last_sent_offset: Option<usize>,
-        throttle: crate::shell::input::mouse::Throttle,
-    },
-}
-
-pub(in crate::shell) struct WorkspaceHit {
-    pub(in crate::shell) rect: Rect,
-    pub(in crate::shell) location: Location,
-}
-
-/// One command bound for the active endpoint, with the id its answer comes
-/// back under.
-pub(crate) struct ClientShellEndpointRequest {
-    pub(crate) id: shepr_protocol::RequestId,
-    pub(crate) command: shepr_protocol::command::EndpointCommand,
-}
-
-impl std::fmt::Debug for ClientShellEndpointRequest {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ClientShellEndpointRequest")
-            .field("id", &self.id)
-            .field("command", &"[redacted]")
-            .finish()
-    }
-}
-
 #[derive(Debug)]
 pub(crate) enum ClientShellAction {
     Endpoint {
@@ -319,10 +94,8 @@ pub(crate) enum ClientShellAction {
         request: Box<ClientShellEndpointRequest>,
     },
     ClipboardWrite(Vec<u8>),
-    ActivateEndpoint {
-        endpoint_id: ClientEndpointId,
-        target: Option<ClientEndpointFocusTarget>,
-    },
+    /// Pick an endpoint, and the navigation inside it the pick names.
+    ActivateEndpoint(Location),
 }
 
 #[derive(Default)]
@@ -370,187 +143,6 @@ pub(in crate::shell) enum ClientShellMode {
     Copy,
 }
 
-/// The live mouse range, pending focus, gestures and timers form one lifecycle.
-/// Copy-mode anchors stay in `ClientCopyModeState` so focus return can rebuild
-/// the projected range; click history can outlive a cleared range for double-clicks.
-#[derive(Default)]
-pub(in crate::shell) struct MouseSelection {
-    pub(in crate::shell) selection:
-        Option<shepr_term::selection::Selection<shepr_protocol::PublicPaneId>>,
-    pub(in crate::shell) focus_pending: Option<shepr_protocol::PublicPaneId>,
-    pub(in crate::shell) last_pane_click: Option<ClientPaneClick>,
-    pub(in crate::shell) autoscroll: Option<ClientSelectionAutoscroll>,
-    pub(in crate::shell) autoscroll_deadline: Option<std::time::Instant>,
-    pub(in crate::shell) highlight_clear_deadline: Option<std::time::Instant>,
-    pub(in crate::shell) repaint_deadline: Option<std::time::Instant>,
-    pub(in crate::shell) word_gesture: Option<ClientWordSelection>,
-}
-
-impl MouseSelection {
-    /// End the range interaction while preserving click history for double-click detection.
-    pub(in crate::shell) fn clear_range(&mut self) {
-        self.selection = None;
-        self.focus_pending = None;
-        self.autoscroll = None;
-        self.autoscroll_deadline = None;
-        self.highlight_clear_deadline = None;
-        self.repaint_deadline = None;
-        self.word_gesture = None;
-    }
-
-    pub(in crate::shell) fn clear(&mut self) {
-        self.clear_range();
-        self.last_pane_click = None;
-    }
-
-    pub(in crate::shell) fn stop_autoscroll(&mut self) {
-        self.autoscroll = None;
-        self.autoscroll_deadline = None;
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::shell) enum ClientShellOverlayKind {
-    Rename,
-    ConfirmClose,
-    Help,
-    Navigator,
-    ContextMenu,
-    GlobalMenu,
-}
-
-#[derive(Debug)]
-pub(in crate::shell) enum ClientRenameTarget {
-    NewWorkspace {
-        cwd: Option<shepr_protocol::RemotePath>,
-        suggested_name: String,
-        label_lookup: Option<shepr_protocol::RequestId>,
-    },
-    Workspace {
-        workspace_id: shepr_protocol::WorkspaceId,
-    },
-    Pane {
-        pane_id: shepr_protocol::PublicPaneId,
-    },
-}
-
-#[derive(Debug)]
-pub(in crate::shell) struct ClientRenameOverlay {
-    pub(in crate::shell) title: &'static str,
-    pub(in crate::shell) input: TextEditor,
-    pub(in crate::shell) target: ClientRenameTarget,
-}
-
-pub(in crate::shell) type ClientNavigatorFilter = shepr_protocol::AgentStatus;
-
-#[derive(Clone, Debug)]
-pub(in crate::shell) struct ClientNavigatorRow {
-    pub(in crate::shell) depth: u8,
-    pub(in crate::shell) label: String,
-    pub(in crate::shell) meta: String,
-    pub(in crate::shell) detail: String,
-    pub(in crate::shell) agent: Option<shepr_config::ConfigAgent>,
-    pub(in crate::shell) status: Option<shepr_protocol::AgentStatus>,
-    pub(in crate::shell) stale: bool,
-    pub(in crate::shell) current: bool,
-    pub(in crate::shell) target: Location,
-}
-
-#[derive(Debug)]
-pub(in crate::shell) struct ClientNavigatorOverlay {
-    pub(in crate::shell) query: TextEditor,
-    pub(in crate::shell) search_focused: bool,
-    pub(in crate::shell) selected: Option<Location>,
-    pub(in crate::shell) scroll: usize,
-    pub(in crate::shell) filter: Option<ClientNavigatorFilter>,
-}
-
-#[derive(Debug)]
-pub(in crate::shell) struct ClientHelpOverlay {
-    pub(in crate::shell) query: TextEditor,
-    pub(in crate::shell) search_focused: bool,
-    pub(in crate::shell) scroll: usize,
-}
-
-#[derive(Debug)]
-pub(in crate::shell) struct ClientGlobalMenuOverlay {
-    pub(in crate::shell) highlighted: usize,
-    pub(in crate::shell) launcher: Rect,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::shell) enum ClientContextMenuAction {
-    Rename,
-    Close,
-    RenamePane,
-    ClearPaneName,
-    SwapWithFocusedPane,
-    SplitRight,
-    SplitDown,
-    Zoom,
-    ToggleRightClickPassthrough,
-    ClosePane,
-}
-
-#[derive(Debug)]
-pub(in crate::shell) enum ClientContextMenuTarget {
-    Workspace {
-        workspace_id: shepr_protocol::WorkspaceId,
-    },
-    Pane {
-        pane_id: shepr_protocol::PublicPaneId,
-        source_pane_id: Option<shepr_protocol::PublicPaneId>,
-        has_manual_label: bool,
-        right_click_passthrough: bool,
-    },
-}
-
-#[derive(Debug)]
-pub(in crate::shell) struct ClientContextMenuOverlay {
-    pub(in crate::shell) target: ClientContextMenuTarget,
-    pub(in crate::shell) x: u16,
-    pub(in crate::shell) y: u16,
-    pub(in crate::shell) highlighted: usize,
-}
-
-pub(in crate::shell) struct ClientContextMenuItem {
-    pub(in crate::shell) label: &'static str,
-    pub(in crate::shell) action: ClientContextMenuAction,
-}
-
-#[derive(Debug)]
-pub(in crate::shell) struct ClientConfirmCloseOverlay {
-    pub(in crate::shell) workspace_id: shepr_protocol::WorkspaceId,
-    pub(in crate::shell) title: String,
-    pub(in crate::shell) detail: String,
-    /// Cancelling returns to Navigate mode only when the dialog came from it;
-    /// otherwise the user lands back in the mode they were in.
-    pub(in crate::shell) return_to_navigate: bool,
-}
-
-#[derive(Debug)]
-pub(in crate::shell) enum ClientShellOverlay {
-    Rename(ClientRenameOverlay),
-    ConfirmClose(ClientConfirmCloseOverlay),
-    Help(ClientHelpOverlay),
-    Navigator(ClientNavigatorOverlay),
-    ContextMenu(ClientContextMenuOverlay),
-    GlobalMenu(ClientGlobalMenuOverlay),
-}
-
-impl ClientShellOverlay {
-    pub(in crate::shell) fn kind(&self) -> ClientShellOverlayKind {
-        match self {
-            Self::Rename(_) => ClientShellOverlayKind::Rename,
-            Self::ConfirmClose(_) => ClientShellOverlayKind::ConfirmClose,
-            Self::Help(_) => ClientShellOverlayKind::Help,
-            Self::Navigator(_) => ClientShellOverlayKind::Navigator,
-            Self::ContextMenu(_) => ClientShellOverlayKind::ContextMenu,
-            Self::GlobalMenu(_) => ClientShellOverlayKind::GlobalMenu,
-        }
-    }
-}
-
 /// Why an endpoint command failed: the client raises `Timeout`
 /// itself; every other failure is the server's own typed error.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -591,237 +183,54 @@ pub(crate) struct ClientPresentationLogContext {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::shell) struct ClientInputContext {
     pub(in crate::shell) mode: ClientShellMode,
-    pub(in crate::shell) overlay: Option<ClientShellOverlayKind>,
+    pub(in crate::shell) overlay: Option<OverlayKind>,
     pub(in crate::shell) retained_selection: bool,
 }
 
 type ClientInputLeases =
     shepr_termio::input::InputLeaseTable<u8, ClientInputContext, shepr_protocol::PublicPaneId>;
 
-#[derive(Clone, Debug)]
-pub(in crate::shell) struct ClientPaneClick {
-    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
-    pub(in crate::shell) viewport_row: u16,
-    pub(in crate::shell) col: u16,
-    pub(in crate::shell) at: std::time::Instant,
-}
-
-impl ClientPaneClick {
-    pub(in crate::shell) fn is_double_click_for(&self, next: &Self) -> bool {
-        self.pane_id == next.pane_id
-            && next.at.duration_since(self.at) <= crate::limits::DOUBLE_CLICK_WINDOW
-            && self.viewport_row.abs_diff(next.viewport_row) <= 1
-            && self.col.abs_diff(next.col) <= 1
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::shell) enum ClientSelectionAutoscrollDirection {
-    Up,
-    Down,
-}
-
-#[derive(Clone, Debug)]
-pub(in crate::shell) struct ClientSelectionAutoscroll {
-    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
-    pub(in crate::shell) direction: ClientSelectionAutoscrollDirection,
-    pub(in crate::shell) last_mouse_column: u16,
-    pub(in crate::shell) last_mouse_row: u16,
-    pub(in crate::shell) inner_rect: Rect,
-    pub(in crate::shell) offset_from_bottom: usize,
-    pub(in crate::shell) max_offset_from_bottom: usize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::shell) enum ClientCopySelection {
-    Character {
-        anchor: shepr_term::Point<shepr_term::AbsRow>,
-    },
-    Linewise {
-        anchor_row: shepr_term::AbsRow,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::shell) struct ClientCopySearchPrompt {
-    pub(in crate::shell) direction: shepr_protocol::command::PaneCopySearchDirection,
-    pub(in crate::shell) query: TextEditor,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::shell) enum ClientCopyOperation {
-    Motion(shepr_protocol::command::PaneCopyMotion),
-    Search {
-        query: TypedText,
-        direction: shepr_protocol::command::PaneCopySearchDirection,
-        repeat: bool,
-    },
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(in crate::shell) struct ClientCopySearchResult {
-    pub(in crate::shell) matches: Vec<shepr_protocol::command::PaneTextRange>,
-    pub(in crate::shell) total: usize,
-    /// Both indexes identify the same match in the returned window and full result set.
-    pub(in crate::shell) current: Option<shepr_protocol::command::PaneCopySearchPosition>,
-}
-
-/// One live search lifecycle: prompt, query, result projection and deferred-copy intent.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(in crate::shell) struct ClientCopySearch {
-    pub(in crate::shell) prompt: Option<ClientCopySearchPrompt>,
-    pub(in crate::shell) query: TypedText,
-    pub(in crate::shell) direction: Option<shepr_protocol::command::PaneCopySearchDirection>,
-    pub(in crate::shell) results: ClientCopySearchResult,
-    pub(in crate::shell) copy_after_result: bool,
-}
-
-impl ClientCopySearch {
-    pub(in crate::shell) fn clear_results(&mut self) {
-        self.results = ClientCopySearchResult::default();
-        self.copy_after_result = false;
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::shell) struct ClientCopyModeState {
-    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
-    pub(in crate::shell) scroll: shepr_term::ScrollMetrics,
-    pub(in crate::shell) geometry: (u16, u16),
-    pub(in crate::shell) alternate_screen_active: bool,
-    pub(in crate::shell) cursor: shepr_protocol::command::PaneTextPoint,
-    pub(in crate::shell) entry_offset_from_bottom: usize,
-    /// The anchor and selection shape drive the projected VT range in `MouseSelection`.
-    /// They are not a duplicate range: the projection changes as the copy cursor moves.
-    pub(in crate::shell) selection: Option<ClientCopySelection>,
-    pub(in crate::shell) search: Option<ClientCopySearch>,
-    /// Invalidates replies from searches canceled while their endpoint request is pending.
-    /// It survives clearing the optional search state so late replies stay stale.
-    pub(in crate::shell) operation_generation: u64,
-}
-
-/// The selected pane as the previously presented surface showed it. The selection
-/// invalidation needs only this, so no previous surface is cloned, and an in-place patch
-/// can capture it before changing the surface.
-pub(in crate::shell) enum PreviousPane {
-    /// Nothing was presented: nothing shows the selection's coordinates still describe
-    /// this pane's grid, and highlighting them could mark stale cells. Invalidate.
-    NoSurface,
-    /// No selection, or the pane is missing from a compared surface: keep it.
-    Absent,
-    /// Compare with the next surface.
-    Present(PaneFacts),
-}
-pub(in crate::shell) struct PaneFacts {
-    inner_width: u16,
-    inner_height: u16,
-    alternate_screen_active: bool,
-    content_revision: u64,
-}
-
 pub struct ClientShellState {
     /// The client loop's time for the event being handled, set on each event,
     /// so shell code that stamps deadlines never reads the clock itself.
     pub(crate) now: std::time::Instant,
     pub(in crate::shell) machine_diagnostics:
-        crate::shell::overlays::machine_diagnostics::MachineDiagnostics,
+        crate::shell::notices::machine_diagnostics::MachineDiagnostics,
     pub(in crate::shell) config: ClientShellConfig,
-    pub(in crate::shell) snapshot: Option<Arc<ClientShellSnapshot>>,
-    pub(in crate::shell) active_snapshot_generation: Option<u64>,
-    pub(in crate::shell) agent_panel_model:
-        crate::shell::navigation::aggregate_navigation::AgentPanelModel,
-    pub(in crate::shell) navigator_index:
-        crate::shell::navigation::aggregate_navigation::NavigatorIndex,
-    pub(in crate::shell) surfaces: PaneSurfaces,
+    pub(in crate::shell) presentation: Presentation,
     pub(in crate::shell) ledger: Ledger,
     pub(in crate::shell) scroll_lanes: ScrollLanes,
-    pub(in crate::shell) copy_pipeline: CopyPipeline,
-    /// Identifies the currently active endpoint and its boot, so a switch of endpoint or a
-    /// restart of its server is detectable when the next snapshot arrives.
-    pub(in crate::shell) active_boot_key: Option<ClientEndpointBootKey>,
     pub(in crate::shell) chrome: crate::shell::sidebar::chrome::ChromeLayout,
     pub(in crate::shell) agent_panel_sort_chrome:
         crate::shell::sidebar::chrome::Chrome<shepr_config::AgentPanelSortConfig>,
-    pub(in crate::shell) last_sidebar_divider_click: Option<std::time::Instant>,
-    pub(in crate::shell) chrome_drag: Option<ClientChromeDrag>,
-    pub(in crate::shell) workspace_press: Option<ClientWorkspacePress>,
-    pub(in crate::shell) workspace_scroll: usize,
-    pub(in crate::shell) agent_scroll: usize,
-    pub(in crate::shell) pending_agent_reveal: Option<Location>,
-    pub(in crate::shell) reveal_focused_workspace: bool,
-    pub(in crate::shell) last_composition: LastComposition,
-    pub(in crate::shell) last_composed_size: Option<(u16, u16)>,
-    pub(in crate::shell) last_composed_at: Option<std::time::Instant>,
+    pub(in crate::shell) pointer: Pointer,
+    pub(in crate::shell) sidebar_scroll: crate::shell::sidebar::scroll::SidebarScroll,
     pub(in crate::shell) mouse_selection: MouseSelection,
-    pub(in crate::shell) hits: ShellHitMap,
     pub(crate) endpoints: Endpoints,
-    pub(in crate::shell) collapsed_endpoints: HashSet<ClientEndpointId>,
-    /// This is the input-mode authority. A copy session can be parked while its pane
-    /// stays focused, so focus alone cannot say whether copy input is active.
-    pub(in crate::shell) mode: ClientShellMode,
-    /// Navigation remains active when no workspace target exists, so the preview is optional.
-    pub(in crate::shell) navigate_workspace_id: Option<PinnedLocation>,
+    pub(in crate::shell) mode: crate::shell::mode::ModeState,
     pub(in crate::shell) pending_workspace_highlight: Option<PendingWorkspaceHighlight>,
-    pub(in crate::shell) reveal_navigation_workspace: bool,
-    pub(in crate::shell) overlay: Option<ClientShellOverlay>,
-    pub(in crate::shell) previous_pane_id: Option<shepr_protocol::PublicPaneId>,
-    pub(in crate::shell) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
+    pub(in crate::shell) overlay: Option<Overlay>,
     /// Stored copy cursor state can survive while the Copy input mode is parked.
-    pub(in crate::shell) copy_mode: Option<ClientCopyModeState>,
-    pub(in crate::shell) host_mouse_pixels: Option<shepr_termio::input::mouse::HostPixels>,
+    pub(in crate::shell) copy: Option<CopySession>,
     pub(in crate::shell) input_leases: ClientInputLeases,
     /// Whether the host sends every key, text keys included, as an escape
     /// code with its release (kitty REPORT_ALL_KEYS). Set per host input batch.
     pub(in crate::shell) host_reports_all_keys: bool,
-    pub(in crate::shell) notices: crate::shell::overlays::notices::Notices,
+    pub(in crate::shell) notices: crate::shell::notices::Notices,
     pub(in crate::shell) outer_focused: Option<bool>,
     pub(in crate::shell) host_background: Option<shepr_term::host::RgbColor>,
-    pub(in crate::shell) endpoint_error: crate::shell::overlays::transient_error::TransientError,
-}
-
-/// Drops search matches whose rows scrolled out of history. They name rows
-/// that no longer exist, so they could never render or be copied; the oldest
-/// rows go first, so each dropped match was ahead of the current one in the
-/// server's global count.
-fn prune_evicted_search_matches(copy_mode: &mut ClientCopyModeState) {
-    let Some(search) = copy_mode.search.as_mut() else {
-        return;
-    };
-    let origin = copy_mode.scroll.history_origin;
-    let before = search.results.matches.len();
-    let current = search.results.current.and_then(|position| {
-        search
-            .results
-            .matches
-            .get(position.window_index)
-            .copied()
-            .map(|found| (found, position.global_index))
-    });
-    search
-        .results
-        .matches
-        .retain(|found| found.start.row >= origin);
-    let removed = before - search.results.matches.len();
-    if removed == 0 {
-        return;
-    }
-    search.results.total = search.results.total.saturating_sub(removed);
-    search.results.current = current.and_then(|(current, global_index)| {
-        search
-            .results
-            .matches
-            .iter()
-            .position(|found| *found == current)
-            .map(
-                |window_index| shepr_protocol::command::PaneCopySearchPosition {
-                    window_index,
-                    global_index: global_index.saturating_sub(removed),
-                },
-            )
-    });
+    pub(in crate::shell) endpoint_error: crate::shell::notices::transient_error::TransientError,
+    /// The host terminal's cell as the client last observed it. A pixel mouse
+    /// position is only built when it is exact.
+    pub(in crate::shell) host_cell: shepr_core::geometry::HostCell,
 }
 
 impl ClientShellState {
+    /// Records the host cell after each resize and at startup.
+    pub(crate) fn set_host_cell(&mut self, cell: shepr_core::geometry::HostCell) {
+        self.host_cell = cell;
+    }
+
     pub fn new_at(mut config: ClientShellConfig, now: std::time::Instant) -> Self {
         let preferences = config.preferences.clone();
         let overlay = None;
@@ -843,57 +252,31 @@ impl ClientShellState {
         config.agent_panel_sort = agent_panel_sort;
         let agent_panel_sort_chrome =
             crate::shell::sidebar::chrome::Chrome::new(agent_panel_sort, sort_origin);
-        let endpoints = vec![local_endpoint()];
-        let agent_panel_model =
-            crate::shell::navigation::aggregate_navigation::AgentPanelModel::build(
-                &endpoints, &config,
-            );
-        let navigator_index =
-            crate::shell::navigation::aggregate_navigation::NavigatorIndex::build(&endpoints);
+        let endpoints = Endpoints::new(vec![local_endpoint()], &config);
         Self {
             now,
             machine_diagnostics: Default::default(),
             config,
-            snapshot: None,
-            active_snapshot_generation: None,
-            agent_panel_model,
-            navigator_index,
-            surfaces: PaneSurfaces::default(),
+            presentation: Presentation::default(),
             ledger: Ledger::default(),
             scroll_lanes: ScrollLanes::default(),
-            copy_pipeline: CopyPipeline::default(),
-            active_boot_key: None,
             chrome,
             agent_panel_sort_chrome,
-            last_sidebar_divider_click: None,
-            chrome_drag: None,
-            workspace_press: None,
-            workspace_scroll: 0,
-            agent_scroll: 0,
-            pending_agent_reveal: None,
-            reveal_focused_workspace: true,
-            last_composition: LastComposition::default(),
-            last_composed_size: None,
-            last_composed_at: None,
+            pointer: Pointer::default(),
+            sidebar_scroll: crate::shell::sidebar::scroll::SidebarScroll::new(),
             mouse_selection: MouseSelection::default(),
-            hits: ShellHitMap::default(),
-            endpoints: Endpoints::new(endpoints),
-            collapsed_endpoints: HashSet::new(),
-            mode: ClientShellMode::Terminal,
-            navigate_workspace_id: None,
+            endpoints,
+            mode: crate::shell::mode::ModeState::default(),
             pending_workspace_highlight: None,
-            reveal_navigation_workspace: false,
             overlay,
-            previous_pane_id: None,
-            pane_mouse_gesture: None,
-            copy_mode: None,
-            host_mouse_pixels: None,
+            copy: None,
             input_leases: ClientInputLeases::default(),
             host_reports_all_keys: false,
             notices: Default::default(),
             outer_focused: None,
             host_background: None,
             endpoint_error: Default::default(),
+            host_cell: shepr_core::geometry::HostCell::Unknown,
         }
     }
 
@@ -909,16 +292,17 @@ impl ClientShellState {
         });
         if pane_ids.is_empty()
             && let Some(pane_id) = self
-                .snapshot
-                .as_deref()
+                .endpoints
+                .active
+                .snapshot()
                 .and_then(|snapshot| snapshot.focused_pane_id)
         {
             pane_ids.push(pane_id);
         }
-        let snapshot = self.snapshot.as_deref();
+        let snapshot = self.endpoints.active.snapshot();
         ClientPresentationLogContext {
             endpoint: self.endpoints.presented().clone(),
-            generation: self.active_snapshot_generation.map(Into::into),
+            generation: self.endpoints.active.generation(),
             boot_id: surface
                 .map(|surface| surface.boot_id.clone())
                 .or_else(|| snapshot.map(|snapshot| snapshot.boot_id.clone())),
@@ -930,75 +314,17 @@ impl ClientShellState {
         }
     }
 
-    pub(in crate::shell) fn reveal_workspace(
+    /// Asks the sidebar to reveal one of the presented endpoint's workspaces at its next
+    /// composition, uncollapsing the endpoint so the workspace has a row.
+    pub(in crate::shell) fn request_workspace_reveal(
         &mut self,
         workspace_id: &shepr_protocol::WorkspaceId,
     ) {
-        if self.endpoints.len() > 1 {
-            // The multi-endpoint sidebar scrolls a flattened row list with endpoint headers
-            // and workspace row gaps. An index in this endpoint's snapshot is not that list
-            // offset, so let the sidebar reveal the focused workspace from the next snapshot.
-            self.collapsed_endpoints.remove(self.endpoints.presented());
-            if self
-                .snapshot
-                .as_deref()
-                .and_then(|snapshot| snapshot.focused_workspace_id.as_ref())
-                == Some(workspace_id)
-            {
-                self.reveal_focused_workspace = true;
-            }
-            return;
-        }
-        if self.hits.workspaces.iter().any(|hit| {
-            hit.location.endpoint == *self.endpoints.presented()
-                && hit.location.workspace_id() == Some(*workspace_id)
-        }) {
-            return;
-        }
-        let target = self.snapshot.as_deref().and_then(|snapshot| {
-            snapshot
-                .workspaces
-                .iter()
-                .position(|workspace| workspace.workspace_id == *workspace_id)
-        });
-        let (Some(target), Some(snapshot)) = (target, self.snapshot.as_deref()) else {
-            return;
-        };
-        let row_heights = if self.chrome.collapsed() {
-            vec![1; snapshot.workspaces.len()]
-        } else {
-            snapshot
-                .workspaces
-                .iter()
-                .map(|workspace| {
-                    u16::try_from(
-                        crate::shell::sidebar::workspace_rows(
-                            workspace,
-                            workspace.agent_status,
-                            &self.config.spaces,
-                        )
-                        .len()
-                        .max(1),
-                    )
-                    .unwrap_or(u16::MAX)
-                })
-                .collect()
-        };
-        let mut gaps = if self.chrome.collapsed() {
-            vec![0; row_heights.len()]
-        } else {
-            vec![self.config.spaces.row_gap; row_heights.len()]
-        };
-        if let Some(last) = gaps.last_mut() {
-            *last = 0;
-        }
-        self.workspace_scroll = crate::shell::navigation::scroll::list_scroll_start_to_reveal(
-            &row_heights,
-            &gaps,
-            self.hits.workspace_body.height,
-            self.workspace_scroll,
-            target,
-        );
+        self.endpoints.expand_presented();
+        self.sidebar_scroll.reveal_workspace(Location::workspace(
+            self.endpoints.presented().clone(),
+            *workspace_id,
+        ));
     }
 
     pub(in crate::shell) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
@@ -1016,289 +342,21 @@ impl ClientShellState {
         .clamped()
     }
 
-    pub(in crate::shell) fn reset_endpoint_projection(&mut self) {
-        self.hits = ShellHitMap::default();
-        self.surfaces = PaneSurfaces::default();
-        self.input_leases = ClientInputLeases::default();
-        self.chrome_drag = None;
-        self.workspace_press = None;
-        self.workspace_scroll = 0;
-        self.agent_scroll = 0;
-        self.reveal_focused_workspace = true;
-        self.last_composition = LastComposition::default();
-        self.last_composed_size = None;
-        self.last_composed_at = None;
-        self.mouse_selection.clear();
-        self.drop_all_requests(DropReason::Reset);
-        self.scroll_lanes.clear();
-        self.notices.reset_endpoint();
-        self.endpoint_error.dismiss();
-        self.navigate_workspace_id = None;
-        self.pending_workspace_highlight = None;
-        self.overlay = None;
-        self.previous_pane_id = None;
-        self.pane_mouse_gesture = None;
-        self.mouse_selection.clear();
-        self.copy_mode = None;
-        if self.mode == ClientShellMode::Copy {
-            self.mode = ClientShellMode::Terminal;
-        }
-        self.reset_copy_pipeline();
-        self.host_mouse_pixels = None;
-    }
-
-    pub(in crate::shell) fn apply_active_snapshot(
-        &mut self,
-        snapshot: Arc<ClientShellSnapshot>,
-        generation: u64,
-    ) {
-        let active_boot_key = Some(ClientEndpointBootKey::new(
-            self.endpoints.presented(),
-            &snapshot.boot_id,
-        ));
-        let endpoint_boot_changed =
-            self.snapshot.is_some() && self.active_boot_key != active_boot_key;
-        let generation_changed = self.active_snapshot_generation != Some(generation);
-        if !endpoint_boot_changed
-            && !generation_changed
-            && self.snapshot.as_ref().is_some_and(|current| {
-                current.boot_id == snapshot.boot_id && snapshot.revision < current.revision
-            })
-        {
-            return;
-        }
-        // A new connection holds the last presented pair and keeps only a baseline it
-        // sent itself: its first surface may arrive before its first snapshot.
-        if generation_changed {
-            self.surfaces.snapshot_generation_changed(generation);
-        }
-        self.active_snapshot_generation = Some(generation);
-        self.active_boot_key = active_boot_key;
-        let boot_changed = endpoint_boot_changed
-            || self
-                .snapshot
-                .as_ref()
-                .is_some_and(|current| current.boot_id != snapshot.boot_id);
-        // The hit map describes the last composed frame, which stays on screen until the
-        // snapshot's matching surface is composed. Clicks are aimed at that frame, so its hits
-        // stay live through the gap: emptying them dropped clicks, made copy-mode entry fail
-        // silently, and let a click inside Help or the navigator close it. Targets the new
-        // snapshot removed are rejected by the endpoint like any other stale ID. A reboot is
-        // different (IDs can be reused), and `reset_endpoint_projection` clears the hits.
-        if boot_changed {
-            // A reboot must not turn Enter on a stale preview into focus on a reused ID.
-            let preview = (self.mode == ClientShellMode::Navigate)
-                .then(|| self.navigate_workspace_id.take())
-                .flatten();
-            // The reset drops everything presented, but not a baseline the incoming
-            // connection already sent for this boot: its next patch follows it.
-            let mut surfaces = std::mem::take(&mut self.surfaces);
-            surfaces.reset_for_boot(&snapshot.boot_id, generation);
-            self.reset_endpoint_projection();
-            self.surfaces = surfaces;
-            self.navigate_workspace_id = preview;
-        } else if let Some(previous) = self
-            .snapshot
-            .as_deref()
-            .and_then(|current| current.focused_pane_id.as_ref())
-            .filter(|previous| Some(*previous) != snapshot.focused_pane_id.as_ref())
-        {
-            self.previous_pane_id = Some(*previous);
-        }
-        if self
-            .snapshot
-            .as_deref()
-            .and_then(|current| current.focused_workspace_id.as_ref())
-            != snapshot.focused_workspace_id.as_ref()
-        {
-            self.reveal_focused_workspace = true;
-        }
-        let selection_focus_lost = if let Some(gesture) = self.mouse_selection.word_gesture.as_mut()
-        {
-            let focused_pane = snapshot.focused_pane_id.as_ref();
-            // Remember confirmed focus across intermediate snapshots with no
-            // focused pane, without rejecting the gesture's in-flight focus request.
-            gesture.focus_confirmed |= focused_pane == Some(&gesture.pane_id);
-            !snapshot
-                .panes
-                .iter()
-                .any(|pane| pane.pane_id == gesture.pane_id)
-                || (gesture.focus_confirmed
-                    && focused_pane.is_some_and(|pane_id| pane_id != &gesture.pane_id))
-        } else if let Some(selection) = self.mouse_selection.selection.as_ref() {
-            let focused_pane = snapshot.focused_pane_id.as_ref();
-            let focused_here = focused_pane == Some(&selection.pane_id);
-            // Like the word-gesture guard above: a selection started in an
-            // unfocused pane survives snapshots that predate its focus
-            // request, and only a focus change after that ends it.
-            let awaiting_focus = !focused_here
-                && self.mouse_selection.focus_pending.as_ref() == Some(&selection.pane_id);
-            if focused_here {
-                self.mouse_selection.focus_pending = None;
-            }
-            !snapshot
-                .panes
-                .iter()
-                .any(|pane| pane.pane_id == selection.pane_id)
-                || (!focused_here && !awaiting_focus)
-        } else {
-            false
-        };
-        if selection_focus_lost {
-            self.mouse_selection.clear();
-        }
-        // Snapshot reconciliation reactivates or parks the session as focus settles. A session
-        // can also be parked explicitly while its pane remains focused, so this is not derived
-        // from focus alone.
-        if let Some(copy_pane_id) = self.copy_mode.as_ref().map(|copy_mode| copy_mode.pane_id) {
-            let pane_exists = snapshot
-                .panes
-                .iter()
-                .any(|pane| pane.pane_id == copy_pane_id);
-            let pane_focused = self.copy_mode.as_ref().is_some_and(|copy_mode| {
-                copy_mode.pane_is_focused(snapshot.focused_pane_id.as_ref())
-            });
-            if !pane_exists {
-                // Queued copy-mode keys belonged to this removed pane. Replaying
-                // them as input into another pane would be dangerous.
-                self.copy_mode = None;
-                self.reset_copy_pipeline();
-                if self
-                    .mouse_selection
-                    .selection
-                    .as_ref()
-                    .is_some_and(|selection| selection.pane_id == copy_pane_id)
-                {
-                    self.mouse_selection.clear();
-                }
-                if self.mode == ClientShellMode::Copy {
-                    self.mode = ClientShellMode::Terminal;
-                }
-            } else if pane_focused {
-                if self.mode == ClientShellMode::Terminal {
-                    self.mode = ClientShellMode::Copy;
-                }
-                if self.mouse_selection.selection.is_none() {
-                    self.sync_copy_selection();
-                }
-            } else {
-                if self
-                    .mouse_selection
-                    .selection
-                    .as_ref()
-                    .is_some_and(|selection| selection.pane_id == copy_pane_id)
-                {
-                    self.mouse_selection.clear();
-                }
-                if self.mode == ClientShellMode::Copy {
-                    self.mode = ClientShellMode::Terminal;
-                }
-            }
-        }
-        if self.mode == ClientShellMode::Navigate && self.navigate_workspace_id.is_none() {
-            self.navigate_workspace_id = snapshot
-                .focused_workspace_id
-                .as_ref()
-                .and_then(|id| self.navigation_target(self.endpoints.presented(), id));
-        }
-        let pane_exists = |pane_id: &shepr_protocol::PublicPaneId| {
-            snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id)
-        };
-        self.scroll_lanes.retain_panes(pane_exists);
-
-        self.snapshot = Some(snapshot);
-        self.reconcile_pending_workspace_highlight();
-        self.pair_surfaces();
-    }
-
     /// The presented surface: what is on screen, possibly held while unpaired. Input
     /// reads this.
     pub(in crate::shell) fn pane_surface(&self) -> Option<&PaneSurfaceFrame> {
-        self.surfaces.presented()
+        self.presentation.surfaces.presented()
     }
 
     /// A full surface from the shown connection `generation`. It becomes the baseline
     /// (the reader enforces order and the shell mirrors it) and is presented once it
     /// pairs with that connection's snapshot, which may arrive after it.
-    pub(crate) fn receive_pane_surface_from(&mut self, surface: PaneSurfaceFrame, generation: u64) {
-        self.receive_tagged_pane_surface(surface, generation);
-    }
-
-    pub(in crate::shell) fn receive_tagged_pane_surface(
+    pub(crate) fn receive_pane_surface_from(
         &mut self,
         surface: PaneSurfaceFrame,
-        generation: surfaces::SurfaceGeneration,
+        generation: shepr_protocol::ConnectionGeneration,
     ) {
-        // Routing admits only the shown connection, and generations only grow. This is
-        // the guard behind it: a surface from an older connection than the snapshot or
-        // the baseline must not replace a newer connection's baseline.
-        let newest = self
-            .active_snapshot_generation
-            .max(self.surfaces.baseline_generation());
-        if Some(generation) < newest {
-            tracing::warn!(
-                ?generation,
-                ?newest,
-                "dropping a pane surface from an older connection"
-            );
-            return;
-        }
-        self.surfaces.receive(surface, generation);
-        self.pair_surfaces();
-    }
-
-    /// Pairs the baseline with the snapshot and, when that changes what is presented,
-    /// runs the presentation effects. The effects never read `self.surfaces`, so it is
-    /// moved out around them; a panic in between leaves `Empty`, a valid state.
-    fn pair_surfaces(&mut self) {
-        let Some(generation) = self.active_snapshot_generation else {
-            return;
-        };
-        let Some(snapshot) = self.snapshot.as_ref() else {
-            return;
-        };
-        if let Pairing::Presented { previous } =
-            self.surfaces
-                .pair(&snapshot.boot_id, snapshot.revision, generation)
-        {
-            let before = self.pane_facts_before(previous.as_ref());
-            let surfaces = std::mem::take(&mut self.surfaces);
-            if let Some(surface) = surfaces.paired() {
-                self.presented_surface_changed(before, surface);
-            }
-            self.surfaces = surfaces;
-        }
-    }
-
-    /// Captures the selected (or word-gesture) pane as `previous` showed it.
-    pub(in crate::shell) fn pane_facts_before(
-        &self,
-        previous: Option<&PaneSurfaceFrame>,
-    ) -> PreviousPane {
-        let pane_id = self
-            .mouse_selection
-            .word_gesture
-            .as_ref()
-            .map(|g| &g.pane_id)
-            .or_else(|| self.mouse_selection.selection.as_ref().map(|s| &s.pane_id));
-        let Some(pane_id) = pane_id else {
-            return PreviousPane::Absent;
-        };
-        let Some(surface) = previous else {
-            return PreviousPane::NoSurface;
-        };
-        surface
-            .panes
-            .iter()
-            .find(|p| &p.pane_id == pane_id)
-            .map_or(PreviousPane::Absent, |p| {
-                PreviousPane::Present(PaneFacts {
-                    inner_width: p.inner_rect.width,
-                    inner_height: p.inner_rect.height,
-                    alternate_screen_active: p.alternate_screen_active,
-                    content_revision: p.content_revision,
-                })
-            })
+        self.receive_tagged_pane_surface(surface, generation);
     }
 
     /// A presented surface or patch shows `scroll` for `pane`: a scroll target it shows
@@ -1317,105 +375,7 @@ impl ClientShellState {
         }
     }
 
-    /// Effects of a change to the presented surface, which the caller stores: invalidates
-    /// a selection or word gesture whose pane changed size or screen, drops scroll targets
-    /// the surface shows, and refreshes copy-mode geometry and clamping.
-    pub(in crate::shell) fn presented_surface_changed(
-        &mut self,
-        before: PreviousPane,
-        surface: &PaneSurfaceFrame,
-    ) {
-        let pane_id = self
-            .mouse_selection
-            .word_gesture
-            .as_ref()
-            .map(|g| &g.pane_id)
-            .or_else(|| self.mouse_selection.selection.as_ref().map(|s| &s.pane_id));
-        let next = pane_id.and_then(|id| surface.panes.iter().find(|p| &p.pane_id == id));
-        let selection_invalidated = match (before, next) {
-            (PreviousPane::NoSurface, _) => true,
-            (PreviousPane::Present(previous), Some(next)) => {
-                previous.inner_width != next.inner_rect.width
-                    || previous.inner_height != next.inner_rect.height
-                    || previous.alternate_screen_active != next.alternate_screen_active
-                    // Ordinary selections are live buffer ranges. Only word gestures
-                    // cache content-dependent boundaries that output can invalidate.
-                    || (self.mouse_selection.word_gesture.is_some()
-                        && previous.content_revision != next.content_revision)
-            }
-            _ => false,
-        };
-        if selection_invalidated {
-            self.mouse_selection.clear_range();
-        }
-        for pane in &surface.panes {
-            self.scroll_target_shown(&pane.pane_id, pane.scroll);
-        }
-        let mut invalidated_copy_pane = None;
-        let mut clamped_copy_coordinates = false;
-        if let Some(copy_mode) = self.copy_mode.as_mut()
-            && let Some(pane) = surface
-                .panes
-                .iter()
-                .find(|pane| pane.pane_id == copy_mode.pane_id)
-        {
-            let geometry = (pane.inner_rect.width, pane.inner_rect.height);
-            let coordinates_changed = copy_mode.geometry != geometry
-                || copy_mode.alternate_screen_active != pane.alternate_screen_active;
-            // Copy-mode points are absolute rows, so output alone moves nothing; a
-            // resize or a screen switch reflows or replaces the rows they name.
-            if coordinates_changed {
-                copy_mode.geometry = geometry;
-                copy_mode.alternate_screen_active = pane.alternate_screen_active;
-                copy_mode.selection = None;
-                invalidated_copy_pane = Some(copy_mode.pane_id);
-                if let Some(search) = copy_mode.search.as_mut() {
-                    search.clear_results();
-                }
-                copy_mode.operation_generation = copy_mode.operation_generation.saturating_add(1);
-            }
-            if let Some(scroll) = pane.scroll {
-                let offset = if self.scroll_lanes.target(&pane.pane_id).is_none() {
-                    scroll.offset_from_bottom
-                } else {
-                    copy_mode.scroll.offset_from_bottom
-                };
-                copy_mode.scroll = scroll.with_offset(offset);
-                let retained_cursor_row = copy_mode.retained_row(copy_mode.cursor.row);
-                clamped_copy_coordinates |= retained_cursor_row != copy_mode.cursor.row;
-                copy_mode.cursor.row = retained_cursor_row;
-                if let Some(mut selection) = copy_mode.selection {
-                    match &mut selection {
-                        ClientCopySelection::Character { anchor } => {
-                            let retained_row = copy_mode.retained_row(anchor.row);
-                            clamped_copy_coordinates |= retained_row != anchor.row;
-                            anchor.row = retained_row;
-                        }
-                        ClientCopySelection::Linewise { anchor_row } => {
-                            let retained_row = copy_mode.retained_row(*anchor_row);
-                            clamped_copy_coordinates |= retained_row != *anchor_row;
-                            *anchor_row = retained_row;
-                        }
-                    }
-                    copy_mode.selection = Some(selection);
-                }
-                prune_evicted_search_matches(copy_mode);
-            }
-        }
-        if clamped_copy_coordinates {
-            self.sync_copy_selection();
-        }
-        if invalidated_copy_pane.as_ref().is_some_and(|pane_id| {
-            self.mouse_selection
-                .selection
-                .as_ref()
-                .is_some_and(|selection| &selection.pane_id == pane_id)
-        }) {
-            self.mouse_selection.clear();
-        }
-    }
-
-    pub(crate) fn tick_selection_highlight(&mut self, now: std::time::Instant) -> bool {
+    pub(in crate::shell) fn tick_selection_highlight(&mut self, now: std::time::Instant) -> bool {
         let mut repaint = false;
         if self
             .mouse_selection
@@ -1552,7 +512,7 @@ fn repaint_timer_outcome(repaint: bool) -> ClientShellInput {
 
 #[cfg(test)]
 impl ClientShellInput {
-    pub(crate) fn into_parts(self) -> (bool, Vec<ClientShellAction>) {
+    pub(in crate::shell) fn into_parts(self) -> (bool, Vec<ClientShellAction>) {
         (self.repaint, self.actions)
     }
 }
@@ -1567,9 +527,8 @@ impl ClientShellState {
     /// Drops the retained pane surface, leaving `compose` on its no-surface placeholder. Resize
     /// and sidebar changes no longer do this (the retained surface is drawn clipped until the
     /// resized one arrives); tests use it to reach the placeholder.
-    pub(crate) fn invalidate_pane_surface(&mut self) {
-        self.surfaces = PaneSurfaces::default();
-        self.hits = ShellHitMap::default();
-        self.host_mouse_pixels = None;
+    pub(in crate::shell) fn invalidate_pane_surface(&mut self) {
+        self.presentation = Presentation::default();
+        self.pointer.host_mouse_pixels = None;
     }
 }

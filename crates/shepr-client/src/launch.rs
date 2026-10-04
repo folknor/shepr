@@ -1,12 +1,10 @@
-use crate::client_loop::ClientLoop;
+use crate::client_loop::{ClientLoop, EventQueue, HostCellReport, LoopSignals};
 use crate::endpoint::connection_io::{
     EndpointConnectionIo, LocalAttachFailure, attach_local_endpoint,
 };
 use crate::errors::{ClientExit, ClientRunError, LoopExit, endpoint_setup_launch_error};
 use crate::events::ClientLoopEvent;
-use crate::limits::CLIENT_EVENT_QUEUE_CAPACITY;
 use crate::loop_config::ClientSettings;
-use crate::reconcile::present_notice;
 use crate::shell_runtime::view_geometry;
 use crate::state::{ClientState, HostWriteFailure};
 use crate::terminal_geometry::{
@@ -15,15 +13,27 @@ use crate::terminal_geometry::{
     resize_poll_loop,
 };
 use crate::terminal_setup::{TerminalGuard, setup_terminal, should_draw_host_cursor};
-use crate::{
-    endpoint, fatal_panic, input, limits, shell, state, terminal_geometry, terminal_setup,
-};
+use crate::{endpoint, fatal_panic, input, shell, state, terminal_geometry, terminal_setup};
 use shepr_protocol::ClientMessage;
 use shepr_termio::blit as render_ansi;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tracing::{info, warn};
+
+/// Event queue capacity shared by host input, resize, endpoint readers, supervisors and quit.
+///
+/// The capacity absorbs short bursts without allowing unlimited event accumulation.
+const CLIENT_EVENT_QUEUE_CAPACITY: usize = 256;
+/// Bound runtime shutdown so terminal restoration and process exit are not held by idle tasks.
+///
+/// A brief drain window gives cooperative tasks time to finish without stalling exit.
+const CLIENT_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
+/// Bound SSH helper cleanup while the client is exiting.
+///
+/// The timeout allows ordinary helper teardown but keeps exit bounded.
+const SSH_RESOURCE_RELEASE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// What launch prepares before taking the terminal: settings, supervisors, the event channel
 /// and the first Local attachment. Every launch-fatal configuration and endpoint check runs
@@ -93,7 +103,7 @@ impl Launched {
                 accepted,
                 &event_tx,
                 endpoint::ClientEndpointId::Local,
-                local_generation.get(),
+                local_generation,
             )
             .map_err(LocalAttachFailure::Setup)
         });
@@ -115,6 +125,12 @@ impl Launched {
                         warn!(%error, "Local transport setup failed; keeping configured machines available");
                     }
                 }
+                // The Local endpoint's first status comes from this real
+                // attach, not from the launch's `LaunchError`: the binary
+                // prints a launch failure taken with machines configured as a
+                // notice before the terminal is taken, and the attach here
+                // yields its own typed `LocalAttachFailure`, so the status is
+                // not seeded from `LaunchError`.
                 LocalAtLaunch::Failed {
                     failure: failure.initial_failure(),
                     generation: local_generation,
@@ -204,10 +220,10 @@ pub(crate) fn run_launched_client(
         let _ = fatal.guard(|| guard.restore());
     }
     if let Some(runtime) = runtime_slot.take() {
-        fatal.guard(|| runtime.shutdown_timeout(limits::CLIENT_RUNTIME_SHUTDOWN_TIMEOUT));
+        fatal.guard(|| runtime.shutdown_timeout(CLIENT_RUNTIME_SHUTDOWN_TIMEOUT));
     }
     fatal.guard(|| {
-        shepr_remote::release_ssh_resources_before_exit(limits::SSH_RESOURCE_RELEASE_TIMEOUT);
+        shepr_remote::release_ssh_resources_before_exit(SSH_RESOURCE_RELEASE_TIMEOUT);
     });
     if let Some(diagnostic) = fatal.diagnostic() {
         fatal.guard(|| tracing::error!(diagnostic, "client panicked; exiting"));
@@ -318,6 +334,7 @@ impl Launched {
             }
         };
         state.set_host_size(cols, rows);
+        state.shell.set_host_cell(initial_geometry.cell());
         state.shell.set_machines(&machines);
         if let LocalLaunchState::Failed(failure) = &local_launch_state {
             let status = endpoint::EndpointFailureStatus::after_failure(failure);
@@ -338,7 +355,7 @@ impl Launched {
         query_host_terminal_appearance(&mut state.output_writer).map_err(LoopExit::HostTerminal)?;
         // Terminals that report no pixel size through the ioctl are asked directly
         // instead of falling back to an assumed cell size.
-        let will_query_host_cell_size = if initial_geometry.exact() {
+        let will_query_host_cell_size = if initial_geometry.cell().is_exact() {
             false
         } else {
             query_host_cell_size(&mut state.output_writer).map_err(LoopExit::HostTerminal)?
@@ -383,10 +400,10 @@ impl Launched {
         let write_stream = if let Some(attached) = initial {
             state
                 .shell
-                .endpoint_connected(&endpoint::ClientEndpointId::Local, local_generation.get());
+                .endpoint_connected(&endpoint::ClientEndpointId::Local, local_generation);
             let mut registry = endpoint::EndpointRegistry::new_at(
                 attached.activate(),
-                local_generation.get(),
+                local_generation,
                 launch_now,
             );
             registry.send_to(
@@ -409,9 +426,7 @@ impl Launched {
             // a failure is recorded as its outcome so the retry follows the normal backoff. An
             // unreached socket used no generation, so the supervisor attempts at once.
             let generation = match &local_launch_state {
-                LocalLaunchState::Attached | LocalLaunchState::Failed(_) => {
-                    Some(local_generation.get())
-                }
+                LocalLaunchState::Attached | LocalLaunchState::Failed(_) => Some(local_generation),
                 LocalLaunchState::Unreached => None,
             };
             supervisors.add_local(
@@ -424,7 +439,7 @@ impl Launched {
                 let status = endpoint::EndpointFailureStatus::after_failure(failure);
                 supervisors.record_status(
                     &endpoint::ClientEndpointId::Local,
-                    local_generation.get(),
+                    local_generation,
                     status.into(),
                     launch_now,
                 );
@@ -435,29 +450,28 @@ impl Launched {
                 if failure.disposition().needs_attention() {
                     warn!(endpoint = "local", error = %failure, "endpoint needs attention");
                 }
-                present_notice(
-                    &mut state,
-                    &shell::EndpointNotice::new(
-                        endpoint::ClientEndpointId::Local,
-                        shell::EndpointNoticeKind::StatusFailure(failure.to_string()),
-                    ),
-                );
+                state.present_notice(&shell::EndpointNotice::new(
+                    endpoint::ClientEndpointId::Local,
+                    shell::EndpointNoticeKind::StatusFailure(failure.to_string()),
+                ));
             }
             LocalLaunchState::Unreached => state.mark_chrome_dirty(),
             LocalLaunchState::Attached => {}
         }
         state.present_pending();
+        let hub = endpoint::EndpointHub::new(write_stream, supervisors, local_failure_policy);
         let client_loop = ClientLoop::new(
             state,
-            local_failure_policy,
-            should_quit,
-            fatal,
-            write_stream,
-            supervisors,
-            reported_cell_size,
-            event_tx,
-            event_rx,
-            will_query_host_cell_size,
+            hub,
+            LoopSignals { should_quit, fatal },
+            EventQueue {
+                tx: event_tx,
+                rx: event_rx,
+            },
+            HostCellReport {
+                size: reported_cell_size,
+                queried: will_query_host_cell_size,
+            },
         );
         Ok(client_loop)
     }
@@ -517,7 +531,7 @@ mod tests {
             "the server socket path fits"
         );
         assert!(
-            shepr_platform::validate_remote_bridge_endpoint_path(
+            shepr_remote::validate_remote_bridge_endpoint_path(
                 &root.join("runtime"),
                 "bridge.sock",
                 "b.sock"

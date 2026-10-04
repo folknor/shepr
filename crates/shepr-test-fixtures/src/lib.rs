@@ -66,6 +66,18 @@ pub fn fixed_boot_id(process_id: u32) -> shepr_protocol::BootId {
     shepr_protocol::BootId::from_process_clock(process_id, Ok(std::time::Duration::ZERO))
 }
 
+/// A wire counter (a revision, a generation, a sequence) at an arbitrary
+/// position, decoded from its wire value: the counters have no constructor
+/// from an integer, so tests that need a particular position take it here.
+///
+/// # Panics
+///
+/// Panics when `T` does not decode from a bare wire integer.
+pub fn counter_at<T: serde::de::DeserializeOwned>(value: u64) -> T {
+    shepr_protocol::codec::from_slice_exact(&encode_to_vec(&value).expect("counter encoding"))
+        .expect("counter decoding")
+}
+
 /// Encode `value` with the wire codec into a fresh buffer.
 pub fn encode_to_vec<T: serde::Serialize + ?Sized>(
     value: &T,

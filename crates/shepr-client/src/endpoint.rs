@@ -2,6 +2,7 @@ mod choice;
 pub(crate) mod commands;
 pub(crate) mod connection_io;
 mod health;
+mod hub;
 mod local_failure;
 mod message_policy;
 mod registry;
@@ -9,6 +10,7 @@ mod supervisor;
 pub mod view;
 
 pub use choice::*;
+pub(crate) use hub::{Admission, EndpointHub, HubEffect, SnapshotDirty};
 pub(crate) use local_failure::*;
 pub(crate) use message_policy::*;
 pub(crate) use registry::*;
@@ -35,6 +37,10 @@ impl ClientEndpointBootKey {
             endpoint_id: endpoint_id.clone(),
             boot_id: boot_id.clone(),
         }
+    }
+
+    pub(crate) fn endpoint_id(&self) -> &ClientEndpointId {
+        &self.endpoint_id
     }
 }
 
@@ -89,8 +95,8 @@ impl EndpointPolicy {
 
     pub(crate) fn handshake_read_timeout(self) -> std::time::Duration {
         match self {
-            Self::Local => crate::limits::LOCAL_HANDSHAKE_READ_TIMEOUT,
-            Self::Machine => crate::limits::REMOTE_HANDSHAKE_READ_TIMEOUT,
+            Self::Local => crate::handshake::LOCAL_HANDSHAKE_READ_TIMEOUT,
+            Self::Machine => crate::handshake::REMOTE_HANDSHAKE_READ_TIMEOUT,
         }
     }
 

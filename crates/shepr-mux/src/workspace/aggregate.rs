@@ -1,8 +1,4 @@
-use std::collections::HashMap;
-
-use crate::terminal::TerminalState;
 use shepr_agent::PresentedAgentState;
-use shepr_protocol::TerminalId;
 
 use super::Workspace;
 
@@ -16,15 +12,12 @@ impl Workspace {
     /// Aggregate agent state over every pane, preferring Blocked, then
     /// Working, then Idle. Unknown has already been presented as Idle, so the
     /// result cannot depend on which equal-attention pane a HashMap visits last.
-    pub fn aggregate_state(
-        &self,
-        terminals: &HashMap<TerminalId, TerminalState>,
-    ) -> PresentedAgentState {
-        aggregate_attention(self.panes.values().filter_map(|pane| {
-            terminals
-                .get(&pane.attached_terminal_id)
-                .map(|terminal| terminal.ownership().state().presentation_state())
-        }))
+    pub fn aggregate_state(&self) -> PresentedAgentState {
+        aggregate_attention(
+            self.tree
+                .panes()
+                .map(|(_, record)| record.terminal().ownership().state().presentation_state()),
+        )
     }
 }
 
@@ -35,22 +28,25 @@ mod tests {
 
     use super::*;
 
-    fn terminal_for_pane(ws: &Workspace, pane_id: PaneId) -> TerminalState {
-        TerminalState::new(
-            ws.terminal_id(pane_id).expect("test precondition").clone(),
-            "/shepr-aggregate-test".into(),
-        )
+    fn set_state(ws: &mut Workspace, pane: PaneId, state: AgentState) {
+        ws.pane_mut(pane)
+            .expect("test precondition")
+            .terminal_mut()
+            .ownership_mut()
+            .set_detected_state_with_screen_signals_at(
+                None,
+                state,
+                false,
+                false,
+                std::time::Instant::now(),
+            );
     }
 
     #[test]
     fn aggregate_state_all_unknown() {
         let ws = Workspace::test_new("test");
-        let mut terminals = HashMap::new();
-        let root = ws.root_pane;
-        let terminal = terminal_for_pane(&ws, root);
-        terminals.insert(terminal.id.clone(), terminal);
 
-        assert_eq!(ws.aggregate_state(&terminals), PresentedAgentState::Idle);
+        assert_eq!(ws.aggregate_state(), PresentedAgentState::Idle);
     }
 
     #[test]
@@ -78,62 +74,30 @@ mod tests {
     fn aggregate_state_collapses_unknown_and_idle_before_aggregation() {
         let mut ws = Workspace::test_new("test");
         let second = ws.test_split(Direction::Horizontal);
-        let first = ws
-            .panes
-            .keys()
-            .find(|id| **id != second)
-            .copied()
-            .expect("test precondition");
-        let mut terminals = HashMap::new();
-        let unknown = terminal_for_pane(&ws, first);
-        terminals.insert(unknown.id.clone(), unknown);
-        let mut idle = terminal_for_pane(&ws, second);
-        idle.ownership_mut()
-            .set_detected_state_with_screen_signals_at(
-                None,
-                AgentState::Idle,
-                false,
-                false,
-                std::time::Instant::now(),
-            );
-        terminals.insert(idle.id.clone(), idle);
+        set_state(&mut ws, second, AgentState::Idle);
 
-        assert_eq!(ws.aggregate_state(&terminals), PresentedAgentState::Idle);
+        assert_eq!(ws.aggregate_state(), PresentedAgentState::Idle);
     }
 
     #[test]
     fn blocked_state_beats_other_panes_in_a_split() {
         let mut ws = Workspace::test_new("test");
+        let first = ws.tree().root();
         let second = ws.test_split(Direction::Horizontal);
-        let first = ws
-            .panes
-            .keys()
-            .find(|id| **id != second)
-            .copied()
-            .expect("test precondition");
-        let mut terminals = HashMap::new();
-        let mut idle = terminal_for_pane(&ws, first);
-        idle.ownership_mut()
-            .set_detected_state_with_screen_signals_at(
-                None,
-                AgentState::Idle,
-                false,
-                false,
-                std::time::Instant::now(),
-            );
-        terminals.insert(idle.id.clone(), idle);
-        let mut blocked = terminal_for_pane(&ws, second);
-        blocked
-            .ownership_mut()
-            .set_detected_state_with_screen_signals_at(
-                None,
-                AgentState::Blocked,
-                false,
-                false,
-                std::time::Instant::now(),
-            );
-        terminals.insert(blocked.id.clone(), blocked);
+        set_state(&mut ws, first, AgentState::Idle);
+        set_state(&mut ws, second, AgentState::Blocked);
 
-        assert_eq!(ws.aggregate_state(&terminals), PresentedAgentState::Blocked);
+        assert_eq!(ws.aggregate_state(), PresentedAgentState::Blocked);
+    }
+
+    #[test]
+    fn working_state_beats_idle_in_a_split() {
+        let mut ws = Workspace::test_new("test");
+        let first = ws.tree().root();
+        let second = ws.test_split(Direction::Horizontal);
+        set_state(&mut ws, first, AgentState::Working);
+        set_state(&mut ws, second, AgentState::Idle);
+
+        assert_eq!(ws.aggregate_state(), PresentedAgentState::Working);
     }
 }

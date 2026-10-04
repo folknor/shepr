@@ -15,8 +15,8 @@ fn detection_capture(pane: &shepr_mux::pane::PaneRuntime) -> DetectionCapture {
     let inputs = pane.read().agent_detection_inputs();
     DetectionCapture {
         screen: inputs.screen_text,
-        osc_title: inputs.osc_title,
-        osc_progress: inputs.osc_progress,
+        osc_title: inputs.osc_title.unwrap_or_default(),
+        osc_progress: inputs.osc_progress.unwrap_or_default(),
     }
 }
 
@@ -26,20 +26,9 @@ impl App {
     /// when manifest work needs it. The screen is the whole detection snapshot,
     /// never the scrolled viewport.
     pub(super) fn handle_detect_capture(&mut self, target: &PaneTarget) -> ApiResult {
-        let Ok(public_id) = target.pane_id.parse::<shepr_protocol::PublicPaneId>() else {
-            return Err(ApiError::new(
-                ApiErrorCode::InvalidPaneId,
-                format!(
-                    "invalid pane id {:?}; expected w<workspace>:p<pane>",
-                    target.pane_id
-                ),
-            ));
-        };
-        let Some((ws_idx, pane_id)) = self.resolve_pane_id(&public_id) else {
-            return Err(pane_not_found(&target.pane_id));
-        };
-        let Some(pane) = self.lookup_runtime(ws_idx, pane_id) else {
-            return Err(self.detect_terminal_unavailable_error(ws_idx, pane_id, &target.pane_id));
+        let (public_id, pane_id) = self.json_pane_with_id(&target.pane_id)?;
+        let Some(pane) = self.lookup_runtime(pane_id) else {
+            return Err(self.detect_terminal_unavailable_error(pane_id, &target.pane_id));
         };
 
         success(ResponseResult::DetectCapture {
@@ -54,21 +43,15 @@ impl App {
     /// hook report, so it answers with that source instead of rule evidence.
     /// Either answer carries the pane's last parked or rejected hook report.
     pub(super) fn handle_detect_explain(&mut self, target: &PaneTarget) -> ApiResult {
-        let (ws_idx, pane_id) = self.json_pane(&target.pane_id)?;
-        let Some(terminal) = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|workspace| workspace.terminal_id(pane_id))
-            .and_then(|terminal_id| self.state.terminals.get(terminal_id))
-        else {
+        let pane_id = self.json_pane(&target.pane_id)?;
+        let Some(terminal) = self.state.terminal(pane_id) else {
             return Err(pane_not_found(&target.pane_id));
         };
         // Keep detect explain's runtime requirement even when hook authority
         // can describe the state; failed restores keep the same
         // pane_terminal_unavailable response as detect capture.
-        let Some(pane) = self.lookup_runtime(ws_idx, pane_id) else {
-            return Err(self.detect_terminal_unavailable_error(ws_idx, pane_id, &target.pane_id));
+        let Some(pane) = self.lookup_runtime(pane_id) else {
+            return Err(self.detect_terminal_unavailable_error(pane_id, &target.pane_id));
         };
         let now = self.clock.now;
         let last_unapplied_hook_report = terminal
@@ -117,8 +100,8 @@ impl App {
             agent,
             shepr_detect::manifest::DetectionInput {
                 screen: &capture.screen,
-                osc_title: &capture.osc_title,
-                osc_progress: &capture.osc_progress,
+                osc_title: capture.osc_title_evidence(),
+                osc_progress: capture.osc_progress_evidence(),
             },
         );
         success(ResponseResult::DetectExplain {
@@ -129,16 +112,12 @@ impl App {
 
     fn detect_terminal_unavailable_error(
         &self,
-        ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
         public_pane_id: &str,
     ) -> ApiError {
         let restore_failure = self
             .state
-            .workspaces
-            .get(ws_idx)
-            .and_then(|workspace| workspace.terminal_id(pane_id))
-            .and_then(|terminal_id| self.state.terminals.get(terminal_id))
+            .terminal(pane_id)
             .and_then(|terminal| terminal.restore_error());
         let message = match restore_failure {
             Some(failure) => format!("pane {public_pane_id} has no running terminal: {failure}"),
@@ -155,15 +134,11 @@ mod tests {
     use shepr_agent::{Agent, AgentState};
     use shepr_api::schema::{AppMethod, AppRequest, PaneTarget};
 
-    fn app_with_pane(name: &str) -> (App, shepr_core::layout::PaneId) {
-        let mut app = App::new(
-            &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Suspended,
-        );
+    fn app_with_pane(name: &str) -> (crate::app::TestApp, shepr_core::layout::PaneId) {
+        let mut app = App::new(&shepr_config::ServerConfig::default());
         app.state
             .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new(name)]);
-        app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].root_pane();
+        let pane_id = app.state.ws(0).tree().root();
         (app, pane_id)
     }
 
@@ -178,13 +153,8 @@ mod tests {
     #[tokio::test]
     async fn explain_evaluates_with_server_manifest_cache() {
         let (mut app, pane_id) = app_with_pane("detect-explain");
-        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
         app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
+            .terminal_mut(pane_id)
             .ownership_mut()
             .set_detected_agent_process_at(Agent::Codex, std::time::Instant::now());
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
@@ -192,10 +162,12 @@ mod tests {
             24,
             b"press enter to confirm or esc to cancel",
         );
-        app.terminal_runtimes.insert(terminal_id, runtime);
+        app.terminal_runtimes.insert(pane_id, runtime);
         let pane = app
-            .public_pane_id(0, pane_id)
+            .state
+            .pane(pane_id)
             .expect("test precondition")
+            .public_id()
             .to_string();
 
         let response = request(
@@ -215,23 +187,20 @@ mod tests {
     #[tokio::test]
     async fn capture_reads_the_snapshot_that_explain_evaluates() {
         let (mut app, pane_id) = app_with_pane("detect-capture");
-        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
         app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
+            .terminal_mut(pane_id)
             .ownership_mut()
             .set_detected_agent_process_at(Agent::Codex, std::time::Instant::now());
         let runtime =
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"captured screen");
         runtime.test_process_pty_bytes(b"\x1b]2;Action Required\x1b\\\x1b]9;4;3;\x1b\\");
         let detection_text = runtime.read().detection_text();
-        app.terminal_runtimes.insert(terminal_id, runtime);
+        app.terminal_runtimes.insert(pane_id, runtime);
         let pane = app
-            .public_pane_id(0, pane_id)
+            .state
+            .pane(pane_id)
             .expect("test precondition")
+            .public_id()
             .to_string();
 
         let capture = request(
@@ -248,7 +217,7 @@ mod tests {
             Some(detection_text.as_str())
         );
         assert_eq!(capture["result"]["capture"]["osc_title"], "Action Required");
-        assert_eq!(capture["result"]["capture"]["osc_progress"], "4;3;");
+        assert_eq!(capture["result"]["capture"]["osc_progress"], "4;3");
         assert!(
             detection_text.contains("captured screen"),
             "{detection_text:?}"
@@ -269,15 +238,14 @@ mod tests {
     #[tokio::test]
     async fn capture_works_on_a_pane_with_no_detected_agent() {
         let (mut app, pane_id) = app_with_pane("detect-capture-plain");
-        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
         let runtime =
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"an unknown agent");
-        app.terminal_runtimes.insert(terminal_id, runtime);
+        app.terminal_runtimes.insert(pane_id, runtime);
         let pane = app
-            .public_pane_id(0, pane_id)
+            .state
+            .pane(pane_id)
             .expect("test precondition")
+            .public_id()
             .to_string();
 
         let capture = request(
@@ -305,17 +273,10 @@ mod tests {
     #[tokio::test]
     async fn detect_rejects_an_unknown_pane_and_resolves_no_agent_labels() {
         let (mut app, pane_id) = app_with_pane("detect-unknown");
-        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
-        let terminal = app
-            .state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition");
+        let terminal = app.state.terminal_mut(pane_id);
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
         app.terminal_runtimes.insert(
-            terminal_id,
+            pane_id,
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
         );
 
@@ -342,21 +303,16 @@ mod tests {
     #[tokio::test]
     async fn detect_on_a_pane_without_a_terminal_reports_why_it_has_none() {
         let (mut app, pane_id) = app_with_pane("detect-no-terminal");
-        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
-        let terminal = app
-            .state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition");
+        let terminal = app.state.terminal_mut(pane_id);
         terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
         terminal.record_start_failure(shepr_mux::terminal::PaneStartFailure::shell_start_failed(
             &std::io::Error::from(std::io::ErrorKind::NotFound),
         ));
         let pane = app
-            .public_pane_id(0, pane_id)
+            .state
+            .pane(pane_id)
             .expect("test precondition")
+            .public_id()
             .to_string();
 
         for method in [
@@ -405,21 +361,18 @@ mod tests {
     #[tokio::test]
     async fn explain_shows_the_last_rejected_hook_report_until_one_applies() {
         let (mut app, pane_id) = app_with_pane("detect-explain-rejected");
-        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
         app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
+            .terminal_mut(pane_id)
             .set_detected_state(Some(Agent::Codex), AgentState::Idle);
         app.terminal_runtimes.insert(
-            terminal_id,
+            pane_id,
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
         );
         let pane = app
-            .public_pane_id(0, pane_id)
+            .state
+            .pane(pane_id)
             .expect("test precondition")
+            .public_id()
             .to_string();
 
         // Codex state reports must name their session; this one does not.
@@ -467,14 +420,7 @@ mod tests {
     #[tokio::test]
     async fn explain_reports_the_hook_authority_skip_for_a_hook_owned_pane() {
         let (mut app, pane_id) = app_with_pane("detect-explain-omp");
-        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
-        let terminal = app
-            .state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition");
+        let terminal = app.state.terminal_mut(pane_id);
         // Full lifecycle authority needs a live detected agent and an anchored
         // session, exactly as a real hook-owned pane has.
         let scratch = ScratchDir::new("detect-explain-omp-session");
@@ -504,12 +450,14 @@ mod tests {
             )
             .expect("test precondition");
         app.terminal_runtimes.insert(
-            terminal_id,
+            pane_id,
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
         );
         let pane = app
-            .public_pane_id(0, pane_id)
+            .state
+            .pane(pane_id)
             .expect("test precondition")
+            .public_id()
             .to_string();
 
         let response = request(

@@ -1,14 +1,14 @@
 use crate::endpoint::EndpointChoice;
+use crate::endpoint::EndpointHub;
 use crate::endpoint::EndpointRegistry;
 use crate::endpoint::commands::EndpointCommandCancellation;
-use crate::endpoint::commands::EndpointCommands;
-use crate::shell::endpoints::ClientEndpointFocusTarget;
-use crate::shell::ledger::{DropReason, Work};
-use crate::shell::overlays::notices::ClientEndpointNoticeKind;
-use crate::shell::state::{
-    ClientCopyOperation, ClientCopySearch, ClientRenameTarget, ClientShellConfig,
-    ClientShellOverlay,
-};
+use crate::shell::config::ClientShellConfig;
+use crate::shell::copy::{ClientCopyOperation, ClientCopySearch};
+use crate::shell::ledger::{DropReason, Submitted, Work};
+use crate::shell::navigation::location::{Location, LocationTarget};
+use crate::shell::notices::ClientEndpointNoticeKind;
+use crate::shell::overlays::Overlay;
+use crate::shell::overlays::rename::RenameTarget;
 use crossterm::event::{KeyCode, KeyModifiers};
 use shepr_config::ClientConfig;
 use shepr_protocol::command::EndpointCommand;
@@ -29,7 +29,14 @@ use crate::endpoint::ClientEndpointId;
 fn pending_request() -> (ClientShellState, Vec<ClientShellAction>) {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     submit_request(state)
 }
 
@@ -53,7 +60,14 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
         let mut state =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
-        state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+        state.receive_pane_surface_from(
+            surface(),
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
         let pane_id = test_pane_id("w1:p1");
         let mut first = ClientShellInput::default();
         state.push_pane_scroll_offset(pane_id, 3, &mut first);
@@ -63,7 +77,7 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
         assert!(queued.actions.is_empty());
         assert_eq!(state.scroll_lanes.queued(&pane_id), Some(7));
         if missing_snapshot {
-            state.snapshot = None;
+            state.endpoints.active.clear_snapshot();
         }
 
         assert_eq!(
@@ -88,7 +102,14 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
 fn mismatched_boot_scroll_result_rolls_back_queued_scroll_state() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     let pane_id = test_pane_id("w1:p1");
     let mut first = ClientShellInput::default();
     state.push_pane_scroll_offset(pane_id, 3, &mut first);
@@ -116,7 +137,14 @@ fn mismatched_boot_scroll_result_rolls_back_queued_scroll_state() {
 fn disconnecting_a_pending_scroll_does_not_show_an_interrupted_action_notice() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     let pane_id = test_pane_id("w1:p1");
     let mut first = ClientShellInput::default();
     state.push_pane_scroll_offset(pane_id, 3, &mut first);
@@ -156,26 +184,21 @@ impl crate::endpoint::EndpointTransport for TestTransport {
 
 #[test]
 fn a_pick_is_applied_at_once_without_an_event_round_trip() {
-    let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
-    let mut commands = EndpointCommands::default();
+    let mut hub = EndpointHub::for_registry(EndpointRegistry::new(
+        TestTransport { fail: false },
+        crate::tests::test_generation(1),
+    ));
     let choice = EndpointChoice::waiting_for(ClientEndpointId::Local);
     let mut shell = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     shell.endpoints.choice = choice;
-    crate::shell_runtime::dispatch_client_shell_actions(
-        vec![ClientShellAction::ActivateEndpoint {
-            endpoint_id: ClientEndpointId::Local,
-            target: Some(ClientEndpointFocusTarget::Workspace(
-                shepr_test_fixtures::id("w1"),
-            )),
-        }],
-        &mut commands,
-        &mut endpoints,
-        &mut std::io::sink(),
-        false,
+    hub.dispatch(
         &mut shell,
+        vec![ClientShellAction::ActivateEndpoint(Location {
+            endpoint: ClientEndpointId::Local,
+            target: LocationTarget::Workspace(shepr_test_fixtures::id("w1")),
+        })],
         std::time::Instant::now(),
-    )
-    .expect("dispatch writes nothing to the host");
+    );
     assert_eq!(
         shell
             .endpoints
@@ -191,8 +214,10 @@ fn a_pick_is_applied_at_once_without_an_event_round_trip() {
 #[test]
 fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
     for shown in [false, true] {
-        let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
-        let mut commands = EndpointCommands::default();
+        let mut hub = EndpointHub::for_registry(EndpointRegistry::new(
+            TestTransport { fail: false },
+            crate::tests::test_generation(1),
+        ));
         let choice = if shown {
             EndpointChoice::showing(ClientEndpointId::Local)
         } else {
@@ -202,12 +227,15 @@ fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
             choice.begin_preparing(
                 crate::endpoint::ViewLease {
                     endpoint_id: ClientEndpointId::Local,
-                    generation: 1,
+                    generation: crate::tests::test_generation(1),
                     boot_id: crate::tests::test_boot_id("boot-1"),
-                    minimum_revision: 1.into(),
+                    minimum_revision: shepr_protocol::ProjectionRevision::FIRST,
                 },
-                "client-shell-view:1:on".into(),
-                shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false),
+                shepr_protocol::RequestId::allocate(),
+                shepr_protocol::TerminalGeometry::from_host(
+                    shepr_core::geometry::GridSize::clamped(80, 24),
+                    shepr_core::geometry::HostCell::from_host(8, 16, false),
+                ),
                 std::time::Instant::now(),
             );
             choice.fail_move();
@@ -216,26 +244,20 @@ fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
                     .pending_start()
                     .expect("failed proof")
                     .failed_generation,
-                Some(1)
+                Some(crate::tests::test_generation(1))
             );
             choice
         };
         let mut shell =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         shell.endpoints.choice = choice;
-        crate::shell_runtime::dispatch_client_shell_actions(
-            vec![ClientShellAction::ActivateEndpoint {
-                endpoint_id: ClientEndpointId::Local,
-                target: None,
-            }],
-            &mut commands,
-            &mut endpoints,
-            &mut std::io::sink(),
-            false,
+        hub.dispatch(
             &mut shell,
+            vec![ClientShellAction::ActivateEndpoint(Location::machine(
+                ClientEndpointId::Local,
+            ))],
             std::time::Instant::now(),
-        )
-        .expect("dispatch writes nothing to the host");
+        );
         if shown {
             assert!(shell.endpoints.choice.pending_start().is_none());
             assert_eq!(
@@ -259,24 +281,17 @@ fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
 #[test]
 fn dispatcher_cancels_pending_requests_on_an_unviewed_endpoint_or_failed_send() {
     use crate::endpoint::EndpointRegistry;
-    use crate::endpoint::commands::EndpointCommands;
 
     for fail_send in [false, true] {
         let (mut state, actions) = pending_request();
-        let mut endpoints = EndpointRegistry::new(TestTransport { fail: fail_send }, 1);
+        let mut endpoints = EndpointRegistry::new(
+            TestTransport { fail: fail_send },
+            crate::tests::test_generation(1),
+        );
         endpoints.set_viewed(&ClientEndpointId::Local, fail_send);
-        let mut commands = EndpointCommands::default();
-        let repaint = crate::shell_runtime::dispatch_client_shell_actions(
-            actions,
-            &mut commands,
-            &mut endpoints,
-            &mut std::io::sink(),
-            false,
-            &mut state,
-            std::time::Instant::now(),
-        )
-        .expect("dispatch writes nothing to the host");
-        assert!(repaint.is_needed());
+        let mut hub = EndpointHub::for_registry(endpoints);
+        let dispatched = hub.dispatch(&mut state, actions, std::time::Instant::now());
+        assert!(dispatched.repaint.is_needed());
         assert!(state.ledger.is_empty());
         // A request refused before it entered the send queue has a known
         // outcome and is not reported as interrupted; one whose send failed
@@ -289,7 +304,7 @@ fn dispatcher_cancels_pending_requests_on_an_unviewed_endpoint_or_failed_send() 
             fail_send
         );
         assert_eq!(
-            commands.disconnect(&ClientEndpointId::Local),
+            hub.commands_mut().disconnect(&ClientEndpointId::Local),
             crate::endpoint::commands::EndpointCommandCancellation::default()
         );
     }
@@ -302,12 +317,14 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
 
     let (mut state, actions) = pending_request();
     let stale_id = request_id(&actions).to_owned();
-    let current = state.focus_endpoint_target(ClientEndpointFocusTarget::Workspace(
-        shepr_test_fixtures::id("w1"),
-    ));
+    let current =
+        state.focus_endpoint_target(LocationTarget::Workspace(shepr_test_fixtures::id("w1")));
     let current_id = request_id(&current).to_owned();
     let mut commands = EndpointCommands::default();
-    for (generation, actions) in [(1, actions), (2, current)] {
+    for (generation, actions) in [
+        (crate::tests::test_generation(1), actions),
+        (crate::tests::test_generation(2), current),
+    ] {
         for action in actions {
             let ClientShellAction::Endpoint {
                 endpoint_id,
@@ -320,7 +337,10 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
             commands.enqueue(endpoint_id, generation, boot_id, request);
         }
     }
-    let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 2);
+    let mut endpoints = EndpointRegistry::new(
+        TestTransport { fail: false },
+        crate::tests::test_generation(2),
+    );
     let cancelled = commands.send_next(
         &ClientEndpointId::Local,
         &mut endpoints,
@@ -334,7 +354,7 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
         commands
             .receive_response(
                 &ClientEndpointId::Local,
-                1,
+                crate::tests::test_generation(1),
                 &crate::tests::test_boot_id("boot-1"),
                 &stale_id,
                 Ok(EndpointReply::Done)
@@ -345,14 +365,14 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
         commands
             .receive_response(
                 &ClientEndpointId::Local,
-                2,
+                crate::tests::test_generation(2),
                 &crate::tests::test_boot_id("boot-1"),
                 &current_id,
                 Ok(EndpointReply::Done)
             )
             .is_some()
     );
-    assert!(state.ledger.contains(current_id.as_str()));
+    assert!(state.ledger.contains(&current_id));
 }
 
 #[test]
@@ -361,37 +381,27 @@ fn an_expired_command_is_settled_even_when_its_connection_was_lost_first() {
 
     for connection_lost in [false, true] {
         let (mut state, actions) = pending_request();
-        let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
-        let mut commands = EndpointCommands::default();
-        for action in actions {
-            let ClientShellAction::Endpoint {
-                endpoint_id,
-                boot_id,
-                request,
-            } = action
-            else {
-                panic!("expected endpoint request");
-            };
-            commands.enqueue(endpoint_id, 1, boot_id, request);
-        }
+        let mut hub = EndpointHub::for_registry(EndpointRegistry::new(
+            TestTransport { fail: false },
+            crate::tests::test_generation(1),
+        ));
+        // The dispatch enqueues the request in the shown endpoint's lane and sends it.
         let sent_at = std::time::Instant::now();
-        let cancelled = commands.send_next(&ClientEndpointId::Local, &mut endpoints, sent_at);
-        assert_eq!(cancelled, EndpointCommandCancellation::default());
+        let dispatched = hub.dispatch(&mut state, actions, sent_at);
+        assert!(!dispatched.repaint.is_needed());
         assert!(!state.ledger.is_empty());
         if connection_lost {
             // A failed health check on the same timer tick removes the connection before the
             // command expires; the lane disconnect comes only with the next reconcile.
-            endpoints.fail(
+            hub.registry_mut().fail(
                 &ClientEndpointId::Local,
                 &std::io::Error::new(std::io::ErrorKind::TimedOut, "health check timed out"),
             );
         }
 
-        let outcome = crate::shell_runtime::settle_expired_endpoint_commands(
-            &mut commands,
-            &endpoints,
+        let outcome = hub.settle_expired(
             &mut state,
-            sent_at + crate::limits::ENDPOINT_COMMAND_TIMEOUT,
+            sent_at + crate::endpoint::commands::ENDPOINT_COMMAND_TIMEOUT,
         );
 
         assert!(outcome.repaint);
@@ -404,7 +414,7 @@ fn an_expired_command_is_settled_even_when_its_connection_was_lost_first() {
         };
         assert_eq!(title, Some(expected));
         assert_eq!(
-            commands.disconnect(&ClientEndpointId::Local),
+            hub.commands_mut().disconnect(&ClientEndpointId::Local),
             EndpointCommandCancellation::default()
         );
     }
@@ -414,7 +424,14 @@ fn an_expired_command_is_settled_even_when_its_connection_was_lost_first() {
 fn failed_selection_copy_does_not_send_terminal_input() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.mouse_selection.selection = Some(shepr_term::selection::Selection::range(
         test_pane_id("w1:p1"),
         shepr_term::Point::new(shepr_term::AbsRow(0), 0),
@@ -471,7 +488,7 @@ fn server_errors_become_unavailable_or_rejected_notices() {
 
     let (kind, code, title, body) = answer(EndpointError::ShuttingDown);
     assert_eq!(kind, ClientEndpointNoticeKind::Unavailable);
-    assert_eq!(code, crate::shell::overlays::notices::NoticeCode::Server);
+    assert_eq!(code, crate::shell::notices::NoticeCode::Server);
     assert_eq!(title, "Server unavailable");
     assert_eq!(body, EndpointError::ShuttingDown.to_string());
 
@@ -489,7 +506,7 @@ fn server_errors_become_unavailable_or_rejected_notices() {
         assert_eq!(kind, ClientEndpointNoticeKind::Rejected);
         assert_eq!(
             code,
-            crate::shell::overlays::notices::NoticeCode::Command(
+            crate::shell::notices::NoticeCode::Command(
                 shepr_protocol::command::CommandKind::WorkspaceRename
             )
         );
@@ -501,7 +518,13 @@ fn server_errors_become_unavailable_or_rejected_notices() {
 fn ready_shell() -> ClientShellState {
     let mut s = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     s.set_snapshot(Box::new(snapshot()));
-    s.receive_pane_surface_from(surface(), s.active_snapshot_generation.unwrap_or(1));
+    s.receive_pane_surface_from(
+        surface(),
+        s.endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     s.compose(106, 20).expect("compose");
     s
 }
@@ -545,7 +568,7 @@ fn start_scroll(s: &mut ClientShellState, offset: usize) -> shepr_protocol::Requ
     request_id(&out.actions).to_owned()
 }
 fn start_word(s: &mut ClientShellState) -> shepr_protocol::RequestId {
-    let hit = s.hits.panes[0].clone();
+    let hit = s.pane_hits()[0].clone();
     let mut out = ClientShellInput::default();
     s.request_word_selection(&hit, hit.scroll.expect("scroll"), 0, 1, &mut out);
     request_id(&out.actions).to_owned()
@@ -562,18 +585,21 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
         let id = match kind {
             0 | 1 => {
                 let mut out = ClientShellInput::default();
-                s.submit(
-                    EndpointCommand::PaneFocus(shepr_protocol::command::PaneTarget {
-                        pane_id: test_pane_id("w1:p1"),
-                    }),
-                    if kind == 0 {
-                        Work::Plain
-                    } else {
-                        Work::SelectionCopy
-                    },
-                    &mut out,
-                )
-                .expect("submit")
+                assert_eq!(
+                    s.submit(
+                        EndpointCommand::PaneFocus(shepr_protocol::command::PaneTarget {
+                            pane_id: test_pane_id("w1:p1"),
+                        }),
+                        if kind == 0 {
+                            Work::Plain
+                        } else {
+                            Work::SelectionCopy
+                        },
+                        &mut out,
+                    ),
+                    Submitted::Opened
+                );
+                request_id(&out.actions).to_owned()
             }
             2 => start_label(&mut s),
             3 => {
@@ -593,16 +619,24 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
             _ => copy_search(&mut s),
         };
         if matches!(kind, 5 | 6) {
-            s.copy_pipeline.push_key(shepr_term::key::TerminalKey::new(
-                KeyCode::Char('j'),
-                KeyModifiers::empty(),
-            ));
-            s.copy_pipeline.push_op(ClientCopyOperation::Motion(
-                shepr_protocol::command::PaneCopyMotion::Word(
-                    shepr_protocol::command::PaneWordMotion::NextStart,
-                ),
-            ));
-            s.copy_mode
+            s.copy
+                .as_mut()
+                .expect("a live copy session")
+                .pipeline_mut()
+                .push_key(shepr_term::key::TerminalKey::new(
+                    KeyCode::Char('j'),
+                    KeyModifiers::empty(),
+                ));
+            s.copy
+                .as_mut()
+                .expect("a live copy session")
+                .pipeline_mut()
+                .push_op(ClientCopyOperation::Motion(
+                    shepr_protocol::command::PaneCopyMotion::Word(
+                        shepr_protocol::command::PaneWordMotion::NextStart,
+                    ),
+                ));
+            s.copy
                 .as_mut()
                 .expect("copy")
                 .search
@@ -611,20 +645,17 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
         }
         let count = s.ledger.len();
         assert!(count > 0);
-        let mark = s.ledger.mark();
         s.drop_request(&id, DropReason::Unsent);
+        // Nothing removes an orphan: a rollback that opened a request would leave it here.
         assert_eq!(s.ledger.len(), count - 1);
-        // The rollback opened no request, not even one the drop path then removed as an
-        // orphan: the ledger issued no serial across the drop.
-        assert_eq!(s.ledger.mark(), mark, "rollback must not open requests");
         match kind {
             2 => {
-                let Some(ClientShellOverlay::Rename(rename)) = &s.overlay else {
+                let Some(Overlay::Rename(rename)) = &s.overlay else {
                     panic!("overlay")
                 };
                 assert!(matches!(
                     &rename.target,
-                    ClientRenameTarget::NewWorkspace {
+                    RenameTarget::NewWorkspace {
                         label_lookup: None,
                         ..
                     }
@@ -633,11 +664,11 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
             3 => assert!(s.scroll_lanes.is_idle()),
             4 => assert!(s.mouse_selection.word_gesture.is_none()),
             5 | 6 => {
-                assert!(!s.copy_pipeline.in_flight());
-                assert!(s.copy_pipeline.ops_is_empty());
-                assert!(s.copy_pipeline.keys_is_empty());
+                assert!(!s.copy_in_flight());
+                assert!(s.copy_ops_empty());
+                assert!(s.copy_keys_empty());
                 assert!(
-                    !s.copy_mode
+                    !s.copy
                         .as_ref()
                         .expect("copy")
                         .search
@@ -653,22 +684,35 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
 fn an_ignored_answer_still_reports_its_server_error() {
     let mut s = copy_shell();
     let old = copy_search(&mut s);
-    s.reset_copy_pipeline();
+    s.copy
+        .as_mut()
+        .expect("a live copy session")
+        .pipeline_mut()
+        .reset();
     let current = s.handle_input_bytes(b"w");
     let current = request_id(&current.actions).to_owned();
     let out = answer(&mut s, &old, Err(ClientShellEndpointError::Timeout));
     assert!(out.repaint);
     assert!(out.actions.is_empty());
-    assert!(s.copy_pipeline.is_awaiting(&current));
+    assert!(s.copy_in_flight());
+    assert!(s.ledger.contains(&current));
     assert!(
         s.notices
-            .timeout_suppressed(crate::shell::overlays::notices::NoticeCode::Command(
+            .timeout_suppressed(crate::shell::notices::NoticeCode::Command(
                 shepr_protocol::command::CommandKind::PaneCopySearch
             ))
     );
-    s.reset_copy_pipeline();
+    s.copy
+        .as_mut()
+        .expect("a live copy session")
+        .pipeline_mut()
+        .reset();
     let another = copy_search(&mut s);
-    s.reset_copy_pipeline();
+    s.copy
+        .as_mut()
+        .expect("a live copy session")
+        .pipeline_mut()
+        .reset();
     let current = s.handle_input_bytes(b"w");
     let current = request_id(&current.actions).to_owned();
     answer(
@@ -678,18 +722,19 @@ fn an_ignored_answer_still_reports_its_server_error() {
     );
     assert!(
         !s.notices
-            .timeout_suppressed(crate::shell::overlays::notices::NoticeCode::Command(
+            .timeout_suppressed(crate::shell::notices::NoticeCode::Command(
                 shepr_protocol::command::CommandKind::PaneCopySearch
             ))
     );
-    assert!(s.copy_pipeline.is_awaiting(&current));
+    assert!(s.copy_in_flight());
+    assert!(s.ledger.contains(&current));
 }
 #[test]
 fn answering_a_request_twice_applies_it_once() {
     let mut s = ready_shell();
     let mut out = ClientShellInput::default();
-    let id = s
-        .submit(
+    assert_eq!(
+        s.submit(
             EndpointCommand::PaneSelectionRead(shepr_protocol::command::PaneSelectionReadParams {
                 pane_id: test_pane_id("w1:p1"),
                 anchor: shepr_protocol::command::PaneTextPoint {
@@ -703,8 +748,10 @@ fn answering_a_request_twice_applies_it_once() {
             }),
             Work::SelectionCopy,
             &mut out,
-        )
-        .expect("submit");
+        ),
+        Submitted::Opened
+    );
+    let id = request_id(&out.actions).to_owned();
     let reply = EndpointReply::PaneSelection {
         pane_id: test_pane_id("w1:p1"),
         text: "text".into(),
@@ -733,7 +780,13 @@ fn a_scroll_answer_does_not_bring_back_a_target_a_surface_already_showed() {
         *metrics =
             shepr_term::ScrollMetrics::new(3, 20, metrics.viewport_rows, metrics.history_origin);
     }
-    s.receive_pane_surface_from(shown, s.active_snapshot_generation.unwrap_or(1));
+    s.receive_pane_surface_from(
+        shown,
+        s.endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     assert!(s.scroll_lanes.target(&test_pane_id("w1:p1")).is_none());
     answer(&mut s, &id, Ok(scroll_reply(3)));
     assert!(s.scroll_lanes.is_idle());
@@ -743,8 +796,12 @@ fn a_copy_answer_after_the_pipeline_was_reset_is_ignored() {
     let mut s = copy_shell();
     let out = s.handle_input_bytes(b"w");
     let id = request_id(&out.actions).to_owned();
-    let before = s.copy_mode.as_ref().expect("copy").cursor;
-    s.reset_copy_pipeline();
+    let before = s.copy.as_ref().expect("copy").cursor;
+    s.copy
+        .as_mut()
+        .expect("a live copy session")
+        .pipeline_mut()
+        .reset();
     let out = answer(
         &mut s,
         &id,
@@ -757,7 +814,7 @@ fn a_copy_answer_after_the_pipeline_was_reset_is_ignored() {
         }),
     );
     assert!(out.actions.is_empty());
-    assert_eq!(s.copy_mode.as_ref().expect("copy").cursor, before);
+    assert_eq!(s.copy.as_ref().expect("copy").cursor, before);
 }
 #[test]
 fn an_abandoned_copy_search_does_not_defer_a_later_copy() {
@@ -765,9 +822,80 @@ fn an_abandoned_copy_search_does_not_defer_a_later_copy() {
     let id = copy_search(&mut s);
     s.abandon_copy_operation();
     let out = s.handle_input_bytes(b"y");
-    assert!(s.copy_mode.is_none());
+    assert!(s.copy.is_none());
     assert!(s.ledger.contains(&id));
     assert!(!out.actions.is_empty());
+}
+#[test]
+fn a_scroll_answer_for_a_lane_rebuilt_after_its_pane_left_is_ignored() {
+    let mut s = ready_shell();
+    let pane = test_pane_id("w1:p1");
+    let a = start_scroll(&mut s, 3);
+    let mut without_pane = snapshot();
+    without_pane.panes.clear();
+    s.set_snapshot(Box::new(without_pane));
+    assert!(s.scroll_lanes.is_idle());
+    s.set_snapshot(Box::new(snapshot()));
+    let b = start_scroll(&mut s, 5);
+    assert_ne!(a, b);
+
+    let stale = answer(&mut s, &a, Ok(scroll_reply(3)));
+    assert!(stale.actions.is_empty());
+    assert!(s.scroll_lanes.in_flight(&pane));
+
+    answer(&mut s, &b, Ok(scroll_reply(5)));
+    assert!(!s.scroll_lanes.in_flight(&pane));
+}
+#[test]
+fn an_in_flight_search_answered_after_a_resize_finishes_without_applying() {
+    let mut s = copy_shell();
+    let id = copy_search(&mut s);
+    s.handle_input_bytes(b"l");
+    assert!(s.copy_in_flight());
+    assert!(!s.copy_keys_empty());
+
+    let mut resized = surface();
+    resized.surface_revision = resized
+        .surface_revision
+        .checked_next()
+        .expect("test precondition");
+    resized.panes[0].content_revision.advance();
+    resized.panes[0].inner_rect.width -= 1;
+    s.receive_pane_surface_from(
+        resized,
+        s.endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    let found = shepr_protocol::command::PaneTextRange {
+        start: shepr_protocol::command::PaneTextPoint {
+            row: shepr_term::AbsRow(0),
+            col: 5,
+        },
+        end: shepr_protocol::command::PaneTextPoint {
+            row: shepr_term::AbsRow(0),
+            col: 8,
+        },
+    };
+    assert_ne!(s.copy.as_ref().expect("copy").cursor, found.start);
+
+    answer(
+        &mut s,
+        &id,
+        Ok(super::copy_search_result(vec![found], Some(0))),
+    );
+
+    let session = s.copy.as_ref().expect("copy");
+    assert!(
+        session
+            .search
+            .as_ref()
+            .is_none_or(|search| search.results.matches.is_empty())
+    );
+    assert_ne!(session.cursor, found.start);
+    assert!(!s.copy_in_flight());
+    assert!(s.copy_keys_empty());
 }
 #[test]
 fn a_word_selection_answer_for_a_replaced_gesture_is_ignored() {
@@ -784,8 +912,11 @@ fn a_word_selection_answer_for_a_replaced_gesture_is_ignored() {
     );
     assert!(!out.repaint);
     assert!(s.mouse_selection.selection.is_none());
-    assert!(!s.drop_word_selection(&old).is_needed());
-    assert!(s.drop_word_selection(&current).is_needed());
+    assert!(s.mouse_selection.word_gesture.is_some());
+    assert!(!s.drop_request(&old, DropReason::Unsent).is_needed());
+    assert!(s.mouse_selection.word_gesture.is_some());
+    assert!(s.drop_request(&current, DropReason::Unsent).is_needed());
+    assert!(s.mouse_selection.word_gesture.is_none());
 }
 #[test]
 fn a_workspace_label_answer_for_a_reopened_overlay_is_ignored() {
@@ -801,15 +932,33 @@ fn a_workspace_label_answer_for_a_reopened_overlay_is_ignored() {
         }),
     );
     assert!(!out.repaint);
-    let Some(ClientShellOverlay::Rename(rename)) = s.overlay.as_ref() else {
+    let Some(Overlay::Rename(rename)) = s.overlay.as_ref() else {
         panic!("overlay")
     };
     assert!(matches!(
         &rename.target,
-        ClientRenameTarget::NewWorkspace {
-            label_lookup: Some(id),
+        RenameTarget::NewWorkspace {
+            label_lookup: Some(_),
             ..
-        } if *id == current
+        }
+    ));
+    answer(
+        &mut s,
+        &current,
+        Ok(EndpointReply::WorkspaceCheckoutRoot {
+            root: Some("/different".into()),
+            home: None,
+        }),
+    );
+    let Some(Overlay::Rename(rename)) = s.overlay.as_ref() else {
+        panic!("overlay")
+    };
+    assert!(matches!(
+        &rename.target,
+        RenameTarget::NewWorkspace {
+            label_lookup: None,
+            ..
+        }
     ));
 }
 #[test]
@@ -819,12 +968,37 @@ fn a_projection_reset_drops_every_request_with_its_feature_state() {
     start_word(&mut s);
     start_scroll(&mut s, 3);
     start_label(&mut s);
-    s.reset_endpoint_projection();
+    s.reset_endpoint_projection(crate::shell::endpoints::ProjectionReset::Rebooted);
     assert!(s.ledger.is_empty());
     assert!(s.scroll_lanes.is_idle());
-    assert!(!s.copy_pipeline.in_flight());
-    assert!(s.copy_pipeline.ops_is_empty());
-    assert!(s.copy_pipeline.keys_is_empty());
+    assert!(!s.copy_in_flight());
+    assert!(s.copy_ops_empty());
+    assert!(s.copy_keys_empty());
+    assert!(s.mouse_selection.word_gesture.is_none());
+    assert!(s.overlay.is_none());
+    assert!(s.pending_workspace_highlight.is_none());
+    assert!(s.notices.visible().is_none());
+}
+#[test]
+fn a_reset_drops_requests_before_resetting_features() {
+    let mut s = copy_shell();
+    let motion = s.handle_input_bytes(b"w");
+    request_id(&motion.actions);
+    assert!(s.copy_in_flight());
+    start_word(&mut s);
+    start_label(&mut s);
+    assert!(!s.ledger.is_empty());
+
+    // A reboot of the presented endpoint resets the projection, which drops every
+    // request while each feature still holds its state, then resets the features.
+    let mut rebooted = snapshot();
+    rebooted.boot_id = crate::tests::test_boot_id("rebooted");
+    s.set_snapshot(Box::new(rebooted));
+
+    assert!(s.ledger.is_empty());
+    assert!(s.copy.is_none());
+    assert!(!s.copy_in_flight());
+    assert!(s.copy_keys_empty());
     assert!(s.mouse_selection.word_gesture.is_none());
     assert!(s.overlay.is_none());
     assert!(s.pending_workspace_highlight.is_none());
@@ -840,28 +1014,19 @@ fn a_failed_focus_releases_only_its_own_highlight() {
         snap.workspaces.push(w);
     }
     s.set_snapshot(Box::new(snap));
-    let first = s.focus_endpoint_target(ClientEndpointFocusTarget::Workspace(test_workspace_id(
-        "w2",
-    )));
+    let first = s.focus_endpoint_target(LocationTarget::Workspace(test_workspace_id("w2")));
     let old = request_id(&first).to_owned();
-    let second = s.focus_endpoint_target(ClientEndpointFocusTarget::Workspace(test_workspace_id(
-        "w3",
-    )));
+    let second = s.focus_endpoint_target(LocationTarget::Workspace(test_workspace_id("w3")));
     let current = request_id(&second).to_owned();
     answer(&mut s, &old, Err(ClientShellEndpointError::Timeout));
-    assert_eq!(
-        s.pending_workspace_highlight
-            .as_ref()
-            .expect("highlight")
-            .request_id,
-        current
-    );
+    assert!(s.pending_workspace_highlight.is_some());
     s.drop_request(&current, DropReason::Interrupted);
     assert!(s.pending_workspace_highlight.is_none());
 }
 #[test]
-fn only_a_plain_request_shows_the_interruption_notice_and_only_when_it_may_have_been_sent() {
-    for plain in [true, false] {
+fn only_state_changing_requests_show_the_interruption_notice_and_only_when_they_may_have_been_sent()
+{
+    for kind in 0..3 {
         for reason in [
             DropReason::Interrupted,
             DropReason::Unsent,
@@ -870,24 +1035,75 @@ fn only_a_plain_request_shows_the_interruption_notice_and_only_when_it_may_have_
         ] {
             let mut s = ready_shell();
             let mut out = ClientShellInput::default();
-            let id = s
-                .submit(
+            let work = match kind {
+                0 => Work::Plain,
+                1 => Work::Focus {
+                    highlight: s.ledger.ticket(),
+                },
+                _ => Work::SelectionCopy,
+            };
+            assert_eq!(
+                s.submit(
                     EndpointCommand::PaneFocus(shepr_protocol::command::PaneTarget {
                         pane_id: test_pane_id("w1:p1"),
                     }),
-                    if plain {
-                        Work::Plain
-                    } else {
-                        Work::SelectionCopy
-                    },
+                    work,
                     &mut out,
-                )
-                .expect("submit");
+                ),
+                Submitted::Opened
+            );
+            let id = request_id(&out.actions).to_owned();
             s.drop_request(&id, reason);
             assert_eq!(
                 s.notices.visible().is_some(),
-                plain && matches!(reason, DropReason::Interrupted)
+                kind < 2 && matches!(reason, DropReason::Interrupted)
             );
         }
     }
+}
+
+#[test]
+fn a_lost_endpoint_drops_its_queued_commands_as_unsent() {
+    // A command queued behind the in-flight one was never sent: losing the endpoint drops it
+    // as unsent, so no interrupted-action notice appears.
+    let mut s = ready_shell();
+    let mut out = ClientShellInput::default();
+    s.open_new_workspace_overlay(&mut out);
+    let mut actions = out.actions;
+    actions.extend(s.handle_input_bytes(b"\r").actions);
+    assert_eq!(actions.len(), 2);
+    let mut hub = EndpointHub::for_registry(EndpointRegistry::new(
+        TestTransport { fail: false },
+        crate::tests::test_generation(1),
+    ));
+    // The first request is sent and the second waits behind it.
+    let dispatched = hub.dispatch(&mut s, actions, std::time::Instant::now());
+    assert!(!dispatched.repaint.is_needed());
+    assert!(!s.ledger.is_empty());
+
+    hub.requests_lost(
+        &mut s,
+        &ClientEndpointId::Local,
+        crate::endpoint::EndpointFailureStatus::Reconnecting,
+    );
+    assert!(s.ledger.is_empty());
+    assert!(s.notices.visible().is_none());
+
+    // A lone command that was sent may have reached the server: it is interrupted.
+    let (mut state, actions) = pending_request();
+    let mut hub = EndpointHub::for_registry(EndpointRegistry::new(
+        TestTransport { fail: false },
+        crate::tests::test_generation(1),
+    ));
+    hub.dispatch(&mut state, actions, std::time::Instant::now());
+    hub.requests_lost(
+        &mut state,
+        &ClientEndpointId::Local,
+        crate::endpoint::EndpointFailureStatus::Reconnecting,
+    );
+    assert!(state.ledger.is_empty());
+    assert_eq!(
+        state.notices.visible().map(|notice| notice.title.as_str()),
+        Some("Action interrupted")
+    );
 }

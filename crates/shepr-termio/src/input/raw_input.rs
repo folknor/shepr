@@ -1,9 +1,9 @@
 use crate::host_term::theme::{parse_default_color_response, parse_palette_color_response};
 use crate::input::parse_terminal_key_sequence;
 use crate::limits::{
-    DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS, MAX_DISCARDED_CONTROL_TAIL_BYTES,
+    DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT, MAX_DISCARDED_CONTROL_TAIL_BYTES,
     MAX_HOST_COLOR_QUERY_REPLIES, MAX_INCOMPLETE_CSI_BYTES, MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES,
-    MAX_PENDING_PASTE_BYTES, PASTE_STALL_TIMEOUT, RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
+    MAX_PENDING_PASTE_BYTES, PASTE_STALL_TIMEOUT, RAW_INPUT_IDLE_FLUSH_TIMEOUT,
 };
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use shepr_term::KittyKeyboardFlags;
@@ -47,7 +47,7 @@ pub enum RawInputEvent {
     },
     HostColorSchemeChanged(HostAppearance),
     HostCellSizeReport {
-        cell: shepr_core::geometry::CellPx,
+        cell: shepr_core::geometry::CellReport,
     },
     Unsupported,
 }
@@ -284,8 +284,8 @@ impl RawInputFramer {
     }
 
     /// How long to keep waiting after an idle flush held input back.
-    pub fn held_input_flush_timeout_ms(&self) -> i32 {
-        self.byte_framer.held_input_flush_timeout_ms()
+    pub fn held_input_flush_timeout(&self) -> std::time::Duration {
+        self.byte_framer.held_input_flush_timeout()
     }
 
     fn framed_events_from_chunks(chunks: Vec<Vec<u8>>) -> Vec<FramedRawInputEvent> {
@@ -359,7 +359,7 @@ enum Held {
     /// MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES and becomes MouseTail on idle flush.
     EscapeReleased,
     /// With host Escape disambiguation, a mouse prefix gets one extra flush
-    /// using DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS. Non-continuation ends
+    /// using DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT. Non-continuation ends
     /// the wait early. Its length is just the already-buffered prefix length.
     MouseWait { prefix_len: usize },
     /// Discard only a valid continuation of this timed-out mouse prefix.
@@ -538,11 +538,11 @@ impl RawInputByteFramer {
         self.host_escape_disambiguation_active = active;
     }
 
-    fn held_input_flush_timeout_ms(&self) -> i32 {
+    fn held_input_flush_timeout(&self) -> std::time::Duration {
         if matches!(self.held, Held::MouseWait { .. }) {
-            DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS
+            DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT
         } else {
-            RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+            RAW_INPUT_IDLE_FLUSH_TIMEOUT
         }
     }
 
@@ -1176,7 +1176,7 @@ fn parse_host_color_scheme_report(buffer: &[u8]) -> Option<HostAppearance> {
 
 /// Parses an XTWINOPS cell size report (`CSI 6 ; height ; width t`) into
 /// `(width_px, height_px)`; note the reply orders height first.
-fn parse_host_cell_size_report(buffer: &[u8]) -> Option<shepr_core::geometry::CellPx> {
+fn parse_host_cell_size_report(buffer: &[u8]) -> Option<shepr_core::geometry::CellReport> {
     let body = buffer.strip_prefix(b"\x1b[")?.strip_suffix(b"t")?;
     let text = std::str::from_utf8(body).ok()?;
     let mut params = text.split(';');
@@ -1188,7 +1188,7 @@ fn parse_host_cell_size_report(buffer: &[u8]) -> Option<shepr_core::geometry::Ce
     if params.next().is_some() {
         return None;
     }
-    shepr_core::geometry::CellPx::new(width_px, height_px)
+    shepr_core::geometry::CellReport::new(width_px, height_px)
 }
 
 fn parse_host_keyboard_probe_response(buffer: &[u8]) -> Option<HostKeyboardProbeResponse> {
@@ -2135,7 +2135,7 @@ mod tests {
         assert!(matches!(
             events[0],
             RawInputEvent::HostCellSizeReport { cell }
-                if cell == shepr_core::geometry::CellPx::new(10, 21).expect("nonzero test cell")
+                if cell == shepr_core::geometry::CellReport::new(10, 21).expect("nonzero test cell")
         ));
     }
 
@@ -2594,8 +2594,8 @@ mod tests {
         let mut split_alt_arrow = RawInputFramer::for_host_input();
         assert!(split_alt_arrow.push(b"\x1b\x1b").is_empty());
         assert_eq!(
-            split_alt_arrow.held_input_flush_timeout_ms(),
-            RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+            split_alt_arrow.held_input_flush_timeout(),
+            RAW_INPUT_IDLE_FLUSH_TIMEOUT
         );
         let events = split_alt_arrow.push(b"[A");
         assert_eq!(events.len(), 1);
@@ -2608,8 +2608,8 @@ mod tests {
         let mut two_escapes = RawInputFramer::for_host_input();
         assert!(two_escapes.push(b"\x1b\x1b").is_empty());
         assert_eq!(
-            two_escapes.held_input_flush_timeout_ms(),
-            RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+            two_escapes.held_input_flush_timeout(),
+            RAW_INPUT_IDLE_FLUSH_TIMEOUT
         );
         let events = two_escapes.flush_timeout();
         assert_eq!(events.len(), 2);
@@ -3595,8 +3595,8 @@ mod tests {
         assert!(delayed.flush_timeout().is_empty());
         assert!(matches!(delayed.held, Held::MouseWait { .. }));
         assert_eq!(
-            delayed.held_input_flush_timeout_ms(),
-            DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS
+            delayed.held_input_flush_timeout(),
+            DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT
         );
         assert_eq!(delayed.flush_timeout(), vec![b"\x1b[".to_vec()]);
         assert!(matches!(delayed.held, Held::None));
@@ -3722,7 +3722,7 @@ mod tests {
         assert!(matches!(
             event,
             RawInputEvent::HostCellSizeReport { cell }
-                if cell == shepr_core::geometry::CellPx::new(10, 21).expect("nonzero test cell")
+                if cell == shepr_core::geometry::CellReport::new(10, 21).expect("nonzero test cell")
         ));
     }
 

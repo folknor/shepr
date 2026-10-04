@@ -1,14 +1,17 @@
 use super::*;
+use crate::handler::KeyboardStackDepth;
 use crate::limits::{
-    KEYBOARD_MODE_STACK_MAX_DEPTH, MAX_OSC_BYTES, MAX_OSC_RAW_BYTES, MAX_SCROLLBACK_LINES,
-    MAX_TITLE_BYTES, MIN_SCROLLBACK_LINES,
+    KEYBOARD_MODE_STACK_MAX_DEPTH, MAX_CLIPBOARD_BYTES, MAX_OSC_BYTES, MAX_OSC_RAW_BYTES,
+    MAX_TITLE_BYTES,
 };
+use alacritty_terminal::term::cell::Cell;
+use shepr_core::scrollback::{ESTIMATED_CELL_BYTES, MIN_HISTORY_LINES};
 
 /// The screen point shown at viewport row `row`: screen rows count from the
 /// oldest retained line, so the viewport starts below the history that is not
 /// scrolled into view.
 fn viewport_point(terminal: &Terminal, col: u16, row: u16) -> Point<ScreenRow> {
-    let top = terminal.scrollbar().viewport_start();
+    let top = terminal.scrollbar().viewport_start().0;
     Point::new(ScreenRow(top + usize::from(row)), col)
 }
 
@@ -94,14 +97,8 @@ fn first_rendered_row_text(terminal: &Terminal) -> String {
 }
 
 #[test]
-fn scrollback_bytes_convert_to_bounded_line_counts() {
-    assert_eq!(scrollback_lines(0, 80), 0);
-    assert_eq!(scrollback_lines(1, 80), MIN_SCROLLBACK_LINES);
-    let per_line = 80 * mem::size_of::<Cell>();
-    assert_eq!(scrollback_lines(per_line * 5_000, 80), 5_000);
-    assert_eq!(scrollback_lines(usize::MAX, 80), MAX_SCROLLBACK_LINES);
-    // Narrower panes get proportionally more lines for the same budget.
-    assert!(scrollback_lines(per_line * 5_000, 40) > scrollback_lines(per_line * 5_000, 80));
+fn scrollback_policy_estimates_the_emulators_real_cell_size() {
+    assert_eq!(ESTIMATED_CELL_BYTES, mem::size_of::<Cell>());
 }
 
 #[test]
@@ -110,14 +107,22 @@ fn terminal_regression_history_purge_restores_the_wide_panes_scrollback_budget()
     const NARROW_COLS: u16 = 20;
     const WIDE_COLS: u16 = 200;
     const INITIAL_LINES: usize = 2_500;
-    let wide_budget = scrollback_lines(MAX_SCROLLBACK_BYTES, usize::from(WIDE_COLS));
+    let budget = ScrollbackBudget::new(MAX_SCROLLBACK_BYTES);
+    let wide_budget = budget.lines_at(usize::from(WIDE_COLS)).get();
     assert!(wide_budget < INITIAL_LINES);
-    assert!(scrollback_lines(MAX_SCROLLBACK_BYTES, usize::from(NARROW_COLS)) > wide_budget);
+    assert!(budget.lines_at(usize::from(NARROW_COLS)).get() > wide_budget);
 
     for purge in 0..3 {
-        let mut terminal = Terminal::new(NARROW_COLS, 3, MAX_SCROLLBACK_BYTES);
+        let mut terminal = Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(NARROW_COLS, 3),
+            shepr_core::scrollback::ScrollbackBudget::new(MAX_SCROLLBACK_BYTES),
+        );
         terminal.write("x\r\n".repeat(INITIAL_LINES).as_bytes());
-        terminal.resize(shepr_core::geometry::PaneGeometry::new(WIDE_COLS, 3, 8, 16));
+        terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+            WIDE_COLS,
+            3,
+            shepr_core::geometry::CellPx::new(8, 16),
+        ));
         assert!(terminal.scrollback_rows() > wide_budget);
 
         let refill = "x\r\n".repeat(wide_budget + 32);
@@ -162,7 +167,10 @@ fn focus_encoding_matches_expected_sequences() {
 
 #[test]
 fn terminal_reports_pty_responses_and_pwd_changes() {
-    let mut terminal = Terminal::new(8, 3, 100);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
 
     terminal.write(b"\x1b[6n\x1b]7;file:///tmp/shepr\x07");
 
@@ -176,7 +184,10 @@ fn terminal_reports_pty_responses_and_pwd_changes() {
 
 #[test]
 fn modes_and_kitty_flags_follow_terminal_state() {
-    let mut terminal = Terminal::new(80, 24, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?1h");
     terminal.write(b"\x1b[>1u\x1b[?1000h\x1b[?1006h");
     terminal.write(b"\x1b[?12h\x1b[?1042h");
@@ -196,9 +207,9 @@ fn modes_and_kitty_flags_follow_terminal_state() {
         Some(MouseProtocol {
             mode: MouseProtocolMode::PressRelease,
             encoding: MouseEncoding::Sgr,
-            pixels_requested: false,
         })
     );
+    assert!(!terminal.input_modes().pixel_mouse().requested());
 
     // X10 replaces the other tracking modes; enabling 1003 cancels X10 again.
     terminal.write(b"\x1b[?9h");
@@ -219,10 +230,9 @@ fn modes_and_kitty_flags_follow_terminal_state() {
         Some(MouseProtocol {
             mode: MouseProtocolMode::AnyMotion,
             encoding: MouseEncoding::Sgr,
-            pixels_requested: true,
         })
     );
-    assert!(input_modes.sgr_pixel_mouse_enabled());
+    assert!(input_modes.pixel_mouse().requested());
 
     terminal.write(b"\x1b[<u");
     terminal.write(b"\x1b[?12l\x1b[?1042l");
@@ -233,7 +243,10 @@ fn modes_and_kitty_flags_follow_terminal_state() {
 
 #[test]
 fn adapter_modes_answer_decrqm_and_reset_on_ris() {
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?1005h\x1b[?1016h");
     assert!(!terminal.mode_get(DecMode::MouseUtf8));
     assert!(terminal.mode_get(DecMode::MouseSgrPixels));
@@ -258,7 +271,10 @@ fn adapter_modes_answer_decrqm_and_reset_on_ris() {
 
 #[test]
 fn replies_keep_byte_order_across_core_and_adapter_sources() {
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.set_color_scheme(Some(ColorScheme::Light));
     terminal.write(b"\x1b[5n\x1bP+q5463\x1b\\\x1b[?996n\x1b]10;?\x07\x1b[c");
     let replies = terminal.take_pty_responses();
@@ -287,7 +303,10 @@ fn replies_keep_byte_order_across_core_and_adapter_sources() {
 
 #[test]
 fn color_queries_report_child_overrides_and_palette_defaults() {
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b]11;rgb:12/34/56\x07\x1b]11;?\x1b\\\x1b]4;1;?\x07");
     let replies = terminal.take_pty_responses();
     assert_eq!(replies.len(), 2);
@@ -323,7 +342,10 @@ fn terminal_regression_color_queries_capture_their_stream_position() {
         g: 0xbb,
         b: 0xcc,
     };
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.set_default_colors(Some(host_foreground), Some(host_background));
 
     terminal.write(
@@ -376,11 +398,18 @@ fn terminal_regression_color_queries_capture_their_stream_position() {
 
 #[test]
 fn pixel_size_reports_need_pixel_geometry_but_character_size_does_not() {
-    let mut terminal = Terminal::new(80, 24, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[14t\x1b[16t\x1b[18t");
     assert_eq!(core_replies(&mut terminal), vec![b"\x1b[8;24;80t".to_vec()]);
 
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        24,
+        shepr_core::geometry::CellPx::new(9, 18),
+    ));
     terminal.write(b"\x1b[14t\x1b[16t\x1b[18t");
     assert_eq!(
         core_replies(&mut terminal),
@@ -395,9 +424,17 @@ fn pixel_size_reports_need_pixel_geometry_but_character_size_does_not() {
 /// Pixel replies are bounded by the same u16 geometry reported by TIOCGWINSZ.
 #[test]
 fn text_area_pixel_report_matches_winsize_limits_for_large_cells() {
-    let mut terminal = Terminal::new(80, 24, 0);
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(
-        80, 24, 100_000, 100_000,
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        24,
+        shepr_core::geometry::CellPx::new(
+            shepr_core::geometry::CellPx::MAX_DIMENSION,
+            shepr_core::geometry::CellPx::MAX_DIMENSION,
+        ),
     ));
     terminal.write(b"\x1b[14t\x1b[?2048h");
     assert_eq!(
@@ -409,18 +446,71 @@ fn text_area_pixel_report_matches_winsize_limits_for_large_cells() {
     );
 }
 
+/// `CSI 16 t` answers the pitch of the extent the child was told, so a clamped
+/// extent still divides back to the reported cell.
+#[test]
+fn cell_size_query_answers_the_published_pitch() {
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        24,
+        shepr_core::geometry::CellPx::new(
+            shepr_core::geometry::CellPx::MAX_DIMENSION,
+            shepr_core::geometry::CellPx::MAX_DIMENSION,
+        ),
+    ));
+    terminal.write(b"\x1b[14t\x1b[16t");
+    assert_eq!(
+        core_replies(&mut terminal),
+        vec![
+            b"\x1b[4;65535;65535t".to_vec(),
+            format!("\x1b[6;{};{}t", 65535 / 24, 65535 / 80).into_bytes(),
+        ]
+    );
+}
+
+/// The input modes carry the 1016 bit together with the extent the child was
+/// told, read through the one `Terminal::pixel_mouse`.
+#[test]
+fn input_modes_carry_the_pixel_extent_with_the_1016_bit() {
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+    terminal.write(b"\x1b[?1016h");
+    assert!(terminal.pixel_mouse().requested());
+    assert_eq!(terminal.pixel_mouse().extent(), None);
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        24,
+        shepr_core::geometry::CellPx::new(9, 18),
+    ));
+    let extent = terminal.pixel_mouse().extent().expect("cell known");
+    assert_eq!((extent.width().get(), extent.height().get()), (720, 432));
+    assert_eq!(terminal.input_modes().pixel_mouse(), terminal.pixel_mouse());
+}
+
 /// vte buffers a synchronized update and replays it at ESU; mode changes and
 /// replies the adapter handles must follow the replayed order, not arrival.
 #[test]
 fn adapter_modes_and_replies_keep_byte_order_inside_synchronized_updates() {
     // X10 set after 1000 replaces it, even when both arrive inside a frame.
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?2026h\x1b[?1000h\x1b[?9h\x1b[?2026l");
     assert!(terminal.mode_get(DecMode::X10Mouse));
     assert!(!terminal.mode_get(DecMode::MousePressRelease));
 
     // DECRQM reports the state at its own position in the frame.
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?2026h\x1b[?1016$p\x1b[?1016h\x1b[?1016$p\x1b[?2026l");
     assert_eq!(
         core_replies(&mut terminal),
@@ -428,15 +518,25 @@ fn adapter_modes_and_replies_keep_byte_order_inside_synchronized_updates() {
     );
 
     // RIS inside a frame resets adapter modes set before it, not after it.
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?2026h\x1b[?2031h\x1bc\x1b[?1016h\x1b[?2026l");
     assert!(!terminal.mode_get(DecMode::ColorSchemeReport));
     assert!(terminal.mode_get(DecMode::MouseSgrPixels));
 
     // The in-band resize report follows a DSR requested earlier in the frame,
     // and nothing is answered before ESU.
-    let mut terminal = Terminal::new(80, 24, 0);
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        24,
+        shepr_core::geometry::CellPx::new(9, 18),
+    ));
     terminal.write(b"\x1b[?2026h\x1b[5n\x1b[?2048h");
     assert!(core_replies(&mut terminal).is_empty());
     terminal.write(b"\x1b[?2026l");
@@ -448,7 +548,10 @@ fn adapter_modes_and_replies_keep_byte_order_inside_synchronized_updates() {
 
 #[test]
 fn modify_other_keys_level_is_reported() {
-    let mut terminal = Terminal::new(8, 2, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 2),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?4m\x1b[>4;2m\x1b[?4m");
     assert_eq!(
         core_replies(&mut terminal),
@@ -458,14 +561,25 @@ fn modify_other_keys_level_is_reported() {
 
 #[test]
 fn in_band_resize_reports_on_enable_and_resize() {
-    let mut terminal = Terminal::new(80, 24, 0);
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        24,
+        shepr_core::geometry::CellPx::new(9, 18),
+    ));
     terminal.write(b"\x1b[?2048h");
     assert_eq!(
         core_replies(&mut terminal),
         vec![b"\x1b[48;24;80;432;720t".to_vec()]
     );
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        100,
+        40,
+        shepr_core::geometry::CellPx::new(9, 18),
+    ));
     assert_eq!(
         core_replies(&mut terminal),
         vec![b"\x1b[48;40;100;720;900t".to_vec()]
@@ -475,7 +589,10 @@ fn in_band_resize_reports_on_enable_and_resize() {
 #[test]
 fn synchronized_output_buffers_until_end_or_timeout() {
     let start = Instant::now();
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write_at(b"\x1b[?2026hhidden", start);
     assert!(terminal.mode_get(DecMode::SynchronizedOutput));
     let deadline = start + std::time::Duration::from_millis(150);
@@ -528,7 +645,10 @@ fn synchronized_output_buffers_until_end_or_timeout() {
 
 #[test]
 fn terminal_read_text_screen_unwraps_soft_wrapped_selection() {
-    let mut terminal = Terminal::new(5, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(5, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write("1ABCD2EFGH3IJKL".as_bytes());
 
     let text = terminal
@@ -542,7 +662,10 @@ fn terminal_read_text_screen_unwraps_soft_wrapped_selection() {
 
 #[test]
 fn terminal_extracts_viewport_hyperlink_uri() {
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b]8;;https://example.com\x1b\\Link\x1b]8;;\x1b\\");
 
     assert_eq!(
@@ -562,7 +685,10 @@ fn terminal_extracts_viewport_hyperlink_uri() {
 
 #[test]
 fn terminal_read_text_screen_handles_wide_chars() {
-    let mut terminal = Terminal::new(5, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(5, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write("1A\u{26A1}".as_bytes());
 
     let full = terminal
@@ -592,15 +718,24 @@ fn terminal_read_text_screen_handles_wide_chars() {
 
 #[test]
 fn zero_max_scrollback_disables_history() {
-    let mut terminal = Terminal::new(80, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     write_numbered_lines(&mut terminal, 3000);
     assert_eq!(terminal.scrollback_rows(), 0);
 }
 
 #[test]
 fn max_scrollback_limit_bytes_retains_more_history_for_larger_limits() {
-    let mut small = Terminal::new(80, 3, 1_000_000);
-    let mut large = Terminal::new(80, 3, 10_000_000);
+    let mut small = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1_000_000),
+    );
+    let mut large = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(10_000_000),
+    );
 
     write_padded_lines(&mut small, 1_250, 70);
     write_padded_lines(&mut large, 1_250, 70);
@@ -616,7 +751,10 @@ fn max_scrollback_limit_bytes_retains_more_history_for_larger_limits() {
 
 #[test]
 fn large_older_scroll_reaches_top_of_scrollback() {
-    let mut terminal = Terminal::new(80, 3, 1_000_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1_000_000),
+    );
     write_numbered_lines(&mut terminal, 1000);
 
     let before = terminal.scrollbar();
@@ -626,13 +764,16 @@ fn large_older_scroll_reaches_top_of_scrollback() {
     terminal.scroll_viewport_delta(ScrollTowards::Older(10_000));
 
     let after = terminal.scrollbar();
-    assert_eq!(after.viewport_start(), 0);
+    assert_eq!(after.viewport_start(), ScreenRow(0));
     assert_eq!(after.viewport_rows, before.viewport_rows);
 }
 
 #[test]
 fn absolute_scroll_row_round_trips_and_clamps() {
-    let mut terminal = Terminal::new(80, 3, 1_000_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1_000_000),
+    );
     write_numbered_lines(&mut terminal, 1000);
 
     let before = terminal.scrollbar();
@@ -642,7 +783,7 @@ fn absolute_scroll_row_round_trips_and_clamps() {
     for row in [0, max_row / 2, max_row, usize::MAX] {
         terminal.scroll_viewport_row(ScreenRow(row));
         let after = terminal.scrollbar();
-        assert_eq!(after.viewport_start(), row.min(max_row));
+        assert_eq!(after.viewport_start(), ScreenRow(row.min(max_row)));
         assert_eq!(after.viewport_rows, before.viewport_rows);
     }
 }
@@ -651,7 +792,10 @@ fn absolute_scroll_row_round_trips_and_clamps() {
 fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
     use std::fmt::Write as _;
 
-    let mut terminal = Terminal::new(20, 5, 100_000_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(100_000_000),
+    );
     let mut input =
         String::from("\x1b]8;;https://example.com\x1b\\FIRST \u{1F1E7}\u{1F1F7}\x1b]8;;\x1b\\\r\n");
     for line in 0..70_000 {
@@ -665,7 +809,7 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
 
     assert!(terminal.scrollback_rows() > u16::MAX as usize);
     terminal.scroll_viewport_delta(ScrollTowards::Older(100_000));
-    assert_eq!(terminal.scrollbar().viewport_start(), 0);
+    assert_eq!(terminal.scrollbar().viewport_start(), ScreenRow(0));
     assert!(
         terminal
             .read_text_screen(
@@ -683,10 +827,14 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
         Some("https://example.com")
     );
 
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(10, 5, 8, 16));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        10,
+        5,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
     terminal.scroll_viewport_delta(ScrollTowards::Older(100_000));
     let metrics = terminal.scrollbar();
-    assert_eq!(metrics.viewport_start(), 0);
+    assert_eq!(metrics.viewport_start(), ScreenRow(0));
     assert_eq!(metrics.viewport_rows, 5);
     assert!(
         terminal
@@ -708,10 +856,17 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
 
 #[test]
 fn raw_resize_preserves_content_without_replaying_terminal_effects() {
-    let mut terminal = Terminal::new(20, 6, 100_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 6),
+        shepr_core::scrollback::ScrollbackBudget::new(100_000),
+    );
     terminal.write(b"header\r\n\x1b[6;1Htail\x1b[6;18H");
     for (cols, rows) in [(10, 3), (30, 8), (8, 4), (20, 6)] {
-        terminal.resize(shepr_core::geometry::PaneGeometry::new(cols, rows, 8, 16));
+        terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+            cols,
+            rows,
+            shepr_core::geometry::CellPx::new(8, 16),
+        ));
         terminal.write(b"X");
         let text = terminal
             .read_text_screen(
@@ -724,10 +879,17 @@ fn raw_resize_preserves_content_without_replaying_terminal_effects() {
             "lost tail after {cols}x{rows}: {text:?}"
         );
         assert_eq!(text.matches("tail").count(), 1);
-        assert!(terminal.cursor_y() < rows);
+        assert!(
+            terminal.cursor_screen_row().0 - (terminal.total_rows() - usize::from(rows))
+                < usize::from(rows)
+        );
     }
     terminal.write(b"\x1b[2J\x1b[H");
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(12, 3, 8, 16));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        12,
+        3,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
     assert!(
         terminal
             .read_text_screen(
@@ -745,7 +907,10 @@ fn clipboard_queries_never_disclose_contents_and_split_writes_complete_once() {
     for suffix in [b"\x07".as_slice(), b"\x1b\\".as_slice()] {
         let bytes = [b"\x1b]52;c;YQBi".as_slice(), suffix].concat();
         for split in 0..=bytes.len() {
-            let mut terminal = Terminal::new(10, 3, 0);
+            let mut terminal = Terminal::new(
+                shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+                shepr_core::scrollback::ScrollbackBudget::new(0),
+            );
             terminal.write(&bytes[..split]);
             terminal.write(&bytes[split..]);
             let effects = terminal.take_effects();
@@ -761,7 +926,10 @@ fn clipboard_queries_never_disclose_contents_and_split_writes_complete_once() {
 
 #[test]
 fn oversized_osc52_clipboard_store_reports_only_its_byte_count() {
-    let mut terminal = Terminal::new(10, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let encoded_payload = "A".repeat((MAX_CLIPBOARD_BYTES / 3 + 1) * 4);
     let decoded_bytes = encoded_payload.len() / 4 * 3;
     let sequence = format!("\x1b]52;c;{encoded_payload}\x07");
@@ -781,7 +949,10 @@ fn oversized_osc52_clipboard_store_reports_only_its_byte_count() {
 
 #[test]
 fn oversized_osc_body_is_skipped_and_parser_recovers_at_its_terminator() {
-    let mut terminal = Terminal::new(10, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let mut sequence = b"\x1b]7;".to_vec();
     // The OSC identifier `7` is raw payload; its following `;` is only a
     // parameter boundary and does not consume the parser's raw-byte bound.
@@ -807,7 +978,10 @@ fn oversized_osc_body_is_skipped_and_parser_recovers_at_its_terminator() {
 
 #[test]
 fn osc52_store_longer_than_the_scanner_retains_is_stored_whole() {
-    let mut terminal = Terminal::new(10, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     // "aaa" encodes to "YWFh", so the store is well past the scanner's bound.
     let text = b"aaa".repeat(MAX_OSC_BYTES);
     let encoded = "YWFh".repeat(MAX_OSC_BYTES);
@@ -818,7 +992,10 @@ fn osc52_store_longer_than_the_scanner_retains_is_stored_whole() {
 
 #[test]
 fn osc52_writes_complete_for_bel_and_st_without_queries() {
-    let mut terminal = Terminal::new(10, 5, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b]52;c;aGVs");
     assert!(terminal.take_effects().clipboard_writes.is_empty());
     terminal.write(b"bG8=\x07");
@@ -842,7 +1019,10 @@ fn osc52_writes_complete_for_bel_and_st_without_queries() {
 
 #[test]
 fn active_screen_and_cursor_visibility_contract() {
-    let mut terminal = Terminal::new(12, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(12, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let mut render_state = RenderState::new();
 
     terminal.write(b"primary");
@@ -890,7 +1070,10 @@ fn active_screen_and_cursor_visibility_contract() {
 
 #[test]
 fn terminal_and_render_state_smoke_test() {
-    let mut terminal = Terminal::new(8, 3, 100);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     assert_eq!(terminal.cols(), 8);
     assert_eq!(terminal.rows(), 3);
 
@@ -934,7 +1117,10 @@ fn terminal_and_render_state_smoke_test() {
 #[test]
 fn render_cells_preserve_issue_453_unicode_payload_exactly() {
     const PAYLOAD: &str = "README \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466} \u{1F9D1}\u{200D}\u{1F4BB} \u{2705} \u{26A1} 漢字 café é \u{1F3F3}\u{FE0F}\u{200D}\u{1F308} \u{1F680}";
-    let mut terminal = Terminal::new(80, 3, 100);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write(format!("{PAYLOAD}\r\n").as_bytes());
 
     assert_eq!(first_rendered_row_text(&terminal), PAYLOAD);
@@ -942,7 +1128,10 @@ fn render_cells_preserve_issue_453_unicode_payload_exactly() {
 
 #[test]
 fn modify_other_keys_level_is_terminal_state() {
-    let mut terminal = Terminal::new(8, 2, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 2),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     assert_eq!(
         terminal.modify_other_keys_level(),
         ModifyOtherKeysLevel::Off
@@ -974,7 +1163,10 @@ fn modify_other_keys_level_is_terminal_state() {
 /// through the parser, so a synchronized update defers it with its frame.
 #[test]
 fn scanner_modify_other_keys_change_waits_for_the_synchronized_frame() {
-    let mut terminal = Terminal::new(8, 2, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 2),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[>4;2m");
     terminal.write(b"\x1b[?2026h\x1b[>4n");
     assert_eq!(
@@ -1009,11 +1201,14 @@ fn kitty_keyboard_push_flood_is_bounded_without_panicking() {
         (b"\x1b[?2026h", b"\x1b[?2026l"),
     ];
     for (prefix, suffix) in cases {
-        let mut terminal = Terminal::new(20, 3, 0);
+        let mut terminal = Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        );
         terminal.write(prefix);
         terminal.write(&flood);
         terminal.write(suffix);
-        assert_eq!(terminal.keyboard_depth.primary, max, "{prefix:?}");
+        assert_eq!(terminal.emu.keyboard_depth.primary, max, "{prefix:?}");
         assert_eq!(
             terminal.kitty_keyboard_flags(),
             KittyKeyboardFlags::DISAMBIGUATE
@@ -1022,7 +1217,7 @@ fn kitty_keyboard_push_flood_is_bounded_without_panicking() {
         // At the cap a push replaces the top entry, so the new mode is active
         // and one pop returns to the entry beneath it.
         terminal.write(b"\x1b[>3u");
-        assert_eq!(terminal.keyboard_depth.primary, max);
+        assert_eq!(terminal.emu.keyboard_depth.primary, max);
         assert_eq!(
             terminal.kitty_keyboard_flags(),
             KittyKeyboardFlags::DISAMBIGUATE | KittyKeyboardFlags::REPORT_EVENT_TYPES
@@ -1041,29 +1236,32 @@ fn kitty_keyboard_push_flood_is_bounded_without_panicking() {
             KittyKeyboardFlags::DISAMBIGUATE
         );
         terminal.write(b"\x1b[<u");
-        assert_eq!(terminal.keyboard_depth.primary, 0);
+        assert_eq!(terminal.emu.keyboard_depth.primary, 0);
         assert!(terminal.kitty_keyboard_flags().is_empty());
     }
 }
 
 #[test]
 fn kitty_keyboard_depth_follows_screen_swaps_and_ris() {
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(&b"\x1b[>1u".repeat(5));
     terminal.write(b"\x1b[?1049h");
     terminal.write(&b"\x1b[>2u".repeat(7));
     assert_eq!(
         (
-            terminal.keyboard_depth.primary,
-            terminal.keyboard_depth.alternate
+            terminal.emu.keyboard_depth.primary,
+            terminal.emu.keyboard_depth.alternate
         ),
         (5, 7)
     );
     terminal.write(b"\x1b[?1049l\x1b[<2u");
     assert_eq!(
         (
-            terminal.keyboard_depth.primary,
-            terminal.keyboard_depth.alternate
+            terminal.emu.keyboard_depth.primary,
+            terminal.emu.keyboard_depth.alternate
         ),
         (3, 7)
     );
@@ -1072,9 +1270,9 @@ fn kitty_keyboard_depth_follows_screen_swaps_and_ris() {
         KittyKeyboardFlags::DISAMBIGUATE
     );
     terminal.write(b"\x1b[<9u");
-    assert_eq!(terminal.keyboard_depth.primary, 0);
+    assert_eq!(terminal.emu.keyboard_depth.primary, 0);
     terminal.write(b"\x1b[?1049h\x1bc");
-    assert_eq!(terminal.keyboard_depth, KeyboardStackDepth::default());
+    assert_eq!(terminal.emu.keyboard_depth, KeyboardStackDepth::default());
     assert!(terminal.kitty_keyboard_flags().is_empty());
 }
 
@@ -1091,7 +1289,10 @@ fn halfwidth_voiced_marks_take_their_own_cell() {
             b"\xbe\x9eZ\x1b[?2026l".to_vec(),
         ],
     ] {
-        let mut terminal = Terminal::new(8, 2, 0);
+        let mut terminal = Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(8, 2),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        );
         for chunk in &chunks {
             terminal.write(chunk);
         }
@@ -1110,7 +1311,10 @@ fn halfwidth_voiced_marks_take_their_own_cell() {
         );
     }
 
-    let mut terminal = Terminal::new(4, 2, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(4, 2),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write("abcd\u{ff9f}".as_bytes());
     assert!(
         terminal
@@ -1123,7 +1327,10 @@ fn halfwidth_voiced_marks_take_their_own_cell() {
 
 #[test]
 fn screen_row_readers_preserve_wrap_and_grapheme_cells() {
-    let mut terminal = Terminal::new(5, 3, 100);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(5, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write("abcdef\r\n界e\u{301}".as_bytes());
 
     let first_wrap = terminal.screen_row_wrap(ScreenRow(0)).expect("first row");
@@ -1143,7 +1350,10 @@ fn screen_row_readers_preserve_wrap_and_grapheme_cells() {
 
 #[test]
 fn render_state_dirty_rows_commit_atomically() {
-    let mut terminal = Terminal::new(8, 3, 100);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     let mut render_state = RenderState::new();
     render_state.update(&terminal);
     {
@@ -1158,7 +1368,7 @@ fn render_state_dirty_rows_commit_atomically() {
             .dirty_rows()
             .map(|row| row.y())
             .collect::<Vec<_>>(),
-        vec![1, 2]
+        vec![ViewportRow(1), ViewportRow(2)]
     );
     render_state.take_dirty_rows(u16::MAX).commit();
     assert_eq!(render_state.dirty(), Dirty::Clean);
@@ -1169,13 +1379,16 @@ fn render_state_dirty_rows_commit_atomically() {
             .dirty_rows()
             .map(|row| row.y())
             .collect::<Vec<_>>(),
-        vec![0]
+        vec![ViewportRow(0)]
     );
 }
 
 #[test]
 fn scrolling_the_viewport_marks_every_row_dirty() {
-    let mut terminal = Terminal::new(8, 3, 100);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     write_numbered_lines(&mut terminal, 10);
     let mut render_state = RenderState::new();
     render_state.update(&terminal);
@@ -1190,7 +1403,10 @@ fn scrolling_the_viewport_marks_every_row_dirty() {
 
 #[test]
 fn row_cell_basic_data_reports_palette_style() {
-    let mut terminal = Terminal::new(8, 3, 100);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write(b"\x1b[31mA\x1b[0m");
 
     let mut render_state = RenderState::new();
@@ -1209,7 +1425,10 @@ fn row_cell_basic_data_reports_palette_style() {
 
 #[test]
 fn clear_screen_keeps_the_cursor_line_and_drops_history() {
-    let mut terminal = Terminal::new(10, 4, 100_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 4),
+        shepr_core::scrollback::ScrollbackBudget::new(100_000),
+    );
     write_numbered_lines(&mut terminal, 20);
     terminal.write(b"$ prompt");
     assert!(terminal.scrollback_rows() > 0);
@@ -1217,7 +1436,7 @@ fn clear_screen_keeps_the_cursor_line_and_drops_history() {
     assert_eq!(terminal.clear_screen(), ClearScreenOutcome::Cleared);
 
     assert_eq!(terminal.scrollback_rows(), 0);
-    assert_eq!(terminal.cursor_y(), 0);
+    assert_eq!(terminal.cursor_screen_row(), ScreenRow(0));
     assert_eq!(
         terminal
             .read_text_screen(
@@ -1231,7 +1450,10 @@ fn clear_screen_keeps_the_cursor_line_and_drops_history() {
 
 #[test]
 fn clear_screen_reports_alternate_screen_refusal() {
-    let mut terminal = Terminal::new(10, 4, 100);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 4),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write(b"primary\x1b[?1049h");
     assert_eq!(
         terminal.clear_screen(),
@@ -1243,13 +1465,16 @@ fn clear_screen_reports_alternate_screen_refusal() {
 
 #[test]
 fn clear_screen_moves_the_saved_cursor_and_fills_with_default_colours() {
-    let mut terminal = Terminal::new(10, 4, 100_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 4),
+        shepr_core::scrollback::ScrollbackBudget::new(100_000),
+    );
     // Save the cursor at the start of the prompt row (row 3), then leave a
     // background colour active.
     terminal.write(b"a\r\nb\r\nc\r\n\x1b7$ \x1b[44m");
     assert_eq!(terminal.clear_screen(), ClearScreenOutcome::Cleared);
 
-    let grid = terminal.term.grid();
+    let grid = terminal.emu.term.grid();
     assert_eq!(grid.saved_cursor.point.line, Line(0));
     for line in 1..4 {
         for column in 0..10 {
@@ -1282,13 +1507,24 @@ fn clear_screen_moves_the_saved_cursor_and_fills_with_default_colours() {
 #[test]
 fn widening_resize_keeps_history_that_already_fit() {
     let per_line_narrow = 40 * mem::size_of::<Cell>();
-    let mut terminal = Terminal::new(40, 3, per_line_narrow * 2_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(40, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(per_line_narrow * 2_000),
+    );
     write_numbered_lines(&mut terminal, 1_500);
     let before = terminal.scrollback_rows();
     assert!(before > 1_400);
 
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 3, 8, 16));
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(40, 3, 8, 16));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        3,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        40,
+        3,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
 
     assert_eq!(terminal.scrollback_rows(), before);
     assert_eq!(
@@ -1302,11 +1538,18 @@ fn widening_resize_keeps_history_that_already_fit() {
 #[test]
 fn widened_history_survives_height_and_further_width_changes() {
     let per_line_narrow = 40 * mem::size_of::<Cell>();
-    let mut terminal = Terminal::new(40, 3, per_line_narrow * 2_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(40, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(per_line_narrow * 2_000),
+    );
     write_line_range(&mut terminal, 0..1_500, 1);
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 3, 8, 16));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        3,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
     let before = terminal.scrollback_rows();
-    assert!(before > scrollback_lines(terminal.max_scrollback, 80));
+    assert!(before > terminal.history.budget_lines(80).get());
     let origin = terminal.history_origin();
     let ids = [
         origin,
@@ -1318,7 +1561,11 @@ fn widened_history_survives_height_and_further_width_changes() {
     // The newest history row moves onto the screen. Every retained row
     // keeps its id, and shrinking must have room to return it to history.
     for height in [8, 3, 1_600, 3] {
-        terminal.resize(shepr_core::geometry::PaneGeometry::new(80, height, 8, 16));
+        terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+            80,
+            height,
+            shepr_core::geometry::CellPx::new(8, 16),
+        ));
         assert_eq!(terminal.history_origin(), origin);
         assert_eq!(ids.map(|id| absolute_row_text(&terminal, id)), texts);
     }
@@ -1326,9 +1573,21 @@ fn widened_history_survives_height_and_further_width_changes() {
 
     // A second width change while history is on screen must not lower the
     // capacity either. Width changes retire ids, so compare content here.
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 8, 8, 16));
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(120, 8, 8, 16));
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(120, 3, 8, 16));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        8,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        120,
+        8,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        120,
+        3,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
     assert_eq!(terminal.scrollback_rows(), before);
     assert_eq!(
         terminal
@@ -1343,35 +1602,54 @@ fn widened_history_survives_height_and_further_width_changes() {
 #[test]
 fn widening_with_short_history_settles_to_the_wider_budget() {
     let per_line_narrow = 40 * mem::size_of::<Cell>();
-    let mut terminal = Terminal::new(40, 3, per_line_narrow * 2_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(40, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(per_line_narrow * 2_000),
+    );
     write_line_range(&mut terminal, 0..20, 1);
     let held = terminal.scrollback_rows();
 
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 3, 8, 16));
-    assert_eq!(
-        terminal.history_lines,
-        scrollback_lines(terminal.max_scrollback, 80)
-    );
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 30, 8, 16));
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 3, 8, 16));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        3,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
+    assert_eq!(terminal.history.lines(), terminal.history.budget_lines(80));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        30,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        3,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
     assert_eq!(terminal.scrollback_rows(), held);
 }
 
 #[test]
 fn unchanged_dimensions_do_not_retire_rows_in_full_history() {
-    let height = u16::try_from(MIN_SCROLLBACK_LINES + 100).expect("test height");
-    let mut terminal = Terminal::new(10, height, 1);
+    let height = u16::try_from(MIN_HISTORY_LINES + 100).expect("test height");
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, height),
+        shepr_core::scrollback::ScrollbackBudget::new(1),
+    );
     write_line_range(
         &mut terminal,
-        0..MIN_SCROLLBACK_LINES + usize::from(height) + 20,
+        0..MIN_HISTORY_LINES + usize::from(height) + 20,
         1,
     );
-    assert_eq!(terminal.scrollback_rows(), MIN_SCROLLBACK_LINES);
+    assert_eq!(terminal.scrollback_rows(), MIN_HISTORY_LINES);
     let origin = terminal.history_origin();
 
     // Neither a cell-size update nor an identical geometry pushes a line.
     for _ in 0..2 {
-        terminal.resize(shepr_core::geometry::PaneGeometry::new(10, height, 8, 16));
+        terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+            10,
+            height,
+            shepr_core::geometry::CellPx::new(8, 16),
+        ));
         assert_eq!(terminal.history_origin(), origin);
         assert_rows_name_their_lines(&terminal, [origin, origin.saturating_add(500)]);
     }
@@ -1381,7 +1659,10 @@ fn unchanged_dimensions_do_not_retire_rows_in_full_history() {
 /// replays it into a fresh terminal, and compares cells and styles.
 #[test]
 fn vt_history_round_trips_through_the_parser() {
-    let mut source = Terminal::new(12, 4, 100_000);
+    let mut source = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(12, 4),
+        shepr_core::scrollback::ScrollbackBudget::new(100_000),
+    );
     source.write(
         "plain \x1b[1;38;5;196mbold-red\x1b[0m \x1b[4:3;58;2;1;2;3mcurly\x1b[0m\r\n\
          \x1b]8;id=x_alacritty;https://example.test\x1b\\link\x1b]8;;\x1b\\ 界e\u{301}\r\n\
@@ -1396,7 +1677,10 @@ fn vt_history_round_trips_through_the_parser() {
     );
     assert!(ansi.contains("id=x_alacritty"));
 
-    let mut restored = Terminal::new(12, 4, 100_000);
+    let mut restored = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(12, 4),
+        shepr_core::scrollback::ScrollbackBudget::new(100_000),
+    );
     restored.write(ansi.as_bytes());
 
     let source_text = source
@@ -1416,10 +1700,10 @@ fn vt_history_round_trips_through_the_parser() {
         );
     }
     let styles = |terminal: &Terminal| {
-        let grid = terminal.term.grid();
-        let history = i32::try_from(terminal.term.history_size()).unwrap_or(i32::MAX);
+        let grid = terminal.emu.term.grid();
+        let history = i32::try_from(terminal.emu.term.history_size()).unwrap_or(i32::MAX);
         let mut styles = Vec::new();
-        for y in 0..i32::try_from(terminal.term.total_lines()).unwrap_or(i32::MAX) {
+        for y in 0..i32::try_from(terminal.emu.term.total_lines()).unwrap_or(i32::MAX) {
             for x in 0..grid.columns() {
                 let cell = &grid[Line(y - history)][Column(x)];
                 styles.push((
@@ -1436,7 +1720,10 @@ fn vt_history_round_trips_through_the_parser() {
 
 #[test]
 fn plain_reads_trim_trailing_blank_lines_and_spaces() {
-    let mut terminal = Terminal::new(10, 4, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 4),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"a  \r\n\r\nb   ");
     assert_eq!(
         terminal
@@ -1460,7 +1747,10 @@ fn plain_reads_trim_trailing_blank_lines_and_spaces() {
 
 #[test]
 fn a_long_title_is_cut_before_alacritty_keeps_or_stacks_it() {
-    let mut terminal = Terminal::new(20, 3, 100);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     // Two-byte characters, twice the cap in bytes.
     let long = "\u{e9}".repeat(MAX_TITLE_BYTES);
     let mut input = format!("\x1b]2;{long}\x07").into_bytes();
@@ -1485,7 +1775,10 @@ fn a_long_title_is_cut_before_alacritty_keeps_or_stacks_it() {
 
 #[test]
 fn titles_follow_the_parser_title_stack_and_ris() {
-    let mut terminal = Terminal::new(20, 3, 100);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     assert_eq!(terminal.take_effects().title_update, None);
 
     // An OSC ends at any ESC, exactly as the parser sees it: the CSI after it
@@ -1508,8 +1801,8 @@ fn titles_follow_the_parser_title_stack_and_ris() {
     );
 
     // Resizing re-announces the title inside alacritty; that is no change.
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(30, 5, 0, 0));
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(10, 2, 0, 0));
+    terminal.resize(shepr_core::geometry::PaneGeometry::cells_only(30, 5));
+    terminal.resize(shepr_core::geometry::PaneGeometry::cells_only(10, 2));
     assert_eq!(terminal.take_effects().title_update, None);
 
     terminal.write(b"\x1bc");
@@ -1521,21 +1814,47 @@ fn titles_follow_the_parser_title_stack_and_ris() {
 
 #[test]
 fn only_conemu_progress_is_reported_as_progress() {
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b]9;4;3;\x07");
     assert_eq!(
         terminal.take_effects().progress_update,
-        Some(ProgressReport(b"4;3;".to_vec()))
+        Some(Progress {
+            state: ProgressState::Indeterminate,
+            percent: None,
+        })
     );
     terminal.write(b"\x1b]9;build finished\x07");
     assert_eq!(terminal.take_effects().progress_update, None);
+}
+
+#[test]
+fn osc_bodies_are_collected_only_while_capture_is_on() {
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+    terminal.write(b"\x1b]0;off\x07");
+    assert!(terminal.take_effects().osc_bodies.is_empty());
+
+    terminal.set_osc_body_capture(true);
+    terminal.write(b"\x1b]0;on\x07\x1b]9;4;3;\x1b\\");
+    assert_eq!(
+        terminal.take_effects().osc_bodies,
+        vec![b"0;on".to_vec(), b"9;4;3;".to_vec()]
+    );
 }
 
 /// Inside a frame vte replays DECRQM after BSU and before ESU, so it must see
 /// the update as active; outside one it is reset.
 #[test]
 fn decrqm_2026_reports_an_active_synchronized_update() {
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?2026$p");
     terminal.write(b"\x1b[?2026h\x1b[?2026$p\x1bc\x1b[?2026$p\x1b[?2026l\x1b[?2026$p");
     assert_eq!(
@@ -1556,7 +1875,10 @@ fn decrqm_2026_reports_an_active_synchronized_update() {
 #[test]
 fn resetting_any_tracking_mode_ends_x10_mouse() {
     for mode in [1000u16, 1002, 1003] {
-        let mut terminal = Terminal::new(20, 3, 0);
+        let mut terminal = Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        );
         terminal.write(b"\x1b[?9h");
         assert!(terminal.mode_get(DecMode::X10Mouse));
         terminal.write(format!("\x1b[?{mode}l").as_bytes());
@@ -1582,7 +1904,10 @@ fn host_default_colors_sit_under_child_overrides() {
         g: 0x55,
         b: 0x66,
     };
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.set_default_colors(Some(host_fg), Some(host_bg));
     let mut render_state = RenderState::new();
     render_state.update(&terminal);
@@ -1632,7 +1957,10 @@ fn host_default_colors_sit_under_child_overrides() {
 
 #[test]
 fn cursor_shape_override_follows_decscusr_osc50_and_ris() {
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     assert!(!terminal.cursor_shape_overridden());
     terminal.write(b"\x1b[5 q");
     assert!(terminal.cursor_shape_overridden());
@@ -1646,7 +1974,10 @@ fn cursor_shape_override_follows_decscusr_osc50_and_ris() {
 
 #[test]
 fn parser_completes_a_child_sequence_split_across_writes() {
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[3");
     terminal.write(b"1mred");
     assert!(!terminal.mode_get(DecMode::BracketedPaste));
@@ -1700,8 +2031,11 @@ fn assert_rows_name_their_lines(terminal: &Terminal, rows: impl IntoIterator<Ite
 #[test]
 fn absolute_rows_keep_naming_their_lines_while_full_history_evicts() {
     // One byte of budget buys the minimum history.
-    let mut terminal = Terminal::new(10, 3, 1);
-    let limit = u64::try_from(MIN_SCROLLBACK_LINES).expect("test precondition");
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1),
+    );
+    let limit = u64::try_from(MIN_HISTORY_LINES).expect("test precondition");
     write_line_range(&mut terminal, 0..900, 1);
     assert_eq!(
         terminal.history_origin(),
@@ -1735,8 +2069,11 @@ fn absolute_rows_keep_naming_their_lines_while_full_history_evicts() {
 /// longer than the whole ring must still count every eviction.
 #[test]
 fn one_write_of_blank_lines_longer_than_the_ring_counts_every_eviction() {
-    let mut terminal = Terminal::new(10, 3, 1);
-    let limit = MIN_SCROLLBACK_LINES;
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1),
+    );
+    let limit = MIN_HISTORY_LINES;
     let retained = u64::try_from(limit + 3).expect("test precondition");
     write_line_range(&mut terminal, 0..limit + 10, 1);
     // The newest history row, which the next batch follows, is blank.
@@ -1760,7 +2097,10 @@ fn one_write_of_blank_lines_longer_than_the_ring_counts_every_eviction() {
 
 #[test]
 fn purges_retire_the_ids_of_purged_lines() {
-    let mut terminal = Terminal::new(10, 3, 100_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100_000),
+    );
     write_line_range(&mut terminal, 0..50, 1);
     assert_rows_name_their_lines(&terminal, [AbsRow(0), AbsRow(49)]);
 
@@ -1794,7 +2134,10 @@ fn purges_retire_the_ids_of_purged_lines() {
 
 #[test]
 fn the_alternate_screen_leaves_primary_row_ids_alone() {
-    let mut terminal = Terminal::new(10, 3, 1);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1),
+    );
     write_line_range(&mut terminal, 0..1_200, 1);
     let origin = terminal.history_origin();
     assert!(origin > AbsRow(0));
@@ -1821,26 +2164,32 @@ fn the_alternate_screen_leaves_primary_row_ids_alone() {
 
 #[test]
 fn height_resizes_keep_row_ids_and_column_resizes_retire_them() {
-    let mut terminal = Terminal::new(10, 5, 1);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(1),
+    );
     write_line_range(&mut terminal, 0..1_500, 1);
 
     // Height changes move lines between screen and history, evicting at the
     // history limit.
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(10, 3, 0, 0));
+    terminal.resize(shepr_core::geometry::PaneGeometry::cells_only(10, 3));
     assert_rows_name_their_lines(&terminal, [terminal.history_origin(), AbsRow(1_499)]);
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(10, 8, 0, 0));
+    terminal.resize(shepr_core::geometry::PaneGeometry::cells_only(10, 8));
     assert_rows_name_their_lines(&terminal, [terminal.history_origin(), AbsRow(1_499)]);
 
     // A column change re-wraps every line.
     let retained_end = terminal.absolute_row_for_screen(ScreenRow(terminal.total_rows()));
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(12, 8, 0, 0));
+    terminal.resize(shepr_core::geometry::PaneGeometry::cells_only(12, 8));
     assert!(terminal.history_origin() >= retained_end);
     assert_eq!(absolute_row_text(&terminal, AbsRow(1_499)), None);
 }
 
 #[test]
 fn visited_rows_match_plain_screen_reads() {
-    let mut terminal = Terminal::new(6, 3, 100_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(6, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100_000),
+    );
     terminal.write("ab界e\u{301}\u{10eeee}x\r\nwrapped-row-text\r\n".as_bytes());
     let rows = terminal.total_rows();
     for y in 0..rows {
@@ -1865,7 +2214,10 @@ fn visited_rows_match_plain_screen_reads() {
 
 #[test]
 fn kitty_unicode_placeholder_is_blank_in_reads_and_rendering() {
-    let mut terminal = Terminal::new(8, 2, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 2),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write("A\u{10eeee}B".as_bytes());
 
     assert_eq!(
@@ -1900,7 +2252,10 @@ fn ris_drops_the_childs_colour_overrides() {
         g: 0x22,
         b: 0x33,
     };
-    let mut terminal = Terminal::new(20, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.set_default_colors(Some(host_fg), Some(host_bg));
     terminal.write(
         b"\x1b]10;rgb:01/02/03\x07\x1b]11;rgb:04/05/06\x07\
@@ -1938,7 +2293,10 @@ fn ris_drops_the_childs_colour_overrides() {
 /// ending in blank cells.
 #[test]
 fn a_wrapped_line_read_in_pieces_joins_to_one_read() {
-    let mut terminal = Terminal::new(10, 3, 100_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100_000),
+    );
     terminal.write(b"head\r\n");
     terminal.write(
         "\x1b[1;31mred bold \x1b[0m plain \x1b[4:3mcurly\x1b[0m \
@@ -1994,7 +2352,10 @@ fn a_wrapped_line_read_in_pieces_joins_to_one_read() {
 /// where the text ends when cut back to its content.
 #[test]
 fn a_carrying_read_reports_its_content_end_and_keeps_blank_lines() {
-    let mut terminal = Terminal::new(4, 6, 1_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(4, 6),
+        shepr_core::scrollback::ScrollbackBudget::new(1_000),
+    );
     terminal.write(b"abc\r\n\r\n\x1b[42m  \x1b[0m\r\n\r\n");
     let cols = terminal.cols();
     let read = |first: usize, last: usize, carry: &mut AnsiCarry, open_end: bool| {
@@ -2024,7 +2385,10 @@ fn a_carrying_read_reports_its_content_end_and_keeps_blank_lines() {
 /// content: its read reports `Some(0)`, an open read reports its whole text.
 #[test]
 fn a_blank_continuation_of_a_wrapped_line_reports_content() {
-    let mut terminal = Terminal::new(4, 4, 1_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(4, 4),
+        shepr_core::scrollback::ScrollbackBudget::new(1_000),
+    );
     // The wrapped row keeps its wrap flag when the continuation is erased.
     terminal.write(b"abcde\x1b[2K\r\nnext");
     let cols = terminal.cols();
@@ -2060,13 +2424,16 @@ fn history_scroll_metrics_clamp_offsets_and_share_the_row_base() {
     assert_eq!(metrics.offset_from_bottom, 10);
     assert_eq!(metrics.viewport_top_row(), AbsRow(40));
     let metrics = metrics.with_offset(4);
-    assert_eq!(metrics.viewport_start(), 6);
+    assert_eq!(metrics.viewport_start(), ScreenRow(6));
     assert_eq!(metrics.absolute_row_at_viewport(ViewportRow(2)), AbsRow(48));
 }
 
 #[test]
 fn explicit_viewport_directions_saturate_at_both_ends() {
-    let mut terminal = Terminal::new(80, 3, 1_000_000);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1_000_000),
+    );
     write_numbered_lines(&mut terminal, 30);
     terminal.scroll_viewport_delta(ScrollTowards::Older(usize::MAX));
     let metrics = terminal.scrollbar();
@@ -2083,7 +2450,10 @@ fn explicit_viewport_directions_saturate_at_both_ends() {
 
 #[test]
 fn explicit_equal_colours_preserve_child_provenance_until_reset() {
-    let mut terminal = Terminal::new(8, 3, 0);
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let mut state = RenderState::new();
     terminal.write(b"\x1b]10;#ffffff\x07");
     state.update(&terminal);

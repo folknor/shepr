@@ -7,27 +7,24 @@ use super::*;
 impl AppState {
     pub(crate) fn set_pane_input(
         &mut self,
-        workspace_index: usize,
         pane_id: PaneId,
         right_click_passthrough: bool,
     ) -> Option<ViewMutation> {
-        let pane = self
-            .workspaces
-            .get_mut(workspace_index)?
-            .pane_state_mut(pane_id)?;
-        if pane.right_click_passthrough == right_click_passthrough {
+        let pane = self.workspaces.pane_mut(pane_id)?;
+        if !pane.set_right_click_passthrough(right_click_passthrough) {
             return Some(ViewMutation::Unchanged);
         }
-        pane.right_click_passthrough = right_click_passthrough;
         Some(ViewMutation::Metadata)
     }
 
-    pub(crate) fn rename_terminal(
+    /// Sets or clears the pane's manual label. `None` when no workspace holds
+    /// the pane.
+    pub(crate) fn rename_pane(
         &mut self,
-        terminal_id: &shepr_protocol::TerminalId,
+        pane_id: PaneId,
         label: Option<String>,
     ) -> Option<ViewMutation> {
-        let terminal = self.terminals.get_mut(terminal_id)?;
+        let terminal = self.workspaces.pane_mut(pane_id)?.terminal_mut();
         if terminal.manual_label() == label.as_deref() {
             return Some(ViewMutation::Unchanged);
         }
@@ -39,60 +36,53 @@ impl AppState {
         Some(ViewMutation::Metadata)
     }
 
-    /// Applies a geometry edit and records its session consequence together.
+    /// Applies a geometry edit to workspace `id` and records its session
+    /// consequence together.
     pub(crate) fn edit_workspace_geometry(
         &mut self,
-        workspace_index: usize,
+        id: &shepr_protocol::WorkspaceId,
         edit: impl FnOnce(&mut shepr_mux::workspace::Workspace) -> bool,
     ) -> ViewMutation {
-        if !self.workspaces.get_mut(workspace_index).is_some_and(edit) {
+        if !self.workspaces.get_mut(id).is_some_and(edit) {
             return ViewMutation::Unchanged;
         }
         self.mark_session_dirty();
         ViewMutation::Geometry
     }
 
-    pub(crate) fn swap_workspace_panes(
-        &mut self,
-        workspace_index: usize,
-        source: PaneId,
-        target: PaneId,
-    ) -> ViewMutation {
-        let Some(workspace) = self.workspaces.get_mut(workspace_index) else {
+    /// Swaps two panes of the workspace that holds `source` and focuses
+    /// `source`. Unchanged when no workspace holds it or `target` is not in
+    /// the same workspace.
+    pub(crate) fn swap_panes(&mut self, source: PaneId, target: PaneId) -> ViewMutation {
+        let Some(workspace) = self.workspace_of_mut(source) else {
             return ViewMutation::Unchanged;
         };
-        let focused = workspace.focused_pane_id();
+        let focused = workspace.tree().focused();
         if !workspace.swap_panes(source, target) {
             return ViewMutation::Unchanged;
         }
         workspace.focus_pane(source);
-        let focus_changed = workspace.focused_pane_id() != focused;
+        let focus_changed = workspace.tree().focused() != focused;
         self.mark_session_dirty();
         ViewMutation::Swap { focus_changed }
     }
 
-    /// Toggles the zoom of workspace `ws_idx` on `pane_id`, focusing the pane
-    /// first. `None` when the pane is not in the workspace. A workspace of one
-    /// pane has nothing to zoom over, so its toggle changes nothing, though
-    /// the pane is still focused.
-    pub(crate) fn toggle_pane_zoom(
-        &mut self,
-        ws_idx: usize,
-        pane_id: PaneId,
-    ) -> Option<PaneZoomOutcome> {
-        if !self.workspaces.get(ws_idx)?.contains_pane(pane_id) {
-            return None;
-        }
-        let focus_changed = self.focus_pane_in_workspace(ws_idx, pane_id).changed();
-        let workspace = self.workspaces.get_mut(ws_idx)?;
-        if workspace.pane_count() <= 1 {
+    /// Toggles the zoom of the workspace that holds `pane_id` on it, focusing
+    /// the pane first. `None` when no workspace holds the pane. A workspace of
+    /// one pane has nothing to zoom over, so its toggle changes nothing,
+    /// though the pane is still focused.
+    pub(crate) fn toggle_pane_zoom(&mut self, pane_id: PaneId) -> Option<PaneZoomOutcome> {
+        self.workspaces.pane(pane_id)?;
+        let focus_changed = self.focus_pane(pane_id).changed();
+        let workspace = self.workspace_of_mut(pane_id)?;
+        if workspace.tree().len() <= 1 {
             return Some(PaneZoomOutcome {
                 changed: false,
                 focus_changed,
             });
         }
 
-        let desired = !workspace.zoomed();
+        let desired = !workspace.tree().zoomed();
         // set_zoomed rejects only zooming a one-pane workspace. The count
         // check above already handles that case without reporting it missing;
         // unzooming always succeeds. The focus change is already committed, so

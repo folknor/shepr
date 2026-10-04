@@ -150,14 +150,17 @@ The libraries, from lower layers to higher layers. `brokkr.toml`'s
 dependency rules hold the layering; the one-line descriptions are
 orientation, and nothing checks them:
 
-- `shepr-core`: shared geometry, layout and plain types.
-- `shepr-platform`: Linux process, filesystem, IPC and terminal plumbing.
+- `shepr-core`: shared geometry (grids, host cells, pane pixel extents), layout
+  and plain types.
+- `shepr-platform`: Linux process, filesystem, IPC and terminal plumbing,
+  including the generic owned runtime directory and the `ClipboardRoute` the
+  client reads once at start. It holds no SSH policy.
 - `shepr-term`: terminal vocabulary and pure encoding shared by the emulator,
   the server and the client: row and point coordinates, selections, scroll
   metrics and scrollbar geometry and paint rows, colours, DEC and keyboard
-  modes, display widths and text column geometry, the VT spellings shepr writes, the host's observed theme and cell
-  size, key identity and chord matching, and child-facing key and mouse
-  encoding. It keeps `alacritty_terminal` and `vte` out of the client binary.
+  modes, display widths and text column geometry, the VT spellings shepr writes, the host's observed theme, key identity and chord matching, child-facing key and mouse
+  encoding, and the pixel mouse eligibility rule (which connection, pane and
+  report may carry pixel positions). It keeps `alacritty_terminal` and `vte` out of the client binary.
 - `shepr-vt`: terminal emulation and read formatting; it re-exports the
   `shepr-term` vocabulary it speaks.
 - `shepr-pty`: PTY process launch and IO, using `shepr-platform` for fd plumbing, socket admission and process identities.
@@ -210,7 +213,8 @@ orientation, and nothing checks them:
 - `shepr-remote`: configured machines and SSH connections, the SSH attempt
   timing, startup preflight, and the remote-host side of the SSH bridge (its
   stdio relay and idle watchdog), which ensures its local server through
-  `shepr-launch`. It classifies OpenSSH output into launch's failure
+  `shepr-launch`. It owns the SSH path policy (OpenSSH `%C` expansion, control
+  path naming, bridge socket naming; `crates/shepr-remote/src/ssh_paths.rs`). It classifies OpenSSH output into launch's failure
   vocabulary at its boundary and keeps discovery evidence to itself.
 - `shepr-git`: Git status as one subsystem: checkout discovery, the Git
   command runner with its environment and deadline policy, config dependency
@@ -326,17 +330,25 @@ every agent integration reports through it.
 
 ## Principles
 
-- **State is separated from runtime.** `AppState` is pure data, testable
-  without PTYs or async. Per-terminal state lives in `TerminalState`
-  (in `AppState::terminals`), which is plain data testable without a PTY;
-  `PaneRuntime` (held by `App`, outside `AppState`)
-  owns the PTY, its tasks and the state shared with them. `PaneState` is only
-  the pane's link to its terminal plus per-pane input flags.
+- **State is separated from runtime.** `AppState` is the session's data,
+  testable without PTYs or async. Each workspace's `PaneTree` owns its
+  layout and its pane records together, and each `PaneRecord` owns its
+  pane's `TerminalState`, which is plain data testable without a PTY;
+  `PaneRuntime` (held by `App`, outside `AppState`) owns the PTY, its tasks
+  and the state shared with them.
 - **Render is pure.** `compute_surface_for()` in
   `crates/shepr-server/src/ui/surface.rs` reads `AppState` by shared
   reference and returns one workspace laid out for one client's surface; pane
-  runtimes are resized by explicit geometry paths (the ones taking a
-  `PaneResizer`), and surface drawing takes shared references and only draws.
+  runtimes are resized by `App::apply_workspace_geometry`, from the same
+  `PaneSurface` descriptions (`ui/pane_surface.rs`: rects, scrollbar gutter and
+  track, cursor) that both the full render and the server's retained patches
+  consume, and surface drawing takes shared references and only draws. What
+  each client was last sent is its `CommittedBaseline` (surface and pane
+  identities, committed together), owned by `ClientRenderState`.
+  The client shell composes the same way: `ClientShellState::compose` resolves
+  a `ShellView` (layout, scroll and hit rects) and draws it, both by shared
+  reference, then commits the view and the resolved scroll positions in one
+  step; drawing never writes shell state.
 - **Presentation is per client.** Each connection on the server keeps its
   own surface size, outer focus, location and window title; nothing projects
   one client's view into `AppState`. What panes have one of is decided from
@@ -360,8 +372,11 @@ every agent integration reports through it.
   plumbing lives in the flat `crates/shepr-platform/src/` crate (`lib.rs` plus
   self-contained submodules). Git command environment and deadline policy lives
   in `shepr-git`, and the logind shutdown monitor and session checkpoint
-  lifecycle live in `shepr-server`. `shepr-platform` classifies pane exit
-  reasons and whether they require a final session checkpoint. There is no
+  lifecycle live in `shepr-server`. `shepr-platform` only tells whether a
+  reaped child exited with a code or was signalled; `PaneEnding` in
+  `shepr-mux`, next to the pane exit arbiter, carries why a pane ended and
+  whether its terminal core is intact, and its `needs_checkpoint()` is the one
+  answer to whether the exit gets a final session checkpoint. There is no
   per-OS layer and no shims standing in for other platforms.
 - **Detection is decoupled.** The detector reads a screen snapshot and never
   touches the parser or viewport state. When changing a manifest, capture the

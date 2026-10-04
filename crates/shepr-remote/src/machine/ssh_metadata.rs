@@ -117,7 +117,7 @@ fn store_private_json_with_directory_sync(
             preserve_metadata_from: None,
             refuse_symlink_target: true,
             durability: shepr_platform::publish_file::Durability::Directory,
-            replace: true,
+            existing: shepr_platform::publish_file::PublishTarget::ReplaceExisting,
             mode: 0o600,
         },
     )?;

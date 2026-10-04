@@ -221,7 +221,10 @@ fn config_update_lock_resolves_parent_symlink_aliases() {
     assert_eq!(alias_lock, actual_lock);
 
     let _lock = lock_config_for_update(&alias_config, &paths).expect("test precondition");
-    let error = match shepr_platform::ipc::acquire_flock_lock(&actual_lock, false) {
+    let error = match shepr_platform::ipc::acquire_flock_lock(
+        &actual_lock,
+        shepr_platform::ipc::LockWait::FailIfHeld,
+    ) {
         Ok(_) => panic!("alias path did not share the existing config lock"),
         Err(error) => error,
     };
@@ -411,25 +414,15 @@ fn writable_directory_does_not_bypass_read_only_config() {
     clippy::disallowed_methods,
     reason = "AGENT_TEST_CONFIG_PARTIAL_WRITE_DIR is this test's own re-exec harness probe, not a shepr setting"
 )]
-fn partial_write_errors_preserve_files_and_do_not_remove_collisions() {
+fn partial_write_errors_preserve_files_and_leave_no_staging_file() {
     const CHILD: &str = "AGENT_TEST_CONFIG_PARTIAL_WRITE_DIR";
     if let Some(path) = std::env::var_os(CHILD) {
         let dir = PathBuf::from(path);
-        // This process runs only this test. A collision must neither be used nor removed.
-        crate::atomic_replace::reset_temp_sequence(0);
-        crate::atomic_replace::set_temp_token_for_test(0);
-        let collision = crate::atomic_replace::temporary_path_for_test(&dir, ".shepr-config", 0)
-            .expect("test precondition");
-        fs::write(&collision, b"unrelated file").expect("test precondition");
         for name in ["existing", "new"] {
             let error =
                 write_config(&dir.join(name), vec![b'x'; 8192]).expect_err("test precondition");
             assert_eq!(error.raw_os_error(), Some(libc::EFBIG));
         }
-        assert_eq!(
-            fs::read(collision).expect("test precondition"),
-            b"unrelated file"
-        );
         println!("partial-write paths executed");
         return;
     }
@@ -445,7 +438,7 @@ fn partial_write_errors_preserve_files_and_do_not_remove_collisions() {
         Step::Exec(vec![
             std::env::current_exe().expect("test precondition").into(),
             "--exact".into(),
-            "config_file::tests::partial_write_errors_preserve_files_and_do_not_remove_collisions"
+            "config_file::tests::partial_write_errors_preserve_files_and_leave_no_staging_file"
                 .into(),
             "--nocapture".into(),
         ]),
@@ -462,7 +455,7 @@ fn partial_write_errors_preserve_files_and_do_not_remove_collisions() {
     assert!(!dir.0.join("new").try_exists().expect("stat new"));
     assert_eq!(
         fs::read_dir(&dir.0).expect("test precondition").count(),
-        2,
-        "only original and collision may remain"
+        1,
+        "only the original may remain"
     );
 }

@@ -16,6 +16,7 @@ use crate::limits::{
     PASSWD_BUFFER_GROWTH_FACTOR, PASSWD_BUFFER_INITIAL_BYTES, PASSWD_BUFFER_MAX_BYTES,
 };
 
+use shepr_core::absolute_path::AbsolutePath;
 use shepr_core::env::{ChildEnv, EnvVar, RegisteredEnv};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,8 +95,11 @@ impl PtyCommand {
     /// Working directory. Unless [`Self::require_cwd`] is set, a directory the
     /// child cannot enter falls back to `HOME`, then the passwd home, then
     /// `/`. The child decides, by chdir; nothing is checked before the fork.
-    pub fn cwd<D: AsRef<OsStr>>(&mut self, dir: D) {
-        self.cwd = Some(dir.as_ref().to_owned());
+    /// The directory is absolute by type, so no relative path can reach the
+    /// child to resolve against the server's own working directory; whether it
+    /// exists is still the child's chdir to say.
+    pub fn cwd(&mut self, dir: &AbsolutePath) {
+        self.cwd = Some(AsRef::<OsStr>::as_ref(dir).to_owned());
     }
 
     /// Start only in the requested directory: if the child cannot enter it,
@@ -279,6 +283,10 @@ mod tests {
             .collect()
     }
 
+    fn abs(path: impl AsRef<Path>) -> AbsolutePath {
+        AbsolutePath::new(path.as_ref()).expect("test cwd is absolute")
+    }
+
     #[test]
     fn padded_or_relative_home_is_not_a_cwd_fallback() {
         let _env = shepr_test_support::IsolatedEnv::new();
@@ -325,7 +333,7 @@ mod tests {
     fn each_candidate_sets_pwd_to_its_directory_and_drops_server_oldpwd() {
         let scratch = shepr_test_support::ScratchDir::new("pty-command-cwd-env");
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
-        cmd.cwd(scratch.path());
+        cmd.cwd(&abs(scratch.path()));
         cmd.env(EnvVar::Home, "/");
         cmd.env(ChildEnv::Pwd, "/server/working-directory");
         cmd.env(ChildEnv::Oldpwd, "/server/previous-directory");
@@ -342,7 +350,7 @@ mod tests {
     #[test]
     fn fallback_candidates_are_home_then_passwd_home_then_root_without_repeats() {
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
-        cmd.cwd("/requested");
+        cmd.cwd(&abs("/requested"));
         cmd.env(EnvVar::Home, "/home/user");
         let spec = cmd
             .launch_spec(Some(OsStr::new("/home/user")))
@@ -361,7 +369,7 @@ mod tests {
     #[test]
     fn a_required_cwd_has_no_fallback() {
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
-        cmd.cwd("/requested");
+        cmd.cwd(&abs("/requested"));
         cmd.require_cwd();
         let spec = cmd
             .launch_spec(Some(OsStr::new("/home")))

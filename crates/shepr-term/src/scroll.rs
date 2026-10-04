@@ -1,7 +1,7 @@
 //! Scroll positions and the scrollbar geometry the server draws and the
 //! client hit-tests.
 
-use crate::{AbsRow, ViewportRow};
+use crate::{AbsRow, ScreenRow, ViewportRow};
 
 /// A bottom-based history viewport. Construction clamps the offset to retained history.
 /// The read-only fields are exposed through Deref; there is no mutable field access.
@@ -67,13 +67,13 @@ impl ScrollMetrics {
     }
 
     /// Retained-buffer row at the top, counted from the oldest retained row.
-    pub fn viewport_start(self) -> usize {
-        self.max_offset_from_bottom - self.offset_from_bottom
+    pub fn viewport_start(self) -> ScreenRow {
+        ScreenRow(self.max_offset_from_bottom - self.offset_from_bottom)
     }
 
     pub fn viewport_top_row(self) -> AbsRow {
         self.history_origin
-            .saturating_add(u64::try_from(self.viewport_start()).unwrap_or(u64::MAX))
+            .saturating_add(u64::try_from(self.viewport_start().0).unwrap_or(u64::MAX))
     }
 
     pub fn absolute_row_at_viewport(self, row: ViewportRow) -> AbsRow {
@@ -132,7 +132,7 @@ impl ScrollbarMetrics for ListScroll {
 
 impl ScrollbarMetrics for ScrollMetrics {
     fn start(self) -> usize {
-        self.viewport_start()
+        self.viewport_start().0
     }
     fn max_start(self) -> usize {
         self.max_offset_from_bottom

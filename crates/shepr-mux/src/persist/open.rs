@@ -4,16 +4,15 @@ use std::time::Instant;
 use tokio::sync::Notify;
 
 use crate::pane::{PaneLauncher, PaneRuntime};
-use crate::terminal::TerminalState;
-use crate::workspace::PaneGeometry;
+use crate::workspace::WorkspaceChrome;
 use crate::workspace::{Workspace, WorkspaceIdAllocator};
-use shepr_protocol::TerminalId;
+use shepr_core::layout::PaneId;
 
 use super::actor::SessionPersister;
+use super::history::HistoryCarry;
 use super::lock::DataDirLease;
+use super::recovery::SessionBackupPolicy;
 use super::restore::RestoredSession;
-use super::snapshot::HistoryCarry;
-use super::writer::SessionBackupPolicy;
 use super::{SessionLoad, load, load_history, plan_restore, session_backup_directory};
 
 /// Whether a server restores and saves the session, or only holds its
@@ -28,7 +27,7 @@ pub enum SessionOpenPolicy {
 pub struct SessionOpenOptions<'a> {
     pub policy: SessionOpenPolicy,
     pub pane_history: bool,
-    pub geometry: PaneGeometry,
+    pub geometry: WorkspaceChrome,
     pub launcher: &'a PaneLauncher,
     pub resume_agents_on_restore: bool,
     pub now: Instant,
@@ -73,15 +72,14 @@ pub struct SessionRestoreSummary {
 /// The restored app data after its carried history has moved to the persister.
 pub struct OpenedRestore {
     pub workspaces: Vec<Workspace>,
-    pub terminals: std::collections::HashMap<TerminalId, TerminalState>,
-    pub terminal_runtimes: std::collections::HashMap<TerminalId, PaneRuntime>,
+    pub terminal_runtimes: std::collections::HashMap<PaneId, PaneRuntime>,
     pub active: Option<usize>,
 }
 
 /// Reads and restores a session, decides whether its source needs a recovery
 /// copy before the first write, and transfers the lease to its persister.
 /// Restored workspaces keep their saved IDs, and `workspace_ids` (the
-/// allocator of the state they join) is moved past them before it issues
+/// allocator of the workspace set they join) is moved past them before it issues
 /// any replacement.
 pub fn open_session(
     lease: DataDirLease,
@@ -128,7 +126,6 @@ pub fn open_session(
                 .launch(options.launcher);
                 let RestoredSession {
                     workspaces,
-                    terminals,
                     terminal_runtimes,
                     active,
                     history_carry: restored_history,
@@ -161,7 +158,6 @@ pub fn open_session(
                 });
                 restored = Some(OpenedRestore {
                     workspaces,
-                    terminals,
                     terminal_runtimes,
                     active,
                 });

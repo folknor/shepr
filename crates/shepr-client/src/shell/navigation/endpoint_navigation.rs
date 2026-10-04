@@ -1,8 +1,9 @@
 use crate::shell::state::ClientShellAction;
 
 use crate::endpoint::ClientEndpointId;
+use crate::shell::input::pointer::ClientWorkspacePress;
 use crate::shell::navigation::location::Location;
-use crate::shell::state::{ClientShellInput, ClientShellState, ClientWorkspacePress};
+use crate::shell::state::{ClientShellInput, ClientShellState};
 use crate::shell::{EndpointNotice, EndpointNoticeKind};
 
 impl ClientShellState {
@@ -10,9 +11,9 @@ impl ClientShellState {
         &self,
         point: (u16, u16),
     ) -> Option<shepr_protocol::WorkspaceId> {
-        self.hits
-            .workspaces
-            .iter()
+        self.presentation
+            .shown()
+            .workspaces()
             .find(|hit| {
                 hit.location.endpoint == *self.endpoints.presented()
                     && crate::shell::input::hit_test::contains(hit.rect, point)
@@ -25,7 +26,7 @@ impl ClientShellState {
         press: &ClientWorkspacePress,
     ) -> bool {
         press.location.endpoint == *self.endpoints.presented()
-            && self.snapshot.as_deref().is_some_and(|snapshot| {
+            && self.endpoints.active.snapshot().is_some_and(|snapshot| {
                 let Some(workspace_id) = press.location.workspace_id() else {
                     return false;
                 };
@@ -50,9 +51,9 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         let Some(hit) = self
-            .hits
-            .machines
-            .iter()
+            .presentation
+            .shown()
+            .machines()
             .find(|hit| crate::shell::input::hit_test::contains(hit.rect, point))
         else {
             return false;
@@ -60,22 +61,23 @@ impl ClientShellState {
         let endpoint_id = hit.location.endpoint.clone();
         let collapse_toggle = crate::shell::input::hit_test::contains(hit.collapse_toggle, point);
         if collapse_toggle {
-            if !self.collapsed_endpoints.remove(&endpoint_id) {
-                self.collapsed_endpoints.insert(endpoint_id.clone());
+            if !self.endpoints.collapsed.remove(&endpoint_id) {
+                self.endpoints.collapsed.insert(endpoint_id.clone());
             }
             outcome.repaint = true;
         } else if endpoint_id == *self.endpoints.presented() {
-            if !self.collapsed_endpoints.remove(&endpoint_id) {
-                self.collapsed_endpoints.insert(endpoint_id.clone());
+            if !self.endpoints.collapsed.remove(&endpoint_id) {
+                self.endpoints.collapsed.insert(endpoint_id.clone());
             }
             // Selecting the shown endpoint cancels a move in progress.
             self.activate_endpoint(endpoint_id, outcome);
             outcome.repaint = true;
         } else if self.endpoint_can_select(&endpoint_id) {
-            outcome.actions.push(ClientShellAction::ActivateEndpoint {
-                endpoint_id,
-                target: None,
-            });
+            outcome
+                .actions
+                .push(ClientShellAction::ActivateEndpoint(Location::machine(
+                    endpoint_id,
+                )));
         } else {
             self.receive_endpoint_unavailable(&EndpointNotice::new(
                 endpoint_id,
@@ -92,9 +94,9 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         let Some(location) = self
-            .hits
-            .agent_hits
-            .iter()
+            .presentation
+            .shown()
+            .agents()
             .find(|hit| crate::shell::input::hit_test::contains(hit.rect, point))
             .map(|hit| hit.location.clone())
         else {
@@ -125,8 +127,9 @@ impl ClientShellState {
                 return true;
             }
             let focused = self
-                .snapshot
-                .as_deref()
+                .endpoints
+                .active
+                .snapshot()
                 .and_then(|snapshot| snapshot.focused_workspace_id.as_ref());
             let current = workspaces.iter().position(|target| {
                 target.location.endpoint == *self.endpoints.presented()
@@ -152,13 +155,14 @@ impl ClientShellState {
             action,
             KeybindAction::PreviousAgent | KeybindAction::NextAgent | KeybindAction::FocusAgent(_)
         ) {
-            let agents = self.agent_panel_model.targets();
+            let agents = self.endpoints.agent_panel_model.targets();
             if agents.is_empty() {
                 return true;
             }
             let focused = self
-                .snapshot
-                .as_deref()
+                .endpoints
+                .active
+                .snapshot()
                 .and_then(|snapshot| snapshot.focused_pane_id.as_ref());
             let Some(next) = crate::shell::navigation::aggregate_navigation::agent_target_index(
                 agents,
@@ -169,19 +173,14 @@ impl ClientShellState {
                 return true;
             };
             let target = agents[next].clone();
-            let target_endpoint_id = target.endpoint.clone();
-            let Some(target_pane_id) = target.pane_id() else {
+            if target.pane_id().is_none() {
                 return true;
-            };
+            }
             if self.focus_or_activate(target.clone(), outcome) {
-                if target_endpoint_id == *self.endpoints.presented() {
-                    self.reveal_endpoint_agent(
-                        &target_endpoint_id,
-                        &target_pane_id,
-                        self.hits.agent_body.height,
-                    );
+                if target.endpoint == *self.endpoints.presented() {
+                    self.sidebar_scroll.reveal_agent(target);
                 } else {
-                    self.pending_agent_reveal = Some(target);
+                    self.sidebar_scroll.reveal_agent_after_activation(target);
                 }
                 outcome.repaint = true;
             }
@@ -196,7 +195,7 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         self.pending_workspace_highlight = None;
-        self.pending_agent_reveal = None;
+        self.sidebar_scroll.cancel_agent_reveal_after_activation();
         if !self.endpoint_can_select(&endpoint_id) {
             if endpoint_id != *self.endpoints.presented() {
                 self.receive_endpoint_unavailable(&EndpointNotice::new(
@@ -207,10 +206,11 @@ impl ClientShellState {
             }
             return false;
         }
-        outcome.actions.push(ClientShellAction::ActivateEndpoint {
-            endpoint_id,
-            target: None,
-        });
+        outcome
+            .actions
+            .push(ClientShellAction::ActivateEndpoint(Location::machine(
+                endpoint_id,
+            )));
         true
     }
 
@@ -220,12 +220,10 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         self.pending_workspace_highlight = None;
-        self.pending_agent_reveal = None;
-        let target = location.focus_target();
-        let endpoint_id = location.endpoint;
-        if !self.endpoint_can_select(&endpoint_id) {
+        self.sidebar_scroll.cancel_agent_reveal_after_activation();
+        if !self.endpoint_can_select(&location.endpoint) {
             self.receive_endpoint_unavailable(&EndpointNotice::new(
-                endpoint_id,
+                location.endpoint,
                 EndpointNoticeKind::NotReady,
             ));
             outcome.repaint = true;
@@ -233,46 +231,47 @@ impl ClientShellState {
         }
         // The runtime resolves every explicit pick against the shown endpoint: focus it,
         // prepare an unavailable endpoint, or retarget a move already in progress.
-        outcome.actions.push(ClientShellAction::ActivateEndpoint {
-            endpoint_id,
-            target,
-        });
+        outcome
+            .actions
+            .push(ClientShellAction::ActivateEndpoint(location));
         true
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::shell::navigation::location::Location;
+    use crate::shell::config::ClientShellConfig;
+    use crate::shell::navigation::location::{Location, LocationTarget};
     use crate::shell::state::ClientShellAction;
-    use crate::shell::state::ClientShellConfig;
     use ratatui::layout::Rect;
 
     use crate::endpoint::ClientEndpointId;
-    use crate::shell::endpoints::MachineHit;
     use crate::shell::state::{ClientShellInput, ClientShellState};
+    use crate::shell::view::{MachineHit, ShellView};
 
     #[test]
     fn displayed_machine_body_submits_a_targetless_selection() {
         let mut state = ClientShellState::new(ClientShellConfig::from_config(
             &shepr_config::ClientConfig::default(),
         ));
-        state.hits.machines.push(MachineHit {
-            rect: Rect::new(0, 0, 10, 1),
-            status_badge: Rect::default(),
-            collapse_toggle: Rect::new(0, 0, 1, 1),
-            location: Location::machine(ClientEndpointId::Local),
-        });
+        state
+            .presentation
+            .set_view(ShellView::with_machine_hit(MachineHit {
+                rect: Rect::new(0, 0, 10, 1),
+                status_badge: Rect::default(),
+                collapse_toggle: Rect::new(0, 0, 1, 1),
+                location: Location::machine(ClientEndpointId::Local),
+            }));
         let mut outcome = ClientShellInput::default();
 
         assert!(state.handle_endpoint_machine_click((5, 0), &mut outcome));
         assert!(matches!(
             outcome.actions.as_slice(),
-            [ClientShellAction::ActivateEndpoint {
-                endpoint_id: ClientEndpointId::Local,
-                target: None,
-            }]
+            [ClientShellAction::ActivateEndpoint(Location {
+                endpoint: ClientEndpointId::Local,
+                target: LocationTarget::Machine,
+            })]
         ));
-        assert!(state.collapsed_endpoints.contains(&ClientEndpointId::Local));
+        assert!(state.endpoints.collapsed.contains(&ClientEndpointId::Local));
     }
 }

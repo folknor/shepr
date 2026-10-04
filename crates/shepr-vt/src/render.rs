@@ -17,8 +17,7 @@ pub enum CursorVisualStyle {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CursorViewport {
-    pub x: u16,
-    pub y: u16,
+    pub at: Point<ViewportRow>,
     pub wide_tail: bool,
 }
 
@@ -32,7 +31,7 @@ pub struct RenderCursor {
 
 impl Terminal {
     fn render_cursor(&self) -> RenderCursor {
-        let grid = self.term.grid();
+        let grid = self.emu.term.grid();
         let point = grid.cursor.point;
         let display_offset = i64::try_from(grid.display_offset()).unwrap_or(i64::MAX);
         let viewport_y = i64::from(point.line.0) + display_offset;
@@ -42,14 +41,16 @@ impl Terminal {
             && viewport_y_usize < grid.screen_lines()
             && point.column.0 < grid.columns())
         .then(|| CursorViewport {
-            x: saturating_u16(point.column.0),
-            y: saturating_u16(viewport_y_usize),
+            at: Point::new(
+                ViewportRow(saturating_u16(viewport_y_usize)),
+                saturating_u16(point.column.0),
+            ),
             wide_tail: grid[point].flags.contains(Flags::WIDE_CHAR_SPACER),
         });
-        let style = self.term.cursor_style();
+        let style = self.emu.term.cursor_style();
         RenderCursor {
             viewport,
-            visible: self.term.mode().contains(TermMode::SHOW_CURSOR),
+            visible: self.emu.term.mode().contains(TermMode::SHOW_CURSOR),
             blinking: style.blinking,
             visual_style: match style.shape {
                 CursorShape::Block | CursorShape::Hidden => CursorVisualStyle::Block,
@@ -58,41 +59,6 @@ impl Terminal {
                 CursorShape::HollowBlock => CursorVisualStyle::BlockHollow,
             },
         }
-    }
-
-    /// Folds alacritty's damage since the last call into our generation
-    /// counters, then resets alacritty's tracking.
-    pub(super) fn collect_damage(&mut self) {
-        let screen_lines = self.term.screen_lines();
-        if self.row_damage_generations.len() != screen_lines {
-            self.row_damage_generations = vec![0; screen_lines];
-            self.bump_full_damage();
-        }
-        let next = self.damage_generation + 1;
-        let mut damaged = false;
-        match self.term.damage() {
-            TermDamage::Full => {
-                self.full_damage_generation = next;
-                damaged = true;
-            }
-            TermDamage::Partial(lines) => {
-                for bounds in lines {
-                    if let Some(slot) = self.row_damage_generations.get_mut(bounds.line) {
-                        *slot = next;
-                        damaged = true;
-                    }
-                }
-            }
-        }
-        self.term.reset_damage();
-        if damaged {
-            self.damage_generation = next;
-        }
-    }
-
-    pub(super) fn bump_full_damage(&mut self) {
-        self.damage_generation += 1;
-        self.full_damage_generation = self.damage_generation;
     }
 }
 
@@ -138,7 +104,7 @@ impl RenderState {
     }
 
     pub fn update(&mut self, terminal: &Terminal) {
-        let grid = terminal.term.grid();
+        let grid = terminal.emu.term.grid();
         let cols = grid.columns();
         let rows = grid.screen_lines();
         let display_offset = grid.display_offset();
@@ -147,14 +113,10 @@ impl RenderState {
             self.cols = cols;
             self.rows = (0..rows).map(|_| RowSnapshot::default()).collect();
         }
-        let full = dims_changed || terminal.full_damage_generation > self.seen_generation;
+        let full = dims_changed || terminal.damage.full_since(self.seen_generation);
         let mut any_changed = false;
         for (y, snapshot) in self.rows.iter_mut().enumerate() {
-            let changed = full
-                || terminal
-                    .row_damage_generations
-                    .get(y)
-                    .is_some_and(|generation| *generation > self.seen_generation);
+            let changed = full || terminal.damage.row_since(y, self.seen_generation);
             if !changed {
                 continue;
             }
@@ -177,7 +139,7 @@ impl RenderState {
         } else if any_changed && self.dirty == Dirty::Clean {
             self.dirty = Dirty::Partial;
         }
-        self.seen_generation = terminal.damage_generation;
+        self.seen_generation = terminal.damage.generation();
         self.cursor = terminal.render_cursor();
         self.colors = terminal.render_colors();
     }
@@ -265,8 +227,8 @@ pub struct RowView<'a> {
 }
 
 impl<'a> RowView<'a> {
-    pub fn y(&self) -> u16 {
-        saturating_u16(self.index)
+    pub fn y(&self) -> ViewportRow {
+        ViewportRow(saturating_u16(self.index))
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -293,7 +255,7 @@ impl DirtyRows<'_> {
     pub fn rows(&self) -> impl Iterator<Item = RowView<'_>> {
         self.state
             .dirty_rows()
-            .take_while(|row| row.y() < self.max_rows)
+            .take_while(|row| row.y().0 < self.max_rows)
     }
 
     pub fn commit(self) {

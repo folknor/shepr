@@ -20,7 +20,7 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
 use shepr_platform::ipc::{
-    Accepted, FirstByte, LocalListener, LocalStream, PeerAdmission, accept_peer, peek_first_byte,
+    Accepted, FirstByte, LocalStream, PeerAdmission, accept_peer, peek_first_byte,
 };
 use tracing::{debug, error, info, warn};
 
@@ -207,7 +207,7 @@ fn hand_off(
 }
 
 pub(super) fn start_listener(
-    listener: LocalListener,
+    listener: std::os::unix::net::UnixListener,
     running: Arc<AtomicBool>,
     api_tx: crate::ApiRequestSender,
     stop: Arc<crate::ServerStopSignal>,
@@ -228,7 +228,7 @@ pub(super) fn start_listener(
 }
 
 fn start_listener_with_dispatch(
-    listener: LocalListener,
+    listener: std::os::unix::net::UnixListener,
     running: Arc<AtomicBool>,
     dispatch: Dispatch,
     unclassified: ConnectionAdmission,
@@ -402,7 +402,10 @@ mod tests {
         let mut bytes = local_preamble().to_vec();
         bytes.extend(
             shepr_protocol::encode_message(&ClientMessage::EndpointHello(EndpointClientHello {
-                geometry: shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, true),
+                geometry: shepr_protocol::TerminalGeometry::from_host(
+                    shepr_core::geometry::GridSize::clamped(80, 24),
+                    shepr_core::geometry::HostCell::from_host(8, 16, true),
+                ),
                 mouse_capture: true,
                 surface_active: true,
             }))
@@ -447,10 +450,13 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("merged-listener");
         let path = scratch.join("server.sock");
         let socket_path = shepr_platform::ipc::SocketPath::new(path.clone()).expect("socket path");
-        let (listener, socket_file, lock) =
-            shepr_platform::ipc::bind_owned_private_socket(&socket_path)
-                .expect("bind")
-                .into_parts();
+        let shepr_platform::ipc::BoundSocketParts {
+            listener,
+            file: socket_file,
+            lock,
+        } = shepr_platform::ipc::bind_owned_private_socket(&socket_path)
+            .expect("bind")
+            .into_parts();
         let running = Arc::new(AtomicBool::new(true));
         let gate = dispatch.gate.clone();
         let thread = start_listener_with_dispatch(

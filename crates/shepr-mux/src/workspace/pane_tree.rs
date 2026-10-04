@@ -1,72 +1,524 @@
-//! A workspace's pane tree: the layout, the pane records and the operations
-//! that keep the two in agreement.
+//! A workspace's pane tree: the layout, a record per pane, the root pane, the
+//! zoom and the public numbering, kept in agreement by construction.
 
 use std::collections::{HashMap, HashSet};
-use std::ops::{Deref, DerefMut};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use super::{PaneGeometry, Workspace};
-use crate::pane::{PaneRuntime, PaneRuntimeRegistry, PaneState};
+use super::shape::Shape;
+use super::{Workspace, WorkspaceChrome};
 use crate::terminal::TerminalState;
-use shepr_core::layout::{Direction, NavDirection, PaneId, TileLayout};
-use shepr_protocol::TerminalId;
+use shepr_core::layout::{
+    Direction, InvalidSavedLayout, LayoutEpoch, NavDirection, Node, PaneId, RatioDelta, SplitPath,
+    SplitRatio, TileLayout,
+};
+use shepr_protocol::{PanePublicNumber, PublicPaneId, WorkspaceId};
 
-/// One pane's state and stable public number. Keeping both in the workspace
-/// record makes its pane map the source of pane identity metadata.
-pub struct WorkspacePane {
-    pub pane_state: PaneState,
-    pub public_number: shepr_protocol::PanePublicNumber,
+/// One pane of a workspace: its public number, its terminal and its input
+/// flag. Built only by `PaneTree`, so a record exists only inside a tree.
+pub struct PaneRecord {
+    number: PanePublicNumber,
+    terminal: TerminalState,
+    /// Whether unmodified right-click gestures are forwarded to the pane
+    /// application.
+    right_click_passthrough: bool,
 }
 
-impl Deref for WorkspacePane {
-    type Target = PaneState;
-
-    fn deref(&self) -> &Self::Target {
-        &self.pane_state
-    }
-}
-
-impl DerefMut for WorkspacePane {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.pane_state
-    }
-}
-
-impl WorkspacePane {
-    pub fn new(pane_state: PaneState, public_number: shepr_protocol::PanePublicNumber) -> Self {
+impl PaneRecord {
+    fn new(number: PanePublicNumber, terminal: TerminalState) -> Self {
         Self {
-            pane_state,
-            public_number,
+            number,
+            terminal,
+            right_click_passthrough: false,
+        }
+    }
+
+    /// The pane's stable public number within its workspace.
+    pub fn number(&self) -> PanePublicNumber {
+        self.number
+    }
+
+    pub fn terminal(&self) -> &TerminalState {
+        &self.terminal
+    }
+
+    pub fn terminal_mut(&mut self) -> &mut TerminalState {
+        &mut self.terminal
+    }
+
+    pub fn right_click_passthrough(&self) -> bool {
+        self.right_click_passthrough
+    }
+
+    /// True when the flag changed.
+    pub fn set_right_click_passthrough(&mut self, on: bool) -> bool {
+        let changed = self.right_click_passthrough != on;
+        self.right_click_passthrough = on;
+        changed
+    }
+
+    /// Replaces the pane's terminal state in place; its number and input flag
+    /// stay.
+    pub(crate) fn replace_terminal(&mut self, terminal: TerminalState) {
+        self.terminal = terminal;
+    }
+}
+
+/// A workspace's panes: the layout, a record per leaf, the root pane, the
+/// zoom and the next public number, kept in agreement by construction.
+///
+/// The leaves of `layout` are exactly the keys of `panes`; `root` is one of
+/// them; every number is distinct and below `next_number`; `zoomed` implies a
+/// second pane. Every constructor and mutator below keeps all four, so
+/// nothing re-checks them.
+pub struct PaneTree {
+    layout: TileLayout,
+    panes: HashMap<PaneId, PaneRecord>,
+    root: PaneId,
+    zoomed: bool,
+    next_number: PanePublicNumber,
+    /// Advanced by every mutator that adds, removes or swaps a leaf, so a
+    /// `SplitPath` read from `layout` is valid exactly while its epoch is.
+    layout_epoch: LayoutEpoch,
+}
+
+/// What a tree keeps besides its shape, as a saved file states it.
+#[derive(Debug, Clone, Copy)]
+pub struct SavedTreeState {
+    pub focus: PanePublicNumber,
+    pub root: PanePublicNumber,
+    pub zoomed: bool,
+    pub next_number: PanePublicNumber,
+}
+
+/// Why a saved tree was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeRejection {
+    RepeatedNumber(PanePublicNumber),
+    NumberNotBelowNext(PanePublicNumber),
+    /// Only from `build`; fresh IDs and a resolved focus rule it out.
+    Layout(InvalidSavedLayout),
+}
+
+/// Why a pane could not be removed from its tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoveRefusal {
+    /// The pane is not in the tree.
+    NotHere,
+    /// The pane is the tree's only one; its workspace goes instead.
+    LastPane,
+}
+
+/// A shape whose numbers, focus, root and zoom were admitted. Building it
+/// allocates the pane IDs and cannot be refused by the saved data.
+pub struct TreePlan<T> {
+    shape: Shape<(PanePublicNumber, T)>,
+    focus: PanePublicNumber,
+    root: PanePublicNumber,
+    zoomed: bool,
+    next_number: PanePublicNumber,
+}
+
+impl<T> TreePlan<T> {
+    /// The leaf of the root pane.
+    pub fn root_leaf(&self) -> &T {
+        let leaves = self.shape.leaves();
+        let entry = leaves
+            .iter()
+            .find(|(number, _)| *number == self.root)
+            .copied()
+            .unwrap_or_else(|| self.shape.first_leaf());
+        let (_, leaf) = entry;
+        leaf
+    }
+
+    /// Whether the plan keeps a zoom.
+    pub fn zoomed(&self) -> bool {
+        self.zoomed
+    }
+
+    /// Allocates `PaneId::alloc()` per leaf in tree order and asks
+    /// `terminal_for` for each leaf's terminal.
+    pub fn build(
+        self,
+        mut terminal_for: impl FnMut(PaneId, T) -> TerminalState,
+    ) -> Result<PaneTree, TreeRejection> {
+        let mut panes = HashMap::new();
+        let mut ids: HashMap<PanePublicNumber, PaneId> = HashMap::new();
+        let node = build_node(self.shape, &mut |number, leaf| {
+            let pane = PaneId::alloc();
+            let terminal = terminal_for(pane, leaf);
+            ids.insert(number, pane);
+            panes.insert(pane, PaneRecord::new(number, terminal));
+            pane
+        });
+        // A resolved focus names a leaf. Were it ever missing, a fresh ID is
+        // not a leaf, so the layout refuses it by name.
+        let focus = ids.get(&self.focus).copied().unwrap_or_else(PaneId::alloc);
+        let layout = TileLayout::from_saved(node, focus).map_err(TreeRejection::Layout)?;
+        let root = ids.get(&self.root).copied().unwrap_or(focus);
+        Ok(PaneTree {
+            layout,
+            panes,
+            root,
+            zoomed: self.zoomed,
+            next_number: self.next_number,
+            layout_epoch: LayoutEpoch::default(),
+        })
+    }
+}
+
+fn build_node<T>(
+    shape: Shape<(PanePublicNumber, T)>,
+    leaf: &mut impl FnMut(PanePublicNumber, T) -> PaneId,
+) -> Node {
+    match shape {
+        Shape::Pane((number, value)) => Node::Pane(leaf(number, value)),
+        Shape::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => {
+            let first = build_node(*first, leaf);
+            let second = build_node(*second, leaf);
+            Node::Split {
+                direction,
+                ratio,
+                first: Box::new(first),
+                second: Box::new(second),
+            }
         }
     }
 }
 
-/// A split planned on a cloned layout: plain data, no child. The caller
-/// launches the pane from `geometry`, `public_id` and the terminal's cwd, then
-/// commits this same plan with `commit_new_pane` in the same synchronous handler.
+/// The one public-number rule: every number is below `next`, and no two are
+/// equal. A number can then always be followed by `next`.
+fn admit_numbers(
+    numbers: &[PanePublicNumber],
+    next: PanePublicNumber,
+) -> Result<(), TreeRejection> {
+    let mut used = HashSet::new();
+    for &number in numbers {
+        if number >= next {
+            return Err(TreeRejection::NumberNotBelowNext(number));
+        }
+        if !used.insert(number) {
+            return Err(TreeRejection::RepeatedNumber(number));
+        }
+    }
+    Ok(())
+}
+
+impl PaneTree {
+    /// A one-pane tree: number `FIRST`, next `SECOND`.
+    pub(crate) fn single(pane: PaneId, terminal: TerminalState) -> Self {
+        Self {
+            layout: TileLayout::from_live_pane(pane),
+            panes: HashMap::from([(pane, PaneRecord::new(PanePublicNumber::FIRST, terminal))]),
+            root: pane,
+            zoomed: false,
+            next_number: PanePublicNumber::SECOND,
+            layout_epoch: LayoutEpoch::default(),
+        }
+    }
+
+    /// Validates a saved or fixture shape before anything is built from it.
+    ///
+    /// The numbers must be distinct and below the saved next number. The saved
+    /// focus and root each fall back to the first leaf when they name no leaf.
+    /// A saved zoom is kept only when the saved focus named a leaf and there
+    /// is a second pane for it to hide.
+    pub fn plan<T>(
+        shape: Shape<T>,
+        number_of: impl Fn(&T) -> PanePublicNumber,
+        saved: SavedTreeState,
+    ) -> Result<TreePlan<T>, TreeRejection> {
+        let numbers: Vec<PanePublicNumber> = shape.leaves().into_iter().map(&number_of).collect();
+        admit_numbers(&numbers, saved.next_number)?;
+        let first = number_of(shape.first_leaf());
+        let focus_survived = numbers.contains(&saved.focus);
+        let focus = if focus_survived { saved.focus } else { first };
+        let root = if numbers.contains(&saved.root) {
+            saved.root
+        } else {
+            first
+        };
+        let zoomed = saved.zoomed && focus_survived && numbers.len() > 1;
+        Ok(TreePlan {
+            shape: shape.map(&mut |leaf| (number_of(&leaf), leaf)),
+            focus,
+            root,
+            zoomed,
+            next_number: saved.next_number,
+        })
+    }
+
+    /// The layout, for geometry reads. Edits go through the tree's mutators,
+    /// which keep the records in step.
+    pub fn layout(&self) -> &TileLayout {
+        &self.layout
+    }
+
+    /// The epoch the layout's split paths are valid for.
+    pub fn layout_epoch(&self) -> LayoutEpoch {
+        self.layout_epoch
+    }
+
+    pub fn root(&self) -> PaneId {
+        self.root
+    }
+
+    pub fn focused(&self) -> PaneId {
+        self.layout.focused()
+    }
+
+    pub fn zoomed(&self) -> bool {
+        self.zoomed
+    }
+
+    /// The sole pane a zoomed tree shows.
+    pub fn zoomed_pane(&self) -> Option<PaneId> {
+        WorkspaceChrome::zoomed_pane(&self.layout, self.zoomed)
+    }
+
+    /// The public number the next new pane takes.
+    pub fn next_number(&self) -> PanePublicNumber {
+        self.next_number
+    }
+
+    pub fn len(&self) -> usize {
+        self.panes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.panes.is_empty()
+    }
+
+    pub fn contains(&self, pane: PaneId) -> bool {
+        self.panes.contains_key(&pane)
+    }
+
+    pub fn pane(&self, pane: PaneId) -> Option<&PaneRecord> {
+        self.panes.get(&pane)
+    }
+
+    /// Every pane with its record, in no particular order.
+    pub fn panes(&self) -> impl Iterator<Item = (PaneId, &PaneRecord)> {
+        self.panes.iter().map(|(pane, record)| (*pane, record))
+    }
+
+    /// Pane IDs in layout order.
+    pub fn pane_ids(&self) -> Vec<PaneId> {
+        self.layout.pane_ids()
+    }
+
+    pub fn pane_by_number(&self, number: PanePublicNumber) -> Option<PaneId> {
+        self.panes
+            .iter()
+            .find_map(|(pane, record)| (record.number == number).then_some(*pane))
+    }
+
+    /// Pane IDs a workspace surface presents, in layout order.
+    pub fn visible_pane_ids(&self) -> Vec<PaneId> {
+        self.zoomed_pane()
+            .map_or_else(|| self.layout.pane_ids(), |pane| vec![pane])
+    }
+
+    /// Whether `pane` is on screen: in the tree, and the focused pane when the
+    /// tree is zoomed.
+    pub fn shows(&self, pane: PaneId) -> bool {
+        self.panes.contains_key(&pane) && self.zoomed_pane().is_none_or(|shown| shown == pane)
+    }
+
+    /// The layout with each leaf mapped through its record. `None` only if the
+    /// layout and the records disagreed, which the constructors and mutators
+    /// rule out; callers log it as an internal error.
+    pub fn map_shape<T>(&self, mut leaf: impl FnMut(PaneId, &PaneRecord) -> T) -> Option<Shape<T>> {
+        fn walk<T>(
+            node: &Node,
+            panes: &HashMap<PaneId, PaneRecord>,
+            leaf: &mut impl FnMut(PaneId, &PaneRecord) -> T,
+        ) -> Option<Shape<T>> {
+            match node {
+                Node::Pane(pane) => {
+                    let record = panes.get(pane)?;
+                    Some(Shape::Pane(leaf(*pane, record)))
+                }
+                Node::Split {
+                    direction,
+                    ratio,
+                    first,
+                    second,
+                } => {
+                    let first = walk(first, panes, leaf)?;
+                    let second = walk(second, panes, leaf)?;
+                    Some(Shape::Split {
+                        direction: *direction,
+                        ratio: *ratio,
+                        first: Box::new(first),
+                        second: Box::new(second),
+                    })
+                }
+            }
+        }
+        walk(self.layout.root(), &self.panes, &mut leaf)
+    }
+
+    pub(super) fn pane_mut(&mut self, pane: PaneId) -> Option<&mut PaneRecord> {
+        self.panes.get_mut(&pane)
+    }
+
+    /// Every pane with its mutable record, in no particular order.
+    pub(super) fn panes_mut(&mut self) -> impl Iterator<Item = (PaneId, &mut PaneRecord)> {
+        self.panes.iter_mut().map(|(pane, record)| (*pane, record))
+    }
+
+    /// The tree's records in layout order, for a workspace that is leaving.
+    pub(super) fn into_records(mut self) -> Vec<(PaneId, PaneRecord)> {
+        self.layout
+            .pane_ids()
+            .into_iter()
+            .filter_map(|pane| self.panes.remove(&pane).map(|record| (pane, record)))
+            .collect()
+    }
+
+    /// False when `pane` is not in the tree.
+    pub(super) fn focus(&mut self, pane: PaneId) -> bool {
+        if !self.panes.contains_key(&pane) {
+            return false;
+        }
+        self.layout.focus_pane(pane);
+        true
+    }
+
+    pub(super) fn swap(&mut self, first: PaneId, second: PaneId) -> bool {
+        let swapped = self.layout.swap_panes(first, second);
+        if swapped {
+            self.layout_epoch = self.layout_epoch.next();
+        }
+        swapped
+    }
+
+    pub(super) fn resize(
+        &mut self,
+        pane: PaneId,
+        nav: NavDirection,
+        delta: RatioDelta,
+        area: shepr_core::geometry::Rect,
+    ) -> bool {
+        self.layout.resize_pane(pane, nav, delta, area)
+    }
+
+    pub(super) fn set_split_ratio(&mut self, path: &SplitPath, ratio: SplitRatio) -> bool {
+        self.layout.set_ratio_at(path, ratio)
+    }
+
+    /// Zooming a one-pane tree is refused; unzooming always succeeds.
+    pub(super) fn set_zoomed(&mut self, zoomed: bool) -> bool {
+        if zoomed && self.panes.len() < 2 {
+            return false;
+        }
+        self.zoomed = zoomed;
+        true
+    }
+
+    /// Takes `pane` out of the layout and the records, promoting the root to
+    /// the first other leaf in layout order when the root goes, and unzooms.
+    /// The last pane is refused: its workspace goes instead.
+    pub(super) fn remove(&mut self, pane: PaneId) -> Result<PaneRecord, RemoveRefusal> {
+        if !self.panes.contains_key(&pane) {
+            return Err(RemoveRefusal::NotHere);
+        }
+        if self.panes.len() <= 1 {
+            return Err(RemoveRefusal::LastPane);
+        }
+        let promoted = (self.root == pane)
+            .then(|| {
+                self.layout
+                    .pane_ids()
+                    .into_iter()
+                    .find(|other| *other != pane)
+            })
+            .flatten();
+        // The layout cannot refuse a leaf the records hold; if it ever did,
+        // nothing has been touched yet.
+        if !self.layout.close_pane(pane) {
+            return Err(RemoveRefusal::NotHere);
+        }
+        self.layout_epoch = self.layout_epoch.next();
+        let record = self.panes.remove(&pane).ok_or(RemoveRefusal::NotHere)?;
+        if let Some(root) = promoted {
+            self.root = root;
+        }
+        self.zoomed = false;
+        Ok(record)
+    }
+
+    /// Installs a prepared split: the new leaf and its record together, the
+    /// new pane focused, an unzoomed tree and the number counter moved past
+    /// the pane's number.
+    fn commit_split(&mut self, split: PreparedSplit) -> Result<PaneId, SplitRefused> {
+        if split.number != self.next_number {
+            return Err(SplitRefused::NumberTaken);
+        }
+        // The token's ID was fresh at prepare and nothing between prepare and
+        // commit can insert it, so the layout accepts it; should it ever
+        // refuse, no record has been added.
+        if self.panes.contains_key(&split.pane)
+            || !self
+                .layout
+                .split_pane(split.target, split.direction, SplitRatio::EVEN, split.pane)
+        {
+            return Err(SplitRefused::TargetGone);
+        }
+        self.panes
+            .insert(split.pane, PaneRecord::new(split.number, split.terminal));
+        self.layout_epoch = self.layout_epoch.next();
+        self.layout.focus_pane(split.pane);
+        self.zoomed = false;
+        self.next_number = split.next_number;
+        Ok(split.pane)
+    }
+}
+
+/// A split planned without changing the workspace: the new pane's identity,
+/// number, spawn size and terminal. The caller launches from it and commits it
+/// in the same synchronous handler.
 ///
-/// Only `prepare_split` builds one and its fields are read-only outside the
-/// workspace module, so the plan a commit installs is the one a launch read:
-/// nothing can pair a launched child with another geometry, cwd or number.
+/// Only `Workspace::prepare_split` builds one and its fields are private, so
+/// the split a commit installs is the one a launch read: nothing can pair a
+/// launched child with another geometry, cwd or number. Prepare and commit
+/// share one synchronous handler on the app thread, so nothing can edit the
+/// layout or take a number between them; the token refuses another workspace,
+/// a number that is no longer next and a target that is gone. If the two
+/// phases ever span an await, they must collapse or the token must also carry
+/// a tree generation.
 pub struct PreparedSplit {
-    pub(super) pane_id: PaneId,
-    pub(super) terminal: TerminalState,
+    workspace: WorkspaceId,
+    target: PaneId,
+    direction: Direction,
+    pane: PaneId,
+    /// The new pane's public number: the tree's next number at prepare.
+    number: PanePublicNumber,
+    /// The number after `number`, so a committed split cannot overflow.
+    next_number: PanePublicNumber,
     /// The new pane's PTY size in the tiled layout, since a split unzooms.
-    pub(super) geometry: shepr_core::geometry::PaneGeometry,
-    /// The id exported to the child as `SHEPR_PANE_ID`; its number is also
-    /// registered when the split is committed.
-    pub(super) public_id: shepr_protocol::PublicPaneId,
-    pub(super) prepared_layout: TileLayout,
+    geometry: shepr_core::geometry::PaneGeometry,
+    terminal: TerminalState,
 }
 
 impl PreparedSplit {
-    pub fn pane_id(&self) -> PaneId {
-        self.pane_id
+    pub fn workspace_id(&self) -> WorkspaceId {
+        self.workspace
     }
 
-    /// The new pane's terminal state; its cwd is where the child starts.
-    pub fn terminal(&self) -> &TerminalState {
-        &self.terminal
+    pub fn pane_id(&self) -> PaneId {
+        self.pane
+    }
+
+    /// The id to export to the child as `SHEPR_PANE_ID`.
+    pub fn public_id(&self) -> PublicPaneId {
+        PublicPaneId::new(&self.workspace, self.number)
     }
 
     /// The new pane's PTY size in the tiled layout, since a split unzooms.
@@ -74,285 +526,477 @@ impl PreparedSplit {
         self.geometry
     }
 
-    /// The id to export to the child as `SHEPR_PANE_ID`.
-    pub fn public_id(&self) -> shepr_protocol::PublicPaneId {
-        self.public_id
+    /// Where the new pane's child starts.
+    pub fn cwd(&self) -> &Path {
+        self.terminal.cwd()
     }
 }
 
+/// Why a prepared split was not committed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitRefused {
+    /// The token was prepared against another workspace.
+    OtherWorkspace,
+    /// The token's number is no longer the tree's next number.
+    NumberTaken,
+    /// The split target is no longer a pane of the tree.
+    TargetGone,
+}
+
 impl Workspace {
-    pub fn root_pane(&self) -> PaneId {
-        self.root_pane
-    }
-
-    pub fn layout(&self) -> &TileLayout {
-        &self.layout
-    }
-
-    pub fn panes(&self) -> &HashMap<PaneId, WorkspacePane> {
-        &self.panes
-    }
-
-    pub fn zoomed(&self) -> bool {
-        self.zoomed
-    }
-
-    /// Whether the layout and the pane records name exactly the same panes,
-    /// with the root and the focused pane among them.
-    pub(super) fn has_consistent_panes(&self) -> bool {
-        let layout_ids = self.layout.pane_ids();
-        let layout_set: HashSet<_> = layout_ids.iter().copied().collect();
-        layout_ids.len() == layout_set.len()
-            && layout_set.len() == self.panes.len()
-            && layout_set.contains(&self.root_pane)
-            && layout_set.contains(&self.layout.focused())
-            && self.panes.keys().all(|id| layout_set.contains(id))
-    }
-
-    pub fn contains_pane(&self, pane_id: PaneId) -> bool {
-        self.panes.contains_key(&pane_id)
-    }
-
-    /// Pane IDs a workspace surface presents, in layout order.
-    pub fn visible_pane_ids(&self) -> Vec<PaneId> {
-        self.zoomed_pane_id()
-            .map_or_else(|| self.layout.pane_ids(), |pane_id| vec![pane_id])
-    }
-
-    /// Whether `pane_id` is on screen: in the layout, and the focused pane
-    /// when the workspace is zoomed.
-    pub fn shows_pane(&self, pane_id: PaneId) -> bool {
-        self.panes.contains_key(&pane_id)
-            && self
-                .zoomed_pane_id()
-                .is_none_or(|visible_id| visible_id == pane_id)
-    }
-
-    fn zoomed_pane_id(&self) -> Option<PaneId> {
-        PaneGeometry::zoomed_pane(&self.layout, self.zoomed)
-    }
-
-    pub fn pane_state(&self, pane_id: PaneId) -> Option<&PaneState> {
-        self.panes.get(&pane_id).map(|pane| &pane.pane_state)
-    }
-
-    pub fn pane_state_mut(&mut self, pane_id: PaneId) -> Option<&mut PaneState> {
-        self.panes
-            .get_mut(&pane_id)
-            .map(|pane| &mut pane.pane_state)
-    }
-
-    pub fn terminal_id(&self, pane_id: PaneId) -> Option<&TerminalId> {
-        self.panes
-            .get(&pane_id)
-            .map(|pane| &pane.attached_terminal_id)
-    }
-
-    pub fn public_pane_number(&self, pane_id: PaneId) -> Option<shepr_protocol::PanePublicNumber> {
-        self.panes.get(&pane_id).map(|pane| pane.public_number)
-    }
-
-    pub fn pane_id_for_public_number(
-        &self,
-        number: shepr_protocol::PanePublicNumber,
-    ) -> Option<PaneId> {
-        self.panes
-            .iter()
-            .find_map(|(pane_id, pane)| (pane.public_number == number).then_some(*pane_id))
-    }
-
-    pub fn pane_count(&self) -> usize {
-        self.panes.len()
-    }
-
-    pub fn focused_pane_id(&self) -> PaneId {
-        self.layout.focused()
-    }
-
-    /// Zooms or unzooms the workspace. A zoom needs a second pane to hide:
-    /// `false`, with the workspace unchanged, when asked to zoom a workspace
-    /// of one pane. Unzooming always succeeds.
-    pub fn set_zoomed(&mut self, zoomed: bool) -> bool {
-        let next = Self::resolved_zoomed(zoomed, self.panes.len(), true);
-        if zoomed && !next {
-            return false;
-        }
-        self.zoomed = next;
-        true
-    }
-
-    /// Apply the workspace zoom rule to a restored pane set. A saved zoom is
-    /// retained only when its focused pane survived and there is another pane
-    /// for it to hide.
-    pub(crate) fn resolved_zoomed(
-        requested: bool,
-        pane_count: usize,
-        saved_focus_survived: bool,
-    ) -> bool {
-        requested && saved_focus_survived && pane_count > 1
-    }
-
-    pub fn focus_pane(&mut self, pane_id: PaneId) -> bool {
-        if !self.has_consistent_panes() || !self.panes.contains_key(&pane_id) {
-            return false;
-        }
-        self.layout.focus_pane(pane_id);
-        true
-    }
-
-    pub fn swap_panes(&mut self, first: PaneId, second: PaneId) -> bool {
-        self.has_consistent_panes() && self.layout.swap_panes(first, second)
-    }
-
-    pub fn resize_pane(
-        &mut self,
-        pane_id: PaneId,
-        direction: NavDirection,
-        delta: shepr_core::layout::RatioDelta,
-        area: shepr_core::geometry::Rect,
-    ) -> bool {
-        self.has_consistent_panes() && self.layout.resize_pane(pane_id, direction, delta, area)
-    }
-
-    pub fn set_split_ratio_at(
-        &mut self,
-        path: &[shepr_core::geometry::SplitBranch],
-        ratio: shepr_core::layout::SplitRatio,
-    ) -> bool {
-        self.has_consistent_panes() && self.layout.set_ratio_at(path, ratio)
-    }
-
-    /// Prepare a split without launching a child or changing this workspace.
-    /// `None` when `target` is not laid out here, or when the next public
-    /// number has no successor, so an exhausted workspace never launches a
-    /// child its commit would refuse.
+    /// Plans a split without launching a child or changing this workspace.
+    /// `None` when `target` is not in the tree, or when the next public number
+    /// has no successor, so an exhausted workspace never launches a child its
+    /// commit would refuse.
+    ///
+    /// The split is made on a local copy of the layout to size the new pane's
+    /// PTY, then dropped: the token holds no layout.
     pub fn prepare_split(
         &self,
         target: PaneId,
         direction: Direction,
-        geometry: &PaneGeometry,
+        chrome: &WorkspaceChrome,
         cell: Option<shepr_core::geometry::CellPx>,
         cwd: PathBuf,
-        focus_new_pane: bool,
     ) -> Option<PreparedSplit> {
-        if self.next_public_pane_number.checked_next().is_none() || !self.contains_pane(target) {
+        let number = self.tree.next_number;
+        let next_number = number.checked_next()?;
+        if !self.tree.contains(target) {
             return None;
         }
-        let mut prepared_layout = self.layout.clone();
-        // The pane map and the layout tree are separate state; a target the
-        // map has but the layout lacks must not produce an unlaid-out pane.
-        let new_id =
-            prepared_layout.split_pane(target, direction, shepr_core::layout::SplitRatio::EVEN)?;
-        // A split unzooms the workspace, so launch against the tiled layout.
-        let geometry = geometry
-            .pane_spawn_geometry(&prepared_layout, false, new_id, cell)
-            .unwrap_or_else(|| geometry.sole_pane_spawn_geometry(cell));
-        let terminal = TerminalState::new(crate::terminal::allocate_terminal_id(), cwd);
-        if focus_new_pane {
-            prepared_layout.focus_pane(new_id);
+        let pane = PaneId::alloc();
+        let mut planned = self.tree.layout.clone();
+        if !planned.split_pane(target, direction, SplitRatio::EVEN, pane) {
+            return None;
         }
+        // A split unzooms the workspace, so launch against the tiled layout.
+        let geometry = chrome
+            .pane_spawn_geometry(&planned, false, pane, cell)
+            .unwrap_or_else(|| chrome.sole_pane_spawn_geometry(cell));
+        let terminal = TerminalState::new(cwd);
         Some(PreparedSplit {
-            pane_id: new_id,
-            terminal,
+            workspace: self.id,
+            target,
+            direction,
+            pane,
+            number,
+            next_number,
             geometry,
-            public_id: shepr_protocol::PublicPaneId::new(&self.id, self.next_public_pane_number),
-            prepared_layout,
+            terminal,
         })
     }
 
-    /// Installs a prepared split: the new layout, an unzoomed workspace and a
-    /// record for the new pane. `false`, with the workspace unchanged, when the
-    /// prepared layout is not this layout plus exactly `pane_id`.
-    ///
-    /// Only the pane-id set (and that the prepared focus is in it) is
-    /// verified, not ratios or ordering, and the public number is checked
-    /// against the live counter to refuse reuse. Prepare and commit run in one
-    /// synchronous handler on the app thread, so nothing can edit the layout
-    /// or take a number between them.
-    /// Do not add a layout generation; if the two phases ever span an await,
-    /// collapse them or add one then.
-    pub(super) fn commit_prepared_split(
-        &mut self,
-        pane_id: PaneId,
-        prepared_layout: TileLayout,
-        terminal_id: TerminalId,
-        public_number: shepr_protocol::PanePublicNumber,
-    ) -> bool {
-        let current_ids = self.layout.pane_ids();
-        let prepared_ids = prepared_layout.pane_ids();
-        if public_number < self.next_public_pane_number
-            || public_number.checked_next().is_none()
-            || !self.has_consistent_panes()
-            || self.panes.contains_key(&pane_id)
-            || !prepared_ids.contains(&pane_id)
-            || prepared_ids.len() != current_ids.len().saturating_add(1)
-            || current_ids.iter().any(|id| !prepared_ids.contains(id))
-            || !prepared_ids.contains(&prepared_layout.focused())
-        {
-            return false;
+    /// Commits a split planned by `prepare_split`: the new pane takes the
+    /// number its launched child was given, is focused, and the workspace is
+    /// unzoomed. A token of another workspace, one whose number is no longer
+    /// next, or one whose target is gone is refused, with the workspace
+    /// unchanged.
+    pub fn commit_split(&mut self, split: PreparedSplit) -> Result<PaneId, SplitRefused> {
+        if split.workspace != self.id {
+            return Err(SplitRefused::OtherWorkspace);
         }
+        self.tree.commit_split(split)
+    }
+}
 
-        self.layout = prepared_layout;
-        self.set_zoomed(false);
-        let pane = WorkspacePane::new(PaneState::new(terminal_id), public_number);
-        self.panes.insert(pane_id, pane);
-        true
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::test_workspace_id;
+
+    fn terminal() -> TerminalState {
+        TerminalState::new(PathBuf::from("/shepr-tree-test"))
     }
 
-    /// Detaches `pane_id` from the layout. The runtime is left to the caller.
-    /// `None` when the pane is the workspace's last one (the workspace itself
-    /// must go) or is not in it.
-    pub(super) fn detach_pane(&mut self, pane_id: PaneId) -> Option<()> {
-        if self.panes.len() <= 1
-            || !self.has_consistent_panes()
-            || !self.panes.contains_key(&pane_id)
-        {
-            return None;
-        }
-
-        let next_root = self.promoted_root_if_needed(pane_id);
-
-        if !self.layout.close_pane(pane_id) {
-            return None;
-        }
-
-        self.panes.remove(&pane_id)?;
-        self.set_zoomed(false);
-        if let Some(next_root) = next_root {
-            self.root_pane = next_root;
-        }
-        Some(())
+    fn number(value: usize) -> PanePublicNumber {
+        PanePublicNumber::new(value).expect("nonzero literal")
     }
 
-    fn promoted_root_if_needed(&self, closing: PaneId) -> Option<PaneId> {
-        if self.root_pane != closing {
-            return None;
+    fn chrome() -> WorkspaceChrome {
+        WorkspaceChrome {
+            area: shepr_core::geometry::Rect::new(0, 0, 80, 24),
+            pane_borders: shepr_config::PaneBordersConfig::Off,
+            pane_gaps: false,
+            pane_outer_borders: false,
+            pane_scrollbars: false,
         }
-        self.layout.pane_ids().into_iter().find(|id| *id != closing)
     }
 
-    pub fn cwd_for_pane(
-        &self,
-        pane_id: PaneId,
-        terminals: &HashMap<TerminalId, TerminalState>,
-        terminal_runtimes: &PaneRuntimeRegistry,
-    ) -> Option<PathBuf> {
-        let terminal_id = self.terminal_id(pane_id)?;
-        super::terminal_cwd(
-            terminal_runtimes.get(terminal_id),
-            terminals.get(terminal_id),
-            super::CwdPurpose::Identity,
+    fn workspace_at(cwd: &Path) -> Workspace {
+        Workspace::test_from_pane(
+            test_workspace_id(),
+            None,
+            cwd,
+            PaneId::alloc(),
+            TerminalState::new(cwd.to_path_buf()),
         )
     }
 
-    pub fn foreground_cwd_for_pane(
-        &self,
-        pane_id: PaneId,
-        terminal_runtimes: &PaneRuntimeRegistry,
-    ) -> Option<PathBuf> {
-        let terminal_id = self.terminal_id(pane_id)?;
-        terminal_runtimes
-            .get(terminal_id)
-            .and_then(PaneRuntime::foreground_cwd)
+    fn prepare(ws: &Workspace, target: PaneId) -> PreparedSplit {
+        ws.prepare_split(
+            target,
+            Direction::Horizontal,
+            &chrome(),
+            None,
+            PathBuf::from("/shepr-tree-test"),
+        )
+        .expect("split plan")
+    }
+
+    fn split(first: Shape<usize>, second: Shape<usize>) -> Shape<usize> {
+        Shape::Split {
+            direction: Direction::Horizontal,
+            ratio: SplitRatio::EVEN,
+            first: Box::new(first),
+            second: Box::new(second),
+        }
+    }
+
+    fn saved(focus: usize, root: usize, zoomed: bool, next: usize) -> SavedTreeState {
+        SavedTreeState {
+            focus: number(focus),
+            root: number(root),
+            zoomed,
+            next_number: number(next),
+        }
+    }
+
+    fn plan(shape: Shape<usize>, saved: SavedTreeState) -> Result<TreePlan<usize>, TreeRejection> {
+        PaneTree::plan(shape, |leaf| number(*leaf), saved)
+    }
+
+    /// Terminals named by the leaf's number, so a built tree can be read
+    /// back by number.
+    fn built(plan: TreePlan<usize>) -> PaneTree {
+        plan.build(|_, leaf| TerminalState::new(PathBuf::from(format!("/shepr-tree-test/{leaf}"))))
+            .expect("a planned tree builds")
+    }
+
+    #[test]
+    fn split_commit_installs_the_leaf_and_the_record_together() {
+        let mut ws = workspace_at(Path::new("/shepr-tree-test"));
+        let root = ws.tree().root();
+        let prepared = prepare(&ws, root);
+        let pane = prepared.pane_id();
+        let public = prepared.public_id();
+        assert_eq!(public.number(), number(2));
+
+        assert_eq!(ws.commit_split(prepared), Ok(pane));
+
+        let tree = ws.tree();
+        assert_eq!(tree.len(), 2);
+        assert!(tree.layout().pane_ids().contains(&pane));
+        assert_eq!(tree.pane(pane).map(PaneRecord::number), Some(number(2)));
+        assert_eq!(tree.pane_by_number(number(2)), Some(pane));
+        assert_eq!(tree.next_number(), number(3));
+        assert_eq!(tree.pane(root).map(PaneRecord::number), Some(number(1)));
+    }
+
+    #[test]
+    fn a_split_token_of_another_workspace_is_refused() {
+        let ws = workspace_at(Path::new("/shepr-tree-test"));
+        let mut other = workspace_at(Path::new("/shepr-tree-test"));
+        let prepared = prepare(&ws, ws.tree().root());
+
+        assert_eq!(
+            other.commit_split(prepared),
+            Err(SplitRefused::OtherWorkspace)
+        );
+        assert_eq!(other.tree().len(), 1);
+        assert_eq!(other.tree().next_number(), number(2));
+    }
+
+    #[test]
+    fn a_split_token_is_refused_once_its_number_is_taken() {
+        let mut ws = workspace_at(Path::new("/shepr-tree-test"));
+        let root = ws.tree().root();
+        let stale = prepare(&ws, root);
+        let taker = prepare(&ws, root);
+        ws.commit_split(taker).expect("the first token commits");
+
+        assert_eq!(ws.commit_split(stale), Err(SplitRefused::NumberTaken));
+        assert_eq!(ws.tree().len(), 2);
+        assert_eq!(ws.tree().next_number(), number(3));
+    }
+
+    #[test]
+    fn a_split_token_is_refused_once_its_target_is_gone() {
+        let mut ws = workspace_at(Path::new("/shepr-tree-test"));
+        let root = ws.tree().root();
+        let target = ws.test_split(Direction::Horizontal);
+        let prepared = prepare(&ws, target);
+        ws.remove_pane(target).expect("a second pane goes");
+
+        assert_eq!(ws.commit_split(prepared), Err(SplitRefused::TargetGone));
+        assert_eq!(ws.tree().pane_ids(), vec![root]);
+    }
+
+    #[test]
+    fn the_layout_epoch_advances_on_topology_changes_and_not_on_ratio_edits() {
+        let mut ws = Workspace::test_new("epoch");
+        let root = ws.tree().root();
+        let start = ws.tree().layout_epoch();
+
+        let second = ws.test_split(Direction::Horizontal);
+        let split = ws.tree().layout_epoch();
+        assert_ne!(split, start);
+
+        assert!(ws.set_split_ratio(&SplitPath::default(), SplitRatio::clamped(0.3)));
+        assert_eq!(ws.tree().layout_epoch(), split);
+
+        assert!(ws.swap_panes(root, second));
+        let swapped = ws.tree().layout_epoch();
+        assert_ne!(swapped, split);
+
+        ws.remove_pane(second).expect("a second pane goes");
+        assert_ne!(ws.tree().layout_epoch(), swapped);
+    }
+
+    #[test]
+    fn a_split_focuses_the_new_pane_and_unzooms() {
+        let mut ws = Workspace::test_new("zoomed");
+        let root = ws.tree().root();
+        let second = ws.test_split(Direction::Horizontal);
+        assert!(ws.focus_pane(root));
+        assert!(ws.set_zoomed(true));
+        assert!(ws.tree().zoomed());
+
+        let prepared = prepare(&ws, root);
+        let pane = ws.commit_split(prepared).expect("commits");
+
+        assert_eq!(ws.tree().focused(), pane);
+        assert!(!ws.tree().zoomed());
+        assert!(ws.tree().contains(second));
+    }
+
+    #[test]
+    fn preparing_a_split_changes_nothing_and_holds_no_layout() {
+        let cwd = Path::new("/__shepr_split_missing_directory__");
+        let mut ws = workspace_at(cwd);
+        let root = ws.tree().root();
+        let id = ws.id();
+
+        let prepared = ws
+            .prepare_split(
+                root,
+                Direction::Horizontal,
+                &chrome(),
+                None,
+                cwd.to_path_buf(),
+            )
+            .expect("split plan");
+
+        assert_eq!(ws.tree().len(), 1);
+        assert_eq!(ws.tree().focused(), root);
+        assert_eq!(ws.tree().next_number(), number(2));
+        assert_eq!(prepared.cwd(), cwd);
+        assert_eq!(prepared.geometry(), spawn_geometry_for(24, 40));
+        assert_eq!(prepared.public_id(), PublicPaneId::new(&id, number(2)));
+        assert_eq!(prepared.workspace_id(), id);
+        // An unknown target plans nothing.
+        assert!(
+            ws.prepare_split(
+                PaneId::alloc(),
+                Direction::Horizontal,
+                &chrome(),
+                None,
+                cwd.to_path_buf()
+            )
+            .is_none()
+        );
+
+        assert!(ws.commit_split(prepared).is_ok());
+        assert_eq!(ws.tree().len(), 2);
+        assert_eq!(ws.tree().next_number(), number(3));
+    }
+
+    fn spawn_geometry_for(rows: u16, cols: u16) -> shepr_core::geometry::PaneGeometry {
+        shepr_core::geometry::PaneGeometry::cells_only(cols, rows)
+    }
+
+    #[test]
+    fn a_workspace_without_a_next_number_plans_no_split() {
+        // No child should be launched when there is no successor to commit.
+        let mut tree = PaneTree::single(PaneId::alloc(), terminal());
+        tree.next_number = PanePublicNumber::new(usize::MAX).expect("max number");
+        let root = tree.root();
+        let mut ws = workspace_at(Path::new("/shepr-tree-test"));
+        ws.tree = tree;
+
+        assert!(
+            ws.prepare_split(
+                root,
+                Direction::Horizontal,
+                &chrome(),
+                None,
+                PathBuf::from("/shepr-tree-test")
+            )
+            .is_none()
+        );
+        assert_eq!(ws.tree().len(), 1);
+    }
+
+    #[test]
+    fn removing_the_root_promotes_a_surviving_pane() {
+        let mut ws = Workspace::test_new("promote");
+        let root = ws.tree().root();
+        let second = ws.test_split(Direction::Horizontal);
+
+        let removed = ws.remove_pane(root).expect("the root goes");
+
+        assert_eq!(removed.number(), number(1));
+        assert_eq!(ws.tree().root(), second);
+        assert!(ws.tree().contains(second));
+        assert!(!ws.tree().contains(root));
+        assert_eq!(ws.tree().len(), 1);
+    }
+
+    #[test]
+    fn removing_the_last_pane_is_refused() {
+        let mut ws = Workspace::test_new("last");
+        let root = ws.tree().root();
+
+        assert!(matches!(ws.remove_pane(root), Err(RemoveRefusal::LastPane)));
+        assert!(matches!(
+            ws.remove_pane(PaneId::alloc()),
+            Err(RemoveRefusal::NotHere)
+        ));
+        assert_eq!(ws.tree().len(), 1);
+        assert_eq!(ws.tree().root(), root);
+    }
+
+    #[test]
+    fn plans_refuse_a_repeated_number_or_one_not_below_next() {
+        let pair = || split(Shape::Pane(1), Shape::Pane(2));
+
+        assert!(plan(pair(), saved(1, 1, false, 3)).is_ok());
+        assert!(matches!(
+            plan(split(Shape::Pane(2), Shape::Pane(2)), saved(2, 2, false, 3)),
+            Err(TreeRejection::RepeatedNumber(repeated)) if repeated == number(2)
+        ));
+        assert!(matches!(
+            plan(pair(), saved(1, 1, false, 2)),
+            Err(TreeRejection::NumberNotBelowNext(over)) if over == number(2)
+        ));
+        assert!(matches!(
+            plan(
+                split(Shape::Pane(1), Shape::Pane(usize::MAX)),
+                saved(1, 1, false, 8)
+            ),
+            Err(TreeRejection::NumberNotBelowNext(_))
+        ));
+    }
+
+    #[test]
+    fn plans_fall_back_focus_and_root_to_the_first_leaf() {
+        let shape = split(Shape::Pane(4), split(Shape::Pane(2), Shape::Pane(3)));
+        let tree = built(plan(shape, saved(9, 9, false, 5)).expect("admitted"));
+
+        let first = tree.layout().pane_ids()[0];
+        assert_eq!(tree.focused(), first);
+        assert_eq!(tree.root(), first);
+        assert_eq!(tree.pane(first).map(PaneRecord::number), Some(number(4)));
+    }
+
+    #[test]
+    fn plans_keep_a_saved_focus_and_root() {
+        let shape = split(Shape::Pane(4), split(Shape::Pane(2), Shape::Pane(3)));
+        let plan = plan(shape, saved(3, 2, false, 5)).expect("admitted");
+        assert_eq!(*plan.root_leaf(), 2);
+        let tree = built(plan);
+
+        let focused = tree.focused();
+        assert_eq!(tree.pane(focused).map(PaneRecord::number), Some(number(3)));
+        assert_eq!(
+            tree.pane(tree.root()).map(PaneRecord::number),
+            Some(number(2))
+        );
+    }
+
+    #[test]
+    fn plans_drop_a_zoom_without_its_focus_or_a_second_pane() {
+        let three = || split(Shape::Pane(1), split(Shape::Pane(2), Shape::Pane(3)));
+        // (shape, saved focus, kept zoom)
+        let cases = [
+            (three(), 2, true),
+            // The saved focus names no leaf.
+            (three(), 9, false),
+            // Only one pane is left to show.
+            (Shape::Pane(1), 1, false),
+        ];
+        for (shape, focus, kept) in cases {
+            let plan = plan(shape, saved(focus, 1, true, 4)).expect("admitted");
+            assert_eq!(plan.zoomed(), kept, "focus {focus}");
+            assert_eq!(built(plan).zoomed(), kept, "focus {focus}");
+        }
+        let unzoomed = plan(three(), saved(2, 1, false, 4)).expect("admitted");
+        assert!(!built(unzoomed).zoomed());
+    }
+
+    #[test]
+    fn a_mapped_shape_plans_back_into_the_same_tree() {
+        let shape = split(Shape::Pane(1), split(Shape::Pane(3), Shape::Pane(2)));
+        let tree = built(plan(shape, saved(3, 1, true, 4)).expect("admitted"));
+
+        let mapped = tree
+            .map_shape(|_, record| record.number().get())
+            .expect("a tree maps");
+        assert_eq!(mapped.leaves(), vec![&1, &3, &2]);
+        let again = built(
+            plan(
+                mapped,
+                saved(
+                    tree.pane(tree.focused())
+                        .map(PaneRecord::number)
+                        .map_or(1, PanePublicNumber::get),
+                    tree.pane(tree.root())
+                        .map(PaneRecord::number)
+                        .map_or(1, PanePublicNumber::get),
+                    tree.zoomed(),
+                    tree.next_number().get(),
+                ),
+            )
+            .expect("a captured tree plans"),
+        );
+
+        let numbers = |tree: &PaneTree| -> Vec<usize> {
+            tree.pane_ids()
+                .into_iter()
+                .filter_map(|pane| tree.pane(pane).map(|record| record.number().get()))
+                .collect()
+        };
+        assert_eq!(numbers(&again), numbers(&tree));
+        assert_eq!(again.zoomed(), tree.zoomed());
+        assert_eq!(again.next_number(), tree.next_number());
+        assert_eq!(
+            again.pane(again.focused()).map(PaneRecord::number),
+            tree.pane(tree.focused()).map(PaneRecord::number)
+        );
+        assert_eq!(
+            again.pane(again.root()).map(PaneRecord::number),
+            tree.pane(tree.root()).map(PaneRecord::number)
+        );
+    }
+
+    #[test]
+    fn zooming_a_one_pane_tree_is_refused_and_unzooming_always_succeeds() {
+        let mut tree = PaneTree::single(PaneId::alloc(), terminal());
+
+        assert!(!tree.set_zoomed(true));
+        assert!(!tree.zoomed());
+        assert!(tree.set_zoomed(false));
+    }
+
+    #[test]
+    fn the_input_flag_reports_whether_it_changed() {
+        let tree = PaneTree::single(PaneId::alloc(), terminal());
+        let mut tree = tree;
+        let pane = tree.root();
+        let record = tree.pane_mut(pane).expect("root record");
+
+        assert!(record.set_right_click_passthrough(true));
+        assert!(!record.set_right_click_passthrough(true));
+        assert!(record.right_click_passthrough());
+        assert!(record.set_right_click_passthrough(false));
     }
 }

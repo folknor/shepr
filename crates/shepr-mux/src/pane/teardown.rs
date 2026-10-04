@@ -1,9 +1,28 @@
-use crate::limits::{PANE_TEARDOWN_BUDGET, PANE_TEARDOWN_STEPS};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{info, warn};
 
 use shepr_core::layout::PaneId;
+
+/// Grace per pane teardown signal before escalating to the next signal.
+const PANE_TEARDOWN_STEP: Duration = Duration::from_millis(250);
+/// Escalation sequence for a pane session, using a grace interval after each
+/// signal before the next round.
+const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = [
+    (shepr_platform::Signal::Hangup, PANE_TEARDOWN_STEP),
+    (shepr_platform::Signal::Terminate, PANE_TEARDOWN_STEP),
+    (shepr_platform::Signal::Kill, PANE_TEARDOWN_STEP),
+];
+/// Total teardown wait: the sum of the grace intervals in `PANE_TEARDOWN_STEPS`.
+const PANE_TEARDOWN_BUDGET: Duration = {
+    let mut budget = Duration::ZERO;
+    let mut index = 0;
+    while index < PANE_TEARDOWN_STEPS.len() {
+        budget = budget.saturating_add(PANE_TEARDOWN_STEPS[index].1);
+        index += 1;
+    }
+    budget
+};
 
 /// The stable child identity and its coordinated lifecycle. A pending runtime
 /// has no child; an owned child always has its pidfd-backed identity.
@@ -268,11 +287,11 @@ pub(super) fn shutdown_pane_processes(
     let work = Arc::new(Mutex::new(Some((tracker.start(), child_liveness))));
     let thread_work = Arc::clone(&work);
     let spawned = std::thread::Builder::new()
-        .name(format!("shepr-pane-{}-teardown", pane_id.raw()))
+        .name(format!("shepr-pane-{pane_id}-teardown"))
         .spawn(move || run_pane_teardown(pane_id, &thread_work));
     if let Err(err) = spawned {
         warn!(
-            pane = pane_id.raw(),
+            pane = %pane_id,
             error = %err,
             "could not start pane teardown thread; tearing down inline"
         );
@@ -317,7 +336,7 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
             // is empty before ending the escalation.
             if shepr_platform::session_members(session_id, leader_reaped).is_empty() {
                 info!(
-                    pane = pane_id.raw(),
+                    pane = %pane_id,
                     session = session_id.get(),
                     ?signal,
                     "pane session terminated"
@@ -335,7 +354,7 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
         .map(|handle| handle.process_id().get())
         .collect();
     warn!(
-        pane = pane_id.raw(),
+        pane = %pane_id,
         session = session_id.get(),
         ?survivors,
         "pane session still alive after forced shutdown"

@@ -11,15 +11,17 @@ fn server_with_runtime_pane(
 ) {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new(name);
-    let pane_id = workspace.root_pane();
-    server.app.state.test_set_workspaces(vec![workspace]);
-    server.app.state.ensure_test_terminals();
-    server.app.state.set_bookmark_index(Some(0));
+    let pane_id = workspace.tree().root();
+    server
+        .app
+        .test_state_mut()
+        .test_set_workspaces(vec![workspace]);
+    server.app.test_state_mut().seed_bookmark_index(Some(0));
 
     let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     let generation = runtime.generation();
     server.app.insert_test_runtime(pane_id, runtime);
-    server.app.persist_for_test();
+    server.persist_for_test();
     (server, pane_id, generation)
 }
 
@@ -29,19 +31,13 @@ fn deliver_interrupted_exit(
     pane_id: shepr_core::layout::PaneId,
     generation: RuntimeGeneration,
 ) {
-    server.handle_internal_event_with_forwarding(AppEvent::Runtime {
-        pane_id,
-        generation,
-        event: Box::new(
-            AppEvent::PaneDied {
-                pane_id,
-                exit_reason: shepr_platform::ChildExitReason::Interrupted,
-                ended_at: std::time::Instant::now(),
-            }
-            .try_into()
-            .expect("runtime payload"),
-        ),
-    });
+    server.handle_internal_event_with_forwarding(
+        shepr_mux::events::RuntimeEvent::PaneDied {
+            ending: shepr_mux::pane::PaneEnding::new(shepr_mux::pane::PaneEndReason::Signalled),
+            ended_at: std::time::Instant::now(),
+        }
+        .enveloped(pane_id, generation),
+    );
 }
 
 fn server_with_held_runtime_exit() -> (
@@ -53,7 +49,7 @@ fn server_with_held_runtime_exit() -> (
     let (mut server, pane_id, generation) = server_with_runtime_pane("checkpointed-runtime-exit");
     deliver_interrupted_exit(&mut server, pane_id, generation);
 
-    assert!(server.app.find_pane(pane_id).is_some());
+    assert!(server.app.state().pane(pane_id).is_some());
     let held = server
         .pending_checkpointed_pane_exits
         .front()
@@ -96,11 +92,11 @@ async fn live_runtime_exit_is_replayed_after_its_checkpoint() {
     );
     assert_eq!(server.pending_checkpointed_pane_exits.len(), 1);
 
-    let now = server.app.clock.now;
+    let now = server.app.clock().now;
     server.handle_scheduled_tasks_headless(now);
 
     assert!(server.pending_checkpointed_pane_exits.is_empty());
-    assert!(server.app.find_pane(pane_id).is_none());
+    assert!(server.app.state().pane(pane_id).is_none());
     shutdown_test_runtimes(&mut server);
 }
 
@@ -120,11 +116,11 @@ async fn a_core_broken_while_the_exit_waits_still_replays_it() {
     );
     assert_eq!(server.pending_checkpointed_pane_exits.len(), 1);
 
-    let now = server.app.clock.now;
+    let now = server.app.clock().now;
     server.handle_scheduled_tasks_headless(now);
 
     assert!(server.pending_checkpointed_pane_exits.is_empty());
-    assert!(server.app.find_pane(pane_id).is_none());
+    assert!(server.app.state().pane(pane_id).is_none());
     shutdown_test_runtimes(&mut server);
 }
 
@@ -144,11 +140,11 @@ async fn replaced_runtime_drops_a_checkpointed_stale_exit_on_replay() {
     assert_ne!(generation, replacement_generation);
     server.app.insert_test_runtime(pane_id, replacement);
 
-    let now = server.app.clock.now;
+    let now = server.app.clock().now;
     server.handle_scheduled_tasks_headless(now);
 
     assert!(server.pending_checkpointed_pane_exits.is_empty());
-    assert!(server.app.find_pane(pane_id).is_some());
+    assert!(server.app.state().pane(pane_id).is_some());
     assert_eq!(
         server.app.test_runtime(pane_id).generation(),
         replacement_generation
@@ -163,7 +159,7 @@ async fn replaced_runtime_drops_a_checkpointed_stale_exit_on_replay() {
 async fn a_released_exit_is_replayed_by_the_pass_after_the_autosave_that_followed() {
     let (mut server, pane_id, runtime_generation) = server_with_runtime_pane("released-exit");
     // An autosave in flight keeps the exit's checkpoint from starting.
-    let autosave = server.app.session_saver.hold_test_save_in_flight();
+    let autosave = server.app.test_saver().hold_test_save_in_flight();
     deliver_interrupted_exit(&mut server, pane_id, runtime_generation);
     let generation = server
         .pending_checkpointed_pane_exits
@@ -172,10 +168,10 @@ async fn a_released_exit_is_replayed_by_the_pass_after_the_autosave_that_followe
         .checkpoint_generation;
     autosave.complete(Ok(()));
     assert!(server.app.reap_finished_session_save());
-    for _ in 0..crate::limits::CHECKPOINT_MAX_FAILURES {
+    for _ in 0..crate::app::CHECKPOINT_MAX_FAILURES {
         let completion = server
             .app
-            .session_saver
+            .test_saver()
             .hold_test_checkpoint_in_flight(generation);
         completion.complete(Err(std::io::Error::other("disk full").into()));
         assert!(server.app.reap_finished_session_save());
@@ -185,7 +181,7 @@ async fn a_released_exit_is_replayed_by_the_pass_after_the_autosave_that_followe
             .app
             .pane_exit_checkpoint_generation_settled(generation)
     );
-    let autosave = server.app.session_saver.hold_test_save_in_flight();
+    let autosave = server.app.test_saver().hold_test_save_in_flight();
     autosave.complete(Ok(()));
     assert!(server.app.reap_finished_session_save());
     assert!(
@@ -194,11 +190,11 @@ async fn a_released_exit_is_replayed_by_the_pass_after_the_autosave_that_followe
             .pane_exit_checkpoint_generation_settled(generation)
     );
     assert_eq!(server.pending_checkpointed_pane_exits.len(), 1);
-    assert!(server.app.find_pane(pane_id).is_some());
+    assert!(server.app.state().pane(pane_id).is_some());
 
-    server.handle_scheduled_tasks_headless(server.app.clock.now);
+    server.handle_scheduled_tasks_headless(server.app.clock().now);
     assert!(server.pending_checkpointed_pane_exits.is_empty());
-    assert!(server.app.find_pane(pane_id).is_none());
+    assert!(server.app.state().pane(pane_id).is_none());
     shutdown_test_runtimes(&mut server);
 }
 
@@ -224,15 +220,18 @@ impl HeadlessServer {
                 std::time::Instant::now() < timeout,
                 "checkpoint replay timed out"
             );
-            let now = if self.app.session_saver.save_in_flight() {
-                self.app.clock.now
+            let now = if self.app.test_saver().save_in_flight() {
+                self.app.clock().now
             } else {
                 self.app
-                    .session_saver
+                    .test_saver()
                     .deadline()
-                    .unwrap_or(self.app.clock.now)
+                    .unwrap_or(self.app.clock().now)
             };
-            self.app.clock.now = now;
+            self.app.set_clock(crate::app::AppClock {
+                now,
+                wall_now: self.app.clock().wall_now,
+            });
             self.handle_scheduled_tasks_headless(now);
             std::thread::yield_now();
         }

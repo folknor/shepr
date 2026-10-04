@@ -33,7 +33,7 @@ pub(super) enum HookEvent {
         now: Instant,
     },
     PaneExited {
-        exit_reason: shepr_platform::ChildExitReason,
+        needs_checkpoint: bool,
         now: Instant,
     },
 }
@@ -117,9 +117,10 @@ impl AgentOwnership {
                 process_exited,
                 now,
             )),
-            HookEvent::PaneExited { exit_reason, now } => {
-                Some(self.transition_pane_exit(exit_reason, now))
-            }
+            HookEvent::PaneExited {
+                needs_checkpoint,
+                now,
+            } => Some(self.transition_pane_exit(needs_checkpoint, now)),
         };
         // Keep this check at the complete event boundary as well as individual
         // source transitions. Production bookkeeping must never panic a server.
@@ -707,6 +708,13 @@ impl HookSourceState {
         }
     }
 
+    /// Whether a parked start has outlived `PARKED_START_LIFETIME` at `now`.
+    fn parked_start_expired(&self, now: Instant) -> bool {
+        self.pending_start_at.is_some_and(|started_at| {
+            now.saturating_duration_since(started_at) > PARKED_START_LIFETIME
+        })
+    }
+
     /// Process evidence alone reopens a hook clear. After an exit it must also
     /// have a recognized pending session start; a parked report is insufficient.
     fn observe_process(
@@ -728,9 +736,7 @@ impl HookSourceState {
         // observations older than that are refused before this point
         // (`transition_detector_observation`). Exact attribution would need a
         // process id on both inputs, and hook reports carry none.
-        if let Some(started_at) = self.pending_start_at
-            && now.saturating_duration_since(started_at) > PARKED_START_LIFETIME
-        {
+        if self.parked_start_expired(now) {
             // Expiry discards the entire pending selection, including a
             // report for it. Presence may reopen a clear, but cannot
             // resurrect an expired exit-gated session.
@@ -1066,10 +1072,19 @@ impl AgentOwnership {
         if !origin.is_full_lifecycle() {
             return;
         }
+        let expired = self
+            .hook_sources
+            .get(origin.source())
+            .is_some_and(|record| record.parked_start_expired(now));
         let effect = self
             .hook_sources
             .get_mut(origin.source())
             .map(|record| record.transition(HookSourceEvent::ProcessObserved(now)));
+        if expired {
+            // Expiry discards the parked start and report, so a record that
+            // still calls one parked would be stale.
+            self.resolve_parked_hook_report(origin.source());
+        }
         if let Some(effect) = effect {
             self.apply_source_effect(effect);
         }
@@ -1392,8 +1407,7 @@ mod transition_tests {
     fn replayed_pane_exit_does_not_consume_a_late_parked_start() {
         let clock = sample();
         let mut ownership = AgentOwnership::new();
-        ownership
-            .set_pane_process_exit_at(shepr_platform::ChildExitReason::Exited, clock.monotonic);
+        ownership.set_pane_process_exit_at(false, clock.monotonic);
         let origin = ReportOrigin::official(Agent::Pi).expect("official Pi");
         assert_eq!(
             ownership.report_session_start_outcome_at(
@@ -1409,10 +1423,7 @@ mod transition_tests {
             HookOutcome::Parked
         );
         let before = ownership.hook_sources.get(origin.source()).cloned();
-        ownership.set_pane_process_exit_at(
-            shepr_platform::ChildExitReason::Exited,
-            clock.monotonic + Duration::from_secs(2),
-        );
+        ownership.set_pane_process_exit_at(false, clock.monotonic + Duration::from_secs(2));
         assert_eq!(ownership.hook_sources.get(origin.source()).cloned(), before);
     }
 
@@ -2253,7 +2264,6 @@ impl AgentOwnership {
 mod pane_exit_tests {
     use super::*;
     use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
-    use shepr_platform::ChildExitReason;
 
     fn running_terminal() -> AgentOwnership {
         let mut terminal = AgentOwnership::new();
@@ -2278,22 +2288,17 @@ mod pane_exit_tests {
 
     #[test]
     fn checkpointed_pane_exit_keeps_resume_identity_without_new_session_dirtiness() {
-        for reason in [
-            ChildExitReason::Interrupted,
-            ChildExitReason::ReaderIoFailed,
-        ] {
-            let mut terminal = running_terminal();
-            let session = terminal.current_session_identity_for_persistence();
-            // clock-io-ok: synthetic exit time for the transition under test.
-            let now = Instant::now();
-            let mutation = terminal.set_pane_process_exit_at(reason, now);
-            assert_eq!(terminal.current_session_identity_for_persistence(), session);
-            assert!(!mutation.session_ref_changed);
-            assert!(terminal.hook_authority.is_none());
-            // Replaying publication must not drop the preserved session.
-            terminal.set_pane_process_exit_at(reason, now);
-            assert_eq!(terminal.current_session_identity_for_persistence(), session);
-        }
+        let mut terminal = running_terminal();
+        let session = terminal.current_session_identity_for_persistence();
+        // clock-io-ok: synthetic exit time for the transition under test.
+        let now = Instant::now();
+        let mutation = terminal.set_pane_process_exit_at(true, now);
+        assert_eq!(terminal.current_session_identity_for_persistence(), session);
+        assert!(!mutation.session_ref_changed);
+        assert!(terminal.hook_authority.is_none());
+        // Replaying publication must not drop the preserved session.
+        terminal.set_pane_process_exit_at(true, now);
+        assert_eq!(terminal.current_session_identity_for_persistence(), session);
     }
 
     const GRACE: std::time::Duration = crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE;
@@ -2334,7 +2339,7 @@ mod pane_exit_tests {
         assert!(terminal.effective_agent().is_none());
         assert_eq!(terminal.detected_agent, None);
         // A shell death after the grace finds nothing to bring back.
-        terminal.set_pane_process_exit_at(ChildExitReason::Interrupted, now + GRACE * 2);
+        terminal.set_pane_process_exit_at(true, now + GRACE * 2);
         assert!(
             terminal
                 .current_session_identity_for_persistence()
@@ -2344,27 +2349,17 @@ mod pane_exit_tests {
 
     #[test]
     fn an_agent_killed_just_before_its_shell_keeps_the_checkpoint_identity() {
-        for reason in [
-            ChildExitReason::Interrupted,
-            ChildExitReason::ReaderIoFailed,
-            ChildExitReason::TerminalClosed,
-        ] {
-            let mut terminal = running_terminal();
-            let session = terminal.current_session_identity_for_persistence();
-            // clock-io-ok: synthetic observation times for kill ordering.
-            let now = Instant::now();
-            pi_exits(&mut terminal, now);
-            let mutation = terminal.set_pane_process_exit_at(reason, now + GRACE / 2);
-            assert_eq!(
-                terminal.current_session_identity_for_persistence(),
-                session,
-                "{reason:?}"
-            );
-            // The saved identity changed back, so the session is dirty and no
-            // older checkpoint can settle this exit.
-            assert!(mutation.session_ref_changed, "{reason:?}");
-            assert!(terminal.hook_authority.is_none(), "{reason:?}");
-        }
+        let mut terminal = running_terminal();
+        let session = terminal.current_session_identity_for_persistence();
+        // clock-io-ok: synthetic observation times for kill ordering.
+        let now = Instant::now();
+        pi_exits(&mut terminal, now);
+        let mutation = terminal.set_pane_process_exit_at(true, now + GRACE / 2);
+        assert_eq!(terminal.current_session_identity_for_persistence(), session);
+        // The saved identity changed back, so the session is dirty and no
+        // older checkpoint can settle this exit.
+        assert!(mutation.session_ref_changed);
+        assert!(terminal.hook_authority.is_none());
     }
 
     #[test]
@@ -2375,7 +2370,7 @@ mod pane_exit_tests {
         let now = Instant::now();
         // The reader failed while the child still ran: the pane's ending is
         // applied first, holding its identity for the checkpoint.
-        terminal.set_pane_process_exit_at(ChildExitReason::ReaderIoFailed, now);
+        terminal.set_pane_process_exit_at(true, now);
         assert_eq!(terminal.current_session_identity_for_persistence(), session);
         // A detector exit still queued for it changes nothing.
         let mutation = pi_exits(&mut terminal, now + std::time::Duration::from_millis(5));
@@ -2389,7 +2384,7 @@ mod pane_exit_tests {
         // clock-io-ok: synthetic exit times.
         let now = Instant::now();
         pi_exits(&mut terminal, now);
-        terminal.set_pane_process_exit_at(ChildExitReason::Exited, now + GRACE / 2);
+        terminal.set_pane_process_exit_at(false, now + GRACE / 2);
         assert!(
             terminal
                 .current_session_identity_for_persistence()
@@ -2405,7 +2400,7 @@ mod pane_exit_tests {
         pi_exits(&mut terminal, now);
         terminal
             .set_detected_agent_process_at(Agent::Pi, now + std::time::Duration::from_millis(5));
-        terminal.set_pane_process_exit_at(ChildExitReason::Interrupted, now + GRACE / 2);
+        terminal.set_pane_process_exit_at(true, now + GRACE / 2);
         assert!(
             terminal
                 .current_session_identity_for_persistence()
@@ -2423,7 +2418,7 @@ mod pane_exit_tests {
         pi_exits(&mut terminal, now);
         terminal
             .set_detected_agent_process_at(Agent::Pi, now - std::time::Duration::from_millis(5));
-        terminal.set_pane_process_exit_at(ChildExitReason::Interrupted, now + GRACE / 2);
+        terminal.set_pane_process_exit_at(true, now + GRACE / 2);
         assert_eq!(terminal.current_session_identity_for_persistence(), session);
     }
 
@@ -2446,7 +2441,7 @@ mod pane_exit_tests {
             authority: AuthorityEffect::Keep,
             persisted: None,
         });
-        terminal.set_pane_process_exit_at(ChildExitReason::Interrupted, now + GRACE / 2);
+        terminal.set_pane_process_exit_at(true, now + GRACE / 2);
         assert!(
             terminal
                 .current_session_identity_for_persistence()
@@ -2600,7 +2595,7 @@ mod pane_exit_tests {
         let mut terminal = running_terminal();
         // clock-io-ok: synthetic exit time for the transition under test.
         let now = Instant::now();
-        let mutation = terminal.set_pane_process_exit_at(ChildExitReason::Exited, now);
+        let mutation = terminal.set_pane_process_exit_at(false, now);
         assert!(mutation.session_ref_changed);
         assert!(
             terminal

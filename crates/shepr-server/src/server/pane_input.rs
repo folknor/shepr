@@ -25,18 +25,46 @@ use shepr_term::key::TerminalKey;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum PaneInputError {
     /// The PTY input queue is full; the input was dropped.
-    Backpressure(&'static str),
+    Backpressure(InputKind),
     /// The PTY actor no longer accepts input (the pane is shutting down).
-    Closed(&'static str),
+    Closed(InputKind),
     /// The input could not be encoded.
     Other(String),
+}
+
+/// The kind of pane input a failure names, in place of what was typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum InputKind {
+    MouseWheel,
+    AlternateScroll,
+    Text,
+    Paste,
+    Key,
+    Mouse,
+}
+
+impl InputKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::MouseWheel => "mouse wheel input",
+            Self::AlternateScroll => "alternate scroll input",
+            Self::Text => "text input",
+            Self::Paste => "paste",
+            Self::Key => "key input",
+            Self::Mouse => "mouse input",
+        }
+    }
 }
 
 impl std::fmt::Display for PaneInputError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Backpressure(what) => write!(f, "{what} dropped: pane input queue is full"),
-            Self::Closed(what) => write!(f, "{what} dropped: pane no longer accepts input"),
+            Self::Backpressure(kind) => {
+                write!(f, "{} dropped: pane input queue is full", kind.label())
+            }
+            Self::Closed(kind) => {
+                write!(f, "{} dropped: pane no longer accepts input", kind.label())
+            }
             Self::Other(message) => f.write_str(message),
         }
     }
@@ -86,65 +114,51 @@ impl std::fmt::Display for PaneInputFailures {
 fn send_input(
     runtime: &shepr_mux::pane::PaneRuntime,
     bytes: Bytes,
-    what: &'static str,
+    kind: InputKind,
 ) -> Result<(), PaneInputError> {
     runtime
         .try_send_bytes(bytes)
-        .map_err(|err| send_error(&err, what))
+        .map_err(|err| send_error(&err, kind))
 }
 
 fn send_paste(
     runtime: &shepr_mux::pane::PaneRuntime,
     text: String,
-    what: &'static str,
+    kind: InputKind,
 ) -> Result<(), PaneInputError> {
     runtime
         .try_send_paste(text)
-        .map_err(|err| send_error(&err, what))
+        .map_err(|err| send_error(&err, kind))
 }
 
-fn send_error(err: &shepr_pty::ChildIoSendError, what: &'static str) -> PaneInputError {
+fn send_error(err: &shepr_pty::ChildIoSendError, kind: InputKind) -> PaneInputError {
     match err {
-        shepr_pty::ChildIoSendError::Full(_) => PaneInputError::Backpressure(what),
-        shepr_pty::ChildIoSendError::Closed(_) => PaneInputError::Closed(what),
+        shepr_pty::ChildIoSendError::Full(_) => PaneInputError::Backpressure(kind),
+        shepr_pty::ChildIoSendError::Closed(_) => PaneInputError::Closed(kind),
     }
 }
 
-pub(super) fn downgrade_ineligible_pixel_mouse(
+/// Rewrites every pixel report that may not reach the pane as pixels into its
+/// cell position. The decision is `shepr_term::mouse::admit_pixel_report`.
+pub(super) fn admit_pixel_reports(
     events: &mut [ClientPaneInputEvent],
-    pixel_mouse: bool,
-    runtime_size: shepr_core::geometry::GridSize,
-    runtime_pixels: Option<shepr_mux::pane::PanePixelSize>,
+    host: shepr_core::geometry::HostCell,
+    pane: shepr_term::mouse::PanePixelMouse,
 ) {
-    let (runtime_rows, runtime_cols) = (runtime_size.rows.get(), runtime_size.cols.get());
     for event in events {
-        let ClientPaneInputEvent::Mouse {
-            position, geometry, ..
-        } = event
+        let ClientPaneInputEvent::Mouse { position, .. } = event else {
+            continue;
+        };
+        let shepr_protocol::ClientMousePosition::Pixels {
+            column,
+            row,
+            report,
+        } = *position
         else {
             continue;
         };
-        let shepr_protocol::ClientMousePosition::Pixels { x, y, column, row } = *position else {
-            continue;
-        };
-        let exact = pixel_mouse
-            && geometry.is_some_and(|geometry| {
-                (runtime_rows, runtime_cols) == (geometry.rows, geometry.cols)
-                    && runtime_pixels
-                        == Some(shepr_mux::pane::PanePixelSize {
-                            width: geometry.width_px,
-                            height: geometry.height_px,
-                        })
-                    && column < geometry.cols
-                    && row < geometry.rows
-                    && x > 0
-                    && y > 0
-                    && x <= geometry.width_px
-                    && y <= geometry.height_px
-            });
-        if !exact {
+        if !shepr_term::mouse::admit_pixel_report(host, pane, report) {
             *position = shepr_protocol::ClientMousePosition::Cell { column, row };
-            *geometry = None;
         }
     }
 }
@@ -186,14 +200,14 @@ fn apply_scroll(
                     "failed to encode mouse wheel event: {wheel_kind:?}"
                 )));
             };
-            send_input(runtime, Bytes::from(bytes), "mouse wheel input")?;
+            send_input(runtime, Bytes::from(bytes), InputKind::MouseWheel)?;
         }
         Some((modes, shepr_mux::pane::WheelRouting::AlternateScroll)) => {
             *changed |= runtime.scroll_reset().is_changed();
             let Some(bytes) = runtime.encode_alternate_scroll_with_modes(modes, wheel_kind) else {
                 return Ok(());
             };
-            send_input(runtime, Bytes::from(bytes), "alternate scroll input")?;
+            send_input(runtime, Bytes::from(bytes), InputKind::AlternateScroll)?;
         }
         _ => {
             let lines = usize::from(lines.max(1));
@@ -257,7 +271,7 @@ fn apply_client_pane_input_event(
             send_input(
                 runtime,
                 Bytes::copy_from_slice(text.as_bytes()),
-                "text input",
+                InputKind::Text,
             )
         }
         ClientPaneInputEvent::Mouse {
@@ -276,7 +290,7 @@ fn apply_client_pane_input_event(
         ),
         ClientPaneInputEvent::Paste(text) => {
             *changed |= runtime.scroll_reset().is_changed();
-            send_paste(runtime, text.clone(), "paste")
+            send_paste(runtime, text.clone(), InputKind::Paste)
         }
     }
 }
@@ -315,7 +329,7 @@ fn apply_key(
     if bytes.is_empty() {
         return Ok(());
     }
-    send_input(runtime, Bytes::from(bytes), "key input")
+    send_input(runtime, Bytes::from(bytes), InputKind::Key)
 }
 
 fn apply_mouse(
@@ -331,13 +345,16 @@ fn apply_mouse(
         shepr_protocol::ClientMousePosition::Cell { column, row } => {
             shepr_term::mouse::Position::Cell { column, row }
         }
-        shepr_protocol::ClientMousePosition::Pixels { x, y, column, row } => {
-            if input_modes.is_some_and(shepr_vt::InputModes::sgr_pixel_mouse_enabled) {
-                shepr_term::mouse::Position::Pixels { x, y }
-            } else {
-                shepr_term::mouse::Position::Cell { column, row }
-            }
-        }
+        shepr_protocol::ClientMousePosition::Pixels {
+            column,
+            row,
+            report,
+        } => shepr_term::mouse::Position::Pixels {
+            column,
+            row,
+            x: report.x(),
+            y: report.y(),
+        },
     };
     let bytes = match kind {
         MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
@@ -378,7 +395,7 @@ fn apply_mouse(
     if kind != MouseEventKind::Moved {
         *changed |= runtime.scroll_reset().is_changed();
     }
-    send_input(runtime, Bytes::from(bytes), "mouse input")
+    send_input(runtime, Bytes::from(bytes), InputKind::Mouse)
 }
 
 #[cfg(test)]
@@ -392,6 +409,40 @@ impl PaneInputFailures {
 mod tests {
     use super::*;
     use crate::test_support::*;
+    use shepr_term::mouse::PanePixelMouse;
+
+    fn extent(
+        width: u16,
+        height: u16,
+        cols: u16,
+        rows: u16,
+    ) -> Option<shepr_core::geometry::PanePixelExtent> {
+        shepr_core::geometry::PanePixelExtent::new(
+            shepr_core::geometry::GridSize::clamped(cols, rows),
+            width,
+            height,
+        )
+    }
+
+    fn pixels_at(
+        x: u32,
+        y: u32,
+        column: u16,
+        row: u16,
+        extent: Option<shepr_core::geometry::PanePixelExtent>,
+    ) -> shepr_protocol::ClientMousePosition {
+        shepr_protocol::ClientMousePosition::Pixels {
+            column,
+            row,
+            report: shepr_term::mouse::PixelReport::new(x, y, extent.expect("test extent")),
+        }
+    }
+
+    fn exact_host() -> shepr_core::geometry::HostCell {
+        shepr_core::geometry::HostCell::Exact(
+            shepr_core::geometry::CellPx::new(10, 20).expect("test cell"),
+        )
+    }
 
     #[tokio::test]
     async fn scroll_change_survives_a_failed_send_and_a_reset_in_the_same_batch() {
@@ -408,7 +459,6 @@ mod tests {
             ClientPaneInputEvent::Mouse {
                 kind: shepr_protocol::ClientMouseKind::ScrollUp,
                 position: shepr_protocol::ClientMousePosition::Cell { column: 0, row: 0 },
-                geometry: None,
                 modifiers: shepr_protocol::WireModifiers::NONE,
                 lines: 1,
             },
@@ -439,8 +489,8 @@ mod tests {
         assert_eq!(
             failures.errors(),
             [
-                PaneInputError::Backpressure("text input"),
-                PaneInputError::Backpressure("text input"),
+                PaneInputError::Backpressure(InputKind::Text),
+                PaneInputError::Backpressure(InputKind::Text),
             ]
         );
         for expected in ["a", "b", "c", "d"] {
@@ -489,30 +539,16 @@ mod tests {
     fn ineligible_shell_pixel_mouse_uses_its_canonical_cell_position() {
         let mut events = vec![ClientPaneInputEvent::Mouse {
             kind: shepr_protocol::ClientMouseKind::Down(shepr_protocol::ClientMouseButton::Left),
-            position: shepr_protocol::ClientMousePosition::Pixels {
-                x: 121,
-                y: 81,
-                column: 12,
-                row: 4,
-            },
-            geometry: Some(shepr_protocol::ClientMouseGeometry {
-                cols: 20,
-                rows: 5,
-                width_px: 200,
-                height_px: 100,
-            }),
+            position: pixels_at(121, 81, 12, 4, extent(200, 100, 20, 5)),
             modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }];
 
-        downgrade_ineligible_pixel_mouse(
+        // The pane never asked for 1016.
+        admit_pixel_reports(
             &mut events,
-            false,
-            shepr_core::geometry::GridSize::clamped(20, 5),
-            Some(shepr_mux::pane::PanePixelSize {
-                width: 200,
-                height: 100,
-            }),
+            exact_host(),
+            PanePixelMouse::new(false, extent(200, 100, 20, 5)),
         );
 
         assert!(matches!(
@@ -526,33 +562,18 @@ mod tests {
 
     #[test]
     fn eligible_shell_pixel_mouse_remains_exact() {
-        let position = shepr_protocol::ClientMousePosition::Pixels {
-            x: 121,
-            y: 81,
-            column: 12,
-            row: 4,
-        };
+        let position = pixels_at(121, 81, 12, 4, extent(200, 100, 20, 5));
         let mut events = vec![ClientPaneInputEvent::Mouse {
             kind: shepr_protocol::ClientMouseKind::Moved,
             position,
-            geometry: Some(shepr_protocol::ClientMouseGeometry {
-                cols: 20,
-                rows: 5,
-                width_px: 200,
-                height_px: 100,
-            }),
             modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }];
 
-        downgrade_ineligible_pixel_mouse(
+        admit_pixel_reports(
             &mut events,
-            true,
-            shepr_core::geometry::GridSize::clamped(20, 5),
-            Some(shepr_mux::pane::PanePixelSize {
-                width: 200,
-                height: 100,
-            }),
+            exact_host(),
+            PanePixelMouse::new(true, extent(200, 100, 20, 5)),
         );
 
         assert!(matches!(
@@ -568,37 +589,22 @@ mod tests {
     fn stale_shell_pixel_geometry_downgrades_to_its_canonical_cell() {
         let mut events = vec![ClientPaneInputEvent::Mouse {
             kind: shepr_protocol::ClientMouseKind::Moved,
-            position: shepr_protocol::ClientMousePosition::Pixels {
-                x: 121,
-                y: 81,
-                column: 12,
-                row: 4,
-            },
-            geometry: Some(shepr_protocol::ClientMouseGeometry {
-                cols: 20,
-                rows: 5,
-                width_px: 200,
-                height_px: 100,
-            }),
+            position: pixels_at(121, 81, 12, 4, extent(200, 100, 20, 5)),
             modifiers: shepr_protocol::WireModifiers::NONE,
             lines: 1,
         }];
 
-        downgrade_ineligible_pixel_mouse(
+        // The pane was resized to 20x6 after the client mapped against 20x5.
+        admit_pixel_reports(
             &mut events,
-            true,
-            shepr_core::geometry::GridSize::clamped(20, 6),
-            Some(shepr_mux::pane::PanePixelSize {
-                width: 200,
-                height: 120,
-            }),
+            exact_host(),
+            PanePixelMouse::new(true, extent(200, 120, 20, 6)),
         );
 
         assert!(matches!(
             events.as_slice(),
             [ClientPaneInputEvent::Mouse {
                 position: shepr_protocol::ClientMousePosition::Cell { column: 12, row: 4 },
-                geometry: None,
                 ..
             }]
         ));

@@ -137,14 +137,15 @@ impl ValidatedTerminalConfig {
         config: &TerminalConfig,
         paths: &AppPaths,
     ) -> Result<Self, Vec<super::ConfigDiagnostic>> {
-        let default_shell = resolve_default_shell(&config.default_shell, paths).map_err(|error| {
-            super::ConfigDiagnostic::path_at(
-                super::ConfigKeyPath::root()
-                    .key("terminal")
-                    .key("default_shell"),
-                error,
-            )
-        });
+        let default_shell =
+            resolve_default_shell(config.default_shell.as_deref(), paths).map_err(|error| {
+                super::ConfigDiagnostic::path_at(
+                    super::ConfigKeyPath::root()
+                        .key("terminal")
+                        .key("default_shell"),
+                    error,
+                )
+            });
         let new_cwd = Self::parse_new_cwd(&config.new_cwd, paths).map_err(|error| {
             super::ConfigDiagnostic::path_at(
                 super::ConfigKeyPath::root().key("terminal").key("new_cwd"),
@@ -216,12 +217,12 @@ impl ValidatedTerminalConfig {
     }
 }
 
-/// The pane shell for this launch. An empty setting means `$SHELL`, and
+/// The pane shell for this launch. An unset setting means `$SHELL`, and
 /// `/bin/sh` only when `SHELL` is unset or blank.
 ///
 /// An inherited `SHELL` is held to the same standard as a configured shell:
 /// one that is unusable or not a shell shepr recognises fails the launch
-/// rather than falling back to `/bin/sh`. With `terminal.default_shell` empty
+/// rather than falling back to `/bin/sh`. With `terminal.default_shell` unset
 /// (the default, and the only state with no config file), `SHELL` is the
 /// setting, so a bad value is a config problem like any other. A fallback
 /// would only have surfaced as a line in the server log, which the TUI never
@@ -232,7 +233,10 @@ impl ValidatedTerminalConfig {
 /// Resolution stays in config validation rather than in server launch code so
 /// the validated config holds a `ResolvedShell`, not a raw string: a shell
 /// that cannot be used fails at config load, before the server starts.
-fn resolve_default_shell(configured: &str, paths: &AppPaths) -> Result<ResolvedShell, String> {
+fn resolve_default_shell(
+    configured: Option<&str>,
+    paths: &AppPaths,
+) -> Result<ResolvedShell, String> {
     let path = shepr_core::env::read_os(shepr_core::env::EnvVar::Path)
         .map_err(|error| error.to_string())?;
     let cwd = paths
@@ -241,7 +245,7 @@ fn resolve_default_shell(configured: &str, paths: &AppPaths) -> Result<ResolvedS
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("/"));
 
-    if !configured.is_empty() {
+    if let Some(configured) = configured {
         return resolve_recognized_shell(
             OsStr::new(configured),
             "configured shell",
@@ -586,8 +590,8 @@ impl ValidatedClientConfig {
         &self.machines
     }
 
-    pub fn live_keybinds(&self) -> super::LiveKeybindConfig {
-        self.live_keybinds.clone()
+    pub fn live_keybinds(&self) -> &super::LiveKeybindConfig {
+        &self.live_keybinds
     }
 }
 
@@ -683,11 +687,11 @@ pub(crate) fn validate_server(
                 },
                 session: ValidatedSessionConfig {
                     resume_agents_on_restore: config.session.resume_agents_on_restore,
-                    startup_per_agent_delay: std::time::Duration::from_millis(
-                        config.session.startup_per_agent_delay_ms.into(),
-                    ),
+                    startup_per_agent_delay: config.session.startup_per_agent_delay,
                 },
-                scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
+                scrollback: shepr_core::scrollback::ScrollbackBudget::new(
+                    config.advanced.scrollback_limit_bytes,
+                ),
                 experimental: ValidatedExperimentalConfig {
                     pane_history: config.experimental.pane_history,
                     reveal_hidden_cursor_for_cjk_ime: config
@@ -713,7 +717,7 @@ pub struct ValidatedServerConfig {
     ui: ValidatedServerUiConfig,
     terminal: ValidatedTerminalConfig,
     session: ValidatedSessionConfig,
-    scrollback_limit_bytes: usize,
+    scrollback: shepr_core::scrollback::ScrollbackBudget,
     experimental: ValidatedExperimentalConfig,
 }
 
@@ -745,9 +749,9 @@ impl ValidatedServerConfig {
     pub fn session(&self) -> &ValidatedSessionConfig {
         &self.session
     }
-    /// The per-pane scrollback budget in bytes; see `advanced.scrollback_limit_bytes`.
-    pub fn scrollback_limit_bytes(&self) -> usize {
-        self.scrollback_limit_bytes
+    /// The per-pane scrollback budget; see `advanced.scrollback_limit_bytes`.
+    pub fn scrollback(&self) -> shepr_core::scrollback::ScrollbackBudget {
+        self.scrollback
     }
     pub fn experimental(&self) -> &ValidatedExperimentalConfig {
         &self.experimental
@@ -757,7 +761,7 @@ impl ValidatedServerConfig {
 #[cfg(test)]
 impl ValidatedClientConfig {
     pub fn validated_live_keybinds(&self) -> Result<super::LiveKeybindConfig, Vec<String>> {
-        Ok(self.live_keybinds())
+        Ok(self.live_keybinds().clone())
     }
 }
 
@@ -915,7 +919,8 @@ mod tests {
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
             .expect("scratch roots fit a socket");
         let mut config = ServerConfig::default();
-        config.terminal.default_shell = scratch.join("missing/zsh").to_string_lossy().into_owned();
+        config.terminal.default_shell =
+            Some(scratch.join("missing/zsh").to_string_lossy().into_owned());
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("missing-cwd".to_owned());
 
         let errors = ValidatedServerConfig::validate(&config, paths)
@@ -959,7 +964,7 @@ mod tests {
             (not_a_shell, "does not recognize"),
         ] {
             let mut config = ServerConfig::default();
-            config.terminal.default_shell = shell.to_string_lossy().into_owned();
+            config.terminal.default_shell = Some(shell.to_string_lossy().into_owned());
             let error = ValidatedServerConfig::validate(&config, paths.clone())
                 .expect_err("an unusable configured shell fails the launch");
             assert!(
@@ -982,7 +987,7 @@ mod tests {
         let configured = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
         let configured_shell = configured.to_string_lossy().into_owned();
         let mut config = ServerConfig::default();
-        config.terminal.default_shell = configured_shell.clone();
+        config.terminal.default_shell = Some(configured_shell.clone());
 
         let validated = ValidatedServerConfig::validate(&config, paths)
             .expect("a configured shell takes precedence over inherited SHELL");
@@ -1002,7 +1007,7 @@ mod tests {
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
             .expect("scratch roots fit a socket");
         let mut config = ServerConfig::default();
-        config.terminal.default_shell = "zsh".into();
+        config.terminal.default_shell = Some("zsh".into());
 
         let validated =
             ValidatedServerConfig::validate(&config, paths).expect("a shell on PATH resolves");
@@ -1018,13 +1023,13 @@ mod tests {
             .expect("scratch roots fit a socket");
         for value in [" /bin/sh", "/bin/sh\t", " ", "\u{2003}/bin/sh"] {
             assert!(
-                resolve_default_shell(value, &paths)
+                resolve_default_shell(Some(value), &paths)
                     .expect_err("padded configured shell")
                     .contains("configured shell must not have surrounding whitespace")
             );
             env.set("SHELL", value);
             assert!(
-                resolve_default_shell("", &paths)
+                resolve_default_shell(None, &paths)
                     .expect_err("padded inherited shell")
                     .contains("SHELL must not have surrounding whitespace")
             );
@@ -1043,18 +1048,18 @@ mod tests {
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
             .expect("scratch roots fit a socket");
         assert_eq!(
-            resolve_default_shell("", &paths)
+            resolve_default_shell(None, &paths)
                 .expect("valid shell")
                 .path(),
             shell
         );
     }
 
-    /// With `terminal.default_shell` empty, `SHELL` is the setting: a usable
+    /// With `terminal.default_shell` unset, `SHELL` is the setting: a usable
     /// one is taken, an unusable or unrecognized one fails the launch naming
     /// `SHELL` and the fix, and only an unset one means `/bin/sh`.
     #[test]
-    fn an_empty_shell_setting_takes_the_inherited_shell_and_rejects_an_unusable_one() {
+    fn an_unset_shell_setting_takes_the_inherited_shell_and_rejects_an_unusable_one() {
         let env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-inherited-shell");
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))

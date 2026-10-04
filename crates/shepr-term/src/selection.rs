@@ -141,12 +141,6 @@ impl<P> Selection<P> {
         }
     }
 
-    /// Return the range as row and column pairs, preserving absolute row IDs.
-    pub fn ordered_cells(&self) -> ((AbsRow, u16), (AbsRow, u16)) {
-        let (start, end) = self.ordered_rows();
-        ((start.row, start.col), (end.row, end.col))
-    }
-
     /// Check whether a stable terminal cell is inside the visible selection.
     pub fn contains(&self, cell: Point<AbsRow>) -> bool {
         if !self.is_visible() {
@@ -230,9 +224,5 @@ mod tests {
         let row = u64::from(u32::MAX) + 10;
         let selection = selection(row, 0, row + 1, 3);
         assert_eq!(selection.ordered_rows(), (point(row, 0), point(row + 1, 3)));
-        assert_eq!(
-            selection.ordered_cells(),
-            ((AbsRow(row), 0), (AbsRow(row + 1), 3))
-        );
     }
 }

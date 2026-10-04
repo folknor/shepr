@@ -13,7 +13,7 @@ use crate::test_support::{
 /// socket, or the data-directory lease.
 const CHILD_MARKER: &str = "SERVER_ALREADY_RUNNING_TEST_CHILD";
 const ENTRY_POINT: &str =
-    "server::headless::tests::already_running_tests::already_running_subprocess_entry_point";
+    "server::headless::tests::already_running::already_running_subprocess_entry_point";
 
 #[test]
 fn run_server_refuses_a_busy_socket_or_data_dir_lease_as_already_running() {
@@ -68,7 +68,9 @@ fn already_running_subprocess_entry_point() {
     );
     let socket = paths.server_address().socket();
     // What a running server holds: the startup lock and a live listener.
-    let _held = shepr_platform::ipc::bind_private_socket(socket).expect("hold the socket");
+    let _held =
+        shepr_platform::ipc::bind_owned_private_socket(paths.server_address().socket_path())
+            .expect("hold the socket");
 
     let ready = AtomicBool::new(false);
     let error = run_server(&config, &paths, |_| ready.store(true, Ordering::Relaxed))

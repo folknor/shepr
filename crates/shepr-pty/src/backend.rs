@@ -636,7 +636,7 @@ mod tests {
     }
 
     fn test_geometry() -> shepr_core::geometry::PaneGeometry {
-        shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0)
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24)
     }
 
     fn ignore_status() -> StatusDelivery {
@@ -782,7 +782,11 @@ mod tests {
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
         let mut spawned = spawn_pty(
-            shepr_core::geometry::PaneGeometry::new(100, 30, 9, 18),
+            shepr_core::geometry::PaneGeometry::with_cell(
+                100,
+                30,
+                shepr_core::geometry::CellPx::new(9, 18),
+            ),
             &cmd,
             ignore_status(),
         )
@@ -809,7 +813,7 @@ mod tests {
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let scratch = shepr_test_support::ScratchDir::new("pty-launch-ok");
         let mut cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
-        cmd.cwd(scratch.path());
+        cmd.cwd(&shepr_core::absolute_path::AbsolutePath::new(scratch.path()).expect("absolute"));
         let (mut spawned, records) = spawn_and_read_status(&cmd);
         assert_eq!(records, [LaunchRecord::ChdirOk(0)]);
         assert!(
@@ -826,7 +830,10 @@ mod tests {
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let scratch = shepr_test_support::ScratchDir::new("pty-launch-missing-cwd");
         let mut cmd = fixture_command(&[Step::Exit(0)]);
-        cmd.cwd(scratch.join("missing"));
+        cmd.cwd(
+            &shepr_core::absolute_path::AbsolutePath::new(scratch.join("missing"))
+                .expect("absolute"),
+        );
         cmd.require_cwd();
         let (mut spawned, records) = spawn_and_read_status(&cmd);
         assert_eq!(records, [LaunchRecord::ChdirFailed(libc::ENOENT)]);
@@ -839,7 +846,10 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("pty-launch-home");
         let mut cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
         cmd.env(shepr_core::env::EnvVar::Home, scratch.path());
-        cmd.cwd(scratch.join("removed-before-spawn"));
+        cmd.cwd(
+            &shepr_core::absolute_path::AbsolutePath::new(scratch.join("removed-before-spawn"))
+                .expect("absolute"),
+        );
         let (mut spawned, records) = spawn_and_read_status(&cmd);
         assert_eq!(records, [LaunchRecord::ChdirOk(1)]);
         assert_eq!(spawned.cwd_candidates[1], scratch.path());

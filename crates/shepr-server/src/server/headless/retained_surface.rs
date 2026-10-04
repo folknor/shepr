@@ -1,9 +1,9 @@
 use super::*;
 use crate::server::ClientId;
 use crate::server::clients::ClientPaneIdentity;
+use crate::server::committed_baseline::CommittedPane;
 use crate::server::pane_surface::PaneSurfaceMetadata;
 use shepr_mux::pane::PatchRow;
-use shepr_protocol::WorkspaceId;
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -12,7 +12,6 @@ pub(super) enum RetainedSurfaceFallback {
     RecomputePending,
     NoBaseline,
     BaselineMismatch,
-    SynchronizedVisible,
     RuntimeMissing,
     TerminalSnapshot(shepr_mux::pane::PatchUnavailable),
     AlternateScreenGeometry,
@@ -24,8 +23,8 @@ pub(super) enum RetainedSurfaceFallback {
 }
 
 fn rect_fits_frame(rect: shepr_protocol::SurfaceRect, frame: &FrameData) -> bool {
-    rect.x.saturating_add(rect.width) <= frame.width
-        && rect.y.saturating_add(rect.height) <= frame.height
+    rect.x.saturating_add(rect.width) <= frame.width()
+        && rect.y.saturating_add(rect.height) <= frame.height()
 }
 
 fn patch_intersects_hyperlinks(
@@ -33,10 +32,10 @@ fn patch_intersects_hyperlinks(
     area: shepr_protocol::SurfaceRect,
     patch: &shepr_mux::pane::TerminalDirtyPatch,
 ) -> bool {
-    if frame.hyperlinks.is_empty() || !rect_fits_frame(area, frame) {
+    if frame.hyperlinks().is_empty() || !rect_fits_frame(area, frame) {
         return false;
     }
-    let width = usize::from(frame.width);
+    let width = usize::from(frame.width());
     patch
         .rows
         .iter()
@@ -44,25 +43,25 @@ fn patch_intersects_hyperlinks(
         .any(|row| {
             let start = usize::from(area.y + row.y) * width + usize::from(area.x);
             let end = start + usize::from(area.width);
-            end > frame.cells.len()
-                || frame.cells[start..end]
+            end > frame.cells().len()
+                || frame.cells()[start..end]
                     .iter()
                     .any(|cell| cell.hyperlink.is_some())
         })
 }
 
 fn patch_row_changed(frame: &FrameData, row: &shepr_protocol::PaneSurfacePatchRow) -> Option<bool> {
-    if row.y >= frame.height
-        || row.x.saturating_add(u16::try_from(row.cells.len()).ok()?) > frame.width
+    if row.y >= frame.height()
+        || row.x.saturating_add(u16::try_from(row.cells.len()).ok()?) > frame.width()
     {
         return None;
     }
-    let start = usize::from(row.y) * usize::from(frame.width) + usize::from(row.x);
+    let start = usize::from(row.y) * usize::from(frame.width()) + usize::from(row.x);
     let end = start + row.cells.len();
-    if end > frame.cells.len() {
+    if end > frame.cells().len() {
         return None;
     }
-    Some(frame.cells[start..end] != row.cells)
+    Some(frame.cells()[start..end] != row.cells)
 }
 
 fn changed_rows(
@@ -83,9 +82,9 @@ fn changed_rows(
             return None;
         }
         let y = area.y + *local_y;
-        let frame_start = usize::from(y) * usize::from(frame.width) + usize::from(area.x);
+        let frame_start = usize::from(y) * usize::from(frame.width()) + usize::from(area.x);
         let frame_end = frame_start.checked_add(width)?;
-        let existing = frame.cells.get(frame_start..frame_end)?;
+        let existing = frame.cells().get(frame_start..frame_end)?;
         // The row was collected at the widest recipient's width; a narrower
         // cut can split a pair the collection kept whole, so it gets the
         // same rule a full render at this width applies. The shared row is
@@ -128,48 +127,24 @@ fn changed_rows(
     Some(rows)
 }
 
+/// The rows that bring the pane's scrollbar column in `frame` to what the ui
+/// says it looks like with `metrics`, and the committed pane's track updated
+/// to match. `look` is the pane as laid out against the baseline.
 fn retained_scrollbar_patch(
     app: &app::App,
     frame: &FrameData,
     pane: &mut shepr_protocol::PaneSurfacePane,
-    reserved_gutter: Option<shepr_protocol::SurfaceRect>,
-    alternate_screen_active: bool,
+    look: &crate::ui::PaneSurface,
     metrics: Option<shepr_mux::pane::ScrollMetrics>,
 ) -> Option<Vec<shepr_protocol::PaneSurfacePatchRow>> {
-    let next_rect = metrics
-        .filter(|metrics| {
-            shepr_mux::workspace::PaneChromeInfo::scrollbar_visible(metrics.max_offset_from_bottom)
-        })
-        .filter(|_| app.state.settings.pane_scrollbars && !alternate_screen_active)
-        .and(reserved_gutter)
-        .filter(|rect| {
-            let right = pane.rect.x.saturating_add(pane.rect.width);
-            rect_fits_frame(*rect, frame)
-                && rect.x >= pane.rect.x
-                && rect.x.saturating_add(rect.width) <= right
-        });
-    let patch_rect = next_rect.or(pane.scrollbar_rect);
-    pane.scrollbar_rect = next_rect;
-    let Some(rect) = patch_rect else {
+    let look = look.clone().with_scroll(metrics);
+    let paint = look.scrollbar_paint(pane.scrollbar_rect, app.state(), metrics);
+    pane.scrollbar_rect = look
+        .scrollbar_rect
+        .map(shepr_surface::ratatui_conversion::surface_rect);
+    let Some((rect, cells)) = paint else {
         return Some(Vec::new());
     };
-
-    let track = Rect::new(0, 0, 1, rect.height);
-    let mut buffer = ratatui::buffer::Buffer::empty(track);
-    if let (Some(metrics), Some(_)) = (metrics, next_rect) {
-        crate::ui::render_pane_scrollbar_buffer(
-            &mut buffer,
-            metrics,
-            track,
-            &app.state.settings.palette,
-            pane.focused,
-        );
-    }
-    let cells = buffer
-        .content
-        .iter()
-        .map(<shepr_protocol::CellData as shepr_surface::ratatui_conversion::CellDataExt>::from_ratatui_cell)
-        .collect::<Vec<_>>();
     let mut rows = Vec::new();
     for (offset, cell) in cells.into_iter().enumerate() {
         let row = shepr_protocol::PaneSurfacePatchRow {
@@ -186,46 +161,19 @@ fn retained_scrollbar_patch(
 
 fn retained_cursor(
     app: &app::App,
-    panes: &[ResolvedRetainedPane<'_>],
+    panes: &[CommittedPane<'_>],
 ) -> Option<shepr_protocol::CursorState> {
-    let pane = panes.iter().find(|pane| pane.pane.focused)?;
-    let runtime = app.state.runtime_for_pane_in_workspace(
-        &app.terminal_runtimes,
-        pane.workspace_index,
-        pane.identity.pane_id,
-    )?;
-    crate::ui::pane_cursor(
-        &app.state,
-        runtime,
-        pane.workspace_index,
-        pane.identity.pane_id,
-        Rect::new(
-            pane.pane.inner_rect.x,
-            pane.pane.inner_rect.y,
-            pane.pane.inner_rect.width,
-            pane.pane.inner_rect.height,
-        ),
-    )
+    let pane = panes.iter().find(|pane| pane.wire.focused)?;
+    let runtime = app.pane_runtime(pane.identity.pane_id)?;
+    pane.look.cursor(app.state(), runtime)
 }
 
 struct RetainedRecipient<'a> {
     client_id: ClientId,
     surface: &'a shepr_protocol::PaneSurfaceFrame,
-    // Reuse the typed identities committed next to this connection's wire pane
-    // entries for source matching, synchronized-output checks, and cursor lookup.
-    panes: Vec<ResolvedRetainedPane<'a>>,
-}
-
-struct ResolvedRetainedPane<'a> {
-    pane: &'a shepr_protocol::PaneSurfacePane,
-    reserved_scrollbar_gutter: Option<shepr_protocol::SurfaceRect>,
-    workspace_index: usize,
-    identity: &'a ClientPaneIdentity,
-}
-
-struct RetainedPaneLayout {
-    workspace_index: usize,
-    panes: Vec<shepr_mux::workspace::PaneChromeInfo>,
+    // The committed panes with the typed identities committed beside them, for
+    // source matching, synchronized-output checks, and cursor lookup.
+    panes: Vec<CommittedPane<'a>>,
 }
 
 struct CollectedPanePatch {
@@ -239,103 +187,9 @@ struct RetainedRecipientUpdate {
     patch: shepr_protocol::PaneSurfacePatch,
 }
 
-fn resolve_retained_panes<'a>(
-    app: &app::App,
-    surface: &'a shepr_protocol::PaneSurfaceFrame,
-    identities: &'a [ClientPaneIdentity],
-    layout: &RetainedPaneLayout,
-) -> Option<Vec<ResolvedRetainedPane<'a>>> {
-    if surface.panes.len() != identities.len() {
-        return None;
-    }
-    let Some(first_identity) = identities.first() else {
-        return Some(Vec::new());
-    };
-    if identities
-        .iter()
-        .any(|identity| identity.workspace_id != first_identity.workspace_id)
-    {
-        return None;
-    }
-    let workspace = app.state.workspaces.get(layout.workspace_index)?;
-    if workspace.id != first_identity.workspace_id || layout.panes.len() != surface.panes.len() {
-        return None;
-    }
-    let mut resolved = Vec::with_capacity(surface.panes.len());
-    for ((pane, identity), pane_layout) in surface.panes.iter().zip(identities).zip(&layout.panes) {
-        if pane_layout.id != identity.pane_id {
-            return None;
-        }
-        let mut content_layout = pane_layout.clone();
-        let gutter = content_layout.content_layout(
-            app.state.settings.pane_scrollbars,
-            pane.alternate_screen_active,
-        );
-        let content = content_layout.inner_rect;
-        let committed_rect = Rect::new(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height);
-        let committed_inner = Rect::new(
-            pane.inner_rect.x,
-            pane.inner_rect.y,
-            pane.inner_rect.width,
-            pane.inner_rect.height,
-        );
-        if pane_layout.rect != committed_rect || content != committed_inner {
-            return None;
-        }
-
-        let reserved_scrollbar_gutter = gutter.map(|rect| shepr_protocol::SurfaceRect {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-        });
-        if pane.scrollbar_rect.is_some() && pane.scrollbar_rect != reserved_scrollbar_gutter {
-            return None;
-        }
-        resolved.push(ResolvedRetainedPane {
-            pane,
-            reserved_scrollbar_gutter,
-            workspace_index: layout.workspace_index,
-            identity,
-        });
-    }
-    Some(resolved)
-}
-
-fn retained_pane_layout<'a>(
-    app: &app::App,
-    cache: &'a mut HashMap<(WorkspaceId, u16, u16), Option<RetainedPaneLayout>>,
-    workspace_id: &shepr_protocol::WorkspaceId,
-    width: u16,
-    height: u16,
-) -> Option<&'a RetainedPaneLayout> {
-    let key = (*workspace_id, width, height);
-    cache
-        .entry(key)
-        .or_insert_with(|| {
-            let workspace_index = app.resolve_workspace_id(workspace_id)?;
-            let workspace = app.state.workspaces.get(workspace_index)?;
-            let area = Rect::new(0, 0, width, height);
-            let panes = app
-                .state
-                .pane_geometry_in(area)
-                .visible_panes(workspace.layout(), workspace.zoomed());
-            Some(RetainedPaneLayout {
-                workspace_index,
-                panes,
-            })
-        })
-        .as_ref()
-}
-
-fn has_synchronized_pane(app: &app::App, panes: &[ResolvedRetainedPane<'_>]) -> bool {
+fn has_synchronized_pane(app: &app::App, panes: &[CommittedPane<'_>]) -> bool {
     panes.iter().any(|pane| {
-        app.state
-            .runtime_for_pane_in_workspace(
-                &app.terminal_runtimes,
-                pane.workspace_index,
-                pane.identity.pane_id,
-            )
+        app.pane_runtime(pane.identity.pane_id)
             .is_some_and(|runtime| runtime.read().synchronized_output_active())
     })
 }
@@ -387,7 +241,6 @@ impl HeadlessServer {
             }};
         }
         let targets = render_targets(&self.clients)
-            .into_iter()
             .filter(|target| ids.contains(&target.client_id))
             .collect::<Vec<_>>();
         // Check slots before baseline validation or source collection.
@@ -408,7 +261,7 @@ impl HeadlessServer {
         // layout only depends on that workspace and frame geometry, so compute
         // it once per key during this fanout pass and validate each client's
         // committed surface against the shared result.
-        let mut layouts = HashMap::new();
+        let mut layouts = crate::ui::PaneLayoutCache::default();
         'targets: for target in &targets {
             let Some(client) = self.clients.get(&target.client_id) else {
                 fallback!(RetainedSurfaceFallback::ClientMissing, target.client_id, 'targets);
@@ -416,48 +269,20 @@ impl HeadlessServer {
             if client.render_state.requires_recompute() {
                 fallback!(RetainedSurfaceFallback::RecomputePending, target.client_id, 'targets);
             }
-            let Some(surface) = client.render_state.last_pane_surface() else {
+            let Some(baseline) = client.render_state.committed_baseline() else {
                 fallback!(RetainedSurfaceFallback::NoBaseline, target.client_id, 'targets);
             };
+            let surface = baseline.surface();
             if surface.boot_id != self.client_shell_boot_id
                 || surface.projection_revision != client.shell_state().projection_revision
-                || surface.frame.width != target.terminal_size.cols.get()
-                || surface.frame.height != target.terminal_size.rows.get()
+                || surface.frame.width() != target.terminal_size.cols.get()
+                || surface.frame.height() != target.terminal_size.rows.get()
             {
                 fallback!(RetainedSurfaceFallback::BaselineMismatch, target.client_id, 'targets);
             }
-            let identities = &client.surface_pane_identities;
-            let layout = if let Some(identity) = identities.first() {
-                let Some(layout) = retained_pane_layout(
-                    &self.app,
-                    &mut layouts,
-                    &identity.workspace_id,
-                    surface.frame.width,
-                    surface.frame.height,
-                ) else {
-                    fallback!(RetainedSurfaceFallback::BaselineMismatch, target.client_id, 'targets);
-                };
-                Some(layout)
-            } else {
-                None
+            let Some(panes) = baseline.panes(self.app.state(), &mut layouts) else {
+                fallback!(RetainedSurfaceFallback::BaselineMismatch, target.client_id, 'targets);
             };
-            let panes = match layout {
-                Some(layout) => {
-                    let Some(panes) =
-                        resolve_retained_panes(&self.app, surface, identities, layout)
-                    else {
-                        fallback!(RetainedSurfaceFallback::BaselineMismatch, target.client_id, 'targets);
-                    };
-                    panes
-                }
-                None if surface.panes.is_empty() => Vec::new(),
-                None => {
-                    fallback!(RetainedSurfaceFallback::BaselineMismatch, target.client_id, 'targets)
-                }
-            };
-            if has_synchronized_pane(&self.app, &panes) {
-                fallback!(RetainedSurfaceFallback::SynchronizedVisible, target.client_id, 'targets);
-            }
             recipients.push(RetainedRecipient {
                 client_id: target.client_id,
                 surface,
@@ -489,22 +314,14 @@ impl HeadlessServer {
                 else {
                     continue;
                 };
-                source_pane.get_or_insert((
-                    (*pane.identity).clone(),
-                    pane.workspace_index,
-                    pane.identity.pane_id,
-                ));
-                width = width.max(pane.pane.inner_rect.width);
-                height = height.max(pane.pane.inner_rect.height);
+                source_pane.get_or_insert(((*pane.identity).clone(), pane.identity.pane_id));
+                width = width.max(pane.wire.inner_rect.width);
+                height = height.max(pane.wire.inner_rect.height);
             }
-            let Some((identity, workspace_index, pane_id)) = source_pane else {
+            let Some((identity, pane_id)) = source_pane else {
                 continue;
             };
-            let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
-                &self.app.terminal_runtimes,
-                workspace_index,
-                pane_id,
-            ) else {
+            let Some(runtime) = self.app.pane_runtime(pane_id) else {
                 source_fallback!(RetainedSurfaceFallback::RuntimeMissing, source);
             };
             let snapshot = match runtime.read().collect_dirty_patch_snapshot(width, height) {
@@ -578,8 +395,7 @@ impl HeadlessServer {
                     &self.app,
                     &surface.frame,
                     pane,
-                    recipient.panes[pane_index].reserved_scrollbar_gutter,
-                    collected_pane.metadata.alternate_screen_active,
+                    &recipient.panes[pane_index].look,
                     collected_pane.metadata.scroll(),
                 ) else {
                     fallback!(RetainedSurfaceFallback::ScrollbarPatch, client_id, 'recipients);
@@ -594,12 +410,12 @@ impl HeadlessServer {
             // by the shared baseline admission in prepare_pane_surface_patch below.
             shepr_protocol::sort_patch_rows(&mut patch_rows);
             let cursor = retained_cursor(&self.app, &recipient.panes);
-            let cursor_changed = cursor != surface.frame.cursor;
+            let cursor_changed = cursor.as_ref() != surface.frame.cursor();
             let patch = shepr_protocol::PaneSurfacePatch {
                 boot_id: self.client_shell_boot_id.clone(),
                 projection_revision,
                 base_surface_revision,
-                surface_revision: shepr_protocol::SurfaceRevision::new(0),
+                surface_revision: shepr_protocol::SurfaceRevision::ZERO,
                 rows: patch_rows,
                 panes: changed_panes,
                 cursor,
@@ -682,6 +498,7 @@ impl HeadlessServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::committed_baseline::CommittedBaseline;
     use crate::test_support::WorkspaceFixture as _;
 
     fn cell(symbol: &str) -> shepr_protocol::CellData {
@@ -691,34 +508,34 @@ mod tests {
             fg: shepr_protocol::WireColor::Reset,
             bg: shepr_protocol::WireColor::Reset,
             style: shepr_protocol::WireStyle::default(),
-            skip: false,
             hyperlink: None,
         }
     }
 
+    fn test_frame(width: u16, height: u16, cells: Vec<shepr_protocol::CellData>) -> FrameData {
+        FrameData::new(cells, width, height, None, Vec::new()).expect("test frame")
+    }
+
     #[test]
     fn retained_resolution_uses_the_typed_baseline_identity() {
-        let mut app = app::App::new(
-            &shepr_config::ServerConfig::default(),
-            app::AppPolicy::Suspended,
-        );
+        let mut app = app::App::new(&shepr_config::ServerConfig::default());
         let workspace = shepr_mux::workspace::Workspace::test_new("typed-baseline");
-        let pane_id = workspace.root_pane();
-        app.state.test_push_workspace(workspace);
-        let workspace_id = app.state.workspaces[0].id;
+        let pane_id = workspace.tree().root();
+        app.test_state_mut().test_push_workspace(workspace);
+        let workspace_id = app.state().ws(0).id();
         let wire_workspace_id =
             shepr_protocol::WorkspaceId::from_number(999).expect("test workspace id");
         let surface = shepr_protocol::PaneSurfaceFrame {
             boot_id: shepr_test_fixtures::fixed_boot_id(1),
-            projection_revision: shepr_protocol::ProjectionRevision::new(1),
-            surface_revision: shepr_protocol::SurfaceRevision::new(1),
-            frame: FrameData::blank(1, 1),
+            projection_revision: shepr_protocol::ProjectionRevision::FIRST,
+            surface_revision: shepr_protocol::SurfaceRevision::FIRST,
+            frame: FrameData::blank(1, 1).expect("test frame"),
             panes: vec![shepr_protocol::PaneSurfacePane {
                 pane_id: shepr_protocol::PublicPaneId::new(
                     &wire_workspace_id,
                     shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
                 ),
-                content_revision: 0,
+                content_revision: shepr_protocol::ContentRevision::default(),
                 rect: shepr_protocol::SurfaceRect {
                     x: 0,
                     y: 0,
@@ -735,10 +552,8 @@ mod tests {
                 scroll: None,
                 focused: true,
                 mouse_reporting: false,
-                sgr_pixel_mouse: false,
+                pixel_mouse: shepr_term::mouse::PanePixelMouse::OFF,
                 alternate_screen_active: false,
-                pixel_width: 0,
-                pixel_height: 0,
             }],
             splits: Vec::new(),
         };
@@ -747,65 +562,53 @@ mod tests {
             pane_id,
         }];
 
-        let mut layouts = HashMap::new();
-        let layout = retained_pane_layout(
-            &app,
-            &mut layouts,
-            &identities[0].workspace_id,
-            surface.frame.width,
-            surface.frame.height,
-        )
-        .expect("test workspace layout resolves");
-        let resolved = resolve_retained_panes(&app, &surface, &identities, layout)
+        let baseline = CommittedBaseline::new(surface, identities);
+        let mut layouts = crate::ui::PaneLayoutCache::default();
+        let resolved = baseline
+            .panes(app.state(), &mut layouts)
             .expect("typed identity resolves without parsing the wire id");
 
         assert_eq!(resolved.len(), 1);
-        assert_eq!(resolved[0].workspace_index, 0);
+        assert_eq!(resolved[0].identity.workspace_id, workspace_id);
         assert_eq!(resolved[0].identity.pane_id, pane_id);
     }
 
     #[test]
     fn retained_scrollbar_does_not_invent_a_gutter_at_the_pane_border() {
-        let mut app = app::App::new(
-            &shepr_config::ServerConfig::default(),
-            app::AppPolicy::Suspended,
-        );
-        app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Always;
-        app.state.settings.pane_scrollbars = true;
-        app.state.settings.pane_outer_borders = true;
+        let mut app = app::App::new(&shepr_config::ServerConfig::default());
+        app.test_state_mut().settings_mut().pane_borders = shepr_config::PaneBordersConfig::Always;
+        app.test_state_mut().settings_mut().pane_scrollbars = true;
+        app.test_state_mut().settings_mut().pane_outer_borders = true;
         let workspace = shepr_mux::workspace::Workspace::test_new("narrow-scrollbar");
-        let workspace_id = workspace.id;
-        let pane_id = workspace.root_pane();
-        app.state.test_push_workspace(workspace);
-        let area = Rect::new(0, 0, 6, 5);
-        let layout = app.state.pane_geometry_in(area).visible_panes(
-            app.state.workspaces[0].layout(),
-            app.state.workspaces[0].zoomed(),
+        let workspace_id = workspace.id();
+        let pane_id = workspace.tree().root();
+        app.test_state_mut().test_push_workspace(workspace);
+        let area = shepr_core::geometry::Rect::new(0, 0, 6, 5);
+        let layout = app.state().chrome_in(area).visible_panes(
+            app.state().ws(0).tree().layout(),
+            app.state().ws(0).tree().zoomed(),
         );
         let pane_layout = layout.first().expect("test workspace has one pane");
-        let pane_inner =
-            shepr_mux::workspace::pane_inner_rect(pane_layout.rect, pane_layout.borders);
+        let pane_inner = pane_layout.inner_rect();
         assert_eq!(pane_inner.width, 4);
-        let content = shepr_mux::workspace::terminal_content_rect(pane_inner, true, false);
+        let content = shepr_core::chrome::content_rect(pane_inner, true, false);
         let mut pane = shepr_protocol::PaneSurfacePane {
             pane_id: shepr_test_fixtures::id("w1:p1"),
-            content_revision: 0,
-            rect: shepr_surface::ratatui_conversion::surface_rect(pane_layout.rect),
-            inner_rect: shepr_surface::ratatui_conversion::surface_rect(content),
+            content_revision: shepr_protocol::ContentRevision::default(),
+            rect: pane_layout.rect,
+            inner_rect: content,
             scrollbar_rect: None,
             scroll: None,
             focused: true,
             mouse_reporting: false,
-            sgr_pixel_mouse: false,
+            pixel_mouse: shepr_term::mouse::PanePixelMouse::OFF,
             alternate_screen_active: false,
-            pixel_width: 0,
-            pixel_height: 0,
         };
         let surface = shepr_protocol::PaneSurfaceFrame {
             boot_id: shepr_test_fixtures::fixed_boot_id(1),
-            projection_revision: shepr_protocol::ProjectionRevision::new(1),
-            surface_revision: shepr_protocol::SurfaceRevision::new(1),
-            frame: FrameData::blank(6, 5),
+            projection_revision: shepr_protocol::ProjectionRevision::FIRST,
+            surface_revision: shepr_protocol::SurfaceRevision::FIRST,
+            frame: FrameData::blank(6, 5).expect("test frame"),
             panes: vec![pane.clone()],
             splits: Vec::new(),
         };
@@ -813,26 +616,19 @@ mod tests {
             workspace_id,
             pane_id,
         }];
-        let mut layouts = HashMap::new();
-        let layout = retained_pane_layout(
-            &app,
-            &mut layouts,
-            &identities[0].workspace_id,
-            surface.frame.width,
-            surface.frame.height,
-        )
-        .expect("test workspace layout resolves");
-        let resolved = resolve_retained_panes(&app, &surface, &identities, layout)
+        let baseline = CommittedBaseline::new(surface.clone(), identities);
+        let mut layouts = crate::ui::PaneLayoutCache::default();
+        let resolved = baseline
+            .panes(app.state(), &mut layouts)
             .expect("the committed pane geometry matches its layout");
-        assert_eq!(resolved[0].reserved_scrollbar_gutter, None);
+        assert_eq!(resolved[0].look.scrollbar_gutter, None);
         let metrics = shepr_mux::pane::ScrollMetrics::new(1, 4, 3, shepr_vt::AbsRow(1));
 
         let rows = retained_scrollbar_patch(
             &app,
             &surface.frame,
             &mut pane,
-            resolved[0].reserved_scrollbar_gutter,
-            false,
+            &resolved[0].look,
             Some(metrics),
         )
         .expect("a pane without a reserved gutter needs no scrollbar patch");
@@ -843,44 +639,38 @@ mod tests {
 
     #[test]
     fn retained_layout_is_reused_for_recipients_with_the_same_workspace_and_size() {
-        let mut app = app::App::new(
-            &shepr_config::ServerConfig::default(),
-            app::AppPolicy::Suspended,
-        );
+        let mut app = app::App::new(&shepr_config::ServerConfig::default());
         let workspace = shepr_mux::workspace::Workspace::test_new("retained-layout-cache");
-        let workspace_id = workspace.id;
-        app.state.test_push_workspace(workspace);
-        let mut cache = HashMap::new();
+        let workspace_id = workspace.id();
+        app.test_state_mut().test_push_workspace(workspace);
+        let mut cache = crate::ui::PaneLayoutCache::default();
 
         let (first_panes, first_len) = {
-            let first = retained_pane_layout(&app, &mut cache, &workspace_id, 80, 24)
+            let first = cache
+                .chromes(app.state(), workspace_id, 80, 24)
                 .expect("first recipient layout");
-            (first.panes.as_ptr(), first.panes.len())
+            (first.as_ptr(), first.len())
         };
         let (second_panes, second_len) = {
-            let second = retained_pane_layout(&app, &mut cache, &workspace_id, 80, 24)
+            let second = cache
+                .chromes(app.state(), workspace_id, 80, 24)
                 .expect("second recipient layout");
-            (second.panes.as_ptr(), second.panes.len())
+            (second.as_ptr(), second.len())
         };
 
         assert_eq!(cache.len(), 1);
         assert_eq!(second_panes, first_panes);
         assert_eq!(second_len, first_len);
 
-        retained_pane_layout(&app, &mut cache, &workspace_id, 81, 24)
+        cache
+            .chromes(app.state(), workspace_id, 81, 24)
             .expect("different frame size gets its own layout");
         assert_eq!(cache.len(), 2);
     }
 
     #[test]
     fn retained_rows_send_only_changed_cell_spans() {
-        let frame = FrameData {
-            width: 6,
-            height: 2,
-            cells: vec![cell(" "); 12],
-            cursor: None,
-            hyperlinks: Vec::new(),
-        };
+        let frame = test_frame(6, 2, vec![cell(" "); 12]);
         let patch = shepr_mux::pane::TerminalDirtyPatch {
             rows: vec![PatchRow {
                 y: 0,
@@ -908,18 +698,16 @@ mod tests {
                 cells: vec![cell("x"), cell("y"), cell(" ")],
             }]
         );
-        assert_eq!(frame.cells, vec![cell(" "); 12], "planning must not commit");
+        assert_eq!(
+            frame.cells(),
+            vec![cell(" "); 12],
+            "planning must not commit"
+        );
     }
 
     #[test]
     fn retained_rows_include_the_cell_after_a_width_transition() {
-        let frame = FrameData {
-            width: 3,
-            height: 1,
-            cells: vec![cell("界"), cell("z"), cell("q")],
-            cursor: None,
-            hyperlinks: Vec::new(),
-        };
+        let frame = test_frame(3, 1, vec![cell("界"), cell("z"), cell("q")]);
         let patch = shepr_mux::pane::TerminalDirtyPatch {
             rows: vec![PatchRow {
                 y: 0,
@@ -956,26 +744,22 @@ mod tests {
             ..cell(symbol)
         };
         let one = shepr_protocol::GridCellWidth::One;
-        let two = shepr_protocol::GridCellWidth::Two;
+        let lead = shepr_protocol::GridCellWidth::WideLead;
+        let tail = shepr_protocol::GridCellWidth::WideTail;
         // Collected once at the wider recipient's width: the pair is whole.
         let patch = shepr_mux::pane::TerminalDirtyPatch {
             rows: vec![PatchRow {
                 y: 0,
                 cells: vec![
                     pane_cell("a", one),
-                    pane_cell("\u{754c}", two),
-                    pane_cell("", one),
+                    pane_cell("\u{754c}", lead),
+                    pane_cell("", tail),
                     pane_cell("b", one),
                 ],
             }],
         };
-        let frame = |width: u16| FrameData {
-            width,
-            height: 1,
-            cells: vec![pane_cell(" ", one); usize::from(width)],
-            cursor: None,
-            hyperlinks: Vec::new(),
-        };
+        let frame =
+            |width: u16| test_frame(width, 1, vec![pane_cell(" ", one); usize::from(width)]);
         let area = |width| shepr_protocol::SurfaceRect {
             x: 0,
             y: 0,
@@ -985,33 +769,27 @@ mod tests {
 
         let wide = changed_rows(&frame(4), area(4), &patch).expect("valid patch");
         let wide_cells: Vec<_> = wide.iter().flat_map(|row| row.cells.clone()).collect();
-        assert!(wide_cells.iter().any(|cell| cell.grid_width == two));
+        assert!(wide_cells.iter().any(|cell| cell.grid_width == lead));
 
         let narrow = changed_rows(&frame(2), area(2), &patch).expect("valid patch");
         let mut applied = frame(2);
         for row in &narrow {
             let start = usize::from(row.x);
-            applied.cells[start..start + row.cells.len()].clone_from_slice(&row.cells);
+            applied.cells_mut()[start..start + row.cells.len()].clone_from_slice(&row.cells);
         }
-        assert_eq!(applied.cells[0].symbol, "a");
-        assert_eq!(applied.cells[1].symbol, " ");
-        assert_eq!(applied.cells[1].grid_width, one);
+        assert_eq!(applied.cells()[0].symbol, "a");
+        assert_eq!(applied.cells()[1].symbol, " ");
+        assert_eq!(applied.cells()[1].grid_width, one);
         assert!(shepr_surface::pane_row::pane_row_is_normalized(
-            &applied.cells
+            applied.cells()
         ));
         // The shared row is untouched for the wider recipient.
-        assert_eq!(patch.rows[0].cells[1].grid_width, two);
+        assert_eq!(patch.rows[0].cells[1].grid_width, lead);
     }
 
     #[test]
     fn retained_rows_omit_unchanged_full_dirty_rows() {
-        let frame = FrameData {
-            width: 4,
-            height: 2,
-            cells: vec![cell(" "); 8],
-            cursor: None,
-            hyperlinks: Vec::new(),
-        };
+        let frame = test_frame(4, 2, vec![cell(" "); 8]);
         let patch = shepr_mux::pane::TerminalDirtyPatch {
             rows: vec![
                 PatchRow {

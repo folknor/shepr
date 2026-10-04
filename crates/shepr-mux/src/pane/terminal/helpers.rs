@@ -7,10 +7,13 @@ pub(super) struct CoreEffects {
     pub(super) clipboard_writes: Vec<Vec<u8>>,
     pub(super) dropped_clipboard_store_bytes: Vec<usize>,
     pub(super) reported_cwd: Option<std::path::PathBuf>,
+    /// The OSC debug log's events, empty unless that log is on.
+    pub(super) osc_debug: Vec<OscDebugEvent>,
     pub(super) terminal_responses: Vec<Bytes>,
     /// The child set a default colour: the program that did it is to be
     /// looked up once the terminal, content and reply-order locks are released
-    /// ([`PaneTerminal::resolve_default_color_owner`]).
+    /// (`resolve_default_color_owner` in the runtime's `theme.rs`, which
+    /// records it through [`PaneTerminal::note_default_color_owner`]).
     pub(super) default_color_generation: Option<DefaultColorGeneration>,
 }
 
@@ -30,6 +33,7 @@ pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
         .into_iter()
         .filter_map(|report| parse_reported_cwd(&report, local_host))
         .next_back();
+    let osc_debug = osc_debug::events(&terminal_effects.osc_bodies);
     let default_color_generation =
         note_default_color_change(core, terminal_effects.default_color_set);
     CoreEffects {
@@ -37,6 +41,7 @@ pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
         clipboard_writes,
         dropped_clipboard_store_bytes,
         reported_cwd,
+        osc_debug,
         terminal_responses,
         default_color_generation,
     }
@@ -62,21 +67,21 @@ pub(super) fn has_default_color_override(terminal: &shepr_vt::Terminal) -> bool 
 /// returns the generation of a newly set override whose owner still has to
 /// be looked up. The lookup scans `/proc`, so the caller does it after
 /// releasing the terminal, content and reply-order locks
-/// ([`PaneTerminal::resolve_default_color_owner`]); with no live child pid,
-/// that method returns without scanning `/proc`. The returned generation is
+/// (`resolve_default_color_owner` in the runtime's `theme.rs`); with no live
+/// child pid, it returns without scanning `/proc`. The returned generation is
 /// absent when there is no owner lookup to perform.
 pub(super) fn note_default_color_change(
     core: &mut PaneTerminalCore,
     set: bool,
 ) -> Option<DefaultColorGeneration> {
     if set {
-        core.default_color_generation = core.default_color_generation.wrapping_add(1);
+        core.record_mutation(CoreMutation::DefaultColorSet);
     }
     if !has_default_color_override(&core.terminal) {
         core.transient_default_color_owner_pgid = None;
         return None;
     }
-    set.then_some(DefaultColorGeneration(core.default_color_generation))
+    set.then_some(core.default_color_generation)
 }
 
 /// Collects the core's queued replies, answering OSC colour queries from the
@@ -132,8 +137,8 @@ pub(super) fn cursor_state_from_render_state(
         shepr_protocol::CursorShapeParam::Default
     };
     Some(TerminalCursorState {
-        x: viewport.x,
-        y: viewport.y,
+        x: viewport.at.col,
+        y: viewport.at.row.0,
         visible: cursor.visible,
         shape,
     })
@@ -178,7 +183,7 @@ pub(super) fn terminal_collect_dirty_patch(
     let mut patch_rows = Vec::new();
     let dirty_rows = render_state.take_dirty_rows(area_height);
     for row in dirty_rows.rows() {
-        let y = row.y();
+        let y = row.y().0;
         let mut patch_cells = Vec::with_capacity(usize::from(area_width));
         let mut x = 0u16;
         for cell_view in row.cells().take(usize::from(area_width)) {
@@ -187,7 +192,6 @@ pub(super) fn terminal_collect_dirty_patch(
                 fallback!(PatchFallback::HyperlinkPresent);
             }
             let paint = terminal_cell_paint(
-                &cell_view,
                 &basic,
                 default_fg,
                 default_bg,
@@ -290,8 +294,9 @@ pub(super) fn terminal_recent_read_range(
         return Ok(None);
     }
     let viewport_start = total_rows.saturating_sub(rows);
-    let cursor_row = viewport_start
-        .saturating_add(usize::from(terminal.cursor_y()))
+    let cursor_row = terminal
+        .cursor_screen_row()
+        .0
         .min(total_rows.saturating_sub(1));
     let mut last_content_row = None;
     let mut scratch = String::new();
@@ -324,12 +329,12 @@ pub(super) fn terminal_extract_selection<P>(
     core: &mut PaneTerminalCore,
     selection: &shepr_vt::selection::Selection<P>,
 ) -> Option<String> {
-    let ((start_abs, start_col), (end_abs, end_col)) = selection.ordered_cells();
+    let (start, end) = selection.ordered_rows();
     let terminal = &core.terminal;
-    let start_row = terminal.screen_row_for_absolute(start_abs)?;
-    let end_row = terminal.screen_row_for_absolute(end_abs)?;
+    let start_row = terminal.screen_row_for_absolute(start.row)?;
+    let end_row = terminal.screen_row_for_absolute(end.row)?;
     let (start_col, end_col) = match selection.shape() {
-        shepr_vt::selection::SelectionShape::Range => (start_col, end_col),
+        shepr_vt::selection::SelectionShape::Range => (start.col, end.col),
         shepr_vt::selection::SelectionShape::Lines => (0, terminal.cols().saturating_sub(1)),
     };
     terminal
@@ -421,6 +426,11 @@ pub(super) fn terminal_buffer_symbol_into<'a>(
 
 #[inline]
 pub(super) fn normalized_buffer_symbol(symbol: &str, wide: shepr_vt::CellWide) -> &str {
+    // A single printable ASCII character in a narrow cell is exactly one
+    // column; this is nearly every cell, so skip measuring it.
+    if wide == shepr_vt::CellWide::Narrow && matches!(symbol.as_bytes(), [b' '..=b'~']) {
+        return symbol;
+    }
     let expected_width = usize::from(wide.columns());
     let actual_width = shepr_vt::width::standard_grapheme_width(symbol);
     if actual_width != expected_width
@@ -437,10 +447,10 @@ pub(super) fn normalized_buffer_symbol(symbol: &str, wide: shepr_vt::CellWide) -
 }
 
 pub(super) fn terminal_grid_width(wide: shepr_vt::CellWide) -> GridCellWidth {
-    if wide.grid_width() == 2 {
-        GridCellWidth::Two
-    } else {
-        GridCellWidth::One
+    match wide {
+        shepr_vt::CellWide::Wide => GridCellWidth::WideLead,
+        shepr_vt::CellWide::SpacerTail => GridCellWidth::WideTail,
+        shepr_vt::CellWide::Narrow | shepr_vt::CellWide::SpacerHead => GridCellWidth::One,
     }
 }
 
@@ -471,7 +481,6 @@ impl CellPaint {
             fg: self.fg,
             bg: self.bg,
             style: self.style,
-            skip: false,
             hyperlink: None,
         }
     }
@@ -490,13 +499,14 @@ impl CellPaint {
         cell.fg = self.fg;
         cell.bg = self.bg;
         cell.style = self.style;
-        cell.skip = false;
         cell.hyperlink = hyperlink;
     }
 }
 
+/// A cell's explicit colours are in `basic.style` (`None` for the default);
+/// the cell view's own resolved colours are `None` in exactly the same cases,
+/// so they are never consulted here.
 pub(super) fn terminal_cell_paint(
-    cells: &shepr_vt::CellView<'_>,
     basic: &shepr_vt::CellBasicData,
     default_fg: Option<WireColor>,
     default_bg: Option<WireColor>,
@@ -508,13 +518,11 @@ pub(super) fn terminal_cell_paint(
         .style
         .fg_color
         .map(|color| terminal_cell_color(color, palette_overrides))
-        .or_else(|| cells.fg_color().map(terminal_color))
         .or(default_fg);
     let mut bg = basic
         .style
         .bg_color
         .map(|color| terminal_cell_color(color, palette_overrides))
-        .or_else(|| cells.bg_color().map(terminal_color))
         .or(default_bg);
     if basic.style.invisible {
         fg = bg.or(default_bg);
@@ -627,14 +635,6 @@ pub(super) fn recent_text_from_rows(rows: &[String], lines: usize) -> String {
     }
 }
 
-pub(super) fn should_probe_host_terminal_theme_restore(core: &PaneTerminalCore) -> bool {
-    if core.transient_default_color_owner_pgid.is_none() || core.host_terminal_theme.is_empty() {
-        return false;
-    }
-
-    core.terminal.active_screen() != shepr_vt::ActiveScreen::Alternate
-}
-
 #[cfg(test)]
 pub(super) fn terminal_visible_ansi(
     core: &PaneTerminalCore,
@@ -644,7 +644,7 @@ pub(super) fn terminal_visible_ansi(
     if rows == 0 || cols == 0 {
         return Ok(String::new());
     }
-    let offset = core.terminal.scrollbar().viewport_start();
+    let offset = core.terminal.scrollbar().viewport_start().0;
     terminal_read_ansi_screen(
         &core.terminal,
         Point::new(ScreenRow(offset), 0),

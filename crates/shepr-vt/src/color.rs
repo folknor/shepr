@@ -1,4 +1,5 @@
 use super::*;
+use alacritty_terminal::term::color::Colors;
 use vte::ansi::Handler;
 
 /// Converts a vte colour to the shared RGB value.
@@ -84,10 +85,118 @@ impl fmt::Debug for ColorQuery {
     }
 }
 
-impl Terminal {
-    pub(super) fn render_colors(&self) -> RenderColors {
-        let colors = self.term.colors();
-        let mut palette = self.default_palette;
+type Palette = [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT];
+
+/// What the host supplies to the terminal: its palette and default
+/// foreground/background, which sit under the child's OSC 4/10/11 overrides
+/// (alacritty's `colors` slots) and over the built-in defaults, so host theme
+/// changes never go through the child's parser, plus the cell pitch and
+/// colour scheme it reports.
+pub(super) struct HostDefaults {
+    palette: Palette,
+    foreground: Option<RgbColor>,
+    background: Option<RgbColor>,
+    cell: Option<shepr_core::geometry::CellPx>,
+    color_scheme: Option<ColorScheme>,
+}
+
+impl HostDefaults {
+    pub(super) fn new() -> Self {
+        Self {
+            palette: default_palette(),
+            foreground: None,
+            background: None,
+            cell: None,
+            color_scheme: None,
+        }
+    }
+
+    pub(super) fn palette(&self) -> Palette {
+        self.palette
+    }
+
+    /// Returns whether the palette changed.
+    pub(super) fn set_palette(&mut self, palette: &Palette) -> bool {
+        let changed = self.palette != *palette;
+        self.palette = *palette;
+        changed
+    }
+
+    /// Returns whether either default changed.
+    pub(super) fn set_colors(
+        &mut self,
+        foreground: Option<RgbColor>,
+        background: Option<RgbColor>,
+    ) -> bool {
+        let changed = (self.foreground, self.background) != (foreground, background);
+        self.foreground = foreground;
+        self.background = background;
+        changed
+    }
+
+    pub(super) fn cell(&self) -> Option<shepr_core::geometry::CellPx> {
+        self.cell
+    }
+
+    pub(super) fn set_cell(&mut self, cell: Option<shepr_core::geometry::CellPx>) {
+        self.cell = cell;
+    }
+
+    pub(super) fn color_scheme(&self) -> Option<ColorScheme> {
+        self.color_scheme
+    }
+
+    pub(super) fn replace_color_scheme(
+        &mut self,
+        color_scheme: Option<ColorScheme>,
+    ) -> Option<ColorScheme> {
+        mem::replace(&mut self.color_scheme, color_scheme)
+    }
+
+    /// The geometry of `term` with the host's cell pitch.
+    pub(super) fn geometry<T>(&self, term: &Term<T>) -> shepr_core::geometry::PaneGeometry {
+        crate::handler::geometry_for_terminal(term.columns(), term.screen_lines(), self.cell)
+    }
+
+    /// The query the child asked about `target`, answered from its own
+    /// overrides (`colors`), then these defaults, then the built-in palette.
+    pub(super) fn color_query(
+        &self,
+        colors: &Colors,
+        target: ColorQueryTarget,
+        reply_form: crate::seq::ReplyForm,
+    ) -> ColorQuery {
+        let core_color = match target {
+            ColorQueryTarget::Palette(index) => {
+                let index = usize::from(index);
+                Some(colors[index].map_or(self.palette[index], rgb_from_vte))
+            }
+            ColorQueryTarget::Foreground => colors[NamedColor::Foreground]
+                .map(rgb_from_vte)
+                .or(self.foreground),
+            ColorQueryTarget::Background => colors[NamedColor::Background]
+                .map(rgb_from_vte)
+                .or(self.background),
+            ColorQueryTarget::Cursor => colors[NamedColor::Cursor]
+                .or(colors[NamedColor::Foreground])
+                .map(rgb_from_vte)
+                .or(self.foreground),
+        };
+        let child_override = match target {
+            ColorQueryTarget::Foreground => colors[NamedColor::Foreground].is_some(),
+            ColorQueryTarget::Background => colors[NamedColor::Background].is_some(),
+            ColorQueryTarget::Palette(_) | ColorQueryTarget::Cursor => false,
+        };
+        ColorQuery {
+            target,
+            core_color,
+            child_override,
+            reply_form,
+        }
+    }
+
+    pub(super) fn render_colors(&self, colors: &Colors) -> RenderColors {
+        let mut palette = self.palette;
         for (index, slot) in palette.iter_mut().enumerate() {
             if let Some(color) = colors[index] {
                 *slot = rgb_from_vte(color);
@@ -105,20 +214,20 @@ impl Terminal {
         RenderColors {
             foreground_source: source(
                 colors[NamedColor::Foreground].is_some(),
-                self.host_foreground.is_some(),
+                self.foreground.is_some(),
             ),
             background_source: source(
                 colors[NamedColor::Background].is_some(),
-                self.host_background.is_some(),
+                self.background.is_some(),
             ),
             child_palette: std::array::from_fn(|index| colors[index].map(rgb_from_vte)),
             background: colors[NamedColor::Background]
                 .map(rgb_from_vte)
-                .or(self.host_background)
+                .or(self.background)
                 .unwrap_or(DEFAULT_BACKGROUND),
             foreground: colors[NamedColor::Foreground]
                 .map(rgb_from_vte)
-                .or(self.host_foreground)
+                .or(self.foreground)
                 .unwrap_or(DEFAULT_FOREGROUND),
             palette,
         }
@@ -126,18 +235,21 @@ impl Terminal {
 }
 
 impl Terminal {
+    pub(super) fn render_colors(&self) -> RenderColors {
+        self.host.render_colors(self.emu.term.colors())
+    }
+
     pub fn set_default_palette(
         &mut self,
         palette: &[RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT],
     ) {
-        if self.default_palette != *palette {
-            self.default_palette = *palette;
-            self.bump_full_damage();
+        if self.host.set_palette(palette) {
+            self.damage.bump_full();
         }
     }
 
     pub fn default_palette(&self) -> [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT] {
-        self.default_palette
+        self.host.palette()
     }
 
     /// Sets the host's default foreground/background (`None`: the built-in
@@ -148,16 +260,14 @@ impl Terminal {
         foreground: Option<RgbColor>,
         background: Option<RgbColor>,
     ) {
-        if (self.host_foreground, self.host_background) != (foreground, background) {
-            self.host_foreground = foreground;
-            self.host_background = background;
-            self.bump_full_damage();
+        if self.host.set_colors(foreground, background) {
+            self.damage.bump_full();
         }
     }
 
     /// The default colour the child set with OSC 10/11, if it has one.
     pub fn default_color_override(&self, color: DefaultColor) -> Option<RgbColor> {
-        self.term.colors()[named_default_color(color)].map(rgb_from_vte)
+        self.emu.term.colors()[named_default_color(color)].map(rgb_from_vte)
     }
 
     /// Drops the child's OSC 10/11 overrides, as OSC 110/111 would, so the
@@ -167,12 +277,12 @@ impl Terminal {
         let mut changed = false;
         for color in [DefaultColor::Foreground, DefaultColor::Background] {
             if self.default_color_override(color).is_some() {
-                Handler::reset_color(&mut self.term, named_default_color(color) as usize);
+                Handler::reset_color(&mut self.emu.term, named_default_color(color) as usize);
                 changed = true;
             }
         }
         if changed {
-            self.bump_full_damage();
+            self.damage.bump_full();
         }
     }
 }

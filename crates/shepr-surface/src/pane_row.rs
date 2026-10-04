@@ -1,7 +1,7 @@
 //! The wide-glyph rule for a row of pane cells as it is emitted.
 //!
 //! A pane cell carries its terminal grid width. A wide glyph is a nonempty
-//! `Two` lead followed by an empty-symbol `One` tail; the client draws the lead
+//! `WideLead` followed by a `WideTail`; the client draws the lead
 //! across both columns and skips the tail. A row cut narrower than its terminal
 //! (a client view smaller than the pane's PTY), or one the emulator left with a
 //! broken pair (deleting the lead, erasing only the tail), can hold a lead
@@ -14,15 +14,13 @@
 use shepr_protocol::{CellData, GridCellWidth, WireStyleFlags};
 
 fn is_lead(cell: &CellData) -> bool {
-    cell.grid_width == GridCellWidth::Two && !cell.symbol.is_empty()
+    cell.grid_width == GridCellWidth::WideLead && !cell.symbol.is_empty()
 }
 
-// The terminal adapter supplies tails as empty One cells, and output consumers
-// match the same width variants. Changing the wire enum alone cannot change that
-// contract. Pair validity is a row property: changed spans may start with a tail
-// whose lead remains in the baseline, so cell deserialization must not repair it.
+// Pair validity is a row property: changed spans may start with a tail whose
+// lead remains in the baseline, so cell deserialization must not repair it.
 fn is_tail(cell: &CellData) -> bool {
-    cell.grid_width == GridCellWidth::One && cell.symbol.is_empty()
+    cell.grid_width == GridCellWidth::WideTail
 }
 
 /// Turns one half of a broken wide pair into a one-column blank. Its colours
@@ -52,9 +50,12 @@ fn broken_cells(row: &[CellData], mut visit: impl FnMut(usize)) {
                 continue;
             }
             visit(x);
-        } else if cell.symbol.is_empty() || cell.grid_width == GridCellWidth::Two {
-            // A tail no lead claimed, or an empty `Two` cell, which is neither
-            // half of a drawable pair.
+        } else if is_tail(cell)
+            || cell.symbol.is_empty()
+            || cell.grid_width == GridCellWidth::WideLead
+        {
+            // A tail no lead claimed, an empty non-tail cell, or an empty lead,
+            // none of which is half of a drawable pair.
             visit(x);
         }
         x += 1;
@@ -93,15 +94,14 @@ mod tests {
                     'W' => "\u{754c}".to_owned(),
                     c => c.to_string(),
                 },
-                grid_width: if c == 'W' {
-                    GridCellWidth::Two
-                } else {
-                    GridCellWidth::One
+                grid_width: match c {
+                    'W' => GridCellWidth::WideLead,
+                    '~' => GridCellWidth::WideTail,
+                    _ => GridCellWidth::One,
                 },
                 fg: WireColor::Reset,
                 bg: WireColor::Reset,
                 style: WireStyle::default(),
-                skip: false,
                 hyperlink: None,
             })
             .collect()

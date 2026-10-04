@@ -1,15 +1,13 @@
 use crate::endpoint::ClientEndpointId;
-use crate::shell::endpoints::ClientEndpointFocusTarget;
-use crate::shell::overlays::notices::ClientEndpointNoticeKind;
-use crate::shell::state::{
-    ClientShellAction, ClientShellConfig, ClientShellInput, ClientShellOverlay, ClientShellState,
-};
+use crate::shell::config::ClientShellConfig;
+use crate::shell::navigation::location::{Location, LocationTarget};
+use crate::shell::notices::ClientEndpointNoticeKind;
+use crate::shell::overlays::Overlay;
+use crate::shell::overlays::help::HelpOverlay;
+use crate::shell::state::{ClientShellAction, ClientShellInput, ClientShellState};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
 use shepr_termio::input::raw_input::RawInputEvent;
-use shepr_termio::text_editor::TextEditor;
-
-use crate::shell::state::ClientHelpOverlay;
 
 use crate::shell::tests::{frame_rows, snapshot, surface};
 
@@ -65,13 +63,12 @@ fn unavailable_view_respects_a_collapsed_single_endpoint_sidebar() {
     assert!(!text.contains("Select a connected machine."));
     assert!(
         state
-            .hits
-            .workspaces
-            .iter()
+            .drawn()
+            .workspaces()
             .any(|hit| hit.location.endpoint.is_local()
                 && hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w1")))
     );
-    assert!(state.hits.machines.is_empty());
+    assert!(state.drawn().machines().next().is_none());
 }
 
 #[test]
@@ -83,7 +80,7 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
         state.active_endpoint_id().clone(),
         test_pane_id("w1:p1"),
     );
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
+    let Some(Overlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("expected navigator");
     };
     navigator.selected = Some(removed_target);
@@ -93,10 +90,10 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
     changed.focused_pane_id = Some(test_pane_id("w1:p2"));
     state.set_snapshot(Box::new(changed));
 
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
+    let Some(Overlay::Navigator(navigator)) = state.overlay.as_ref() else {
         panic!("expected navigator");
     };
-    let rows = crate::shell::presentation::render::client_navigator_rows(
+    let rows = crate::shell::presentation::text::client_navigator_rows(
         &state.endpoints,
         state.active_endpoint_id(),
         navigator,
@@ -108,15 +105,15 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
     let expected = rows[0].target.clone();
 
     let mut outcome = ClientShellInput::default();
-    state.accept_navigator_selection(&mut outcome);
+    crate::shell::tests::press_overlay_enter(&mut state, &mut outcome);
 
     assert!(state.overlay.is_none());
     assert!(matches!(
         outcome.actions.as_slice(),
-        [ClientShellAction::ActivateEndpoint {
-            endpoint_id: ClientEndpointId::Local,
-            target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
-        }] if workspace_id == &crate::tests::test_workspace_id("w1")
+        [ClientShellAction::ActivateEndpoint(Location {
+            endpoint: ClientEndpointId::Local,
+            target: LocationTarget::Workspace(workspace_id),
+        })] if workspace_id == &crate::tests::test_workspace_id("w1")
     ));
     assert_eq!(
         expected,
@@ -131,22 +128,28 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
 fn client_presentation_regression_help_scrolls_to_its_last_entry_in_a_narrow_terminal() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     let groups = shepr_termio::input::keybind_help_groups(
         &state.config.keybinds.keybinds,
         state.config.keybinds.prefix,
     );
     let (_, last_entries) = groups.last().expect("help groups");
-    let (_, last_label) = last_entries.last().expect("help entries");
+    let last_label = last_entries.last().expect("help entries").label;
     let last_word = last_label
         .split_whitespace()
         .last()
         .expect("label text")
         .to_owned();
-    state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
-        query: TextEditor::default(),
-        search_focused: false,
+    state.overlay = Some(Overlay::Help(HelpOverlay {
         scroll: usize::MAX,
+        ..HelpOverlay::default()
     }));
 
     // Narrow enough that word wrapping produces more rows than character division predicts;
@@ -154,7 +157,7 @@ fn client_presentation_regression_help_scrolls_to_its_last_entry_in_a_narrow_ter
     state.compose(26, 24).expect("help frame");
     let frame = state.compose(26, 24).expect("help frame");
     let rows = frame_rows(&frame);
-    let popup = state.hits.help_popup;
+    let popup = state.drawn().help_popup();
     let text_row = |y: u16| {
         rows[usize::from(y)]
             .chars()
@@ -179,12 +182,46 @@ fn client_presentation_regression_help_scrolls_to_its_last_entry_in_a_narrow_ter
 }
 
 #[test]
+fn help_scroll_survives_a_window_too_small_for_help() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.overlay = Some(Overlay::Help(HelpOverlay {
+        scroll: usize::MAX,
+        ..HelpOverlay::default()
+    }));
+    let help_scroll = |state: &ClientShellState| {
+        let Some(Overlay::Help(help)) = state.overlay.as_ref() else {
+            panic!("help overlay");
+        };
+        help.scroll
+    };
+    // The first frame resolves the requested scroll to the end of the text.
+    state.compose(106, 24).expect("help frame");
+    let scrolled = help_scroll(&state);
+    assert!(scrolled > 0 && scrolled < usize::MAX);
+
+    state.compose(20, 4).expect("frame too small for help");
+    assert_eq!(help_scroll(&state), scrolled);
+
+    state.compose(106, 24).expect("help frame again");
+    assert_eq!(help_scroll(&state), scrolled);
+}
+
+#[test]
 fn client_presentation_regression_notice_card_keeps_diagnostic_lines_visible() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     assert!(state.push_endpoint_notice(
         ClientEndpointNoticeKind::Unavailable,
-        crate::shell::overlays::notices::NoticeCode::MachineDiagnostic,
+        crate::shell::notices::NoticeCode::MachineDiagnostic,
         "Buildbox: restart shepr to authenticate",
         "first diagnostic line\nsecond diagnostic line\nthird diagnostic line",
     ));
@@ -213,14 +250,14 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
     assert!(state.receive_restore_notice(&ClientEndpointId::Local, &first, &kind));
     assert!(state.receive_restore_notice(&remote, &second, &kind));
     assert!(!state.receive_restore_notice(&ClientEndpointId::Local, &first, &kind));
-    state.reset_endpoint_projection();
+    state.reset_endpoint_projection(crate::shell::endpoints::ProjectionReset::Rebooted);
     assert_eq!(
         state.notices.visible().expect("first card").key.boot_id,
         Some(first)
     );
     let now = std::time::Instant::now();
     state.notices.drawn(now);
-    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(state.tick_transient_banners(now + crate::shell::notices::ENDPOINT_NOTICE_TIMEOUT));
     assert_eq!(
         state.notices.visible().expect("second card").key.boot_id,
         Some(second)
@@ -230,7 +267,7 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
         "Build: saved session not fully restored"
     );
     // A queued card receives a full lifetime only after it is actually drawn.
-    assert!(!state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(!state.tick_transient_banners(now + crate::shell::notices::ENDPOINT_NOTICE_TIMEOUT));
 }
 
 #[test]
@@ -248,7 +285,7 @@ fn a_saves_stopped_card_shows_once_per_boot_beside_the_restore_card() {
     assert!(!state.receive_session_saves_stopped(&ClientEndpointId::Local, &boot));
     let now = std::time::Instant::now();
     state.notices.drawn(now);
-    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(state.tick_transient_banners(now + crate::shell::notices::ENDPOINT_NOTICE_TIMEOUT));
     let card = state.notices.visible().expect("saves stopped card");
     assert!(
         card.title.ends_with(": session saves stopped"),
@@ -274,7 +311,7 @@ fn transient_cards_do_not_discard_queued_restore_cards() {
     state.receive_paste_rejection("too large".into());
     let now = std::time::Instant::now();
     state.notices.drawn(now);
-    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(state.tick_transient_banners(now + crate::shell::notices::ENDPOINT_NOTICE_TIMEOUT));
     assert_eq!(
         state.notices.visible().expect("restore card").key.boot_id,
         Some(boot)
@@ -295,7 +332,7 @@ fn dismissing_a_restore_card_immediately_shows_the_next_queued_card() {
     state.receive_restore_notice(&ClientEndpointId::Local, &first, &kind);
     state.receive_restore_notice(&remote, &second, &kind);
     state.compose(106, 20).expect("first notice frame");
-    let toast = state.hits.notification_toast;
+    let toast = state.drawn().notification_toast();
     assert!(!toast.is_empty());
 
     state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
@@ -320,4 +357,80 @@ fn dismissing_a_restore_card_immediately_shows_the_next_queued_card() {
 
     state.compose(106, 20).expect("second notice frame");
     assert!(state.notices.deadline().is_some());
+}
+
+#[test]
+fn an_unpaired_compose_records_no_view() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.compose(106, 20).expect("first frame");
+    assert_eq!(state.drawn().size, (106, 20));
+
+    // A surface for a projection the snapshot has not reached waits for its snapshot, so the
+    // presented surface is held unpaired and the last frame stays on screen.
+    let mut future = surface();
+    future.projection_revision = shepr_test_fixtures::counter_at(3);
+    state.receive_pane_surface_from(
+        future,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    assert!(state.compose(80, 24).is_none());
+
+    assert_eq!(state.drawn().size, (106, 20));
+    assert!(!state.pane_hits().is_empty());
+}
+
+#[test]
+fn navigate_reveal_follows_a_size_change() {
+    let mut initial = snapshot();
+    let template = initial.workspaces[0].clone();
+    initial.workspaces = (1..=30)
+        .map(|number| shepr_protocol::ClientShellWorkspace {
+            workspace_id: test_workspace_id(&format!("w{number}")),
+            label: format!("space-{number}"),
+            branch: None,
+            ..template.clone()
+        })
+        .collect();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(initial));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.compose(106, 20).expect("full sidebar");
+
+    let preview = state.navigation_target(state.endpoints.presented(), &test_workspace_id("w30"));
+    state.mode.enter_navigate(preview);
+    assert!(
+        state
+            .drawn()
+            .workspaces()
+            .all(|hit| hit.location.workspace_id() != Some(test_workspace_id("w30")))
+    );
+
+    state.compose(106, 22).expect("resized frame");
+
+    assert!(
+        state
+            .drawn()
+            .workspaces()
+            .any(|hit| hit.location.workspace_id() == Some(test_workspace_id("w30")))
+    );
 }

@@ -6,11 +6,13 @@ use ratatui::{
 };
 use shepr_protocol::{ClientShellAgent, ClientShellPane, PublicPaneId};
 
+use crate::shell::config::ClientShellConfig;
 use crate::shell::presentation::status::{status_glyph, status_text};
+use crate::shell::presentation::text::{put_spans, put_text};
+use crate::shell::sidebar::layout::AgentPanelView;
 use crate::shell::sidebar::sidebar_tokens::{
     AgentTokenContext, ResolvedToken, TokenStyles, resolved_token_spans, sidebar_agent_rows,
 };
-use crate::shell::state::{ClientShellConfig, ShellHitMap};
 use shepr_protocol::{ClientShellSnapshot, ClientShellWorkspace};
 use std::collections::HashMap;
 
@@ -18,18 +20,19 @@ pub(in crate::shell) struct AgentRow {
     pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
     pub(in crate::shell) status: shepr_protocol::AgentStatus,
     pub(in crate::shell) focused: bool,
-    pub(in crate::shell) rows: Vec<Vec<ResolvedToken>>,
-    pub(in crate::shell) state_change_seq: u64,
+    pub(in crate::shell::sidebar) rows: Vec<Vec<ResolvedToken>>,
+    pub(in crate::shell) state_change_seq: shepr_protocol::StateChangeSeq,
 }
 
-pub(in crate::shell) fn render_agent_panel_header(
+/// Draws the agent section's divider and, when it fits, its header and sort label.
+pub(in crate::shell) fn draw_agent_panel_header(
     buffer: &mut Buffer,
-    area: Rect,
+    panel: &AgentPanelView,
     config: &ClientShellConfig,
-    hits: &mut ShellHitMap,
-) -> bool {
+) {
+    let area = panel.area;
     if area.height == 0 {
-        return false;
+        return;
     }
     put_text(
         buffer,
@@ -39,9 +42,9 @@ pub(in crate::shell) fn render_agent_panel_header(
         &"─".repeat(area.width as usize),
         Style::default().fg(config.palette.surface_dim),
     );
-    if area.height < 2 {
-        return false;
-    }
+    let Some(sort_rect) = panel.sort_toggle else {
+        return;
+    };
     put_text(
         buffer,
         area.x,
@@ -52,124 +55,16 @@ pub(in crate::shell) fn render_agent_panel_header(
             .fg(config.palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
-    let sort_label = match config.agent_panel_sort {
-        shepr_config::AgentPanelSortConfig::Spaces => "grouped",
-        shepr_config::AgentPanelSortConfig::Priority => "priority",
-    };
-    let sort_width =
-        u16::try_from(display_width(sort_label).min(usize::from(area.width))).unwrap_or(u16::MAX);
-    let sort_rect = Rect::new(
-        area.right().saturating_sub(sort_width),
-        area.y + 1,
-        sort_width,
-        1,
-    );
-    hits.agent_sort_toggle = if config.mouse_capture {
-        sort_rect
-    } else {
-        Rect::default()
-    };
     put_text(
         buffer,
         sort_rect.x,
         sort_rect.y,
         sort_rect.width,
-        sort_label,
+        crate::shell::sidebar::layout::agent_sort_label(config),
         Style::default()
             .fg(config.palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
-    true
-}
-
-pub(in crate::shell) fn render_agent_list<T>(
-    buffer: &mut Buffer,
-    area: Rect,
-    rows: &[T],
-    empty_message: Option<&str>,
-    config: &ClientShellConfig,
-    agent_scroll: &mut usize,
-    hits: &mut ShellHitMap,
-    row_lines: impl Fn(&T) -> usize,
-    mut render_row: impl FnMut(&mut Buffer, Rect, &T, &mut ShellHitMap),
-) {
-    let body = Rect::new(
-        area.x,
-        area.y.saturating_add(3),
-        area.width,
-        area.height.saturating_sub(3),
-    );
-    hits.agent_body = body;
-    if body.is_empty() || rows.is_empty() {
-        *agent_scroll = 0;
-        if let Some(message) = empty_message.filter(|_| !body.is_empty()) {
-            put_text(
-                buffer,
-                body.x,
-                body.y,
-                body.width,
-                message,
-                Style::default()
-                    .fg(config.palette.overlay0)
-                    .add_modifier(Modifier::DIM),
-            );
-        }
-        return;
-    }
-
-    let row_heights = rows
-        .iter()
-        .map(|row| u16::try_from(row_lines(row).max(1)).unwrap_or(u16::MAX))
-        .collect::<Vec<_>>();
-    let gaps = rows
-        .iter()
-        .enumerate()
-        .map(|(index, _)| {
-            if index + 1 < rows.len() {
-                config.agents.row_gap
-            } else {
-                0
-            }
-        })
-        .collect::<Vec<_>>();
-    let metrics = crate::shell::navigation::scroll::list_scroll_metrics(
-        &row_heights,
-        &gaps,
-        body.height,
-        *agent_scroll,
-    );
-    hits.agent_max_scroll = metrics.max_start();
-    hits.agent_scroll_metrics = Some(metrics);
-    *agent_scroll = metrics.start();
-    let show_scrollbar = metrics.max_start() > 0 && body.width > 1;
-    let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
-    let mut y = body.y;
-    for (index, row) in rows.iter().enumerate().skip(*agent_scroll) {
-        let height = row_heights[index].min(body.height);
-        if y.saturating_add(height) > body.bottom() {
-            break;
-        }
-        let rect = Rect::new(body.x, y, content_width, height);
-        render_row(buffer, rect, row, hits);
-        y = y
-            .saturating_add(height)
-            .saturating_add(if index + 1 < rows.len() {
-                config.agents.row_gap
-            } else {
-                0
-            });
-    }
-
-    if show_scrollbar {
-        let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
-        hits.agent_scrollbar = track;
-        crate::shell::navigation::scroll::render_list_scrollbar(
-            buffer,
-            track,
-            metrics,
-            &config.palette,
-        );
-    }
 }
 
 pub(in crate::shell) fn agent_rows(
@@ -313,7 +208,7 @@ pub(in crate::shell) fn render_agent_row(
                     .saturating_sub(u16::try_from(indent).unwrap_or(u16::MAX)),
             ),
         ));
-        crate::shell::presentation::render::put_spans(
+        put_spans(
             buffer,
             Rect::new(
                 rect.x,
@@ -327,21 +222,13 @@ pub(in crate::shell) fn render_agent_row(
     }
 }
 
-fn put_text(buffer: &mut Buffer, x: u16, y: u16, width: u16, text: &str, style: Style) {
-    crate::shell::presentation::render::put_text(buffer, x, y, width, text, style);
-}
-
-fn display_width(text: &str) -> usize {
-    crate::shell::presentation::render::rendered_text_width(text)
-}
-
 #[cfg(test)]
 mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::Style;
 
-    use crate::shell::presentation::render::{display_width, put_text};
+    use crate::shell::presentation::text::{display_width, put_text};
 
     #[test]
     fn put_text_advances_by_display_width_and_clips_wide_characters() {

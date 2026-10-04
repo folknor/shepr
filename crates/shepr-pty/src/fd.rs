@@ -1,8 +1,10 @@
 use std::{
     os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
+
+use shepr_platform::Wait;
 
 use crate::limits::WAKE_PIPE_READ_BUFFER_BYTES;
 
@@ -100,7 +102,7 @@ pub(crate) fn poll_pty_and_wake(
     pty_fd: RawFd,
     wake_fd: RawFd,
     poll_pty_write: bool,
-    timeout_ms: i32,
+    wait: Wait,
 ) -> std::io::Result<PtyWakeReadiness> {
     let mut pty_events = libc::POLLIN;
     if poll_pty_write {
@@ -120,11 +122,14 @@ pub(crate) fn poll_pty_and_wake(
         },
     ];
 
-    // clock-io-ok: an EINTR retry resumes the kernel wait from the real time
-    // the poll began.
-    let deadline = (timeout_ms >= 0)
-        .then(|| Instant::now() + Duration::from_millis(u64::try_from(timeout_ms).unwrap_or(0)));
-    let mut remaining_timeout_ms = timeout_ms;
+    let deadline = match wait {
+        Wait::Forever => None,
+        // clock-io-ok: an EINTR retry resumes the kernel wait from the real
+        // time the poll began.
+        Wait::Now => Some(Instant::now()),
+        Wait::After(duration) => Some(Instant::now() + duration),
+    };
+    let mut remaining = wait;
     loop {
         for poll_fd in &mut poll_fds {
             poll_fd.revents = 0;
@@ -135,7 +140,7 @@ pub(crate) fn poll_pty_and_wake(
             libc::poll(
                 poll_fds.as_mut_ptr(),
                 poll_fds.len() as _,
-                remaining_timeout_ms,
+                remaining.poll_millis(),
             )
         };
         if result < 0 {
@@ -145,11 +150,10 @@ pub(crate) fn poll_pty_and_wake(
                     continue;
                 };
                 // clock-io-ok: the interrupted poll consumed real time.
-                let Some(timeout) = shepr_platform::poll_timeout_until(deadline, Instant::now())
-                else {
+                let Some(left) = shepr_platform::remaining_until(deadline, Instant::now()) else {
                     return Ok(PtyWakeReadiness::default());
                 };
-                remaining_timeout_ms = timeout;
+                remaining = Wait::After(left);
                 continue;
             }
             return Err(err);
@@ -176,7 +180,10 @@ pub(crate) fn resize_pty_fd(
     fd: RawFd,
     geometry: shepr_core::geometry::PaneGeometry,
 ) -> std::io::Result<()> {
-    let (pixel_width, pixel_height) = geometry.text_area_px().unwrap_or((0, 0));
+    // Zero is the winsize ABI's spelling of an unknown pixel extent.
+    let (pixel_width, pixel_height) = geometry.pixel_extent().map_or((0, 0), |extent| {
+        (extent.width().get(), extent.height().get())
+    });
     let size = libc::winsize {
         ws_row: geometry.rows(),
         ws_col: geometry.cols(),

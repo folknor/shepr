@@ -1,30 +1,22 @@
-use crate::endpoint::ClientEndpointId;
-use crate::shell::navigation::location::Location;
-use crate::shell::presentation::render::put_text;
-use crate::shell::state::{AgentHit, ClientShellConfig, ClientShellState, ShellHitMap};
+use crate::shell::presentation::status::status_glyph;
+use crate::shell::presentation::text::put_text;
+use crate::shell::sidebar::layout::{AgentPanelView, AgentSlot, SidebarInputs};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 
-use crate::shell::presentation::status::status_glyph;
-use ratatui::layout::Rect;
-
-pub(in crate::shell) fn render_collapsed(
+/// Draws the collapsed sidebar's agent column, one glyph row per slot.
+pub(in crate::shell) fn draw_collapsed(
     buffer: &mut Buffer,
-    area: Rect,
-    active_endpoint_id: &ClientEndpointId,
-    single_endpoint: bool,
-    config: &ClientShellConfig,
-    model: &crate::shell::navigation::aggregate_navigation::AgentPanelModel,
-    hits: &mut ShellHitMap,
+    slots: &[AgentSlot],
+    inputs: &SidebarInputs<'_>,
 ) {
-    for (index, row) in model.rows.iter().take(area.height as usize).enumerate() {
-        let rect = Rect::new(
-            area.x,
-            area.y + u16::try_from(index).unwrap_or(u16::MAX),
-            area.width,
-            1,
-        );
-        let focused = row.agent.focused && &row.endpoint_id == active_endpoint_id;
+    let config = inputs.config;
+    for slot in slots {
+        let Some(row) = inputs.model.rows.get(slot.row) else {
+            continue;
+        };
+        let rect = slot.hit.rect;
+        let focused = row.agent.focused && &row.endpoint_id == inputs.presented;
         if focused {
             buffer.set_style(rect, Style::default().bg(config.palette.active_row_bg));
         }
@@ -34,13 +26,13 @@ pub(in crate::shell) fn render_collapsed(
             &config.palette,
             row.stale,
         );
-        if single_endpoint {
+        if inputs.single_endpoint() {
             put_text(
                 buffer,
                 rect.x,
                 rect.y,
                 rect.width.min(2),
-                &format!("{:<2}", index + 1),
+                &format!("{:<2}", slot.row + 1),
                 Style::default().fg(if focused {
                     config.palette.text
                 } else {
@@ -66,87 +58,44 @@ pub(in crate::shell) fn render_collapsed(
                 glyph.style,
             );
         }
-        hits.agent_hits.push(AgentHit {
-            rect,
-            location: Location::pane(row.endpoint_id.clone(), row.agent.pane_id),
-        });
     }
 }
 
-pub(in crate::shell) fn render_expanded(
+/// Draws the expanded sidebar's agent section: its divider, header and rows.
+pub(in crate::shell) fn draw_agent_panel(
     buffer: &mut Buffer,
-    area: Rect,
-    active_endpoint_id: &ClientEndpointId,
-    config: &ClientShellConfig,
-    model: &crate::shell::navigation::aggregate_navigation::AgentPanelModel,
-    agent_scroll: &mut usize,
-    hits: &mut ShellHitMap,
+    panel: &AgentPanelView,
+    inputs: &SidebarInputs<'_>,
 ) {
-    if !crate::shell::sidebar::agent_sidebar::render_agent_panel_header(buffer, area, config, hits)
-    {
+    let config = inputs.config;
+    crate::shell::sidebar::agent_sidebar::draw_agent_panel_header(buffer, panel, config);
+    let Some(list) = &panel.list else {
         return;
-    }
-    crate::shell::sidebar::agent_sidebar::render_agent_list(
-        buffer,
-        area,
-        &model.rows,
-        None,
-        config,
-        agent_scroll,
-        hits,
-        |row| row.agent.rows.len(),
-        |buffer, rect, row, hits| {
-            let focused = row.agent.focused && &row.endpoint_id == active_endpoint_id;
-            crate::shell::sidebar::agent_sidebar::render_agent_row(
-                buffer, rect, &row.agent, focused, config,
-            );
-            if row.stale {
-                buffer.set_style(
-                    rect,
-                    Style::default()
-                        .fg(config.palette.overlay0)
-                        .add_modifier(Modifier::DIM),
-                );
-            }
-            hits.agent_hits.push(AgentHit {
-                rect,
-                location: Location::pane(row.endpoint_id.clone(), row.agent.pane_id),
-            });
-        },
-    );
-}
-
-impl ClientShellState {
-    pub(in crate::shell) fn reveal_endpoint_agent(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        pane_id: &shepr_protocol::PublicPaneId,
-        body_height: u16,
-    ) {
-        if body_height == 0 {
-            return;
-        }
-        let rows = &self.agent_panel_model.rows;
-        let Some(target) = rows
-            .iter()
-            .position(|row| &row.endpoint_id == endpoint_id && &row.agent.pane_id == pane_id)
-        else {
-            return;
+    };
+    for slot in &list.slots {
+        let Some(row) = inputs.model.rows.get(slot.row) else {
+            continue;
         };
-        let heights = rows
-            .iter()
-            .map(|row| u16::try_from(row.agent.rows.len().max(1)).unwrap_or(u16::MAX))
-            .collect::<Vec<_>>();
-        let mut gaps = vec![self.config.agents.row_gap; rows.len()];
-        if let Some(last) = gaps.last_mut() {
-            *last = 0;
+        let rect = slot.hit.rect;
+        let focused = row.agent.focused && &row.endpoint_id == inputs.presented;
+        crate::shell::sidebar::agent_sidebar::render_agent_row(
+            buffer, rect, &row.agent, focused, config,
+        );
+        if row.stale {
+            buffer.set_style(
+                rect,
+                Style::default()
+                    .fg(config.palette.overlay0)
+                    .add_modifier(Modifier::DIM),
+            );
         }
-        self.agent_scroll = crate::shell::navigation::scroll::list_scroll_start_to_reveal(
-            &heights,
-            &gaps,
-            body_height,
-            self.agent_scroll,
-            target,
+    }
+    if let Some(track) = list.scrollbar {
+        crate::shell::view::list::render_list_scrollbar(
+            buffer,
+            track,
+            list.scroll,
+            &config.palette,
         );
     }
 }

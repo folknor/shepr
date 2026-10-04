@@ -121,8 +121,12 @@ pub(crate) fn endpoint_connection_launch_error(error: io::Error) -> ClientRunErr
     ))
 }
 
-// Launch remains an IO boundary because the binary also constructs it before
-// calling the client. Contextual endpoint failures retain their typed cause here.
+// Only the client constructs `ClientRunError::Launch`; the binary reports its
+// own pre-launch failures (an unusable terminal, a local server launch
+// failure) as typed errors of its own. The cause is still an `io::Error`
+// because causes already flattened by shepr-remote (and the handshake and
+// transport setup errors that arrive as `io::Error`) cannot be recovered into
+// a typed value. Contextual endpoint failures retain their typed cause here.
 #[derive(Debug)]
 enum LaunchContext {
     Connection(io::Error),

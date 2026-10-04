@@ -17,13 +17,22 @@ pub enum Durability {
     DirectoryOrWithdraw,
 }
 
+/// What publication does with a target that already exists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PublishTarget {
+    /// Overwrite it atomically by rename.
+    ReplaceExisting,
+    /// Refuse it with `AlreadyExists`, linking the new file in no-clobber.
+    CreateOnly,
+}
+
 pub struct PublishOptions<'a> {
     pub preserve_metadata_from: Option<&'a Path>,
     /// Refuse symlinks and every other non-regular existing target.
     /// This inspects the final component; rename never follows that component.
     pub refuse_symlink_target: bool,
     pub durability: Durability,
-    pub replace: bool,
+    pub existing: PublishTarget,
     /// Creation mode, filtered by umask; preserved metadata takes precedence.
     pub mode: u32,
 }
@@ -44,7 +53,7 @@ pub struct PreparedFile {
     output: fs::File,
     refuse_symlink_target: bool,
     durability: Durability,
-    replace: bool,
+    existing: PublishTarget,
 }
 
 impl PreparedFile {
@@ -54,10 +63,25 @@ impl PreparedFile {
         options: &PublishOptions<'_>,
     ) -> io::Result<Self> {
         let parent = parent(target);
-        for _ in 0..crate::limits::RANDOM_NAME_ATTEMPTS {
+        Self::prepare_named(target, source, options, || {
             let token = crate::unpredictable_token()?;
             let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
-            let temporary = publication_temporary_path(parent, ".shepr", token, sequence);
+            Ok(publication_temporary_path(
+                parent, ".shepr", token, sequence,
+            ))
+        })
+    }
+
+    /// `prepare` over a source of staging names; a name already taken is
+    /// neither used nor removed, and the next one is tried.
+    fn prepare_named(
+        target: &Path,
+        source: &mut impl io::Read,
+        options: &PublishOptions<'_>,
+        mut next_name: impl FnMut() -> io::Result<PathBuf>,
+    ) -> io::Result<Self> {
+        for _ in 0..crate::limits::RANDOM_NAME_ATTEMPTS {
+            let temporary = next_name()?;
             match Self::prepare_at(target, &temporary, source, options) {
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 result => return result,
@@ -77,7 +101,9 @@ impl PreparedFile {
         source: &mut impl io::Read,
         options: &PublishOptions<'_>,
     ) -> io::Result<Self> {
-        if options.replace && matches!(options.durability, Durability::DirectoryOrWithdraw) {
+        if options.existing == PublishTarget::ReplaceExisting
+            && matches!(options.durability, Durability::DirectoryOrWithdraw)
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "withdrawal requires exclusive publication",
@@ -99,7 +125,7 @@ impl PreparedFile {
             output,
             refuse_symlink_target: options.refuse_symlink_target,
             durability: options.durability,
-            replace: options.replace,
+            existing: options.existing,
         };
         if options.preserve_metadata_from.is_some() {
             crate::config_file::preserve_metadata(
@@ -132,7 +158,7 @@ impl PreparedFile {
         sync: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<Published> {
         match fs::symlink_metadata(&self.target) {
-            Ok(_) if !self.replace => {
+            Ok(_) if self.existing == PublishTarget::CreateOnly => {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     "publish target already exists",
@@ -148,7 +174,7 @@ impl PreparedFile {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
-        if self.replace {
+        if self.existing == PublishTarget::ReplaceExisting {
             fs::rename(&self.temporary, &self.target)?;
         } else {
             // Linking is an atomic no-clobber publication in the same directory.
@@ -201,10 +227,160 @@ pub fn publication_temporary_path(
     parent.join(format!("{prefix}-{token:016x}-{sequence}.tmp"))
 }
 
-pub fn publish_file(
-    target: &Path,
-    source: &mut impl io::Read,
-    options: &PublishOptions<'_>,
-) -> io::Result<Published> {
-    PreparedFile::prepare(target, source, options)?.commit()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options(durability: Durability, existing: PublishTarget) -> PublishOptions<'static> {
+        PublishOptions {
+            preserve_metadata_from: None,
+            refuse_symlink_target: true,
+            durability,
+            existing,
+            mode: 0o600,
+        }
+    }
+
+    fn prepare(target: &Path, contents: &[u8], options: &PublishOptions<'_>) -> PreparedFile {
+        PreparedFile::prepare(target, &mut &contents[..], options).expect("prepare")
+    }
+
+    #[test]
+    fn exclusive_publication_does_not_clobber_an_existing_target() {
+        let scratch = shepr_test_support::ScratchDir::new("publish-no-clobber");
+        let target = scratch.path().join("target");
+        fs::write(&target, b"original").expect("write");
+        let prepared = prepare(
+            &target,
+            b"new",
+            &options(Durability::FileOnly, PublishTarget::CreateOnly),
+        );
+        let temporary = prepared.temporary_path().to_owned();
+        let error = prepared.commit().expect_err("the target exists");
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&target).expect("read"), b"original");
+        assert!(
+            !temporary.try_exists().expect("stat"),
+            "dropping removes the staging name"
+        );
+    }
+
+    #[test]
+    fn exclusive_publication_links_the_file_and_drops_the_staging_name() {
+        let scratch = shepr_test_support::ScratchDir::new("publish-link");
+        let target = scratch.path().join("target");
+        let prepared = prepare(
+            &target,
+            b"new",
+            &options(Durability::FileOnly, PublishTarget::CreateOnly),
+        );
+        let temporary = prepared.temporary_path().to_owned();
+        assert!(matches!(
+            prepared.commit().expect("commit"),
+            Published::Durable
+        ));
+        assert_eq!(fs::read(&target).expect("read"), b"new");
+        assert!(!temporary.try_exists().expect("stat"));
+    }
+
+    #[test]
+    fn withdraw_removes_the_published_file_when_the_directory_sync_fails() {
+        let scratch = shepr_test_support::ScratchDir::new("publish-withdraw");
+        let target = scratch.path().join("target");
+        let prepared = prepare(
+            &target,
+            b"new",
+            &options(Durability::DirectoryOrWithdraw, PublishTarget::CreateOnly),
+        );
+        let error = prepared
+            .commit_with_directory_sync(|_| Err(io::Error::other("sync failed")))
+            .expect_err("the sync failure is reported");
+        assert_eq!(error.to_string(), "sync failed");
+        assert!(
+            !target.try_exists().expect("stat"),
+            "the unsynced publication is withdrawn"
+        );
+    }
+
+    #[test]
+    fn a_failed_directory_sync_keeps_a_replacement_and_reports_it_not_durable() {
+        let scratch = shepr_test_support::ScratchDir::new("publish-not-durable");
+        let target = scratch.path().join("target");
+        fs::write(&target, b"original").expect("write");
+        let prepared = prepare(
+            &target,
+            b"new",
+            &options(Durability::Directory, PublishTarget::ReplaceExisting),
+        );
+        let published = prepared
+            .commit_with_directory_sync(|_| Err(io::Error::other("sync failed")))
+            .expect("the replacement stays published");
+        assert!(matches!(published, Published::NotDurable(_)));
+        assert_eq!(fs::read(&target).expect("read"), b"new");
+    }
+
+    #[test]
+    fn a_taken_staging_name_is_neither_used_nor_removed() {
+        let scratch = shepr_test_support::ScratchDir::new("publish-collision");
+        let target = scratch.path().join("target");
+        let taken = scratch.path().join("taken.tmp");
+        let free = scratch.path().join("free.tmp");
+        fs::write(&taken, b"unrelated file").expect("write");
+        let mut names = vec![free.clone(), taken.clone()];
+        let prepared = PreparedFile::prepare_named(
+            &target,
+            &mut &b"new"[..],
+            &options(Durability::FileOnly, PublishTarget::ReplaceExisting),
+            || Ok(names.pop().expect("a name")),
+        )
+        .expect("the second name is free");
+        assert_eq!(prepared.temporary_path(), free);
+        assert_eq!(fs::read(&taken).expect("read"), b"unrelated file");
+        drop(prepared);
+        assert_eq!(fs::read(&taken).expect("read"), b"unrelated file");
+        assert!(
+            !free.try_exists().expect("stat"),
+            "dropping removes only its own staging name"
+        );
+    }
+
+    #[test]
+    fn withdrawal_requires_exclusive_publication() {
+        let scratch = shepr_test_support::ScratchDir::new("publish-withdraw-replace");
+        let target = scratch.path().join("target");
+        let Err(error) = PreparedFile::prepare(
+            &target,
+            &mut &b"x"[..],
+            &options(
+                Durability::DirectoryOrWithdraw,
+                PublishTarget::ReplaceExisting,
+            ),
+        ) else {
+            panic!("withdrawal and replacement conflict");
+        };
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn a_symlink_target_is_refused_and_left_alone() {
+        let scratch = shepr_test_support::ScratchDir::new("publish-symlink");
+        let real = scratch.path().join("real");
+        fs::write(&real, b"original").expect("write");
+        let target = scratch.path().join("target");
+        std::os::unix::fs::symlink(&real, &target).expect("symlink");
+        let prepared = prepare(
+            &target,
+            b"new",
+            &options(Durability::FileOnly, PublishTarget::ReplaceExisting),
+        );
+        let error = prepared.commit().expect_err("a symlink is not replaced");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(fs::read(&real).expect("read"), b"original");
+        assert!(
+            fs::symlink_metadata(&target)
+                .expect("metadata")
+                .file_type()
+                .is_symlink()
+        );
+    }
 }

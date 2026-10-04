@@ -4,7 +4,7 @@ pub(super) struct ClientSettings {
     host_cursor: shepr_config::HostCursorModeConfig,
     mouse_capture_active: bool,
     modify_other_keys_mode: Option<shepr_term::ModifyOtherKeysLevel>,
-    prefers_osc52_clipboard: bool,
+    clipboard_route: shepr_platform::ClipboardRoute,
 }
 
 impl ClientSettings {
@@ -15,21 +15,21 @@ impl ClientSettings {
         Ok(Self::resolve_with_host_preferences(
             config,
             modify_other_keys_mode,
-            shepr_platform::prefers_osc52_clipboard(),
+            shepr_platform::ClipboardRoute::from_env(),
         ))
     }
 
     fn resolve_with_host_preferences(
         config: &shepr_config::ValidatedClientConfig,
         modify_other_keys_mode: Option<shepr_term::ModifyOtherKeysLevel>,
-        prefers_osc52_clipboard: bool,
+        clipboard_route: shepr_platform::ClipboardRoute,
     ) -> Self {
         let ui = config.ui();
         Self {
             host_cursor: ui.host_cursor,
             mouse_capture_active: ui.mouse_capture,
             modify_other_keys_mode,
-            prefers_osc52_clipboard,
+            clipboard_route,
         }
     }
 
@@ -45,15 +45,15 @@ impl ClientSettings {
         self.modify_other_keys_mode
     }
 
-    pub(super) fn prefers_osc52_clipboard(&self) -> bool {
-        self.prefers_osc52_clipboard
+    pub(super) fn clipboard_route(&self) -> shepr_platform::ClipboardRoute {
+        self.clipboard_route
     }
 }
 
 #[cfg(test)]
 impl ClientSettings {
     pub(super) fn from_config(config: &shepr_config::ValidatedClientConfig) -> Self {
-        Self::resolve_with_host_preferences(config, None, false)
+        Self::resolve_with_host_preferences(config, None, shepr_platform::ClipboardRoute::Osc52)
     }
 }
 
@@ -68,16 +68,21 @@ mod tests {
         let settings = ClientSettings::resolve_with_host_preferences(
             &config,
             Some(shepr_term::ModifyOtherKeysLevel::All),
-            true,
+            shepr_platform::ClipboardRoute::Osc52,
         );
         assert_eq!(
             settings.modify_other_keys_mode(),
             Some(shepr_term::ModifyOtherKeysLevel::All)
         );
-        assert!(settings.prefers_osc52_clipboard());
+        assert_eq!(
+            settings.clipboard_route(),
+            shepr_platform::ClipboardRoute::Osc52
+        );
 
-        let settings = ClientSettings::resolve_with_host_preferences(&config, None, false);
+        let helpers =
+            shepr_platform::ClipboardRoute::Helpers(shepr_platform::ClipboardSession::none());
+        let settings = ClientSettings::resolve_with_host_preferences(&config, None, helpers);
         assert_eq!(settings.modify_other_keys_mode(), None);
-        assert!(!settings.prefers_osc52_clipboard());
+        assert_eq!(settings.clipboard_route(), helpers);
     }
 }

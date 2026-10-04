@@ -1,6 +1,8 @@
-use crate::shell::state::{
-    ClientChromeDrag, ClientShellConfig, ClientShellEndpointError, ClientShellOverlay,
-};
+use crate::shell::config::ClientShellConfig;
+use crate::shell::input::pointer::ClientChromeDrag;
+use crate::shell::overlays::Overlay;
+use crate::shell::overlays::context_menu::ContextMenuOverlay;
+use crate::shell::state::ClientShellEndpointError;
 use crossterm::event::{KeyModifiers, MouseButton};
 use ratatui::buffer::Buffer;
 use shepr_config::ClientConfig;
@@ -11,8 +13,7 @@ use shepr_protocol::{
 use shepr_termio::input::raw_input::RawInputEvent;
 
 use crate::shell::state::{
-    ClientContextMenuOverlay, ClientShellAction, ClientShellInput, ClientShellRequest,
-    ClientShellState,
+    ClientShellAction, ClientShellInput, ClientShellRequest, ClientShellState,
 };
 
 use shepr_protocol::{PaneSurfaceSplit, SurfaceRect};
@@ -28,7 +29,7 @@ fn selection_repaint_cadence_keeps_one_deadline_and_flushes_when_input_stops() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let now = std::time::Instant::now();
     let ms = std::time::Duration::from_millis;
-    state.last_composed_at = Some(now);
+    state.presentation.set_composed_at(now);
     for elapsed in [1, 4, 8, 12, 15] {
         assert!(!state.request_selection_drag_repaint(now + ms(elapsed)));
         assert_eq!(state.mouse_selection.repaint_deadline, Some(now + ms(16)));
@@ -51,7 +52,7 @@ fn selection_repaint_cadence_allows_immediate_paint_when_due() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let now = std::time::Instant::now();
     assert!(state.request_selection_drag_repaint(now));
-    state.last_composed_at = Some(now);
+    state.presentation.set_composed_at(now);
     assert!(state.request_selection_drag_repaint(now + std::time::Duration::from_millis(16)));
     assert!(state.mouse_selection.repaint_deadline.is_none());
 }
@@ -72,9 +73,16 @@ fn a_pane_without_scroll_metrics_takes_no_selection() {
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = None;
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("pane frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
     let mut mouse = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: pane.inner_rect.x,
@@ -104,9 +112,16 @@ fn a_pane_without_scroll_metrics_takes_no_selection() {
 fn selection_release_copies_latest_position_before_deferred_paint() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("pane frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
     let mut mouse = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: pane.inner_rect.x,
@@ -161,13 +176,21 @@ fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
             height: 19,
         },
         path: vec![
-            shepr_core::geometry::SplitBranch::First,
-            shepr_core::geometry::SplitBranch::Second,
+            shepr_core::layout::SplitBranch::First,
+            shepr_core::layout::SplitBranch::Second,
         ],
+        epoch: shepr_core::layout::LayoutEpoch::default(),
     });
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("split pane surface");
-    let split = state.hits.pane_splits[0].clone();
+    let split = state.drawn().pane_splits()[0].clone();
 
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -176,14 +199,15 @@ fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(matches!(
-        state.chrome_drag,
+        state.pointer.chrome_drag,
         Some(ClientChromeDrag::PaneSplit { .. })
     ));
     let mut replacement = snapshot();
-    replacement.revision = shepr_protocol::ProjectionRevision::new(2);
+    replacement.revision = shepr_test_fixtures::counter_at::<shepr_protocol::ProjectionRevision>(2);
     replacement.workspaces[0].label = "updated".into();
     let mut replacement_surface = surface();
-    replacement_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
+    replacement_surface.projection_revision =
+        shepr_test_fixtures::counter_at::<shepr_protocol::ProjectionRevision>(2);
     let mut second = replacement_surface.panes[0].clone();
     second.pane_id = test_pane_id("w1:p2");
     second.rect.x = 40;
@@ -205,14 +229,19 @@ fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
             height: 19,
         },
         path: vec![
-            shepr_core::geometry::SplitBranch::First,
-            shepr_core::geometry::SplitBranch::Second,
+            shepr_core::layout::SplitBranch::First,
+            shepr_core::layout::SplitBranch::Second,
         ],
+        epoch: shepr_core::layout::LayoutEpoch::default(),
     });
     state.set_snapshot(Box::new(replacement));
     state.receive_pane_surface_from(
         replacement_surface,
-        state.active_snapshot_generation.unwrap_or(1),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
     let drag = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Drag(MouseButton::Left),
@@ -227,8 +256,12 @@ fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
         &request.command,
         EndpointCommand::LayoutSetSplitRatio(params)
             if params.workspace_id == crate::tests::test_workspace_id("w1")
-                && params.first_panes == vec![test_pane_id("w1:p1")]
-                && params.second_panes == vec![test_pane_id("w1:p2")]
+                && params.path
+                    == vec![
+                        shepr_core::layout::SplitBranch::First,
+                        shepr_core::layout::SplitBranch::Second,
+                    ]
+                && params.epoch == shepr_core::layout::LayoutEpoch::default()
                 && (params.ratio.get() - 0.6).abs() < f32::EPSILON
     ));
     let release =
@@ -239,7 +272,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
             modifiers: KeyModifiers::empty(),
         })]);
     assert!(release.actions.is_empty());
-    assert!(state.chrome_drag.is_none());
+    assert!(state.pointer.chrome_drag.is_none());
 }
 
 #[test]
@@ -264,12 +297,20 @@ fn disabled_mouse_chrome_removes_split_drag_hits() {
             height: 19,
         },
         path: Vec::new(),
+        epoch: shepr_core::layout::LayoutEpoch::default(),
     });
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(projected));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("mouse-disabled shell");
-    assert!(state.hits.pane_splits.is_empty());
+    assert!(state.drawn().pane_splits().is_empty());
 }
 
 #[test]
@@ -323,8 +364,11 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
                 .selection
                 .as_ref()
                 .expect("test precondition")
-                .ordered_cells(),
-            ((shepr_term::AbsRow(0), 6), (shepr_term::AbsRow(0), 10))
+                .ordered_rows(),
+            (
+                shepr_term::Point::new(shepr_term::AbsRow(0), 6),
+                shepr_term::Point::new(shepr_term::AbsRow(0), 10)
+            )
         );
         assert!(
             word_drag_mouse(&mut state, release, 0, 8)
@@ -375,11 +419,19 @@ fn word_drag_state(copy_on_select: bool) -> ClientShellState {
         "delta echo foxtrot ",
         "golf hotel india   ",
     ]);
-    pane_surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
+    pane_surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
+        .expect("test buffer is a valid frame");
     pane_surface.panes[0].rect.width = 19;
     pane_surface.panes[0].rect.height = 3;
     pane_surface.panes[0].inner_rect = pane_surface.panes[0].rect;
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     state
 }
@@ -390,7 +442,7 @@ fn word_drag_mouse(
     row: u16,
     col: u16,
 ) -> ClientShellInput {
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind,
         column: pane.inner_rect.x + col,
@@ -421,7 +473,7 @@ fn word_row_reply(
     state
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
-            id.as_str(),
+            id,
             Ok(EndpointReply::PaneSelection {
                 pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: text.into(),
@@ -440,7 +492,7 @@ fn start_word_drag(state: &mut ClientShellState) -> shepr_protocol::RequestId {
     let second = word_drag_mouse(state, MouseEventKind::Down(MouseButton::Left), 0, 8);
     assert!(second.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. }
         if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
-            if params.anchor.col == 0 && params.cursor.col == state.hits.panes[0].inner_rect.width - 1))));
+            if params.anchor.col == 0 && params.cursor.col == state.pane_hits()[0].inner_rect.width - 1))));
     word_read_id(&second.actions)
 }
 
@@ -509,15 +561,13 @@ fn double_click_drag_selects_whole_words_in_both_directions() {
             motion.actions.is_empty(),
             "reuse the row while dragging within it"
         );
-        assert_eq!(
-            state
-                .mouse_selection
-                .selection
-                .as_ref()
-                .expect("test precondition")
-                .ordered_cells(),
-            expected
-        );
+        let (start, end) = state
+            .mouse_selection
+            .selection
+            .as_ref()
+            .expect("test precondition")
+            .ordered_rows();
+        assert_eq!(((start.row, start.col), (end.row, end.col)), expected);
     }
     assert!(
         word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 0, 16)
@@ -631,8 +681,11 @@ fn double_click_drag_survives_focus_lag_after_anchor_reply() {
             .selection
             .as_ref()
             .expect("test precondition")
-            .ordered_cells(),
-        ((shepr_term::AbsRow(0), 6), (shepr_term::AbsRow(0), 18))
+            .ordered_rows(),
+        (
+            shepr_term::Point::new(shepr_term::AbsRow(0), 6),
+            shepr_term::Point::new(shepr_term::AbsRow(0), 18)
+        )
     );
     let released = word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 0, 14);
     assert_eq!(released.actions.len(), 1);
@@ -650,9 +703,16 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
     };
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(focused_on("w1:p2")));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("pane frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
     assert_eq!(pane.pane_id.to_string(), "w1:p1");
     let mouse = |kind, column| {
         RawInputEvent::Mouse(crossterm::event::MouseEvent {
@@ -684,8 +744,11 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
             .selection
             .as_ref()
             .expect("drag continues")
-            .ordered_cells(),
-        ((shepr_term::AbsRow(0), 0), (shepr_term::AbsRow(0), 2))
+            .ordered_rows(),
+        (
+            shepr_term::Point::new(shepr_term::AbsRow(0), 0),
+            shepr_term::Point::new(shepr_term::AbsRow(0), 2)
+        )
     );
 
     state.set_snapshot(Box::new(focused_on("w1:p1")));
@@ -700,9 +763,16 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
 fn selection_in_focused_pane_still_ends_when_focus_moves() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("pane frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
         column: pane.inner_rect.x,
@@ -730,9 +800,16 @@ fn double_click_drag_invalidates_cached_boundaries_outside_selected_cells() {
             .surface_revision
             .checked_next()
             .expect("test precondition");
-        changed.panes[0].content_revision += 2;
-        changed.frame.cells[14].symbol = " ".into();
-        state.receive_pane_surface_from(changed, state.active_snapshot_generation.unwrap_or(1));
+        changed.panes[0].content_revision.advance();
+        changed.frame.cells_mut()[14].symbol = " ".into();
+        state.receive_pane_surface_from(
+            changed,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
         assert!(
             state.mouse_selection.selection.is_none(),
             "unchanged selected cells do not validate cached boundaries outside the selection"
@@ -759,17 +836,33 @@ fn reconnect_word_selection_tracks_content_changes() {
         word_row_reply(&mut state, &initial, "alpha bravo charlie");
         let mut next_surface = state.pane_surface().expect("test precondition").clone();
         if content_changed {
-            next_surface.panes[0].content_revision += 2;
-            next_surface.frame.cells[14].symbol = " ".into();
+            next_surface.panes[0].content_revision.advance();
+            next_surface.frame.cells_mut()[14].symbol = " ".into();
         }
         let endpoint_id = state.active_endpoint_id().clone();
-        let snapshot = std::sync::Arc::clone(state.snapshot.as_ref().expect("test precondition"));
+        let snapshot = std::sync::Arc::clone(
+            state
+                .endpoints
+                .active
+                .shared_snapshot()
+                .expect("test precondition"),
+        );
         state.mark_endpoint_disconnected(&endpoint_id);
-        state.endpoint_connected(&endpoint_id, 1);
-        state.cache_endpoint_snapshot_for_generation(&endpoint_id, 1, snapshot);
+        state.endpoint_connected(&endpoint_id, crate::tests::test_generation(1));
+        state.cache_endpoint_snapshot_for_generation(
+            &endpoint_id,
+            crate::tests::test_generation(1),
+            snapshot,
+        );
         assert!(state.activate_endpoint_projection(&endpoint_id));
-        state
-            .receive_pane_surface_from(next_surface, state.active_snapshot_generation.unwrap_or(1));
+        state.receive_pane_surface_from(
+            next_surface,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
 
         assert_eq!(state.mouse_selection.selection.is_some(), !content_changed);
         assert_eq!(
@@ -801,8 +894,15 @@ fn double_click_release_ignores_reply_after_focus_or_content_changes() {
                 .surface_revision
                 .checked_next()
                 .expect("test precondition");
-            changed.panes[0].content_revision += 2;
-            state.receive_pane_surface_from(changed, state.active_snapshot_generation.unwrap_or(1));
+            changed.panes[0].content_revision.advance();
+            state.receive_pane_surface_from(
+                changed,
+                state
+                    .endpoints
+                    .active
+                    .generation()
+                    .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+            );
         }
         assert!(
             word_row_reply(&mut state, &initial, "alpha bravo charlie").is_empty(),
@@ -832,7 +932,14 @@ fn double_click_drag_resize_cancels_pending_word_lookup() {
             .expect("test precondition");
         resized.panes[0].rect.width += 5;
         resized.panes[0].inner_rect.width += 5;
-        state.receive_pane_surface_from(resized, state.active_snapshot_generation.unwrap_or(1));
+        state.receive_pane_surface_from(
+            resized,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
         assert!(word_row_reply(&mut state, &pending, "alpha bravo charlie extra").is_empty());
         assert!(
             state.mouse_selection.selection.is_none(),
@@ -845,7 +952,7 @@ fn double_click_drag_resize_cancels_pending_word_lookup() {
 #[test]
 fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
     let mut state = word_drag_state(false);
-    state.hits.panes[0].scroll = Some(shepr_term::ScrollMetrics::new(
+    state.pane_hits_mut()[0].scroll = Some(shepr_term::ScrollMetrics::new(
         5,
         10,
         3,
@@ -871,8 +978,11 @@ fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
             .selection
             .as_ref()
             .expect("test precondition")
-            .ordered_cells(),
-        ((shepr_term::AbsRow(4), 11), (shepr_term::AbsRow(5), 10))
+            .ordered_rows(),
+        (
+            shepr_term::Point::new(shepr_term::AbsRow(4), 11),
+            shepr_term::Point::new(shepr_term::AbsRow(5), 10)
+        )
     );
     word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 0, 14);
     assert!(
@@ -892,8 +1002,9 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     state.set_snapshot(Box::new(snapshot()));
     let surface_at = |surface_revision, content_revision, alternate_screen_active| {
         let mut pane_surface = surface();
-        pane_surface.surface_revision = shepr_protocol::SurfaceRevision::new(surface_revision);
-        pane_surface.panes[0].content_revision = content_revision;
+        pane_surface.surface_revision =
+            shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(surface_revision);
+        pane_surface.panes[0].content_revision = shepr_test_fixtures::counter_at(content_revision);
         pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
             0,
             11,
@@ -905,10 +1016,14 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     };
     state.receive_pane_surface_from(
         surface_at(1, 0, true),
-        state.active_snapshot_generation.unwrap_or(1),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
     state.compose(106, 20).expect("composed frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
     let mouse = |kind, column, row| {
         RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind,
@@ -924,10 +1039,14 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         pane.inner_rect.y + 1,
     )]);
     let mut updated_surface = surface_at(2, 2, true);
-    updated_surface.frame.cells[0].symbol = "W".into();
+    updated_surface.frame.cells_mut()[0].symbol = "W".into();
     state.receive_pane_surface_from(
         updated_surface,
-        state.active_snapshot_generation.unwrap_or(1),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
     state.compose(106, 20).expect("updated frame");
 
@@ -945,15 +1064,22 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         .expect("visible selection");
     assert!(selection.is_visible());
     assert_eq!(
-        selection.ordered_cells(),
-        ((shepr_term::AbsRow(12), 0), (shepr_term::AbsRow(12), 1))
+        selection.ordered_rows(),
+        (
+            shepr_term::Point::new(shepr_term::AbsRow(12), 0),
+            shepr_term::Point::new(shepr_term::AbsRow(12), 1)
+        )
     );
 
     let mut replaced_surface = surface_at(3, 4, true);
-    replaced_surface.frame.cells[4].symbol = "X".into();
+    replaced_surface.frame.cells_mut()[4].symbol = "X".into();
     state.receive_pane_surface_from(
         replaced_surface,
-        state.active_snapshot_generation.unwrap_or(1),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
     assert_eq!(
         state
@@ -961,8 +1087,11 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
             .selection
             .as_ref()
             .expect("test precondition")
-            .ordered_cells(),
-        ((shepr_term::AbsRow(12), 0), (shepr_term::AbsRow(12), 1))
+            .ordered_rows(),
+        (
+            shepr_term::Point::new(shepr_term::AbsRow(12), 0),
+            shepr_term::Point::new(shepr_term::AbsRow(12), 1)
+        )
     );
 
     // The selected row can leave the viewport during a drag. A later patch,
@@ -976,20 +1105,28 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         *metrics = metrics.with_offset(2);
     }
     assert!(matches!(
-        state.apply_pane_surface_patch_from(
-            &shepr_protocol::PaneSurfacePatch {
-                boot_id: scrolled.boot_id,
-                projection_revision: scrolled.projection_revision,
-                base_surface_revision: shepr_protocol::SurfaceRevision::new(3),
-                surface_revision: shepr_protocol::SurfaceRevision::new(4),
-                panes: scrolled.panes,
-                rows: vec![],
-                cursor: scrolled.frame.cursor,
-            },
-            state.active_snapshot_generation.unwrap_or(1)
-        ),
-        crate::shell::presentation::surface_patch::ClientPaneSurfacePatchOutcome::Applied(_)
-    ));
+            state.apply_pane_surface_patch_from(
+                &shepr_protocol::PaneSurfacePatch {
+                    boot_id: scrolled.boot_id,
+                    projection_revision: scrolled.projection_revision,
+                    base_surface_revision: shepr_test_fixtures::counter_at::<
+                        shepr_protocol::SurfaceRevision,
+                    >(3),
+                    surface_revision: shepr_test_fixtures::counter_at::<
+                        shepr_protocol::SurfaceRevision,
+                    >(4),
+                    panes: scrolled.panes,
+                    rows: vec![],
+                    cursor: scrolled.frame.cursor().cloned(),
+                },
+                state
+                    .endpoints
+                    .active
+                    .generation()
+                    .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST)
+            ),
+            crate::shell::presentation::surface_patch::ClientPaneSurfacePatchOutcome::Applied(_)
+        ));
     assert!(
         state
             .mouse_selection
@@ -1004,8 +1141,11 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
             .selection
             .as_ref()
             .expect("test precondition")
-            .ordered_cells(),
-        ((shepr_term::AbsRow(12), 0), (shepr_term::AbsRow(12), 1))
+            .ordered_rows(),
+        (
+            shepr_term::Point::new(shepr_term::AbsRow(12), 0),
+            shepr_term::Point::new(shepr_term::AbsRow(12), 1)
+        )
     );
 
     for (surface_revision, content_revision, width, alternate_screen_active) in
@@ -1021,7 +1161,11 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         changed_surface.panes[0].alternate_screen_active = alternate_screen_active;
         state.receive_pane_surface_from(
             changed_surface,
-            state.active_snapshot_generation.unwrap_or(1),
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
         );
         assert!(state.mouse_selection.selection.is_none());
     }
@@ -1033,9 +1177,16 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
 
     let click = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -1067,8 +1218,8 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
         modifiers: KeyModifiers::ALT,
     })]);
     assert!(moved.requests.is_empty());
-    assert!(state.pane_mouse_gesture.is_some());
-    state.hits.panes.clear();
+    assert!(state.pointer.pane_mouse_gesture.is_some());
+    state.pane_hits_mut().clear();
     let release =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
@@ -1090,7 +1241,7 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
                     }]
                 )
     ));
-    assert!(state.pane_mouse_gesture.is_none());
+    assert!(state.pointer.pane_mouse_gesture.is_none());
 }
 
 #[test]
@@ -1099,12 +1250,27 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
-    pane_surface.panes[0].sgr_pixel_mouse = true;
-    pane_surface.panes[0].pixel_width = 39;
-    pane_surface.panes[0].pixel_height = 38;
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    let inner = pane_surface.panes[0].inner_rect;
+    let extent = shepr_core::geometry::PanePixelExtent::new(
+        shepr_core::geometry::GridSize::new(inner.width, inner.height).expect("inner grid"),
+        39,
+        38,
+    )
+    .expect("nonzero extent");
+    pane_surface.panes[0].pixel_mouse = shepr_term::mouse::PanePixelMouse::new(true, Some(extent));
+    state.set_host_cell(shepr_core::geometry::HostCell::Exact(
+        shepr_core::geometry::CellPx::new(10, 20).expect("valid cell"),
+    ));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
     let geometry = shepr_termio::input::mouse::HostPixelExtent::new(106, 20, 1060, 400)
         .expect("host geometry");
     let x = u32::from(pane.inner_rect.x) * 10 + 21;
@@ -1133,9 +1299,9 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
                         kind: shepr_protocol::ClientMouseKind::Down(
                             shepr_protocol::ClientMouseButton::Left
                         ),
-                        position: ClientMousePosition::Pixels { x: 20, y: 20, .. },
+                        position: ClientMousePosition::Pixels { report, .. },
                         ..
-                    }]
+                    }] if (report.x(), report.y()) == (20, 20) && report.extent() == extent
                 )
     ));
 
@@ -1151,10 +1317,127 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
                 kind: shepr_protocol::ClientMouseKind::Up(
                     shepr_protocol::ClientMouseButton::Left
                 ),
-                position: ClientMousePosition::Pixels { x: 20, y: 20, .. },
+                position: ClientMousePosition::Pixels { report, .. },
                 ..
-            }]
+            }] if (report.x(), report.y()) == (20, 20)
         )
+    ));
+}
+
+/// The host's pixel report for the cell at `column`, `row` of a 106x20 host
+/// of 10x20 cells, offset `dx`, `dy` pixels inside it, as one host input.
+fn pixel_mouse_down(
+    state: &mut ClientShellState,
+    pane: &crate::shell::view::PaneHit,
+    cell: (u16, u16),
+    offset: (u32, u32),
+) -> ClientShellInput {
+    let geometry = shepr_termio::input::mouse::HostPixelExtent::new(106, 20, 1060, 400)
+        .expect("host geometry");
+    let x = u32::from(pane.inner_rect.x + cell.0) * 10 + 1 + offset.0;
+    let y = u32::from(pane.inner_rect.y + cell.1) * 20 + 1 + offset.1;
+    let report = format!("\x1b[<0;{x};{y}M");
+    let mut framer = shepr_termio::input::raw_input::RawInputFramer::default();
+    let mut framed = framer.push_framed(report.as_bytes());
+    framed.extend(framer.flush_timeout_framed());
+    let framed = framed.pop().expect("one framed pixel mouse");
+    state.handle_host_input(
+        vec![crate::events::ParsedHostInput {
+            event: framed.event,
+            pixel_mouse: Some(shepr_termio::input::mouse::HostPixels { x, y, geometry }),
+        }],
+        false,
+        std::time::Instant::now(),
+    )
+}
+
+fn pixel_pane_state(
+    pane_pixel_mouse: shepr_term::mouse::PanePixelMouse,
+) -> (ClientShellState, crate::shell::view::PaneHit) {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].mouse_reporting = true;
+    pane_surface.panes[0].pixel_mouse = pane_pixel_mouse;
+    state.set_host_cell(shepr_core::geometry::HostCell::Exact(
+        shepr_core::geometry::CellPx::new(10, 20).expect("valid cell"),
+    ));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.compose(106, 20).expect("composed frame");
+    let pane = state.pane_hits()[0].clone();
+    (state, pane)
+}
+
+#[test]
+fn pane_pixel_mouse_rescales_into_a_foreign_pane_extent() {
+    // The child believes in 8x16 cells while this host's cell is 10x20.
+    let extent = shepr_core::geometry::PanePixelExtent::new(
+        shepr_core::geometry::GridSize::new(4, 2).expect("inner grid"),
+        32,
+        32,
+    )
+    .expect("nonzero extent");
+    let (mut state, pane) =
+        pixel_pane_state(shepr_term::mouse::PanePixelMouse::new(true, Some(extent)));
+    // Host cell (2, 1), 5 pixels right and 10 down inside it: half way across
+    // the cell, so half way across the child's 8x16 cell (3rd column, 2nd row).
+    let outcome = pixel_mouse_down(&mut state, &pane, (2, 1), (5, 10));
+    let [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. })] =
+        &outcome.requests[..]
+    else {
+        panic!(
+            "one targeted pixel mouse input, got {:?}",
+            outcome.requests.len()
+        );
+    };
+    let [
+        ClientPaneInputEvent::Mouse {
+            position:
+                ClientMousePosition::Pixels {
+                    column: 2,
+                    row: 1,
+                    report,
+                },
+            ..
+        },
+    ] = &events[..]
+    else {
+        panic!("a pixel position, got {events:?}");
+    };
+    assert_eq!((report.x(), report.y()), (2 * 8 + 4 + 1, 16 + 8 + 1));
+    assert_eq!(report.extent(), extent);
+}
+
+#[test]
+fn pane_presented_at_another_grid_reports_cells() {
+    // The extent belongs to a grid other than the one this pane is shown at.
+    let extent = shepr_core::geometry::PanePixelExtent::new(
+        shepr_core::geometry::GridSize::new(40, 20).expect("other grid"),
+        320,
+        320,
+    )
+    .expect("nonzero extent");
+    let (mut state, pane) =
+        pixel_pane_state(shepr_term::mouse::PanePixelMouse::new(true, Some(extent)));
+    let outcome = pixel_mouse_down(&mut state, &pane, (2, 1), (5, 10));
+    let [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. })] =
+        &outcome.requests[..]
+    else {
+        panic!("one targeted mouse input");
+    };
+    assert!(matches!(
+        &events[..],
+        [ClientPaneInputEvent::Mouse {
+            position: ClientMousePosition::Cell { column: 2, row: 1 },
+            ..
+        }]
     ));
 }
 
@@ -1166,9 +1449,16 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
     state.set_snapshot(Box::new(snapshot));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
 
     let down = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Right),
@@ -1182,7 +1472,7 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
             if pane_id == &crate::tests::test_pane_id("w1:p1")
     ));
     assert!(state.overlay.is_none());
-    assert!(state.pane_mouse_gesture.is_some());
+    assert!(state.pointer.pane_mouse_gesture.is_some());
 
     let up = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Up(MouseButton::Right),
@@ -1204,16 +1494,28 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
                     }]
                 )
     ));
-    assert!(state.pane_mouse_gesture.is_none());
+    assert!(state.pointer.pane_mouse_gesture.is_none());
 }
 
 #[test]
 fn context_menu_keyboard_and_outside_click_are_client_owned() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
-    let workspace = state.hits.workspaces[0].rect;
+    let workspace = state
+        .drawn()
+        .workspaces()
+        .next()
+        .expect("a workspace hit")
+        .rect;
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Right),
         column: workspace.x + 1,
@@ -1225,7 +1527,7 @@ fn context_menu_keyboard_and_outside_click_are_client_owned() {
     assert!(moved.repaint);
     assert!(matches!(
         state.overlay,
-        Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
+        Some(Overlay::ContextMenu(ContextMenuOverlay {
             highlighted: 1,
             ..
         }))

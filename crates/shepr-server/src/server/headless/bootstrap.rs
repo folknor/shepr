@@ -1,5 +1,9 @@
 use super::*;
 
+/// Give Tokio tasks a short time to stop after a failed startup; teardown continues
+/// even if a task is stuck.
+const TOKIO_RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Why [`run_server`] refused to start or stopped with an error. The server
 /// prints nothing itself: the binary renders this and picks the exit status.
 #[derive(Debug)]
@@ -20,7 +24,12 @@ pub enum RunServerError {
     Runtime(io::Error),
     Lease(io::Error),
     Logging(io::Error),
-    Serve(io::Error),
+    /// The termination signal handler could not be installed, so the loop
+    /// never started.
+    SignalInstall(io::Error),
+    /// Shutdown completion was asked for from a lifecycle phase it does not
+    /// start from.
+    Shutdown(UnexpectedPhase),
 }
 
 impl std::fmt::Display for RunServerError {
@@ -42,7 +51,8 @@ impl std::fmt::Display for RunServerError {
             | Self::Runtime(error)
             | Self::Lease(error)
             | Self::Logging(error)
-            | Self::Serve(error) => error.fmt(f),
+            | Self::SignalInstall(error) => error.fmt(f),
+            Self::Shutdown(error) => error.fmt(f),
         }
     }
 }
@@ -56,7 +66,8 @@ impl std::error::Error for RunServerError {
             | Self::Runtime(error)
             | Self::Lease(error)
             | Self::Logging(error)
-            | Self::Serve(error) => Some(error),
+            | Self::SignalInstall(error) => Some(error),
+            Self::Shutdown(error) => Some(error),
             Self::AlreadyRunning { .. } | Self::DataDirHeld { .. } => None,
         }
     }
@@ -121,7 +132,7 @@ pub fn run_server(
 
     let data_dir = paths.data_dir();
 
-    let (api_tx, api_rx) = tokio::sync::mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
+    let (api_tx, api_rx) = tokio::sync::mpsc::channel(API_REQUEST_CHANNEL_CAPACITY);
     let stop_signal = Arc::new(shepr_api::ServerStopSignal::default());
     // The one boot identity of this server lifetime: the listener's `ping`
     // and stop guard and the client shell lane all report this value.
@@ -176,15 +187,27 @@ pub fn run_server(
             api,
             file_logging,
         } = reserved;
-        let mut app = app::App::with_paths(
+        let (mut app, outputs) = app::App::open(
             config,
             paths,
             lease,
-            app::AppPolicy::Production,
+            shepr_mux::persist::SessionOpenPolicy::Persist,
             super::sample_app_clock(),
         );
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
-        let mut server = HeadlessServer::new(app, api_rx, api, stop_signal, boot_id);
+        let window_title = crate::ui::WindowTitleSettings::from_config(
+            config.ui().window_title.as_ref(),
+            app.host_names(),
+        );
+        let mut server = HeadlessServer::new(
+            app,
+            outputs,
+            api_rx,
+            api,
+            stop_signal,
+            boot_id,
+            window_title,
+        );
         server.open_client_protocol();
         let ready = ServerReady {
             socket,
@@ -197,11 +220,11 @@ pub fn run_server(
         server.run().await.map_err(|error| {
             // A client-spawned server's stderr is /dev/null by now.
             tracing::error!(%error, "the server event loop failed");
-            RunServerError::Serve(error)
+            error
         })
     });
 
-    rt.shutdown_timeout(crate::limits::TOKIO_RUNTIME_SHUTDOWN_TIMEOUT);
+    rt.shutdown_timeout(TOKIO_RUNTIME_SHUTDOWN_TIMEOUT);
     crate::logging::shutdown();
     result
 }
@@ -265,7 +288,7 @@ fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathB
         return;
     };
 
-    if !app.state.workspaces.is_empty() {
+    if !app.state().workspaces().is_empty() {
         info!(
             cwd = %cwd.display(),
             "restored session already has workspaces; ignoring startup cwd"
@@ -339,18 +362,18 @@ mod startup_tests {
             paths.clone(),
         );
         let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir()).expect("lease");
-        let (tx, rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
+        let (tx, rx) = mpsc::channel(API_REQUEST_CHANNEL_CAPACITY);
         let stop = Arc::new(shepr_api::ServerStopSignal::default());
         let boot_id = mint_boot_id(super::super::sample_app_clock().wall_now);
         let api = shepr_api::start_server(tx, Arc::clone(&stop), &paths, boot_id.clone())
             .expect("socket before restore");
         let client = shepr_api::client::ApiClient::for_socket(paths.server_address().socket());
         assert!(client.ping().expect("starting pong").starting);
-        let app = app::App::with_paths(
+        let (app, outputs) = app::App::open(
             &config,
             &paths,
             lease,
-            app::AppPolicy::Suspended,
+            shepr_mux::persist::SessionOpenPolicy::Never,
             super::super::sample_app_clock(),
         );
         assert!(
@@ -359,7 +382,7 @@ mod startup_tests {
                 .expect("restore alone leaves gate closed")
                 .starting
         );
-        let server = HeadlessServer::new(app, rx, api, stop, boot_id.clone());
+        let server = HeadlessServer::new(app, outputs, rx, api, stop, boot_id.clone(), None);
         let constructed = client.ping().expect("constructed pong");
         assert!(constructed.starting);
         assert_eq!(
@@ -379,7 +402,10 @@ mod startup_tests {
             &mut peer,
             &shepr_protocol::ClientMessage::EndpointHello(
                 shepr_protocol::endpoint::EndpointClientHello {
-                    geometry: shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, true),
+                    geometry: shepr_protocol::TerminalGeometry::from_host(
+                        shepr_core::geometry::GridSize::clamped(80, 24),
+                        shepr_core::geometry::HostCell::from_host(8, 16, true),
+                    ),
                     mouse_capture: true,
                     surface_active: true,
                 },

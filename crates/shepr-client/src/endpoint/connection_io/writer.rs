@@ -3,13 +3,32 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use crate::deadline::Deadline;
 use crate::endpoint::EndpointTransport;
-use crate::limits::{
-    ENDPOINT_IO_POLL_INTERVAL, ENDPOINT_WRITE_TIMEOUT, MAX_BATCH_BYTES, MAX_QUEUED_BATCHES,
-    MAX_QUEUED_BYTES,
-};
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::ClientMessage;
+
+/// How long one endpoint frame write, or an input flush, may block.
+///
+/// The timeout absorbs short socket stalls and fails a wedged endpoint promptly.
+const ENDPOINT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Poll spacing while an endpoint writer waits for socket progress.
+///
+/// The interval keeps stalled writes responsive without a tight polling loop.
+const ENDPOINT_IO_POLL_INTERVAL: Duration = Duration::from_millis(2);
+/// Maximum queued frame batches waiting for the endpoint writer.
+///
+/// The queue absorbs short input bursts while limiting queued command objects.
+const MAX_QUEUED_BATCHES: usize = 256;
+/// Maximum bytes coalesced into one endpoint writer batch.
+///
+/// The cap bounds each write batch so a large burst does not monopolize the writer.
+const MAX_BATCH_BYTES: usize = 64 * 1024;
+/// Maximum endpoint writer backlog, leaving room for frames already in flight
+/// while bounding queued memory.
+const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
+
+const _: () = assert!(ENDPOINT_IO_POLL_INTERVAL.as_millis() < ENDPOINT_WRITE_TIMEOUT.as_millis());
 
 /// When the reader thread last took a complete frame off one connection, and whether one of
 /// them was an endpoint snapshot. Endpoint health reads this instead of the time the client
@@ -231,7 +250,7 @@ impl EndpointTransport for NativeEndpointTransport {
         // clock-io-ok: the flush wait must account for time spent enqueueing it.
         completion
             .recv_timeout(
-                crate::limits::Deadline::at(deadline)
+                Deadline::at(deadline)
                     // clock-io-ok: compute the remaining time after the flush was queued.
                     .remaining(Instant::now())
                     .unwrap_or_default(),
@@ -295,7 +314,7 @@ fn write_frame(
     stopped: &AtomicBool,
 ) -> io::Result<()> {
     // clock-io-ok: measure elapsed time while the worker writes a frame.
-    let deadline = crate::limits::Deadline::after(Instant::now(), ENDPOINT_WRITE_TIMEOUT);
+    let deadline = Deadline::after(Instant::now(), ENDPOINT_WRITE_TIMEOUT);
     while !frame.is_empty() && !stopped.load(Ordering::Acquire) {
         let chunk = frame;
         match writer.write(chunk) {
@@ -389,7 +408,8 @@ mod tests {
             })();
             done.send(result).expect("test precondition");
         });
-        let mut registry = crate::endpoint::EndpointRegistry::new(transport, 1);
+        let mut registry =
+            crate::endpoint::EndpointRegistry::new(transport, crate::tests::test_generation(1));
         let input = paste("queued input".to_owned());
         assert_eq!(
             registry.send_to(&crate::endpoint::ClientEndpointId::Local, &input),

@@ -68,9 +68,14 @@ fn recv_render_server_message_until(
 }
 
 /// The registry generation of the source (Local) connection.
-const SOURCE_GENERATION: u64 = 1;
+fn source_generation() -> shepr_protocol::ConnectionGeneration {
+    shepr_test_fixtures::counter_at(1)
+}
+
 /// The registry generation of the target (remote) connection.
-const TARGET_GENERATION: u64 = 7;
+fn target_generation() -> shepr_protocol::ConnectionGeneration {
+    shepr_test_fixtures::counter_at(7)
+}
 
 #[derive(Clone)]
 struct CapturingEndpointTransport(Arc<Mutex<Vec<shepr_protocol::ClientMessage>>>);
@@ -97,13 +102,17 @@ impl EndpointTransport for CapturingEndpointTransport {
 }
 
 fn lifecycle_geometry() -> shepr_protocol::TerminalGeometry {
-    shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false)
+    shepr_protocol::TerminalGeometry::from_host(
+        shepr_core::geometry::GridSize::clamped(80, 24),
+        shepr_core::geometry::HostCell::from_host(8, 16, false),
+    )
 }
 
 /// Two real servers emit every acknowledgement, snapshot and surface used as evidence.
 #[tokio::test]
 async fn two_headless_servers_switch_endpoints_without_a_lease() {
     let mut source_server = headless_tests::test_headless_server();
+    headless_tests::enable_window_title(&mut source_server, "{workspace}");
     let _source_input =
         headless_tests::install_focused_test_runtime(&mut source_server, b"local source");
     let (source_writer, source_control, source_render) = headless_tests::test_client_writer();
@@ -112,7 +121,10 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         &mut source_server,
         ServerEvent::ShellConnected {
             client_id: source_client_id,
-            geometry: shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
+            geometry: shepr_core::geometry::HostGeometry::new(
+                shepr_core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::HostCell::from_host(8, 16, false)
+            ),
             mouse_capture: true,
             surface_active: true,
             outbox: source_writer,
@@ -121,6 +133,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
     let source_snapshot = headless_tests::client_shell_snapshot(&source_control);
 
     let mut target_server = headless_tests::test_headless_server();
+    headless_tests::enable_window_title(&mut target_server, "{workspace}");
     let _target_input =
         headless_tests::install_focused_test_runtime(&mut target_server, b"remote target");
     let (target_writer, target_control, target_render) = headless_tests::test_client_writer();
@@ -129,7 +142,10 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         &mut target_server,
         ServerEvent::ShellConnected {
             client_id: target_client_id,
-            geometry: shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
+            geometry: shepr_core::geometry::HostGeometry::new(
+                shepr_core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::HostCell::from_host(8, 16, false)
+            ),
             mouse_capture: true,
             surface_active: false,
             outbox: target_writer,
@@ -150,26 +166,26 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         now,
     );
     shell.set_machines(&[machine]);
-    shell.endpoint_connected(&ClientEndpointId::Local, SOURCE_GENERATION);
+    shell.endpoint_connected(&ClientEndpointId::Local, source_generation());
     shell.set_endpoint_snapshot_for_generation(
         &ClientEndpointId::Local,
-        SOURCE_GENERATION,
+        source_generation(),
         source_snapshot,
     );
-    shell.endpoint_connected(&target_id, TARGET_GENERATION);
-    shell.set_endpoint_snapshot_for_generation(&target_id, TARGET_GENERATION, remote_snapshot);
+    shell.endpoint_connected(&target_id, target_generation());
+    shell.set_endpoint_snapshot_for_generation(&target_id, target_generation(), remote_snapshot);
 
     let source_sent = Arc::new(Mutex::new(Vec::new()));
     let target_sent = Arc::new(Mutex::new(Vec::new()));
     let mut endpoints = EndpointRegistry::new_at(
         CapturingEndpointTransport(Arc::clone(&source_sent)),
-        SOURCE_GENERATION,
+        source_generation(),
         now,
     );
     endpoints.insert(
         target_id.clone(),
         CapturingEndpointTransport(Arc::clone(&target_sent)),
-        TARGET_GENERATION,
+        target_generation(),
         false,
         now,
     );
@@ -201,7 +217,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         let (to, generation, server, client, control, render, sent, previous_sent) = if returning {
             (
                 ClientEndpointId::Local,
-                SOURCE_GENERATION,
+                source_generation(),
                 &mut source_server,
                 source_client_id,
                 &source_control,
@@ -212,7 +228,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         } else {
             (
                 target_id.clone(),
-                TARGET_GENERATION,
+                target_generation(),
                 &mut target_server,
                 target_client_id,
                 &target_control,
@@ -223,7 +239,9 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         };
         // A non-viewed connection still supplies metadata; drain earlier control effects.
         while control.try_recv().is_ok() {}
-        shell.endpoint_choice_mut().select(to.clone(), None);
+        shell
+            .endpoint_choice_mut()
+            .select(shepr_client::Location::machine(to.clone()));
         assert_eq!(
             view::start_move(&mut endpoints, &mut shell, |_| baseline(), Instant::now()),
             StartOutcome::Started

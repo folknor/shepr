@@ -6,12 +6,11 @@
 //! `shepr_term::width::text_width`. A half the replacement would leave behind
 //! becomes a [`blank`].
 //!
-//! Two operations lay chrome over a frame, and both use the blank and the
-//! width rule here. The client's [`crate::compose::Canvas::overwrite`] repairs
-//! a whole region at once and copies the scratch buffer's continuation cells.
-//! The server's [`overlay_buffer`] writes one glyph at a time through
-//! [`put_run`], which repairs only the edges of each run, and fills a wide
-//! glyph's second column with a synthesized [`CellData::blank`].
+//! Two operations lay chrome over a frame, and both use the one repair rule
+//! of [`split_glyph_cells`], the blank and the width rule here. The client's
+//! [`crate::compose::Canvas::overwrite`] repairs a whole region at once; the
+//! server's [`overlay_buffer`] and [`put_run`] repair the region or run they
+//! write the same way, and copy the scratch buffer's continuation cells.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -20,7 +19,7 @@ use shepr_term::width::text_width;
 
 use crate::ratatui_conversion::CellDataExt as _;
 
-/// Blanks `cell` in place: a space in its own style, no skip, no link. The
+/// Blanks `cell` in place: a space in its own style, no link. The
 /// space is one column wide whatever the cell held, so a blanked wide pane
 /// lead no longer claims the column after it. Unlike
 /// [`crate::pane_row::blank_pane_cell`] (the blank for a pane glyph cut by a
@@ -31,7 +30,6 @@ pub fn blank(cell: &mut CellData) {
     cell.symbol.clear();
     cell.symbol.push(' ');
     cell.grid_width = GridCellWidth::Grapheme;
-    cell.skip = false;
     cell.hyperlink = None;
 }
 
@@ -39,8 +37,8 @@ pub fn blank(cell: &mut CellData) {
 fn columns(symbol: &str, grid_width: GridCellWidth) -> usize {
     match grid_width {
         GridCellWidth::Grapheme => text_width(symbol).max(1),
-        GridCellWidth::One => 1,
-        GridCellWidth::Two => 2,
+        GridCellWidth::One | GridCellWidth::WideTail => 1,
+        GridCellWidth::WideLead => 2,
     }
 }
 
@@ -82,83 +80,112 @@ pub(crate) fn split_glyph_cells<'a>(
     out
 }
 
-/// Whether `cell` occupies two columns.
-fn is_wide(cell: &CellData) -> bool {
-    columns(&cell.symbol, cell.grid_width) > 1
+/// Blanks the cells of `row` that a replacement of the `covered` cells would
+/// leave as half a glyph, by [`split_glyph_cells`]'s rule for the surface
+/// written over.
+fn blank_underlying_remnants(row: &mut [CellData], covered: &[bool]) {
+    let view = &*row;
+    let remnants = split_glyph_cells(
+        view.len(),
+        |x| view[x].symbol.as_str(),
+        |x| view[x].grid_width,
+        covered,
+        false,
+    );
+    for x in remnants {
+        blank(&mut row[x]);
+    }
 }
 
 /// Replaces the frame cells from `(x, y)` rightwards with `cells`, clipped to
-/// the frame, and repairs the glyphs the span's edges split: the lead of a wide
-/// glyph whose tail is replaced, and the tail of a wide glyph whose lead is
-/// replaced, become blanks in their own style (no skip, no link). Wide tails
-/// are the empty-symbol cells pane rendering writes. A frame whose cell vector
-/// does not match its dimensions is left alone.
+/// the frame, and repairs the glyphs the span splits by the one rule the
+/// client compositor uses ([`split_glyph_cells`]): the uncovered part of any
+/// glyph the span cuts, whether its tail is an empty symbol or a space
+/// continuation, and an empty-symbol cell right after the span that no glyph
+/// reaches, becomes a blank in its own style (no link). `cells` are
+/// taken as whole glyphs, except that a wide one cut by the frame's right edge
+/// is blanked.
 pub fn put_run(frame: &mut FrameData, x: u16, y: u16, cells: &[CellData]) {
-    let width = usize::from(frame.width);
-    if y >= frame.height
-        || x >= frame.width
-        || frame.cells.len() != width * usize::from(frame.height)
-    {
+    let width = usize::from(frame.width());
+    if y >= frame.height() || x >= frame.width() {
         return;
     }
-    let start = usize::from(y) * width + usize::from(x);
     let count = cells.len().min(width - usize::from(x));
     if count == 0 {
         return;
     }
-    let end = start + count;
     let row_start = usize::from(y) * width;
-    let row_end = row_start + width;
-
-    if start > row_start && frame.cells[start].symbol.is_empty() && is_wide(&frame.cells[start - 1])
-    {
-        blank(&mut frame.cells[start - 1]);
-    }
-    let last_was_wide = is_wide(&frame.cells[end - 1]);
-    for (slot, cell) in frame.cells[start..end].iter_mut().zip(cells) {
+    let left = usize::from(x);
+    let row = &mut frame.cells_mut()[row_start..row_start + width];
+    let mut covered = vec![false; width];
+    covered[left..left + count].fill(true);
+    blank_underlying_remnants(row, &covered);
+    for (slot, cell) in row[left..left + count].iter_mut().zip(cells) {
         slot.clone_from(cell);
     }
-    if end < row_end && last_was_wide && frame.cells[end].symbol.is_empty() {
-        blank(&mut frame.cells[end]);
+    let last = &mut row[left + count - 1];
+    if left + count == width && columns(&last.symbol, last.grid_width) > 1 {
+        blank(last);
     }
 }
 
 /// Replaces the frame cells in `covered` with what a ratatui renderer drew
-/// into `scratch` there, one glyph at a time through [`put_run`]. Both are in
-/// frame coordinates, and `covered` is clipped to the scratch area and the
-/// frame. Every covered cell is replaced, drawn or not: a scratch cell's value
-/// cannot say whether it was drawn (a deliberately drawn default-style space
-/// looks exactly like an untouched one), so the caller states the extent it
-/// owns. Each replacement takes the scratch cell's symbol, colours, flags and
-/// skip, and no link: a link belongs to the text it was on.
+/// into `scratch` there. Both are in frame coordinates, and `covered` is
+/// clipped to the scratch area and the frame. Every covered cell is replaced,
+/// drawn or not: a scratch cell's value cannot say whether it was drawn (a
+/// deliberately drawn default-style space looks exactly like an untouched
+/// one), so the caller states the extent it owns. Each replacement takes the
+/// scratch cell's symbol, colours and flags, and no link: a link belongs
+/// to the text it was on.
 ///
-/// A wide glyph in the scratch owns the cell after it, which becomes a
-/// [`CellData::blank`] whatever the scratch holds there. One whose second
-/// column falls outside the covered area or the frame would show half a
-/// glyph, so it is drawn as a [`blank`].
+/// Glyphs are repaired by the rule the client compositor's
+/// [`crate::compose::Canvas::overwrite`] uses ([`split_glyph_cells`]), on both
+/// sides. A frame glyph the region cuts loses its uncovered part. A scratch
+/// glyph the region or the frame's edge cuts is drawn as a [`blank`] where
+/// covered, which includes a continuation cell at the region's left edge
+/// whose lead lies outside it. A wide scratch glyph's continuation cell is
+/// otherwise copied as the scratch holds it.
 pub fn overlay_buffer(frame: &mut FrameData, scratch: &Buffer, covered: Rect) {
+    let width = usize::from(frame.width());
     let area = covered.intersection(scratch.area);
-    let right = area.right().min(frame.width);
-    let bottom = area.bottom().min(frame.height);
+    let right = area.right().min(frame.width());
+    let bottom = area.bottom().min(frame.height());
+    if area.left() >= right {
+        return;
+    }
+    // One column past the scratch, so a wide glyph in its last column reads as
+    // cut (cells outside the scratch read as spaces).
+    let scratch_len = usize::from(scratch.area.right()) + 1;
+    let mut flags = vec![false; width.max(scratch_len)];
     for y in area.top()..bottom {
-        let mut x = area.left();
-        while x < right {
-            let Some(source) = scratch.cell((x, y)) else {
-                break;
+        flags.fill(false);
+        flags[usize::from(area.left())..usize::from(right)].fill(true);
+        let row_start = usize::from(y) * width;
+        let row = &mut frame.cells_mut()[row_start..row_start + width];
+        blank_underlying_remnants(row, &flags[..width]);
+        let scratch_at = |x: usize| u16::try_from(x).ok().and_then(|x| scratch.cell((x, y)));
+        let scratch_remnants = split_glyph_cells(
+            scratch_len,
+            |x| scratch_at(x).map_or(" ", ratatui::buffer::Cell::symbol),
+            |_| GridCellWidth::Grapheme,
+            &flags[..scratch_len],
+            true,
+        );
+        let left = usize::from(area.left());
+        for (x, slot) in row
+            .iter_mut()
+            .enumerate()
+            .take(usize::from(right))
+            .skip(left)
+        {
+            let Some(source) = scratch_at(x) else {
+                continue;
             };
             let mut cell = CellData::from_ratatui_cell(source);
-            let glyph_width = text_width(&cell.symbol).max(1);
-            let columns = u16::try_from(glyph_width).unwrap_or(u16::MAX);
-            let mut run = Vec::with_capacity(glyph_width);
-            if x.saturating_add(columns) > right {
+            if scratch_remnants.contains(&x) {
                 blank(&mut cell);
-                run.push(cell);
-            } else {
-                run.push(cell);
-                run.resize(glyph_width, CellData::blank());
             }
-            put_run(frame, x, y, &run);
-            x = x.saturating_add(columns.max(1));
+            *slot = cell;
         }
     }
 }

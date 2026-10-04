@@ -85,12 +85,32 @@
 //! exposed text does not change, so neither does the revision.
 
 use std::collections::VecDeque;
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 
 use shepr_vt::AnsiCarry;
 
 use super::*;
+
+/// Rows a chunked history scan reads per hold of the terminal lock. Between
+/// chunks the lock is released so the PTY reader, rendering and detection
+/// are never stalled behind a scan of the whole scrollback.
+pub(super) const SCAN_CHUNK_ROWS: u64 = 2048;
+/// The most rows a merged history chunk covers. Eviction drops a chunk whole
+/// and formats the rows of it that survive again under one lock hold, so this
+/// bounds that rework (a history at its limit evicts on nearly every save, and
+/// each would redo the whole oldest chunk). With `MERGE_MAX_BYTES` it also sets
+/// the chunk count: two neighbours that could still merge do not exist, so a
+/// cache of `n` rows holds about `2 n / MERGE_MAX_ROWS` chunks at most, however
+/// often it was saved.
+const MERGE_MAX_ROWS: u64 = 256;
+/// The most text a merged history chunk holds. Merging copies both texts, and
+/// a save that adds a few rows to a small last chunk copies that chunk again;
+/// this caps the copy at a size that costs far less than the formatting of the
+/// rows that caused it, which happens under the terminal lock and the copy does
+/// not.
+const MERGE_MAX_BYTES: usize = 64 * 1024;
 
 /// Chunks of formatted history a reader keeps between reads of one pane,
 /// oldest first and contiguous. Only a reader of the same terminal may use
@@ -103,7 +123,7 @@ use super::*;
 #[derive(Default)]
 pub struct PaneHistoryCache {
     terminal: Weak<PaneTerminal>,
-    epoch: u64,
+    epoch: HistoryEpoch,
     cols: u16,
     chunks: VecDeque<HistoryChunk>,
     /// The screen part of the last successful read, untrimmed.
@@ -114,18 +134,15 @@ pub struct PaneHistoryCache {
     /// the tail changes. Equal revisions mean the exposed text is unchanged;
     /// different ones do not mean it changed (a change past the last content,
     /// such as one more blank line, moves the revision and not the text).
-    /// Zero while the cache has never held anything. Consumers compare only
-    /// equality, including the empty cache, so zero is a valid text identity
-    /// rather than an unavailable read. Making it optional would add a state
-    /// that those consumers do not need.
-    revision: u64,
+    /// `None` while the cache has never held anything.
+    revision: Option<NonZeroU64>,
 }
 
 /// Revisions are unique across every cache, so a replaced or recreated cache
 /// never repeats one a save has already seen.
-fn next_revision() -> u64 {
+fn next_revision() -> Option<NonZeroU64> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
-    NEXT.fetch_add(1, Ordering::Relaxed)
+    NonZeroU64::new(NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 /// The VT text of absolute rows `start..end`, as the formatter wrote it:
@@ -296,7 +313,7 @@ impl PaneHistoryCache {
     /// Drops what the terminal no longer backs: everything after a resize,
     /// evicted rows at the front, rows that are on the screen again at the
     /// back. Returns whether anything was dropped.
-    fn settle(&mut self, epoch: u64, bounds: &HistoryBounds) -> bool {
+    fn settle(&mut self, epoch: HistoryEpoch, bounds: &HistoryBounds) -> bool {
         let mut changed = false;
         if self.epoch != epoch || self.cols != bounds.cols {
             changed = !self.chunks.is_empty();
@@ -461,7 +478,12 @@ impl PaneHistoryCache {
     /// shared with another cache. A different revision does not prove the text
     /// changed: blank lines past the last content move it without changing
     /// the text.
-    pub fn revision(&self) -> u64 {
+    ///
+    /// `None` while the cache has never held anything. Consumers compare only
+    /// equality, and `None` equals only another empty cache, so it is a valid
+    /// text identity (no cache that held something has no revision) rather than
+    /// an unavailable read.
+    pub fn revision(&self) -> Option<NonZeroU64> {
         self.revision
     }
 
@@ -696,9 +718,8 @@ mod tests {
 
     fn terminal(cols: u16, rows: u16, scrollback_bytes: usize) -> Arc<PaneTerminal> {
         Arc::new(PaneTerminal::new(shepr_vt::Terminal::new(
-            cols,
-            rows,
-            scrollback_bytes,
+            shepr_core::geometry::PaneGeometry::cells_only(cols, rows),
+            shepr_core::scrollback::ScrollbackBudget::new(scrollback_bytes),
         )))
     }
 
@@ -766,9 +787,9 @@ mod tests {
         assert_eq!(source.read(&mut cache), whole_read(&pane));
         // A taller pane pulls history rows back onto the screen, where the
         // child rewrites one before the pane shrinks again.
-        let _ = pane.resize(shepr_core::geometry::PaneGeometry::new(20, 10, 0, 0));
+        let _ = pane.resize(shepr_core::geometry::PaneGeometry::cells_only(20, 10));
         write(&pane, b"\x1b[Hrewritten\r\n");
-        let _ = pane.resize(shepr_core::geometry::PaneGeometry::new(20, 4, 0, 0));
+        let _ = pane.resize(shepr_core::geometry::PaneGeometry::cells_only(20, 4));
         let read = source.read(&mut cache);
         assert_eq!(read, whole_read(&pane));
     }

@@ -1,15 +1,18 @@
 use std::time::Instant;
 
 use bytes::Bytes;
-use ratatui::layout::Rect;
 
 use super::App;
-use super::resume_schedule::AttemptOutcome;
+use super::resume_schedule::{AttemptOutcome, ResumePlans};
 use shepr_mux::workspace::Workspace;
+
+/// Wait briefly for live host colors; afterward the saved theme, if any, stays
+/// the fallback for resumed agents.
+pub(super) const PENDING_AGENT_RESUME_THEME_WAIT: std::time::Duration =
+    std::time::Duration::from_millis(750);
 
 struct PendingAgentResumeCandidate {
     pane_id: shepr_core::layout::PaneId,
-    terminal_id: shepr_protocol::TerminalId,
     cwd: std::path::PathBuf,
     plan: shepr_agent::resume::AgentResumePlan,
     /// The PTY geometry the resumed shell starts at: its content grid and the
@@ -17,12 +20,24 @@ struct PendingAgentResumeCandidate {
     geometry: shepr_core::geometry::PaneGeometry,
 }
 
+/// What one resume pass did.
+#[derive(Debug, Default)]
+pub(crate) struct ResumeOutcome {
+    /// Some plan was consumed (launched or abandoned).
+    pub(crate) consumed: bool,
+    /// Panes whose runtime a launch replaced; their focus is re-reported.
+    pub(crate) replaced_runtimes: Vec<shepr_core::layout::PaneId>,
+}
+
 impl App {
     pub(crate) fn has_pending_agent_resumes(&self) -> bool {
+        if self.resume_schedule.is_retired() {
+            return false;
+        }
         self.state
-            .terminals
-            .values()
-            .any(|terminal| terminal.agent_resume().is_pending())
+            .workspaces
+            .records()
+            .any(|(_, record)| record.terminal().agent_resume().is_pending())
     }
 
     /// When the headless loop should wake to attempt a resume, `None` while
@@ -32,58 +47,63 @@ impl App {
         if !self.has_pending_agent_resumes() {
             return None;
         }
-        self.resume_schedule.wakeup(
-            self.clock.now,
-            self.has_pending_agent_resume_candidates(),
-            self.live_host_theme_reported,
-        )
+        self.resume_schedule
+            .wakeup(self.clock.now, self.has_pending_agent_resume_candidates())
     }
 
     /// Attempts every resume the schedule allows now. The one entry point for
     /// every path that starts resumes (the loop and the geometry callbacks),
     /// so all of them share the schedule's theme wait, spacing and backoff.
     /// Returns whether any plan was consumed (an agent launched, or the resume
-    /// abandoned).
-    pub(crate) fn start_pending_agent_resumes(&mut self, now: Instant) -> bool {
+    /// abandoned) and the panes whose runtime a launch replaced. A consumed
+    /// plan marks the shell projection dirty.
+    #[must_use]
+    pub(crate) fn start_pending_agent_resumes(&mut self, now: Instant) -> ResumeOutcome {
         // The headless loop calls this on every iteration; skip the per-workspace
         // layout walk entirely once nothing is waiting to resume.
         let has_pending_plans = self.has_pending_agent_resumes();
         let eligible = has_pending_plans && self.has_pending_agent_resume_candidates();
-        self.resume_schedule
-            .observe(now, has_pending_plans, eligible);
-        if !self
-            .resume_schedule
-            .is_due(now, eligible, self.live_host_theme_reported)
-        {
-            return false;
+        let plans = if eligible {
+            ResumePlans::Eligible
+        } else if has_pending_plans {
+            ResumePlans::Waiting
+        } else {
+            ResumePlans::None
+        };
+        self.resume_schedule.observe(now, plans);
+        let mut outcome = ResumeOutcome::default();
+        if !self.resume_schedule.is_due(now, eligible) {
+            return outcome;
         }
 
         let pending = self.pending_agent_resume_candidates();
         let mut pass = self.resume_schedule.begin_pass(now);
         for PendingAgentResumeCandidate {
             pane_id,
-            terminal_id,
             cwd,
             plan,
             geometry,
         } in &pending
         {
-            let outcome =
-                self.start_pending_agent_resume(*pane_id, terminal_id, cwd, plan, *geometry, now);
-            if !pass.record(outcome) {
+            let attempt = self.start_pending_agent_resume(*pane_id, cwd, plan, *geometry, now);
+            if attempt == AttemptOutcome::Launched {
+                outcome.replaced_runtimes.push(*pane_id);
+            }
+            if !pass.record(attempt) {
                 break;
             }
         }
         self.resume_schedule.finish(&pass);
 
-        let changed = pass.changed();
-        if changed {
+        outcome.consumed = pass.changed();
+        if outcome.consumed {
             self.state.mark_session_dirty();
+            self.state.mark_shell_projection_dirty();
         }
         if !self.has_pending_agent_resumes() {
-            self.resume_schedule.observe(now, false, false);
+            self.resume_schedule.observe(now, ResumePlans::None);
         }
-        changed
+        outcome
     }
 
     /// Whether any pane would be a resume candidate right now, without cloning
@@ -92,22 +112,18 @@ impl App {
     /// out (`resume_layout_area`), a pane in the layout, no runtime yet and an
     /// unconsumed plan.
     fn has_pending_agent_resume_candidates(&self) -> bool {
-        self.state
-            .workspaces
-            .iter()
-            .enumerate()
-            .any(|(ws_idx, ws)| {
-                // A restored pane without usable geometry cannot be launched
-                // yet. Check this first so repeated loop passes do not walk its
-                // pane tree before the first layout or a nonzero resize.
-                self.resume_layout_area(ws_idx).is_some_and(|area| {
-                    self.workspace_has_pending_agent_resume(ws)
-                        && self
-                            .pending_agent_resume_pane_infos(ws, area)
-                            .iter()
-                            .any(|info| self.pane_awaits_agent_resume(ws, info.id))
-                })
+        self.state.workspaces.iter().any(|ws| {
+            // A restored pane without usable geometry cannot be launched
+            // yet. Check this first so repeated loop passes do not walk its
+            // pane tree before the first layout or a nonzero resize.
+            Self::resume_layout_area(ws).is_some_and(|area| {
+                self.workspace_has_pending_agent_resume(ws)
+                    && self
+                        .pending_agent_resume_pane_infos(ws, area)
+                        .iter()
+                        .any(|info| self.pane_awaits_agent_resume(ws, info.chrome.id))
             })
+        })
     }
 
     /// The area a workspace's pending resumes are sized in: the area its PTY
@@ -115,9 +131,10 @@ impl App {
     /// workspace with no recorded geometry has no size to launch with, so its
     /// resumes wait for the first geometry pass; the headless area is never a
     /// stand-in.
-    fn resume_layout_area(&self, ws_idx: usize) -> Option<Rect> {
-        self.state
-            .workspace_area(ws_idx)
+    fn resume_layout_area(workspace: &Workspace) -> Option<shepr_core::geometry::Rect> {
+        workspace
+            .spawn_geometry()
+            .map(|geometry| geometry.area)
             .filter(|area| area.width > 0 && area.height > 0)
     }
 
@@ -126,9 +143,9 @@ impl App {
     /// with nothing pending, which is almost all of them.
     fn workspace_has_pending_agent_resume(&self, workspace: &Workspace) -> bool {
         workspace
+            .tree()
             .panes()
-            .keys()
-            .any(|pane_id| self.pane_awaits_agent_resume(workspace, *pane_id))
+            .any(|(pane_id, _)| self.pane_awaits_agent_resume(workspace, pane_id))
     }
 
     fn pane_awaits_agent_resume(
@@ -139,22 +156,19 @@ impl App {
         self.resume_candidate(workspace, pane_id).is_some()
     }
 
-    fn resume_candidate(
+    fn resume_candidate<'w>(
         &self,
-        workspace: &Workspace,
+        workspace: &'w Workspace,
         pane_id: shepr_core::layout::PaneId,
     ) -> Option<(
-        &shepr_mux::terminal::TerminalState,
-        &shepr_agent::resume::AgentResumePlan,
-        &std::path::Path,
+        &'w shepr_mux::terminal::TerminalState,
+        &'w shepr_agent::resume::AgentResumePlan,
+        &'w std::path::Path,
     )> {
-        let pane = workspace.panes().get(&pane_id)?;
-        let terminal = self.state.terminals.get(&pane.attached_terminal_id)?;
-        let plan = terminal.agent_resume().candidate(
-            self.terminal_runtimes
-                .get(&pane.attached_terminal_id)
-                .is_some(),
-        )?;
+        let terminal = workspace.tree().pane(pane_id)?.terminal();
+        let plan = terminal
+            .agent_resume()
+            .candidate(self.terminal_runtimes.get(&pane_id).is_some())?;
         // Resume deliberately uses the saved path without probing or filtering
         // it. The child's required chdir owns admission of that directory.
         Some((terminal, plan, terminal.cwd()))
@@ -162,29 +176,25 @@ impl App {
 
     fn pending_agent_resume_candidates(&self) -> Vec<PendingAgentResumeCandidate> {
         let mut pending = Vec::new();
-        for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
+        for ws in self.state.workspaces.iter() {
             if !self.workspace_has_pending_agent_resume(ws) {
                 continue;
             }
-            let Some(area) = self.resume_layout_area(ws_idx) else {
+            let Some(area) = Self::resume_layout_area(ws) else {
                 continue;
             };
-            let cell = self
-                .state
-                .workspace_spawn_geometry(ws_idx)
-                .and_then(|geometry| geometry.cell_px());
+            let cell = ws.spawn_geometry().and_then(|geometry| geometry.cell_px());
             for info in self.pending_agent_resume_pane_infos(ws, area) {
-                let Some((terminal, plan, cwd)) = self.resume_candidate(ws, info.id) else {
+                let Some((_, plan, cwd)) = self.resume_candidate(ws, info.chrome.id) else {
                     continue;
                 };
                 pending.push(PendingAgentResumeCandidate {
-                    pane_id: info.id,
-                    terminal_id: terminal.id.clone(),
+                    pane_id: info.chrome.id,
                     cwd: cwd.to_path_buf(),
                     plan: plan.clone(),
-                    geometry: shepr_mux::workspace::spawn_geometry(
-                        info.inner_rect.height,
-                        info.inner_rect.width,
+                    geometry: shepr_core::geometry::PaneGeometry::with_cell(
+                        info.content.width,
+                        info.content.height,
                         cell,
                     ),
                 });
@@ -201,18 +211,14 @@ impl App {
     fn pending_agent_resume_pane_infos(
         &self,
         workspace: &Workspace,
-        area: Rect,
-    ) -> Vec<shepr_mux::workspace::PaneChromeInfo> {
-        derived_pending_agent_resume_pane_infos(
-            workspace,
-            self.state.settings.pane_geometry_in(area),
-        )
+        area: shepr_core::geometry::Rect,
+    ) -> Vec<shepr_core::chrome::PaneContent> {
+        derived_pending_agent_resume_pane_infos(workspace, self.state.chrome_in(area))
     }
 
     fn start_pending_agent_resume(
         &mut self,
         pane_id: shepr_core::layout::PaneId,
-        terminal_id: &shepr_protocol::TerminalId,
         cwd: &std::path::Path,
         plan: &shepr_agent::resume::AgentResumePlan,
         geometry: shepr_core::geometry::PaneGeometry,
@@ -222,18 +228,14 @@ impl App {
         let resume_command = plan.to_shell_command();
         // No public identity only when the pane or its workspace is gone,
         // which no retry fixes.
-        let Some(public_id) = self
-            .find_pane(pane_id)
-            .and_then(|(ws_idx, _)| self.public_pane_id(ws_idx, pane_id))
-        else {
+        let Some(public_id) = self.state.pane(pane_id).map(|pane| pane.public_id()) else {
             tracing::warn!(
-                pane = pane_id.raw(),
-                terminal = %terminal_id,
+                pane = %pane_id,
                 agent = %plan.agent(),
                 "abandoning deferred agent resume: pane or workspace is gone"
             );
             self.abandon_resume(
-                terminal_id,
+                pane_id,
                 shepr_mux::terminal::ResumeUnavailableReason::PaneGone,
                 now,
             );
@@ -255,14 +257,13 @@ impl App {
             Ok(runtime) => runtime,
             Err(err) => {
                 tracing::warn!(
-                    pane = pane_id.raw(),
-                    terminal = %terminal_id,
+                    pane = %pane_id,
                     agent = %plan.agent(),
                     error = %err,
                     "failed to start shell for deferred agent resume"
                 );
-                self.abandon_terminal_agent_resume(
-                    terminal_id,
+                self.abandon_agent_resume(
+                    pane_id,
                     shepr_mux::terminal::PaneStartFailure::shell_start_failed(&err),
                     now,
                 );
@@ -272,20 +273,19 @@ impl App {
 
         let mut input = resume_command;
         input.push('\r');
-        self.install_terminal_runtime(terminal_id.clone(), runtime);
-        self.runtimes_replaced_panes.push(pane_id);
-        self.hold_resume_command(terminal_id, Bytes::from(input));
+        self.install_runtime(pane_id, runtime);
+        self.hold_resume_command(pane_id, Bytes::from(input));
         AttemptOutcome::Launched
     }
 
     fn abandon_resume(
         &mut self,
-        terminal_id: &shepr_protocol::TerminalId,
+        pane_id: shepr_core::layout::PaneId,
         reason: shepr_mux::terminal::ResumeUnavailableReason,
         now: Instant,
     ) {
-        self.abandon_terminal_agent_resume(
-            terminal_id,
+        self.abandon_agent_resume(
+            pane_id,
             shepr_mux::terminal::PaneStartFailure::resume_unavailable(reason),
             now,
         );
@@ -294,56 +294,68 @@ impl App {
 
 fn derived_pending_agent_resume_pane_infos(
     workspace: &Workspace,
-    geometry: shepr_mux::workspace::PaneGeometry,
-) -> Vec<shepr_mux::workspace::PaneChromeInfo> {
-    geometry.resume_panes(workspace.layout(), workspace.zoomed())
+    chrome: shepr_mux::workspace::WorkspaceChrome,
+) -> Vec<shepr_core::chrome::PaneContent> {
+    chrome.resume_panes(workspace.tree().layout(), workspace.tree().zoomed())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::limits::PENDING_AGENT_RESUME_THEME_WAIT;
     use crate::test_support::*;
+    use ratatui::layout::Rect;
 
-    fn test_app() -> App {
-        App::new(
-            &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Suspended,
-        )
+    fn test_app() -> crate::app::TestApp {
+        App::new(&shepr_config::ServerConfig::default())
     }
 
     /// Feeds the app its queued runtime events, as the headless loop does,
     /// until every resume launch it dispatched has settled.
-    async fn settle_resume_launches(app: &mut App) {
+    async fn settle_resume_launches(app: &mut crate::app::TestApp) {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         while app
             .state
-            .terminals
-            .values()
-            .any(|terminal| terminal.agent_resume().is_launching())
+            .workspaces
+            .records()
+            .any(|(_, record)| record.terminal().agent_resume().is_launching())
         {
-            let event = tokio::time::timeout_at(deadline, app.event_rx.recv())
+            let event = tokio::time::timeout_at(deadline, app.next_event())
                 .await
-                .expect("the resume launch settles")
-                .expect("the event channel stays open");
+                .expect("the resume launch settles");
             app.handle_internal_event(event);
         }
     }
 
+    #[tokio::test]
+    async fn resume_scans_stop_once_no_plan_is_pending() {
+        let mut app = test_app();
+        assert!(!app.resume_schedule.is_retired());
+
+        let outcome = app.start_pending_agent_resumes(Instant::now());
+
+        assert!(!outcome.consumed);
+        assert!(outcome.replaced_runtimes.is_empty());
+        assert!(app.resume_schedule.is_retired());
+        assert!(!app.has_pending_agent_resumes());
+        assert_eq!(app.pending_agent_resume_wakeup(), None);
+    }
+
     fn report_test_host_theme(app: &mut App) {
-        app.set_host_terminal_theme(shepr_term::host::TerminalTheme {
-            foreground: Some(shepr_term::host::RgbColor {
-                r: 220,
-                g: 220,
-                b: 220,
-            }),
-            background: Some(shepr_term::host::RgbColor {
-                r: 20,
-                g: 20,
-                b: 20,
-            }),
-            ..Default::default()
-        });
+        assert!(
+            app.set_host_terminal_theme(shepr_term::host::TerminalTheme {
+                foreground: Some(shepr_term::host::RgbColor {
+                    r: 220,
+                    g: 220,
+                    b: 220,
+                }),
+                background: Some(shepr_term::host::RgbColor {
+                    r: 20,
+                    g: 20,
+                    b: 20,
+                }),
+                ..Default::default()
+            })
+        );
     }
 
     /// A saved directory that is gone settles each launch as a placeholder
@@ -353,41 +365,40 @@ mod tests {
     async fn resumes_whose_directory_is_gone_settle_as_placeholders() {
         let config: shepr_config::ServerConfig =
             toml::from_str("[session]\nstartup_per_agent_delay_ms = 0").expect("test precondition");
-        let mut app = App::new(&config, crate::app::AppPolicy::Suspended);
+        let mut app = App::new(&config);
         app.state.test_set_workspaces(
             (0..4)
                 .map(|_| shepr_mux::workspace::Workspace::test_new("restore"))
                 .collect(),
         );
-        app.state.set_bookmark_index(Some(0));
+        app.state.seed_bookmark_index(Some(0));
         app.state
             .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
-        app.state.ensure_test_terminals();
         let missing =
             crate::test_support::ScratchDir::new("resume-cwd").join("__missing_resume_cwd__");
         assert!(!missing.try_exists().expect("stat missing resume cwd"));
-        for terminal in app.state.terminals.values_mut() {
+        for (pane, record) in app.state.workspaces.records_mut() {
+            let terminal = record.terminal_mut();
             // Restore builds a terminal from its saved cwd, which may have
             // disappeared; a live pane never reports a missing one.
-            *terminal =
-                shepr_mux::terminal::TerminalState::new(terminal.id.clone(), missing.clone());
+            *terminal = shepr_mux::terminal::TerminalState::new(missing.clone());
             terminal.plan_agent_resume(crate::test_support::test_codex_plan(
-                &terminal.id.to_string(),
+                &pane.to_string(),
                 vec!["codex".into()],
             ));
         }
         let now = Instant::now();
         // No live host theme report yet: the first pass only starts the wait.
-        assert!(!app.start_pending_agent_resumes(now));
+        assert!(!app.start_pending_agent_resumes(now).consumed);
         let theme_wait = now + PENDING_AGENT_RESUME_THEME_WAIT;
         assert_eq!(app.pending_agent_resume_wakeup(), Some(theme_wait));
-        assert!(app.start_pending_agent_resumes(theme_wait));
+        assert!(app.start_pending_agent_resumes(theme_wait).consumed);
         settle_resume_launches(&mut app).await;
         assert!(!app.has_pending_agent_resumes());
         assert!(app.terminal_runtimes.values().next().is_none());
-        for terminal in app.state.terminals.values() {
+        for (_, record) in app.state.workspaces.records() {
             assert!(matches!(
-                terminal.restore_error(),
+                record.terminal().restore_error(),
                 Some(shepr_mux::terminal::PaneStartFailure::DirectoryUnavailable { path, .. })
                     if *path == missing
             ));
@@ -398,17 +409,12 @@ mod tests {
     async fn candidate_probe_agrees_with_the_collected_candidates() {
         let mut app = test_app();
         let pending_workspace = shepr_mux::workspace::Workspace::test_new("pending");
-        let pending_pane = pending_workspace.root_pane();
-        let pending_terminal = pending_workspace
-            .terminal_id(pending_pane)
-            .cloned()
-            .expect("test precondition");
+        let pending_pane = pending_workspace.tree().root();
         app.state.test_set_workspaces(vec![
             shepr_mux::workspace::Workspace::test_new("idle"),
             pending_workspace,
         ]);
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
+        app.state.seed_bookmark_index(Some(0));
 
         // Nothing pending anywhere.
         app.state
@@ -416,18 +422,15 @@ mod tests {
         assert!(!app.has_pending_agent_resume_candidates());
         assert!(app.pending_agent_resume_candidates().is_empty());
 
-        app.state
-            .terminals
-            .get_mut(&pending_terminal)
-            .expect("test terminal should exist")
-            .plan_agent_resume(crate::test_support::test_codex_plan(
+        app.state.terminal_mut(pending_pane).plan_agent_resume(
+            crate::test_support::test_codex_plan(
                 "shepr:codex\0codex\0Id\0probe-session",
                 long_running_test_argv(),
-            ));
+            ),
+        );
         assert!(app.has_pending_agent_resume_candidates());
         let candidates = app.pending_agent_resume_candidates();
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].terminal_id, pending_terminal);
         assert_eq!(candidates[0].pane_id, pending_pane);
         assert_eq!(
             candidates[0].geometry.cell(),
@@ -439,11 +442,8 @@ mod tests {
         // actually applied to its workspace.
         app.state
             .test_record_all_workspace_geometry(crate::app::SpawnGeometry {
-                area: Rect::new(0, 0, 100, 30),
-                cell_size: shepr_term::host::HostCellSize {
-                    width_px: 8,
-                    height_px: 16,
-                },
+                area: shepr_core::geometry::Rect::new(0, 0, 100, 30),
+                cell: shepr_core::geometry::CellPx::new(8, 16),
             });
         let candidates = app.pending_agent_resume_candidates();
         assert_eq!(
@@ -451,15 +451,26 @@ mod tests {
             shepr_core::geometry::CellPx::new(8, 16)
         );
 
-        // A workspace the server has not laid out has no geometry to launch with,
-        // and neither has one laid out in an empty area.
-        app.state.workspace_geometry.clear();
-        assert!(!app.has_pending_agent_resume_candidates());
-        assert!(app.pending_agent_resume_candidates().is_empty());
+        // A workspace laid out in an empty area has no geometry to launch with.
         app.state
             .test_record_all_workspace_areas(Rect::new(0, 0, 0, 0));
         assert!(!app.has_pending_agent_resume_candidates());
         assert!(app.pending_agent_resume_candidates().is_empty());
+
+        // Neither has a workspace the server has not laid out.
+        let mut unlaid = test_app();
+        let workspace = shepr_mux::workspace::Workspace::test_new("unlaid");
+        let unlaid_pane = workspace.tree().root();
+        unlaid.state.test_set_workspaces(vec![workspace]);
+        unlaid.state.seed_bookmark_index(Some(0));
+        unlaid.state.terminal_mut(unlaid_pane).plan_agent_resume(
+            crate::test_support::test_codex_plan(
+                "shepr:codex\0codex\0Id\0probe-session",
+                long_running_test_argv(),
+            ),
+        );
+        assert!(!unlaid.has_pending_agent_resume_candidates());
+        assert!(unlaid.pending_agent_resume_candidates().is_empty());
     }
 
     /// The plan stays on the terminal until its launch settles, so a save in
@@ -471,37 +482,34 @@ mod tests {
         let mut app = test_app();
         app.set_test_shell(shepr_test_support::fixture::idle_shell());
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.root_pane();
-        let terminal_id = workspace
-            .terminal_id(pane_id)
-            .cloned()
-            .expect("test precondition");
+        let pane_id = workspace.tree().root();
         app.state.test_set_workspaces(vec![workspace]);
-        app.state.set_bookmark_index(Some(0));
+        app.state.seed_bookmark_index(Some(0));
         app.state
             .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
-        app.state.ensure_test_terminals();
         app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test terminal should exist")
+            .terminal_mut(pane_id)
             .plan_agent_resume(crate::test_support::test_codex_plan(
                 "shepr:codex\0codex\0Id\0dispatched-session",
                 long_running_test_argv(),
             ));
         report_test_host_theme(&mut app);
 
-        assert!(app.start_pending_agent_resumes(Instant::now()));
-        assert!(app.terminal_runtimes.get(&terminal_id).is_some());
+        assert!(app.start_pending_agent_resumes(Instant::now()).consumed);
+        assert!(app.terminal_runtimes.get(&pane_id).is_some());
         assert!(
-            app.state.terminals[&terminal_id]
+            app.state
+                .terminal(pane_id)
+                .expect("terminal")
                 .agent_resume()
                 .is_pending()
         );
         assert!(!app.has_pending_agent_resume_candidates());
         settle_resume_launches(&mut app).await;
         assert!(
-            !app.state.terminals[&terminal_id]
+            !app.state
+                .terminal(pane_id)
+                .expect("terminal")
                 .agent_resume()
                 .is_pending()
         );
@@ -531,29 +539,21 @@ mod tests {
         for missing_shell in [false, true] {
             let mut app = test_app();
             let workspace = shepr_mux::workspace::Workspace::test_new("unavailable");
-            let pane_id = workspace.root_pane();
-            let terminal_id = workspace
-                .terminal_id(pane_id)
-                .expect("test precondition")
-                .clone();
+            let pane_id = workspace.tree().root();
             app.state.test_set_workspaces(vec![workspace]);
-            app.state.set_bookmark_index(Some(0));
-            app.state.ensure_test_terminals();
+            app.state.seed_bookmark_index(Some(0));
             if missing_shell {
                 app.set_test_shell("/__shepr_missing_resume_shell__");
             }
-            let terminal = app
-                .state
-                .terminals
-                .get_mut(&terminal_id)
-                .expect("test precondition");
+            let clock_now = app.clock.now;
+            let terminal = app.state.terminal_mut(pane_id);
             if !missing_shell {
                 let missing = crate::test_support::ScratchDir::new("resume-cwd")
                     .join("__shepr_missing_resume_cwd__");
                 assert!(!missing.try_exists().expect("stat missing resume cwd"));
                 // Restore builds a terminal from its saved cwd, which may have
                 // disappeared; a live pane never reports a missing one.
-                *terminal = shepr_mux::terminal::TerminalState::new(terminal.id.clone(), missing);
+                *terminal = shepr_mux::terminal::TerminalState::new(missing);
             }
             let session = shepr_agent::resume::PersistedAgentSession::new(
                 shepr_agent::AgentSource::parse("shepr:codex").expect("bundled source"),
@@ -578,16 +578,16 @@ mod tests {
                     shepr_agent::AgentState::Idle,
                     false,
                     false,
-                    app.clock.now,
+                    clock_now,
                 );
             app.state
                 .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
             report_test_host_theme(&mut app);
             let now = Instant::now();
-            assert!(app.start_pending_agent_resumes(now));
+            assert!(app.start_pending_agent_resumes(now).consumed);
             settle_resume_launches(&mut app).await;
-            assert!(app.terminal_runtimes.get(&terminal_id).is_none());
-            let terminal = &app.state.terminals[&terminal_id];
+            assert!(app.terminal_runtimes.get(&pane_id).is_none());
+            let terminal = app.state.terminal(pane_id).expect("terminal");
             assert!(!terminal.agent_resume().is_pending());
             assert_eq!(
                 terminal.ownership().persisted_agent_session(),
@@ -598,7 +598,7 @@ mod tests {
             assert_eq!(terminal.ownership().detected_agent(), None);
             assert_eq!(terminal.ownership().effective_agent(), None);
             assert!(!app.has_pending_agent_resumes());
-            assert!(!app.start_pending_agent_resumes(now));
+            assert!(!app.start_pending_agent_resumes(now).consumed);
         }
     }
 
@@ -620,21 +620,12 @@ mod tests {
         app.set_test_shell(&shell);
 
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.root_pane();
-        let terminal_id = workspace
-            .terminal_id(pane_id)
-            .cloned()
-            .expect("test precondition");
+        let pane_id = workspace.tree().root();
         app.state.test_set_workspaces(vec![workspace]);
-        app.state.ensure_test_terminals();
         let plan =
             crate::test_support::test_codex_plan("resume-cwd-race", long_running_test_argv());
-        let terminal = app
-            .state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test terminal should exist");
-        *terminal = shepr_mux::terminal::TerminalState::new(terminal_id.clone(), cwd.clone());
+        let terminal = app.state.terminal_mut(pane_id);
+        *terminal = shepr_mux::terminal::TerminalState::new(cwd.clone());
         terminal.plan_agent_resume(plan.clone());
 
         // The directory the terminal was saved with disappears before the
@@ -642,20 +633,19 @@ mod tests {
         std::fs::remove_dir(&cwd).expect("remove resume cwd");
         let outcome = app.start_pending_agent_resume(
             pane_id,
-            &terminal_id,
             &cwd,
             &plan,
-            shepr_mux::workspace::spawn_geometry(24, 80, None),
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
             Instant::now(),
         );
         assert_eq!(outcome, AttemptOutcome::Launched, "the fork is dispatched");
         settle_resume_launches(&mut app).await;
 
         assert!(
-            app.terminal_runtimes.get(&terminal_id).is_none(),
+            app.terminal_runtimes.get(&pane_id).is_none(),
             "a stale resume cwd must not fall back to HOME"
         );
-        let terminal = &app.state.terminals[&terminal_id];
+        let terminal = app.state.terminal(pane_id).expect("terminal");
         assert!(!terminal.agent_resume().is_pending());
         assert!(matches!(
             terminal.restore_error(),
@@ -667,44 +657,34 @@ mod tests {
     async fn pending_agent_resume_waits_for_live_host_theme_before_launch() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.root_pane();
-        let terminal_id = workspace
-            .terminal_id(pane_id)
-            .cloned()
-            .expect("test precondition");
+        let pane_id = workspace.tree().root();
         app.state.test_set_workspaces(vec![workspace]);
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
+        app.state.seed_bookmark_index(Some(0));
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
-        let terminal = app
-            .state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test terminal should exist");
+        let terminal = app.state.terminal_mut(pane_id);
         terminal.plan_agent_resume(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0codex-session",
             marker_resume_test_argv(),
         ));
 
-        assert!(!app.start_pending_agent_resumes(Instant::now()));
-        assert!(app.terminal_runtimes.get(&terminal_id).is_none());
+        assert!(!app.start_pending_agent_resumes(Instant::now()).consumed);
+        assert!(app.terminal_runtimes.get(&pane_id).is_none());
 
         report_test_host_theme(&mut app);
 
-        assert!(app.start_pending_agent_resumes(Instant::now()));
-        assert!(app.terminal_runtimes.get(&terminal_id).is_some());
+        assert!(app.start_pending_agent_resumes(Instant::now()).consumed);
+        assert!(app.terminal_runtimes.get(&pane_id).is_some());
         settle_resume_launches(&mut app).await;
         let terminal = app
             .state
-            .terminals
-            .get(&terminal_id)
+            .terminal(pane_id)
             .expect("terminal should survive launch");
         assert!(!terminal.agent_resume().is_pending());
 
         let runtime = app
             .terminal_runtimes
-            .get(&terminal_id)
+            .get(&pane_id)
             .expect("pending resume should leave a shell runtime");
         let marker = "restored agent: shell quoted | marker";
         let source = runtime.read().history_source();
@@ -733,29 +713,25 @@ mod tests {
     async fn pending_agent_resume_can_launch_after_theme_wait_expires() {
         let mut app = test_app();
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
-        let pane_id = workspace.root_pane();
-        let terminal_id = workspace
-            .terminal_id(pane_id)
-            .cloned()
-            .expect("test precondition");
+        let pane_id = workspace.tree().root();
         app.state.test_set_workspaces(vec![workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
+        app.state.seed_bookmark_index(Some(0));
         app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test terminal should exist")
+            .terminal_mut(pane_id)
             .plan_agent_resume(crate::test_support::test_codex_plan(
                 "shepr:codex\0codex\0Id\0codex-session",
                 long_running_test_argv(),
             ));
 
         let now = Instant::now();
-        assert!(!app.start_pending_agent_resumes(now));
-        assert!(app.start_pending_agent_resumes(now + PENDING_AGENT_RESUME_THEME_WAIT));
-        assert!(app.terminal_runtimes.get(&terminal_id).is_some());
+        assert!(!app.start_pending_agent_resumes(now).consumed);
+        assert!(
+            app.start_pending_agent_resumes(now + PENDING_AGENT_RESUME_THEME_WAIT)
+                .consumed
+        );
+        assert!(app.terminal_runtimes.get(&pane_id).is_some());
 
         for (_, runtime) in app.terminal_runtimes.drain() {
             drop(runtime);
@@ -766,45 +742,34 @@ mod tests {
     async fn pending_agent_resume_launches_hidden_panes_with_current_terminal_area() {
         let mut app = test_app();
         let active_workspace = shepr_mux::workspace::Workspace::test_new("active");
-        let active_pane = active_workspace.root_pane();
-        let active_terminal = active_workspace
-            .terminal_id(active_pane)
-            .cloned()
-            .expect("test precondition");
+        let active_pane = active_workspace.tree().root();
         let hidden_workspace = shepr_mux::workspace::Workspace::test_new("hidden");
-        let hidden_pane = hidden_workspace.root_pane();
-        let hidden_terminal = hidden_workspace
-            .terminal_id(hidden_pane)
-            .cloned()
-            .expect("test precondition");
+        let hidden_pane = hidden_workspace.tree().root();
         app.state
             .test_set_workspaces(vec![active_workspace, hidden_workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
+        app.state.seed_bookmark_index(Some(0));
         report_test_host_theme(&mut app);
-        for terminal_id in [&active_terminal, &hidden_terminal] {
+        for pane in [active_pane, hidden_pane] {
             app.state
-                .terminals
-                .get_mut(terminal_id)
-                .expect("test terminal should exist")
+                .terminal_mut(pane)
                 .plan_agent_resume(crate::test_support::test_codex_plan(
-                    &format!("shepr:codex\0codex\0Id\0{terminal_id}"),
+                    &format!("shepr:codex\0codex\0Id\0{pane}"),
                     long_running_test_argv(),
                 ));
         }
 
         let now = Instant::now();
-        assert!(app.start_pending_agent_resumes(now));
-        assert!(app.terminal_runtimes.get(&active_terminal).is_some());
-        assert!(app.terminal_runtimes.get(&hidden_terminal).is_none());
+        assert!(app.start_pending_agent_resumes(now).consumed);
+        assert!(app.terminal_runtimes.get(&active_pane).is_some());
+        assert!(app.terminal_runtimes.get(&hidden_pane).is_none());
         // The launch spaces the next one out; the wakeup is the barrier.
         let barrier = now + std::time::Duration::from_millis(100);
-        assert!(!app.start_pending_agent_resumes(now));
+        assert!(!app.start_pending_agent_resumes(now).consumed);
         assert_eq!(app.pending_agent_resume_wakeup(), Some(barrier));
-        assert!(app.start_pending_agent_resumes(barrier));
-        assert!(app.terminal_runtimes.get(&hidden_terminal).is_some());
+        assert!(app.start_pending_agent_resumes(barrier).consumed);
+        assert!(app.terminal_runtimes.get(&hidden_pane).is_some());
         assert_eq!(
             app.pending_agent_resume_wakeup(),
             None,
@@ -820,36 +785,28 @@ mod tests {
     async fn pending_agent_resume_launches_zoom_hidden_panes() {
         let mut app = test_app();
         let mut workspace = shepr_mux::workspace::Workspace::test_new("zoomed");
-        let hidden_pane = workspace.root_pane();
+        let hidden_pane = workspace.tree().root();
         // The split pane is focused, so it is the one the zoom shows.
         workspace.test_split(shepr_core::layout::Direction::Horizontal);
         workspace.set_zoomed(true);
-        let hidden_terminal = workspace
-            .terminal_id(hidden_pane)
-            .cloned()
-            .expect("test precondition");
         app.state.test_set_workspaces(vec![workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
+        app.state.seed_bookmark_index(Some(0));
         report_test_host_theme(&mut app);
-        app.state
-            .terminals
-            .get_mut(&hidden_terminal)
-            .expect("hidden zoom pane terminal should exist")
-            .plan_agent_resume(crate::test_support::test_codex_plan(
+        app.state.terminal_mut(hidden_pane).plan_agent_resume(
+            crate::test_support::test_codex_plan(
                 "shepr:codex\0codex\0Id\0zoom-hidden-session",
                 long_running_test_argv(),
-            ));
+            ),
+        );
 
-        assert!(app.start_pending_agent_resumes(Instant::now()));
-        assert!(app.terminal_runtimes.get(&hidden_terminal).is_some());
+        assert!(app.start_pending_agent_resumes(Instant::now()).consumed);
+        assert!(app.terminal_runtimes.get(&hidden_pane).is_some());
         settle_resume_launches(&mut app).await;
         assert!(
             !app.state
-                .terminals
-                .get(&hidden_terminal)
+                .terminal(hidden_pane)
                 .expect("hidden zoom pane terminal should still exist")
                 .agent_resume()
                 .is_pending(),
@@ -865,35 +822,27 @@ mod tests {
     async fn pending_agent_resume_uses_current_terminal_area_for_background_panes() {
         let mut app = test_app();
         let previous_workspace = shepr_mux::workspace::Workspace::test_new("previous");
-        let previous_pane = previous_workspace.root_pane();
-        let previous_terminal = previous_workspace
-            .terminal_id(previous_pane)
-            .cloned()
-            .expect("test precondition");
+        let previous_pane = previous_workspace.tree().root();
         let current_workspace = shepr_mux::workspace::Workspace::test_new("current");
         app.state
             .test_set_workspaces(vec![previous_workspace, current_workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 80, 24));
-        app.state.set_bookmark_index(Some(1));
-        app.state.ensure_test_terminals();
+        app.state.seed_bookmark_index(Some(1));
         report_test_host_theme(&mut app);
-        app.state
-            .terminals
-            .get_mut(&previous_terminal)
-            .expect("test terminal should exist")
-            .plan_agent_resume(crate::test_support::test_codex_plan(
+        app.state.terminal_mut(previous_pane).plan_agent_resume(
+            crate::test_support::test_codex_plan(
                 "shepr:codex\0codex\0Id\0codex-session",
                 long_running_test_argv(),
-            ));
+            ),
+        );
 
-        assert!(app.start_pending_agent_resumes(Instant::now()));
-        assert!(app.terminal_runtimes.get(&previous_terminal).is_some());
+        assert!(app.start_pending_agent_resumes(Instant::now()).consumed);
+        assert!(app.terminal_runtimes.get(&previous_pane).is_some());
         settle_resume_launches(&mut app).await;
         assert!(
             !app.state
-                .terminals
-                .get(&previous_terminal)
+                .terminal(previous_pane)
                 .expect("previous terminal should still exist")
                 .agent_resume()
                 .is_pending(),
@@ -916,16 +865,14 @@ mod tests {
         app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Always;
         let mut workspace = shepr_mux::workspace::Workspace::test_new("split");
         let pane_id = workspace.test_split(shepr_core::layout::Direction::Horizontal);
-        let terminal_id = workspace
-            .terminal_id(pane_id)
-            .cloned()
-            .expect("test precondition");
         let area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.test_set_workspaces(vec![workspace]);
         app.state.test_record_all_workspace_areas(area);
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
-        let target = app.state.workspaces[0].id;
+        app.state.seed_bookmark_index(Some(0));
+        let target = crate::ui::SurfaceTarget {
+            index: 0,
+            id: app.state.ws(0).id(),
+        };
         let content_rect = |app: &App| {
             let layout = crate::ui::compute_surface_for(
                 &app.state,
@@ -934,7 +881,7 @@ mod tests {
                 area,
             );
             let info = layout
-                .pane_infos
+                .panes
                 .iter()
                 .find(|info| info.id == pane_id)
                 .expect("the resumed pane is visible");
@@ -943,18 +890,16 @@ mod tests {
         let before_launch = content_rect(&app);
         report_test_host_theme(&mut app);
         app.state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test terminal should exist")
+            .terminal_mut(pane_id)
             .plan_agent_resume(crate::test_support::test_codex_plan(
                 "shepr:codex\0codex\0Id\0codex-session",
                 long_running_test_argv(),
             ));
 
-        assert!(app.start_pending_agent_resumes(Instant::now()));
+        assert!(app.start_pending_agent_resumes(Instant::now()).consumed);
         let launched = app
             .terminal_runtimes
-            .get(&terminal_id)
+            .get(&pane_id)
             .expect("pending resume should launch")
             .current_size();
         assert_eq!(launched, before_launch);

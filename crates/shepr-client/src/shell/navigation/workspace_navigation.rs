@@ -1,15 +1,33 @@
 use crate::endpoint::ClientEndpointId;
 use crate::shell::endpoints::ClientShellEndpoint;
+use crate::shell::ledger::Ticket;
 use crate::shell::navigation::location::{Location, LocationTarget, PinnedLocation};
 use crate::shell::state::ClientShellMode;
-use crate::shell::state::{ClientShellInput, ClientShellState};
+use crate::shell::state::{ClientShellInput, ClientShellState, Repaint};
 use crate::shell::{EndpointNotice, EndpointNoticeKind};
+
+/// Keep workspace navigation feedback visible while its focus request is pending.
+///
+/// The timeout covers the normal focus round trip without leaving stale feedback on screen.
+const WORKSPACE_HIGHLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Display-only continuity while a direct focus request awaits its authoritative snapshot.
 pub(in crate::shell) struct PendingWorkspaceHighlight {
     pub(in crate::shell) target: PinnedLocation,
-    pub(in crate::shell) request_id: shepr_protocol::RequestId,
+    ticket: Ticket,
     expires_at: std::time::Instant,
+}
+
+impl PendingWorkspaceHighlight {
+    /// Clears `slot` when it holds `ticket`.
+    pub(in crate::shell) fn release(slot: &mut Option<Self>, ticket: Ticket) -> Repaint {
+        if slot.as_ref().is_some_and(|held| held.ticket == ticket) {
+            *slot = None;
+            Repaint::Needed
+        } else {
+            Repaint::Unchanged
+        }
+    }
 }
 
 impl PinnedLocation {
@@ -51,18 +69,18 @@ impl ClientShellState {
     pub(in crate::shell) fn keep_workspace_highlight_until_snapshot(
         &mut self,
         target: PinnedLocation,
-        request_id: &shepr_protocol::RequestId,
+        ticket: Ticket,
         now: std::time::Instant,
     ) {
         self.pending_workspace_highlight = Some(PendingWorkspaceHighlight {
             target,
-            request_id: request_id.clone(),
-            expires_at: now + crate::limits::WORKSPACE_HIGHLIGHT_TIMEOUT,
+            ticket,
+            expires_at: now + WORKSPACE_HIGHLIGHT_TIMEOUT,
         });
         self.reconcile_pending_workspace_highlight();
     }
 
-    pub(crate) fn tick_workspace_highlight(&mut self, now: std::time::Instant) -> bool {
+    pub(in crate::shell) fn tick_workspace_highlight(&mut self, now: std::time::Instant) -> bool {
         if self
             .pending_workspace_highlight
             .as_ref()
@@ -87,7 +105,7 @@ impl ClientShellState {
             .is_some_and(|pending| {
                 pending.target.location.endpoint != *self.endpoints.presented()
                     || !self.navigation_target_valid(&pending.target)
-                    || self.snapshot.as_deref().is_some_and(|snapshot| {
+                    || self.endpoints.active.snapshot().is_some_and(|snapshot| {
                         pending
                             .target
                             .location
@@ -121,7 +139,12 @@ impl ClientShellState {
     }
 
     pub(in crate::shell) fn focused_navigation_target(&self) -> Option<PinnedLocation> {
-        let workspace_id = self.snapshot.as_deref()?.focused_workspace_id.as_ref()?;
+        let workspace_id = self
+            .endpoints
+            .active
+            .snapshot()?
+            .focused_workspace_id
+            .as_ref()?;
         self.navigation_target(self.endpoints.presented(), workspace_id)
     }
 
@@ -144,7 +167,7 @@ impl ClientShellState {
     }
 
     pub(in crate::shell) fn workspace_preview_action_blocked(&self) -> bool {
-        self.navigate_workspace_id.as_ref().is_some_and(|target| {
+        self.mode.preview().is_some_and(|target| {
             target.location.endpoint != *self.endpoints.presented()
                 || !self.navigation_target_valid(target)
         })
@@ -156,8 +179,8 @@ impl ClientShellState {
             return;
         }
         let current = self
-            .navigate_workspace_id
-            .as_ref()
+            .mode
+            .preview()
             .and_then(|selected| targets.iter().position(|target| target == selected));
         let Some(next) = crate::shell::navigation::aggregate_navigation::cycle_index(
             targets.len(),
@@ -167,20 +190,14 @@ impl ClientShellState {
             return;
         };
         let target = targets.swap_remove(next);
-        self.collapsed_endpoints.remove(&target.location.endpoint);
-        if self.endpoints.len() == 1
-            && let Some(workspace_id) = target.location.workspace_id()
-        {
-            self.reveal_workspace(&workspace_id);
-        }
-        self.navigate_workspace_id = Some(target);
-        self.reveal_navigation_workspace =
-            self.endpoints.len() > 1 || self.snapshot.is_none() || self.pane_surface().is_none();
+        self.endpoints.collapsed.remove(&target.location.endpoint);
+        self.mode.set_preview(Some(target));
+        self.sidebar_scroll.reveal_selected_workspace();
     }
 
     pub(in crate::shell) fn accept_navigate_workspace(&mut self, outcome: &mut ClientShellInput) {
-        let Some(target) = self.navigate_workspace_id.clone() else {
-            self.mode = self.copy_or_terminal_mode();
+        let Some(target) = self.mode.preview().cloned() else {
+            self.mode.set(self.copy_or_terminal_mode());
             outcome.repaint = true;
             return;
         };
@@ -193,8 +210,7 @@ impl ClientShellState {
             return;
         }
         if self.focus_or_activate(target.location.clone(), outcome) {
-            self.mode = ClientShellMode::Terminal;
-            self.navigate_workspace_id = None;
+            self.mode.set(ClientShellMode::Terminal);
         }
         outcome.repaint = true;
     }

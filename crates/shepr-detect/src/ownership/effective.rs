@@ -48,10 +48,10 @@ impl AgentOwnership {
     pub fn state_owner(&self) -> EffectiveStateSource {
         self.effective_row().source
     }
-    pub fn last_agent_state_change_seq(&self) -> Option<u64> {
+    pub fn last_agent_state_change_seq(&self) -> Option<shepr_agent::StateChangeSeq> {
         self.last_agent_state_change_seq
     }
-    pub fn record_agent_state_change_seq(&mut self, seq: u64) {
+    pub fn record_agent_state_change_seq(&mut self, seq: shepr_agent::StateChangeSeq) {
         self.last_agent_state_change_seq = Some(seq);
     }
 }
@@ -126,7 +126,7 @@ mod tests {
             EffectiveStateSource::FullLifecycleHook
         );
         assert!(ownership.full_lifecycle_hook_authority_active());
-        ownership.set_pane_process_exit_at(shepr_platform::ChildExitReason::Exited, now);
+        ownership.set_pane_process_exit_at(false, now);
         assert_eq!(ownership.state_owner(), EffectiveStateSource::ProcessExit);
         assert!(!ownership.full_lifecycle_hook_authority_active());
     }

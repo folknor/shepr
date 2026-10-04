@@ -32,7 +32,7 @@ impl CellSpan {
 /// zero-width marks use display columns, then prefers structured spans that
 /// users expect to copy whole (URLs and quoted paths), and finally falls back
 /// to a separator-delimited token.
-pub(crate) fn word_bounds_at_column(row: &str, col: u16) -> Option<(u16, u16)> {
+pub(super) fn word_bounds_at_column(row: &str, col: u16) -> Option<(u16, u16)> {
     // Map the row into display cells before doing any word-boundary work.
     let cells = text_cells(row);
     let clicked_idx = cell_index_at_column(&cells, col)?;
@@ -210,25 +210,7 @@ fn starts_with_chars(cells: &[TextCell], prefix: &str) -> bool {
 }
 
 fn is_word_separator(ch: char) -> bool {
-    ch.is_whitespace()
-        || matches!(
-            ch,
-            '|' | '('
-                | ')'
-                | '['
-                | ']'
-                | '{'
-                | '}'
-                | ','
-                | ';'
-                | '!'
-                | '（'
-                | '）'
-                | '：'
-                | '、'
-                | '。'
-                | '，'
-        )
+    shepr_term::word::is_token_delimiter(ch)
 }
 
 fn trim_token_edges(cells: &[TextCell], span: CellSpan) -> Option<CellSpan> {

@@ -7,13 +7,13 @@ fn surface_set(active: bool) -> Box<EndpointCommand> {
     ))
 }
 
-fn request_active_surface(server: &mut HeadlessServer, client_id: u64, request_id: &str) {
+fn request_active_surface(server: &mut HeadlessServer, client_id: u64) {
     let boot_id = server.client_shell_boot_id.clone();
     assert!(
         server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id: client_id.into(),
             boot_id,
-            request_id: request_id.into(),
+            request_id: shepr_protocol::RequestId::allocate(),
             command: surface_set(true),
         })
     );
@@ -27,17 +27,17 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     let mut server = test_headless_server();
     let mut input_rx = install_focused_test_runtime(&mut server, b"");
     let pane_id = focused_test_pane(&server);
-    let workspace_id = server
-        .app
-        .public_workspace_id(0)
-        .expect("test precondition");
+    let workspace_id = server.app.state().ws(0).id();
     let (writer, control_rx, render_rx) = test_client_writer();
     let client_id = ClientId::test_new(52);
 
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
-            geometry: shepr_core::geometry::HostGeometry::new(101, 37, 9, 18, true),
+            geometry: shepr_core::geometry::HostGeometry::new(
+                shepr_core::geometry::GridSize::clamped(101, 37),
+                shepr_core::geometry::HostCell::from_host(9, 18, true)
+            ),
             mouse_capture: true,
             surface_active: false,
             outbox: writer,
@@ -46,7 +46,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     let _ = client_shell_snapshot(&control_rx);
     assert_eq!(server.clients.foreground_client_id(), None);
     // A metadata-only connection sizes no workspace.
-    assert_eq!(server.app.state.workspace_area(0), None);
+    assert_eq!(server.app.state().ws(0).spawn_geometry(), None);
 
     server.render_now();
     assert!(render_rx.try_recv().is_err());
@@ -73,7 +73,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         !server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
-            request_id: "inactive-mutation".into(),
+            request_id: shepr_protocol::RequestId::allocate(),
             command: Box::new(EndpointCommand::WorkspaceFocus(
                 shepr_protocol::command::WorkspaceTarget { workspace_id },
             )),
@@ -106,7 +106,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
-            request_id: "activate-surface".into(),
+            request_id: shepr_protocol::RequestId::allocate(),
             command: surface_set(true),
         })
     );
@@ -124,8 +124,13 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     };
     assert_eq!(server.clients.foreground_client_id(), Some(client_id));
     assert_eq!(
-        server.app.state.workspace_area(0),
-        Some(ratatui::layout::Rect::new(0, 0, 101, 37))
+        server
+            .app
+            .state()
+            .ws(0)
+            .spawn_geometry()
+            .map(|geometry| geometry.area),
+        Some(Rect::new(0, 0, 101, 37))
     );
 
     server.render_now();
@@ -134,18 +139,18 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     else {
         panic!("expected pane surface");
     };
-    assert_eq!((surface.frame.width, surface.frame.height), (101, 37));
+    assert_eq!((surface.frame.width(), surface.frame.height()), (101, 37));
     assert!(surface.projection_revision >= activation_floor);
     assert_eq!(
         surface.surface_revision,
-        shepr_protocol::SurfaceRevision::new(1)
+        shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(1)
     );
 
     assert!(
         server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
-            request_id: "deactivate-surface".into(),
+            request_id: shepr_protocol::RequestId::allocate(),
             command: surface_set(false),
         })
     );
@@ -154,24 +159,26 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     let plan = server.render_plan(false);
     server.render_pass(&plan, &HashSet::new());
     assert!(server.clients.contains_key(&client_id));
-    let (_, runtime_pane_id) = server
+    let runtime_pane_id = server
         .app
-        .resolve_pane_id(&surface.panes[0].pane_id)
-        .expect("test precondition");
+        .state()
+        .resolve_pane(&surface.panes[0].pane_id)
+        .expect("test precondition")
+        .id();
     server
         .app
-        .state
-        .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, runtime_pane_id)
+        .pane_runtime(runtime_pane_id)
         .expect("test precondition")
         .test_process_pty_bytes(b"REACTIVATED");
     assert!(server.try_render_patches(&std::collections::HashSet::from([runtime_pane_id])));
     assert!(render_rx.try_recv().is_err());
 
+    let reactivate = shepr_protocol::RequestId::allocate();
     assert!(
         server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id,
-            request_id: "reactivate-surface".into(),
+            request_id: reactivate.clone(),
             command: surface_set(true),
         })
     );
@@ -182,7 +189,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
         match message {
             ServerMessage::ClientShellEndpointResponse {
                 request_id, result, ..
-            } if request_id == "reactivate-surface" => break result,
+            } if request_id == reactivate => break result,
             ServerMessage::EndpointSnapshot(_)
             | ServerMessage::ClientShellEndpointResponse { .. } => continue,
             other => panic!("unexpected surface reactivation message: {other:?}"),
@@ -206,7 +213,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert!(surface.projection_revision >= reactivation_floor);
     assert_eq!(
         surface.surface_revision,
-        shepr_protocol::SurfaceRevision::new(2)
+        shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(2)
     );
     shutdown_test_runtimes(&mut server);
 }
@@ -235,7 +242,10 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id: ClientId::test_new(8),
-            geometry: shepr_core::geometry::HostGeometry::new(100, 35, 0, 0, false),
+            geometry: shepr_core::geometry::HostGeometry::new(
+                shepr_core::geometry::GridSize::clamped(100, 35),
+                shepr_core::geometry::HostCell::Unknown
+            ),
             mouse_capture: false,
             surface_active: false,
             outbox: writer,
@@ -245,7 +255,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         .recv()
         .expect("background client snapshot");
 
-    request_active_surface(&mut server, 8, "activate-background-surface");
+    request_active_surface(&mut server, 8);
     let _ = background_control
         .recv()
         .expect("background surface activation response");
@@ -257,13 +267,13 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         server.clients[&ClientId::test_new(7)]
             .shell_state()
             .outer_terminal_focus,
-        Some(true)
+        crate::server::clients::OuterFocus::Focused
     );
     assert_eq!(
         server.clients[&ClientId::test_new(8)]
             .shell_state()
             .outer_terminal_focus,
-        None
+        crate::server::clients::OuterFocus::Unreported
     );
     assert_eq!(
         server.app.test_runtime(pane_id).current_size(),
@@ -283,13 +293,13 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         server.clients[&ClientId::test_new(7)]
             .shell_state()
             .outer_terminal_focus,
-        Some(true)
+        crate::server::clients::OuterFocus::Focused
     );
     assert_eq!(
         server.clients[&ClientId::test_new(8)]
             .shell_state()
             .outer_terminal_focus,
-        Some(false)
+        crate::server::clients::OuterFocus::Unfocused
     );
     assert_eq!(
         server.app.test_runtime(pane_id).current_size(),
@@ -300,7 +310,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         Some(ClientId::test_new(7))
     );
 
-    request_active_surface(&mut server, 8, "synchronize-background-surface");
+    request_active_surface(&mut server, 8);
     let _ = background_control
         .recv()
         .expect("background view reassertion response");
@@ -331,10 +341,13 @@ async fn focused_surface_reassertion_reclaims_workspace_geometry() {
 
     let (other_control, _) = connect_test_shell(&mut server, 7, 68, 17);
     let _ = other_control.recv().expect("other client snapshot");
-    assert!(server.claim_shell_workspace_geometry(ClientId::test_new(7), false));
+    assert!(server.claim_shell_workspace_geometry(
+        ClientId::test_new(7),
+        client_views::PendingResumes::Defer
+    ));
     assert_eq!(server.app.test_runtime(pane_id).current_size(), (17, 67));
 
-    request_active_surface(&mut server, 8, "reassert-focused-surface");
+    request_active_surface(&mut server, 8);
     let _ = focused_control
         .recv()
         .expect("focused surface reassertion response");
@@ -343,7 +356,7 @@ async fn focused_surface_reassertion_reclaims_workspace_geometry() {
         server.clients[&ClientId::test_new(8)]
             .shell_state()
             .outer_terminal_focus,
-        Some(true)
+        crate::server::clients::OuterFocus::Focused
     );
     assert_eq!(server.app.test_runtime(pane_id).current_size(), (35, 99));
     assert_eq!(
@@ -357,11 +370,13 @@ async fn focused_surface_reassertion_reclaims_workspace_geometry() {
 async fn navigation_reapplies_geometry_for_the_workspace_left_behind() {
     let mut server = test_headless_server();
     let first = shepr_mux::workspace::Workspace::test_new("first");
-    let first_pane = first.root_pane();
+    let first_pane = first.tree().root();
     let second = shepr_mux::workspace::Workspace::test_new("second");
-    let second_pane = second.root_pane();
-    server.app.state.test_set_workspaces(vec![first, second]);
-    server.app.state.ensure_test_terminals();
+    let second_pane = second.tree().root();
+    server
+        .app
+        .test_state_mut()
+        .test_set_workspaces(vec![first, second]);
     server.app.insert_test_runtime(
         first_pane,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
@@ -370,17 +385,22 @@ async fn navigation_reapplies_geometry_for_the_workspace_left_behind() {
         second_pane,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"SECOND"),
     );
-    server.app.state.set_bookmark_index(Some(0));
-    let first_id = server.app.public_workspace_id(0).expect("first workspace");
-    let second_id = server.app.public_workspace_id(1).expect("second workspace");
+    server.app.test_state_mut().seed_bookmark_index(Some(0));
+    let first_id = server.app.state().ws(0).id();
+    let second_id = server.app.state().ws(1).id();
 
     let (first_control, _first_render) = connect_test_shell(&mut server, 7, 200, 60);
     let _ = client_shell_snapshot(&first_control);
     let (second_control, _second_render) = connect_test_shell(&mut server, 8, 100, 30);
     let _ = client_shell_snapshot(&second_control);
     assert_eq!(
-        server.app.state.workspace_area(0),
-        Some(ratatui::layout::Rect::new(0, 0, 200, 60))
+        server
+            .app
+            .state()
+            .ws(0)
+            .spawn_geometry()
+            .map(|geometry| geometry.area),
+        Some(Rect::new(0, 0, 200, 60))
     );
 
     // The destination already remembers client 7 as its controller by the
@@ -403,8 +423,13 @@ async fn navigation_reapplies_geometry_for_the_workspace_left_behind() {
         ))
     );
     assert_eq!(
-        server.app.state.workspace_area(0),
-        Some(ratatui::layout::Rect::new(0, 0, 100, 30))
+        server
+            .app
+            .state()
+            .ws(0)
+            .spawn_geometry()
+            .map(|geometry| geometry.area),
+        Some(Rect::new(0, 0, 100, 30))
     );
     assert_eq!(server.app.test_runtime(first_pane).current_size(), (30, 99));
     shutdown_test_runtimes(&mut server);
@@ -424,7 +449,9 @@ async fn unchanged_geometry_application_does_not_force_surface_recompute() {
     );
     let applied_size = server.app.test_runtime(pane_id).current_size();
 
-    assert!(!server.reapply_controlled_shell_workspace_geometry(false));
+    assert!(
+        !server.reapply_controlled_shell_workspace_geometry(client_views::PendingResumes::Defer)
+    );
     assert!(
         !server.clients[&ClientId::test_new(7)]
             .render_state
@@ -445,20 +472,25 @@ async fn replay_host_effects_replays_modes_and_title() {
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
-            geometry: shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
+            geometry: shepr_core::geometry::HostGeometry::new(
+                shepr_core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::HostCell::from_host(8, 16, false)
+            ),
             mouse_capture: true,
             surface_active: true,
             outbox: writer,
         })
     );
     let _ = client_shell_snapshot(&control_rx);
-    server.app.configure_window_title("target title");
+    server.window_title = crate::ui::WindowTitleSettings::for_test("target title");
     {
         let client = server
             .clients
             .get_mut(&client_id)
             .expect("test precondition");
-        client.outbox.tell_mouse_capture(false, false);
+        client
+            .outbox
+            .tell_mouse_capture(shepr_term::mouse::HostMouseCapture::Off);
         client.outbox.tell_keyboard_report_all(false);
     }
     for _ in 0..2 {
@@ -470,7 +502,7 @@ async fn replay_host_effects_replays_modes_and_title() {
         server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id,
-            request_id: "post-commit-reassert".into(),
+            request_id: shepr_protocol::RequestId::allocate(),
             command: surface_set(true),
         })
     );
@@ -479,9 +511,14 @@ async fn replay_host_effects_replays_modes_and_title() {
         .recv()
         .expect("typed surface reassertion acknowledgement");
     server.test_handle_server_event(ServerEvent::ShellReplayHostEffects { client_id });
-    assert_eq!(
-        server.clients[&client_id].outbox.told_mouse_capture(),
-        Some(true),
+    assert!(
+        matches!(
+            server.clients[&client_id].outbox.told_mouse_capture(),
+            Some(
+                shepr_term::mouse::HostMouseCapture::Cells
+                    | shepr_term::mouse::HostMouseCapture::Pixels
+            )
+        ),
         "the committed target replays its host mode"
     );
     assert_eq!(
@@ -491,11 +528,13 @@ async fn replay_host_effects_replays_modes_and_title() {
     let messages = (0..3)
         .map(|_| read_server_message(control_rx.recv().expect("reassertion effect")))
         .collect::<Vec<_>>();
-    assert!(
-        messages
-            .iter()
-            .any(|message| matches!(message, ServerMessage::MouseCapture { enabled: true, .. }))
-    );
+    assert!(messages.iter().any(|message| matches!(
+        message,
+        ServerMessage::MouseCapture {
+            mode: shepr_term::mouse::HostMouseCapture::Cells
+                | shepr_term::mouse::HostMouseCapture::Pixels
+        }
+    )));
     assert!(messages.iter().any(|message| matches!(
         message,
         ServerMessage::ClientShellKeyboardReportAll { enabled: false }
@@ -518,7 +557,10 @@ async fn replay_host_effects_is_ignored_by_a_non_viewed_connection() {
     let client_id = ClientId::test_new(64);
     server.test_handle_server_event(ServerEvent::ShellConnected {
         client_id,
-        geometry: shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
+        geometry: shepr_core::geometry::HostGeometry::new(
+            shepr_core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::HostCell::from_host(8, 16, false),
+        ),
         mouse_capture: true,
         surface_active: false,
         outbox: writer,

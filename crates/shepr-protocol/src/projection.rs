@@ -1,6 +1,10 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
+/// The agent state-change order the projection carries, re-exported so a
+/// consumer of the wire type does not link the agent crate for it.
+pub use shepr_agent::StateChangeSeq;
+
 /// Initial resource projection used by the client-owned shell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellSnapshot {
@@ -53,5 +57,5 @@ pub struct ClientShellAgent {
     pub terminal_title: Option<String>,
     pub terminal_title_stripped: Option<String>,
     pub agent_status: AgentStatus,
-    pub state_change_seq: u64,
+    pub state_change_seq: StateChangeSeq,
 }

@@ -73,11 +73,8 @@ mod tests {
     use super::*;
     use shepr_test_support::{IsolatedEnv, ScratchDir};
 
-    fn app() -> App {
-        App::new(
-            &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Suspended,
-        )
+    fn app() -> crate::app::TestApp {
+        App::new(&shepr_config::ServerConfig::default())
     }
 
     /// The prepare and worker halves, as the server loop runs them.

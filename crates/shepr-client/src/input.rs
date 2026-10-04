@@ -12,9 +12,13 @@ use shepr_termio::input::raw_input::RawInputFramer;
 use tokio::sync::mpsc;
 
 use crate::events::{ClientLoopEvent, ParsedHostInput};
-use crate::limits::HOST_INPUT_READ_CHUNK_BYTES;
 use crate::terminal_geometry::SharedHostGeometry;
 use crate::terminal_setup::HostMouseInputProbe;
+
+/// Scratch buffer size for each read from the outer terminal.
+///
+/// The chunk keeps blocking reads page-sized and bounds each temporary read buffer.
+pub(crate) const HOST_INPUT_READ_CHUNK_BYTES: usize = 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProbeAvailability {
@@ -220,8 +224,8 @@ fn flush_idle_input(
     if !framer.has_pending_input() && pending_palette.is_empty() {
         return true;
     }
-    let timeout_ms = idle_flush_timeout_ms(framer, host_mouse_probe.capture_active());
-    if stdin_read_ready(stdin_fd, timeout_ms) != Some(false) {
+    let idle_wait = idle_flush_timeout(framer, host_mouse_probe.capture_active());
+    if stdin_read_ready(stdin_fd, idle_wait) != StdinReadiness::TimedOut {
         return true;
     }
     let chunks = framer.flush_timeout_framed();
@@ -239,7 +243,7 @@ fn flush_idle_input(
         return false;
     }
     if has_pending_after_flush
-        && stdin_read_ready(stdin_fd, framer.held_input_flush_timeout_ms()) == Some(false)
+        && stdin_read_ready(stdin_fd, framer.held_input_flush_timeout()) == StdinReadiness::TimedOut
     {
         let chunks = framer.flush_timeout_framed();
         if !framer.has_pending_input() {
@@ -350,29 +354,41 @@ fn flush_unix_palette_input(
         .is_ok()
 }
 
-fn idle_flush_timeout_ms(
+fn idle_flush_timeout(
     framer: &shepr_termio::input::raw_input::RawInputFramer,
     host_mouse_capture_active: bool,
-) -> i32 {
+) -> std::time::Duration {
     if !host_mouse_capture_active {
-        return shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS;
+        return shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT;
     }
     if framer.has_pending_lone_escape() || framer.has_pending_incomplete_mouse_sequence() {
-        shepr_termio::limits::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
+        shepr_termio::limits::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT
     } else if framer.has_pending_csi_introducer() {
         // A mouse report split after `ESC [` is still ambiguous with legacy Alt+[.
-        shepr_termio::limits::MOUSE_ACTIVE_CSI_INTRODUCER_FLUSH_TIMEOUT_MS
+        shepr_termio::limits::MOUSE_ACTIVE_CSI_INTRODUCER_FLUSH_TIMEOUT
     } else {
-        shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+        shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT
     }
 }
 
-fn stdin_read_ready(stdin_fd: RawFd, timeout_ms: i32) -> Option<bool> {
-    poll_read_ready(stdin_fd, timeout_ms)
+/// What waiting for stdin input found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StdinReadiness {
+    /// Input (or a hangup the next read reports) is waiting.
+    Ready,
+    /// The wait elapsed with no input.
+    TimedOut,
+    /// Polling failed; the caller treats it like readiness and lets the read
+    /// report the error.
+    PollFailed,
 }
 
-fn poll_read_ready(fd: i32, timeout_ms: i32) -> Option<bool> {
-    shepr_platform::poll_fd_readable(fd, timeout_ms).ok()
+fn stdin_read_ready(stdin_fd: RawFd, wait: std::time::Duration) -> StdinReadiness {
+    match shepr_platform::poll_fd_readable(stdin_fd, wait) {
+        Ok(true) => StdinReadiness::Ready,
+        Ok(false) => StdinReadiness::TimedOut,
+        Err(_) => StdinReadiness::PollFailed,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -487,9 +503,8 @@ mod tests {
 
     #[test]
     fn raw_input_idle_flush_timeout_keeps_escape_responsive() {
-        let timeout_ms =
-            std::hint::black_box(shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS);
-        assert!(timeout_ms <= 20);
+        let timeout = std::hint::black_box(shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT);
+        assert!(timeout <= std::time::Duration::from_millis(20));
     }
 
     #[test]
@@ -506,30 +521,29 @@ mod tests {
         assert!(csi.push_framed(b"\x1b[").is_empty());
 
         assert_eq!(
-            idle_flush_timeout_ms(&csi, true),
-            shepr_termio::limits::MOUSE_ACTIVE_CSI_INTRODUCER_FLUSH_TIMEOUT_MS
+            idle_flush_timeout(&csi, true),
+            shepr_termio::limits::MOUSE_ACTIVE_CSI_INTRODUCER_FLUSH_TIMEOUT
         );
         for framer in [&escape, &sgr_mouse, &default_mouse, &unrelated, &csi] {
             assert_eq!(
-                idle_flush_timeout_ms(framer, false),
-                shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+                idle_flush_timeout(framer, false),
+                shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT
             );
         }
         for framer in [&escape, &sgr_mouse, &default_mouse] {
             assert_eq!(
-                idle_flush_timeout_ms(framer, true),
-                shepr_termio::limits::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS
+                idle_flush_timeout(framer, true),
+                shepr_termio::limits::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT
             );
         }
         assert_eq!(
-            idle_flush_timeout_ms(&unrelated, true),
-            shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS
+            idle_flush_timeout(&unrelated, true),
+            shepr_termio::limits::RAW_INPUT_IDLE_FLUSH_TIMEOUT
         );
 
-        let mouse_timeout_ms = std::hint::black_box(
-            shepr_termio::limits::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS,
-        );
-        assert!(mouse_timeout_ms > 100);
+        let mouse_timeout =
+            std::hint::black_box(shepr_termio::limits::MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT);
+        assert!(mouse_timeout > std::time::Duration::from_millis(100));
     }
 
     type HostFramer = shepr_termio::input::raw_input::RawInputFramer;
@@ -547,17 +561,13 @@ mod tests {
         gap: std::time::Duration,
         next: &[u8],
     ) -> Vec<Vec<u8>> {
-        let first_wait = std::time::Duration::from_millis(
-            u64::try_from(idle_flush_timeout_ms(framer, mouse_capture)).unwrap_or_default(),
-        );
+        let first_wait = idle_flush_timeout(framer, mouse_capture);
         let mut chunks = Vec::new();
         if gap >= first_wait {
             let flushed = framer.flush_timeout_framed();
             let has_pending_after_flush = framer.has_pending_input();
             chunks.extend(raw_bytes(flushed));
-            let second_wait = std::time::Duration::from_millis(
-                u64::try_from(framer.held_input_flush_timeout_ms()).unwrap_or_default(),
-            );
+            let second_wait = framer.held_input_flush_timeout();
             if has_pending_after_flush && gap >= first_wait + second_wait {
                 chunks.extend(raw_bytes(framer.flush_timeout_framed()));
             }

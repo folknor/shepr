@@ -10,8 +10,6 @@ pub mod git {
     /// A Git status the refresh answered for one workspace.
     pub type WorkspaceGitStatus = RefreshedStatus<shepr_protocol::WorkspaceId>;
 }
-mod limits;
-pub(crate) mod logging;
 pub mod pane;
 pub mod persist;
 pub mod render_signal;

@@ -1,7 +1,7 @@
 use shepr_core::env::EnvVar;
 
 /// Whether clipboard writes should travel through the host terminal.
-pub fn prefers_osc52_clipboard() -> bool {
+pub(crate) fn prefers_osc52_clipboard() -> bool {
     prefers_osc52_clipboard_for_env(
         crate::env_present(EnvVar::SshConnection),
         crate::env_present(EnvVar::SshTty),

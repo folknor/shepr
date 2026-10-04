@@ -9,7 +9,7 @@ use shepr_protocol::{AgentStatus, PublicPaneId, WorkspaceId};
 /// `HeadlessServer::snapshot_from_session` projects; the server rebuilds it on the loop, so a
 /// field nothing reads costs every rebuild.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct SessionSnapshot {
+pub(crate) struct ProjectionInput {
     pub(crate) workspaces: Vec<WorkspaceInfo>,
     pub(crate) panes: Vec<SnapshotPane>,
     pub(crate) agents: Vec<SnapshotAgent>,
@@ -32,46 +32,43 @@ pub(crate) struct SnapshotAgent {
     pub(crate) terminal_title: Option<String>,
     pub(crate) terminal_title_stripped: Option<String>,
     pub(crate) agent_status: AgentStatus,
-    pub(crate) state_change_seq: u64,
+    pub(crate) state_change_seq: shepr_agent::StateChangeSeq,
 }
 
 impl App {
     /// The session's workspaces, panes and agents, which the server
     /// projects into each client shell's snapshot.
-    pub(crate) fn session_snapshot(&self) -> SessionSnapshot {
+    pub(crate) fn projection_input(&self) -> ProjectionInput {
         let mut workspaces = Vec::new();
         let mut panes = Vec::new();
-        for (ws_idx, ws) in self.state.workspaces.iter().enumerate() {
-            workspaces.extend(self.workspace_info(ws_idx));
+        for ws in self.state.workspaces.iter() {
+            workspaces.extend(self.workspace_info(&ws.id()));
             panes.extend(
-                ws.layout()
+                ws.tree()
                     .pane_ids()
                     .into_iter()
-                    .filter_map(|pane_id| self.snapshot_pane(ws_idx, pane_id)),
+                    .filter_map(|pane_id| self.state.pane(pane_id))
+                    .map(|pane| self.snapshot_pane(&pane)),
             );
         }
 
-        SessionSnapshot {
+        ProjectionInput {
             workspaces,
             panes,
             agents: self.collect_agent_infos(),
         }
     }
 
-    fn snapshot_pane(
-        &self,
-        ws_idx: usize,
-        pane_id: shepr_core::layout::PaneId,
-    ) -> Option<SnapshotPane> {
-        let ws = self.state.workspaces.get(ws_idx)?;
-        let pane = ws.pane_state(pane_id)?;
-        let terminal = self.state.terminals.get(&pane.attached_terminal_id)?;
-        Some(SnapshotPane {
-            pane_id: self.public_pane_id(ws_idx, pane_id)?,
-            workspace_id: self.public_workspace_id(ws_idx)?,
+    fn snapshot_pane(&self, pane: &shepr_mux::workspace::PaneRef<'_>) -> SnapshotPane {
+        let ws = pane.workspace();
+        let pane_id = pane.id();
+        let terminal = pane.terminal();
+        SnapshotPane {
+            pane_id: pane.public_id(),
+            workspace_id: ws.id(),
             label: terminal.manual_label().map(str::to_owned),
             cwd: ws
-                .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
+                .cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(shepr_protocol::RemotePath::from),
             // Runs on the server main loop once per pane for every session
             // snapshot the client shells are projected from, so the runtime
@@ -80,7 +77,7 @@ impl App {
             foreground_cwd: ws
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(shepr_protocol::RemotePath::from),
-        })
+        }
     }
 }
 
@@ -90,21 +87,19 @@ mod tests {
     use shepr_config::ServerConfig;
     use shepr_mux::workspace::Workspace;
 
-    fn app_with_two_panes() -> crate::app::App {
-        let mut app =
-            crate::app::App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+    fn app_with_two_panes() -> crate::app::TestApp {
+        let mut app = crate::app::App::new(&ServerConfig::default());
         let mut workspace = Workspace::test_new("snapshot");
         workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.test_set_workspaces(vec![workspace]);
-        app.state.ensure_test_terminals();
-        app.state.set_bookmark_index(Some(0));
+        app.state.seed_bookmark_index(Some(0));
         app
     }
 
     #[test]
-    fn session_snapshot_lists_the_session_without_naming_a_focus() {
+    fn projection_input_lists_the_session_without_naming_a_focus() {
         let app = app_with_two_panes();
-        let snapshot = app.session_snapshot();
+        let snapshot = app.projection_input();
 
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.panes.len(), 2);

@@ -24,6 +24,24 @@ pub(crate) const MAX_ABANDONED_GIT_REFRESH_THREADS: usize = 4;
 /// interval keeps exit detection responsive without a busy loop.
 pub(crate) const GIT_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
+/// How long a probe that timed out waits for its killed child to be reaped
+/// before the child is handed to the background reaper. A child in an
+/// uninterruptible wait on a hung mount ignores SIGKILL until the kernel call
+/// returns, so the caller must not wait for it.
+pub(crate) const GIT_KILL_REAP_GRACE: Duration = Duration::from_millis(250);
+
+/// Most killed Git children the background reaper holds at once. A child past
+/// it is dropped unreaped, a zombie until shepr exits, rather than growing
+/// without bound under a mount that stays hung.
+pub(crate) const MAX_UNREAPED_GIT_CHILDREN: usize = 16;
+
+/// How often the background reaper checks the children it holds.
+pub(crate) const UNREAPED_GIT_CHILD_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Bytes read from a Git probe's output pipe per read call. Large enough that
+/// typical status output drains in a few reads.
+pub(crate) const GIT_PIPE_READ_CHUNK_BYTES: usize = 8192;
+
 /// Maximum bytes read from one loose Git ref file; far above any real ref,
 /// it bounds the read of a corrupt or hostile file.
 pub(crate) const MAX_GIT_REF_FILE_BYTES: usize = 64 * 1024;

@@ -31,7 +31,10 @@ struct Observation {
 
 impl Harness {
     fn new(width: u16, height: u16) -> Self {
-        let terminal = shepr_vt::Terminal::new(width, height, 256);
+        let terminal = shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(width, height),
+            shepr_core::scrollback::ScrollbackBudget::new(256),
+        );
         Self {
             pane: PaneTerminal::new(terminal),
             width,
@@ -52,9 +55,14 @@ impl Harness {
     }
 
     fn resize(&mut self, width: u16, height: u16) {
-        for reply in self.pane.resize(shepr_core::geometry::PaneGeometry::new(
-            width, height, 8, 16,
-        )) {
+        for reply in self
+            .pane
+            .resize(shepr_core::geometry::PaneGeometry::with_cell(
+                width,
+                height,
+                shepr_core::geometry::CellPx::new(8, 16),
+            ))
+        {
             self.effects.replies.extend_from_slice(&reply);
         }
         self.width = width;
@@ -64,28 +72,29 @@ impl Harness {
     fn full_frame(&self) -> FrameData {
         // A full render into a blank frame: the independent oracle the
         // incremental dirty rows are compared against.
-        let mut frame = FrameData::blank(self.width, self.height);
+        let mut frame =
+            FrameData::blank(self.width, self.height).expect("test frame size is valid");
         self.pane
             .render_into(&mut frame, Rect::new(0, 0, self.width, self.height));
         frame
     }
 
     fn full_cells(&self) -> Vec<CellData> {
-        self.full_frame().cells
+        self.full_frame().cells().to_vec()
     }
 
     /// Every linked cell as its position, symbol and target.
     fn links(&self) -> Vec<((u16, u16), String, String)> {
         let frame = self.full_frame();
         let mut links = Vec::new();
-        for (index, cell) in frame.cells.iter().enumerate() {
+        for (index, cell) in frame.cells().iter().enumerate() {
             let Some(link) = cell.hyperlink else { continue };
-            let x = u16::try_from(index % usize::from(frame.width)).expect("test precondition");
-            let y = u16::try_from(index / usize::from(frame.width)).expect("test precondition");
+            let x = u16::try_from(index % usize::from(frame.width())).expect("test precondition");
+            let y = u16::try_from(index / usize::from(frame.width())).expect("test precondition");
             links.push((
                 (x, y),
                 cell.symbol.clone(),
-                frame.hyperlinks[usize::try_from(link).expect("test precondition")].clone(),
+                frame.hyperlinks()[usize::try_from(link).expect("test precondition")].clone(),
             ));
         }
         links
@@ -333,7 +342,7 @@ fn sparse_dirty_patches_preserve_coordinates_and_clipped_rows() {
 
         let core = terminal.pane.core.lock().expect("test precondition");
         for row in core.render_state.iter_rows() {
-            assert_eq!(row.is_dirty(), height == 3 && row.y() == 4);
+            assert_eq!(row.is_dirty(), height == 3 && row.y().0 == 4);
         }
         assert_eq!(core.render_state.rows(), 6);
     }
@@ -368,7 +377,7 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
         .render_state
         .iter_rows()
         .filter(|row| row.is_dirty())
-        .map(|row| row.y())
+        .map(|row| row.y().0)
         .collect();
     assert_eq!(dirty, vec![1, 4]);
 }

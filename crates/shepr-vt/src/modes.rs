@@ -5,7 +5,8 @@
 //! for 12). Modes the parser passes through as unknown (9, 1016, 2031, 2048)
 //! are stored in the adapter's [`ExtraModes`]; the handler owns their side
 //! effects. 2026 is parser state and reads through the synchronized-output
-//! deadline.
+//! deadline (`sync_update_buffering`); DECRQM ?2026 alone answers from
+//! `ExtraModes::sync_update_in_replay`, the replay-order flag.
 //!
 //! A number missing from the table is unsupported for both query and write.
 //! That includes 47 and 1047: vte only implements the 1049 screen swap, so
@@ -15,7 +16,7 @@
 //!
 //! Number lookups scan the short static slice without allocation or locking.
 
-use super::ExtraModes;
+use super::emulator::ExtraModes;
 use alacritty_terminal::term::TermMode;
 use shepr_term::DecMode;
 
@@ -59,7 +60,7 @@ pub(super) enum Getter {
     Term(TermMode),
     CursorBlink,
     Extra(ExtraMode),
-    SynchronizedOutput,
+    SyncUpdateBuffering,
     /// Parsed but always reported as unsupported.
     Unsupported,
 }
@@ -73,7 +74,20 @@ pub(super) struct ModeSpec {
     )]
     pub(super) name: &'static str,
     pub(super) get: Getter,
-    pub(super) extra: Option<ExtraMode>,
+}
+
+impl ModeSpec {
+    /// The adapter-stored mode this entry reads, derived from `get` so the
+    /// table states it once.
+    pub(super) const fn extra(&self) -> Option<ExtraMode> {
+        match self.get {
+            Getter::Extra(extra) => Some(extra),
+            Getter::Term(_)
+            | Getter::CursorBlink
+            | Getter::SyncUpdateBuffering
+            | Getter::Unsupported => None,
+        }
+    }
 }
 
 const fn term_mode(mode: DecMode, name: &'static str, term_mode: TermMode) -> ModeSpec {
@@ -81,7 +95,6 @@ const fn term_mode(mode: DecMode, name: &'static str, term_mode: TermMode) -> Mo
         mode,
         name,
         get: Getter::Term(term_mode),
-        extra: None,
     }
 }
 
@@ -90,7 +103,6 @@ const fn extra(mode: DecMode, name: &'static str, extra: ExtraMode) -> ModeSpec 
         mode,
         name,
         get: Getter::Extra(extra),
-        extra: Some(extra),
     }
 }
 
@@ -104,7 +116,6 @@ pub(super) const MODES: &[ModeSpec] = &[
         mode: DecMode::ColumnMode,
         name: "column mode",
         get: Getter::Unsupported,
-        extra: None,
     },
     term_mode(DecMode::Origin, "origin", TermMode::ORIGIN),
     term_mode(DecMode::LineWrap, "line wrap", TermMode::LINE_WRAP),
@@ -113,7 +124,6 @@ pub(super) const MODES: &[ModeSpec] = &[
         mode: DecMode::CursorBlink,
         name: "cursor blink",
         get: Getter::CursorBlink,
-        extra: None,
     },
     term_mode(DecMode::ShowCursor, "show cursor", TermMode::SHOW_CURSOR),
     term_mode(
@@ -162,8 +172,7 @@ pub(super) const MODES: &[ModeSpec] = &[
     ModeSpec {
         mode: DecMode::SynchronizedOutput,
         name: "synchronized output",
-        get: Getter::SynchronizedOutput,
-        extra: None,
+        get: Getter::SyncUpdateBuffering,
     },
     extra(
         DecMode::ColorSchemeReport,
@@ -199,7 +208,7 @@ pub(super) fn lookup_number(number: u16) -> Option<&'static ModeSpec> {
 
 /// The adapter-stored mode for a number vte passed through as unknown.
 pub(super) fn extra_mode(number: u16) -> Option<ExtraMode> {
-    lookup_number(number)?.extra
+    lookup_number(number)?.extra()
 }
 
 #[cfg(test)]

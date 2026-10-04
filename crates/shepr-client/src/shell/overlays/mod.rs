@@ -1,988 +1,794 @@
-use crate::endpoint::ClientEndpointStatus;
-use ratatui::style::Modifier;
-use ratatui::text::Line;
-use ratatui::text::Span;
-use ratatui::widgets::Paragraph;
-use ratatui::widgets::Widget;
-mod context_menu;
-pub(in crate::shell) mod endpoint_notices;
-mod fixed_keys;
-pub(in crate::shell) mod global_menu;
-pub(in crate::shell) mod machine_diagnostics;
-pub(in crate::shell) mod notices;
-mod overlay_input;
-pub(in crate::shell) mod text_editor;
-pub(in crate::shell) mod transient_error;
+//! The modal overlays. Each lives in its own module with its state, layout, drawing and key,
+//! mouse and paste handling, and none calls a `ClientShellState` method: input returns an
+//! `OverlayEffect` that `apply_overlay_effect` applies here, together with the openers that
+//! need the snapshot and the request ledger. Typed and pasted text land in overlay editors;
+//! input content must stay out of logs and error messages here (log lengths or content-free
+//! kinds instead).
 
-use crate::endpoint::ClientEndpointId;
-use crate::shell::endpoints::endpoint_status_presentation;
-use crate::shell::navigation::location::{Location, LocationTarget};
-use crate::shell::presentation::render::{display_width, put_right_text, put_text};
-use crate::shell::state::{
-    ClientConfirmCloseOverlay, ClientContextMenuOverlay, ClientGlobalMenuOverlay,
-    ClientHelpOverlay, ClientNavigatorOverlay, ClientRenameOverlay, ClientShellOverlay,
-};
+use crossterm::event::MouseEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use shepr_config::LiveKeybindConfig;
 use shepr_config::theme::Palette;
+use shepr_term::key::TerminalKey;
+use shepr_term::scroll::ListScroll;
 
-use crate::shell::presentation::status::{panel_contrast_fg, status_glyph, status_text};
+pub(in crate::shell) mod confirm_close;
+pub(in crate::shell) mod context_menu;
+pub(in crate::shell) mod global_menu;
+pub(in crate::shell) mod help;
+pub(in crate::shell) mod navigator;
+pub(in crate::shell) mod rename;
+pub(in crate::shell) mod text_editor;
+mod widgets;
 
-use crate::limits::{
-    MAX_NAVIGATOR_OVERLAY_HEIGHT, MAX_NAVIGATOR_OVERLAY_WIDTH, MIN_CONTEXT_MENU_WIDTH,
-    MIN_NAVIGATOR_OVERLAY_HEIGHT, MIN_NAVIGATOR_OVERLAY_WIDTH,
-};
+use crate::endpoint::ClientEndpointId;
+use crate::shell::ledger::{Submitted, Ticket, Work};
+use crate::shell::navigation::aggregate_navigation::NavigatorIndex;
+use crate::shell::navigation::location::{Location, LocationTarget};
+use crate::shell::presentation::status::panel_contrast_fg;
+use crate::shell::presentation::text::put_text;
+use crate::shell::state::{ClientShellInput, ClientShellMode, ClientShellState, Repaint};
+use crate::shell::view::list::ListView;
+use crate::shell::view::resolve::overlay_context;
+use confirm_close::ConfirmCloseOverlay;
+use context_menu::{ContextMenuAction, ContextMenuOverlay, ContextMenuTarget};
+use global_menu::{GlobalMenuAction, GlobalMenuOverlay};
+use help::HelpOverlay;
+use navigator::{ClientNavigatorRow, NavigatorOverlay};
+use rename::{RenameOverlay, RenameTarget};
+use widgets::panel;
 
-/// What an overlay renderer painted into its scratch buffer, and the hit rects it produced.
+#[derive(Debug)]
+pub(in crate::shell) enum Overlay {
+    Rename(RenameOverlay),
+    ConfirmClose(ConfirmCloseOverlay),
+    Help(HelpOverlay),
+    Navigator(NavigatorOverlay),
+    ContextMenu(ContextMenuOverlay),
+    GlobalMenu(GlobalMenuOverlay),
+}
+
+fn apply_label_lookup(
+    overlay: &mut Option<Overlay>,
+    lookup: Ticket,
+    result: Option<shepr_protocol::command::WorkspaceCheckoutRootReply>,
+) -> Repaint {
+    match overlay.as_mut() {
+        Some(Overlay::Rename(rename)) => rename.apply_checkout_root(lookup, result),
+        _ => Repaint::Unchanged,
+    }
+}
+
+/// The rollback of a dropped checkout-root lookup: a prompt still holding `lookup` stops
+/// waiting for it and keeps its path-based suggestion. A prompt that is gone or was
+/// reopened since is untouched. Never needs a repaint.
+pub(in crate::shell) fn drop_label_lookup(
+    overlay: &mut Option<Overlay>,
+    lookup: Ticket,
+) -> Repaint {
+    apply_label_lookup(overlay, lookup, None)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::shell) enum OverlayKind {
+    Rename,
+    ConfirmClose,
+    Help,
+    Navigator,
+    ContextMenu,
+    GlobalMenu,
+}
+
+/// The open overlay as laid out for one frame. Each variant carries only its own overlay's
+/// geometry, so no field can belong to another overlay.
+pub(in crate::shell) enum OverlayView {
+    Rename(DialogView),
+    ConfirmClose(DialogView),
+    Help(HelpView),
+    Navigator(NavigatorView),
+    ContextMenu(MenuView),
+    GlobalMenu(MenuView),
+}
+
+pub(in crate::shell) struct DialogView {
+    pub(in crate::shell) popup: Rect,
+    pub(in crate::shell) inner: Rect,
+    /// Rename only.
+    pub(in crate::shell) input: Option<Rect>,
+    pub(in crate::shell) primary: Rect,
+    /// Rename only.
+    pub(in crate::shell) clear: Option<Rect>,
+    pub(in crate::shell) cancel: Rect,
+}
+
+pub(in crate::shell) struct HelpView {
+    pub(in crate::shell) popup: Rect,
+    pub(in crate::shell) inner: Rect,
+    pub(in crate::shell) close: Rect,
+    pub(in crate::shell) text_area: Rect,
+    pub(in crate::shell) scroll: ListScroll,
+    pub(in crate::shell) scrollbar: Option<Rect>,
+}
+
+pub(in crate::shell) struct NavigatorView {
+    pub(in crate::shell) popup: Rect,
+    pub(in crate::shell) inner: Rect,
+    pub(in crate::shell) search: Rect,
+    pub(in crate::shell) body: Rect,
+    /// Computed once per frame.
+    pub(in crate::shell) rows: Vec<ClientNavigatorRow>,
+    pub(in crate::shell) selected: usize,
+    pub(in crate::shell) list: ListView<NavigatorSlot>,
+}
+
+pub(in crate::shell) struct NavigatorSlot {
+    pub(in crate::shell) rect: Rect,
+    pub(in crate::shell) row: usize,
+}
+
+pub(in crate::shell) struct MenuView {
+    pub(in crate::shell) rect: Rect,
+    pub(in crate::shell) rows: Vec<(Rect, usize)>,
+}
+
+/// The scroll position a laid-out overlay resolved, for the commit step to store.
+pub(in crate::shell) enum OverlayScroll {
+    Navigator(usize),
+    Help(usize),
+}
+
+/// What drawing an overlay committed beyond its cells.
 ///
-/// Renderers draw into a fresh full-screen scratch buffer, never into the frame; composition
-/// commits only a successful render: the `backdrop` dimming first, then the scratch cells of
-/// the `opaque` rects (the union is one replacement). A renderer that gives up returns
-/// `None` and commits nothing.
+/// Overlays draw into a fresh full-screen scratch buffer, never into the frame; composition
+/// commits only a successful layout: the `backdrop` dimming first, then the scratch cells of
+/// the `opaque` rects (the union is one replacement).
 #[derive(Default)]
-pub(crate) struct OverlayRender {
+pub(in crate::shell) struct OverlayPaint {
     /// Absolute rects the overlay painted opaquely: every scratch cell it drew is inside one.
-    pub(crate) opaque: Vec<Rect>,
+    pub(in crate::shell) opaque: Vec<Rect>,
     /// Whether the whole frame is dimmed behind the overlay (Help, Rename, ConfirmClose).
-    pub(crate) backdrop: bool,
-    pub(crate) menu_rows: Vec<(Rect, usize)>,
-    pub(crate) primary: Rect,
-    pub(crate) clear: Rect,
-    pub(crate) cancel: Rect,
-    pub(crate) navigator_popup: Rect,
-    pub(crate) navigator_search: Rect,
-    pub(crate) navigator_rows: Vec<(Rect, Location)>,
-    pub(crate) navigator_scrollbar: Rect,
-    pub(crate) navigator_scroll_metrics: Option<shepr_term::scroll::ListScroll>,
-    pub(crate) help_popup: Rect,
-    pub(crate) help_scrollbar: Rect,
-    pub(crate) help_scroll_metrics: Option<shepr_term::scroll::ListScroll>,
-    pub(crate) help_max_scroll: usize,
-    pub(crate) cursor: Option<shepr_protocol::CursorState>,
+    pub(in crate::shell) backdrop: bool,
+    pub(in crate::shell) cursor: Option<shepr_protocol::CursorState>,
 }
 
-pub(crate) fn render_client_overlay(
-    b: &mut Buffer,
-    o: &ClientShellOverlay,
-    navigator_index: &crate::shell::navigation::aggregate_navigation::NavigatorIndex,
-    active_endpoint_id: &ClientEndpointId,
-    k: &LiveKeybindConfig,
-    p: &Palette,
-) -> Option<OverlayRender> {
-    // Help, Rename and ConfirmClose dim everything behind them; the navigator and the menus
-    // do not. The dimming is composition's to apply, and only when the render succeeds.
-    let backdrop = |rendered: Option<OverlayRender>| {
-        rendered.map(|rendered| OverlayRender {
-            backdrop: true,
-            ..rendered
-        })
-    };
-    match o {
-        ClientShellOverlay::Rename(v) => backdrop(render_rename_overlay(b, v, p)),
-        ClientShellOverlay::ConfirmClose(v) => backdrop(render_confirm_close_overlay(b, v, p)),
-        ClientShellOverlay::Help(v) => backdrop(render_help_overlay(b, v, k, p)),
-        ClientShellOverlay::Navigator(v) => {
-            render_navigator_overlay(b, v, navigator_index, active_endpoint_id, p)
+/// What laying out, drawing and handling input for an overlay reads besides the overlay itself.
+pub(in crate::shell) struct OverlayContext<'a> {
+    pub(in crate::shell) navigator_index: &'a NavigatorIndex,
+    pub(in crate::shell) active_endpoint_id: &'a ClientEndpointId,
+    pub(in crate::shell) keybinds: &'a LiveKeybindConfig,
+    pub(in crate::shell) palette: &'a Palette,
+    /// The sidebar's menu launcher on the frame on screen, for the global menu's toggle click.
+    pub(in crate::shell) global_launcher: Option<Rect>,
+}
+
+/// What an overlay's input did.
+pub(in crate::shell::overlays) enum OverlayEffect {
+    /// Consumed, nothing changed.
+    Unchanged,
+    /// Consumed; the overlay changed and the frame repaints.
+    Changed,
+    /// Close the overlay and repaint.
+    Close,
+    /// Shell work; the overlay stays open unless the command closes it.
+    Command(OverlayCommand),
+}
+
+pub(in crate::shell::overlays) enum OverlayCommand {
+    /// Activate the navigator's target; the overlay closes only if activation succeeds.
+    OpenTarget(Location),
+    /// Rename or create; the overlay closes.
+    SaveRename {
+        target: RenameTarget,
+        label: Option<String>,
+    },
+    CloseWorkspace(shepr_protocol::WorkspaceId),
+    /// Esc on the close dialog; back to Navigate when it came from there.
+    CancelClose {
+        return_to_navigate: bool,
+    },
+    GlobalMenu(GlobalMenuAction),
+    ContextMenu {
+        target: ContextMenuTarget,
+        action: ContextMenuAction,
+    },
+    /// The global menu's launcher was pressed while the menu is open.
+    ToggleGlobalMenu,
+}
+
+impl Overlay {
+    pub(in crate::shell) fn kind(&self) -> OverlayKind {
+        match self {
+            Self::Rename(_) => OverlayKind::Rename,
+            Self::ConfirmClose(_) => OverlayKind::ConfirmClose,
+            Self::Help(_) => OverlayKind::Help,
+            Self::Navigator(_) => OverlayKind::Navigator,
+            Self::ContextMenu(_) => OverlayKind::ContextMenu,
+            Self::GlobalMenu(_) => OverlayKind::GlobalMenu,
         }
-        ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
-}
 
-pub(crate) fn render_global_menu(
-    buffer: &mut Buffer,
-    menu: &ClientGlobalMenuOverlay,
-    palette: &Palette,
-) -> Option<OverlayRender> {
-    let items = crate::shell::overlays::global_menu::global_menu_items();
-    let screen = buffer.area;
-    let width = items
-        .iter()
-        .map(|(label, _)| display_width(label))
-        .max()
-        .unwrap_or(8)
-        .saturating_add(4)
-        .min(screen.width.max(1));
-    let height = u16::try_from(items.len())
-        .unwrap_or(u16::MAX)
-        .saturating_add(2)
-        .min(screen.height.max(1));
-    let launcher = menu.launcher;
-    let x = launcher
-        .right()
-        .saturating_sub(width)
-        .min(screen.right().saturating_sub(width));
-    let y = launcher.y.saturating_sub(height).max(screen.y);
-    let rect = Rect::new(x, y, width, height);
-    let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
-    let mut rows = Vec::new();
-    for (index, (label, _)) in items.iter().enumerate() {
-        let row_y = inner
-            .y
-            .saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
-        if row_y >= inner.bottom() {
-            break;
-        }
-        let row = Rect::new(inner.x, row_y, inner.width, 1);
-        let highlighted = index == menu.highlighted;
-        let style = if highlighted {
-            Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(palette.text).bg(palette.panel_bg)
-        };
-        buffer.set_style(row, style);
-        put_text(buffer, row.x, row.y, row.width, &format!(" {label}"), style);
-        rows.push((row, index));
-    }
-    Some(OverlayRender {
-        opaque: vec![rect],
-        menu_rows: rows,
-        ..OverlayRender::default()
-    })
-}
-
-pub(crate) fn render_context_menu(
-    buffer: &mut Buffer,
-    menu: &ClientContextMenuOverlay,
-    palette: &Palette,
-) -> Option<OverlayRender> {
-    let items = menu.items();
-    let screen = buffer.area;
-    let max_item_width = items
-        .iter()
-        .map(|item| display_width(item.label))
-        .max()
-        .unwrap_or(0);
-    let width = max_item_width
-        .saturating_add(4)
-        .max(MIN_CONTEXT_MENU_WIDTH)
-        .min(screen.width.max(1));
-    let height = u16::try_from(items.len())
-        .unwrap_or(u16::MAX)
-        .saturating_add(2)
-        .min(screen.height.max(1));
-    let x = menu
-        .x
-        .min(screen.x.saturating_add(screen.width.saturating_sub(width)));
-    let y = menu.y.min(
-        screen
-            .y
-            .saturating_add(screen.height.saturating_sub(height)),
-    );
-    let rect = Rect::new(x, y, width, height);
-    let inner = panel(buffer, rect, palette.accent, palette.panel_bg)?;
-    let mut rows = Vec::new();
-    for (index, item) in items.iter().enumerate() {
-        let row_y = inner
-            .y
-            .saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
-        if row_y >= inner.bottom() {
-            break;
-        }
-        let row = Rect::new(inner.x, row_y, inner.width, 1);
-        let highlighted = index == menu.highlighted;
-        let style = if highlighted {
-            Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(palette.text).bg(palette.panel_bg)
-        };
-        buffer.set_style(row, style);
-        put_text(buffer, row.x, row.y, row.width, item.label, style);
-        rows.push((row, index));
-    }
-    Some(OverlayRender {
-        opaque: vec![rect],
-        menu_rows: rows,
-        ..OverlayRender::default()
-    })
-}
-
-fn panel(
-    b: &mut Buffer,
-    a: Rect,
-    c: ratatui::style::Color,
-    bg: ratatui::style::Color,
-) -> Option<Rect> {
-    if a.width < 2 || a.height < 2 {
-        return None;
-    }
-    let background = Style::default().bg(bg).remove_modifier(Modifier::DIM);
-    let border = Style::default().fg(c).bg(bg).remove_modifier(Modifier::DIM);
-    // A panel is opaque: every cell is reset before anything is drawn, so nothing already in
-    // the buffer (pane attributes, an earlier draw) leaks into the popup.
-    for y in a.y..a.bottom() {
-        for x in a.x..a.right() {
-            if let Some(cell) = b.cell_mut((x, y)) {
-                cell.reset();
+    /// Lays the overlay out on `screen`. `None` when it does not fit: nothing is drawn then.
+    pub(in crate::shell) fn layout(
+        &self,
+        screen: Rect,
+        ctx: &OverlayContext<'_>,
+    ) -> Option<(OverlayView, Option<OverlayScroll>)> {
+        match self {
+            Self::Rename(_) => {
+                RenameOverlay::layout(screen).map(|view| (OverlayView::Rename(view), None))
             }
-            set_cell(b, x, y, " ", background);
+            Self::ConfirmClose(_) => ConfirmCloseOverlay::layout(screen)
+                .map(|view| (OverlayView::ConfirmClose(view), None)),
+            Self::Help(help) => help
+                .layout(screen, ctx)
+                .map(|(view, scroll)| (OverlayView::Help(view), Some(scroll))),
+            Self::Navigator(navigator) => navigator
+                .layout(screen, ctx)
+                .map(|(view, scroll)| (OverlayView::Navigator(view), Some(scroll))),
+            Self::ContextMenu(menu) => menu
+                .layout(screen)
+                .map(|view| (OverlayView::ContextMenu(view), None)),
+            Self::GlobalMenu(menu) => menu
+                .layout(screen)
+                .map(|view| (OverlayView::GlobalMenu(view), None)),
         }
     }
-    for x in a.x..a.right() {
-        let top = if x == a.x {
-            "┌"
-        } else if x + 1 == a.right() {
-            "┐"
-        } else {
-            "─"
-        };
-        set_cell(b, x, a.y, top, border);
-        let bottom = if x == a.x {
-            "└"
-        } else if x + 1 == a.right() {
-            "┘"
-        } else {
-            "─"
-        };
-        set_cell(b, x, a.bottom() - 1, bottom, border);
-    }
-    for y in a.y + 1..a.bottom() - 1 {
-        set_cell(b, a.x, y, "│", border);
-        set_cell(b, a.right() - 1, y, "│", border);
-    }
-    Some(Rect::new(a.x + 1, a.y + 1, a.width - 2, a.height - 2))
-}
 
-/// Writes one cell, skipping positions outside the buffer. Menus are placed from pointer
-/// positions and popups from the frame size; `Buffer` indexing would panic on any rect that
-/// reaches past the frame.
-fn set_cell(b: &mut Buffer, x: u16, y: u16, symbol: &str, style: Style) {
-    if let Some(cell) = b.cell_mut((x, y)) {
-        cell.set_symbol(symbol).set_style(style);
-    }
-}
-fn popup(a: Rect, w: u16, h: u16) -> Option<Rect> {
-    let w = w.min(a.width.saturating_sub(4));
-    let h = h.min(a.height.saturating_sub(2));
-    if w < 4 || h < 4 {
-        return None;
-    }
-    Some(Rect::new(
-        a.x + (a.width - w) / 2,
-        a.y + (a.height - h) / 2,
-        w,
-        h,
-    ))
-}
-fn button(b: &mut Buffer, r: Rect, t: &str, s: Style) {
-    b.set_style(r, s);
-    let w = display_width(t).min(r.width);
-    put_text(b, r.x + (r.width - w) / 2, r.y, w, t, s);
-}
-fn row(i: Rect, ws: &[u16], gap: u16, off: u16) -> Vec<Rect> {
-    let total = ws.iter().sum::<u16>()
-        + gap * u16::try_from(ws.len().saturating_sub(1)).unwrap_or(u16::MAX);
-    let mut x = i.x + i.width.saturating_sub(total) / 2;
-    ws.iter()
-        .map(|w| {
-            let r = Rect::new(
-                x,
-                i.y + off.min(i.height.saturating_sub(1)),
-                (*w).min(i.width.saturating_sub(x - i.x)),
-                1,
-            );
-            x += *w + gap;
-            r
-        })
-        .collect()
-}
-fn render_rename_overlay(
-    b: &mut Buffer,
-    v: &ClientRenameOverlay,
-    p: &Palette,
-) -> Option<OverlayRender> {
-    let q = popup(b.area, 56, 7)?;
-    let i = panel(b, q, p.accent, p.panel_bg)?;
-    put_text(
-        b,
-        i.x,
-        i.y,
-        i.width,
-        v.title,
-        Style::default()
-            .fg(p.text)
-            .bg(p.panel_bg)
-            .add_modifier(Modifier::BOLD),
-    );
-    let input = Rect::new(i.x, i.y + 2, i.width, 1);
-    b.set_style(input, Style::default().fg(p.text).bg(p.surface0));
-    let cursor = text_editor::render(
-        b,
-        Rect::new(input.x + 1, input.y, input.width.saturating_sub(1), 1),
-        &v.input,
-        Style::default().fg(p.text).bg(p.surface0),
-    );
-    let rs = row(i, &[8, 10, 12], 2, 3);
-    let [save, clear, cancel] = rs.as_slice() else {
-        return None;
-    };
-    button(
-        b,
-        *save,
-        " ↵ save ",
-        Style::default()
-            .fg(panel_contrast_fg(p))
-            .bg(p.accent)
-            .add_modifier(Modifier::BOLD),
-    );
-    let n = Style::default()
-        .fg(p.text)
-        .bg(p.surface0)
-        .add_modifier(Modifier::BOLD);
-    button(b, *clear, " ^c clear ", n);
-    button(b, *cancel, " esc cancel ", n);
-    Some(OverlayRender {
-        opaque: vec![q],
-        primary: *save,
-        clear: *clear,
-        cancel: *cancel,
-        navigator_popup: Rect::default(),
-        navigator_search: Rect::default(),
-        navigator_rows: Vec::new(),
-        cursor,
-        ..OverlayRender::default()
-    })
-}
-
-fn render_navigator_overlay(
-    b: &mut Buffer,
-    n: &ClientNavigatorOverlay,
-    navigator_index: &crate::shell::navigation::aggregate_navigation::NavigatorIndex,
-    active_endpoint_id: &ClientEndpointId,
-    p: &Palette,
-) -> Option<OverlayRender> {
-    let a = b.area;
-    let width = a.width.saturating_sub(4).min(MAX_NAVIGATOR_OVERLAY_WIDTH);
-    let height = a.height.saturating_sub(2).min(MAX_NAVIGATOR_OVERLAY_HEIGHT);
-    if width < MIN_NAVIGATOR_OVERLAY_WIDTH || height < MIN_NAVIGATOR_OVERLAY_HEIGHT {
-        return None;
-    }
-    let q = Rect::new(
-        a.x + (a.width - width) / 2,
-        a.y + (a.height - height) / 2,
-        width,
-        height,
-    )
-    .intersection(a);
-    let i = panel(b, q, p.accent, p.panel_bg)?;
-    put_text(
-        b,
-        q.x + 2,
-        q.y,
-        q.width.saturating_sub(4),
-        " Go to ",
-        Style::default().fg(p.accent).bg(p.panel_bg),
-    );
-    let rows = navigator_index.rows(active_endpoint_id, n);
-    let search = if n.search_focused {
-        " / ".to_owned()
-    } else if let Some(f) = n.filter {
-        format!(" / {}", f.label())
-    } else if n.query.is_empty() {
-        " / search agents and terminals".to_owned()
-    } else {
-        format!(" / {}", n.query)
-    };
-    let terminal_count = rows
-        .iter()
-        .filter(|row| matches!(row.target.target, LocationTarget::Pane(_)))
-        .count();
-    let count = format!(
-        "{terminal_count} {}",
-        if terminal_count == 1 {
-            "terminal"
-        } else {
-            "terminals"
-        }
-    );
-    put_text(
-        b,
-        i.x,
-        i.y,
-        i.width.saturating_sub(display_width(&count) + 1),
-        &search,
-        Style::default()
-            .fg(if n.search_focused { p.text } else { p.overlay0 })
-            .bg(p.panel_bg),
-    );
-    let cursor = if n.search_focused {
-        text_editor::render(
-            b,
-            Rect::new(
-                i.x + 3,
-                i.y,
-                i.width.saturating_sub(4 + display_width(&count)),
-                1,
-            ),
-            &n.query,
-            Style::default().fg(p.text).bg(p.panel_bg),
-        )
-    } else {
-        None
-    };
-    put_right_text(
-        b,
-        i,
-        i.y,
-        &count,
-        Style::default().fg(p.overlay0).bg(p.panel_bg),
-    );
-    put_text(
-        b,
-        i.x,
-        i.y + 1,
-        i.width,
-        &"─".repeat(i.width as usize),
-        Style::default().fg(p.surface1).bg(p.panel_bg),
-    );
-    let body = Rect::new(i.x, i.y + 2, i.width, i.height.saturating_sub(5));
-    let selected =
-        crate::shell::navigation::aggregate_navigation::navigator_selected_index(&rows, n)
-            .unwrap_or(0);
-    let max = rows.len().saturating_sub(body.height as usize);
-    let scroll = n
-        .scroll
-        .max(selected.saturating_sub(body.height.saturating_sub(1) as usize))
-        .min(selected)
-        .min(max);
-    let metrics = shepr_term::scroll::ListScroll::new(scroll, max, usize::from(body.height));
-    let scrollbar =
-        (max > 0 && body.width > 1).then_some(Rect::new(body.right() - 1, body.y, 1, body.height));
-    let row_width = body.width.saturating_sub(u16::from(scrollbar.is_some()));
-    let mut row_hits = Vec::new();
-    if rows.is_empty() {
-        put_text(
-            b,
-            body.x,
-            body.y,
-            body.width,
-            " No matching agents or terminals",
-            Style::default().fg(p.overlay0).bg(p.panel_bg),
-        );
-    }
-    for (ix, r) in rows
-        .iter()
-        .enumerate()
-        .skip(scroll)
-        .take(body.height as usize)
-    {
-        let rect = Rect::new(
-            body.x,
-            body.y + u16::try_from(ix - scroll).unwrap_or(u16::MAX),
-            row_width,
-            1,
-        );
-        row_hits.push((rect, r.target.clone()));
-        let st = if r.stale {
-            Style::default()
-                .fg(p.overlay0)
-                .bg(if ix == selected {
-                    p.surface0
-                } else {
-                    p.panel_bg
-                })
-                .add_modifier(Modifier::DIM)
-        } else if ix == selected {
-            Style::default()
-                .fg(panel_contrast_fg(p))
-                .bg(p.accent)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-                .fg(if matches!(r.target.target, LocationTarget::Machine) {
-                    p.subtext0
-                } else {
-                    p.text
-                })
-                .bg(p.panel_bg)
-        };
-        let is_pane = matches!(r.target.target, LocationTarget::Pane(_));
-        let connector = if !is_pane {
-            ""
-        } else if rows
-            .get(ix + 1)
-            .is_some_and(|next| matches!(next.target.target, LocationTarget::Pane(_)))
-        {
-            "├─ "
-        } else {
-            "└─ "
-        };
-        let padding = u16::from(r.depth.saturating_sub(u8::from(is_pane))) * 2 + 1;
-        let connector_x = rect.x + padding;
-        let indent = format!("{:width$}{connector}", "", width = usize::from(padding));
-        let current = if r.current { "◆ " } else { "" };
-        let glyph_option = r.status.map(|status| {
-            status_glyph(status, shepr_config::StatusIndicatorStyle::Dots, p, r.stale)
-        });
-        let status = glyph_option.map_or("", |glyph| glyph.text);
-        let status_separator = if status.is_empty() { "" } else { " " };
-        let label = format!("{indent}{current}{status}{status_separator}{}", r.label);
-        let st = if r.status.is_none() {
-            st.add_modifier(Modifier::BOLD)
-        } else {
-            st
-        };
-        b.set_style(rect, st);
-        let columns = if r.status.is_some() {
-            if rect.width >= 64 {
-                24
-            } else if rect.width >= 36 {
-                12
-            } else {
-                0
+    /// Draws the overlay into `buffer` from its view. A view of another overlay's kind draws
+    /// nothing.
+    pub(in crate::shell) fn draw(
+        &self,
+        view: &OverlayView,
+        buffer: &mut Buffer,
+        ctx: &OverlayContext<'_>,
+    ) -> OverlayPaint {
+        match (self, view) {
+            (Self::Rename(rename), OverlayView::Rename(view)) => {
+                rename.draw(buffer, view, ctx.palette)
             }
-        } else {
-            0
-        };
-        put_text(
-            b,
-            rect.x,
-            rect.y,
-            rect.width.saturating_sub(columns),
-            &label,
-            st,
-        );
-        if is_pane {
-            put_text(
-                b,
-                connector_x,
-                rect.y,
-                rect.right().saturating_sub(connector_x).min(2),
-                connector,
-                if r.stale || ix == selected {
-                    st
-                } else {
-                    st.fg(p.overlay0)
+            (Self::ConfirmClose(confirm), OverlayView::ConfirmClose(view)) => {
+                confirm.draw(buffer, view, ctx.palette)
+            }
+            (Self::Help(help), OverlayView::Help(view)) => help.draw(buffer, view, ctx),
+            (Self::Navigator(navigator), OverlayView::Navigator(view)) => {
+                navigator.draw(buffer, view, ctx)
+            }
+            (Self::ContextMenu(menu), OverlayView::ContextMenu(view)) => {
+                menu.draw(buffer, view, ctx)
+            }
+            (Self::GlobalMenu(menu), OverlayView::GlobalMenu(view)) => menu.draw(buffer, view, ctx),
+            _ => OverlayPaint::default(),
+        }
+    }
+
+    /// Handles a key. `view` is the overlay as last drawn; one of another kind, or none, means
+    /// the overlay is not on screen.
+    fn on_key(
+        &mut self,
+        key: &TerminalKey,
+        view: Option<&OverlayView>,
+        ctx: &OverlayContext<'_>,
+    ) -> OverlayEffect {
+        match self {
+            Self::Rename(rename) => rename.on_key(key),
+            Self::ConfirmClose(confirm) => confirm.on_key(key),
+            Self::Help(help) => help.on_key(
+                key,
+                match view {
+                    Some(OverlayView::Help(view)) => Some(view),
+                    _ => None,
                 },
-            );
+            ),
+            Self::Navigator(navigator) => navigator.on_key(key, ctx),
+            Self::ContextMenu(menu) => menu.on_key(key),
+            Self::GlobalMenu(menu) => menu.on_key(key),
         }
-        if let (Some(status), Some(glyph)) = (r.status, glyph_option) {
-            let prefix = format!("{indent}{current}");
-            let status_style = if ix == selected && !r.stale {
-                st
-            } else {
-                glyph.style.bg(if ix == selected {
-                    p.surface0
-                } else {
-                    p.panel_bg
-                })
-            };
-            put_text(
-                b,
-                rect.x.saturating_add(display_width(&prefix)),
-                rect.y,
-                display_width(glyph.text),
-                glyph.text,
-                status_style,
-            );
-            let meta_style = if r.stale || ix == selected {
-                st
-            } else {
-                st.fg(p.overlay0)
-            };
-            if columns > 0 {
-                put_text(
-                    b,
-                    rect.right() - columns + 1,
-                    rect.y,
-                    11,
-                    r.agent.map_or("terminal", shepr_config::ConfigAgent::label),
-                    meta_style,
-                );
+    }
+
+    /// Handles a mouse event. `view` is as for `on_key`; a press with no view of this
+    /// overlay's kind is handled as a press outside the popup.
+    fn on_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        view: Option<&OverlayView>,
+        ctx: &OverlayContext<'_>,
+    ) -> OverlayEffect {
+        match self {
+            Self::Rename(rename) => rename.on_mouse(
+                mouse,
+                match view {
+                    Some(OverlayView::Rename(view)) => Some(view),
+                    _ => None,
+                },
+            ),
+            Self::ConfirmClose(confirm) => confirm.on_mouse(
+                mouse,
+                match view {
+                    Some(OverlayView::ConfirmClose(view)) => Some(view),
+                    _ => None,
+                },
+            ),
+            Self::Help(help) => help.on_mouse(
+                mouse,
+                match view {
+                    Some(OverlayView::Help(view)) => Some(view),
+                    _ => None,
+                },
+            ),
+            Self::Navigator(navigator) => navigator.on_mouse(
+                mouse,
+                match view {
+                    Some(OverlayView::Navigator(view)) => Some(view),
+                    _ => None,
+                },
+                ctx,
+            ),
+            Self::ContextMenu(menu) => menu.on_mouse(
+                mouse,
+                match view {
+                    Some(OverlayView::ContextMenu(view)) => Some(view),
+                    _ => None,
+                },
+            ),
+            Self::GlobalMenu(menu) => menu.on_mouse(
+                mouse,
+                match view {
+                    Some(OverlayView::GlobalMenu(view)) => Some(view),
+                    _ => None,
+                },
+                ctx.global_launcher,
+            ),
+        }
+    }
+
+    /// Pasted text; whether the overlay took it.
+    pub(in crate::shell) fn on_text(&mut self, text: &str) -> bool {
+        match self {
+            Self::Rename(rename) => rename.on_text(text),
+            Self::Help(help) => help.on_text(text),
+            Self::Navigator(navigator) => navigator.on_text(text),
+            Self::ConfirmClose(_) | Self::ContextMenu(_) | Self::GlobalMenu(_) => false,
+        }
+    }
+
+    /// Whether the clipboard-paste shortcut pastes into this overlay.
+    pub(in crate::shell) fn accepts_modal_paste(&self) -> bool {
+        match self {
+            Self::Rename(_) => true,
+            Self::Help(help) => help.accepts_modal_paste(),
+            Self::Navigator(navigator) => navigator.accepts_modal_paste(),
+            Self::ConfirmClose(_) | Self::ContextMenu(_) | Self::GlobalMenu(_) => false,
+        }
+    }
+
+    /// Stores the scroll position the frame resolved. A scroll of another overlay's kind is
+    /// ignored.
+    pub(in crate::shell) fn commit_scroll(&mut self, scroll: OverlayScroll) {
+        match (self, scroll) {
+            (Self::Navigator(navigator), OverlayScroll::Navigator(start)) => {
+                navigator.scroll = start;
             }
-            if columns == 24 {
-                put_text(
-                    b,
-                    rect.right() - 11,
-                    rect.y,
-                    11,
-                    if r.agent.is_some() {
-                        status_text(status)
-                    } else {
-                        "shell"
-                    },
-                    meta_style,
-                );
-            }
-        }
-        let machine_status = if matches!(r.target.target, LocationTarget::Machine)
-            && !r.target.endpoint.is_local()
-        {
-            navigator_index.endpoint_status(&r.target.endpoint)
-        } else {
-            None
-        };
-        if let Some(status) = machine_status {
-            let (glyph, state, color) = endpoint_status_presentation(status, p);
-            let signal = if status == ClientEndpointStatus::Online {
-                glyph.to_owned()
-            } else {
-                format!("{glyph} {state}")
-            };
-            let signal_style = if ix == selected {
-                st
-            } else {
-                Style::default()
-                    .fg(color)
-                    .bg(p.panel_bg)
-                    .add_modifier(if r.stale {
-                        Modifier::DIM
-                    } else {
-                        Modifier::empty()
-                    })
-            };
-            put_right_text(b, rect, rect.y, &signal, signal_style);
-        } else if r.status.is_none() && !r.meta.is_empty() {
-            let label_width = display_width(&label).min(rect.width);
-            let meta = Rect::new(
-                rect.x.saturating_add(label_width).saturating_add(1),
-                rect.y,
-                rect.width.saturating_sub(label_width.saturating_add(1)),
-                1,
-            );
-            put_right_text(b, meta, rect.y, &r.meta, st);
+            (Self::Help(help), OverlayScroll::Help(start)) => help.scroll = start,
+            _ => {}
         }
     }
-    if let Some(track) = scrollbar {
-        crate::shell::navigation::scroll::render_scrollbar_buffer(
-            b,
-            metrics,
-            track,
-            "▕",
-            Style::default().fg(p.overlay0),
-            "▐",
-            Style::default().fg(p.overlay1),
-        );
-    }
-    if let Some(r) = rows.get(selected) {
-        put_text(
-            b,
-            i.x,
-            i.bottom() - 3,
-            i.width,
-            &format!(" {}", r.detail),
-            Style::default().fg(p.subtext0).bg(p.panel_bg),
-        );
-        put_text(
-            b,
-            i.x,
-            i.bottom() - 2,
-            i.width,
-            &format!(" {}", r.meta),
-            Style::default().fg(p.overlay0).bg(p.panel_bg),
-        );
-    }
-    put_text(
-        b,
-        i.x,
-        i.bottom() - 1,
-        i.width,
-        fixed_keys::navigator_footer(n.search_focused),
-        Style::default().fg(p.overlay0).bg(p.panel_bg),
-    );
-    Some(OverlayRender {
-        opaque: vec![q],
-        primary: Rect::default(),
-        clear: Rect::default(),
-        cancel: Rect::default(),
-        navigator_popup: q,
-        navigator_search: Rect::new(i.x, i.y, i.width, 1),
-        navigator_rows: row_hits,
-        navigator_scrollbar: scrollbar.unwrap_or_default(),
-        navigator_scroll_metrics: Some(metrics),
-        cursor,
-        ..OverlayRender::default()
-    })
 }
 
-fn help_lines(
-    keybinds: &LiveKeybindConfig,
-    query: &str,
+/// Lays a menu's rows out inside its panel.
+fn menu_view(rect: Rect, item_count: usize) -> Option<MenuView> {
+    let inner = widgets::panel_inner(rect)?;
+    let mut rows = Vec::new();
+    for index in 0..item_count {
+        let row_y = inner
+            .y
+            .saturating_add(u16::try_from(index).unwrap_or(u16::MAX));
+        if row_y >= inner.bottom() {
+            break;
+        }
+        rows.push((Rect::new(inner.x, row_y, inner.width, 1), index));
+    }
+    Some(MenuView { rect, rows })
+}
+
+/// Draws a menu's panel and rows. `label` gives the text of the item at an index.
+fn draw_menu(
+    buffer: &mut Buffer,
+    view: &MenuView,
+    highlighted_index: usize,
+    label: impl Fn(usize) -> Option<String>,
     palette: &Palette,
-) -> Vec<ratatui::text::Line<'static>> {
-    let groups = shepr_termio::input::filter_keybind_help_groups(
-        shepr_termio::input::keybind_help_groups(&keybinds.keybinds, keybinds.prefix),
-        query,
-    );
-    let key_width = groups
-        .iter()
-        .flat_map(|(_, entries)| entries.iter().map(|(key, _)| key.chars().count()))
-        .max()
-        .unwrap_or(8);
-    if groups.is_empty() {
-        let message = " no matching keybinds";
-        return vec![Line::from(Span::styled(
-            message,
-            Style::default().fg(palette.overlay1).bg(palette.panel_bg),
-        ))];
-    }
-
-    let mut lines = Vec::new();
-    for (group, entries) in groups {
-        lines.push(Line::from(Span::styled(
-            format!(" {group}"),
+) -> OverlayPaint {
+    panel(buffer, view.rect, palette.accent, palette.panel_bg);
+    for (row, index) in &view.rows {
+        let highlighted = *index == highlighted_index;
+        let style = if highlighted {
             Style::default()
-                .fg(palette.accent)
-                .bg(palette.panel_bg)
-                .add_modifier(Modifier::BOLD),
-        )));
-        for (key, label) in entries {
-            let padded_key = format!(" {key:<key_width$} ");
-            lines.push(Line::from(vec![
-                Span::styled(
-                    padded_key,
-                    Style::default()
-                        .fg(palette.mauve)
-                        .bg(palette.panel_bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    label.into_owned(),
-                    Style::default().fg(palette.text).bg(palette.panel_bg),
-                ),
-            ]));
+                .fg(panel_contrast_fg(palette))
+                .bg(palette.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(palette.text).bg(palette.panel_bg)
+        };
+        buffer.set_style(*row, style);
+        if let Some(text) = label(*index) {
+            put_text(buffer, row.x, row.y, row.width, &text, style);
         }
-        lines.push(Line::raw(""));
     }
-    lines
+    OverlayPaint {
+        opaque: vec![view.rect],
+        ..OverlayPaint::default()
+    }
 }
 
-fn render_help_overlay(
-    b: &mut Buffer,
-    h: &ClientHelpOverlay,
-    k: &LiveKeybindConfig,
-    p: &Palette,
-) -> Option<OverlayRender> {
-    use ratatui::widgets::Wrap;
-
-    let q = popup(b.area, 76, 22)?;
-    let i = panel(b, q, p.accent, p.panel_bg)?;
-    if i.width < 20 || i.height < 6 {
-        return None;
-    }
-    put_text(
-        b,
-        i.x,
-        i.y,
-        i.width,
-        "keybinds",
-        Style::default()
-            .fg(p.text)
-            .bg(p.panel_bg)
-            .add_modifier(Modifier::BOLD),
-    );
-    let close = Rect::new(i.right() - 13, i.y, 13, 1);
-    button(
-        b,
-        close,
-        if h.search_focused {
-            " esc back "
-        } else {
-            " esc close "
-        },
-        Style::default()
-            .fg(panel_contrast_fg(p))
-            .bg(p.accent)
-            .add_modifier(Modifier::BOLD),
-    );
-    let sy = i.y + 1;
-    put_text(
-        b,
-        i.x,
-        sy,
-        i.width,
-        &if h.search_focused {
-            " / ".to_owned()
-        } else {
-            " / press / to filter by command or shortcut".to_owned()
-        },
-        Style::default()
-            .fg(if h.search_focused { p.text } else { p.overlay0 })
-            .bg(p.panel_bg),
-    );
-    let cursor = if h.search_focused {
-        text_editor::render(
-            b,
-            Rect::new(i.x + 3, sy, i.width.saturating_sub(3), 1),
-            &h.query,
-            Style::default().fg(p.text).bg(p.panel_bg),
-        )
-    } else {
-        None
-    };
-
-    let body = Rect::new(i.x, i.y + 3, i.width, i.height.saturating_sub(5));
-    // The scroll range counts rows with the same word wrapper that draws them.
-    let paragraph = Paragraph::new(help_lines(k, &h.query, p)).wrap(Wrap { trim: false });
-    let viewport_rows = usize::from(body.height.max(1));
-    let needs_scrollbar = paragraph.line_count(body.width) > viewport_rows;
-    let text_area = if needs_scrollbar {
-        Rect::new(body.x, body.y, body.width.saturating_sub(1), body.height)
-    } else {
-        body
-    };
-    let total_rows = paragraph.line_count(text_area.width);
-    let max_scroll = total_rows.saturating_sub(viewport_rows);
-    let scroll = h.scroll.min(max_scroll);
-    let metrics = shepr_term::scroll::ListScroll::new(scroll, max_scroll, viewport_rows);
-    let scrollbar = needs_scrollbar.then_some(Rect::new(
-        body.right().saturating_sub(1),
-        body.y,
-        1,
-        body.height,
-    ));
-    Widget::render(
-        paragraph.scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
-        text_area,
-        b,
-    );
-    if let Some(track) = scrollbar {
-        crate::shell::navigation::scroll::render_scrollbar_buffer(
-            b,
-            metrics,
-            track,
-            "▐",
-            Style::default().fg(p.overlay0).bg(p.panel_bg),
-            "▐",
-            Style::default().fg(p.overlay1).bg(p.panel_bg),
-        );
+impl ClientShellState {
+    /// Routes a key to the open overlay and applies what it asks for.
+    pub(in crate::shell) fn route_overlay_key(
+        &mut self,
+        key: &TerminalKey,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(mut overlay) = self.overlay.take() else {
+            return;
+        };
+        let effect = {
+            let ctx = overlay_context(self);
+            overlay.on_key(key, self.presentation.shown().overlay.as_ref(), &ctx)
+        };
+        self.overlay = Some(overlay);
+        self.apply_overlay_effect(effect, outcome);
     }
 
-    put_text(
-        b,
-        i.x,
-        i.bottom() - 1,
-        i.width,
-        fixed_keys::help_footer(h.search_focused),
-        Style::default().fg(p.overlay0).bg(p.panel_bg),
-    );
-    Some(OverlayRender {
-        opaque: vec![q],
-        cancel: close,
-        help_popup: q,
-        help_scrollbar: scrollbar.unwrap_or_default(),
-        help_scroll_metrics: Some(metrics),
-        help_max_scroll: max_scroll,
-        cursor,
-        ..OverlayRender::default()
-    })
-}
-fn render_confirm_close_overlay(
-    b: &mut Buffer,
-    c: &ClientConfirmCloseOverlay,
-    p: &Palette,
-) -> Option<OverlayRender> {
-    let q = popup(b.area, 64, 6)?;
-    let i = panel(b, q, p.red, p.panel_bg)?;
-    put_text(
-        b,
-        i.x,
-        i.y,
-        i.width,
-        &format!(" {}", c.title),
-        Style::default()
-            .fg(p.red)
-            .bg(p.panel_bg)
-            .add_modifier(Modifier::BOLD),
-    );
-    put_text(
-        b,
-        i.x,
-        i.y + 1,
-        i.width,
-        &format!(" {}", c.detail),
-        Style::default().fg(p.text).bg(p.panel_bg),
-    );
-    let rs = row(i, &[13, 12], 2, 3);
-    let [ok, cancel] = rs.as_slice() else {
-        return None;
-    };
-    button(
-        b,
-        *ok,
-        " ↵ confirm ",
-        Style::default()
-            .fg(panel_contrast_fg(p))
-            .bg(p.red)
-            .add_modifier(Modifier::BOLD),
-    );
-    button(
-        b,
-        *cancel,
-        " esc cancel ",
-        Style::default()
-            .fg(p.text)
-            .bg(p.surface0)
-            .add_modifier(Modifier::BOLD),
-    );
-    Some(OverlayRender {
-        opaque: vec![q],
-        primary: *ok,
-        clear: Rect::default(),
-        cancel: *cancel,
-        navigator_popup: Rect::default(),
-        navigator_search: Rect::default(),
-        navigator_rows: Vec::new(),
-        cursor: None,
-        ..OverlayRender::default()
-    })
+    /// Routes a mouse event to the open overlay and applies what it asks for. An open overlay
+    /// takes every mouse event that reaches it.
+    pub(in crate::shell) fn route_overlay_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(mut overlay) = self.overlay.take() else {
+            return;
+        };
+        let effect = {
+            let ctx = overlay_context(self);
+            overlay.on_mouse(mouse, self.presentation.shown().overlay.as_ref(), &ctx)
+        };
+        self.overlay = Some(overlay);
+        self.apply_overlay_effect(effect, outcome);
+    }
+
+    fn apply_overlay_effect(&mut self, effect: OverlayEffect, outcome: &mut ClientShellInput) {
+        match effect {
+            OverlayEffect::Unchanged => {}
+            OverlayEffect::Changed => outcome.repaint = true,
+            OverlayEffect::Close => {
+                self.overlay = None;
+                outcome.repaint = true;
+            }
+            OverlayEffect::Command(command) => self.apply_overlay_command(command, outcome),
+        }
+    }
+
+    fn apply_overlay_command(&mut self, command: OverlayCommand, outcome: &mut ClientShellInput) {
+        match command {
+            OverlayCommand::OpenTarget(target) => {
+                let activated = match target.target {
+                    LocationTarget::Machine => {
+                        self.activate_endpoint(target.endpoint.clone(), outcome)
+                    }
+                    LocationTarget::Workspace(_) | LocationTarget::Pane(_) => {
+                        self.focus_or_activate(target, outcome)
+                    }
+                };
+                if activated {
+                    self.overlay = None;
+                }
+                outcome.repaint = true;
+            }
+            OverlayCommand::SaveRename { target, label } => {
+                self.overlay = None;
+                self.push_endpoint_command(target.into_command(label), outcome);
+                outcome.repaint = true;
+            }
+            OverlayCommand::CloseWorkspace(workspace_id) => {
+                self.overlay = None;
+                outcome.repaint = true;
+                self.push_endpoint_command(
+                    shepr_protocol::command::EndpointCommand::WorkspaceClose(
+                        shepr_protocol::command::WorkspaceCloseParams { workspace_id },
+                    ),
+                    outcome,
+                );
+            }
+            OverlayCommand::CancelClose { return_to_navigate } => {
+                self.overlay = None;
+                if return_to_navigate {
+                    let preview = self.focused_navigation_target();
+                    self.mode.enter_navigate(preview);
+                    self.sidebar_scroll.reveal_selected_workspace();
+                }
+                outcome.repaint = true;
+            }
+            OverlayCommand::GlobalMenu(action) => {
+                self.overlay = None;
+                self.activate_global_menu_action(action, outcome);
+            }
+            OverlayCommand::ContextMenu { target, action } => {
+                self.overlay = None;
+                self.activate_context_menu_action(&target, action, outcome);
+            }
+            OverlayCommand::ToggleGlobalMenu => {
+                self.toggle_global_menu();
+                outcome.repaint = true;
+            }
+        }
+    }
+
+    /// Pasted and modal-paste text for the open overlay; whether it took it.
+    pub(in crate::shell) fn insert_overlay_text(&mut self, text: &str) -> bool {
+        self.overlay
+            .as_mut()
+            .is_some_and(|overlay| overlay.on_text(text))
+    }
+
+    pub(in crate::shell) fn open_navigator_overlay(&mut self) {
+        let mut navigator = NavigatorOverlay::default();
+        let rows = self
+            .endpoints
+            .navigator_index
+            .rows(self.endpoints.presented(), &navigator);
+        navigator.selected = rows
+            .iter()
+            .find(|row| row.current)
+            .map(|row| row.target.clone());
+        self.overlay = Some(Overlay::Navigator(navigator));
+    }
+
+    pub(in crate::shell) fn workspace_action_id(&self) -> Option<shepr_protocol::WorkspaceId> {
+        self.mode
+            .preview()
+            .filter(|target| {
+                target.location.endpoint == *self.endpoints.presented()
+                    && self.navigation_target_valid(target)
+            })
+            .and_then(|target| target.location.workspace_id())
+            .or_else(|| {
+                self.endpoints
+                    .active
+                    .snapshot()
+                    .and_then(|snapshot| snapshot.focused_workspace_id)
+            })
+    }
+
+    /// Opens the new-workspace name prompt with the path-based label and asks
+    /// the active endpoint's server, local or remote, for the cwd's checkout
+    /// root; the answer replaces the suggestion unless the user has edited it.
+    pub(in crate::shell) fn open_new_workspace_overlay(&mut self, outcome: &mut ClientShellInput) {
+        let source_workspace_id = self.workspace_action_id();
+        let cwd = self.endpoints.active.snapshot().and_then(|snapshot| {
+            let workspace_id = source_workspace_id.as_ref()?;
+            snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == *workspace_id)
+                .and_then(|workspace| workspace.new_workspace_cwd.clone())
+        });
+        let suggested_name = match cwd.as_ref() {
+            Some(cwd) => {
+                shepr_core::workspace_label::workspace_label_from_cwd(cwd.as_path(), None, None)
+            }
+            None => "workspace".to_owned(),
+        };
+        let mut label_lookup = None;
+        if let Some(cwd) = cwd.as_ref()
+            && self.endpoint_usable(self.endpoints.presented())
+        {
+            let lookup = self.ledger.ticket();
+            if self.submit(
+                shepr_protocol::command::EndpointCommand::WorkspaceCheckoutRoot(
+                    shepr_protocol::command::WorkspaceCheckoutRootParams { cwd: cwd.clone() },
+                ),
+                Work::WorkspaceLabel { lookup },
+                outcome,
+            ) == Submitted::Opened
+            {
+                label_lookup = Some(lookup);
+            }
+        }
+        self.overlay = Some(Overlay::Rename(RenameOverlay::new_workspace(
+            cwd,
+            suggested_name,
+            label_lookup,
+        )));
+    }
+
+    /// Applies the answer to a `workspace.checkout_root` request. An answer for
+    /// an overlay that is gone or was reopened since is ignored, and a failed
+    /// lookup keeps the path-based suggestion. Returns a repaint decision.
+    pub(in crate::shell) fn complete_workspace_label_lookup(
+        &mut self,
+        lookup: Ticket,
+        result: Option<shepr_protocol::command::WorkspaceCheckoutRootReply>,
+    ) -> Repaint {
+        apply_label_lookup(&mut self.overlay, lookup, result)
+    }
+
+    pub(in crate::shell) fn open_rename_workspace_overlay(&mut self) {
+        let Some(snapshot) = self.endpoints.active.snapshot() else {
+            return;
+        };
+        let Some(workspace_id) = self.workspace_action_id() else {
+            return;
+        };
+        let Some(workspace) = snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == workspace_id)
+        else {
+            return;
+        };
+        self.overlay = Some(Overlay::Rename(RenameOverlay::workspace(
+            workspace_id,
+            &workspace.label,
+        )));
+    }
+
+    pub(in crate::shell) fn open_rename_pane_overlay(&mut self) {
+        let Some(snapshot) = self.endpoints.active.snapshot() else {
+            return;
+        };
+        let Some(pane_id) = snapshot.focused_pane_id.as_ref() else {
+            return;
+        };
+        let Some(pane) = snapshot.panes.iter().find(|pane| pane.pane_id == *pane_id) else {
+            return;
+        };
+        self.overlay = Some(Overlay::Rename(RenameOverlay::pane(
+            pane.pane_id,
+            pane.label.as_deref(),
+        )));
+    }
+
+    pub(in crate::shell) fn open_confirm_close_overlay(
+        &mut self,
+        workspace_id: shepr_protocol::WorkspaceId,
+    ) {
+        let Some(snapshot) = self.endpoints.active.snapshot() else {
+            return;
+        };
+        let Some(workspace) = snapshot
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_id == workspace_id)
+        else {
+            return;
+        };
+        let pane_count = snapshot
+            .panes
+            .iter()
+            .filter(|pane| pane.pane_id.workspace_id() == &workspace.workspace_id)
+            .count();
+        let scope = if pane_count == 1 {
+            "1 pane".to_owned()
+        } else {
+            format!("{pane_count} panes")
+        };
+        self.overlay = Some(Overlay::ConfirmClose(ConfirmCloseOverlay {
+            workspace_id,
+            detail: format!("{} - {scope}", workspace.label),
+            return_to_navigate: self.mode.is(ClientShellMode::Navigate),
+        }));
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use ratatui::style::Modifier;
+    use super::confirm_close::ConfirmCloseOverlay;
+    use super::context_menu::{ContextMenuOverlay, ContextMenuTarget};
+    use super::global_menu::GlobalMenuOverlay;
+    use super::help::HelpOverlay;
+    use super::navigator::NavigatorOverlay;
+    use super::rename::RenameOverlay;
+    use super::{Overlay, OverlayScroll, OverlayView};
+    use crate::shell::config::ClientShellConfig;
+    use crate::shell::state::ClientShellState;
+    use crate::shell::view::resolve::overlay_context;
+    use crate::tests::test_workspace_id;
+    use shepr_config::ClientConfig;
 
-    use super::panel;
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::style::Color;
-    use ratatui::style::Style;
+    fn test_state() -> ClientShellState {
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        state.set_snapshot(Box::new(crate::shell::tests::snapshot()));
+        state
+    }
 
     #[test]
-    fn panel_resets_every_cell_so_nothing_leaks_into_the_popup() {
-        let area = Rect::new(0, 0, 8, 5);
-        let mut buffer = Buffer::empty(area);
-        let attributed = Style::default()
-            .fg(Color::Red)
-            .bg(Color::Blue)
-            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED | Modifier::DIM);
-        for y in 0..5 {
-            for x in 0..8 {
-                if let Some(cell) = buffer.cell_mut((x, y)) {
-                    cell.set_symbol("x").set_style(attributed);
-                }
+    fn layout_returns_none_where_render_gave_up() {
+        let state = test_state();
+        let ctx = overlay_context(&state);
+        let popups = || {
+            vec![
+                Overlay::Rename(RenameOverlay::workspace(test_workspace_id("w1"), "")),
+                Overlay::ConfirmClose(ConfirmCloseOverlay {
+                    workspace_id: test_workspace_id("w1"),
+                    detail: "detail".to_owned(),
+                    return_to_navigate: false,
+                }),
+                Overlay::Help(HelpOverlay::default()),
+                Overlay::Navigator(NavigatorOverlay::default()),
+            ]
+        };
+        for (cols, rows) in [(3, 3), (10, 5)] {
+            let screen = ratatui::layout::Rect::new(0, 0, cols, rows);
+            for overlay in popups() {
+                assert!(
+                    overlay.layout(screen, &ctx).is_none(),
+                    "{:?} fits {cols}x{rows}",
+                    overlay.kind()
+                );
             }
         }
-        let inner = panel(
-            &mut buffer,
-            Rect::new(1, 1, 6, 3),
-            Color::Green,
-            Color::Black,
-        )
-        .expect("panel fits");
-        assert_eq!(inner, Rect::new(2, 2, 4, 1));
-        for y in 1..4 {
-            for x in 1..7 {
-                let cell = &buffer[(x, y)];
-                let border = x == 1 || x == 6 || y == 1 || y == 3;
-                assert_eq!(cell.bg, Color::Black, "({x}, {y})");
-                assert_eq!(cell.modifier, Modifier::empty(), "({x}, {y})");
-                if border {
-                    assert_eq!(cell.fg, Color::Green, "({x}, {y})");
-                } else {
-                    assert_eq!(cell.symbol(), " ", "({x}, {y})");
-                    assert_eq!(cell.fg, Color::Reset, "({x}, {y})");
-                }
-            }
+        // A menu is clipped to the screen rather than refused while a border still fits.
+        let menus = [
+            Overlay::ContextMenu(ContextMenuOverlay {
+                target: ContextMenuTarget::Workspace {
+                    workspace_id: test_workspace_id("w1"),
+                },
+                x: 0,
+                y: 0,
+                highlighted: 0,
+            }),
+            Overlay::GlobalMenu(GlobalMenuOverlay {
+                highlighted: 0,
+                launcher: ratatui::layout::Rect::new(0, 0, 1, 1),
+            }),
+        ];
+        for overlay in &menus {
+            let screen = ratatui::layout::Rect::new(0, 0, 3, 3);
+            let (view, scroll) = overlay.layout(screen, &ctx).expect("menu fits");
+            assert!(scroll.is_none());
+            let rect = match view {
+                OverlayView::ContextMenu(menu) | OverlayView::GlobalMenu(menu) => menu.rect,
+                _ => panic!("menu view"),
+            };
+            assert_eq!(rect.intersection(screen), rect);
         }
-        // Cells outside the panel are untouched.
-        assert_eq!(buffer[(0, 0)].symbol(), "x");
+    }
+
+    #[test]
+    fn navigator_layout_keeps_the_selection_in_view() {
+        let mut state = test_state();
+        let mut projected = crate::shell::tests::snapshot();
+        for index in 2..=60 {
+            let mut pane = projected.panes[0].clone();
+            pane.pane_id = shepr_protocol::PublicPaneId::new(
+                &test_workspace_id("w1"),
+                shepr_protocol::PanePublicNumber::new(index).expect("nonzero test number"),
+            );
+            pane.label = Some(format!("agent {index}"));
+            projected.panes.push(pane);
+        }
+        state.set_snapshot(Box::new(projected));
+        let ctx = overlay_context(&state);
+        let mut overlay = NavigatorOverlay::default();
+        let rows = ctx.navigator_index.rows(ctx.active_endpoint_id, &overlay);
+        overlay.selected = rows.last().map(|row| row.target.clone());
+        let overlay = Overlay::Navigator(overlay);
+
+        let screen = ratatui::layout::Rect::new(0, 0, 106, 24);
+        let (view, scroll) = overlay.layout(screen, &ctx).expect("navigator fits");
+        let OverlayView::Navigator(view) = view else {
+            panic!("navigator view");
+        };
+        let Some(OverlayScroll::Navigator(start)) = scroll else {
+            panic!("navigator scroll");
+        };
+        assert_eq!(start, view.list.scroll.start());
+        assert!(start > 0);
+        assert!(view.selected >= start);
+        assert!(view.selected < start + view.list.scroll.viewport_rows());
+        assert!(view.list.slots.iter().any(|slot| slot.row == view.selected));
     }
 }

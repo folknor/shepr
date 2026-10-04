@@ -35,13 +35,13 @@ fn copy_mode_cursor_changed_on_owner(
     state: &ClientShellState,
     patch: &shepr_protocol::PaneSurfacePatch,
 ) -> bool {
-    let Some(copy_mode) = state.copy_mode.as_ref() else {
+    let Some(copy_mode) = state.copy.as_ref() else {
         return false;
     };
     let Some(surface) = state.pane_surface() else {
         return false;
     };
-    patch.cursor != surface.frame.cursor
+    patch.cursor.as_ref() != surface.frame.cursor()
         && surface
             .panes
             .iter()
@@ -56,15 +56,16 @@ fn fast_path_blocker(
     // The last composition drew over pane cells (notices, banners, overlays, the mode
     // bar, a clipped surface) or replaced the pane cursor (copy mode, an overlay, an
     // unusable endpoint). Patch rows would overwrite those effects, so they compose.
+    let composition = state.presentation.composition();
     let composition_covers_panes =
-        state.last_composition.pane_cells_occluded || state.last_composition.pane_cursor_overridden;
+        composition.pane_cells_occluded || composition.pane_cursor_overridden;
     // A surface produced for a larger pane area (before a resize or sidebar toggle took
     // effect) is drawn clipped by `compose`. Its patch rows, offset into this layout, could
     // land on the mode bar or past the frame, so they go through compose too. The layout
     // can change after the last composition, so this reads the current area.
-    let surface_overflows = state.pane_surface().is_some_and(|surface| {
-        crate::shell::presentation::composition::surface_overflows_area(surface, area)
-    });
+    let surface_overflows = state
+        .pane_surface()
+        .is_some_and(|surface| crate::shell::view::resolve::surface_overflows_area(surface, area));
     // Selection and copy mode affect pane cells only when their owner is patched. A parked
     // copy session must not send unrelated pane output through full-frame composition.
     let selection_patched = state
@@ -80,7 +81,7 @@ fn fast_path_blocker(
         });
     // The cursor is sampled independently of the changed pane list, so a patch can move it
     // without naming its owner in metadata. Recompose only when that owner has copy state.
-    let copy_mode_patched = state.copy_mode.as_ref().is_some_and(|copy_mode| {
+    let copy_mode_patched = state.copy.as_ref().is_some_and(|copy_mode| {
         patch_updates_pane(
             patch.panes.iter().map(|pane| &pane.pane_id),
             &copy_mode.pane_id,
@@ -88,8 +89,7 @@ fn fast_path_blocker(
     }) || copy_mode_cursor_changed_on_owner(state, patch);
     let unknown_pane = patch.panes.iter().any(|pane| {
         !state
-            .hits
-            .panes
+            .pane_hits()
             .iter()
             .any(|hit| hit.pane_id == pane.pane_id)
     });
@@ -106,7 +106,7 @@ impl ClientShellState {
     pub(crate) fn apply_pane_surface_patch_from(
         &mut self,
         patch: &shepr_protocol::PaneSurfacePatch,
-        generation: u64,
+        generation: shepr_protocol::ConnectionGeneration,
     ) -> ClientPaneSurfacePatchOutcome {
         self.apply_tagged_pane_surface_patch(patch, generation)
     }
@@ -116,16 +116,16 @@ impl ClientShellState {
         patch: &shepr_protocol::PaneSurfacePatch,
         generation: surfaces::SurfaceGeneration,
     ) -> ClientPaneSurfacePatchOutcome {
-        if let Err(reason) = self.surfaces.validate(patch, generation) {
+        if let Err(reason) = self.presentation.surfaces.validate(patch, generation) {
             return ClientPaneSurfacePatchOutcome::Rejected(reason);
         }
-        if !self.surfaces.is_paired() {
-            return match self.surfaces.apply_validated(patch) {
+        if !self.presentation.surfaces.is_paired() {
+            return match self.presentation.surfaces.apply_validated(patch) {
                 Ok(()) => ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Held),
                 Err(reason) => ClientPaneSurfacePatchOutcome::Rejected(reason),
             };
         }
-        let (cols, rows) = self.last_composed_size.unwrap_or_default();
+        let (cols, rows) = self.view().map_or_else(Default::default, |view| view.size);
         let area = self.layout(cols, rows).pane_surface;
         // Composition metadata can be stale between a shell change and its redraw. A
         // change that needs recomposition leaves presentation dirty, so the client drops
@@ -153,35 +153,32 @@ impl ClientShellState {
                 }),
         });
         if let Some(area) = fast_path_area {
-            if let Err(reason) = self.surfaces.apply_validated(patch) {
+            if let Err(reason) = self.presentation.surfaces.apply_validated(patch) {
                 return ClientPaneSurfacePatchOutcome::Rejected(reason);
             }
             for updated in &patch.panes {
-                let Some(hit) = self
-                    .hits
-                    .panes
-                    .iter_mut()
-                    .find(|hit| hit.pane_id == updated.pane_id)
-                else {
+                if !self.presentation.patch_pane_hit(updated, area) {
                     continue;
-                };
-                if let Some(updated_hit) =
-                    crate::shell::state::PaneHit::from_wire(updated, (area.x, area.y), area)
-                {
-                    *hit = updated_hit;
                 }
                 self.scroll_target_shown(&updated.pane_id, updated.scroll);
             }
         } else {
-            let before = self.pane_facts_before(self.surfaces.paired());
-            if let Err(reason) = self.surfaces.apply_validated(patch) {
+            let before = self
+                .mouse_selection
+                .facts_in(self.presentation.surfaces.paired());
+            if let Err(reason) = self.presentation.surfaces.apply_validated(patch) {
                 return ClientPaneSurfacePatchOutcome::Rejected(reason);
             }
-            let surfaces = std::mem::take(&mut self.surfaces);
-            if let Some(surface) = surfaces.paired() {
-                self.presented_surface_changed(before, surface);
+            if let Some(surface) = self.presentation.surfaces.paired() {
+                crate::shell::transitions::surface_presented(
+                    &mut self.mouse_selection,
+                    &mut self.copy,
+                    &mut self.scroll_lanes,
+                    &mut self.ledger,
+                    before,
+                    surface,
+                );
             }
-            self.surfaces = surfaces;
         }
         ClientPaneSurfacePatchOutcome::Applied(match composed_patch {
             Some(c) => PatchPresentation::Rows(c),
@@ -192,13 +189,14 @@ impl ClientShellState {
 
 #[cfg(test)]
 mod tests {
-    use crate::shell::state::ClientShellConfig;
+    use crate::shell::config::ClientShellConfig;
     use ratatui::buffer::Buffer;
     use shepr_config::ClientConfig;
     use shepr_protocol::FrameData;
     use shepr_surface::ratatui_conversion::FrameDataExt as _;
 
-    use crate::shell::state::{ClientCopyModeState, ClientShellState};
+    use crate::shell::copy::{CopyEntry, CopySession};
+    use crate::shell::state::ClientShellState;
 
     use super::{fast_path_blocker, patch_updates_pane};
     use ratatui::layout::Rect;
@@ -219,24 +217,22 @@ mod tests {
     ) -> shepr_protocol::PaneSurfacePane {
         shepr_protocol::PaneSurfacePane {
             pane_id,
-            content_revision: 0,
+            content_revision: shepr_protocol::ContentRevision::default(),
             rect,
             inner_rect: rect,
             scrollbar_rect: None,
             scroll: None,
             focused,
             mouse_reporting: false,
-            sgr_pixel_mouse: false,
+            pixel_mouse: shepr_term::mouse::PanePixelMouse::OFF,
             alternate_screen_active: false,
-            pixel_width: 0,
-            pixel_height: 0,
         }
     }
 
     fn state_with_copy_pane_focus(copy_pane_focused: bool) -> (ClientShellState, Rect) {
         let mut state =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-        state.last_composed_size = Some((80, 24));
+        state.presentation.set_composed_size((80, 24));
         let mut snapshot = crate::shell::tests::snapshot();
         let copy_pane_id = snapshot.panes[0].pane_id;
         let other_pane_id = crate::tests::test_pane_id("w1:p2");
@@ -272,42 +268,48 @@ mod tests {
                 test_surface_pane(other_pane_id, true, other_rect),
             ]
         };
-        let snapshot = state.snapshot.as_deref().expect("snapshot installed");
+        let snapshot = state
+            .endpoints
+            .active
+            .snapshot()
+            .expect("snapshot installed");
         let buffer = Buffer::empty(Rect::new(0, 0, area.width, area.height));
         state.receive_pane_surface_from(
             shepr_protocol::PaneSurfaceFrame {
                 boot_id: snapshot.boot_id.clone(),
                 projection_revision: snapshot.revision,
-                surface_revision: shepr_protocol::SurfaceRevision::new(1),
+                surface_revision: shepr_protocol::SurfaceRevision::FIRST,
                 frame: FrameData::from_ratatui_buffer_with_hyperlinks(
                     &buffer,
                     Some(cursor(1)),
                     &[],
-                ),
+                )
+                .expect("test buffer is a valid frame"),
                 panes,
                 splits: Vec::new(),
             },
-            state.active_snapshot_generation.unwrap_or(1),
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
         );
-        state.copy_mode = Some(ClientCopyModeState {
+        state.copy = Some(CopySession::start(CopyEntry {
+            pane_id: copy_pane_id,
             scroll: shepr_term::ScrollMetrics::new(
                 0,
                 0,
                 usize::from(area.height),
                 shepr_term::AbsRow(0),
             ),
-            pane_id: copy_pane_id,
             geometry: (area.width, area.height),
             alternate_screen_active: false,
             cursor: shepr_protocol::command::PaneTextPoint {
                 row: shepr_term::AbsRow(0),
                 col: 0,
             },
-            entry_offset_from_bottom: 0,
-            selection: None,
-            search: None,
-            operation_generation: 0,
-        });
+            rows: crate::shell::ledger::Ticket::fixture(1),
+        }));
         (state, area)
     }
 
@@ -320,7 +322,7 @@ mod tests {
             boot_id: surface.boot_id.clone(),
             projection_revision: surface.projection_revision,
             base_surface_revision: surface.surface_revision,
-            surface_revision: shepr_protocol::SurfaceRevision::new(2),
+            surface_revision: shepr_test_fixtures::counter_at(2),
             rows: Vec::new(),
             panes: Vec::new(),
             cursor,
@@ -332,7 +334,7 @@ mod tests {
         let (mut state, area) = state_with_copy_pane_focus(false);
         let patch = cursor_patch(&state, Some(cursor(2)));
         assert!(!fast_path_blocker(&state, &patch, area));
-        state.last_composition.pane_cursor_overridden = true;
+        state.presentation.composition_mut().pane_cursor_overridden = true;
         assert!(fast_path_blocker(&state, &patch, area));
     }
 

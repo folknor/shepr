@@ -59,8 +59,6 @@
 //! than reach `Term`. When bumping `alacritty_terminal`, diff vte's `Handler`
 //! trait against this impl.
 
-use std::sync::Mutex;
-
 use alacritty_terminal::event::EventListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::Column;
@@ -74,16 +72,19 @@ use vte::ansi::{
 
 use crate::limits::{KEYBOARD_MODE_STACK_MAX_DEPTH, MAX_TITLE_BYTES};
 
-use super::ExtraModes;
+use super::color::HostDefaults;
+use super::effects::{Effects, TerminalEvent};
+use super::emulator::ExtraModes;
+use super::history::HistoryCapacity;
 use super::modes::{self, ExtraMode};
 use super::rows::RowOrigin;
-use super::{ColorQuery, ColorQueryTarget, HistoryCapacity, RgbColor, TerminalEvent};
 use shepr_core::geometry::PaneGeometry;
 
 /// The in-band resize report (`CSI 48 ; rows ; cols ; height ; width t`),
 /// `None` while no pixel geometry is known.
 pub(super) fn in_band_size_report(geometry: PaneGeometry) -> Option<String> {
-    let (width, height) = geometry.text_area_px()?;
+    let extent = geometry.pixel_extent()?;
+    let (width, height) = (extent.width(), extent.height());
     Some(format!(
         "\x1b[48;{};{};{height};{width}t",
         geometry.rows(),
@@ -94,8 +95,8 @@ pub(super) fn in_band_size_report(geometry: PaneGeometry) -> Option<String> {
 /// The `CSI 14 t` reply (`CSI 4 ; height ; width t`), `None` while no pixel
 /// geometry is known. Its pixels use the same u16 limit as PTY winsize.
 pub(super) fn text_area_pixels_report(geometry: PaneGeometry) -> Option<String> {
-    let (width, height) = geometry.text_area_px()?;
-    Some(format!("\x1b[4;{height};{width}t"))
+    let extent = geometry.pixel_extent()?;
+    Some(format!("\x1b[4;{};{}t", extent.height(), extent.width()))
 }
 
 pub(super) fn geometry_for_terminal(
@@ -135,35 +136,31 @@ impl KeyboardStackDepth {
     }
 }
 
+/// The parts of the terminal the parser drives: the emulator state it
+/// mutates, and borrows of the other parts it consults or feeds, each the
+/// same value the terminal itself uses.
 pub(super) struct CoreHandler<'a, T: EventListener> {
     pub(super) term: &'a mut Term<T>,
     pub(super) keyboard_depth: &'a mut KeyboardStackDepth,
     pub(super) modes: &'a mut ExtraModes,
-    pub(super) cell: Option<shepr_core::geometry::CellPx>,
+    /// Cell pitch and the host's colour defaults.
+    pub(super) host: &'a HostDefaults,
     /// Ordered adapter events, including replies from both alacritty and this
-    /// handler.
-    pub(super) events: &'a Mutex<Vec<TerminalEvent>>,
-    /// Set when the child sets the default foreground or background (OSC
-    /// 10/11); the terminal hands it to the pane with
-    /// `take_effects`.
-    pub(super) default_color_set: &'a mut bool,
+    /// handler, and the flag that the child set a default colour (OSC 10/11).
+    pub(super) effects: &'a mut Effects,
     /// Absolute row accounting. The terminal opens a batch before handing
     /// the handler to the parser and closes it afterwards; the handler
     /// settles it around the actions that purge rows or swap screens.
     pub(super) rows: &'a mut RowOrigin,
     /// The primary screen's history line limit.
-    pub(super) history_limit: &'a mut usize,
-    pub(super) max_scrollback: usize,
-    pub(super) default_palette: &'a [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT],
-    pub(super) host_foreground: Option<RgbColor>,
-    pub(super) host_background: Option<RgbColor>,
+    pub(super) history: &'a mut HistoryCapacity,
 }
 
 impl<T: EventListener> CoreHandler<'_, T> {
     /// Closes the row-accounting batch in progress, so the action about to
     /// run is accounted for on its own.
     fn settle_rows(&mut self) {
-        self.rows.finish(self.term, *self.history_limit);
+        self.rows.finish(self.term, self.history.lines());
     }
 
     /// Opens a new row-accounting batch after such an action.
@@ -174,19 +171,12 @@ impl<T: EventListener> CoreHandler<'_, T> {
     /// Reports an upper bound on the lines the call just run pushed into the
     /// primary screen's history (see `RowOrigin::note_pushed`).
     fn pushed_rows(&mut self, lines: usize) {
-        self.rows.note_pushed(self.term, lines, *self.history_limit);
+        self.rows
+            .note_pushed(self.term, lines, self.history.lines());
     }
 
-    /// A purge leaves no retained history whose old capacity must be
-    /// preserved, so restore the byte-budget limit at the current width.
     fn restore_scrollback_budget_after_history_purge(&mut self) {
-        HistoryCapacity::new(
-            self.term,
-            self.events,
-            self.history_limit,
-            self.max_scrollback,
-        )
-        .restore_after_history_purge();
+        self.history.restore_after_purge(self.term, self.effects);
     }
 
     fn active_keyboard_depth(&mut self) -> &mut usize {
@@ -199,7 +189,7 @@ impl<T: EventListener> CoreHandler<'_, T> {
     }
 
     fn reply_bytes(&self, bytes: Vec<u8>) {
-        super::lock_auxiliary(self.events).push(TerminalEvent::PtyWrite(bytes));
+        self.effects.queue_pty_write(bytes);
     }
 
     /// The adapter-modelled state of a private mode alacritty does not know
@@ -210,7 +200,7 @@ impl<T: EventListener> CoreHandler<'_, T> {
                 modes::extra_mode(number).map(|extra| extra.get(self.modes))
             }
             PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
-                Some(self.modes.synchronized_update)
+                Some(self.modes.sync_update_in_replay)
             }
             _ => None,
         }
@@ -461,12 +451,12 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         // A synchronized update belongs to vte's parser, which RIS does not
         // end, so the DECRQM ?2026 state survives it.
         *self.modes = ExtraModes {
-            synchronized_update: self.modes.synchronized_update,
+            sync_update_in_replay: self.modes.sync_update_in_replay,
             ..ExtraModes::default()
         };
         // alacritty clears its title (and title stack) here without sending
         // an event; report the reset so the pane's title follows.
-        super::lock_auxiliary(self.events).push(TerminalEvent::ResetTitle);
+        self.effects.queue(TerminalEvent::ResetTitle);
     }
 
     fn reverse_index(&mut self) {
@@ -506,11 +496,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
                     }
                 }
                 ExtraMode::InBandResize => {
-                    if let Some(report) = in_band_size_report(geometry_for_terminal(
-                        self.term.columns(),
-                        self.term.screen_lines(),
-                        self.cell,
-                    )) {
+                    if let Some(report) = in_band_size_report(self.host.geometry(self.term)) {
                         self.reply(report);
                     }
                 }
@@ -532,7 +518,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
                 self.modes.sgr_pixels_mouse = false;
             }
             PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
-                self.modes.synchronized_update = true;
+                self.modes.sync_update_in_replay = true;
             }
             PrivateMode::Named(NamedPrivateMode::SwapScreenAndSetRestoreCursor) => {
                 // The row tracker follows the active grid; settle it before
@@ -565,7 +551,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
                 | NamedPrivateMode::ReportAllMouseMotion,
             ) => self.modes.x10_mouse = false,
             PrivateMode::Named(NamedPrivateMode::SyncUpdate) => {
-                self.modes.synchronized_update = false;
+                self.modes.sync_update_in_replay = false;
             }
             PrivateMode::Named(NamedPrivateMode::SwapScreenAndSetRestoreCursor) => {
                 self.settle_rows();
@@ -612,7 +598,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     fn set_color(&mut self, index: usize, color: Rgb) {
         if index == NamedColor::Foreground as usize || index == NamedColor::Background as usize {
-            *self.default_color_set = true;
+            self.effects.note_default_color_set();
         }
         Handler::set_color(self.term, index, color);
     }
@@ -621,39 +607,15 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         let Some(target) = crate::color::color_query_target(index) else {
             return;
         };
-        let colors = self.term.colors();
-        let core_color = match target {
-            ColorQueryTarget::Palette(index) => {
-                let index = usize::from(index);
-                Some(colors[index].map_or(self.default_palette[index], crate::color::rgb_from_vte))
-            }
-            ColorQueryTarget::Foreground => colors[NamedColor::Foreground]
-                .map(crate::color::rgb_from_vte)
-                .or(self.host_foreground),
-            ColorQueryTarget::Background => colors[NamedColor::Background]
-                .map(crate::color::rgb_from_vte)
-                .or(self.host_background),
-            ColorQueryTarget::Cursor => colors[NamedColor::Cursor]
-                .or(colors[NamedColor::Foreground])
-                .map(crate::color::rgb_from_vte)
-                .or(self.host_foreground),
+        let reply_form = if terminator == "\x07" {
+            crate::seq::ReplyForm::Bel
+        } else {
+            crate::seq::ReplyForm::St
         };
-        let child_override = match target {
-            ColorQueryTarget::Foreground => colors[NamedColor::Foreground].is_some(),
-            ColorQueryTarget::Background => colors[NamedColor::Background].is_some(),
-            ColorQueryTarget::Palette(_) | ColorQueryTarget::Cursor => false,
-        };
-        let query = ColorQuery {
-            target,
-            core_color,
-            child_override,
-            reply_form: if terminator == "\x07" {
-                crate::seq::ReplyForm::Bel
-            } else {
-                crate::seq::ReplyForm::St
-            },
-        };
-        super::lock_auxiliary(self.events).push(TerminalEvent::ColorQuery(query));
+        let query = self
+            .host
+            .color_query(self.term.colors(), target, reply_form);
+        self.effects.queue(TerminalEvent::ColorQuery(query));
     }
 
     fn reset_color(&mut self, index: usize) {
@@ -682,11 +644,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     /// Not forwarded: alacritty's reply closure multiplies u16 cell sizes.
     fn text_area_size_pixels(&mut self) {
-        if let Some(report) = text_area_pixels_report(geometry_for_terminal(
-            self.term.columns(),
-            self.term.screen_lines(),
-            self.cell,
-        )) {
+        if let Some(report) = text_area_pixels_report(self.host.geometry(self.term)) {
             self.reply(report);
         }
     }

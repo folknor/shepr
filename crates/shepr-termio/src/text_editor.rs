@@ -129,6 +129,13 @@ impl TextEditor {
                 .map_or(0, str::len)
     }
 
+    /// Word motion for the prompt editor. This edits text the user types into
+    /// a prompt (names, paths, commands), not pane text, so it keeps its own
+    /// rule rather than `shepr_term::word`: a word is a run of alphanumerics
+    /// and `_`, any other non-space character is punctuation, and each run
+    /// of a class is one step, as in a shell line editor. Pane text uses the
+    /// terminal classifier because its separators and CJK punctuation are
+    /// what terminal output looks like.
     fn word_boundary(&self, backward: bool) -> usize {
         let class = |grapheme: &str| {
             let ch = grapheme.chars().next().unwrap_or(' ');

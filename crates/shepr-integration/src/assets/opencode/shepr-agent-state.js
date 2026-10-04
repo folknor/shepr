@@ -8,63 +8,37 @@ import net from "node:net";
 
 const SOURCE = "shepr:opencode";
 const AGENT = "opencode";
+const METHOD_SESSION = "pane.report_agent_session";
+const METHOD_STATE = "pane.report_agent";
+const SOCKET_WAIT_MS = 500;
+const STATE = { working: "working", blocked: "blocked", idle: "idle" };
 // Seqs are microseconds since the epoch plus one per report, while the shell
 // and Python hooks send nanoseconds. The units never meet: shepr orders seqs
-// per source string, and the only other reporter under this source, the TUI
-// plugin, uses the same unit (and never runs alongside this server plugin; see
-// `ownsLocalLifecycle`). Nanoseconds are not an option here: they exceed 2^53,
-// where a JS number stops being exact, so `+= 1` would round away. The
-// wall-clock seed puts a restarted process above its predecessor's last seq;
-// after a backwards clock step, shepr accepts any seq from a source that has
-// been silent for a few seconds.
+// per source string, and every JavaScript reporter under one source uses this
+// unit. Nanoseconds are not an option here: they exceed 2^53, where a JS
+// number stops being exact, so `+= 1` would round away. The wall-clock seed
+// puts a restarted process above its predecessor's last seq; after a backwards
+// clock step, shepr accepts any seq from a source that has been silent for a
+// few seconds.
 let reportSeq = Date.now() * 1000;
 let requestChain = Promise.resolve();
-let reportedRootSessionID;
-let reportedLocalSessionID;
 
-// Track child sessions so their events cannot replace the pane's root session.
-// User prompts carry the root id to preserve its identity and cross-talk guard.
-const childSessions = new Map();
-const CHILD_EVENT_STATES = new Map([
-  ["permission.asked", "blocked"],
-  ["question.asked", "blocked"],
-  ["permission.replied", "working"],
-  ["question.replied", "working"],
-  ["question.rejected", "working"],
-]);
+// Only a release pane of a shepr server has anything to report to.
+function reportingEnabled() {
+  return (
+    process.env.SHEPR_BUILD_PROFILE === "release" &&
+    process.env.SHEPR_ENV === "1" &&
+    !!process.env.SHEPR_SOCKET_PATH &&
+    !!process.env.SHEPR_PANE_ID
+  );
+}
 
 function nextReportSeq() {
   reportSeq += 1;
   return reportSeq;
 }
 
-function sessionIDFromProperties(properties) {
-  if (typeof properties?.sessionID === "string" && properties.sessionID) {
-    return properties.sessionID;
-  }
-  return typeof properties?.info?.id === "string" && properties.info.id
-    ? properties.info.id
-    : undefined;
-}
-
-const SESSION_STATE_BY_STATUS = new Map([
-  ["idle", "idle"],
-  ["active", "working"],
-  ["busy", "working"],
-  ["pending", "working"],
-  ["retry", "working"],
-  ["running", "working"],
-  ["streaming", "working"],
-  ["working", "working"],
-]);
-
-function stateFromSessionStatus(status) {
-  const kind = typeof status === "string" ? status : status?.type;
-  return typeof kind === "string"
-    ? SESSION_STATE_BY_STATUS.get(kind.toLowerCase())
-    : undefined;
-}
-
+// Reports go out one at a time so they reach shepr in sequence order.
 function request(method, params) {
   const pending = requestChain.then(() => requestOnce(method, params));
   requestChain = pending.catch(() => {});
@@ -105,8 +79,8 @@ function requestOnce(method, params) {
     };
 
     // A plain timer, not socket.setTimeout (an idle timeout), so a connection
-    // that never finishes connecting still settles within 500 ms.
-    timer = setTimeout(settle, 500);
+    // that never finishes connecting still settles within the wait.
+    timer = setTimeout(settle, SOCKET_WAIT_MS);
     timer.unref?.();
     client.on("data", settle);
     client.on("error", settle);
@@ -123,18 +97,87 @@ function reportSession(sessionID, sessionStartSource) {
   if (sessionStartSource) {
     params.session_start_source = sessionStartSource;
   }
-  return request("pane.report_agent_session", params);
+  return request(METHOD_SESSION, params);
 }
 
 function reportState(state, sessionID) {
   if (!sessionID) {
     return Promise.resolve();
   }
+  return request(METHOD_STATE, { state, agent_session_id: sessionID });
+}
 
-  const params = { state };
-  reportedRootSessionID = sessionID;
-  params.agent_session_id = sessionID;
-  return request("pane.report_agent", params);
+// Subagent (child) sessions must not speak for the pane: their created or
+// updated reports would replace the resumable root session, and their idle
+// would mark the pane idle while the root is still working. Only a child's
+// prompts for the user (blocked) and the replies to them (working) are
+// forwarded, attributed to the root session.
+const childSessions = new Map();
+const CHILD_EVENT_STATES = new Map([
+  ["permission.asked", STATE.blocked],
+  ["question.asked", STATE.blocked],
+  ["permission.replied", STATE.working],
+  ["question.replied", STATE.working],
+  ["question.rejected", STATE.working],
+]);
+
+function sessionIDFromProperties(properties) {
+  if (typeof properties?.sessionID === "string" && properties.sessionID) {
+    return properties.sessionID;
+  }
+  return typeof properties?.info?.id === "string" && properties.info.id
+    ? properties.info.id
+    : undefined;
+}
+
+// A session payload names its parent when it is a subagent's.
+function trackChildSession(info) {
+  if (typeof info?.id === "string" && info.id && typeof info.parentID === "string" && info.parentID) {
+    childSessions.set(info.id, info.parentID);
+  }
+}
+
+function rootSessionOf(sessionID) {
+  let rootSessionID = sessionID;
+  const seen = new Set();
+  while (childSessions.has(rootSessionID) && !seen.has(rootSessionID)) {
+    seen.add(rootSessionID);
+    rootSessionID = childSessions.get(rootSessionID);
+  }
+  return rootSessionID;
+}
+
+const SESSION_STATE_BY_STATUS = new Map([
+  ["idle", STATE.idle],
+  ["active", STATE.working],
+  ["busy", STATE.working],
+  ["pending", STATE.working],
+  ["retry", STATE.working],
+  ["running", STATE.working],
+  ["streaming", STATE.working],
+  ["working", STATE.working],
+]);
+
+// Status arrives either as a bare string or as an object such as
+// `{ type: "busy" }` / `{ type: "retry", ... }`.
+function stateFromSessionStatus(status) {
+  const kind = typeof status === "string" ? status : status?.type;
+  return typeof kind === "string"
+    ? SESSION_STATE_BY_STATUS.get(kind.toLowerCase())
+    : undefined;
+}
+
+// The TUI plugin reports under this source too and uses the same seq unit; it
+// never runs alongside this server plugin (see `ownsLocalLifecycle`).
+let reportedRootSessionID;
+let reportedLocalSessionID;
+
+// A state report also records which root session this process last spoke for.
+function reportRootState(state, sessionID) {
+  if (sessionID) {
+    reportedRootSessionID = sessionID;
+  }
+  return reportState(state, sessionID);
 }
 
 function ownsLocalLifecycle() {
@@ -152,13 +195,7 @@ function ownsLocalLifecycle() {
 }
 
 export const SheprAgentStatePlugin = async () => {
-  if (
-    !ownsLocalLifecycle() ||
-    process.env.SHEPR_BUILD_PROFILE !== "release" ||
-    process.env.SHEPR_ENV !== "1" ||
-    !process.env.SHEPR_SOCKET_PATH ||
-    !process.env.SHEPR_PANE_ID
-  ) {
+  if (!ownsLocalLifecycle() || !reportingEnabled()) {
     return {};
   }
 
@@ -176,27 +213,18 @@ export const SheprAgentStatePlugin = async () => {
         // OpenCode root.
         await reportSession(sessionID, "startup");
       }
-      await reportState("working", sessionID);
+      await reportRootState(STATE.working, sessionID);
     },
     event: async ({ event }) => {
       const type = event?.type;
       const properties = event?.properties ?? {};
       const sessionID = sessionIDFromProperties(properties);
 
-      const info = properties.info;
-      if (info?.id && info.parentID) {
-        childSessions.set(info.id, info.parentID);
-      }
+      trackChildSession(properties.info);
       if (sessionID && childSessions.has(sessionID)) {
         const state = CHILD_EVENT_STATES.get(type);
         if (state) {
-          let rootSessionID = sessionID;
-          const seen = new Set();
-          while (childSessions.has(rootSessionID) && !seen.has(rootSessionID)) {
-            seen.add(rootSessionID);
-            rootSessionID = childSessions.get(rootSessionID);
-          }
-          await reportState(state, rootSessionID);
+          await reportRootState(state, rootSessionOf(sessionID));
         }
         return;
       }
@@ -215,7 +243,7 @@ export const SheprAgentStatePlugin = async () => {
         case "session.status": {
           const state = stateFromSessionStatus(properties.status);
           if (state) {
-            await reportState(state, sessionID);
+            await reportRootState(state, sessionID);
           } else {
             await reportSession(sessionID);
           }
@@ -227,20 +255,20 @@ export const SheprAgentStatePlugin = async () => {
         case "question.replied":
         case "question.rejected":
         case "session.compacted":
-          await reportState("working", sessionID);
+          await reportRootState(STATE.working, sessionID);
           break;
         case "permission.asked":
         case "question.asked":
-          await reportState("blocked", sessionID);
+          await reportRootState(STATE.blocked, sessionID);
           break;
         case "session.error":
           // Escape aborts a request without leaving the session blocked.
           if (properties.error?.name !== "MessageAbortedError") {
-            await reportState("blocked", sessionID);
+            await reportRootState(STATE.blocked, sessionID);
           }
           break;
         case "session.idle":
-          await reportState("idle", sessionID);
+          await reportRootState(STATE.idle, sessionID);
           break;
         case "session.deleted":
           break;

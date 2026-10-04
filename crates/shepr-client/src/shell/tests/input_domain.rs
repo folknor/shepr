@@ -1,6 +1,8 @@
+use crate::shell::config::ClientShellConfig;
+use crate::shell::overlays::Overlay;
+use crate::shell::overlays::rename::{RenameOverlay, RenameTarget};
 use crate::shell::state::{
-    ClientRenameTarget, ClientShellAction, ClientShellConfig, ClientShellInput, ClientShellMode,
-    ClientShellOverlay, ClientShellRequest,
+    ClientShellAction, ClientShellInput, ClientShellMode, ClientShellRequest,
 };
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -10,7 +12,7 @@ use shepr_protocol::{ClientMessage, ClientMousePosition, ClientPaneInputEvent};
 use shepr_termio::input::raw_input::RawInputEvent;
 use shepr_termio::text_editor::TextEditor;
 
-use crate::shell::state::{ClientRenameOverlay, ClientShellState};
+use crate::shell::state::ClientShellState;
 use shepr_protocol::{ClientShellWorkspace, FrameData};
 use shepr_surface::ratatui_conversion::FrameDataExt as _;
 
@@ -62,9 +64,19 @@ fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
         let mut third_surface_pane = pane_surface.panes[0].clone();
         third_surface_pane.pane_id = test_pane_id("w1:p3");
         pane_surface.panes.push(third_surface_pane);
-        state
-            .receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
-        state.mode = mode;
+        state.receive_pane_surface_from(
+            pane_surface,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
+        if mode == ClientShellMode::Navigate {
+            state.mode.enter_navigate(None);
+        } else {
+            state.mode.set(mode);
+        }
 
         let outcome = state.handle_input_bytes(b"\t");
         let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
@@ -258,10 +270,9 @@ fn modal_paste_shortcut_is_ctrl_v() {
 #[test]
 fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
-        title: "rename pane",
+    state.overlay = Some(Overlay::Rename(RenameOverlay {
         input: TextEditor::new("replace me", true),
-        target: ClientRenameTarget::Pane {
+        target: RenameTarget::Pane {
             pane_id: test_pane_id("w1:p1"),
         },
     }));
@@ -276,7 +287,7 @@ fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
     assert!(outcome.repaint);
     assert!(matches!(
         state.overlay,
-        Some(ClientShellOverlay::Rename(ClientRenameOverlay { ref input, .. }))
+        Some(Overlay::Rename(RenameOverlay { ref input, .. }))
             if input.as_str() == "feature/pasted"
     ));
 }
@@ -292,7 +303,14 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
@@ -347,7 +365,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         shepr_term::key::TerminalKey::new(KeyCode::Char('y'), KeyModifiers::empty()),
     )]);
     assert!(early_copy.actions.is_empty());
-    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
 
     let actions = state
         .handle_endpoint_result(
@@ -356,7 +374,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
             Ok(copy_search_result(matches, Some(1))),
         )
         .actions;
-    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
     let selection_request_id = actions
         .iter()
         .find_map(|action| match action {
@@ -390,9 +408,16 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
     let geometry = shepr_termio::input::mouse::HostPixelExtent::new(106, 20, 1060, 400)
         .expect("host geometry");
     let x = u32::from(pane.inner_rect.x) * 10 + 21;
@@ -411,7 +436,7 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
             )
     ));
 
-    state.hits.panes.clear();
+    state.pane_hits_mut().clear();
     let release = state.handle_pixel_mouse_bytes(b"\x1b[<0;1;1m", geometry);
     assert!(matches!(
         &release.requests[..],
@@ -428,7 +453,7 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
                     }]
                 )
     ));
-    assert!(state.pane_mouse_gesture.is_none());
+    assert!(state.pointer.pane_mouse_gesture.is_none());
 }
 
 #[test]
@@ -572,13 +597,20 @@ fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
 fn help_overlay_uses_live_keymap_and_owns_filter_state() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     let mut open = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::Help, &mut open);
     let initial = state.compose(106, 30).expect("help overlay");
     let text = initial
-        .cells
-        .chunks(initial.width as usize)
+        .cells()
+        .chunks(initial.width() as usize)
         .map(|row| {
             row.iter()
                 .map(|cell| cell.symbol.as_str())
@@ -593,8 +625,8 @@ fn help_overlay_uses_live_keymap_and_owns_filter_state() {
     assert!(state.handle_input_bytes(b"workspace").actions.is_empty());
     let filtered = state.compose(106, 30).expect("filtered help");
     let text = filtered
-        .cells
-        .chunks(filtered.width as usize)
+        .cells()
+        .chunks(filtered.width() as usize)
         .map(|row| {
             row.iter()
                 .map(|cell| cell.symbol.as_str())
@@ -604,15 +636,10 @@ fn help_overlay_uses_live_keymap_and_owns_filter_state() {
         .join("\n");
     assert!(text.contains("workspace navigation"));
     assert!(!text.contains("prefix mode"));
-    assert!(
-        filtered
-            .cursor
-            .as_ref()
-            .is_some_and(|cursor| cursor.visible)
-    );
+    assert!(filtered.cursor().is_some_and(|cursor| cursor.visible));
 
     assert!(state.handle_input_bytes(b"\x1b").repaint);
-    assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
+    assert!(matches!(state.overlay, Some(Overlay::Help(_))));
     assert!(state.handle_input_bytes(b"\x1b").repaint);
     assert!(state.overlay.is_none());
 }
@@ -621,7 +648,14 @@ fn help_overlay_uses_live_keymap_and_owns_filter_state() {
 fn overlay_that_does_not_fit_still_presents_the_frame() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     let mut open = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::Help, &mut open);
     // Help needs at least 10 rows; this terminal has 8.
@@ -629,8 +663,8 @@ fn overlay_that_does_not_fit_still_presents_the_frame() {
         .compose(106, 8)
         .expect("a frame is presented even though help does not fit");
     let text = frame
-        .cells
-        .chunks(frame.width as usize)
+        .cells()
+        .chunks(frame.width() as usize)
         .map(|row| {
             row.iter()
                 .map(|cell| cell.symbol.as_str())
@@ -639,13 +673,13 @@ fn overlay_that_does_not_fit_still_presents_the_frame() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(text.contains("window too small"));
-    assert!(state.hits.help_popup.is_empty());
-    assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
+    assert!(state.drawn().help_popup().is_empty());
+    assert!(matches!(state.overlay, Some(Overlay::Help(_))));
 
     // Once the terminal is large enough the overlay is drawn again.
     let frame = state.compose(106, 30).expect("help overlay");
-    assert!(!state.hits.help_popup.is_empty());
-    assert_eq!(frame.height, 30);
+    assert!(!state.drawn().help_popup().is_empty());
+    assert_eq!(frame.height(), 30);
 }
 
 #[test]
@@ -663,26 +697,31 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
     state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
     state.chrome.set_collapsed(true);
     state.set_snapshot(Box::new(many));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("collapsed frame");
     // The focused workspace is revealed, so it is on screen and clickable.
     assert!(
         state
-            .hits
-            .workspaces
-            .iter()
+            .drawn()
+            .workspaces()
             .any(|hit| hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w30")))
     );
     assert!(
         !state
-            .hits
-            .workspaces
-            .iter()
+            .drawn()
+            .workspaces()
             .any(|hit| hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w1")))
     );
 
     // The wheel scrolls the list back up.
-    let body = state.hits.workspace_body;
+    let body = state.drawn().workspace_body();
     for _ in 0..30 {
         state.handle_mouse(
             MouseEvent {
@@ -698,9 +737,8 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
     state.compose(106, 20).expect("scrolled frame");
     assert!(
         state
-            .hits
-            .workspaces
-            .iter()
+            .drawn()
+            .workspaces()
             .any(|hit| hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w1")))
     );
 }
@@ -709,19 +747,26 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
 fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     let mut open = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::Help, &mut open);
     state.compose(106, 30).expect("help overlay");
-    let popup = state.hits.help_popup;
+    let popup = state.drawn().help_popup();
     assert!(!popup.is_empty());
 
     // A newer snapshot arrives; its surface has not. The old frame is still on screen.
     let mut next = snapshot();
     next.revision = next.revision.checked_next().expect("test precondition");
     state.set_snapshot(Box::new(next));
-    assert!(!state.hits.panes.is_empty());
-    assert_eq!(state.hits.help_popup, popup);
+    assert!(!state.pane_hits().is_empty());
+    assert_eq!(state.drawn().help_popup(), popup);
 
     // A click inside the visible popup must not close it.
     let mut outcome = ClientShellInput::default();
@@ -735,15 +780,23 @@ fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
         std::time::Instant::now(),
         &mut outcome,
     );
-    assert!(matches!(state.overlay, Some(ClientShellOverlay::Help(_))));
+    assert!(matches!(state.overlay, Some(Overlay::Help(_))));
 
     // Parking the next revision's surface leaves the visible pair, and its hits, alone.
     let mut parked = surface();
-    parked.projection_revision = shepr_protocol::ProjectionRevision::new(3);
-    state.receive_pane_surface_from(parked, state.active_snapshot_generation.unwrap_or(1));
-    assert!(state.surfaces.waiting_baseline().is_some());
-    assert!(!state.hits.panes.is_empty());
-    assert_eq!(state.hits.help_popup, popup);
+    parked.projection_revision =
+        shepr_test_fixtures::counter_at::<shepr_protocol::ProjectionRevision>(3);
+    state.receive_pane_surface_from(
+        parked,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    assert!(state.presentation.surfaces.waiting_baseline().is_some());
+    assert!(!state.pane_hits().is_empty());
+    assert_eq!(state.drawn().help_popup(), popup);
 }
 
 #[test]
@@ -776,8 +829,16 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
         &linked,
         None,
         &[((0, 0), "L".into(), "https://example.test".into())],
+    )
+    .expect("test buffer is a valid frame");
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     let mut selection = shepr_term::selection::Selection::range(
         test_pane_id("w1:p1"),
         shepr_term::Point::new(shepr_term::AbsRow(0), 0),
@@ -786,11 +847,11 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
     assert!(selection.finish());
     state.mouse_selection.selection = Some(selection);
     let frame = state.compose(106, 20).expect("composed frame");
-    let hit = &state.hits.panes[0];
+    let hit = &state.pane_hits()[0];
     let index =
-        usize::from(hit.inner_rect.y) * usize::from(frame.width) + usize::from(hit.inner_rect.x);
-    let link = frame.cells[index].hyperlink.expect("linked cell") as usize;
-    assert_eq!(frame.hyperlinks[link], "https://example.test");
+        usize::from(hit.inner_rect.y) * usize::from(frame.width()) + usize::from(hit.inner_rect.x);
+    let link = frame.cells()[index].hyperlink.expect("linked cell") as usize;
+    assert_eq!(frame.hyperlinks()[link], "https://example.test");
 }
 
 fn open_help(state: &mut ClientShellState) {
@@ -806,16 +867,23 @@ fn last_row_text(frame: &FrameData) -> String {
 fn overlay_that_gives_up_commits_nothing_but_the_hint_row() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     let before = state.compose(106, 8).expect("frame without overlay");
     open_help(&mut state);
     let after = state.compose(106, 8).expect("frame with the overlay open");
-    let body = usize::from(before.width) * usize::from(before.height - 1);
+    let body = usize::from(before.width()) * usize::from(before.height() - 1);
     // Help needs at least 10 rows: nothing it drew may reach the frame, not even its
     // backdrop dimming; only the last row carries the hint.
-    assert_eq!(after.cells[..body], before.cells[..body]);
+    assert_eq!(after.cells()[..body], before.cells()[..body]);
     assert!(last_row_text(&after).contains("window too small"));
-    assert!(after.cursor.is_none());
+    assert!(after.cursor().is_none());
 }
 
 #[test]
@@ -825,13 +893,20 @@ fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    for cell in &mut pane_surface.frame.cells {
+    for cell in pane_surface.frame.cells_mut() {
         cell.style.flags = WireStyleFlags::BOLD;
         cell.style.underline = shepr_term::UnderlineStyle::Curly;
     }
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     let plain = state.compose(106, 30).expect("frame without overlay");
-    let hit = state.hits.panes[0].clone();
+    let hit = state.pane_hits()[0].clone();
     let pane_origin = (hit.inner_rect.x, hit.inner_rect.y);
     assert!(
         !frame_cell(&plain, pane_origin)
@@ -842,7 +917,7 @@ fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
 
     open_help(&mut state);
     let frame = state.compose(106, 30).expect("help frame");
-    let popup = state.hits.help_popup;
+    let popup = state.drawn().help_popup();
     assert!(!popup.is_empty());
     // Outside the popup the backdrop adds DIM and keeps everything else, shapes included.
     let dimmed = frame_cell(&frame, pane_origin);
@@ -868,15 +943,22 @@ fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
 fn mode_bar_is_drawn_only_while_no_overlay_is_open() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
-    state.mode = ClientShellMode::Prefix;
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.mode.set(ClientShellMode::Prefix);
     let frame = state.compose(106, 30).expect("frame with the mode bar");
     assert!(frame_rows(&frame).iter().any(|row| row.contains("PREFIX")));
 
     // An overlay that fits replaces the bar's row content; one that does not fit still
     // counts as open, so the bar's tail must not show beside the hint either.
     open_help(&mut state);
-    state.mode = ClientShellMode::Prefix;
+    state.mode.set(ClientShellMode::Prefix);
     let frame = state.compose(106, 30).expect("help frame");
     assert!(!frame_rows(&frame).iter().any(|row| row.contains("PREFIX")));
     let frame = state

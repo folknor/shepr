@@ -1,8 +1,10 @@
-pub mod app;
-pub(crate) mod limits;
+pub(crate) mod app;
+pub(crate) mod backoff;
 pub(crate) mod logging;
-pub mod server;
+pub(crate) mod server;
 mod ui;
+
+pub use server::headless::{RunServerError, ServerReady, run_server};
 
 #[cfg(test)]
 mod agent_integration_contract_tests;

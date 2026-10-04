@@ -6,11 +6,21 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use crate::limits::{
-    HOST_INPUT_READ_CHUNK_BYTES, HOST_KEYBOARD_QUERY_TIMEOUT, MAX_BUFFERED_HOST_INPUT,
-};
+use crate::deadline::Deadline;
+use crate::input::HOST_INPUT_READ_CHUNK_BYTES;
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
+use shepr_core::geometry::HostCell;
+use shepr_term::mouse::HostMouseCapture;
+
+/// Bound the keyboard-capability query's wait for a host terminal response.
+///
+/// A short wait covers normal terminal replies while keeping startup interactive.
+const HOST_KEYBOARD_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+/// Maximum host input buffered while the keyboard-capability query is pending.
+///
+/// The capacity holds terminal replies while bounding input from an unresponsive host.
+const MAX_BUFFERED_HOST_INPUT: usize = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // Terminal setup / restore
@@ -24,7 +34,7 @@ pub(super) fn setup_terminal(
     modify_other_keys_mode: Option<shepr_term::ModifyOtherKeysLevel>,
 ) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
     let output_writer = HostTerminalWriter::from_stdout()?;
-    let host_modes = HostModes::new(mouse_capture, mouse_capture);
+    let host_modes = HostModes::new(mouse_capture);
     // Built before raw mode so a failure anywhere below still restores through Drop. Raw mode
     // goes through crossterm; screen and mode writes use this writer directly rather than
     // `ratatui::init`, whose own panic hook would restore through `io::stdout()`.
@@ -51,7 +61,7 @@ pub(super) fn setup_terminal(
     )?;
     let (host_escape_disambiguation_active, buffered_host_input) =
         query_host_escape_disambiguation(&mut output);
-    host_modes.apply_mouse(&mut output, false, true)?;
+    host_modes.reassert_mouse(&mut output, HostCell::Unknown)?;
     host_modes.enable_bracketed_paste(&mut output)?;
     host_modes.enable_focus_change(&mut output)?;
     host_modes.enable_color_scheme_reports(&mut output)?;
@@ -119,14 +129,14 @@ fn query_host_escape_disambiguation(writer: &mut impl io::Write) -> (bool, Vec<u
     let stdin = io::stdin();
     let stdin_fd = stdin.as_raw_fd();
     // clock-io-ok: bound the host terminal query and its poll/read loop.
-    let deadline = crate::limits::Deadline::after(Instant::now(), HOST_KEYBOARD_QUERY_TIMEOUT);
+    let deadline = Deadline::after(Instant::now(), HOST_KEYBOARD_QUERY_TIMEOUT);
     let mut responses = shepr_termio::input::raw_input::HostKeyboardProbeResponses::default();
     while !responses.primary_device_attributes && buffered_input.len() < MAX_BUFFERED_HOST_INPUT {
         // clock-io-ok: account for elapsed poll and read time in the query budget.
-        let Some(timeout_ms) = deadline.remaining_millis_i32(Instant::now()) else {
+        let Some(remaining) = deadline.remaining(Instant::now()) else {
             break;
         };
-        match shepr_platform::poll_fd_readable(stdin_fd, timeout_ms) {
+        match shepr_platform::poll_fd_readable(stdin_fd, remaining) {
             Ok(true) => {}
             Ok(false) => break,
             Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
@@ -213,25 +223,19 @@ pub(super) fn should_draw_host_cursor(mode: shepr_config::HostCursorModeConfig) 
     }
 }
 
-pub(super) fn effective_sgr_pixel_mouse(
-    enabled: bool,
-    requested: bool,
-    exact_geometry: bool,
-) -> bool {
-    enabled && requested && exact_geometry
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct EndpointMouseRequest {
-    enabled: bool,
-    sgr_pixels: bool,
+/// Whether applying the mouse mode writes only a change or repeats the mode
+/// the host already has (after a host event that may have reset it).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MouseWrite {
+    OnChange,
+    Always,
 }
 
 #[derive(Clone, Copy)]
 enum MouseSource {
     Initial,
     Preference,
-    Endpoint(EndpointMouseRequest),
+    Endpoint(HostMouseCapture),
 }
 
 #[derive(Clone)]
@@ -260,11 +264,14 @@ pub(super) struct HostMouseMode {
 }
 
 impl HostMouseMode {
-    pub(super) fn new(shell_preference: bool, initially_active: bool) -> Self {
+    /// A mouse mode whose preference is `shell_preference`, with capture
+    /// already active exactly when the preference asks for it (startup enables
+    /// the configured capture before anything else decides).
+    pub(super) fn new(shell_preference: bool) -> Self {
         Self {
             shell_preference,
             source: MouseSource::Initial,
-            capture_active: Arc::new(AtomicBool::new(initially_active)),
+            capture_active: Arc::new(AtomicBool::new(shell_preference)),
             sgr_pixels_active: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -288,52 +295,40 @@ impl HostMouseMode {
         self.sgr_pixels_active.load(Ordering::Acquire)
     }
 
-    pub(super) fn set_endpoint_request(&mut self, enabled: bool, sgr_pixels: bool) {
-        self.source = MouseSource::Endpoint(EndpointMouseRequest {
-            enabled,
-            sgr_pixels,
-        });
+    pub(super) fn set_endpoint_request(&mut self, mode: HostMouseCapture) {
+        self.source = MouseSource::Endpoint(mode);
     }
 
     pub(super) fn clear_endpoint_request(&mut self) {
         self.source = MouseSource::Preference;
     }
 
-    pub(super) fn desired(&self) -> EndpointMouseRequest {
+    pub(super) fn desired(&self) -> HostMouseCapture {
         match self.source {
-            MouseSource::Initial => EndpointMouseRequest {
-                enabled: self.capture_active(),
-                sgr_pixels: self.sgr_pixels_active(),
-            },
-            MouseSource::Preference => EndpointMouseRequest {
-                enabled: self.shell_preference,
-                sgr_pixels: false,
-            },
-            MouseSource::Endpoint(request) => request,
+            MouseSource::Initial => {
+                HostMouseCapture::new(self.capture_active(), self.sgr_pixels_active())
+            }
+            MouseSource::Preference => HostMouseCapture::new(self.shell_preference, false),
+            MouseSource::Endpoint(mode) => mode,
         }
     }
 
     fn apply(
         &self,
         writer: &mut impl io::Write,
-        exact_geometry: bool,
-        reassert: bool,
+        host: HostCell,
+        write: MouseWrite,
     ) -> io::Result<()> {
-        let request = self.desired();
-        let enabled = request.enabled;
-        let sgr_pixels = effective_sgr_pixel_mouse(enabled, request.sgr_pixels, exact_geometry);
-        let changed = host_mouse_capture_update(
-            self.capture_active(),
-            self.sgr_pixels_active(),
-            enabled,
-            request.sgr_pixels,
-            exact_geometry,
-        );
-        if changed.is_some() || reassert {
-            set_mouse_capture_with_writer(writer, enabled, sgr_pixels)?;
+        let requested = self.desired();
+        let current = HostMouseCapture::new(self.capture_active(), self.sgr_pixels_active());
+        let changed = host_mouse_capture_update(current, requested, host);
+        let mode = requested.effective(host);
+        if changed.is_some() || write == MouseWrite::Always {
+            set_mouse_capture_with_writer(writer, mode)?;
         }
-        self.capture_active.store(enabled, Ordering::Release);
-        self.sgr_pixels_active.store(sgr_pixels, Ordering::Release);
+        self.capture_active.store(mode.enabled(), Ordering::Release);
+        self.sgr_pixels_active
+            .store(mode.pixels(), Ordering::Release);
         Ok(())
     }
 }
@@ -372,14 +367,14 @@ impl HostRestoreMask {
         self.0 & flag.bit() != 0
     }
 
-    fn replace_keyboard(self, kitty_entry: bool, modify_other_keys: bool) -> Self {
+    fn replace_keyboard(self, restore: KeyboardRestore) -> Self {
         let keyboard_bits =
             HostRestoreFlag::KittyKeyboardEntry.bit() | HostRestoreFlag::ModifyOtherKeys.bit();
         let mut next = self.0 & !keyboard_bits;
-        if kitty_entry {
+        if restore.kitty_entry {
             next |= HostRestoreFlag::KittyKeyboardEntry.bit();
         }
-        if modify_other_keys {
+        if restore.modify_other_keys {
             next |= HostRestoreFlag::ModifyOtherKeys.bit();
         }
         Self(next)
@@ -402,17 +397,27 @@ enum HostKeyboardUpdate {
     ModifyOtherKeys(shepr_term::ModifyOtherKeysLevel),
 }
 
+/// Which keyboard protocol modes the host may hold and shepr must restore.
+#[derive(Clone, Copy)]
+struct KeyboardRestore {
+    kitty_entry: bool,
+    modify_other_keys: bool,
+}
+
 impl HostKeyboardUpdate {
     fn restore_state(
         &self,
         keyboard: &shepr_termio::host_term::modes::HostKeyboardState,
-    ) -> (bool, bool) {
+    ) -> KeyboardRestore {
         match self {
-            Self::EnhancementFlags(flags) => (!flags.is_empty(), false),
-            Self::ModifyOtherKeys(level) => (
-                keyboard.has_kitty_keyboard_entry(),
-                *level != shepr_term::ModifyOtherKeysLevel::Off,
-            ),
+            Self::EnhancementFlags(flags) => KeyboardRestore {
+                kitty_entry: !flags.is_empty(),
+                modify_other_keys: false,
+            },
+            Self::ModifyOtherKeys(level) => KeyboardRestore {
+                kitty_entry: keyboard.has_kitty_keyboard_entry(),
+                modify_other_keys: *level != shepr_term::ModifyOtherKeysLevel::Off,
+            },
         }
     }
 
@@ -468,11 +473,11 @@ pub(super) struct HostModes {
 }
 
 impl HostModes {
-    pub(super) fn new(shell_preference: bool, initially_active: bool) -> Self {
+    pub(super) fn new(mouse_capture: bool) -> Self {
         Self {
             inner: Arc::new(HostModesInner {
                 state: Mutex::new(HostModesState {
-                    mouse: HostMouseMode::new(shell_preference, initially_active),
+                    mouse: HostMouseMode::new(mouse_capture),
                     keyboard: shepr_termio::host_term::modes::HostKeyboardState::default(),
                     pane_keyboard_report_all: false,
                     keyboard_report_all_active: false,
@@ -491,13 +496,11 @@ impl HostModes {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn record_keyboard_restore_state(&self, kitty_entry: bool, modify_other_keys: bool) {
+    fn record_keyboard_restore_state(&self, restore: KeyboardRestore) {
         self.inner
             .restore_state
             .update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                HostRestoreMask(current)
-                    .replace_keyboard(kitty_entry, modify_other_keys)
-                    .bits()
+                HostRestoreMask(current).replace_keyboard(restore).bits()
             });
     }
 
@@ -544,25 +547,44 @@ impl HostModes {
         self.state().mouse.shell_preference()
     }
 
-    pub(super) fn set_mouse_endpoint_request(&self, enabled: bool, sgr_pixels: bool) {
-        self.state().mouse.set_endpoint_request(enabled, sgr_pixels);
+    pub(super) fn set_mouse_endpoint_request(&self, mode: HostMouseCapture) {
+        self.state().mouse.set_endpoint_request(mode);
     }
 
     pub(super) fn clear_mouse_endpoint_request(&self) {
         self.state().mouse.clear_endpoint_request();
     }
 
+    /// Applies the desired mouse mode, writing only what changed.
     pub(super) fn apply_mouse(
         &self,
         writer: &mut impl io::Write,
-        exact_geometry: bool,
-        reassert: bool,
+        host: HostCell,
+    ) -> io::Result<()> {
+        self.write_mouse(writer, host, MouseWrite::OnChange)
+    }
+
+    /// Applies the desired mouse mode and writes it even when unchanged, for
+    /// a host that may have reset it.
+    pub(super) fn reassert_mouse(
+        &self,
+        writer: &mut impl io::Write,
+        host: HostCell,
+    ) -> io::Result<()> {
+        self.write_mouse(writer, host, MouseWrite::Always)
+    }
+
+    fn write_mouse(
+        &self,
+        writer: &mut impl io::Write,
+        host: HostCell,
+        write: MouseWrite,
     ) -> io::Result<()> {
         let state = self.state();
-        if state.mouse.desired().enabled {
+        if state.mouse.desired().enabled() {
             self.record_restore_flag(HostRestoreFlag::MouseCapture);
         }
-        state.mouse.apply(writer, exact_geometry, reassert)
+        state.mouse.apply(writer, host, write)
     }
 
     pub(super) fn set_keyboard_enhancement_flags(
@@ -593,30 +615,26 @@ impl HostModes {
         // helper does not update its own record on failure; restoration reads this mask, never
         // that record. A transient mode write can be retried, while a permanent one ends the
         // session, so either path restores every mode the write may have reached.
-        let (kitty_entry, modify_other_keys) = update.restore_state(&state.keyboard);
-        self.record_keyboard_restore_state(
-            state.keyboard.has_kitty_keyboard_entry() || kitty_entry,
-            state.keyboard.modify_other_keys_active() || modify_other_keys,
-        );
+        let pending = update.restore_state(&state.keyboard);
+        self.record_keyboard_restore_state(KeyboardRestore {
+            kitty_entry: state.keyboard.has_kitty_keyboard_entry() || pending.kitty_entry,
+            modify_other_keys: state.keyboard.modify_other_keys_active()
+                || pending.modify_other_keys,
+        });
         let result = update.apply(writer, &mut state.keyboard);
         if result.is_ok() {
-            self.record_keyboard_restore_state(
-                state.keyboard.has_kitty_keyboard_entry(),
-                state.keyboard.modify_other_keys_active(),
-            );
+            self.record_keyboard_restore_state(KeyboardRestore {
+                kitty_entry: state.keyboard.has_kitty_keyboard_entry(),
+                modify_other_keys: state.keyboard.modify_other_keys_active(),
+            });
         }
         result
     }
 
-    pub(super) fn set_pane_keyboard_report_all(
-        &self,
-        writer: &mut impl io::Write,
-        enabled: bool,
-        shell_requests_report_all: bool,
-    ) -> io::Result<()> {
-        let mut state = self.state();
-        state.pane_keyboard_report_all = enabled;
-        self.apply_keyboard_report_all(writer, &mut state, shell_requests_report_all)
+    /// Records whether the pane asks for every key to be reported. Nothing is
+    /// written until [`Self::sync_shell_keyboard_report_all`] applies it.
+    pub(super) fn set_pane_keyboard_report_all(&self, enabled: bool) {
+        self.state().pane_keyboard_report_all = enabled;
     }
 
     /// Whether the host was last told to report every key as an escape code,
@@ -728,11 +746,11 @@ impl HostModes {
 }
 
 fn restore_modify_other_keys<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
-    shepr_termio::host_term::modes::restore_host_keyboard_protocol(writer, true, false)
+    shepr_termio::host_term::modes::restore_host_modify_other_keys(writer)
 }
 
 fn restore_kitty_keyboard_entry<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
-    shepr_termio::host_term::modes::restore_host_keyboard_protocol(writer, false, true)
+    shepr_termio::host_term::modes::restore_host_kitty_keyboard_entry(writer)
 }
 
 fn restore_color_scheme_reports<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
@@ -752,7 +770,7 @@ fn restore_line_wrap<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<
 }
 
 fn restore_mouse_capture<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
-    set_mouse_capture_with_writer(writer, false, false)
+    set_mouse_capture_with_writer(writer, HostMouseCapture::Off)
 }
 
 fn restore_window_title<W: io::Write>(host_modes: &HostModes, writer: &mut W) -> io::Result<()> {
@@ -774,26 +792,22 @@ fn restore_window_title_stack<W: io::Write>(
 }
 
 pub(super) fn host_mouse_capture_update(
-    current_enabled: bool,
-    current_sgr_pixels: bool,
-    enabled: bool,
-    sgr_pixels_requested: bool,
-    exact_geometry: bool,
-) -> Option<(bool, bool)> {
-    let sgr_pixels = effective_sgr_pixel_mouse(enabled, sgr_pixels_requested, exact_geometry);
-    (current_enabled != enabled || current_sgr_pixels != sgr_pixels)
-        .then_some((enabled, sgr_pixels))
+    current: HostMouseCapture,
+    requested: HostMouseCapture,
+    host: HostCell,
+) -> Option<HostMouseCapture> {
+    let mode = requested.effective(host);
+    (current != mode).then_some(mode)
 }
 
 fn set_mouse_capture_with_writer(
     writer: &mut impl io::Write,
-    enabled: bool,
-    sgr_pixels: bool,
+    mode: HostMouseCapture,
 ) -> io::Result<()> {
     shepr_termio::host_term::modes::clear_host_mouse_reporting(writer)?;
-    if enabled {
+    if mode.enabled() {
         execute!(writer, EnableMouseCapture)?;
-        if sgr_pixels {
+        if mode.pixels() {
             shepr_termio::host_term::modes::enable_host_sgr_pixel_mouse_reporting(writer)?;
         }
         Ok(())
@@ -1003,16 +1017,19 @@ mod tests {
 
     #[test]
     fn mouse_capture_update_only_emits_changed_modes_and_restores_exact_pixels() {
+        let cell = shepr_core::geometry::CellPx::new(9, 18).expect("valid cell");
+        let estimated = HostCell::Estimated(cell);
+        let exact = HostCell::Exact(cell);
         assert_eq!(
-            host_mouse_capture_update(true, false, true, true, false),
+            host_mouse_capture_update(HostMouseCapture::Cells, HostMouseCapture::Pixels, estimated),
             None
         );
         assert_eq!(
-            host_mouse_capture_update(true, false, true, true, true),
-            Some((true, true))
+            host_mouse_capture_update(HostMouseCapture::Cells, HostMouseCapture::Pixels, exact),
+            Some(HostMouseCapture::Pixels)
         );
         assert_eq!(
-            host_mouse_capture_update(true, true, true, true, true),
+            host_mouse_capture_update(HostMouseCapture::Pixels, HostMouseCapture::Pixels, exact),
             None
         );
     }
@@ -1033,7 +1050,7 @@ mod tests {
         TerminalGuard {
             host_escape_disambiguation_active: false,
             buffered_host_input: Vec::new(),
-            host_modes: HostModes::new(false, false),
+            host_modes: HostModes::new(false),
             output_writer: HostTerminalWriter(Arc::new(sink)),
             restored: false,
             restore_state: panicking_restore,
@@ -1066,7 +1083,7 @@ mod tests {
 
     #[test]
     fn host_modes_restore_undoes_keyboard_protocol_and_title_once() {
-        let modes = HostModes::new(false, false);
+        let modes = HostModes::new(false);
         let mut output = Vec::new();
         modes
             .set_keyboard_enhancement_flags(
@@ -1094,10 +1111,11 @@ mod tests {
 
     #[test]
     fn host_modes_report_all_without_a_prior_entry_pushes_and_restore_pops_it() {
-        let modes = HostModes::new(false, false);
+        let modes = HostModes::new(false);
         let mut output = Vec::new();
+        modes.set_pane_keyboard_report_all(true);
         modes
-            .set_pane_keyboard_report_all(&mut output, true, false)
+            .sync_shell_keyboard_report_all(&mut output, false)
             .expect("write to a Vec");
         assert_eq!(output, b"\x1b[>31u");
 
@@ -1108,12 +1126,12 @@ mod tests {
 
     #[test]
     fn host_modes_restores_mouse_capture_enabled_without_reassertion() {
-        let modes = HostModes::new(false, false);
-        modes.set_mouse_endpoint_request(true, false);
+        let modes = HostModes::new(false);
+        modes.set_mouse_endpoint_request(HostMouseCapture::Cells);
 
         let mut setup_output = Vec::new();
         modes
-            .apply_mouse(&mut setup_output, false, false)
+            .apply_mouse(&mut setup_output, HostCell::Unknown)
             .expect("write to a Vec");
         assert!(!setup_output.is_empty());
         assert!(modes.state().mouse.capture_active());
@@ -1137,7 +1155,7 @@ mod tests {
                 b"\x1b[>4;1m",
             ),
         ] {
-            let modes = HostModes::new(false, false);
+            let modes = HostModes::new(false);
             let mut output = Vec::new();
             modes
                 .set_keyboard_enhancement_flags(
@@ -1198,7 +1216,8 @@ mod tests {
         write_terminal_restore_postlude(&mut output).expect("write to a Vec");
         assert_eq!(output, b"\x1b[?25h\x1b[0 q");
         output.clear();
-        set_mouse_capture_with_writer(&mut output, true, true).expect("write to a Vec");
+        set_mouse_capture_with_writer(&mut output, HostMouseCapture::Pixels)
+            .expect("write to a Vec");
         assert!(output.ends_with(b"\x1b[?1016h"), "{output:?}");
         assert_eq!(
             shepr_termio::host_term::modes::HOST_KEYBOARD_QUERY_SEQUENCE,
@@ -1208,30 +1227,14 @@ mod tests {
 
     #[test]
     fn host_mouse_mode_owns_request_and_preference_resolution() {
-        let mut mode = HostMouseMode::new(true, true);
+        let mut mode = HostMouseMode::new(true);
 
-        assert_eq!(
-            mode.desired(),
-            EndpointMouseRequest {
-                enabled: true,
-                sgr_pixels: false,
-            }
-        );
-        mode.set_endpoint_request(false, true);
-        assert_eq!(
-            mode.desired(),
-            EndpointMouseRequest {
-                enabled: false,
-                sgr_pixels: true,
-            }
-        );
+        assert_eq!(mode.desired(), HostMouseCapture::Cells);
+        mode.set_endpoint_request(HostMouseCapture::Off);
+        assert_eq!(mode.desired(), HostMouseCapture::Off);
+        mode.set_endpoint_request(HostMouseCapture::Pixels);
+        assert_eq!(mode.desired(), HostMouseCapture::Pixels);
         mode.clear_endpoint_request();
-        assert_eq!(
-            mode.desired(),
-            EndpointMouseRequest {
-                enabled: true,
-                sgr_pixels: false,
-            }
-        );
+        assert_eq!(mode.desired(), HostMouseCapture::Cells);
     }
 }

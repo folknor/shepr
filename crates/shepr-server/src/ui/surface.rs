@@ -1,23 +1,47 @@
 use ratatui::layout::Rect;
 
-use super::PaneResizer;
-use super::panes::{compute_pane_infos_for_workspace, render_panes, resize_pane_infos};
+use std::collections::HashMap;
+
+use super::PaneSurface;
+use super::panes::{render_panes, visible_chromes, workspace_runtime};
 use crate::app::AppState;
+use shepr_core::chrome::PaneChrome;
 use shepr_core::layout::SplitBorder;
 use shepr_mux::pane::PaneRuntimeRegistry;
-use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
+use shepr_mux::workspace::Workspace;
 use shepr_protocol::{CursorState, FrameData, WorkspaceId};
 
+/// A workspace resolved against the state of one render pass: its position and
+/// id. Resolved once per client per pass, then carried to every reader, which
+/// looks the workspace up by position and checks the id, so a target that went
+/// stale draws nothing instead of drawing another workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct SurfaceTarget {
+    pub(crate) index: usize,
+    pub(crate) id: WorkspaceId,
+}
+
+impl SurfaceTarget {
+    /// The workspace this target names in `app`: the one at `index`, if it
+    /// still has `id`. O(1).
+    pub(crate) fn workspace(self, app: &AppState) -> Option<&Workspace> {
+        app.workspaces()
+            .as_slice()
+            .get(self.index)
+            .filter(|workspace| workspace.id() == self.id)
+    }
+}
+
 pub(crate) struct SurfaceLayout {
-    pub(crate) target: Option<WorkspaceId>,
-    pub(crate) pane_infos: Vec<PaneInfo>,
+    pub(crate) target: Option<SurfaceTarget>,
+    pub(crate) panes: Vec<PaneSurface>,
     pub(crate) split_borders: Vec<SplitBorder>,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct SurfaceView<'a> {
-    pub(crate) target: Option<&'a WorkspaceId>,
-    pub(crate) pane_infos: &'a [PaneInfo],
+    pub(crate) target: Option<SurfaceTarget>,
+    pub(crate) panes: &'a [PaneSurface],
     pub(crate) split_borders: &'a [SplitBorder],
 }
 
@@ -29,61 +53,104 @@ pub(crate) struct SurfaceView<'a> {
 pub(crate) fn compute_surface_for(
     app: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
-    target: Option<WorkspaceId>,
+    target: Option<SurfaceTarget>,
     area: Rect,
 ) -> SurfaceLayout {
-    let resolved = target.as_ref().and_then(|id| app.workspace_index(id));
-    let workspace = resolved.and_then(|workspace_index| app.workspaces.get(workspace_index));
+    let workspace = target.and_then(|target| target.workspace(app));
     let split_borders = workspace.map_or_default(|workspace| {
-        if workspace.zoomed() {
+        if workspace.tree().zoomed() {
             Vec::new()
         } else {
-            workspace
-                .layout()
-                .splits(shepr_mux::workspace::layout_rect(area))
+            workspace.tree().layout().splits(super::core_rect(area))
         }
     });
-    let pane_infos = resolved.map_or_else(Vec::new, |workspace_index| {
-        compute_pane_infos_for_workspace(app, terminal_runtimes, workspace_index, area)
+    let panes = workspace.map_or_else(Vec::new, |workspace| {
+        compute_pane_surfaces(app, terminal_runtimes, workspace, area)
     });
 
     SurfaceLayout {
         target,
-        pane_infos,
+        panes,
         split_borders,
     }
 }
 
-/// Resizes the visible panes of one workspace to their content rects in
-/// `area`: the explicit geometry path the server's PTY size rule runs through.
-pub(crate) fn resize_surface(
+/// How each visible pane of `workspace` looks in `area`, settled against its
+/// runtime's screen mode and scrollback. Reads the runtimes and changes
+/// nothing; the server's geometry path sizes PTYs from the same description.
+pub(crate) fn compute_pane_surfaces(
     app: &AppState,
-    resizer: &mut PaneResizer<'_>,
-    workspace_index: usize,
+    terminal_runtimes: &PaneRuntimeRegistry,
+    workspace: &Workspace,
     area: Rect,
-    cell_size: shepr_term::host::HostCellSize,
-) {
-    let pane_infos = compute_pane_infos_for_workspace(app, resizer.runtimes, workspace_index, area);
-    resize_pane_infos(app, resizer, workspace_index, &pane_infos, cell_size);
+) -> Vec<PaneSurface> {
+    visible_chromes(app, workspace, super::core_rect(area))
+        .into_iter()
+        .map(|chrome| {
+            let runtime = workspace_runtime(workspace, terminal_runtimes, chrome.id);
+            let scrollbars = app.settings().pane_scrollbars;
+            PaneSurface::settle(
+                chrome,
+                scrollbars,
+                scrollbars && runtime.is_some_and(|rt| rt.read().alternate_screen_active()),
+                || runtime.and_then(|rt| rt.read().scroll_metrics()),
+            )
+        })
+        .collect()
+}
+
+/// The chrome of workspaces' visible panes at a surface size, computed once
+/// per workspace and size. Several clients can view one workspace at the same
+/// size, and the chrome depends on nothing else, so a pass that checks each
+/// client's committed panes against it shares the result.
+#[derive(Default)]
+pub(crate) struct PaneLayoutCache {
+    layouts: HashMap<(WorkspaceId, u16, u16), Option<Vec<PaneChrome>>>,
+}
+
+impl PaneLayoutCache {
+    /// The visible panes' chrome of `workspace_id` in a `width` by `height`
+    /// surface; `None` when the workspace is gone.
+    pub(crate) fn chromes(
+        &mut self,
+        app: &AppState,
+        workspace_id: WorkspaceId,
+        width: u16,
+        height: u16,
+    ) -> Option<&[PaneChrome]> {
+        self.layouts
+            .entry((workspace_id, width, height))
+            .or_insert_with(|| {
+                let workspace = app.workspace(&workspace_id)?;
+                Some(visible_chromes(
+                    app,
+                    workspace,
+                    shepr_core::geometry::Rect::new(0, 0, width, height),
+                ))
+            })
+            .as_deref()
+    }
 }
 
 /// Draws the surface's panes and chrome into `frame`, whose size is the
 /// client's surface. Pane cells, typed underline shapes and hyperlinks
-/// included, are written directly in wire form.
+/// included, are written directly in wire form. Returns how each pane's draw
+/// went, so the caller learns of a pane that was held back (a synchronized
+/// update, an unreadable core) from the draw itself.
 pub(crate) fn render_surface(
     app: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
     surface: SurfaceView<'_>,
     frame: &mut FrameData,
-) {
+) -> Vec<(shepr_core::layout::PaneId, shepr_mux::pane::PaneDraw)> {
     render_panes(
         app,
         terminal_runtimes,
         frame,
         surface.target,
-        surface.pane_infos,
+        surface.panes,
         surface.split_borders,
-    );
+    )
 }
 
 pub(crate) fn surface_cursor(
@@ -91,59 +158,16 @@ pub(crate) fn surface_cursor(
     terminal_runtimes: &PaneRuntimeRegistry,
     surface: SurfaceView<'_>,
 ) -> Option<CursorState> {
-    let ws_idx = app.workspace_index(surface.target?)?;
-    let info = surface.pane_infos.iter().find(|info| info.is_focused)?;
-    let runtime = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)?;
-    pane_cursor(app, runtime, ws_idx, info.id, info.inner_rect)
+    let workspace = surface.target?.workspace(app)?;
+    let pane = surface.panes.iter().find(|pane| pane.is_focused)?;
+    let runtime = workspace_runtime(workspace, terminal_runtimes, pane.id)?;
+    pane.cursor(app, runtime)
 }
 
-/// Cursor policy shared by complete surfaces and retained updates. Geometry
-/// belongs to the viewing client, while agent identity belongs to the pane.
-pub(crate) fn pane_cursor(
-    app: &AppState,
-    runtime: &shepr_mux::pane::PaneRuntime,
-    ws_idx: usize,
-    pane_id: shepr_core::layout::PaneId,
-    area: Rect,
-) -> Option<CursorState> {
-    if runtime.read().synchronized_output_active() {
-        return None;
-    }
-    let scrolled_back = super::panes::pane_is_scrolled_back(runtime);
-    let reveal = app.settings.reveal_hidden_cursor_for_cjk_ime
-        && app.settings.cjk_ime_agents.includes(
-            app.workspaces
-                .get(ws_idx)
-                .and_then(|ws| ws.terminal_id(pane_id))
-                .and_then(|terminal_id| app.terminals.get(terminal_id))
-                .and_then(|terminal| terminal.ownership().detected_agent()),
-        );
-
-    if let Some(cursor) = runtime.read().cursor_state(area) {
-        let visible = if reveal {
-            !scrolled_back
-        } else {
-            cursor.visible && !scrolled_back
-        };
-        Some(CursorState {
-            x: cursor.x,
-            y: cursor.y,
-            visible,
-            shape: if reveal && visible {
-                app.settings.cjk_ime_cursor_shape
-            } else {
-                cursor.shape
-            },
-        })
-    } else if reveal && !scrolled_back {
-        Some(CursorState {
-            x: area.x,
-            y: area.y,
-            visible: true,
-            shape: app.settings.cjk_ime_cursor_shape,
-        })
-    } else {
-        None
+#[cfg(test)]
+impl PaneLayoutCache {
+    pub(crate) fn len(&self) -> usize {
+        self.layouts.len()
     }
 }
 
@@ -158,16 +182,11 @@ mod tests {
     async fn explicit_surface_layout_drives_render_cursor_and_hyperlinks() {
         let uri = "https://example.com/surface";
         let mut workspace = Workspace::test_new("shell-workspace");
-        let left = workspace.root_pane();
+        let left = workspace.tree().root();
         let right = workspace.test_split(Direction::Horizontal);
         let mut runtimes = PaneRuntimeRegistry::new();
-        let left_terminal = workspace.terminal_id(left).cloned().expect("left terminal");
-        let right_terminal = workspace
-            .terminal_id(right)
-            .cloned()
-            .expect("right terminal");
         runtimes.insert(
-            left_terminal,
+            left,
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
                 20,
                 8,
@@ -175,18 +194,22 @@ mod tests {
             ),
         );
         runtimes.insert(
-            right_terminal,
+            right,
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 8, b"RIGHT"),
         );
 
         let mut app = AppState::test_new();
         app.test_set_workspaces(vec![workspace]);
-        app.set_bookmark_index(Some(0));
+        app.seed_bookmark_index(Some(0));
 
         let full_area = Rect::new(0, 0, 106, 20);
         let area = full_area;
-        let surface = compute_surface_for(&app, &runtimes, Some(app.workspaces[0].id), area);
-        assert_eq!(surface.pane_infos.len(), 2);
+        let target = SurfaceTarget {
+            index: 0,
+            id: app.ws(0).id(),
+        };
+        let surface = compute_surface_for(&app, &runtimes, Some(target), area);
+        assert_eq!(surface.panes.len(), 2);
         assert!(!surface.split_borders.is_empty());
 
         // The recorded layout area of the workspace is session geometry for spawn
@@ -194,15 +217,16 @@ mod tests {
         app.test_record_all_workspace_areas(Rect::new(9, 8, 7, 6));
 
         let surface_view = SurfaceView {
-            target: surface.target.as_ref(),
-            pane_infos: &surface.pane_infos,
+            target: surface.target,
+            panes: &surface.panes,
             split_borders: &surface.split_borders,
         };
-        let mut frame = FrameData::blank(full_area.width, full_area.height);
+        let mut frame =
+            FrameData::blank(full_area.width, full_area.height).expect("test frame size is valid");
         render_surface(&app, &runtimes, surface_view, &mut frame);
 
         let rendered = frame
-            .cells
+            .cells()
             .iter()
             .map(|cell| cell.symbol.as_str())
             .collect::<String>();
@@ -211,14 +235,59 @@ mod tests {
         assert!(!rendered.contains("shell-workspace"));
 
         // The link is on the cells of the linked text, in the frame's table.
-        assert_eq!(frame.hyperlinks, vec![uri.to_owned()]);
+        assert_eq!(frame.hyperlinks(), [uri.to_owned()]);
         let linked = frame
-            .cells
+            .cells()
             .iter()
             .filter(|cell| cell.hyperlink.is_some())
             .map(|cell| cell.symbol.as_str())
             .collect::<String>();
         assert_eq!(linked, "LEFT");
         assert!(surface_cursor(&app, &runtimes, surface_view,).is_some());
+    }
+
+    #[test]
+    fn a_stale_surface_target_draws_no_workspace() {
+        let mut app = AppState::test_new();
+        app.test_set_workspaces(vec![
+            Workspace::test_new("first"),
+            Workspace::test_new("second"),
+        ]);
+        let runtimes = PaneRuntimeRegistry::new();
+        let area = Rect::new(0, 0, 80, 24);
+        let first = app.ws(0).id();
+        let second = app.ws(1).id();
+
+        let live = SurfaceTarget {
+            index: 1,
+            id: second,
+        };
+        assert_eq!(
+            compute_surface_for(&app, &runtimes, Some(live), area)
+                .panes
+                .len(),
+            1
+        );
+
+        // The position holds another id: the workspace moved since the target
+        // was resolved.
+        let stale = SurfaceTarget {
+            index: 0,
+            id: second,
+        };
+        assert!(stale.workspace(&app).is_none());
+        let layout = compute_surface_for(&app, &runtimes, Some(stale), area);
+        assert!(layout.panes.is_empty());
+        assert!(layout.split_borders.is_empty());
+
+        let past_the_end = SurfaceTarget {
+            index: 2,
+            id: first,
+        };
+        assert!(
+            compute_surface_for(&app, &runtimes, Some(past_the_end), area)
+                .panes
+                .is_empty()
+        );
     }
 }

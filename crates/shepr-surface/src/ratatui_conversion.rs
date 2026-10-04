@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 
 use shepr_protocol::{
-    CellData, CursorState, FrameData, GridCellWidth, SurfaceRect, WireColor, WireStyle,
-    WireStyleFlags,
+    CellData, CursorState, FrameData, FrameGridError, GridCellWidth, SurfaceRect, WireColor,
+    WireStyle, WireStyleFlags,
 };
 
 /// Conversion between a wire color and a ratatui color. Lossless both ways.
@@ -110,10 +110,12 @@ impl WireStyleExt for WireStyle {
 
 /// The wire cell of a cell a ratatui renderer drew.
 pub trait CellDataExt: Sized {
-    /// A cell a ratatui renderer drew. Lossless for everything ratatui can
-    /// express; an underline is `Single` (see
-    /// [`WireStyleExt::from_ratatui_modifier`]). Pane cells are never drawn
-    /// through ratatui, so none reach this.
+    /// A cell a ratatui renderer drew. Lossless for everything the wire cell
+    /// carries; an underline is `Single` (see
+    /// [`WireStyleExt::from_ratatui_modifier`]). Ratatui's diff option (the
+    /// `Skip` hint for its own buffer diff) has no wire counterpart and is
+    /// dropped here. Pane cells are never drawn through ratatui, so none reach
+    /// this.
     fn from_ratatui_cell(cell: &ratatui::buffer::Cell) -> Self;
 }
 
@@ -125,7 +127,6 @@ impl CellDataExt for CellData {
             fg: WireColor::from_ratatui(cell.fg),
             bg: WireColor::from_ratatui(cell.bg),
             style: WireStyle::from_ratatui_modifier(cell.modifier),
-            skip: cell.diff_option == ratatui::buffer::CellDiffOption::Skip,
             hyperlink: None,
         }
     }
@@ -135,12 +136,13 @@ impl CellDataExt for CellData {
 pub trait FrameDataExt: Sized {
     /// The frame a ratatui buffer holds, with `cursor`. `hyperlinks` names
     /// `((x, y), symbol, uri)` triples; a cell takes its link only while it
-    /// still shows that symbol.
+    /// still shows that symbol. Fails when the buffer is not a grid the wire
+    /// budget admits.
     fn from_ratatui_buffer_with_hyperlinks(
         buffer: &ratatui::buffer::Buffer,
         cursor: Option<CursorState>,
         hyperlinks: &[((u16, u16), String, String)],
-    ) -> Self;
+    ) -> Result<Self, FrameGridError>;
 }
 
 impl FrameDataExt for FrameData {
@@ -148,7 +150,7 @@ impl FrameDataExt for FrameData {
         buffer: &ratatui::buffer::Buffer,
         cursor: Option<CursorState>,
         hyperlinks: &[((u16, u16), String, String)],
-    ) -> Self {
+    ) -> Result<Self, FrameGridError> {
         let area = buffer.area;
         let width = area.width;
         let height = area.height;
@@ -188,13 +190,7 @@ impl FrameDataExt for FrameData {
             cells.push(cell);
         }
 
-        FrameData {
-            cells,
-            width,
-            height,
-            cursor,
-            hyperlinks: hyperlink_uris,
-        }
+        Self::new(cells, width, height, cursor, hyperlink_uris)
     }
 }
 
@@ -247,30 +243,36 @@ mod tests {
             shape: shepr_protocol::CursorShapeParam::Default,
         };
         let frame =
-            FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, Some(cursor.clone()), &[]);
+            FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, Some(cursor.clone()), &[])
+                .expect("test precondition");
 
         // Verify frame dimensions.
-        assert_eq!(frame.width, 5);
-        assert_eq!(frame.height, 3);
-        assert_eq!(frame.cells.len(), 15);
-        assert_eq!(frame.cursor, Some(cursor));
+        assert_eq!(frame.width(), 5);
+        assert_eq!(frame.height(), 3);
+        assert_eq!(frame.cells().len(), 15);
+        assert_eq!(frame.cursor(), Some(&cursor));
 
         // Verify specific cells survived the conversion.
-        assert_eq!(frame.cells[0].symbol, "H");
-        assert_eq!(frame.cells[0].fg, WireColor::from_ratatui(Color::Red));
-        assert!(frame.cells[0].style.flags.contains(WireStyleFlags::BOLD));
+        assert_eq!(frame.cells()[0].symbol, "H");
+        assert_eq!(frame.cells()[0].fg, WireColor::from_ratatui(Color::Red));
+        assert!(frame.cells()[0].style.flags.contains(WireStyleFlags::BOLD));
 
-        assert_eq!(frame.cells[1].symbol, "i");
-        assert_eq!(frame.cells[1].fg, WireColor::from_ratatui(Color::Green));
-        assert!(frame.cells[1].style.flags.contains(WireStyleFlags::ITALIC));
+        assert_eq!(frame.cells()[1].symbol, "i");
+        assert_eq!(frame.cells()[1].fg, WireColor::from_ratatui(Color::Green));
+        assert!(
+            frame.cells()[1]
+                .style
+                .flags
+                .contains(WireStyleFlags::ITALIC)
+        );
 
-        assert_eq!(frame.cells[2].symbol, "!");
+        assert_eq!(frame.cells()[2].symbol, "!");
         assert_eq!(
-            frame.cells[2].fg,
+            frame.cells()[2].fg,
             WireColor::from_ratatui(Color::Rgb(255, 128, 0))
         );
         assert_eq!(
-            frame.cells[2].bg,
+            frame.cells()[2].bg,
             WireColor::from_ratatui(Color::Indexed(220))
         );
 
@@ -278,11 +280,18 @@ mod tests {
             &buffer,
             None,
             &[((1, 0), "i".to_owned(), "https://example.com".to_owned())],
-        );
-        assert_eq!(with_links.cells[1].hyperlink, Some(0));
+        )
+        .expect("test precondition");
+        assert_eq!(with_links.cells()[1].hyperlink, Some(0));
+        assert_eq!(with_links.hyperlinks(), ["https://example.com".to_owned()]);
+    }
+
+    #[test]
+    fn a_buffer_outside_the_wire_budget_is_refused() {
+        let buffer = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 0, 0));
         assert_eq!(
-            with_links.hyperlinks,
-            vec!["https://example.com".to_owned()]
+            FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]),
+            Err(FrameGridError::InvalidDimensions)
         );
     }
 

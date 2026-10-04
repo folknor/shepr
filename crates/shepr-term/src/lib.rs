@@ -4,7 +4,8 @@
 //! This crate holds the values both sides of a pane speak about (row and
 //! point coordinates, selections, scroll metrics, colours, underline shapes,
 //! DEC modes, keyboard and mouse protocol modes, display widths, the host's
-//! observed theme and cell size), the VT spellings shepr writes (`seq`), key
+//! observed theme, what a displayable title is and what a word
+//! is in pane text), the VT spellings shepr writes (`seq`), key
 //! identity and chord matching (`key`), and the child-facing key and mouse
 //! encoders. It holds no emulator state and no host terminal I/O: the
 //! emulator adapter lives in `shepr-vt`, and reading or writing the host
@@ -12,6 +13,7 @@
 
 mod color;
 mod coords;
+pub mod copy_motion;
 pub mod host;
 pub mod key;
 mod limits;
@@ -21,7 +23,9 @@ pub mod scroll;
 pub mod selection;
 pub mod seq;
 mod style;
+pub mod title;
 pub mod width;
+pub mod word;
 
 pub use color::{
     ColorQueryTarget, ColorScheme, DefaultColor, NAMED_COLOR_COUNT, RgbColor, default_palette,

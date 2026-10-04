@@ -11,7 +11,7 @@ use crate::test_support::{
 
 const CHILD_MARKER: &str = "SERVER_STOP_TEST_CHILD";
 const ENTRY_POINT: &str =
-    "server::headless::tests::server_stop_tests::idle_server_stop_subprocess_entry_point";
+    "server::headless::tests::server_stop::idle_server_stop_subprocess_entry_point";
 
 /// Far below the stopping client's own wait, and far above what an idle
 /// server needs to shut down once it notices the request.

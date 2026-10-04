@@ -1,7 +1,14 @@
 use std::time::Instant;
 
-use super::checkpoint_retry_delay;
-use crate::limits::CHECKPOINT_MAX_FAILURES;
+use super::{CHECKPOINT_MAX_FAILURES, checkpoint_retry_delay};
+
+/// How a finished host-shutdown checkpoint ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HostCheckpointOutcome {
+    Saved,
+    /// Every attempt failed, or the persister stopped accepting saves.
+    Unsaved,
+}
 
 /// The checkpoint a logind shutdown warning asks for: one save, retried after
 /// failures, whose result the lifecycle takes before it freezes saves. A
@@ -91,11 +98,11 @@ impl HostShutdownCheckpoint {
         }
     }
 
-    /// Takes a finished checkpoint's result (whether it saved), once.
-    pub(super) fn take_result(&mut self) -> Option<bool> {
+    /// Takes a finished checkpoint's result, once.
+    pub(super) fn take_result(&mut self) -> Option<HostCheckpointOutcome> {
         let result = match self {
-            Self::Saved => true,
-            Self::Unsaved => false,
+            Self::Saved => HostCheckpointOutcome::Saved,
+            Self::Unsaved => HostCheckpointOutcome::Unsaved,
             Self::Idle | Self::Requested { .. } => return None,
         };
         *self = Self::Idle;
@@ -110,8 +117,8 @@ impl HostShutdownCheckpoint {
 
 #[cfg(test)]
 mod tests {
+    use super::super::SESSION_SAVE_RETRY_MIN;
     use super::*;
-    use crate::limits::SESSION_SAVE_RETRY_MIN;
     #[test]
     fn a_request_is_ignored_while_requested_or_unclaimed() {
         let mut host = HostShutdownCheckpoint::new();
@@ -142,13 +149,13 @@ mod tests {
         assert_eq!(host.take_result(), None);
         host.request();
         host.saved();
-        assert_eq!(host.take_result(), Some(true));
+        assert_eq!(host.take_result(), Some(HostCheckpointOutcome::Saved));
         assert_eq!(host.take_result(), None);
         host.request();
         for _ in 0..CHECKPOINT_MAX_FAILURES {
             host.failed(Instant::now());
         }
-        assert_eq!(host.take_result(), Some(false));
+        assert_eq!(host.take_result(), Some(HostCheckpointOutcome::Unsaved));
         assert_eq!(host.take_result(), None);
     }
     #[test]

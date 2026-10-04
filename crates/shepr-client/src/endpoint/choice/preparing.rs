@@ -1,10 +1,13 @@
-use super::{ClientEndpointFocusTarget, ClientEndpointId, focus_lane::FocusLane};
+use super::{ClientEndpointId, LocationTarget, focus_lane::FocusLane};
 use shepr_protocol::{
-    BootId, ClientMessage, ClientShellSnapshot, ClientSurfaceSize, PaneSurfaceFrame,
-    PaneSurfacePatch, RequestId, TerminalGeometry,
+    BootId, ClientMessage, ClientShellSnapshot, ClientSurfaceSize, ConnectionGeneration,
+    PaneSurfaceFrame, PaneSurfacePatch, RequestId, TerminalGeometry,
     command::{EndpointError, EndpointReply},
 };
 use std::time::Instant;
+
+/// How long a move may stay Preparing before it fails and the shown endpoint stays.
+pub(crate) const ENDPOINT_MOVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Why a prepared move cannot commit. Rendered only at the notice boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +51,7 @@ impl std::error::Error for MoveFailure {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewLease {
     pub endpoint_id: ClientEndpointId,
-    pub generation: u64,
+    pub generation: ConnectionGeneration,
     pub boot_id: BootId,
     /// The revision of the snapshot the move started from; older snapshots are stale.
     pub minimum_revision: shepr_protocol::ProjectionRevision,
@@ -153,7 +156,7 @@ impl Preparing {
         lease: ViewLease,
         view_request: RequestId,
         geometry: TerminalGeometry,
-        focus: Option<ClientEndpointFocusTarget>,
+        focus: LocationTarget,
         now: Instant,
     ) -> Self {
         Self {
@@ -164,7 +167,7 @@ impl Preparing {
             focus_lane: FocusLane::new(focus),
             evidence: ViewEvidence::default(),
             rejection: None,
-            deadline: now + crate::limits::ENDPOINT_MOVE_TIMEOUT,
+            deadline: now + ENDPOINT_MOVE_TIMEOUT,
         }
     }
     pub fn lease(&self) -> &ViewLease {
@@ -176,7 +179,12 @@ impl Preparing {
     pub fn rejection(&self) -> Option<&MoveFailure> {
         self.rejection.as_ref()
     }
-    fn matches(&self, endpoint: &ClientEndpointId, generation: u64, boot: &BootId) -> bool {
+    fn matches(
+        &self,
+        endpoint: &ClientEndpointId,
+        generation: ConnectionGeneration,
+        boot: &BootId,
+    ) -> bool {
         self.lease.endpoint_id == *endpoint
             && self.lease.generation == generation
             && &self.lease.boot_id == boot
@@ -193,17 +201,17 @@ impl Preparing {
             .evidence
             .coherent_surface(self.floor?, self.geometry.surface_size())?;
         let matches = match &self.focus_lane.desired {
-            Some(ClientEndpointFocusTarget::Pane(id)) => {
+            LocationTarget::Pane(id) => {
                 self.evidence.focused_pane_id.as_ref() == Some(id)
                     && surface
                         .panes
                         .iter()
                         .any(|pane| pane.focused && &pane.pane_id == id)
             }
-            Some(ClientEndpointFocusTarget::Workspace(id)) => {
+            LocationTarget::Workspace(id) => {
                 self.evidence.focused_workspace_id.as_ref() == Some(id)
             }
-            None => true,
+            LocationTarget::Machine => true,
         };
         matches.then_some(surface)
     }
@@ -213,7 +221,7 @@ impl Preparing {
     pub fn accepts_response(
         &self,
         endpoint: &ClientEndpointId,
-        generation: u64,
+        generation: ConnectionGeneration,
         boot: &BootId,
         request: &RequestId,
     ) -> bool {
@@ -226,7 +234,7 @@ impl Preparing {
     pub fn receive_response(
         &mut self,
         endpoint: &ClientEndpointId,
-        generation: u64,
+        generation: ConnectionGeneration,
         boot: &BootId,
         request: &RequestId,
         result: Result<EndpointReply, EndpointError>,
@@ -260,7 +268,7 @@ impl Preparing {
     pub fn receive_snapshot(
         &mut self,
         endpoint: &ClientEndpointId,
-        generation: u64,
+        generation: ConnectionGeneration,
         snapshot: &ClientShellSnapshot,
     ) -> PrepareProgress {
         if !self.matches(endpoint, generation, &snapshot.boot_id)
@@ -274,7 +282,7 @@ impl Preparing {
     pub fn receive_surface(
         &mut self,
         endpoint: &ClientEndpointId,
-        generation: u64,
+        generation: ConnectionGeneration,
         surface: PaneSurfaceFrame,
     ) -> PrepareProgress {
         if !self.matches(endpoint, generation, &surface.boot_id)
@@ -288,7 +296,7 @@ impl Preparing {
     pub fn receive_patch(
         &mut self,
         endpoint: &ClientEndpointId,
-        generation: u64,
+        generation: ConnectionGeneration,
         patch: &PaneSurfacePatch,
     ) -> PrepareProgress {
         if !self.matches(endpoint, generation, &patch.boot_id) {
@@ -311,7 +319,7 @@ impl Preparing {
     }
 
     /// Replaces the navigation the move should show; an in-flight request is not joined.
-    pub fn retarget_focus(&mut self, focus: Option<ClientEndpointFocusTarget>) {
+    pub fn retarget_focus(&mut self, focus: LocationTarget) {
         self.focus_lane.desired = focus;
     }
 
@@ -324,12 +332,13 @@ impl Preparing {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{geometry, lease, preparing, remote};
+    use super::super::tests::{geometry, lease, preparing, remote, view_request};
     use super::*;
+    use crate::tests::test_generation as generation;
     fn snapshot(revision: u64) -> ClientShellSnapshot {
         ClientShellSnapshot {
             boot_id: lease().boot_id,
-            revision: revision.into(),
+            revision: shepr_test_fixtures::counter_at(revision),
             restore_notice: None,
             session_saves_stopped: false,
             focused_workspace_id: None,
@@ -342,15 +351,9 @@ mod tests {
     fn surface(revision: u64) -> PaneSurfaceFrame {
         PaneSurfaceFrame {
             boot_id: lease().boot_id,
-            projection_revision: revision.into(),
-            surface_revision: 1.into(),
-            frame: shepr_protocol::FrameData {
-                cells: vec![],
-                width: 80,
-                height: 24,
-                cursor: None,
-                hyperlinks: vec![],
-            },
+            projection_revision: shepr_test_fixtures::counter_at(revision),
+            surface_revision: shepr_protocol::SurfaceRevision::FIRST,
+            frame: shepr_protocol::FrameData::blank(80, 24).expect("test frame size is valid"),
             panes: vec![],
             splits: vec![],
         }
@@ -359,20 +362,20 @@ mod tests {
         assert_eq!(
             p.receive_response(
                 &remote(),
-                7,
+                generation(7),
                 &lease().boot_id,
-                &"client-shell-view:1:on".into(),
+                &view_request(),
                 Ok(EndpointReply::ClientShellSurfaceSet {
                     active: true,
-                    projection_revision: floor.into()
+                    projection_revision: shepr_test_fixtures::counter_at(floor)
                 })
             ),
             PrepareProgress::Pending
         );
     }
     fn pair(p: &mut Preparing, revision: u64) {
-        p.receive_snapshot(&remote(), 7, &snapshot(revision));
-        p.receive_surface(&remote(), 7, surface(revision));
+        p.receive_snapshot(&remote(), generation(7), &snapshot(revision));
+        p.receive_surface(&remote(), generation(7), surface(revision));
     }
     #[test]
     fn ready_needs_the_ack_the_focus_and_an_exact_snapshot_surface_pair() {
@@ -382,10 +385,10 @@ mod tests {
         assert!(p.ready().is_none());
         acknowledge(p, 2);
         assert!(p.ready().is_some());
-        p.receive_snapshot(&remote(), 7, &snapshot(3));
+        p.receive_snapshot(&remote(), generation(7), &snapshot(3));
         assert!(p.ready().is_none());
-        p.retarget_focus(Some(ClientEndpointFocusTarget::Workspace(
-            crate::tests::test_workspace_id("w1"),
+        p.retarget_focus(LocationTarget::Workspace(crate::tests::test_workspace_id(
+            "w1",
         )));
         pair(p, 3);
         assert!(p.ready().is_none());
@@ -405,12 +408,21 @@ mod tests {
         let mut c = preparing();
         let p = c.preparing_mut().expect("preparing");
         let mut s = snapshot(2);
-        assert_eq!(p.receive_snapshot(&remote(), 8, &s), PrepareProgress::Stale);
+        assert_eq!(
+            p.receive_snapshot(&remote(), generation(8), &s),
+            PrepareProgress::Stale
+        );
         s.boot_id = crate::tests::test_boot_id("old-boot");
-        assert_eq!(p.receive_snapshot(&remote(), 7, &s), PrepareProgress::Stale);
+        assert_eq!(
+            p.receive_snapshot(&remote(), generation(7), &s),
+            PrepareProgress::Stale
+        );
         let mut s = surface(2);
         s.boot_id = crate::tests::test_boot_id("old-boot");
-        assert_eq!(p.receive_surface(&remote(), 7, s), PrepareProgress::Stale);
+        assert_eq!(
+            p.receive_surface(&remote(), generation(7), s),
+            PrepareProgress::Stale
+        );
         acknowledge(p, 2);
         assert!(p.ready().is_none());
     }
@@ -421,9 +433,9 @@ mod tests {
         assert_eq!(
             p.receive_response(
                 &remote(),
-                7,
+                generation(7),
                 &crate::tests::test_boot_id("old-boot"),
-                &"client-shell-view:1:on".into(),
+                &view_request(),
                 Ok(EndpointReply::Done)
             ),
             PrepareProgress::Stale
@@ -438,9 +450,9 @@ mod tests {
         assert_eq!(
             p.receive_response(
                 &remote(),
-                7,
+                generation(7),
                 &lease().boot_id,
-                &"client-shell-view:1:on".into(),
+                &view_request(),
                 Ok(EndpointReply::Done)
             ),
             PrepareProgress::Rejected
@@ -453,9 +465,9 @@ mod tests {
         let p = c.preparing_mut().expect("preparing");
         p.receive_response(
             &remote(),
-            7,
+            generation(7),
             &lease().boot_id,
-            &"client-shell-view:1:on".into(),
+            &view_request(),
             Err(EndpointError::ShuttingDown),
         );
         acknowledge_after_rejection(p);
@@ -465,12 +477,12 @@ mod tests {
     fn acknowledge_after_rejection(p: &mut Preparing) {
         p.receive_response(
             &remote(),
-            7,
+            generation(7),
             &lease().boot_id,
-            &"client-shell-view:1:on".into(),
+            &view_request(),
             Ok(EndpointReply::ClientShellSurfaceSet {
                 active: true,
-                projection_revision: 2.into(),
+                projection_revision: shepr_test_fixtures::counter_at(2),
             }),
         );
     }
@@ -479,10 +491,13 @@ mod tests {
         let mut c = preparing();
         let p = c.preparing_mut().expect("preparing");
         acknowledge(p, 2);
-        p.receive_snapshot(&remote(), 7, &snapshot(2));
+        p.receive_snapshot(&remote(), generation(7), &snapshot(2));
         let mut s = surface(2);
-        s.frame.width = 79;
-        assert_eq!(p.receive_surface(&remote(), 7, s), PrepareProgress::Stale);
+        s.frame = shepr_protocol::FrameData::blank(79, 24).expect("test frame size is valid");
+        assert_eq!(
+            p.receive_surface(&remote(), generation(7), s),
+            PrepareProgress::Stale
+        );
         assert!(p.ready().is_none());
     }
     #[test]
@@ -490,19 +505,19 @@ mod tests {
         let mut c = preparing();
         let p = c.preparing_mut().expect("preparing");
         acknowledge(p, 2);
-        p.receive_snapshot(&remote(), 7, &snapshot(2));
+        p.receive_snapshot(&remote(), generation(7), &snapshot(2));
         let patch = PaneSurfacePatch {
             boot_id: lease().boot_id,
-            projection_revision: 2.into(),
-            base_surface_revision: 1.into(),
-            surface_revision: 2.into(),
+            projection_revision: shepr_test_fixtures::counter_at(2),
+            base_surface_revision: shepr_test_fixtures::counter_at(1),
+            surface_revision: shepr_test_fixtures::counter_at(2),
             rows: vec![],
             panes: vec![],
             cursor: None,
         };
-        p.receive_patch(&remote(), 7, &patch);
+        p.receive_patch(&remote(), generation(7), &patch);
         assert!(p.ready().is_none());
-        p.receive_surface(&remote(), 7, surface(2));
+        p.receive_surface(&remote(), generation(7), surface(2));
         assert!(p.ready().is_some());
     }
     #[test]
@@ -511,7 +526,10 @@ mod tests {
         let p = c.preparing_mut().expect("preparing");
         acknowledge(p, 2);
         pair(p, 2);
-        assert!(p.update_geometry(TerminalGeometry::new(81, 24, 8, 16, false)));
+        assert!(p.update_geometry(TerminalGeometry::from_host(
+            shepr_core::geometry::GridSize::clamped(81, 24),
+            shepr_core::geometry::HostCell::from_host(8, 16, false)
+        )));
         assert!(p.ready().is_none());
     }
     #[test]

@@ -1,22 +1,22 @@
 use super::*;
 use serde::{Deserialize, Serialize};
-use shepr_core::geometry::SplitBranch;
+use shepr_core::layout::SplitBranch;
 
 /// Origin-relative geometry for one pane in a rendered pane surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSurfacePane {
     pub pane_id: PublicPaneId,
-    pub content_revision: u64,
+    pub content_revision: ContentRevision,
     pub rect: SurfaceRect,
     pub inner_rect: SurfaceRect,
     pub scrollbar_rect: Option<SurfaceRect>,
     pub scroll: Option<PaneSurfaceScrollMetrics>,
     pub focused: bool,
     pub mouse_reporting: bool,
-    pub sgr_pixel_mouse: bool,
+    /// Whether the child asked for mode 1016 and the one extent it was told,
+    /// the same for every client viewing the pane.
+    pub pixel_mouse: shepr_term::mouse::PanePixelMouse,
     pub alternate_screen_active: bool,
-    pub pixel_width: u32,
-    pub pixel_height: u32,
 }
 
 pub use shepr_term::ScrollMetrics as PaneSurfaceScrollMetrics;
@@ -33,42 +33,18 @@ pub struct PaneSurfaceSplit {
         deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_SPLIT_PATH, _, _>"
     )]
     pub path: Vec<SplitBranch>,
+    /// The workspace's layout epoch `path` was read at; a ratio command
+    /// names the split by this pair.
+    pub epoch: shepr_core::layout::LayoutEpoch,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PaneSurfaceSplitDirection {
-    Horizontal,
-    Vertical,
-}
+/// The axis of a split handle is the layout's own axis; the wire carries the
+/// core type, which encodes as a two-variant enum index.
+pub use shepr_core::layout::Direction as PaneSurfaceSplitDirection;
 
-/// Wire-safe rectangle relative to a pane surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SurfaceRect {
-    pub x: u16,
-    pub y: u16,
-    pub width: u16,
-    pub height: u16,
-}
-
-impl From<shepr_core::geometry::Rect> for SurfaceRect {
-    fn from(rect: shepr_core::geometry::Rect) -> Self {
-        Self {
-            x: rect.x,
-            y: rect.y,
-            width: rect.width,
-            height: rect.height,
-        }
-    }
-}
-
-impl From<shepr_core::layout::Direction> for PaneSurfaceSplitDirection {
-    fn from(direction: shepr_core::layout::Direction) -> Self {
-        match direction {
-            shepr_core::layout::Direction::Horizontal => Self::Horizontal,
-            shepr_core::layout::Direction::Vertical => Self::Vertical,
-        }
-    }
-}
+/// Rectangle relative to a pane surface: the layout's own cell rectangle,
+/// carried on the wire as it is.
+pub use shepr_core::geometry::Rect as SurfaceRect;
 
 /// One server-rendered workspace surface without sidebar or overlays.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,14 +97,14 @@ impl SurfaceTopology<'_> {
 impl PaneSurfaceFrame {
     /// Whether this surface has the pane grid requested by the client.
     pub fn is_sized_for(&self, size: ClientSurfaceSize) -> bool {
-        self.frame.width == size.cols && self.frame.height == size.rows
+        self.frame.width() == size.cols && self.frame.height() == size.rows
     }
 
     pub fn topology(&self) -> SurfaceTopology<'_> {
         SurfaceTopology {
-            width: self.frame.width,
-            height: self.frame.height,
-            hyperlinks: &self.frame.hyperlinks,
+            width: self.frame.width(),
+            height: self.frame.height(),
+            hyperlinks: self.frame.hyperlinks(),
             panes: &self.panes,
             splits: &self.splits,
         }
@@ -206,10 +182,10 @@ impl From<&PaneSurfaceFrame> for SurfaceProjectionMeta {
     fn from(surface: &PaneSurfaceFrame) -> Self {
         Self {
             frame: SurfaceFrameMeta {
-                width: surface.frame.width,
-                height: surface.frame.height,
-                cursor: surface.frame.cursor.clone(),
-                hyperlinks: surface.frame.hyperlinks.clone(),
+                width: surface.frame.width(),
+                height: surface.frame.height(),
+                cursor: surface.frame.cursor().cloned(),
+                hyperlinks: surface.frame.hyperlinks().to_vec(),
             },
             panes: surface.panes.clone(),
             splits: surface.splits.clone(),
@@ -229,27 +205,28 @@ impl SurfaceProjectionMeta {
     }
 
     /// The complete surface this metadata describes, with `cells` as its grid.
+    /// Fails when `cells` is not a valid grid for the metadata's size and links.
     pub fn into_surface(
         self,
         boot_id: BootId,
         projection_revision: ProjectionRevision,
         surface_revision: SurfaceRevision,
         cells: Vec<CellData>,
-    ) -> PaneSurfaceFrame {
-        PaneSurfaceFrame {
+    ) -> Result<PaneSurfaceFrame, FrameGridError> {
+        Ok(PaneSurfaceFrame {
             boot_id,
             projection_revision,
             surface_revision,
-            frame: FrameData {
+            frame: FrameData::new(
                 cells,
-                width: self.frame.width,
-                height: self.frame.height,
-                cursor: self.frame.cursor,
-                hyperlinks: self.frame.hyperlinks,
-            },
+                self.frame.width,
+                self.frame.height,
+                self.frame.cursor,
+                self.frame.hyperlinks,
+            )?,
             panes: self.panes,
             splits: self.splits,
-        }
+        })
     }
 }
 

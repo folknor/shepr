@@ -15,7 +15,7 @@ pub(in crate::shell) fn snapshot() -> ClientShellSnapshot {
         boot_id: crate::tests::test_boot_id("boot-1"),
         restore_notice: None,
         session_saves_stopped: false,
-        revision: shepr_protocol::ProjectionRevision::new(1),
+        revision: shepr_protocol::ProjectionRevision::FIRST,
         focused_workspace_id: Some(test_workspace_id("w1")),
         focused_pane_id: Some(test_pane_id("w1:p1")),
         workspaces: vec![ClientShellWorkspace {
@@ -41,8 +41,8 @@ pub(in crate::shell) fn surface() -> PaneSurfaceFrame {
     let surface_buffer = Buffer::with_lines(["LIVE", "PANE"]);
     PaneSurfaceFrame {
         boot_id: crate::tests::test_boot_id("boot-1"),
-        projection_revision: shepr_protocol::ProjectionRevision::new(1),
-        surface_revision: shepr_protocol::SurfaceRevision::new(1),
+        projection_revision: shepr_protocol::ProjectionRevision::FIRST,
+        surface_revision: shepr_protocol::SurfaceRevision::FIRST,
         frame: FrameData::from_ratatui_buffer_with_hyperlinks(
             &surface_buffer,
             Some(shepr_protocol::CursorState {
@@ -52,10 +52,11 @@ pub(in crate::shell) fn surface() -> PaneSurfaceFrame {
                 shape: shepr_protocol::CursorShapeParam::SteadyBlock,
             }),
             &[],
-        ),
+        )
+        .expect("test buffer is a valid frame"),
         panes: vec![PaneSurfacePane {
             pane_id: test_pane_id("w1:p1"),
-            content_revision: 0,
+            content_revision: shepr_protocol::ContentRevision::default(),
             rect: SurfaceRect {
                 x: 0,
                 y: 0,
@@ -79,10 +80,8 @@ pub(in crate::shell) fn surface() -> PaneSurfaceFrame {
             )),
             focused: true,
             mouse_reporting: false,
-            sgr_pixel_mouse: false,
+            pixel_mouse: shepr_term::mouse::PanePixelMouse::OFF,
             alternate_screen_active: false,
-            pixel_width: 0,
-            pixel_height: 0,
         }],
         splits: Vec::new(),
     }
@@ -90,8 +89,8 @@ pub(in crate::shell) fn surface() -> PaneSurfaceFrame {
 
 fn frame_rows(frame: &FrameData) -> Vec<String> {
     frame
-        .cells
-        .chunks(frame.width as usize)
+        .cells()
+        .chunks(frame.width() as usize)
         .map(|row| row.iter().map(|cell| cell.symbol.as_str()).collect())
         .collect()
 }
@@ -99,13 +98,13 @@ fn frame_rows(frame: &FrameData) -> Vec<String> {
 /// The wire cell at `position` of `frame`. Composed frames are read as wire cells, never
 /// converted back to a ratatui buffer.
 fn frame_cell(frame: &FrameData, (x, y): (u16, u16)) -> &shepr_protocol::CellData {
-    assert!(
-        x < frame.width && y < frame.height,
-        "cell ({x}, {y}) is outside the {}x{} frame",
-        frame.width,
-        frame.height
-    );
-    &frame.cells[usize::from(y) * usize::from(frame.width) + usize::from(x)]
+    frame.cell(x, y).unwrap_or_else(|| {
+        panic!(
+            "cell ({x}, {y}) is outside the {}x{} frame",
+            frame.width(),
+            frame.height()
+        )
+    })
 }
 
 fn cell_fg(frame: &FrameData, position: (u16, u16)) -> ratatui::style::Color {
@@ -126,7 +125,7 @@ fn cell_is_bold(frame: &FrameData, position: (u16, u16)) -> bool {
 /// Absolute cell position of `needle` inside `area`, for style assertions.
 fn cell_symbol_position(frame: &FrameData, area: Rect, needle: &str) -> (u16, u16) {
     let rows = frame_rows(frame);
-    for y in area.y..area.bottom().min(frame.height) {
+    for y in area.y..area.bottom().min(frame.height()) {
         let row = &rows[y as usize];
         let slice = row
             .chars()
@@ -138,7 +137,7 @@ fn cell_symbol_position(frame: &FrameData, area: Rect, needle: &str) -> (u16, u1
             return (column, y);
         }
     }
-    let visible = (area.y..area.bottom().min(frame.height))
+    let visible = (area.y..area.bottom().min(frame.height()))
         .map(|y| {
             rows[y as usize]
                 .chars()
@@ -148,6 +147,20 @@ fn cell_symbol_position(frame: &FrameData, area: Rect, needle: &str) -> (u16, u1
         })
         .collect::<Vec<_>>();
     panic!("symbol {needle:?} not found in {area:?}: {visible:?}");
+}
+
+/// Presses Enter in the open overlay, which activates what it highlights.
+pub(in crate::shell) fn press_overlay_enter(
+    state: &mut crate::shell::state::ClientShellState,
+    outcome: &mut crate::shell::state::ClientShellInput,
+) {
+    state.route_overlay_key(
+        &shepr_term::key::TerminalKey::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
+        outcome,
+    );
 }
 
 pub(in crate::shell) fn pane_scroll_result(
@@ -190,6 +203,7 @@ mod copy;
 mod endpoint_requests;
 mod endpoints;
 mod mouse_selection;
+mod navigator;
 mod presentation_regressions;
 mod startup_overlays;
 

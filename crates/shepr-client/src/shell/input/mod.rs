@@ -1,31 +1,44 @@
 use shepr_termio::input::KeybindAction;
 use shepr_termio::input::KeybindDispatch;
 
-use crate::shell::overlays::notices::{ClientEndpointNoticeKind, NoticeCode};
-use crate::shell::state::ClientShellOverlay;
+use crate::shell::notices::{ClientEndpointNoticeKind, NoticeCode};
+use crate::shell::overlays::Overlay;
 use crossterm::event::KeyEventKind;
-pub(in crate::shell) mod copy_mode;
 pub(in crate::shell) mod events;
 pub(in crate::shell) mod hit_test;
 pub(in crate::shell) mod mouse;
+pub(in crate::shell) mod pointer;
 pub(in crate::shell) mod scroll_lanes;
+pub(in crate::shell) mod selection;
 pub(in crate::shell) mod word_bounds;
 pub(in crate::shell) mod word_selection;
 
 use crate::shell::state::{
-    ClientHelpOverlay, ClientInputContext, ClientNavigatorOverlay, ClientShellInput,
-    ClientShellMode, ClientShellRequest, ClientShellState,
+    ClientInputContext, ClientShellInput, ClientShellMode, ClientShellRequest, ClientShellState,
 };
 use shepr_protocol::ClientMessage;
 
 use crate::shell::input::events::PaneInputBatchAccounting;
 
 use crate::input_wire::WirePaneInput;
-use crate::limits::{CLIPBOARD_RESULT_QUEUE_CAPACITY, MODAL_PASTE_CLIPBOARD_TIMEOUT};
 use crossterm::event::{KeyCode, KeyModifiers};
 use shepr_protocol::ClientPaneInputEvent;
 use shepr_termio::input::fixed_keys::{self, FixedKey, KeyBinding, ModifierMatch};
 use shepr_termio::input::raw_input::RawInputEvent;
+
+/// Maximum time Ctrl+V waits for the clipboard helper in a modal input.
+///
+/// The timeout keeps a stalled clipboard owner from freezing modal input.
+const MODAL_PASTE_CLIPBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+/// Keys held for copy mode while one of its requests is in flight.
+///
+/// Copy-mode keys wait for the request ahead of them so motions stay in order; past this many,
+/// later keys are dropped with a notice instead of growing the queue without bound.
+pub(in crate::shell) const MAX_COPY_INPUT_QUEUE: usize = 256;
+/// Channel capacity for the asynchronous clipboard helper.
+///
+/// The channel suffices because every read has its receiver and completes once.
+const CLIPBOARD_RESULT_QUEUE_CAPACITY: usize = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResizeCommand {
@@ -186,10 +199,10 @@ pub(in crate::shell) fn navigate_alias_matches(
 
 macro_rules! define_navigate_actions {
     (
-        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
+        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
     ) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum NavigateAction {
@@ -214,10 +227,10 @@ fn resolve_navigate_binding(
 ) -> Option<NavigateAction> {
     macro_rules! resolve_navigate {
         (
-            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
+            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
         ) => {{
             $(
                 if keybinds.navigate.$navigate_field.matches_direct_key(key)
@@ -254,18 +267,15 @@ fn host_theme_update(event: &RawInputEvent) -> Option<shepr_protocol::ClientHost
     match event {
         RawInputEvent::HostDefaultColor { kind, color } => {
             Some(ClientHostThemeUpdate::DefaultColor {
-                kind: (*kind).into(),
-                color: (*color).into(),
+                kind: *kind,
+                color: *color,
             })
         }
-        RawInputEvent::HostPaletteColors { colors } => Some(ClientHostThemeUpdate::PaletteColors(
-            colors
-                .iter()
-                .map(|(index, color)| (*index, (*color).into()))
-                .collect(),
-        )),
+        RawInputEvent::HostPaletteColors { colors } => {
+            Some(ClientHostThemeUpdate::PaletteColors(colors.clone()))
+        }
         RawInputEvent::HostColorSchemeChanged(appearance) => {
-            Some(ClientHostThemeUpdate::Appearance((*appearance).into()))
+            Some(ClientHostThemeUpdate::Appearance(*appearance))
         }
         _ => None,
     }
@@ -290,7 +300,7 @@ fn push_host_theme_update(
 impl ClientShellState {
     pub(crate) fn host_keyboard_report_all_requested(&self) -> bool {
         matches!(
-            self.mode,
+            self.mode.kind(),
             ClientShellMode::Prefix | ClientShellMode::Navigate
         )
     }
@@ -317,14 +327,14 @@ impl ClientShellState {
                 };
                 mouse.column = column;
                 mouse.row = row;
-                let previous = self.host_mouse_pixels.replace(pixels);
+                let previous = self.pointer.host_mouse_pixels.replace(pixels);
                 self.handle_raw_event(
                     RawInputEvent::Mouse(mouse),
                     now,
                     &mut outcome,
                     &mut accounting,
                 );
-                self.host_mouse_pixels = previous;
+                self.pointer.host_mouse_pixels = previous;
             } else {
                 self.handle_raw_event(input.event, now, &mut outcome, &mut accounting);
             }
@@ -364,7 +374,7 @@ impl ClientShellState {
                 }
                 if self.insert_overlay_text(&text) {
                     outcome.repaint = true;
-                } else if self.overlay.is_none() && self.mode == ClientShellMode::Terminal {
+                } else if self.overlay.is_none() && self.mode.is(ClientShellMode::Terminal) {
                     self.push_focused_paste(text, outcome, accounting);
                 }
             }
@@ -421,7 +431,7 @@ impl ClientShellState {
     }
 
     fn prepare_committed_text(&mut self, text: &str, outcome: &mut ClientShellInput) -> bool {
-        if !(self.mode == ClientShellMode::Navigate && self.workspace_preview_action_blocked())
+        if !(self.mode.is(ClientShellMode::Navigate) && self.workspace_preview_action_blocked())
             && self.insert_copy_search_text(text)
         {
             outcome.repaint = true;
@@ -444,9 +454,16 @@ impl ClientShellState {
     ) {
         // Preserve input order through the outstanding read, including keys that interrupt copy
         // mode. Replaying the whole stream keeps Esc and the prefix behind the keys they follow.
-        if self.copy_pipeline.in_flight() && self.copy_mode_owns_input() {
-            if self.copy_pipeline.keys_len() < crate::limits::MAX_COPY_INPUT_QUEUE {
-                self.copy_pipeline.push_key(key);
+        if self
+            .copy
+            .as_ref()
+            .is_some_and(|session| session.pipeline().in_flight())
+            && self.copy_mode_owns_input()
+        {
+            if let Some(session) = self.copy.as_mut()
+                && session.pipeline().keys_len() < MAX_COPY_INPUT_QUEUE
+            {
+                session.pipeline_mut().push_key(key);
                 return;
             }
             if !self.copy_mode_interrupt_key(&key) {
@@ -523,21 +540,11 @@ impl ClientShellState {
                 accounting,
             );
         }
-        if let Some(gesture) = self.pane_mouse_gesture.take() {
+        if let Some(gesture) = self.pointer.pane_mouse_gesture.take() {
             let modifiers = gesture
                 .last_event
                 .modifiers
                 .difference(gesture.stripped_modifiers);
-            let geometry = matches!(
-                gesture.last_position,
-                shepr_protocol::ClientMousePosition::Pixels { .. }
-            )
-            .then_some(shepr_protocol::ClientMouseGeometry {
-                cols: gesture.hit.inner_rect.width,
-                rows: gesture.hit.inner_rect.height,
-                width_px: gesture.hit.pixel_width,
-                height_px: gesture.hit.pixel_height,
-            });
             crate::shell::input::events::push_target_event(
                 gesture.hit.pane_id,
                 ClientPaneInputEvent::Mouse {
@@ -545,7 +552,6 @@ impl ClientShellState {
                         shepr_protocol::ClientMouseButton::from_host(gesture.button),
                     ),
                     position: gesture.last_position,
-                    geometry,
                     modifiers: shepr_protocol::WireModifiers::from_host(modifiers),
                     lines: self.config.mouse_scroll_lines,
                 },
@@ -553,7 +559,9 @@ impl ClientShellState {
                 accounting,
             );
         }
-        self.copy_pipeline.clear_keys();
+        if let Some(session) = self.copy.as_mut() {
+            session.pipeline_mut().clear_keys();
+        }
     }
 
     fn execute_repeat_plan(
@@ -598,34 +606,23 @@ impl ClientShellState {
 
     pub(in crate::shell) fn modal_paste_target_active(&self) -> bool {
         if self.overlay.is_none()
-            && self.mode == ClientShellMode::Navigate
+            && self.mode.is(ClientShellMode::Navigate)
             && self.workspace_preview_action_blocked()
         {
             return false;
         }
         if self.copy_mode_owns_input()
             && self
-                .copy_mode
+                .copy
                 .as_ref()
                 .and_then(|copy_mode| copy_mode.search.as_ref())
                 .is_some_and(|search| search.prompt.is_some())
         {
             return true;
         }
-        matches!(
-            self.overlay.as_ref(),
-            Some(
-                ClientShellOverlay::Rename(_)
-                    | ClientShellOverlay::Navigator(ClientNavigatorOverlay {
-                        search_focused: true,
-                        ..
-                    })
-                    | ClientShellOverlay::Help(ClientHelpOverlay {
-                        search_focused: true,
-                        ..
-                    })
-            )
-        )
+        self.overlay
+            .as_ref()
+            .is_some_and(Overlay::accepts_modal_paste)
     }
 
     pub(in crate::shell) fn handle_modal_paste_shortcut_with(
@@ -680,7 +677,7 @@ impl ClientShellState {
             outcome.repaint |= had_selection;
         }
 
-        match self.mode {
+        match self.mode.kind() {
             ClientShellMode::Terminal => {
                 if let Some(binding) =
                     shepr_termio::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
@@ -689,14 +686,14 @@ impl ClientShellState {
                     return None;
                 }
                 if self.config.keybinds.prefix.matches(key) {
-                    self.mode = ClientShellMode::Prefix;
+                    self.mode.set(ClientShellMode::Prefix);
                     outcome.repaint = true;
                     return None;
                 }
                 self.focused_pane_id()
             }
             ClientShellMode::Prefix => {
-                let return_mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
+                let return_mode = if self.copy.as_ref().is_some_and(|copy_mode| {
                     copy_mode.pane_is_focused(self.focused_pane_id().as_ref())
                 }) {
                     ClientShellMode::Copy
@@ -704,24 +701,24 @@ impl ClientShellState {
                     ClientShellMode::Terminal
                 };
                 if self.config.keybinds.prefix.matches(key) {
-                    self.mode = return_mode;
+                    self.mode.set(return_mode);
                     outcome.repaint = true;
                     return self.focused_pane_id();
                 }
                 if key.code == KeyCode::Esc {
-                    self.mode = return_mode;
+                    self.mode.set(return_mode);
                     outcome.repaint = true;
                     return None;
                 }
                 if let Some(binding) =
                     shepr_termio::input::resolve_prefix_binding(&self.config.keybinds.keybinds, key)
                 {
-                    self.mode = return_mode;
+                    self.mode.set(return_mode);
                     outcome.repaint = true;
                     self.record_binding(&binding, outcome);
                     return None;
                 }
-                self.mode = return_mode;
+                self.mode.set(return_mode);
                 outcome.repaint = true;
                 None
             }
@@ -735,13 +732,13 @@ impl ClientShellState {
             }
             ClientShellMode::Copy => {
                 if self
-                    .copy_mode
+                    .copy
                     .as_ref()
                     .and_then(|copy_mode| copy_mode.search.as_ref())
                     .is_none_or(|search| search.prompt.is_none())
                     && self.config.keybinds.prefix.matches(key)
                 {
-                    self.mode = ClientShellMode::Prefix;
+                    self.mode.set(ClientShellMode::Prefix);
                     outcome.repaint = true;
                 } else {
                     self.route_copy_mode_key(key, outcome);
@@ -755,7 +752,7 @@ impl ClientShellState {
     /// not decide whether copy currently owns input; `copy_mode_owns_input` does.
     pub(in crate::shell) fn copy_or_terminal_mode(&self) -> ClientShellMode {
         if self
-            .copy_mode
+            .copy
             .as_ref()
             .is_some_and(|copy_mode| copy_mode.pane_is_focused(self.focused_pane_id().as_ref()))
         {
@@ -785,8 +782,7 @@ impl ClientShellState {
     ) {
         self.pending_workspace_highlight = None;
         if self.config.keybinds.prefix.matches(key) {
-            self.mode = self.copy_or_terminal_mode();
-            self.navigate_workspace_id = None;
+            self.mode.set(self.copy_or_terminal_mode());
             outcome.repaint = true;
             return;
         }
@@ -794,8 +790,7 @@ impl ClientShellState {
         let navigate_binding = resolve_navigate_binding(&self.config.keybinds.keybinds, key);
         match navigate_binding.as_ref() {
             Some(NavigateAction::Back) => {
-                self.mode = self.copy_or_terminal_mode();
-                self.navigate_workspace_id = None;
+                self.mode.set(self.copy_or_terminal_mode());
                 outcome.repaint = true;
                 return;
             }
@@ -833,12 +828,12 @@ impl ClientShellState {
             match navigate_binding {
                 NavigateAction::SwitchWorkspace(index) => {
                     let valid = self
-                        .snapshot
-                        .as_deref()
+                        .endpoints
+                        .active
+                        .snapshot()
                         .is_some_and(|snapshot| snapshot.workspaces.get(index).is_some());
                     if valid {
-                        self.mode = ClientShellMode::Terminal;
-                        self.navigate_workspace_id = None;
+                        self.mode.set(ClientShellMode::Terminal);
                         self.record_binding(&KeybindAction::SwitchWorkspace(index), outcome);
                         outcome.repaint = true;
                     }
@@ -910,20 +905,17 @@ impl ClientShellState {
             self.cycle_pane(true, outcome);
         } else {
             if !preserve_navigate {
-                self.mode = self.copy_or_terminal_mode();
+                self.mode.set(self.copy_or_terminal_mode());
             }
             self.record_binding(binding, outcome);
             // Navigate mode was left just above, but a close dialog opened from
             // it should still cancel back into it.
-            if let Some(ClientShellOverlay::ConfirmClose(confirm)) = self.overlay.as_mut() {
+            if let Some(Overlay::ConfirmClose(confirm)) = self.overlay.as_mut() {
                 confirm.return_to_navigate = true;
             }
         }
-        if !preserve_navigate {
-            if self.mode == ClientShellMode::Navigate {
-                self.mode = self.copy_or_terminal_mode();
-            }
-            self.navigate_workspace_id = None;
+        if !preserve_navigate && self.mode.is(ClientShellMode::Navigate) {
+            self.mode.set(self.copy_or_terminal_mode());
         }
         outcome.repaint = true;
     }
@@ -934,12 +926,16 @@ impl ClientShellState {
     ) -> bool {
         match binding {
             KeybindAction::SwitchWorkspace(index) => self
-                .snapshot
-                .as_deref()
+                .endpoints
+                .active
+                .snapshot()
                 .is_some_and(|snapshot| snapshot.workspaces.get(*index).is_some()),
-            KeybindAction::FocusAgent(index) => {
-                self.agent_panel_model.targets().get(*index).is_some()
-            }
+            KeybindAction::FocusAgent(index) => self
+                .endpoints
+                .agent_panel_model
+                .targets()
+                .get(*index)
+                .is_some(),
             _ => true,
         }
     }
@@ -950,8 +946,9 @@ impl ClientShellState {
         } else {
             shepr_termio::input::KeybindAction::CyclePaneNext
         };
-        if let Some(command) = self.endpoint_command_for_action(action) {
-            self.push_endpoint_command(command, outcome);
+        // Cycling never carries a sidebar reveal.
+        if let Some(action_command) = self.endpoint_command_for_action(action) {
+            self.push_endpoint_command(action_command.command, outcome);
         }
     }
 
@@ -962,13 +959,13 @@ impl ClientShellState {
     ) {
         let resize_bindings = &self.config.keybinds.keybinds.resize_mode;
         if resize_bindings.matches_prefix_key(key) || resize_bindings.matches_direct_key(key) {
-            self.mode = self.copy_or_terminal_mode();
+            self.mode.set(self.copy_or_terminal_mode());
             outcome.repaint = true;
             return;
         }
         match fixed_keys::command_for(RESIZE_BINDINGS, key) {
             Some(ResizeCommand::Finish) => {
-                self.mode = self.copy_or_terminal_mode();
+                self.mode.set(self.copy_or_terminal_mode());
                 outcome.repaint = true;
             }
             Some(ResizeCommand::Left) => {
@@ -990,8 +987,8 @@ impl ClientShellState {
 
     fn input_context(&self) -> ClientInputContext {
         ClientInputContext {
-            mode: self.mode,
-            overlay: self.overlay.as_ref().map(ClientShellOverlay::kind),
+            mode: self.mode.kind(),
+            overlay: self.overlay.as_ref().map(Overlay::kind),
             retained_selection: self
                 .mouse_selection
                 .selection
@@ -1001,8 +998,9 @@ impl ClientShellState {
     }
 
     pub(in crate::shell) fn focused_pane_id(&self) -> Option<shepr_protocol::PublicPaneId> {
-        self.snapshot
-            .as_deref()
+        self.endpoints
+            .active
+            .snapshot()
             .and_then(|snapshot| snapshot.focused_pane_id)
     }
 
@@ -1073,7 +1071,7 @@ impl ClientShellState {
         mouse.row = row;
         let mut outcome = ClientShellInput::default();
         let mut accounting = PaneInputBatchAccounting::default();
-        let previous = self.host_mouse_pixels.replace(pixels);
+        let previous = self.pointer.host_mouse_pixels.replace(pixels);
         // clock-io-ok: this test-only entry stands in for the client loop.
         let now = std::time::Instant::now();
         self.now = now;
@@ -1083,7 +1081,7 @@ impl ClientShellState {
             &mut outcome,
             &mut accounting,
         );
-        self.host_mouse_pixels = previous;
+        self.pointer.host_mouse_pixels = previous;
         outcome
     }
 
@@ -1123,16 +1121,15 @@ impl ClientShellState {
 
 #[cfg(test)]
 mod tests {
-    use crate::shell::state::ClientCopySelection;
-    use crate::shell::state::ClientShellConfig;
+    use crate::shell::config::ClientShellConfig;
+    use crate::shell::copy::{ClientCopySelection, CopyEntry, CopySession};
     use shepr_config::ClientConfig;
     use shepr_protocol::ClientPaneInputEvent;
 
     use super::{navigate_indexed_binding_index, read_clipboard_text_bounded_with};
     use crate::shell::input::events::PaneInputBatchAccounting;
     use crate::shell::state::{
-        ClientCopyModeState, ClientShellInput, ClientShellMode, ClientShellRequest,
-        ClientShellState,
+        ClientShellInput, ClientShellMode, ClientShellRequest, ClientShellState,
     };
     use crossterm::event::{KeyCode, KeyModifiers};
     use shepr_protocol::ClientMessage;
@@ -1164,21 +1161,18 @@ mod tests {
         )
     }
 
-    fn copy_mode_state() -> ClientCopyModeState {
-        ClientCopyModeState {
-            scroll: shepr_term::ScrollMetrics::new(0, 0, 2, shepr_term::AbsRow(0)),
+    fn copy_mode_state() -> CopySession {
+        CopySession::start(CopyEntry {
             pane_id: test_pane_id(),
+            scroll: shepr_term::ScrollMetrics::new(0, 0, 2, shepr_term::AbsRow(0)),
             geometry: (10, 2),
             alternate_screen_active: false,
             cursor: shepr_protocol::command::PaneTextPoint {
                 row: shepr_term::AbsRow(0),
                 col: 0,
             },
-            entry_offset_from_bottom: 0,
-            selection: None,
-            search: None,
-            operation_generation: 0,
-        }
+            rows: crate::shell::ledger::Ticket::fixture(1),
+        })
     }
 
     fn message_text_bytes(request: &ClientShellRequest) -> usize {
@@ -1281,9 +1275,14 @@ mod tests {
     #[test]
     fn copy_prefix_replays_after_keys_queued_behind_an_operation() {
         let mut state = shell();
-        state.mode = ClientShellMode::Copy;
-        state.copy_mode = Some(copy_mode_state());
-        state.copy_pipeline.begin("test-request".into());
+        state.mode.set(ClientShellMode::Copy);
+        state.copy = Some(copy_mode_state());
+        state
+            .copy
+            .as_mut()
+            .expect("a live copy session")
+            .pipeline_mut()
+            .begin(crate::shell::ledger::Ticket::fixture(2), None);
         let mut outcome = ClientShellInput::default();
         let mut accounting = PaneInputBatchAccounting::default();
         let prefix = state.config.keybinds.prefix;
@@ -1299,35 +1298,40 @@ mod tests {
             &mut accounting,
         );
 
-        assert_eq!(state.mode, ClientShellMode::Copy);
-        assert_eq!(state.copy_pipeline.keys_len(), 2);
+        assert_eq!(state.mode.kind(), ClientShellMode::Copy);
+        assert_eq!(state.copy_keys_len(), 2);
 
         state.finish_copy_operation(true, &mut outcome);
 
-        assert_eq!(state.mode, ClientShellMode::Prefix);
+        assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
         assert!(
             state
-                .copy_mode
+                .copy
                 .as_ref()
                 .is_some_and(|copy_mode| copy_mode.selection.is_some())
         );
-        assert!(state.copy_pipeline.keys_is_empty());
+        assert!(state.copy_keys_empty());
     }
 
     #[test]
     fn copy_escape_cancels_selection_started_by_prior_queued_key() {
         let mut state = shell();
-        state.mode = ClientShellMode::Copy;
-        let mut copy_mode = copy_mode_state();
-        copy_mode.selection = Some(ClientCopySelection::Character {
-            anchor: shepr_term::Point::new(shepr_term::AbsRow(0), 0),
-        });
-        state.copy_mode = Some(copy_mode);
+        state.mode.set(ClientShellMode::Copy);
+        state.copy = Some(
+            copy_mode_state().with_selection(ClientCopySelection::Character {
+                anchor: shepr_term::Point::new(shepr_term::AbsRow(0), 0),
+            }),
+        );
         state.mouse_selection.selection = Some(shepr_term::selection::Selection::anchor(
             test_pane_id(),
             shepr_term::Point::new(shepr_term::AbsRow(0), 0),
         ));
-        state.copy_pipeline.begin("test-request".into());
+        state
+            .copy
+            .as_mut()
+            .expect("a live copy session")
+            .pipeline_mut()
+            .begin(crate::shell::ledger::Ticket::fixture(2), None);
         let mut outcome = ClientShellInput::default();
         let mut accounting = PaneInputBatchAccounting::default();
 
@@ -1342,17 +1346,17 @@ mod tests {
             &mut accounting,
         );
 
-        assert_eq!(state.copy_pipeline.keys_len(), 2);
+        assert_eq!(state.copy_keys_len(), 2);
         state.finish_copy_operation(true, &mut outcome);
 
-        assert_eq!(state.mode, ClientShellMode::Copy);
+        assert_eq!(state.mode.kind(), ClientShellMode::Copy);
         assert!(
             state
-                .copy_mode
+                .copy
                 .as_ref()
                 .is_some_and(|copy_mode| copy_mode.selection.is_none())
         );
         assert!(state.mouse_selection.selection.is_none());
-        assert!(state.copy_pipeline.keys_is_empty());
+        assert!(state.copy_keys_empty());
     }
 }

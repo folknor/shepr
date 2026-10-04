@@ -16,18 +16,19 @@ use std::path::Path;
 use shepr_api::error::{ApiError, ApiErrorCode};
 use shepr_api::schema::{Method, Request};
 use shepr_detect::ownership::HookClockSample;
-use shepr_mux::pane::PaneState;
 use shepr_mux::terminal::TerminalState;
-use shepr_mux::workspace::{Workspace, WorkspacePane};
+use shepr_mux::workspace::Workspace;
 
-use crate::app::{App, AppClock, AppPolicy};
+use crate::app::{App, AppClock, AppOutputs};
 
 /// An `App` with one workspace whose single pane has a terminal but no
 /// spawned process, which persists nothing.
 pub(crate) struct AgentReportHarness {
     app: App,
+    /// Held so the app's event channel stays open; nothing waits on it.
+    _outputs: AppOutputs,
     pane_id: String,
-    terminal_id: shepr_protocol::TerminalId,
+    pane: shepr_core::layout::PaneId,
 }
 
 impl AgentReportHarness {
@@ -55,34 +56,38 @@ impl AgentReportHarness {
         let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
             .map_err(|error| error.to_string())?;
         // Requests are applied directly with `apply_request`.
-        let mut app = App::with_paths(&config, &paths, lease, AppPolicy::Suspended, app_clock(at));
+        let (mut app, outputs) = App::open(
+            &config,
+            &paths,
+            lease,
+            shepr_mux::persist::SessionOpenPolicy::Never,
+            app_clock(at),
+        );
 
         let pane = shepr_core::layout::PaneId::alloc();
-        let terminal_id = shepr_mux::terminal::allocate_terminal_id();
-        let mut terminal = TerminalState::new(terminal_id.clone(), root.to_path_buf());
+        let mut terminal = TerminalState::new(root.to_path_buf());
         terminal
             .ownership_mut()
             .set_detected_agent_process_at(agent, at.monotonic);
-        app.state.terminals.insert(terminal_id.clone(), terminal);
-        let workspace_id = app.state.workspace_ids.allocate();
-        app.state.test_push_workspace(Workspace::test_from_pane(
-            workspace_id,
-            Some("agent-report-contract".to_owned()),
-            root,
-            pane,
-            WorkspacePane::new(
-                PaneState::new(terminal_id.clone()),
-                shepr_protocol::PanePublicNumber::FIRST,
-            ),
-        ));
+        app.test_state_mut()
+            .test_push_workspace(Workspace::test_from_pane(
+                crate::test_support::next_fixture_workspace_id(),
+                Some("agent-report-contract".to_owned()),
+                root,
+                pane,
+                terminal,
+            ));
         let pane_id = app
-            .public_pane_id(0, pane)
+            .state()
+            .pane(pane)
             .ok_or_else(|| "test pane has no public id".to_owned())?
+            .public_id()
             .to_string();
         Ok(Self {
             app,
+            _outputs: outputs,
             pane_id,
-            terminal_id,
+            pane,
         })
     }
 
@@ -117,13 +122,10 @@ impl AgentReportHarness {
 
     /// The single pane's terminal state, `None` only if a handler removed it.
     pub(crate) fn terminal_state(&self) -> Option<&TerminalState> {
-        self.app.state.terminals.get(&self.terminal_id)
+        self.app.state().terminal(self.pane)
     }
 }
 
 fn app_clock(at: HookClockSample) -> AppClock {
-    AppClock {
-        now: at.monotonic,
-        wall_now: at.wall,
-    }
+    AppClock::from(at)
 }

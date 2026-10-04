@@ -36,19 +36,19 @@ impl AgentOwnership {
         .unwrap_or_default()
     }
 
-    /// A pane exit ends hook authority, but an interrupted pane must retain
-    /// its resume identity for the checkpoint taken before layout removal:
-    /// the one it holds, or one a detector release removed within the grace
-    /// before `ended_at`, the time the pane's ending was recorded. Detector
-    /// releases are only applied while the pane child is live; once it exits,
-    /// this transition decides with the exit's reason.
+    /// A pane exit ends hook authority, but a pane whose exit `needs_checkpoint`
+    /// must retain its resume identity for the checkpoint taken before layout
+    /// removal: the one it holds, or one a detector release removed within the
+    /// grace before `ended_at`, the time the pane's ending was recorded.
+    /// Detector releases are only applied while the pane child is live; once
+    /// it exits, this transition decides with the caller's checkpoint answer.
     pub fn set_pane_process_exit_at(
         &mut self,
-        exit_reason: shepr_platform::ChildExitReason,
+        needs_checkpoint: bool,
         ended_at: Instant,
     ) -> AgentOwnershipMutation {
         self.transition_hook_event(HookEvent::PaneExited {
-            exit_reason,
+            needs_checkpoint,
             now: ended_at,
         })
         .unwrap_or_default()

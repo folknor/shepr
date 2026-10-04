@@ -3,6 +3,14 @@ use super::*;
 use crate::server::ClientId;
 use crate::server::clients::ClientSurfaceChange;
 
+/// The result of setting a connection's surface active or inactive.
+pub(super) struct SurfaceActivation {
+    /// The request changed what the server presents, or activated the surface
+    /// (an activation always counts, see `set_client_shell_surface_active`).
+    pub(super) changed: bool,
+    pub(super) projection_revision: shepr_protocol::ProjectionRevision,
+}
+
 impl HeadlessServer {
     /// Set whether this connection is viewed and return the resulting projection floor.
     ///
@@ -13,7 +21,7 @@ impl HeadlessServer {
         &mut self,
         client_id: ClientId,
         active: bool,
-    ) -> Option<(bool, shepr_protocol::ProjectionRevision)> {
+    ) -> Option<SurfaceActivation> {
         // The floor is per connection and steps once per activation or
         // changed snapshot, so exhaustion is unreachable in practice. Should
         // it happen, drop the client: it reconnects with a fresh counter
@@ -55,7 +63,10 @@ impl HeadlessServer {
                     shell.snapshot = None;
                 }
                 if !changed && !active {
-                    return Some((false, shell.projection_revision));
+                    return Some(SurfaceActivation {
+                        changed: false,
+                        projection_revision: shell.projection_revision,
+                    });
                 }
                 shell.projection_revision
             };
@@ -90,6 +101,9 @@ impl HeadlessServer {
         if active {
             self.sync_pane_focus();
         }
-        Some((changed || active, projection_revision))
+        Some(SurfaceActivation {
+            changed: changed || active,
+            projection_revision,
+        })
     }
 }

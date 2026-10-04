@@ -6,18 +6,17 @@ use ratatui::{
     widgets::{Borders, Paragraph, Widget, Wrap},
 };
 
-use super::PaneResizer;
+use super::PaneSurface;
 use super::chrome::{overlay_buffer, put_run};
-use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
+use super::scrollbar::render_pane_scrollbar;
 use super::text::truncate_end;
 use crate::app::AppState;
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
 use shepr_mux::terminal::{Label, PaneStartFailure};
-use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
 use shepr_protocol::{CellData, FrameData, WireColor};
 use shepr_surface::ratatui_conversion::WireColorExt as _;
 
-pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
+pub(super) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
     rt.read()
         .scroll_metrics()
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
@@ -44,61 +43,26 @@ fn pane_border_title(label: &Label, pane_width: u16) -> Option<String> {
     ))
 }
 
-/// Apply a computed pane layout to every runtime it contains.
-pub(super) fn resize_pane_infos(
+/// The chrome of the panes `workspace` shows in `area`: its whole layout, or
+/// the zoomed pane alone.
+pub(super) fn visible_chromes(
     app: &AppState,
-    resizer: &mut PaneResizer<'_>,
-    ws_idx: usize,
-    pane_infos: &[PaneInfo],
-    cell_size: shepr_term::host::HostCellSize,
-) {
-    let Some(workspace) = app.workspaces.get(ws_idx) else {
-        return;
-    };
-
-    for info in pane_infos {
-        let Some(terminal_id) = workspace.terminal_id(info.id) else {
-            continue;
-        };
-        let Some(rt) = resizer.runtime(terminal_id) else {
-            continue;
-        };
-        rt.resize(shepr_core::geometry::PaneGeometry::with_cell(
-            info.inner_rect.width,
-            info.inner_rect.height,
-            cell_size.cell(),
-        ));
-    }
+    workspace: &shepr_mux::workspace::Workspace,
+    area: shepr_core::geometry::Rect,
+) -> Vec<shepr_core::chrome::PaneChrome> {
+    app.chrome_in(area)
+        .visible_panes(workspace.tree().layout(), workspace.tree().zoomed())
 }
 
-/// Compute pane layout info without mutating pane runtimes.
-pub(super) fn compute_pane_infos_for_workspace(
-    app: &AppState,
-    terminal_runtimes: &PaneRuntimeRegistry,
-    ws_idx: usize,
-    area: Rect,
-) -> Vec<PaneInfo> {
-    let Some(workspace) = app.workspaces.get(ws_idx) else {
-        return Vec::new();
-    };
-
-    let mut pane_infos = app
-        .pane_geometry_in(area)
-        .visible_panes(workspace.layout(), workspace.zoomed());
-
-    for info in &mut pane_infos {
-        let runtime = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id);
-        let alternate_screen = app.settings.pane_scrollbars
-            && runtime.is_some_and(|rt| rt.read().alternate_screen_active());
-        let gutter = info.content_layout(app.settings.pane_scrollbars, alternate_screen);
-        info.scrollbar_rect = gutter.filter(|_| {
-            runtime
-                .and_then(|rt| rt.read().scroll_metrics())
-                .is_some_and(should_show_scrollbar)
-        });
-    }
-
-    pane_infos
+/// The live runtime of `pane` in `workspace`: the workspace's own tree confirms
+/// the pane is one of its own in one probe, so the draw never walks the set.
+pub(crate) fn workspace_runtime<'a>(
+    workspace: &shepr_mux::workspace::Workspace,
+    terminal_runtimes: &'a PaneRuntimeRegistry,
+    pane: shepr_core::layout::PaneId,
+) -> Option<&'a PaneRuntime> {
+    workspace.tree().pane(pane)?;
+    terminal_runtimes.get(&pane)
 }
 
 /// Draws the panes of one workspace and their chrome into `frame`: pane cells
@@ -107,28 +71,23 @@ pub(super) fn render_panes(
     app: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
     frame: &mut FrameData,
-    target: Option<&shepr_protocol::WorkspaceId>,
-    pane_infos: &[PaneInfo],
+    target: Option<super::SurfaceTarget>,
+    pane_infos: &[PaneSurface],
     split_borders: &[shepr_core::layout::SplitBorder],
-) {
-    let Some(target) = target else {
-        return;
-    };
-    let Some(ws_idx) = app.workspace_index(target) else {
-        return;
-    };
-    let Some(ws) = app.workspaces.get(ws_idx) else {
-        return;
+) -> Vec<(shepr_core::layout::PaneId, shepr_mux::pane::PaneDraw)> {
+    let mut draws = Vec::new();
+    let Some(ws) = target.and_then(|target| target.workspace(app)) else {
+        return draws;
     };
 
     for info in pane_infos {
-        if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-            rt.read().render_into(frame, info.inner_rect);
+        if let Some(rt) = workspace_runtime(ws, terminal_runtimes, info.id) {
+            draws.push((info.id, rt.read().render_into(frame, info.inner_rect)));
             render_pane_scrollbar(app, frame, info, rt);
         } else if let Some(reason) = ws
-            .terminal_id(info.id)
-            .and_then(|id| app.terminals.get(id))
-            .and_then(|terminal| terminal.restore_error())
+            .tree()
+            .pane(info.id)
+            .and_then(|record| record.terminal().restore_error())
         {
             let mut scratch = Buffer::empty(info.inner_rect);
             Paragraph::new(restore_failure_text(reason))
@@ -141,6 +100,7 @@ pub(super) fn render_panes(
     }
 
     render_pane_borders(app, ws, pane_infos, split_borders, frame);
+    draws
 }
 
 #[derive(Clone, Copy, Default)]
@@ -184,9 +144,9 @@ struct BorderGrid {
 impl BorderGrid {
     fn new(frame: &FrameData) -> Self {
         Self {
-            width: frame.width,
-            height: frame.height,
-            cells: vec![LineCell::default(); frame.cells.len()],
+            width: frame.width(),
+            height: frame.height(),
+            cells: vec![LineCell::default(); frame.cells().len()],
         }
     }
 
@@ -229,11 +189,11 @@ impl BorderGrid {
 fn render_pane_borders(
     app: &AppState,
     ws: &shepr_mux::workspace::Workspace,
-    pane_infos: &[PaneInfo],
+    pane_infos: &[PaneSurface],
     split_borders: &[shepr_core::layout::SplitBorder],
     frame: &mut FrameData,
 ) {
-    if !app.settings.pane_borders.draws_borders()
+    if !app.settings().pane_borders.draws_borders()
         || pane_infos.iter().all(|info| info.borders.is_empty())
     {
         return;
@@ -243,12 +203,12 @@ fn render_pane_borders(
     for info in pane_infos {
         add_pane_border_cells(&mut cells, info);
     }
-    add_split_border_cells(app.settings.pane_gaps, split_borders, &mut cells);
+    add_split_border_cells(app.settings().pane_gaps, split_borders, &mut cells);
     for info in pane_infos.iter().filter(|info| info.is_focused) {
-        mark_focused_pane_cells(&mut cells, info, app.settings.pane_gaps);
+        mark_focused_pane_cells(&mut cells, info, app.settings().pane_gaps);
     }
 
-    let width = usize::from(frame.width);
+    let width = usize::from(frame.width());
     if width > 0 {
         for (index, line) in cells.cells.iter().copied().enumerate() {
             if !line.has_any(LineCell::PRESENT) {
@@ -258,7 +218,7 @@ fn render_pane_borders(
             else {
                 continue;
             };
-            if y >= frame.height {
+            if y >= frame.height() {
                 continue;
             }
             let symbol = line_cell_symbol(line);
@@ -266,9 +226,9 @@ fn render_pane_borders(
                 continue;
             }
             let color = if line.has_any(LineCell::FOCUSED) {
-                app.settings.palette.accent
+                app.settings().palette.accent
             } else {
-                app.settings.palette.overlay0
+                app.settings().palette.overlay0
             };
             let cell = CellData {
                 symbol: symbol.to_owned(),
@@ -343,7 +303,7 @@ fn add_split_border_cells(
     }
 }
 
-fn add_pane_border_cells(cells: &mut BorderGrid, info: &PaneInfo) {
+fn add_pane_border_cells(cells: &mut BorderGrid, info: &PaneSurface) {
     let rect = info.rect;
     if rect.width == 0 || rect.height == 0 {
         return;
@@ -389,7 +349,7 @@ fn add_pane_border_cells(cells: &mut BorderGrid, info: &PaneInfo) {
     }
 }
 
-fn mark_focused_pane_cells(cells: &mut BorderGrid, info: &PaneInfo, pane_gaps: bool) {
+fn mark_focused_pane_cells(cells: &mut BorderGrid, info: &PaneSurface, pane_gaps: bool) {
     let rect = info.rect;
     if rect.width == 0 || rect.height == 0 {
         return;
@@ -420,19 +380,21 @@ fn mark_focused_pane_cells(cells: &mut BorderGrid, info: &PaneInfo, pane_gaps: b
 fn render_pane_border_titles(
     app: &AppState,
     ws: &shepr_mux::workspace::Workspace,
-    pane_infos: &[PaneInfo],
+    pane_infos: &[PaneSurface],
     frame: &mut FrameData,
 ) {
-    let area = Rect::new(0, 0, frame.width, frame.height);
+    let area = Rect::new(0, 0, frame.width(), frame.height());
     for info in pane_infos {
         if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
             continue;
         }
         let Some(title) = ws
-            .pane_state(info.id)
-            .and_then(|pane| app.terminals.get(&pane.attached_terminal_id))
-            .and_then(|terminal| {
-                terminal.border_label(app.settings.show_agent_labels_on_pane_borders)
+            .tree()
+            .pane(info.id)
+            .and_then(|record| {
+                record
+                    .terminal()
+                    .border_label(app.settings().show_agent_labels_on_pane_borders)
             })
             .and_then(|label| pane_border_title(&label, info.rect.width))
         else {
@@ -453,9 +415,9 @@ fn render_pane_border_titles(
             continue;
         }
         let color = if info.is_focused {
-            app.settings.palette.accent
+            app.settings().palette.accent
         } else {
-            app.settings.palette.overlay0
+            app.settings().palette.overlay0
         };
         let mut style = Style::default().fg(color);
         if info.is_focused {
@@ -555,18 +517,18 @@ pub(crate) fn split_hit_rect(
 use super::text::display_width;
 
 #[cfg(test)]
-use shepr_mux::workspace::apply_pane_chrome;
-
-#[cfg(test)]
 fn compute_pane_infos(
     app: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
     area: Rect,
-) -> Vec<PaneInfo> {
-    let Some(workspace_index) = app.bookmark_index() else {
+) -> Vec<PaneSurface> {
+    let Some(workspace) = app
+        .bookmark_index()
+        .and_then(|index| app.workspaces().as_slice().get(index))
+    else {
         return Vec::new();
     };
-    compute_pane_infos_for_workspace(app, terminal_runtimes, workspace_index, area)
+    super::compute_pane_surfaces(app, terminal_runtimes, workspace, area)
 }
 
 #[cfg(test)]
@@ -576,51 +538,47 @@ mod tests {
     use shepr_config::PaneBordersConfig;
     use shepr_core::layout::PaneId;
     use shepr_mux::pane::PaneRuntime;
-    use shepr_mux::terminal::TerminalState;
     use shepr_mux::workspace::Workspace;
-    use shepr_mux::workspace::pane_inner_rect;
 
     /// A registry holding `runtime` as the live runtime of `pane_id`, keyed
-    /// by the pane's terminal id the way production registers runtimes.
+    /// by the pane the way production registers runtimes.
     fn registry_with_runtime(
         workspace: &Workspace,
         pane_id: PaneId,
         runtime: PaneRuntime,
     ) -> PaneRuntimeRegistry {
-        let mut registry = PaneRuntimeRegistry::new();
-        registry.insert(
-            workspace
-                .terminal_id(pane_id)
-                .expect("test precondition")
-                .clone(),
-            runtime,
+        assert!(
+            workspace.tree().pane(pane_id).is_some(),
+            "test precondition"
         );
+        let mut registry = PaneRuntimeRegistry::new();
+        registry.insert(pane_id, runtime);
         registry
     }
 
     #[test]
     fn runtimeless_pane_reserves_the_gutter_its_fresh_shell_gets() {
         let mut app = AppState::test_new();
-        app.settings.pane_scrollbars = true;
+        app.settings_mut().pane_scrollbars = true;
         app.test_set_workspaces(vec![Workspace::test_new("resume-pending")]);
-        app.set_bookmark_index(Some(0));
+        app.seed_bookmark_index(Some(0));
         let area = Rect::new(0, 0, 100, 30);
 
         let infos = compute_pane_infos(&app, &PaneRuntimeRegistry::new(), area);
 
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].scrollbar_rect, None);
+        // A lone pane has no borders under the default setting, so the gutter
+        // is the one column its fresh shell does not get.
+        assert!(infos[0].borders.is_empty());
         assert_eq!(
             infos[0].inner_rect,
-            shepr_mux::workspace::terminal_content_rect(
-                pane_inner_rect(infos[0].rect, infos[0].borders),
-                true,
-                false,
+            Rect::new(
+                infos[0].rect.x,
+                infos[0].rect.y,
+                infos[0].rect.width - 1,
+                infos[0].rect.height
             )
-        );
-        assert_eq!(
-            infos[0].inner_rect.width,
-            pane_inner_rect(infos[0].rect, infos[0].borders).width - 1
         );
     }
 
@@ -628,34 +586,31 @@ mod tests {
     fn unavailable_pane_renders_restore_failure_without_a_runtime() {
         let mut app = AppState::test_new();
         app.test_set_workspaces(vec![Workspace::test_new("unavailable")]);
-        app.set_bookmark_index(Some(0));
-        app.ensure_test_terminals();
-        let pane_id = app.workspaces[0].root_pane();
-        let terminal_id = app.workspaces[0]
-            .terminal_id(pane_id)
-            .expect("test precondition")
-            .clone();
-        app.terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition")
+        app.seed_bookmark_index(Some(0));
+        let pane_id = app.ws(0).tree().root();
+        app.terminal_mut(pane_id)
             .record_start_failure(PaneStartFailure::DirectoryUnavailable {
                 path: "/missing".into(),
                 error: std::io::Error::from(std::io::ErrorKind::NotFound),
             });
         let runtimes = PaneRuntimeRegistry::new();
         let area = Rect::new(0, 0, 80, 24);
-        let layout =
-            crate::ui::compute_surface_for(&app, &runtimes, Some(app.workspaces[0].id), area);
+        let target = crate::ui::SurfaceTarget {
+            index: 0,
+            id: app.ws(0).id(),
+        };
+        let layout = crate::ui::compute_surface_for(&app, &runtimes, Some(target), area);
         let surface = crate::ui::SurfaceView {
-            target: layout.target.as_ref(),
-            pane_infos: &layout.pane_infos,
+            target: layout.target,
+            panes: &layout.panes,
             split_borders: &layout.split_borders,
         };
         let cursor = crate::ui::surface_cursor(&app, &runtimes, surface);
-        let mut frame = FrameData::blank(area.width, area.height);
+        let mut frame =
+            FrameData::blank(area.width, area.height).expect("test frame size is valid");
         crate::ui::render_surface(&app, &runtimes, surface, &mut frame);
         let text: String = frame
-            .cells
+            .cells()
             .iter()
             .map(|cell| cell.symbol.as_str())
             .collect();
@@ -708,259 +663,69 @@ mod tests {
 
     #[test]
     fn pane_border_renderer_places_adjacent_cjk_by_display_width() {
-        let mut app = AppState::test_new();
-        let ws = Workspace::test_new("test");
-        let pane_id = ws.root_pane();
-        let pane_infos = vec![PaneInfo {
+        let app = AppState::test_new();
+        let mut ws = Workspace::test_new("test");
+        let pane_id = ws.tree().root();
+        let pane_infos = vec![PaneSurface {
             id: pane_id,
             rect: Rect::new(0, 0, 12, 3),
             inner_rect: Rect::default(),
+            scrollbar_gutter: None,
             scrollbar_rect: None,
             borders: Borders::ALL,
             is_focused: false,
         }];
 
-        let terminal_id = ws.panes()[&pane_id].attached_terminal_id.clone();
-        let mut terminal_state = TerminalState::new(terminal_id.clone(), "/shepr-test/cwd".into());
-        terminal_state.set_manual_label("1 模块组织（已定）".into());
-        app.terminals.insert(terminal_id, terminal_state);
+        ws.pane_mut(pane_id)
+            .expect("the root pane has a record")
+            .terminal_mut()
+            .set_manual_label("1 模块组织（已定）".into());
 
-        let mut frame = FrameData::blank(12, 3);
+        let mut frame = FrameData::blank(12, 3).expect("test frame size is valid");
         render_pane_borders(&app, &ws, &pane_infos, &[], &mut frame);
-        let buffer = |x: u16, y: u16| &frame.cells[usize::from(y) * 12 + usize::from(x)];
+        let buffer = |x: u16, y: u16| &frame.cells()[usize::from(y) * 12 + usize::from(x)];
         assert_eq!(buffer(4, 0).symbol, "模");
         assert_eq!(buffer(5, 0).symbol, " ");
         assert_eq!(buffer(6, 0).symbol, "块");
     }
 
     #[test]
-    fn default_horizontal_split_uses_one_shared_divider_column() {
-        let mut workspace = Workspace::test_new("test");
-        let root = workspace.root_pane();
-        let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
-        workspace.focus_pane(root);
-
-        let infos = apply_pane_chrome(
-            &workspace
-                .layout()
-                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
-            PaneBordersConfig::Auto,
-            false,
-            true,
-        );
-        let left = infos
-            .iter()
-            .find(|info| info.id == root)
-            .expect("test precondition");
-        let right = infos
-            .iter()
-            .find(|info| info.id == right)
-            .expect("test precondition");
-
-        assert_eq!(left.rect.x + left.rect.width, right.rect.x);
-        assert!(!left.borders.contains(Borders::RIGHT));
-        assert!(right.borders.contains(Borders::LEFT));
-    }
-
-    #[test]
-    fn default_vertical_split_uses_one_shared_divider_row() {
-        let mut workspace = Workspace::test_new("test");
-        let root = workspace.root_pane();
-        let bottom = workspace.test_split(shepr_core::layout::Direction::Vertical);
-        workspace.focus_pane(root);
-
-        let infos = apply_pane_chrome(
-            &workspace
-                .layout()
-                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
-            PaneBordersConfig::Auto,
-            false,
-            true,
-        );
-        let top = infos
-            .iter()
-            .find(|info| info.id == root)
-            .expect("test precondition");
-        let bottom = infos
-            .iter()
-            .find(|info| info.id == bottom)
-            .expect("test precondition");
-
-        assert_eq!(top.rect.y + top.rect.height, bottom.rect.y);
-        assert!(!top.borders.contains(Borders::BOTTOM));
-        assert!(bottom.borders.contains(Borders::TOP));
-    }
-
-    #[test]
-    fn disabled_outer_borders_keep_only_shared_pane_dividers() {
-        let mut workspace = Workspace::test_new("test");
-        let root = workspace.root_pane();
-        let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
-        workspace.focus_pane(root);
-
-        let infos = apply_pane_chrome(
-            &workspace
-                .layout()
-                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
-            PaneBordersConfig::Auto,
-            false,
-            false,
-        );
-        let left = infos
-            .iter()
-            .find(|info| info.id == root)
-            .expect("test precondition");
-        let right = infos
-            .iter()
-            .find(|info| info.id == right)
-            .expect("test precondition");
-
-        assert_eq!(left.borders, Borders::NONE);
-        assert_eq!(right.borders, Borders::LEFT);
-    }
-
-    #[test]
-    fn pane_gaps_keep_independent_bordered_panes() {
-        let mut workspace = Workspace::test_new("test");
-        let root = workspace.root_pane();
-        let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
-        workspace.focus_pane(root);
-
-        let infos = apply_pane_chrome(
-            &workspace
-                .layout()
-                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
-            PaneBordersConfig::Auto,
-            true,
-            true,
-        );
-        let left = infos
-            .iter()
-            .find(|info| info.id == root)
-            .expect("test precondition");
-        let right = infos
-            .iter()
-            .find(|info| info.id == right)
-            .expect("test precondition");
-
-        assert_eq!(left.rect.x + left.rect.width, right.rect.x);
-        assert_eq!(left.borders, Borders::ALL);
-        assert_eq!(right.borders, Borders::ALL);
-    }
-
-    #[test]
-    fn borderless_pane_gaps_add_one_empty_cell_between_panes() {
-        let mut workspace = Workspace::test_new("test");
-        let root = workspace.root_pane();
-        let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
-        workspace.focus_pane(root);
-
-        let infos = apply_pane_chrome(
-            &workspace
-                .layout()
-                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
-            PaneBordersConfig::Off,
-            true,
-            true,
-        );
-        let left = infos
-            .iter()
-            .find(|info| info.id == root)
-            .expect("test precondition");
-        let right = infos
-            .iter()
-            .find(|info| info.id == right)
-            .expect("test precondition");
-
-        assert_eq!(left.rect, Rect::new(0, 0, 49, 20));
-        assert_eq!(right.rect, Rect::new(50, 0, 50, 20));
-        assert!(left.borders.is_empty());
-        assert!(right.borders.is_empty());
-    }
-
-    #[test]
-    fn disabled_pane_borders_make_inner_rect_equal_visual_rect() {
-        let mut workspace = Workspace::test_new("test");
-        workspace.test_split(shepr_core::layout::Direction::Horizontal);
-
-        let infos = apply_pane_chrome(
-            &workspace
-                .layout()
-                .panes(shepr_core::geometry::Rect::new(0, 0, 100, 20)),
-            PaneBordersConfig::Off,
-            false,
-            true,
-        );
-
-        for info in infos {
-            assert!(info.borders.is_empty());
-            assert_eq!(pane_inner_rect(info.rect, info.borders), info.rect);
-        }
-    }
-
-    #[test]
-    fn always_pane_borders_frame_lone_pane() {
-        let workspace = Workspace::test_new("test");
-        let area = shepr_core::geometry::Rect::new(0, 0, 100, 20);
-
-        let default_infos = apply_pane_chrome(
-            &workspace.layout().panes(area),
-            PaneBordersConfig::Auto,
-            false,
-            true,
-        );
-        assert_eq!(default_infos[0].borders, Borders::NONE);
-
-        let framed_infos = apply_pane_chrome(
-            &workspace.layout().panes(area),
-            PaneBordersConfig::Always,
-            false,
-            true,
-        );
-        assert_eq!(framed_infos[0].borders, Borders::ALL);
-
-        let no_outer_infos = apply_pane_chrome(
-            &workspace.layout().panes(area),
-            PaneBordersConfig::Always,
-            false,
-            false,
-        );
-        assert_eq!(no_outer_infos[0].borders, Borders::NONE);
-    }
-
-    #[test]
     fn global_pane_border_renderer_composes_junctions_and_focus_style() {
         let mut app = AppState::test_new();
-        app.settings.pane_gaps = false;
+        app.settings_mut().pane_gaps = false;
         let pane_infos = vec![
-            PaneInfo {
+            PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(1),
                 rect: Rect::new(0, 0, 2, 2),
                 inner_rect: Rect::default(),
+                scrollbar_gutter: None,
                 scrollbar_rect: None,
                 borders: Borders::TOP | Borders::LEFT,
                 is_focused: true,
             },
-            PaneInfo {
+            PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(2),
                 rect: Rect::new(2, 0, 2, 2),
                 inner_rect: Rect::default(),
+                scrollbar_gutter: None,
                 scrollbar_rect: None,
                 borders: Borders::TOP | Borders::LEFT | Borders::RIGHT,
                 is_focused: false,
             },
-            PaneInfo {
+            PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(3),
                 rect: Rect::new(0, 2, 2, 2),
                 inner_rect: Rect::default(),
+                scrollbar_gutter: None,
                 scrollbar_rect: None,
                 borders: Borders::TOP | Borders::LEFT | Borders::BOTTOM,
                 is_focused: false,
             },
-            PaneInfo {
+            PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(4),
                 rect: Rect::new(2, 2, 2, 2),
                 inner_rect: Rect::default(),
+                scrollbar_gutter: None,
                 scrollbar_rect: None,
                 borders: Borders::ALL,
                 is_focused: false,
@@ -972,21 +737,21 @@ mod tests {
                 direction: shepr_core::layout::Direction::Horizontal,
                 ratio: shepr_core::layout::SplitRatio::EVEN,
                 area: shepr_core::geometry::Rect::new(0, 0, 4, 4),
-                path: vec![],
+                path: shepr_core::layout::SplitPath::default(),
             },
             shepr_core::layout::SplitBorder {
                 pos: 2,
                 direction: shepr_core::layout::Direction::Vertical,
                 ratio: shepr_core::layout::SplitRatio::EVEN,
                 area: shepr_core::geometry::Rect::new(0, 0, 4, 4),
-                path: vec![shepr_core::geometry::SplitBranch::First],
+                path: vec![shepr_core::layout::SplitBranch::First].into(),
             },
         ];
         let ws = Workspace::test_new("test");
-        let mut frame = FrameData::blank(4, 4);
+        let mut frame = FrameData::blank(4, 4).expect("test frame size is valid");
         render_pane_borders(&app, &ws, &pane_infos, &split_borders, &mut frame);
-        let buffer = |x: u16, y: u16| &frame.cells[usize::from(y) * 4 + usize::from(x)];
-        let accent = WireColor::from_ratatui(app.settings.palette.accent);
+        let buffer = |x: u16, y: u16| &frame.cells()[usize::from(y) * 4 + usize::from(x)];
+        let accent = WireColor::from_ratatui(app.settings().palette.accent);
         assert_eq!(buffer(2, 2).symbol, "┼");
         assert_eq!(buffer(2, 2).fg, accent);
         assert_eq!(buffer(2, 1).symbol, "│");
@@ -996,36 +761,38 @@ mod tests {
     #[test]
     fn gapped_pane_focus_does_not_color_neighbor_border() {
         let mut app = AppState::test_new();
-        app.settings.pane_gaps = true;
+        app.settings_mut().pane_gaps = true;
         let pane_infos = vec![
-            PaneInfo {
+            PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(1),
                 rect: Rect::new(0, 0, 2, 3),
                 inner_rect: Rect::default(),
+                scrollbar_gutter: None,
                 scrollbar_rect: None,
                 borders: Borders::ALL,
                 is_focused: true,
             },
-            PaneInfo {
+            PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(2),
                 rect: Rect::new(2, 0, 2, 3),
                 inner_rect: Rect::default(),
+                scrollbar_gutter: None,
                 scrollbar_rect: None,
                 borders: Borders::ALL,
                 is_focused: false,
             },
         ];
         let ws = Workspace::test_new("test");
-        let mut frame = FrameData::blank(4, 3);
+        let mut frame = FrameData::blank(4, 3).expect("test frame size is valid");
         render_pane_borders(&app, &ws, &pane_infos, &[], &mut frame);
-        let buffer = |x: u16, y: u16| &frame.cells[usize::from(y) * 4 + usize::from(x)];
+        let buffer = |x: u16, y: u16| &frame.cells()[usize::from(y) * 4 + usize::from(x)];
         assert_eq!(
             buffer(1, 1).fg,
-            WireColor::from_ratatui(app.settings.palette.accent)
+            WireColor::from_ratatui(app.settings().palette.accent)
         );
         assert_eq!(
             buffer(2, 1).fg,
-            WireColor::from_ratatui(app.settings.palette.overlay0)
+            WireColor::from_ratatui(app.settings().palette.overlay0)
         );
     }
 
@@ -1033,14 +800,14 @@ mod tests {
     async fn pane_scrollbar_gutter_is_reserved_before_scrollback_exists() {
         let mut app = AppState::test_new();
         let workspace = Workspace::test_new("test");
-        let root_pane = workspace.root_pane();
+        let root_pane = workspace.tree().root();
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
             PaneRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.test_set_workspaces(vec![workspace]);
-        app.set_bookmark_index(Some(0));
+        app.seed_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1055,11 +822,7 @@ mod tests {
     async fn alternate_screen_reclaims_scrollbar_gutter_without_resizing_panes() {
         let mut app = AppState::test_new();
         let workspace = Workspace::test_new("test");
-        let root_pane = workspace.root_pane();
-        let terminal_id = workspace
-            .terminal_id(root_pane)
-            .expect("test precondition")
-            .clone();
+        let root_pane = workspace.tree().root();
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
@@ -1071,10 +834,10 @@ mod tests {
             ),
         );
         let runtime = terminal_runtimes
-            .get(&terminal_id)
+            .get(&root_pane)
             .expect("test precondition");
         app.test_set_workspaces(vec![workspace]);
-        app.set_bookmark_index(Some(0));
+        app.seed_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let assert_geometry = |expected_width, has_scrollbar| {
@@ -1098,14 +861,14 @@ mod tests {
     async fn lone_pane_scrollbar_gutter_is_reserved_before_scrollback_exists() {
         let mut app = AppState::test_new();
         let workspace = Workspace::test_new("test");
-        let root_pane = workspace.root_pane();
+        let root_pane = workspace.tree().root();
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
             PaneRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.test_set_workspaces(vec![workspace]);
-        app.set_bookmark_index(Some(0));
+        app.seed_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1128,7 +891,7 @@ mod tests {
             PaneRuntime::test_with_scrollback_bytes(40, 8, 1024, b"ready\n"),
         );
         app.test_set_workspaces(vec![workspace]);
-        app.set_bookmark_index(Some(0));
+        app.seed_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1144,14 +907,14 @@ mod tests {
     async fn tiny_pane_does_not_reserve_scrollbar_gutter() {
         let mut app = AppState::test_new();
         let workspace = Workspace::test_new("test");
-        let root_pane = workspace.root_pane();
+        let root_pane = workspace.tree().root();
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
             PaneRuntime::test_with_scrollback_bytes(4, 8, 1024, b"ready\n"),
         );
         app.test_set_workspaces(vec![workspace]);
-        app.set_bookmark_index(Some(0));
+        app.seed_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 4, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1173,35 +936,35 @@ mod tests {
                 [(true, false), (false, false), (true, true), (false, true)]
             {
                 let mut app = AppState::test_new();
-                app.settings.pane_borders = pane_borders;
-                app.settings.pane_scrollbars = pane_scrollbars;
+                app.settings_mut().pane_borders = pane_borders;
+                app.settings_mut().pane_scrollbars = pane_scrollbars;
                 let area = Rect::new(2, 1, 101, 31);
                 let mut workspace = Workspace::test_new("test");
-                let root = workspace.root_pane();
+                let root = workspace.tree().root();
                 let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
                 workspace.set_zoomed(zoomed);
                 let mut terminal_runtimes = PaneRuntimeRegistry::new();
                 for pane in [root, right] {
                     terminal_runtimes.insert(
-                        workspace
-                            .terminal_id(pane)
-                            .expect("test precondition")
-                            .clone(),
+                        pane,
                         PaneRuntime::test_with_scrollback_bytes(20, 5, 1024, b""),
                     );
                 }
                 app.test_set_workspaces(vec![workspace]);
-                app.set_bookmark_index(Some(0));
+                app.seed_bookmark_index(Some(0));
                 app.test_record_all_workspace_areas(area);
 
                 let infos = compute_pane_infos(&app, &terminal_runtimes, area);
-                let geometry = app.pane_geometry_for_workspace(0);
-                assert_eq!(geometry.area, area);
+                let geometry = app.chrome_in(app.layout_area(app.ws(0)));
+                assert_eq!(geometry.area, crate::ui::core_rect(area));
                 assert_eq!(infos.len(), if zoomed { 1 } else { 2 });
                 for info in &infos {
                     assert_eq!(
-                        geometry.pane_size(app.workspaces[0].layout(), zoomed, info.id),
-                        Some((info.inner_rect.height, info.inner_rect.width)),
+                        geometry.pane_size(app.ws(0).tree().layout(), zoomed, info.id),
+                        shepr_core::geometry::GridSize::new(
+                            info.inner_rect.width,
+                            info.inner_rect.height
+                        ),
                         "borders {pane_borders:?}, scrollbars {pane_scrollbars}, zoomed {zoomed}"
                     );
                 }
@@ -1216,7 +979,7 @@ mod tests {
     async fn pane_scrollbar_setting_controls_reserved_column() {
         let mut app = AppState::test_new();
         let workspace = Workspace::test_new("test");
-        let root_pane = workspace.root_pane();
+        let root_pane = workspace.tree().root();
         let terminal_runtimes = registry_with_runtime(
             &workspace,
             root_pane,
@@ -1228,7 +991,7 @@ mod tests {
             ),
         );
         app.test_set_workspaces(vec![workspace]);
-        app.set_bookmark_index(Some(0));
+        app.seed_bookmark_index(Some(0));
 
         let area = Rect::new(10, 3, 40, 8);
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1238,7 +1001,7 @@ mod tests {
         assert_eq!(info.scrollbar_rect, Some(Rect::new(49, 3, 1, 8)));
         assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
 
-        app.settings.pane_scrollbars = false;
+        app.settings_mut().pane_scrollbars = false;
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
         let info = &infos[0];
 
@@ -1259,7 +1022,7 @@ mod split_hit_tests {
             direction: shepr_core::layout::Direction::Horizontal,
             ratio: shepr_core::layout::SplitRatio::EVEN,
             area: shepr_core::geometry::Rect::new(2, 3, 40, 12),
-            path: vec![shepr_core::geometry::SplitBranch::First],
+            path: vec![shepr_core::layout::SplitBranch::First].into(),
         };
         assert_eq!(
             split_hit_rect(&horizontal, true, false, &[]),
@@ -1280,7 +1043,7 @@ mod split_hit_tests {
             direction: shepr_core::layout::Direction::Vertical,
             ratio: shepr_core::layout::SplitRatio::EVEN,
             area: shepr_core::geometry::Rect::new(2, 3, 40, 12),
-            path: vec![shepr_core::geometry::SplitBranch::Second],
+            path: vec![shepr_core::layout::SplitBranch::Second].into(),
         };
         assert_eq!(
             split_hit_rect(&vertical, true, true, &[]),
@@ -1292,7 +1055,7 @@ mod split_hit_tests {
             direction: shepr_core::layout::Direction::Horizontal,
             ratio: shepr_core::layout::SplitRatio::EVEN,
             area: shepr_core::geometry::Rect::new(0, 0, 1, 4),
-            path: Vec::new(),
+            path: shepr_core::layout::SplitPath::default(),
         };
         assert_eq!(
             split_hit_rect(&edge, true, true, &[]),

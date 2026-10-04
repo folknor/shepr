@@ -72,21 +72,25 @@ const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
 // report for a pane it does not know or with an empty agent label; the hook
 // drops that refusal like any other failure.
 //
-// Every asset opens the API socket itself and builds one envelope shape: a
-// single JSON request line whose `id` is `<source>:<seq>`, the report's own
-// `source` and `seq` params (the OpenCode TUI's session selection report has
-// no seq and puts a clock reading in the seq's unit there), and every socket
-// attempt waits at most 500 ms for the reply. `hook_assets_share_one_envelope`
-// in the tests holds the assets to it, and the server crate's
-// `agent_integration_contract_tests` module replays each asset's scripted
-// session into terminal state.
+// Every asset opens the API socket itself and builds one envelope shape: the
+// pane gate (a release pane with a socket and a pane id), a single JSON
+// request line whose `id` is `<source>:<seq>`, the report's own `source` and
+// `seq` params (the OpenCode TUI's session selection report has no seq and
+// puts a clock reading in the seq's unit there), and every socket attempt
+// waits at most 500 ms for the reply.
 //
-// Each installed asset is standalone and translates that agent's own
-// lifecycle payload into the API request. Those payload decoders and
-// lifecycle gates differ by agent, so generating the scripts from one template
-// would add a build-time source path without removing that agent-specific
-// logic. Hooks write directly to the server socket, so no reporter command
-// belongs in the CLI.
+// Those shared facts are written once, in `bundle.rs` and the agent descriptor
+// table, and generated into each asset as a preamble for its language: shell
+// and Python for the hooks, JavaScript for the OpenCode and Kilo plugins and
+// the OpenCode TUI plugin, TypeScript for the Pi and OMP extensions. What
+// differs by agent is only its decoder, which turns that agent's own
+// lifecycle payload into a report and is appended to the preamble. The files under `assets/` are that generated output, committed because the
+// bun tests and the server crate's `agent_integration_contract_tests` module
+// run them from disk, and the installer ships them as they are. The tests in
+// `bundle.rs` fail when one is stale, hold the decoders to spelling none of
+// the envelope, and the server crate's tests replay each asset's scripted
+// session into terminal state. Hooks write directly to the server socket, so
+// no reporter command belongs in the CLI.
 
 // Each agent's own config files, named once. The `IntegrationSpec` rows list
 // them for the registration check, and install joins the same constants, so
@@ -108,6 +112,8 @@ const ANTIGRAVITY_CLI_HOOKS_NAME: &str = "hooks.json";
 /// agent's config directory like the other names here.
 const GROK_HOOK_CONFIG_NAME: &str = "shepr.json";
 
+#[cfg(test)]
+mod bundle;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]

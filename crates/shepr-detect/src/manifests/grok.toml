@@ -8,8 +8,10 @@ id = "grok"
 # that prefix blinks while the terminal is unfocused, so visible blocker
 # rules outrank the title spinner rule.
 #
-# Grok also emits OSC 9;4 progress on supported terminals. Shepr retains the
-# payload after "9;": "4;1;-1" while busy and "4;0;0" when idle.
+# Grok also emits OSC 9;4 progress on supported terminals: "9;4;1;-1" while
+# busy and "9;4;0;0" when idle. Shepr parses the report and matches its
+# canonical "4;state[;percent]" spelling: the busy report's -1 is not a valid
+# percentage, so it reads "4;1"; the idle one reads "4;0;0".
 #
 # Working turns render one live status line directly above the prompt box:
 #   "⠧ Waiting on subagent… 2.8s   13s ⇣29.7k [stop]"
@@ -97,7 +99,7 @@ state = "working"
 priority = 1150
 region = "osc_progress"
 visible_working = true
-regex = ['^4;1;-1$']
+regex = ['^4;1$']
 
 [[rules]]
 id = "osc_title_idle"

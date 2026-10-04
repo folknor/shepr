@@ -1,9 +1,14 @@
 use shepr_protocol::command::{EndpointError, EndpointReply};
 use shepr_protocol::{BootId, RequestId, ServerMessage};
 
-use crate::limits::MAX_ENDPOINT_RESPONSE_ENCODED_BYTES;
+use super::outbox::CLIENT_CONTROL_QUEUE_MAX_BYTES;
 
-pub(crate) use crate::limits::MAX_ENDPOINT_REQUEST_ID_BYTES;
+/// Frames needed to carry a full control queue of endpoint response bytes.
+const MAX_ENDPOINT_RESPONSE_FRAME_COUNT: usize =
+    CLIENT_CONTROL_QUEUE_MAX_BYTES.div_ceil(shepr_protocol::MAX_FRAME_SIZE);
+/// Encoded size cap of one endpoint response, leaving room for frame prefixes.
+const MAX_ENDPOINT_RESPONSE_ENCODED_BYTES: usize =
+    CLIENT_CONTROL_QUEUE_MAX_BYTES - std::mem::size_of::<u32>() * MAX_ENDPOINT_RESPONSE_FRAME_COUNT;
 
 /// The one response to an endpoint command. A large result (a selection of a
 /// long scrollback) crosses in as many frames as it needs, up to the control
@@ -70,9 +75,10 @@ mod tests {
 
     #[test]
     fn endpoint_response_uses_the_client_request_id() {
+        let id = RequestId::allocate();
         let message = response_message(
             shepr_test_fixtures::fixed_boot_id(1),
-            "client-shell:1".into(),
+            id.clone(),
             Ok(EndpointReply::Done),
         );
         assert!(matches!(
@@ -81,7 +87,7 @@ mod tests {
                 request_id,
                 result: Ok(EndpointReply::Done),
                 ..
-            } if request_id == "client-shell:1"
+            } if request_id == id
         ));
     }
 
@@ -96,7 +102,7 @@ mod tests {
         ] {
             let message = error_message(
                 shepr_test_fixtures::fixed_boot_id(1),
-                "request-a".into(),
+                RequestId::allocate(),
                 error.clone(),
             );
             let ServerMessage::ClientShellEndpointResponse {
@@ -114,7 +120,7 @@ mod tests {
         let text = "x".repeat(shepr_protocol::MAX_FRAME_SIZE);
         let message = response_message(
             shepr_test_fixtures::fixed_boot_id(1),
-            "request-a".into(),
+            RequestId::allocate(),
             Ok(EndpointReply::PaneSelection {
                 pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: text.clone(),
@@ -135,9 +141,10 @@ mod tests {
 
     #[test]
     fn a_response_past_the_message_limit_becomes_a_bounded_refusal() {
+        let id = RequestId::allocate();
         let message = response_within(
             shepr_test_fixtures::fixed_boot_id(1),
-            "request-a".into(),
+            id.clone(),
             Ok(EndpointReply::PaneSelection {
                 pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: "x".repeat(4096),
@@ -152,7 +159,7 @@ mod tests {
         else {
             panic!("expected an error response, got {message:?}");
         };
-        assert_eq!(request_id, "request-a");
+        assert_eq!(request_id, &id);
         let EndpointError::LimitExceeded(error) = error else {
             panic!("expected a too-large refusal, got {error:?}");
         };
@@ -164,7 +171,7 @@ mod tests {
     fn a_response_past_the_control_queue_limit_becomes_a_bounded_refusal() {
         let message = response_message(
             shepr_test_fixtures::fixed_boot_id(1),
-            "request-a".into(),
+            RequestId::allocate(),
             Ok(EndpointReply::PaneSelection {
                 pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: "x".repeat(MAX_ENDPOINT_RESPONSE_ENCODED_BYTES + 1),

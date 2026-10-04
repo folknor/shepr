@@ -37,8 +37,12 @@ async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
     );
 
     let initial_projection_revision = initial.projection_revision;
-    server.app.state.workspaces[0].custom_name = Some("renamed workspace".into());
-    server.app.state.mark_shell_projection_dirty();
+    server
+        .app
+        .test_state_mut()
+        .ws_mut(0)
+        .set_custom_name(Some("renamed workspace".into()));
+    server.app.test_state_mut().mark_shell_projection_dirty();
     write_shared_test_pane(
         &mut server,
         pane_id,
@@ -64,7 +68,7 @@ async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
     );
     assert!(decoded.projection_revision > initial_projection_revision);
     assert!(frame_text(&decoded.frame).contains("updated text"));
-    assert_eq!(decoded.frame.hyperlinks, vec!["https://example.test/path"]);
+    assert_eq!(decoded.frame.hyperlinks(), ["https://example.test/path"]);
     shutdown_test_runtimes(&mut server);
 }
 
@@ -191,7 +195,10 @@ async fn a_resize_renders_only_the_resized_client_when_no_workspace_resizes() {
     let before = pair.server.view_epoch;
     pair.server.handle_server_event(ServerEvent::ShellResize {
         client_id: ClientId::test_new(8),
-        geometry: shepr_core::geometry::HostGeometry::new(79, 23, 0, 0, false),
+        geometry: shepr_core::geometry::HostGeometry::new(
+            shepr_core::geometry::GridSize::clamped(79, 23),
+            shepr_core::geometry::HostCell::Unknown,
+        ),
     });
     assert_eq!(pair.server.view_epoch, before);
     assert_eq!(pair.pass(false).full, vec![ClientId::test_new(8)]);
@@ -204,11 +211,11 @@ async fn a_scroll_renders_only_the_viewers_of_the_scrolled_pane() {
         pair.pane,
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(80, 23, 10_000, b"BASE"),
     );
-    let workspace_id = pair.server.app.state.workspaces[0].id;
+    let workspace_id = pair.server.app.state().ws(0).id();
     pair.server.apply_workspace_geometry(&workspace_id);
     let other = shepr_mux::workspace::Workspace::test_new("other");
-    let other_id = other.id;
-    pair.server.app.state.test_push_workspace(other);
+    let other_id = other.id();
+    pair.server.app.test_state_mut().test_push_workspace(other);
     pair.server
         .place_test_client_on_workspace(ClientId::test_new(8), &other_id);
     pair.pass(false);
@@ -228,8 +235,10 @@ async fn a_scroll_renders_only_the_viewers_of_the_scrolled_pane() {
     let pane_id = pair
         .server
         .app
-        .public_pane_id(0, pair.pane)
-        .expect("pane id");
+        .state()
+        .pane(pair.pane)
+        .expect("pane exists")
+        .public_id();
     pair.server
         .handle_client_shell_command(
             ClientId::test_new(7),
@@ -247,8 +256,8 @@ async fn a_scroll_renders_only_the_viewers_of_the_scrolled_pane() {
 async fn a_navigation_renders_only_the_client_that_moved() {
     let mut pair = Pair::new();
     let other = shepr_mux::workspace::Workspace::test_new("destination");
-    let other_id = other.id;
-    pair.server.app.state.test_push_workspace(other);
+    let other_id = other.id();
+    pair.server.app.test_state_mut().test_push_workspace(other);
     let epoch = pair.server.view_epoch;
     assert!(
         pair.server
@@ -326,7 +335,7 @@ async fn a_synchronized_pane_defers_the_surface_without_a_retry_loop() {
 async fn a_changed_deferral_owes_its_client_without_a_view_change() {
     let mut pair = Pair::new();
     let epoch = pair.server.view_epoch;
-    pair.server.app.render_dirty.take();
+    pair.server.outputs.render().take();
     pair.server
         .clients
         .get_mut(&ClientId::test_new(8))
@@ -340,7 +349,7 @@ async fn a_changed_deferral_owes_its_client_without_a_view_change() {
     assert_eq!(report.owed, vec![ClientId::test_new(8)]);
     assert_eq!(report.surface_renders, 1);
     assert_eq!(pair.server.view_epoch, epoch);
-    assert!(!pair.server.app.render_dirty.is_pending());
+    assert!(!pair.server.outputs.render().is_pending());
     assert_eq!(
         pair.server.render_plan(false).full,
         vec![ClientId::test_new(8)]
@@ -421,17 +430,13 @@ async fn a_retained_check_failure_promotes_only_its_client() {
 async fn a_failed_source_collection_promotes_only_clients_viewing_that_pane() {
     let mut pair = Pair::new();
     let other = shepr_mux::workspace::Workspace::test_new("other");
-    let other_id = other.id;
-    pair.server.app.state.test_push_workspace(other);
+    let other_id = other.id();
+    pair.server.app.test_state_mut().test_push_workspace(other);
     pair.server
         .place_test_client_on_workspace(ClientId::test_new(8), &other_id);
     pair.pass(false);
     pair.render[1].recv().expect("other baseline");
-    let terminal = pair.server.app.state.workspaces[0]
-        .terminal_id(pair.pane)
-        .expect("terminal")
-        .clone();
-    pair.server.app.terminal_runtimes.remove(&terminal);
+    pair.server.app.test_runtimes_mut().remove(&pair.pane);
     let outcome = pair.server.render_patches(
         &[ClientId::test_new(7), ClientId::test_new(8)],
         &HashSet::from([pair.pane]),
@@ -503,7 +508,7 @@ async fn mode_geometry_includes_all_viewers_in_the_same_plan() {
 #[tokio::test]
 async fn a_geometry_application_that_resizes_nothing_invalidates_nobody() {
     let mut pair = Pair::new();
-    let workspace_id = pair.server.app.state.workspaces[0].id;
+    let workspace_id = pair.server.app.state().ws(0).id();
     let Some(crate::server::headless::client_views::GeometrySource::Client(source)) =
         pair.server.workspace_geometry_source(&workspace_id)
     else {
@@ -537,8 +542,8 @@ async fn a_geometry_application_that_resizes_nothing_invalidates_nobody() {
 async fn replies_follow_the_snapshot_when_a_pass_renders_a_subset() {
     let mut pair = Pair::new();
     let other = shepr_mux::workspace::Workspace::test_new("destination");
-    let other_id = other.id;
-    pair.server.app.state.test_push_workspace(other);
+    let other_id = other.id();
+    pair.server.app.test_state_mut().test_push_workspace(other);
     pair.server
         .navigate_shell_client(ClientId::test_new(8), &other_id);
     let reply = ServerMessage::WindowTitle {
@@ -565,7 +570,7 @@ async fn with_no_client_attached_planning_lays_out_a_workspace_without_owing_a_p
     let mut server = test_headless_server();
     install_shared_view_test_runtime(&mut server);
     assert!(!server.render_plan(false).has_full());
-    assert!(server.app.state.workspace_area(0).is_some());
+    assert!(server.app.state().ws(0).spawn_geometry().is_some());
     server.mark_view_changed();
     assert!(!server.render_plan(false).has_full());
     shutdown_test_runtimes(&mut server);
@@ -640,18 +645,19 @@ async fn exhausted_surface_revisions_close_the_client() {
 #[tokio::test]
 async fn scrolling_preserves_concurrent_shared_projection_changes() {
     let mut pair = Pair::new();
-    pair.server.app.state.ensure_test_terminals();
     pair.damage(b"\x1b]0;shared title\x07");
     pair.server
-        .app
-        .render_dirty
+        .outputs
+        .render()
         .request_terminal_title(pair.pane);
     let epoch = pair.server.view_epoch;
     let pane_id = pair
         .server
         .app
-        .public_pane_id(0, pair.pane)
-        .expect("pane id");
+        .state()
+        .pane(pair.pane)
+        .expect("pane exists")
+        .public_id();
     pair.server
         .handle_client_shell_command(
             ClientId::test_new(7),
@@ -674,10 +680,14 @@ async fn cjk_cursor_reveal_keeps_retained_rendering_and_matches_full_surfaces() 
         let mut pair = Pair::new();
         pair.server
             .app
-            .state
-            .settings
+            .test_state_mut()
+            .settings_mut()
             .reveal_hidden_cursor_for_cjk_ime = true;
-        pair.server.app.state.settings.cjk_ime_agents = if allow_shell {
+        pair.server
+            .app
+            .test_state_mut()
+            .settings_mut()
+            .cjk_ime_agents = if allow_shell {
             crate::app::state::AgentFilter::from_config(&[])
         } else {
             let agents = [shepr_config::ConfigAgent::all()
@@ -700,23 +710,25 @@ async fn cjk_cursor_reveal_keeps_retained_rendering_and_matches_full_surfaces() 
                 .render_state
                 .last_pane_surface()
                 .expect("retained baseline");
-            let cursor = surface.frame.cursor.as_ref().expect("cursor");
+            let cursor = surface.frame.cursor().expect("cursor");
             assert_eq!(cursor.visible, allow_shell);
             if allow_shell {
                 assert_eq!(
                     cursor.shape,
-                    pair.server.app.state.settings.cjk_ime_cursor_shape
+                    pair.server.app.state().settings().cjk_ime_cursor_shape
                 );
             }
-            let target = &pair.server.app.state.workspaces[0].id;
+            let target = crate::ui::SurfaceTarget {
+                index: 0,
+                id: pair.server.app.state().ws(0).id(),
+            };
             let full = crate::server::pane_surface::render_pane_surface(
                 &pair.server.app,
                 Some(target),
-                Rect::new(0, 0, surface.frame.width, surface.frame.height),
-                shepr_term::host::HostCellSize::default(),
+                Rect::new(0, 0, surface.frame.width(), surface.frame.height()),
             )
             .expect("complete surface");
-            assert_eq!(full.frame.cursor, surface.frame.cursor);
+            assert_eq!(full.frame.cursor(), surface.frame.cursor());
             assert_eq!(full.panes, surface.panes);
         }
     }
@@ -728,9 +740,8 @@ impl render::SurfaceBoundary for ChangedSurfaceBoundary {
     fn render(
         &self,
         _app: &crate::app::App,
-        _workspace: Option<&shepr_protocol::WorkspaceId>,
-        _area: ratatui::layout::Rect,
-        _cell_size: shepr_term::host::HostCellSize,
+        _workspace: Option<crate::ui::SurfaceTarget>,
+        _area: shepr_core::geometry::Rect,
     ) -> Result<
         crate::server::pane_surface::RenderedPaneSurface,
         crate::server::pane_surface::SurfaceRenderDeferred,

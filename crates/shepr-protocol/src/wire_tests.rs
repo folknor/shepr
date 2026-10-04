@@ -1,6 +1,6 @@
 use super::*;
 use serde::Serialize;
-use shepr_core::geometry::SplitBranch;
+use shepr_core::layout::SplitBranch;
 use std::io::{self, Read};
 
 #[cfg(test)]
@@ -55,7 +55,10 @@ mod tests {
     #[test]
     fn endpoint_hello_roundtrip() -> TestResult {
         let msg = ClientMessage::EndpointHello(crate::endpoint::EndpointClientHello {
-            geometry: super::TerminalGeometry::new(80, 24, 8, 16, true),
+            geometry: super::TerminalGeometry::from_host(
+                shepr_core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::HostCell::from_host(8, 16, true),
+            ),
             mouse_capture: false,
             surface_active: true,
         });
@@ -66,7 +69,10 @@ mod tests {
     #[test]
     fn client_shell_resize_roundtrip() -> TestResult {
         let msg = ClientMessage::ClientShellResize {
-            geometry: super::TerminalGeometry::new(74, 29, 8, 16, true),
+            geometry: super::TerminalGeometry::from_host(
+                shepr_core::geometry::GridSize::clamped(74, 29),
+                shepr_core::geometry::HostCell::from_host(8, 16, true),
+            ),
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -191,8 +197,11 @@ mod tests {
             }),
             EndpointCommand::LayoutSetSplitRatio(LayoutSetSplitRatioParams {
                 workspace_id: workspace,
-                first_panes: vec![pane],
-                second_panes: vec!["w1:p2".parse()?],
+                path: vec![
+                    shepr_core::layout::SplitBranch::First,
+                    shepr_core::layout::SplitBranch::Second,
+                ],
+                epoch: shepr_core::layout::LayoutEpoch::default().next(),
                 ratio: shepr_core::layout::SplitRatio::new(0.6).expect("wire test ratio is valid"),
             }),
             EndpointCommand::WorkspaceMove(WorkspaceMoveParams {
@@ -242,7 +251,7 @@ mod tests {
         ] {
             let request = ClientMessage::ClientShellEndpointRequest {
                 boot_id: "1-1".into(),
-                request_id: "request-a".into(),
+                request_id: crate::RequestId::allocate(),
                 command,
             };
             assert_eq!(roundtrip(&request)?, request);
@@ -280,7 +289,7 @@ mod tests {
         ] {
             let response = ServerMessage::ClientShellEndpointResponse {
                 boot_id: "1-1".into(),
-                request_id: "request-a".into(),
+                request_id: crate::RequestId::allocate(),
                 result,
             };
             assert_eq!(roundtrip(&response)?, response);
@@ -318,15 +327,14 @@ mod tests {
     #[test]
     fn server_frame_roundtrip_nontrivial() -> TestResult {
         // Build a 3×2 frame with varied styles (≥2×2).
-        let frame = FrameData {
-            cells: vec![
+        let frame = FrameData::new(
+            vec![
                 CellData {
                     symbol: "H".into(),
                     grid_width: GridCellWidth::Grapheme,
                     fg: WireColor::Red,
                     bg: WireColor::Black,
                     style: flagged(WireStyleFlags::BOLD),
-                    skip: false,
                     hyperlink: None,
                 },
                 CellData {
@@ -335,7 +343,6 @@ mod tests {
                     fg: WireColor::Green,
                     bg: WireColor::Reset,
                     style: flagged(WireStyleFlags::ITALIC),
-                    skip: false,
                     hyperlink: None,
                 },
                 CellData {
@@ -347,7 +354,6 @@ mod tests {
                         flags: WireStyleFlags::BOLD,
                         underline: shepr_term::UnderlineStyle::Curly,
                     },
-                    skip: false,
                     hyperlink: Some(0),
                 },
                 CellData {
@@ -356,7 +362,6 @@ mod tests {
                     fg: WireColor::Reset,
                     bg: WireColor::Reset,
                     style: WireStyle::default(),
-                    skip: true,
                     hyperlink: None,
                 },
                 CellData {
@@ -365,33 +370,31 @@ mod tests {
                     fg: WireColor::Cyan,
                     bg: WireColor::Blue,
                     style: flagged(WireStyleFlags::REVERSED),
-                    skip: false,
                     hyperlink: None,
                 },
                 CellData {
                     symbol: "\u{1F980}".into(), // emoji, wide grapheme cluster
-                    grid_width: GridCellWidth::Two,
+                    grid_width: GridCellWidth::WideLead,
                     fg: WireColor::Yellow,
                     bg: WireColor::Magenta,
                     style: WireStyle::default(),
-                    skip: false,
                     hyperlink: None,
                 },
             ],
-            width: 3,
-            height: 2,
-            cursor: Some(CursorState {
+            3,
+            2,
+            Some(CursorState {
                 x: 0,
                 y: 0,
                 visible: true,
                 shape: crate::CursorShapeParam::SteadyBar,
             }),
-            hyperlinks: vec!["https://example.com".to_owned()],
-        };
+            vec!["https://example.com".to_owned()],
+        )?;
         let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
             boot_id: "1-1".into(),
-            projection_revision: crate::ProjectionRevision::new(1),
-            surface_revision: crate::SurfaceRevision::new(1),
+            projection_revision: crate::revision::at(1),
+            surface_revision: crate::revision::at(1),
             frame: frame.clone(),
             panes: Vec::new(),
             splits: vec![PaneSurfaceSplit {
@@ -410,16 +413,17 @@ mod tests {
                     height: 2,
                 },
                 path: vec![SplitBranch::First, SplitBranch::Second],
+                epoch: shepr_core::layout::LayoutEpoch::default().next(),
             }],
         });
         let decoded = roundtrip(&msg)?;
         assert_eq!(msg, decoded);
         match decoded {
             ServerMessage::PaneSurface(surface) => {
-                assert_eq!(surface.frame.cells[2].hyperlink, Some(0));
+                assert_eq!(surface.frame.cells()[2].hyperlink, Some(0));
                 assert_eq!(
-                    surface.frame.hyperlinks,
-                    vec!["https://example.com".to_owned()]
+                    surface.frame.hyperlinks(),
+                    ["https://example.com".to_owned()]
                 );
             }
             other => panic!("expected pane surface, got {other:?}"),
@@ -431,10 +435,10 @@ mod tests {
     fn surface_update_roundtrip() -> TestResult {
         let msg = ServerMessage::SurfaceUpdate(SurfaceUpdate {
             boot_id: "1-1".into(),
-            base_projection_revision: crate::ProjectionRevision::new(3),
-            projection_revision: crate::ProjectionRevision::new(3),
-            base_surface_revision: crate::SurfaceRevision::new(7),
-            surface_revision: crate::SurfaceRevision::new(8),
+            base_projection_revision: crate::revision::at(3),
+            projection_revision: crate::revision::at(3),
+            base_surface_revision: crate::revision::at(7),
+            surface_revision: crate::revision::at(8),
             meta: None,
             spans: vec![PaneSurfacePatchRow {
                 x: 2,
@@ -445,7 +449,6 @@ mod tests {
                     fg: WireColor::Indexed(1),
                     bg: WireColor::Rgb(0, 0, 2),
                     style: flagged(WireStyleFlags::BOLD.union(WireStyleFlags::ITALIC)),
-                    skip: false,
                     hyperlink: None,
                 }],
             }],
@@ -466,7 +469,7 @@ mod tests {
                 backup_dir: "/state/session-backups".into(),
             }),
             session_saves_stopped: true,
-            revision: crate::ProjectionRevision::new(1),
+            revision: crate::revision::at(1),
             focused_workspace_id: Some("w1".into()),
             focused_pane_id: Some("w1:p1".into()),
             workspaces: vec![ClientShellWorkspace {
@@ -492,7 +495,7 @@ mod tests {
                 terminal_title: None,
                 terminal_title_stripped: None,
                 agent_status: crate::AgentStatus::Working,
-                state_change_seq: 1,
+                state_change_seq: crate::revision::at(1),
             }],
         };
         let decoded: ClientShellSnapshot = roundtrip(&msg)?;
@@ -529,11 +532,66 @@ mod tests {
 
     #[test]
     fn server_mouse_capture_roundtrip() -> TestResult {
-        let msg = ServerMessage::MouseCapture {
-            enabled: true,
-            sgr_pixels: true,
+        for mode in [
+            shepr_term::mouse::HostMouseCapture::Off,
+            shepr_term::mouse::HostMouseCapture::Cells,
+            shepr_term::mouse::HostMouseCapture::Pixels,
+        ] {
+            let msg = ServerMessage::MouseCapture { mode };
+            assert_eq!(roundtrip(&msg)?, msg);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn pixel_mouse_position_carries_its_extent_on_the_wire() -> TestResult {
+        use crate::{ClientMouseKind, ClientMousePosition, ClientPaneInputEvent, WireModifiers};
+        use shepr_core::geometry::{GridSize, PanePixelExtent};
+        use shepr_term::mouse::PixelReport;
+
+        let extent = PanePixelExtent::new(GridSize::clamped(80, 24), 720, 432).expect("nonzero");
+        let event = ClientPaneInputEvent::Mouse {
+            kind: ClientMouseKind::Moved,
+            position: ClientMousePosition::Pixels {
+                column: 2,
+                row: 3,
+                report: PixelReport::new(48, 139, extent),
+            },
+            modifiers: WireModifiers::NONE,
+            lines: 0,
         };
-        assert_eq!(roundtrip(&msg)?, msg);
+        assert_eq!(roundtrip(&event)?, event);
+
+        // A zero extent axis does not decode: the extent is nonzero by type.
+        // The mirror has the report's positional shape with plain integers.
+        #[derive(Serialize)]
+        struct MirrorExtent {
+            grid: GridSize,
+            width: u16,
+            height: u16,
+        }
+        #[derive(Serialize)]
+        struct MirrorReport {
+            x: u32,
+            y: u32,
+            extent: MirrorExtent,
+        }
+        let mirror = |width: u16| MirrorReport {
+            x: 48,
+            y: 139,
+            extent: MirrorExtent {
+                grid: extent.grid(),
+                width,
+                height: 432,
+            },
+        };
+        let good = codec::to_vec(&mirror(720))?;
+        assert_eq!(
+            codec::from_slice_exact::<PixelReport>(&good)?,
+            PixelReport::new(48, 139, extent)
+        );
+        let zero = codec::to_vec(&mirror(0))?;
+        assert!(codec::from_slice_exact::<PixelReport>(&zero).is_err());
         Ok(())
     }
 
@@ -561,7 +619,10 @@ mod tests {
     #[test]
     fn framing_small_message_roundtrip() {
         let msg = ClientMessage::ClientShellResize {
-            geometry: super::TerminalGeometry::new(80, 24, 8, 16, false),
+            geometry: super::TerminalGeometry::from_host(
+                shepr_core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::HostCell::from_host(8, 16, false),
+            ),
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).expect("test precondition");
@@ -595,27 +656,27 @@ mod tests {
                 } else {
                     WireStyleFlags::ITALIC.union(WireStyleFlags::DIM)
                 }),
-                skip: i % 100 == 0,
                 hyperlink: None,
             })
             .collect();
 
-        let frame = FrameData {
+        let frame = FrameData::new(
             cells,
             width,
             height,
-            cursor: Some(CursorState {
+            Some(CursorState {
                 x: 10,
                 y: 5,
                 visible: true,
                 shape: crate::CursorShapeParam::Default,
             }),
-            hyperlinks: Vec::new(),
-        };
+            Vec::new(),
+        )
+        .expect("test precondition");
         let msg = ServerMessage::PaneSurface(PaneSurfaceFrame {
             boot_id: "1-1".into(),
-            projection_revision: crate::ProjectionRevision::new(1),
-            surface_revision: crate::SurfaceRevision::new(1),
+            projection_revision: crate::revision::at(1),
+            surface_revision: crate::revision::at(1),
             frame,
             panes: Vec::new(),
             splits: Vec::new(),
@@ -643,12 +704,12 @@ mod tests {
         for i in 0..150u32 {
             let msg = match i % 4 {
                 0 => ClientMessage::ClientShellResize {
-                    geometry: super::TerminalGeometry::new(
-                        80 + u16::try_from(i % 40).unwrap_or(u16::MAX),
-                        24 + u16::try_from(i % 20).unwrap_or(u16::MAX),
-                        8,
-                        16,
-                        i % 2 == 0,
+                    geometry: super::TerminalGeometry::from_host(
+                        shepr_core::geometry::GridSize::clamped(
+                            80 + u16::try_from(i % 40).unwrap_or(u16::MAX),
+                            24 + u16::try_from(i % 20).unwrap_or(u16::MAX),
+                        ),
+                        shepr_core::geometry::HostCell::from_host(8, 16, i % 2 == 0),
                     ),
                 },
                 1 => paste("x".repeat((i as usize % 50) + 1)),
@@ -798,29 +859,36 @@ mod tests {
 
     #[test]
     fn blank_frame_is_a_grid_of_unstyled_spaces() {
-        let frame = FrameData::blank(3, 2);
-        assert_eq!((frame.width, frame.height), (3, 2));
-        assert_eq!(frame.cells.len(), 6);
-        assert!(frame.cells.iter().all(|cell| *cell == CellData::blank()));
-        assert!(frame.cursor.is_none() && frame.hyperlinks.is_empty());
-        assert!(FrameData::blank(0, 5).cells.is_empty());
+        let frame = FrameData::blank(3, 2).expect("small frame");
+        assert_eq!((frame.width(), frame.height()), (3, 2));
+        assert_eq!(frame.cells().len(), 6);
+        assert!(frame.cells().iter().all(|cell| *cell == CellData::blank()));
+        assert!(frame.cursor().is_none() && frame.hyperlinks().is_empty());
+        assert_eq!(
+            FrameData::blank(0, 5),
+            Err(crate::FrameGridError::InvalidDimensions)
+        );
     }
 
     #[test]
     fn interned_hyperlinks_are_deduplicated_and_bounded() {
-        let mut frame = FrameData::blank(1, 1);
+        let mut frame = FrameData::blank(1, 1).expect("small frame");
         assert_eq!(frame.intern_hyperlink("https://a.example"), Some(0));
         assert_eq!(frame.intern_hyperlink("https://b.example"), Some(1));
         assert_eq!(frame.intern_hyperlink("https://b.example"), Some(1));
         assert_eq!(frame.intern_hyperlink("https://a.example"), Some(0));
-        assert_eq!(frame.hyperlinks.len(), 2);
+        assert_eq!(frame.hyperlinks().len(), 2);
 
-        frame.hyperlinks = (0..crate::MAX_SURFACE_HYPERLINKS)
-            .map(|index| index.to_string())
-            .collect();
+        frame
+            .set_hyperlinks(
+                (0..crate::MAX_SURFACE_HYPERLINKS)
+                    .map(|index| index.to_string())
+                    .collect(),
+            )
+            .expect("table at its budget");
         assert_eq!(frame.intern_hyperlink("7"), Some(7));
         assert_eq!(frame.intern_hyperlink("full"), None);
-        assert_eq!(frame.hyperlinks.len(), crate::MAX_SURFACE_HYPERLINKS);
+        assert_eq!(frame.hyperlinks().len(), crate::MAX_SURFACE_HYPERLINKS);
     }
 
     #[test]
@@ -860,7 +928,10 @@ mod tests {
     fn read_message_accepts_exact_payload() {
         // A normally-framed message should decode without error.
         let msg = ClientMessage::ClientShellResize {
-            geometry: super::TerminalGeometry::new(80, 24, 8, 16, false),
+            geometry: super::TerminalGeometry::from_host(
+                shepr_core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::HostCell::from_host(8, 16, false),
+            ),
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &msg).expect("test precondition");
@@ -1070,11 +1141,17 @@ mod tests {
 
         let messages = vec![
             ClientMessage::ClientShellResize {
-                geometry: super::TerminalGeometry::new(200, 60, 8, 16, true),
+                geometry: super::TerminalGeometry::from_host(
+                    shepr_core::geometry::GridSize::clamped(200, 60),
+                    shepr_core::geometry::HostCell::from_host(8, 16, true),
+                ),
             },
             paste("hello world".to_owned()),
             ClientMessage::ClientShellResize {
-                geometry: super::TerminalGeometry::new(100, 30, 8, 16, true),
+                geometry: super::TerminalGeometry::from_host(
+                    shepr_core::geometry::GridSize::clamped(100, 30),
+                    shepr_core::geometry::HostCell::from_host(8, 16, true),
+                ),
             },
             ClientMessage::Detach,
         ];

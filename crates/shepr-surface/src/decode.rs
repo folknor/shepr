@@ -41,9 +41,7 @@ impl std::fmt::Display for SurfaceDecodeSubject {
         write!(
             f,
             "boot {}, projection revision {}, surface revision {}",
-            self.boot_id,
-            self.projection_revision.get(),
-            self.surface_revision.get()
+            self.boot_id, self.projection_revision, self.surface_revision
         )?;
         if !self.pane_ids.is_empty() {
             f.write_str(", panes ")?;
@@ -114,10 +112,10 @@ impl<'a> SurfaceBaseline<'a> {
                 surface.projection_revision,
                 surface.surface_revision,
             ),
-            cells: &surface.frame.cells,
-            width: surface.frame.width,
-            height: surface.frame.height,
-            hyperlinks: &surface.frame.hyperlinks,
+            cells: surface.frame.cells(),
+            width: surface.frame.width(),
+            height: surface.frame.height(),
+            hyperlinks: surface.frame.hyperlinks(),
             panes: &surface.panes,
         }
     }
@@ -162,22 +160,19 @@ pub fn apply_patch_to_surface(
     patch: &PaneSurfacePatch,
 ) -> Result<(), SurfaceDecodeError> {
     SurfaceBaseline::new(surface).admits(patch)?;
-    apply_admitted_patch(
-        &mut surface.frame.cells,
-        surface.frame.width,
-        &mut surface.panes,
-        &mut surface.frame.cursor,
-        patch,
-    );
+    let width = surface.frame.width();
+    apply_admitted_patch(surface.frame.cells_mut(), width, &mut surface.panes, patch);
+    surface.frame.set_cursor(patch.cursor.clone());
     surface.surface_revision = patch.surface_revision;
     Ok(())
 }
 
+/// Writes an admitted patch's rows and pane observations. The cursor is the
+/// caller's, since it lives beside the cells in a frame.
 fn apply_admitted_patch(
     cells: &mut [CellData],
     width: u16,
     panes: &mut [shepr_protocol::PaneSurfacePane],
-    cursor: &mut Option<shepr_protocol::CursorState>,
     patch: &PaneSurfacePatch,
 ) {
     for row in &patch.rows {
@@ -192,7 +187,6 @@ fn apply_admitted_patch(
             existing.clone_from(updated);
         }
     }
-    cursor.clone_from(&patch.cursor);
 }
 
 impl From<shepr_protocol::FrameGridError> for SurfaceDecodeError {
@@ -354,7 +348,7 @@ impl<'a> Baseline<'a> {
                     && surface.topology().same_topology(&last.topology())
                 {
                     shepr_protocol::SurfaceMeta::Patch(shepr_protocol::SurfacePatchMeta {
-                        cursor: surface.frame.cursor.clone(),
+                        cursor: surface.frame.cursor().cloned(),
                         panes: surface
                             .panes
                             .iter()
@@ -409,8 +403,7 @@ pub enum DecodedWireServerMessage {
         title: Option<String>,
     },
     MouseCapture {
-        enabled: bool,
-        sgr_pixels: bool,
+        mode: shepr_term::mouse::HostMouseCapture,
     },
     PaneSurface(PaneSurfaceFrame),
     ClientShellError {
@@ -437,13 +430,7 @@ impl TryFrom<ServerMessage> for DecodedWireServerMessage {
             ServerMessage::ServerShutdown { reason } => Ok(Self::ServerShutdown { reason }),
             ServerMessage::Clipboard { data } => Ok(Self::Clipboard { data }),
             ServerMessage::WindowTitle { title } => Ok(Self::WindowTitle { title }),
-            ServerMessage::MouseCapture {
-                enabled,
-                sgr_pixels,
-            } => Ok(Self::MouseCapture {
-                enabled,
-                sgr_pixels,
-            }),
+            ServerMessage::MouseCapture { mode } => Ok(Self::MouseCapture { mode }),
             ServerMessage::PaneSurface(surface) => Ok(Self::PaneSurface(surface)),
             ServerMessage::ClientShellError { kind } => Ok(Self::ClientShellError { kind }),
             ServerMessage::ClientShellKeyboardReportAll { enabled } => {
@@ -483,12 +470,15 @@ pub struct Decoder {
 impl Decoder {
     pub fn current_surface(&self) -> Option<PaneSurfaceFrame> {
         let base = self.baseline.as_ref()?;
-        Some(base.meta.clone()?.into_surface(
-            base.boot_id.clone(),
-            base.projection_revision,
-            base.surface_revision,
-            base.cells.clone(),
-        ))
+        base.meta
+            .clone()?
+            .into_surface(
+                base.boot_id.clone(),
+                base.projection_revision,
+                base.surface_revision,
+                base.cells.clone(),
+            )
+            .ok()
     }
 
     pub fn decode(
@@ -565,13 +555,8 @@ impl Decoder {
                         panes: &previous.panes,
                     }
                     .admits(&patch)?;
-                    apply_admitted_patch(
-                        &mut base.cells,
-                        base.width,
-                        &mut previous.panes,
-                        &mut previous.frame.cursor,
-                        &patch,
-                    );
+                    apply_admitted_patch(&mut base.cells, base.width, &mut previous.panes, &patch);
+                    previous.frame.cursor.clone_from(&patch.cursor);
                     base.surface_revision = patch.surface_revision;
                     return Ok(DecodedServerMessage::PaneSurfacePatch(patch));
                 }
@@ -643,13 +628,8 @@ impl Decoder {
                         panes: &previous.panes,
                     }
                     .admits(&patch)?;
-                    apply_admitted_patch(
-                        &mut base.cells,
-                        base.width,
-                        &mut meta.panes,
-                        &mut meta.frame.cursor,
-                        &patch,
-                    );
+                    apply_admitted_patch(&mut base.cells, base.width, &mut meta.panes, &patch);
+                    meta.frame.cursor.clone_from(&patch.cursor);
                     base.meta = Some(meta);
                     base.surface_revision = patch.surface_revision;
                     return Ok(DecodedServerMessage::PaneSurfacePatch(patch));
@@ -703,12 +683,24 @@ impl Decoder {
                 // caller owns the returned surface. FrameData uses Vec, so these
                 // independent owners require one grid copy until cell storage is
                 // shared or copy-on-write.
-                let surface = meta.clone().into_surface(
-                    update.boot_id,
-                    update.projection_revision,
-                    update.surface_revision,
-                    base.cells.clone(),
-                );
+                let surface = meta
+                    .clone()
+                    .into_surface(
+                        update.boot_id.clone(),
+                        update.projection_revision,
+                        update.surface_revision,
+                        base.cells.clone(),
+                    )
+                    .map_err(|error| {
+                        SurfaceDecodeError::from(error).with_subject(
+                            SurfaceDecodeSubject::from_update_header(
+                                &update.boot_id,
+                                update.projection_revision,
+                                update.surface_revision,
+                                &meta.panes,
+                            ),
+                        )
+                    })?;
                 base.meta = Some(meta);
                 base.projection_revision = surface.projection_revision;
                 base.surface_revision = surface.surface_revision;
@@ -742,9 +734,16 @@ impl Decoder {
             base.boot_id.clone_from(&surface.boot_id);
             base.projection_revision = surface.projection_revision;
             base.surface_revision = surface.surface_revision;
-            base.width = surface.frame.width;
-            base.height = surface.frame.height;
-            base.cells.clone_from(&surface.frame.cells);
+            base.width = surface.frame.width();
+            base.height = surface.frame.height();
+            // Same-size baselines reuse each cell's symbol allocation.
+            let source = surface.frame.cells();
+            if base.cells.len() == source.len() {
+                base.cells.clone_from_slice(source);
+            } else {
+                base.cells.clear();
+                base.cells.extend_from_slice(source);
+            }
             base.meta = Some(surface.into());
         }
         Ok(DecodedServerMessage::Wire(message))
@@ -783,7 +782,6 @@ mod tests {
             fg: WireColor::Reset,
             bg: WireColor::Reset,
             style: WireStyle::default(),
-            skip: false,
             hyperlink: None,
         }
     }
@@ -791,15 +789,10 @@ mod tests {
     fn surface() -> PaneSurfaceFrame {
         PaneSurfaceFrame {
             boot_id: boot("1-1"),
-            projection_revision: ProjectionRevision::new(1),
-            surface_revision: SurfaceRevision::new(1),
-            frame: FrameData {
-                cells: vec![cell("a"), cell("b")],
-                width: 2,
-                height: 1,
-                cursor: None,
-                hyperlinks: Vec::new(),
-            },
+            projection_revision: crate::test_counters::projection(1),
+            surface_revision: crate::test_counters::surface(1),
+            frame: FrameData::new(vec![cell("a"), cell("b")], 2, 1, None, Vec::new())
+                .expect("test frame"),
             panes: Vec::new(),
             splits: Vec::new(),
         }
@@ -824,7 +817,7 @@ mod tests {
             boot_id: kept.boot_id.clone(),
             projection_revision: kept.projection_revision,
             base_surface_revision: kept.surface_revision,
-            surface_revision: SurfaceRevision::new(2),
+            surface_revision: crate::test_counters::surface(2),
             rows: vec![PaneSurfacePatchRow {
                 x: 0,
                 y: 0,
@@ -861,18 +854,20 @@ mod tests {
     fn projection_metadata_and_full_frame_use_the_same_topology_rule() {
         let first = surface();
         let mut next = first.clone();
-        next.frame.cells[0] = cell("z");
-        next.frame.cursor = Some(shepr_protocol::CursorState {
+        next.frame.cells_mut()[0] = cell("z");
+        next.frame.set_cursor(Some(shepr_protocol::CursorState {
             x: 1,
             y: 0,
             visible: true,
             shape: shepr_protocol::CursorShapeParam::SteadyBar,
-        });
+        }));
         let previous = shepr_protocol::SurfaceProjectionMeta::from(&first);
         let changed = shepr_protocol::SurfaceProjectionMeta::from(&next);
         assert!(first.topology().same_topology(&next.topology()));
         assert!(previous.topology().same_topology(&changed.topology()));
-        next.frame.hyperlinks.push("https://example.test".into());
+        next.frame
+            .push_hyperlink("https://example.test".into())
+            .expect("room in the table");
         let changed = shepr_protocol::SurfaceProjectionMeta::from(&next);
         assert!(!first.topology().same_topology(&next.topology()));
         assert!(!previous.topology().same_topology(&changed.topology()));
@@ -887,10 +882,10 @@ mod tests {
             .expect("baseline");
         let update = SurfaceUpdate {
             boot_id: first.boot_id.clone(),
-            base_surface_revision: SurfaceRevision::new(1),
-            surface_revision: SurfaceRevision::new(2),
-            base_projection_revision: ProjectionRevision::new(1),
-            projection_revision: ProjectionRevision::new(2),
+            base_surface_revision: crate::test_counters::surface(1),
+            surface_revision: crate::test_counters::surface(2),
+            base_projection_revision: crate::test_counters::projection(1),
+            projection_revision: crate::test_counters::projection(2),
             meta: None,
             spans: vec![PaneSurfacePatchRow {
                 x: 1,
@@ -907,9 +902,12 @@ mod tests {
         else {
             panic!("expected surface");
         };
-        assert_eq!(applied.frame.cells[1], cell("c"));
-        assert_eq!(applied.projection_revision, ProjectionRevision::new(2));
-        assert_eq!(applied.surface_revision, SurfaceRevision::new(2));
+        assert_eq!(applied.frame.cells()[1], cell("c"));
+        assert_eq!(
+            applied.projection_revision,
+            crate::test_counters::projection(2)
+        );
+        assert_eq!(applied.surface_revision, crate::test_counters::surface(2));
     }
 
     #[test]
@@ -920,10 +918,10 @@ mod tests {
             .expect("baseline");
         let update = SurfaceUpdate {
             boot_id: boot("1-1"),
-            base_surface_revision: SurfaceRevision::new(0),
-            surface_revision: SurfaceRevision::new(2),
-            base_projection_revision: ProjectionRevision::new(1),
-            projection_revision: ProjectionRevision::new(1),
+            base_surface_revision: crate::test_counters::surface(0),
+            surface_revision: crate::test_counters::surface(2),
+            base_projection_revision: crate::test_counters::projection(1),
+            projection_revision: crate::test_counters::projection(1),
             meta: None,
             spans: Vec::new(),
         };
@@ -938,8 +936,11 @@ mod tests {
             SurfaceDecodeError::BaselineMismatch
         ));
         assert_eq!(subject.boot_id, "1-1");
-        assert_eq!(subject.projection_revision, ProjectionRevision::new(1));
-        assert_eq!(subject.surface_revision, SurfaceRevision::new(2));
+        assert_eq!(
+            subject.projection_revision,
+            crate::test_counters::projection(1)
+        );
+        assert_eq!(subject.surface_revision, crate::test_counters::surface(2));
     }
 
     #[test]
@@ -950,10 +951,10 @@ mod tests {
             .expect("baseline");
         let update = SurfaceUpdate {
             boot_id: boot("1-1"),
-            base_surface_revision: SurfaceRevision::new(1),
-            surface_revision: SurfaceRevision::new(2),
-            base_projection_revision: ProjectionRevision::new(1),
-            projection_revision: ProjectionRevision::new(1),
+            base_surface_revision: crate::test_counters::surface(1),
+            surface_revision: crate::test_counters::surface(2),
+            base_projection_revision: crate::test_counters::projection(1),
+            projection_revision: crate::test_counters::projection(1),
             meta: None,
             spans: vec![PaneSurfacePatchRow {
                 x: 0,
@@ -969,7 +970,7 @@ mod tests {
         };
         assert_eq!(patch.rows.len(), 1);
         assert_eq!(
-            decoder.current_surface().expect("baseline").frame.cells[0],
+            decoder.current_surface().expect("baseline").frame.cells()[0],
             cell("z")
         );
 
@@ -988,7 +989,10 @@ mod tests {
     #[test]
     fn compact_metadata_round_trips_and_rejected_spans_leave_baseline_unchanged() {
         let mut first = surface();
-        first.frame.hyperlinks = vec!["https://example.test/".repeat(4096)];
+        first
+            .frame
+            .set_hyperlinks(vec!["https://example.test/".repeat(4096)])
+            .expect("no cell links yet");
         let rect = shepr_protocol::SurfaceRect {
             x: 0,
             y: 0,
@@ -997,32 +1001,30 @@ mod tests {
         };
         first.panes.push(shepr_protocol::PaneSurfacePane {
             pane_id: "w1:p1".parse().expect("pane ID"),
-            content_revision: 1,
+            content_revision: crate::test_counters::content(1),
             rect,
             inner_rect: rect,
             scrollbar_rect: None,
             scroll: None,
             focused: true,
             mouse_reporting: false,
-            sgr_pixel_mouse: false,
+            pixel_mouse: shepr_term::mouse::PanePixelMouse::OFF,
             alternate_screen_active: false,
-            pixel_width: 0,
-            pixel_height: 0,
         });
         let mut decoder = Decoder::default();
         decoder
             .decode(ServerMessage::PaneSurface(first.clone()))
             .expect("baseline");
         let mut next = first.clone();
-        next.surface_revision = SurfaceRevision::new(2);
-        next.panes[0].content_revision = 2;
-        next.frame.cursor = Some(shepr_protocol::CursorState {
+        next.surface_revision = crate::test_counters::surface(2);
+        next.panes[0].content_revision = crate::test_counters::content(2);
+        next.frame.set_cursor(Some(shepr_protocol::CursorState {
             x: 1,
             y: 0,
             visible: true,
             shape: shepr_protocol::CursorShapeParam::SteadyBar,
-        });
-        next.frame.cells[0] = cell("z");
+        }));
+        next.frame.cells_mut()[0] = cell("z");
         let baseline = Baseline::new(
             &first.boot_id,
             first.projection_revision,
@@ -1066,17 +1068,22 @@ mod tests {
     #[test]
     fn projection_update_validates_only_the_resulting_hyperlink_indices() {
         let mut first = surface();
-        first.frame.hyperlinks = vec!["https://example.test".into()];
-        first.frame.cells[0].hyperlink = Some(0);
+        first
+            .frame
+            .set_hyperlinks(vec!["https://example.test".into()])
+            .expect("no cell links yet");
+        first.frame.cells_mut()[0].hyperlink = Some(0);
         let mut decoder = Decoder::default();
         decoder
             .decode(ServerMessage::PaneSurface(first.clone()))
             .expect("baseline");
         let mut next = first.clone();
-        next.projection_revision = ProjectionRevision::new(2);
-        next.surface_revision = SurfaceRevision::new(2);
-        next.frame.hyperlinks.clear();
-        next.frame.cells[0] = cell("z");
+        next.projection_revision = crate::test_counters::projection(2);
+        next.surface_revision = crate::test_counters::surface(2);
+        next.frame.cells_mut()[0] = cell("z");
+        next.frame
+            .set_hyperlinks(Vec::new())
+            .expect("no cell links remain");
         let baseline = Baseline::new(
             &first.boot_id,
             first.projection_revision,

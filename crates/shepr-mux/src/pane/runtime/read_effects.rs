@@ -56,6 +56,8 @@ pub(super) struct PaneReadEffects {
     pub(super) terminal: Arc<PaneTerminal>,
     pub(super) render_notify: Arc<Notify>,
     pub(super) render_dirty: Arc<RenderSignal>,
+    /// This pane's coalescing state in `render_dirty`.
+    pub(super) pty_render: PaneRenderSlot,
     pub(super) cwd: Arc<PaneCwdState>,
     pub(super) events: crate::events::EventSender,
     pub(super) child_liveness: Arc<ChildLiveness>,
@@ -222,7 +224,7 @@ impl PaneReadEffects {
         let render_requested = matches!(result.render_request, RenderRequest::Now)
             && self
                 .render_dirty
-                .request_pty_coalesced(pane_id, &self.terminal.render_queued);
+                .request_pty_coalesced(pane_id, &self.pty_render);
         if title_requested || render_requested {
             self.render_notify.notify_one();
         }
@@ -232,7 +234,7 @@ impl PaneReadEffects {
                 .try_send(crate::events::RuntimeEvent::ClipboardWrite { content })
             {
                 warn!(
-                    pane = pane_id.raw(),
+                    pane = %pane_id,
                     error = %err,
                     "failed to send OSC 52 clipboard write"
                 );
@@ -264,7 +266,8 @@ impl PaneReadEffects {
         // coalescing or dropping cwd reports while retaining their order.
         deferred.ticket.apply(|| {
             if let Some(generation) = deferred.default_color_generation {
-                self.terminal.resolve_default_color_owner(
+                super::theme::resolve_default_color_owner(
+                    &self.terminal,
                     self.pane_id,
                     &self.child_liveness,
                     generation,
@@ -351,7 +354,7 @@ impl PaneReadEffects {
                     && !self.timer_reply_drop_reported.swap(true, Ordering::Relaxed)
                 {
                     warn!(
-                        pane = self.pane_id.raw(),
+                        pane = %self.pane_id,
                         dropped_replies = replies.len(),
                         "synchronized update replies had no PTY actor route"
                     );

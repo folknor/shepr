@@ -53,15 +53,11 @@ mod tests {
     #[tokio::test]
     async fn workspace_create_refuses_a_relative_cwd_before_spawning() {
         use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
-        let mut app = App::new(
-            &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Suspended,
-        );
+        let mut app = App::new(&shepr_config::ServerConfig::default());
         app.set_test_shell(exiting_test_command());
         app.state
             .test_set_workspaces(vec![Workspace::test_new("relative-cwd")]);
-        app.state.ensure_test_terminals();
-        let terminal_count = app.state.terminals.len();
+        let pane_count = app.state.workspaces.records().count();
 
         let response = app.handle_workspace_create(
             WorkspaceCreateParams {
@@ -77,8 +73,8 @@ mod tests {
         );
 
         assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.workspaces[0].pane_count(), 1);
-        assert_eq!(app.state.terminals.len(), terminal_count);
+        assert_eq!(app.state.ws(0).tree().len(), 1);
+        assert_eq!(app.state.workspaces.records().count(), pane_count);
         shutdown_test_runtimes(&mut app);
     }
 }

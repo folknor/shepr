@@ -1,19 +1,27 @@
 use super::*;
-use crate::app::SpawnGeometry;
+use crate::app::tests::test_app;
+use crate::app::{SpawnGeometry, exiting_test_command};
 use crate::test_support::*;
 use shepr_config::ServerConfig;
 use shepr_mux::workspace::Workspace;
-use shepr_protocol::command::{EndpointCommand, EndpointError, PaneTextPoint};
+use shepr_protocol::command::{
+    EndpointCommand, EndpointError, EndpointReply, PaneCopyMotion, PaneCopySearchDirection,
+    PaneLineMotion, PaneParagraphMotion, PaneSplitParams, PaneTarget, PaneTextPoint,
+    PaneWordMotion, SplitDirection,
+};
 use shepr_protocol::{PublicPaneId, WorkspaceId};
-use shepr_term::host::HostCellSize;
+use std::time::{Duration, Instant};
 
-fn app_with_test_workspace() -> (App, PublicPaneId) {
-    let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+fn app_with_test_workspace() -> (crate::app::TestApp, PublicPaneId) {
+    let mut app = App::new(&ServerConfig::default());
     app.state
         .test_set_workspaces(vec![Workspace::test_new("metadata")]);
-    app.state.ensure_test_terminals();
-    let pane_id = app.state.workspaces[0].root_pane();
-    let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
+    let pane_id = app.state.ws(0).tree().root();
+    let public_pane_id = app
+        .state
+        .pane(pane_id)
+        .expect("test precondition")
+        .public_id();
     (app, public_pane_id)
 }
 
@@ -32,7 +40,7 @@ fn ctx() -> EndpointContext {
 #[test]
 fn pane_input_set_changes_only_the_target_pane() {
     let (mut app, public_pane_id) = app_with_test_workspace();
-    let target = app.state.workspaces[0].root_pane();
+    let target = app.state.ws(0).tree().root();
     let other = app
         .state
         .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
@@ -47,22 +55,26 @@ fn pane_input_set_changes_only_the_target_pane() {
     assert_eq!(handled.reply, EndpointReply::Done);
     assert_eq!(handled.navigate, None);
     assert!(
-        app.state.workspaces[0]
-            .pane_state(target)
+        app.state
+            .ws(0)
+            .tree()
+            .pane(target)
             .expect("test precondition")
-            .right_click_passthrough
+            .right_click_passthrough()
     );
     assert!(
-        !app.state.workspaces[0]
-            .pane_state(other)
+        !app.state
+            .ws(0)
+            .tree()
+            .pane(other)
             .expect("test precondition")
-            .right_click_passthrough
+            .right_click_passthrough()
     );
 }
 
-fn app_with_scrollback_runtime() -> (App, PublicPaneId, PaneId) {
+fn app_with_scrollback_runtime() -> (crate::app::TestApp, PublicPaneId, PaneId) {
     let (mut app, public_pane_id) = app_with_test_workspace();
-    let pane_id = app.state.workspaces[0].root_pane();
+    let pane_id = app.state.ws(0).tree().root();
     let lines = (0..20)
         .map(|line| format!("line {line:02}\n"))
         .collect::<String>();
@@ -81,8 +93,8 @@ async fn clear_pane_mutates_endpoint_owned_history() {
     let response = app.handle_endpoint_command(command);
     assert_eq!(response, Ok(EndpointReply::Done));
     let runtime = app
-        .state
-        .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+        .terminal_runtimes
+        .get(&pane_id)
         .expect("test precondition");
     assert_eq!(
         runtime
@@ -97,13 +109,10 @@ async fn clear_pane_mutates_endpoint_owned_history() {
 #[tokio::test]
 async fn pane_info_exposes_scroll_metrics() {
     let (app, _public_pane_id, pane_id) = app_with_scrollback_runtime();
-    let runtime = app
-        .state
-        .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
-        .expect("runtime");
+    let runtime = app.terminal_runtimes.get(&pane_id).expect("runtime");
     runtime.scroll_up(3);
 
-    let pane = app.pane_info(0, pane_id).expect("pane info");
+    let pane = app.pane_info(pane_id).expect("pane info");
     let scroll = pane.scroll.expect("scroll metrics");
     assert_eq!(scroll.offset_from_bottom, 3);
     assert!(scroll.max_offset_from_bottom >= scroll.offset_from_bottom);
@@ -113,10 +122,7 @@ async fn pane_info_exposes_scroll_metrics() {
 #[tokio::test]
 async fn pane_scroll_sets_and_clamps_endpoint_owned_history() {
     let (mut app, public_pane_id, pane_id) = app_with_scrollback_runtime();
-    let runtime = app
-        .state
-        .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
-        .expect("runtime");
+    let runtime = app.terminal_runtimes.get(&pane_id).expect("runtime");
     let max_offset = runtime
         .read()
         .scroll_metrics()
@@ -143,15 +149,15 @@ async fn pane_scroll_sets_and_clamps_endpoint_owned_history() {
 #[tokio::test]
 async fn pane_selection_read_uses_endpoint_terminal_text() {
     let (mut app, public_pane_id) = app_with_test_workspace();
-    let pane_id = app.state.workspaces[0].root_pane();
+    let pane_id = app.state.ws(0).tree().root();
     app.insert_test_runtime(
         pane_id,
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"hello world"),
     );
 
     let runtime = app
-        .state
-        .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+        .terminal_runtimes
+        .get(&pane_id)
         .expect("test precondition");
     runtime.test_process_pty_bytes(b"\r\nagent is still working");
     let params = PaneSelectionReadParams {
@@ -181,7 +187,7 @@ async fn pane_selection_read_uses_endpoint_terminal_text() {
 #[tokio::test]
 async fn copy_motion_uses_endpoint_terminal_word_semantics() {
     let (mut app, public_pane_id) = app_with_test_workspace();
-    let pane_id = app.state.workspaces[0].root_pane();
+    let pane_id = app.state.ws(0).tree().root();
     app.insert_test_runtime(
         pane_id,
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"hello world"),
@@ -213,7 +219,7 @@ async fn copy_motion_uses_endpoint_terminal_word_semantics() {
 #[tokio::test]
 async fn line_motions_land_on_the_ends_of_the_row() {
     let (mut app, public_pane_id) = app_with_test_workspace();
-    let pane_id = app.state.workspaces[0].root_pane();
+    let pane_id = app.state.ws(0).tree().root();
     app.insert_test_runtime(
         pane_id,
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"  hello  "),
@@ -249,7 +255,7 @@ async fn line_motions_land_on_the_ends_of_the_row() {
 #[tokio::test]
 async fn copy_motion_and_search_keep_their_line_across_eviction() {
     let (mut app, public_pane_id) = app_with_test_workspace();
-    let pane_id = app.state.workspaces[0].root_pane();
+    let pane_id = app.state.ws(0).tree().root();
     let initial: String = (0..1_100).map(|i| format!("{i:06}\r\n")).collect();
     // One byte of scrollback budget buys the minimum history, so every
     // further line evicts one.
@@ -281,8 +287,8 @@ async fn copy_motion_and_search_keep_their_line_across_eviction() {
     assert_eq!(line.row, shepr_vt::AbsRow(1_099));
 
     let runtime = app
-        .state
-        .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
+        .terminal_runtimes
+        .get(&pane_id)
         .expect("test precondition");
     let origin_before = runtime
         .read()
@@ -338,7 +344,7 @@ async fn copy_motion_and_search_keep_their_line_across_eviction() {
 #[tokio::test]
 async fn paragraph_motion_preserves_the_copy_cursor_column() {
     let (mut app, public_pane_id) = app_with_test_workspace();
-    let pane_id = app.state.workspaces[0].root_pane();
+    let pane_id = app.state.ws(0).tree().root();
     app.insert_test_runtime(
         pane_id,
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"one\r\n\r\nthree"),
@@ -368,7 +374,7 @@ async fn paragraph_motion_preserves_the_copy_cursor_column() {
 #[tokio::test]
 async fn copy_search_uses_endpoint_terminal_matches_and_wraps() {
     let (mut app, public_pane_id) = app_with_test_workspace();
-    let pane_id = app.state.workspaces[0].root_pane();
+    let pane_id = app.state.ws(0).tree().root();
     app.insert_test_runtime(
         pane_id,
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 5, 1000, b"alpha beta alpha"),
@@ -419,7 +425,7 @@ async fn copy_search_uses_endpoint_terminal_matches_and_wraps() {
 #[tokio::test]
 async fn copy_search_bounds_returned_matches_but_keeps_exact_total() {
     let (mut app, public_pane_id) = app_with_test_workspace();
-    let pane_id = app.state.workspaces[0].root_pane();
+    let pane_id = app.state.ws(0).tree().root();
     let text = "a ".repeat(1500);
     app.insert_test_runtime(
         pane_id,
@@ -460,14 +466,12 @@ fn pane_rename_returns_the_renamed_pane() {
     };
     assert_eq!(pane.pane_id, public_pane_id);
     assert_eq!(handled.navigate, None);
-    let pane_id = app.state.workspaces[0].root_pane();
-    let terminal_id = app.state.workspaces[0]
-        .pane_state(pane_id)
-        .expect("test precondition")
-        .attached_terminal_id
-        .clone();
+    let pane_id = app.state.ws(0).tree().root();
     assert_eq!(
-        app.state.terminals[&terminal_id].manual_label(),
+        app.state
+            .terminal(pane_id)
+            .expect("test precondition")
+            .manual_label(),
         Some("build")
     );
 }
@@ -475,12 +479,7 @@ fn pane_rename_returns_the_renamed_pane() {
 #[test]
 fn pane_rename_sets_and_clears_the_manual_label() {
     let (mut app, public_pane_id) = app_with_test_workspace();
-    let pane = app.state.workspaces[0].root_pane();
-    let terminal_id = app.state.workspaces[0]
-        .pane_state(pane)
-        .expect("test precondition")
-        .attached_terminal_id
-        .clone();
+    let pane = app.state.ws(0).tree().root();
 
     app.handle_pane_rename(PaneRenameParams {
         pane_id: public_pane_id,
@@ -488,7 +487,10 @@ fn pane_rename_sets_and_clears_the_manual_label() {
     })
     .expect("the pane is renamed");
     assert_eq!(
-        app.state.terminals[&terminal_id].manual_label(),
+        app.state
+            .terminal(pane)
+            .expect("test precondition")
+            .manual_label(),
         Some("reviewer")
     );
 
@@ -503,22 +505,31 @@ fn pane_rename_sets_and_clears_the_manual_label() {
             ..
         })
     ));
-    assert!(app.state.terminals[&terminal_id].manual_label().is_none());
+    assert!(
+        app.state
+            .terminal(pane)
+            .expect("test precondition")
+            .manual_label()
+            .is_none()
+    );
 }
 
-fn app_with_workspace() -> App {
-    let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+fn app_with_workspace() -> crate::app::TestApp {
+    let mut app = App::new(&ServerConfig::default());
     app.state
         .test_set_workspaces(vec![Workspace::test_new("issue")]);
-    app.state.ensure_test_terminals();
     app
 }
 
 #[test]
 fn pane_close_of_last_pane_closes_workspace() {
     let mut app = app_with_workspace();
-    let pane_id = app.state.workspaces[0].root_pane();
-    let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
+    let pane_id = app.state.ws(0).tree().root();
+    let public_pane_id = app
+        .state
+        .pane(pane_id)
+        .expect("test precondition")
+        .public_id();
 
     let handled = app
         .handle_pane_close(&PaneTarget {
@@ -534,12 +545,11 @@ fn pane_close_of_last_pane_closes_workspace() {
 #[test]
 fn pane_close_keeps_the_workspace_when_other_panes_remain() {
     let mut app = app_with_workspace();
-    let root = app.state.workspaces[0].root_pane();
+    let root = app.state.ws(0).tree().root();
     let survivor = app
         .state
         .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
-    app.state.ensure_test_terminals();
-    let public_pane_id = app.public_pane_id(0, root).expect("test precondition");
+    let public_pane_id = app.state.pane(root).expect("test precondition").public_id();
 
     app.handle_pane_close(&PaneTarget {
         pane_id: public_pane_id,
@@ -547,37 +557,36 @@ fn pane_close_keeps_the_workspace_when_other_panes_remain() {
     .expect("the pane closes");
 
     assert_eq!(app.state.workspaces.len(), 1);
-    assert_eq!(app.state.workspaces[0].pane_count(), 1);
-    assert!(app.state.workspaces[0].contains_pane(survivor));
+    assert_eq!(app.state.ws(0).tree().len(), 1);
+    assert!(app.state.ws(0).tree().contains(survivor));
 }
 
 /// Lays the first workspace out in a 100x20 area, as the server does when it
 /// applies PTY geometry.
 fn lay_out_first_workspace(app: &mut App) {
-    let id = app.state.workspaces[0].id;
+    let id = app.state.ws(0).id();
     app.state.record_workspace_geometry(
         &id,
         SpawnGeometry {
-            area: ratatui::layout::Rect::new(0, 0, 100, 20),
-            cell_size: HostCellSize::default(),
+            area: shepr_core::geometry::Rect::new(0, 0, 100, 20),
+            cell: None,
         },
     );
 }
 
 /// The panes of the first workspace in layout order.
 fn workspace_pane_order(app: &App) -> Vec<PaneId> {
-    app.state.workspaces[0].layout().pane_ids()
+    app.state.ws(0).tree().layout().pane_ids()
 }
 
 /// A workspace of two panes, side by side and laid out, with `root` focused.
-fn app_with_two_panes() -> (App, PaneId, PaneId) {
+fn app_with_two_panes() -> (crate::app::TestApp, PaneId, PaneId) {
     let mut app = app_with_workspace();
-    let root = app.state.workspaces[0].root_pane();
+    let root = app.state.ws(0).tree().root();
     let right = app
         .state
         .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
-    app.state.ensure_test_terminals();
-    app.state.workspaces[0].focus_pane(root);
+    app.state.ws_mut(0).focus_pane(root);
     lay_out_first_workspace(&mut app);
     (app, root, right)
 }
@@ -585,14 +594,22 @@ fn app_with_two_panes() -> (App, PaneId, PaneId) {
 #[test]
 fn pane_swap_explicit_panes_swap_and_keep_focus_on_the_source() {
     let mut app = app_with_workspace();
-    let source = app.state.workspaces[0].root_pane();
+    let source = app.state.ws(0).tree().root();
     let target = app
         .state
         .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
-    app.state.workspaces[0].focus_pane(source);
+    app.state.ws_mut(0).focus_pane(source);
     lay_out_first_workspace(&mut app);
-    let source_public = app.public_pane_id(0, source).expect("test precondition");
-    let target_public = app.public_pane_id(0, target).expect("test precondition");
+    let source_public = app
+        .state
+        .pane(source)
+        .expect("test precondition")
+        .public_id();
+    let target_public = app
+        .state
+        .pane(target)
+        .expect("test precondition")
+        .public_id();
     assert_eq!(workspace_pane_order(&app), vec![source, target]);
 
     let handled = app
@@ -603,15 +620,15 @@ fn pane_swap_explicit_panes_swap_and_keep_focus_on_the_source() {
         .expect("the swap succeeds");
 
     assert_eq!(handled.reply, EndpointReply::Done);
-    assert_eq!(handled.navigate, app.public_workspace_id(0));
+    assert_eq!(handled.navigate, Some(app.state.ws(0).id()));
     assert_eq!(workspace_pane_order(&app), vec![target, source]);
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), source);
+    assert_eq!(app.state.ws(0).tree().focused(), source);
 }
 
 #[test]
 fn pane_swap_by_direction_swaps_with_the_neighbour_and_navigates() {
     let (mut app, root, right) = app_with_two_panes();
-    let root_public = app.public_pane_id(0, root).expect("test precondition");
+    let root_public = app.state.pane(root).expect("test precondition").public_id();
 
     let handled = app
         .handle_pane_swap(&PaneSwapParams::Direction {
@@ -620,16 +637,20 @@ fn pane_swap_by_direction_swaps_with_the_neighbour_and_navigates() {
         })
         .expect("the swap succeeds");
 
-    assert_eq!(handled.navigate, app.public_workspace_id(0));
+    assert_eq!(handled.navigate, Some(app.state.ws(0).id()));
     assert_eq!(workspace_pane_order(&app), vec![right, root]);
 }
 
 #[test]
 fn pane_swap_without_a_neighbor_is_a_noop_that_moves_nobody() {
     let mut app = app_with_workspace();
-    let source = app.state.workspaces[0].root_pane();
+    let source = app.state.ws(0).tree().root();
     lay_out_first_workspace(&mut app);
-    let source_public = app.public_pane_id(0, source).expect("test precondition");
+    let source_public = app
+        .state
+        .pane(source)
+        .expect("test precondition")
+        .public_id();
 
     let handled = app
         .handle_pane_swap(&PaneSwapParams::Direction {
@@ -646,7 +667,7 @@ fn pane_swap_without_a_neighbor_is_a_noop_that_moves_nobody() {
 #[test]
 fn pane_swap_with_an_unknown_pane_is_refused_by_direction_and_a_noop_by_id() {
     let (mut app, root, right) = app_with_two_panes();
-    let root_public = app.public_pane_id(0, root).expect("test precondition");
+    let root_public = app.state.pane(root).expect("test precondition").public_id();
 
     // A direction from a pane that is gone has no source to swap.
     let refused = app.handle_pane_swap(&PaneSwapParams::Direction {
@@ -683,10 +704,18 @@ fn pane_swap_with_an_unknown_pane_is_refused_by_direction_and_a_noop_by_id() {
 fn pane_swap_across_workspaces_is_a_noop() {
     let mut app = app_with_workspace();
     app.state.test_push_workspace(Workspace::test_new("other"));
-    let source = app.state.workspaces[0].root_pane();
-    let target = app.state.workspaces[1].root_pane();
-    let source_public = app.public_pane_id(0, source).expect("test precondition");
-    let target_public = app.public_pane_id(1, target).expect("test precondition");
+    let source = app.state.ws(0).tree().root();
+    let target = app.state.ws(1).tree().root();
+    let source_public = app
+        .state
+        .pane(source)
+        .expect("test precondition")
+        .public_id();
+    let target_public = app
+        .state
+        .pane(target)
+        .expect("test precondition")
+        .public_id();
 
     let handled = app
         .handle_pane_swap(&PaneSwapParams::Panes {
@@ -697,19 +726,19 @@ fn pane_swap_across_workspaces_is_a_noop() {
 
     assert_eq!(handled.reply, EndpointReply::Done);
     assert_eq!(handled.navigate, None);
-    assert_eq!(app.state.workspaces[0].root_pane(), source);
-    assert_eq!(app.state.workspaces[1].root_pane(), target);
+    assert_eq!(app.state.ws(0).tree().root(), source);
+    assert_eq!(app.state.ws(1).tree().root(), target);
 }
 
 #[test]
 fn pane_zoom_toggles_zoom_and_navigates() {
     let mut app = app_with_workspace();
-    let root = app.state.workspaces[0].root_pane();
+    let root = app.state.ws(0).tree().root();
     let _right = app
         .state
         .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
-    app.state.workspaces[0].focus_pane(root);
-    let root_public = app.public_pane_id(0, root).expect("test precondition");
+    app.state.ws_mut(0).focus_pane(root);
+    let root_public = app.state.pane(root).expect("test precondition").public_id();
     let params = PaneZoomParams {
         pane_id: root_public,
     };
@@ -717,19 +746,19 @@ fn pane_zoom_toggles_zoom_and_navigates() {
     let handled = app.handle_pane_zoom(&params).expect("the pane zooms");
 
     assert_eq!(handled.reply, EndpointReply::Done);
-    assert_eq!(handled.navigate, app.public_workspace_id(0));
-    assert!(app.state.workspaces[0].zoomed());
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), root);
+    assert_eq!(handled.navigate, Some(app.state.ws(0).id()));
+    assert!(app.state.ws(0).tree().zoomed());
+    assert_eq!(app.state.ws(0).tree().focused(), root);
 
     app.handle_pane_zoom(&params).expect("the pane unzooms");
-    assert!(!app.state.workspaces[0].zoomed());
+    assert!(!app.state.ws(0).tree().zoomed());
 }
 
 #[test]
 fn pane_zoom_of_a_single_pane_changes_nothing_but_still_navigates() {
     let mut app = app_with_workspace();
-    let root = app.state.workspaces[0].root_pane();
-    let root_public = app.public_pane_id(0, root).expect("test precondition");
+    let root = app.state.ws(0).tree().root();
+    let root_public = app.state.pane(root).expect("test precondition").public_id();
 
     let handled = app
         .handle_pane_zoom(&PaneZoomParams {
@@ -738,20 +767,24 @@ fn pane_zoom_of_a_single_pane_changes_nothing_but_still_navigates() {
         .expect("a lone pane is a valid target");
 
     assert_eq!(handled.reply, EndpointReply::Done);
-    assert_eq!(handled.navigate, app.public_workspace_id(0));
-    assert!(!app.state.workspaces[0].zoomed());
+    assert_eq!(handled.navigate, Some(app.state.ws(0).id()));
+    assert!(!app.state.ws(0).tree().zoomed());
 }
 
 #[test]
 fn pane_zoom_on_another_pane_of_a_zoomed_workspace_focuses_it_and_toggles() {
     let mut app = app_with_workspace();
-    let root = app.state.workspaces[0].root_pane();
+    let root = app.state.ws(0).tree().root();
     let right = app
         .state
         .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
-    app.state.workspaces[0].focus_pane(root);
-    app.state.workspaces[0].set_zoomed(true);
-    let right_public = app.public_pane_id(0, right).expect("test precondition");
+    app.state.ws_mut(0).focus_pane(root);
+    app.state.ws_mut(0).set_zoomed(true);
+    let right_public = app
+        .state
+        .pane(right)
+        .expect("test precondition")
+        .public_id();
 
     let handled = app
         .handle_pane_zoom(&PaneZoomParams {
@@ -759,21 +792,21 @@ fn pane_zoom_on_another_pane_of_a_zoomed_workspace_focuses_it_and_toggles() {
         })
         .expect("the toggle succeeds");
 
-    assert_eq!(handled.navigate, app.public_workspace_id(0));
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), right);
-    assert!(!app.state.workspaces[0].zoomed());
+    assert_eq!(handled.navigate, Some(app.state.ws(0).id()));
+    assert_eq!(app.state.ws(0).tree().focused(), right);
+    assert!(!app.state.ws(0).tree().zoomed());
 }
 
 #[test]
 fn pane_resize_changes_target_ratio_without_changing_focus_or_navigating() {
     let mut app = app_with_workspace();
-    let root = app.state.workspaces[0].root_pane();
+    let root = app.state.ws(0).tree().root();
     let right = app
         .state
         .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
-    app.state.workspaces[0].focus_pane(right);
+    app.state.ws_mut(0).focus_pane(right);
     lay_out_first_workspace(&mut app);
-    let root_public = app.public_pane_id(0, root).expect("test precondition");
+    let root_public = app.state.pane(root).expect("test precondition").public_id();
 
     let handled = app
         .handle_pane_resize(&PaneResizeParams {
@@ -784,16 +817,16 @@ fn pane_resize_changes_target_ratio_without_changing_focus_or_navigating() {
 
     assert_eq!(handled.reply, EndpointReply::Done);
     assert_eq!(handled.navigate, None);
-    let area = shepr_mux::workspace::layout_rect(app.state.workspace_layout_area(0));
-    let splits = app.state.workspaces[0].layout().splits(area);
+    let area = app.state.layout_area(app.state.ws(0));
+    let splits = app.state.ws(0).tree().layout().splits(area);
     assert!((splits[0].ratio.get() - 0.55).abs() < 1e-6);
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), right);
+    assert_eq!(app.state.ws(0).tree().focused(), right);
 }
 
 #[test]
 fn pane_focus_direction_focuses_the_neighbor_and_navigates() {
     let (mut app, root, right) = app_with_two_panes();
-    let root_public = app.public_pane_id(0, root).expect("test precondition");
+    let root_public = app.state.pane(root).expect("test precondition").public_id();
 
     let handled = app
         .handle_pane_focus_direction(&PaneFocusDirectionParams {
@@ -803,15 +836,15 @@ fn pane_focus_direction_focuses_the_neighbor_and_navigates() {
         .expect("the neighbour is focused");
 
     assert_eq!(handled.reply, EndpointReply::Done);
-    assert_eq!(handled.navigate, app.public_workspace_id(0));
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), right);
+    assert_eq!(handled.navigate, Some(app.state.ws(0).id()));
+    assert_eq!(app.state.ws(0).tree().focused(), right);
 }
 
 #[test]
 fn pane_focus_direction_navigates_even_when_the_neighbor_already_has_focus() {
     let (mut app, root, right) = app_with_two_panes();
-    app.state.workspaces[0].focus_pane(right);
-    let root_public = app.public_pane_id(0, root).expect("test precondition");
+    app.state.ws_mut(0).focus_pane(right);
+    let root_public = app.state.pane(root).expect("test precondition").public_id();
 
     let handled = app
         .handle_pane_focus_direction(&PaneFocusDirectionParams {
@@ -820,16 +853,16 @@ fn pane_focus_direction_navigates_even_when_the_neighbor_already_has_focus() {
         })
         .expect("the neighbour is found");
 
-    assert_eq!(handled.navigate, app.public_workspace_id(0));
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), right);
+    assert_eq!(handled.navigate, Some(app.state.ws(0).id()));
+    assert_eq!(app.state.ws(0).tree().focused(), right);
 }
 
 #[test]
 fn pane_focus_direction_without_a_neighbor_moves_nobody() {
     let mut app = app_with_workspace();
-    let root = app.state.workspaces[0].root_pane();
+    let root = app.state.ws(0).tree().root();
     lay_out_first_workspace(&mut app);
-    let root_public = app.public_pane_id(0, root).expect("test precondition");
+    let root_public = app.state.pane(root).expect("test precondition").public_id();
 
     let handled = app
         .handle_pane_focus_direction(&PaneFocusDirectionParams {
@@ -840,19 +873,20 @@ fn pane_focus_direction_without_a_neighbor_moves_nobody() {
 
     assert_eq!(handled.reply, EndpointReply::Done);
     assert_eq!(handled.navigate, None, "an edge navigates nobody");
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), root);
+    assert_eq!(app.state.ws(0).tree().focused(), root);
 }
 
 #[test]
 fn pane_focus_focuses_the_target_and_navigates_across_workspaces() {
     let mut app = app_with_workspace();
     app.state.test_push_workspace(Workspace::test_new("other"));
-    let target_pane = app.state.workspaces[1].root_pane();
-    app.state.ensure_test_terminals();
+    let target_pane = app.state.ws(1).tree().root();
     let target_public = app
-        .public_pane_id(1, target_pane)
-        .expect("test precondition");
-    app.state.set_bookmark_index(Some(0));
+        .state
+        .pane(target_pane)
+        .expect("test precondition")
+        .public_id();
+    app.state.seed_bookmark_index(Some(0));
 
     let handled = app
         .handle_pane_focus(&PaneTarget {
@@ -864,8 +898,8 @@ fn pane_focus_focuses_the_target_and_navigates_across_workspaces() {
         panic!("expected pane info");
     };
     assert_eq!(pane.pane_id, target_public);
-    assert_eq!(handled.navigate, app.public_workspace_id(1));
-    assert_eq!(app.state.workspaces[1].focused_pane_id(), target_pane);
+    assert_eq!(handled.navigate, Some(app.state.ws(1).id()));
+    assert_eq!(app.state.ws(1).tree().focused(), target_pane);
     // The app applies no navigation: the bookmark moves only from an active
     // client's effect, applied by the server loop.
     assert_eq!(app.state.bookmark_index(), Some(0));
@@ -874,8 +908,12 @@ fn pane_focus_focuses_the_target_and_navigates_across_workspaces() {
 #[test]
 fn pane_focus_on_the_focused_pane_still_navigates() {
     let mut app = app_with_workspace();
-    let pane_id = app.state.workspaces[0].root_pane();
-    let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
+    let pane_id = app.state.ws(0).tree().root();
+    let public_pane_id = app
+        .state
+        .pane(pane_id)
+        .expect("test precondition")
+        .public_id();
     app.state.session_dirty = false;
 
     let handled = app
@@ -884,7 +922,7 @@ fn pane_focus_on_the_focused_pane_still_navigates() {
         })
         .expect("the pane is focused");
 
-    assert_eq!(handled.navigate, app.public_workspace_id(0));
+    assert_eq!(handled.navigate, Some(app.state.ws(0).id()));
     assert!(!app.state.session_dirty, "nothing was mutated");
     let EndpointReply::PaneInfo { pane } = handled.reply else {
         panic!("expected pane info");
@@ -932,15 +970,14 @@ fn a_rejected_focus_command_moves_nobody() {
         );
         assert_eq!(outcome.navigate, None, "{name}");
     }
-    assert_eq!(app.state.workspaces[0].focused_pane_id(), root);
+    assert_eq!(app.state.ws(0).tree().focused(), root);
 }
 
 #[test]
 fn commands_that_only_change_state_in_place_navigate_nobody() {
-    let (mut app, root, right) = app_with_two_panes();
-    let root_public = app.public_pane_id(0, root).expect("test precondition");
-    let right_public = app.public_pane_id(0, right).expect("test precondition");
-    let workspace_id = app.public_workspace_id(0).expect("test precondition");
+    let (mut app, root, _right) = app_with_two_panes();
+    let root_public = app.state.pane(root).expect("test precondition").public_id();
+    let workspace_id = app.state.ws(0).id();
     let commands = [
         EndpointCommand::PaneInputSet(PaneInputSetParams {
             pane_id: root_public,
@@ -960,8 +997,8 @@ fn commands_that_only_change_state_in_place_navigate_nobody() {
         }),
         EndpointCommand::LayoutSetSplitRatio(shepr_protocol::command::LayoutSetSplitRatioParams {
             workspace_id,
-            first_panes: vec![root_public],
-            second_panes: vec![right_public],
+            path: Vec::new(),
+            epoch: app.state.ws(0).tree().layout_epoch(),
             ratio: shepr_core::layout::SplitRatio::new(0.4).expect("test split ratio is valid"),
         }),
         EndpointCommand::WorkspaceMove(shepr_protocol::command::WorkspaceMoveParams {
@@ -988,4 +1025,251 @@ fn pane_focus_rejects_a_pane_that_is_gone() {
 
     let error = response.expect_err("a missing pane is refused");
     assert_eq!(error.error, EndpointError::PaneGone(missing_pane()));
+}
+
+fn split_of(app: &App, ws_idx: usize) -> EndpointCommand {
+    let target_pane = app.state.ws(ws_idx).tree().root();
+    EndpointCommand::PaneSplit(PaneSplitParams {
+        pane_id: app
+            .state
+            .pane(target_pane)
+            .expect("test precondition")
+            .public_id(),
+        direction: SplitDirection::Right,
+    })
+}
+
+fn shut_down_runtimes(app: &mut App) {
+    let runtimes: Vec<_> = app.terminal_runtimes.drain().collect();
+    for (_pane_id, runtime) in runtimes {
+        drop(runtime);
+    }
+}
+
+#[tokio::test]
+async fn pane_split_request_focuses_the_new_pane_and_navigates_the_requester_only() {
+    let env = IsolatedEnv::new();
+    env.set("SHELL", exiting_test_command());
+
+    let mut app = test_app();
+    app.state.test_set_workspaces(vec![
+        Workspace::test_new("api-pane-split-focused"),
+        Workspace::test_new("api-pane-split-background"),
+    ]);
+    app.state.seed_bookmark_index(Some(0));
+    let command = split_of(&app, 1);
+
+    let outcome = app.handle_endpoint_command_in(command, &EndpointContext::without_geometry());
+    let Ok(EndpointReply::PaneInfo { pane }) = outcome.result else {
+        panic!("expected pane info");
+    };
+
+    let reply = app
+        .state
+        .resolve_pane(&pane.pane_id)
+        .expect("test precondition");
+    let reply_pane = reply.id();
+    assert_eq!(reply.workspace().id(), app.state.ws(1).id());
+    assert!(reply.workspace().tree().contains(reply_pane));
+    assert_eq!(app.state.ws(1).tree().focused(), reply_pane);
+    // A split navigates its requester to the split workspace; the effect is
+    // returned and never applied to the session's bookmark.
+    assert_eq!(outcome.navigate, Some(app.state.ws(1).id()));
+    assert_eq!(app.state.bookmark_index(), Some(0));
+
+    shut_down_runtimes(&mut app);
+}
+
+#[tokio::test]
+async fn a_split_pane_child_sees_the_public_id_the_reply_names() {
+    let _env = IsolatedEnv::new();
+    let scratch = crate::test_support::ScratchDir::new("split-pane-id");
+    let seen = scratch.join("pane-id");
+    let shell = shepr_test_support::fixture::stand_in(
+        scratch.path(),
+        "sh",
+        &[
+            shepr_test_support::fixture::Step::To(seen.clone()),
+            shepr_test_support::fixture::Step::PrintEnv("SHEPR_PANE_ID".into()),
+            shepr_test_support::fixture::Step::Sleep(Duration::from_secs(30)),
+        ],
+    );
+
+    let mut app = test_app();
+    app.set_test_shell(&shell);
+    // Its next public number differs from both its raw pane ids and its
+    // pane count, so only the number the split took can match.
+    app.state
+        .test_set_workspaces(vec![Workspace::test_adversarial_identity_state()]);
+    app.state.seed_bookmark_index(Some(0));
+    let command = split_of(&app, 0);
+
+    let outcome = app.handle_endpoint_command_in(command, &EndpointContext::without_geometry());
+    let Ok(EndpointReply::PaneInfo { pane }) = outcome.result else {
+        panic!("expected pane info");
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut child_pane_id = String::new();
+    while Instant::now() < deadline {
+        child_pane_id = std::fs::read_to_string(&seen).unwrap_or_default();
+        if child_pane_id.ends_with('\n') {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(child_pane_id.trim_end(), pane.pane_id.to_string());
+    let live = app
+        .state
+        .resolve_pane(&pane.pane_id)
+        .expect("the reply names a live pane");
+    assert_eq!(live.public_id(), pane.pane_id);
+
+    shut_down_runtimes(&mut app);
+}
+
+#[tokio::test]
+async fn pane_split_request_splits_in_half_and_keeps_default_input_routing() {
+    let env = IsolatedEnv::new();
+    env.set("SHELL", exiting_test_command());
+
+    let mut app = test_app();
+    app.state
+        .test_set_workspaces(vec![Workspace::test_new("api-pane-split-half")]);
+    let command = split_of(&app, 0);
+
+    let result = app.handle_endpoint_command(command);
+    let Ok(EndpointReply::PaneInfo { pane }) = result else {
+        panic!("expected pane info");
+    };
+
+    let splits = app
+        .state
+        .ws(0)
+        .tree()
+        .layout()
+        .splits(shepr_core::geometry::Rect::new(0, 0, 100, 20));
+    assert_eq!(splits.len(), 1);
+    assert!((splits[0].ratio.get() - 0.5).abs() < f32::EPSILON);
+    let response_pane_id = app
+        .state
+        .resolve_pane(&pane.pane_id)
+        .expect("test precondition")
+        .id();
+    assert!(
+        !app.state
+            .ws(0)
+            .tree()
+            .pane(response_pane_id)
+            .expect("test precondition")
+            .right_click_passthrough()
+    );
+
+    shut_down_runtimes(&mut app);
+}
+
+#[tokio::test]
+async fn a_split_sizes_against_the_recorded_geometry_and_only_then_the_requesters() {
+    let env = IsolatedEnv::new();
+    env.set("SHELL", exiting_test_command());
+
+    let mut app = test_app();
+    app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Off;
+    app.state.settings.pane_scrollbars = false;
+    app.state.test_set_workspaces(vec![
+        Workspace::test_new("recorded"),
+        Workspace::test_new("unrecorded"),
+    ]);
+    let recorded = SpawnGeometry {
+        area: shepr_core::geometry::Rect::new(0, 0, 100, 20),
+        cell: shepr_core::geometry::CellPx::new(8, 16),
+    };
+    let requester = SpawnGeometry {
+        area: shepr_core::geometry::Rect::new(0, 0, 60, 10),
+        cell: shepr_core::geometry::CellPx::new(9, 18),
+    };
+    let first_id = app.state.ws(0).id();
+    app.state.record_workspace_geometry(&first_id, recorded);
+    let ctx = EndpointContext {
+        requester_geometry: Some(requester),
+    };
+
+    for (ws_idx, expected) in [(0, recorded), (1, requester)] {
+        let command = split_of(&app, ws_idx);
+        let Ok(EndpointReply::PaneInfo { pane }) =
+            app.handle_endpoint_command_in(command, &ctx).result
+        else {
+            panic!("expected pane info");
+        };
+        let new_pane = app
+            .state
+            .resolve_pane(&pane.pane_id)
+            .expect("test precondition")
+            .id();
+        let runtime = app.test_runtime(new_pane);
+        let grid = runtime.grid_size();
+        assert_eq!(
+            u32::from(grid.rows.get()),
+            u32::from(expected.area.height),
+            "workspace {ws_idx} is sized against the geometry it has or the requester's"
+        );
+        assert_eq!(
+            runtime.read().pixel_mouse().extent().map(|extent| (
+                u32::from(extent.width().get()),
+                u32::from(extent.height().get())
+            )),
+            expected.cell.map(|cell| (
+                u32::from(grid.cols.get()) * cell.width().get(),
+                u32::from(grid.rows.get()) * cell.height().get(),
+            )),
+            "workspace {ws_idx}"
+        );
+    }
+
+    shut_down_runtimes(&mut app);
+}
+
+#[test]
+fn pane_close_request_closes_only_the_target_pane_when_others_remain() {
+    let mut app = test_app();
+    let mut workspace = Workspace::test_new("api-pane-close");
+    let target_pane = workspace.tree().root();
+    workspace.test_split(shepr_core::layout::Direction::Horizontal);
+    app.state.test_set_workspaces(vec![workspace]);
+    app.state.seed_bookmark_index(Some(0));
+
+    let target_pane_id = app
+        .pane_info(target_pane)
+        .expect("test precondition")
+        .pane_id;
+
+    let result = app.handle_endpoint_command(EndpointCommand::PaneClose(PaneTarget {
+        pane_id: target_pane_id,
+    }));
+
+    assert!(matches!(result, Ok(EndpointReply::Done)));
+    assert_eq!(app.state.workspaces.len(), 1);
+    assert_eq!(app.state.ws(0).tree().len(), 1);
+    assert_eq!(app.state.ws(0).display_name(), "api-pane-close");
+}
+
+#[test]
+fn pane_close_request_closes_workspace_when_it_removes_the_last_pane() {
+    let mut app = test_app();
+    let workspace = Workspace::test_new("api-pane-close-last");
+    app.state.test_set_workspaces(vec![workspace]);
+    app.state.seed_bookmark_index(Some(0));
+
+    let target_pane = app.state.ws(0).tree().root();
+    let target_pane_id = app
+        .pane_info(target_pane)
+        .expect("test precondition")
+        .pane_id;
+
+    let result = app.handle_endpoint_command(EndpointCommand::PaneClose(PaneTarget {
+        pane_id: target_pane_id,
+    }));
+
+    assert!(matches!(result, Ok(EndpointReply::Done)));
+    assert!(app.state.workspaces.is_empty());
 }

@@ -9,12 +9,6 @@ use crate::limits::{
     MAX_TERMINAL_GRID_CELLS, MAX_TERMINAL_GRID_DIMENSION, PANE_MIN_COLS, PANE_MIN_ROWS,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum SplitBranch {
-    First,
-    Second,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GridSize {
     pub cols: NonZeroU16,
@@ -136,7 +130,7 @@ impl TryFrom<GridSize> for BoundedGridSize {
 /// A cell-addressed area: the layout model's rect. Rendering crates convert it
 /// to their drawing library's rect at the boundary, so this crate stays free
 /// of any TUI dependency.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Rect {
     pub x: u16,
     pub y: u16,
@@ -157,12 +151,34 @@ impl Rect {
     }
 }
 
-/// A nonzero cell pixel report. Reports stay raw for protocol refusal
-/// diagnostics; use `HostCellGeometry` to retain a bounded host observation.
+/// A raw nonzero cell size as a host or peer reported it, possibly above
+/// `CellPx::MAX_DIMENSION`. Kept raw so a refusal can name it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CellPx {
+pub struct CellReport {
     pub width: NonZeroU32,
     pub height: NonZeroU32,
+}
+
+impl CellReport {
+    pub fn new(width: u32, height: u32) -> Option<Self> {
+        Some(Self {
+            width: NonZeroU32::new(width)?,
+            height: NonZeroU32::new(height)?,
+        })
+    }
+
+    /// The usable cell, `None` when an axis is above the bound.
+    pub fn cell(self) -> Option<CellPx> {
+        CellPx::try_from(self).ok()
+    }
+}
+
+/// A usable cell size: nonzero and within `MAX_DIMENSION` on both axes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "CellReport", into = "CellReport")]
+pub struct CellPx {
+    width: NonZeroU32,
+    height: NonZeroU32,
 }
 
 impl CellPx {
@@ -170,15 +186,47 @@ impl CellPx {
     /// so the server can refuse them with a specific reason.
     pub const MAX_DIMENSION: u32 = crate::limits::MAX_HOST_CELL_PX;
 
-    pub fn within_host_limit(width: u32, height: u32) -> bool {
-        width <= Self::MAX_DIMENSION && height <= Self::MAX_DIMENSION
+    /// `None` for a zero or oversized axis.
+    pub fn new(width: u32, height: u32) -> Option<Self> {
+        CellReport::new(width, height)?.cell()
     }
 
-    pub fn new(width: u32, height: u32) -> Option<Self> {
-        Some(Self {
-            width: NonZeroU32::new(width)?,
-            height: NonZeroU32::new(height)?,
+    pub fn width(self) -> NonZeroU32 {
+        self.width
+    }
+
+    pub fn height(self) -> NonZeroU32 {
+        self.height
+    }
+}
+
+impl TryFrom<CellReport> for CellPx {
+    /// The refused report, so a caller can name it.
+    type Error = CellReport;
+
+    fn try_from(report: CellReport) -> Result<Self, Self::Error> {
+        if report.width.get() > Self::MAX_DIMENSION || report.height.get() > Self::MAX_DIMENSION {
+            return Err(report);
+        }
+        Ok(Self {
+            width: report.width,
+            height: report.height,
         })
+    }
+}
+
+impl std::fmt::Display for CellReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}x{}", self.width, self.height)
+    }
+}
+
+impl From<CellPx> for CellReport {
+    fn from(cell: CellPx) -> Self {
+        Self {
+            width: cell.width,
+            height: cell.height,
+        }
     }
 }
 
@@ -211,12 +259,6 @@ impl From<PaneGeometryRepr> for PaneGeometry {
 }
 
 impl PaneGeometry {
-    /// A `cols` by `rows` grid, clamped to the pane minimum, whose cells
-    /// measure `width` by `height` pixels; pixel-less when either is zero.
-    pub fn new(cols: u16, rows: u16, width: u32, height: u32) -> Self {
-        Self::with_cell(cols, rows, CellPx::new(width, height))
-    }
-
     /// A `cols` by `rows` grid, clamped to the pane minimum, with an
     /// already validated cell pixel size.
     pub fn with_cell(cols: u16, rows: u16, cell: Option<CellPx>) -> Self {
@@ -224,6 +266,11 @@ impl PaneGeometry {
             grid: GridSize::clamped_pane(cols, rows),
             cell,
         }
+    }
+
+    /// A pane with no known cell size.
+    pub fn cells_only(cols: u16, rows: u16) -> Self {
+        Self::with_cell(cols, rows, None)
     }
 
     pub fn grid(self) -> GridSize {
@@ -242,76 +289,136 @@ impl PaneGeometry {
         self.grid.rows.get()
     }
 
-    pub fn cell_width(self) -> u32 {
-        self.cell.map_or(0, |cell| cell.width.get())
-    }
-
-    pub fn cell_height(self) -> u32 {
-        self.cell.map_or(0, |cell| cell.height.get())
-    }
-
-    /// The pixel extent representable by `TIOCSWINSZ` and `TIOCGWINSZ`.
-    /// Terminal reports use this same extent so a child sees one pixel size.
-    pub fn text_area_px(self) -> Option<(u16, u16)> {
+    /// The extent `TIOCSWINSZ` can carry: each axis clamped to `u16::MAX`.
+    /// `None` without a cell. Terminal reports use this same extent so a
+    /// child sees one pixel size.
+    pub fn pixel_extent(self) -> Option<PanePixelExtent> {
         let cell = self.cell?;
         let width = u64::from(self.cols()) * u64::from(cell.width.get());
         let height = u64::from(self.rows()) * u64::from(cell.height.get());
-        Some((
+        PanePixelExtent::new(
+            self.grid,
             u16::try_from(width.min(u64::from(u16::MAX))).unwrap_or(u16::MAX),
             u16::try_from(height.min(u64::from(u16::MAX))).unwrap_or(u16::MAX),
-        ))
+        )
     }
 }
 
-/// Host cell pitch and whether it supports exact pixel coordinates.
-///
-/// Raw nonzero cell reports remain representable by `CellPx` for handshake
-/// diagnostics. This type owns the usable host-cell bound and exactness:
-/// neither unknown cells nor a clamped report can be exact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct HostCellGeometry {
-    cell: Option<CellPx>,
-    exact: bool,
+/// A pane's text area in pixels as its child was told it (winsize,
+/// `CSI 14 t`, mode 2048), with the grid it belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PanePixelExtent {
+    grid: GridSize,
+    width: NonZeroU16,
+    height: NonZeroU16,
 }
 
-impl HostCellGeometry {
+impl PanePixelExtent {
+    /// `None` when either axis is zero.
+    pub fn new(grid: GridSize, width: u16, height: u16) -> Option<Self> {
+        Some(Self {
+            grid,
+            width: NonZeroU16::new(width)?,
+            height: NonZeroU16::new(height)?,
+        })
+    }
+
+    pub fn grid(self) -> GridSize {
+        self.grid
+    }
+
+    pub fn width(self) -> NonZeroU16 {
+        self.width
+    }
+
+    pub fn height(self) -> NonZeroU16 {
+        self.height
+    }
+
+    /// The integer cell pitch a child derives from this extent:
+    /// `(width / cols).max(1)`, `(height / rows).max(1)`.
+    pub fn cell_pitch(self) -> (NonZeroU32, NonZeroU32) {
+        let axis = |extent: NonZeroU16, count: u16| {
+            let pitch = (u32::from(extent.get()) / u32::from(count).max(1)).max(1);
+            NonZeroU32::new(pitch).unwrap_or(NonZeroU32::MIN)
+        };
+        (
+            axis(self.width, self.grid.cols()),
+            axis(self.height, self.grid.rows()),
+        )
+    }
+
+    /// Whether a 1-based pixel lies inside the extent.
+    pub fn contains(self, x: u32, y: u32) -> bool {
+        (1..=u32::from(self.width.get())).contains(&x)
+            && (1..=u32::from(self.height.get())).contains(&y)
+    }
+
+    /// The 1-based top-left pixel of a 0-based cell, through `cell_pitch`.
+    pub fn cell_origin(self, column: u16, row: u16) -> (u32, u32) {
+        let (cell_width, cell_height) = self.cell_pitch();
+        (
+            u32::from(column) * cell_width.get() + 1,
+            u32::from(row) * cell_height.get() + 1,
+        )
+    }
+}
+
+/// The host terminal's cell as one observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostCell {
+    Unknown,
+    /// A cell the host did not measure exactly: a guess, an XTWINOPS reply
+    /// without an ioctl extent, or a clamped report.
+    Estimated(CellPx),
+    /// Measured from one coherent ioctl; pixel mouse is possible.
+    Exact(CellPx),
+}
+
+impl HostCell {
+    /// A host reading: a zero axis is unknown, an oversized one is clamped
+    /// to `CellPx::MAX_DIMENSION` and never exact. The one place a zero
+    /// from the host is interpreted.
     pub fn from_host(width: u32, height: u32, exact: bool) -> Self {
-        let cell = CellPx::new(
-            width.min(CellPx::MAX_DIMENSION),
-            height.min(CellPx::MAX_DIMENSION),
-        );
-        Self {
-            cell,
-            exact: exact && CellPx::within_host_limit(width, height) && cell.is_some(),
+        match CellReport::new(width, height) {
+            Some(report) => Self::from_report(report, exact),
+            None => Self::Unknown,
         }
     }
 
-    /// A peer's out-of-range report is unusable rather than clamped; changing
-    /// it would claim a geometry the peer never sent.
-    pub fn from_wire(width: u32, height: u32, exact: bool) -> Self {
-        let cell = CellPx::new(width, height).filter(|_| CellPx::within_host_limit(width, height));
-        Self {
-            cell,
-            exact: exact && cell.is_some(),
+    /// The same for a nonzero raw report.
+    pub fn from_report(report: CellReport, exact: bool) -> Self {
+        match report.cell() {
+            Some(cell) if exact => Self::Exact(cell),
+            Some(cell) => Self::Estimated(cell),
+            None => {
+                let clamp = |axis: NonZeroU32| axis.get().min(CellPx::MAX_DIMENSION);
+                match CellPx::new(clamp(report.width), clamp(report.height)) {
+                    Some(cell) => Self::Estimated(cell),
+                    None => Self::Unknown,
+                }
+            }
         }
     }
 
     pub fn cell(self) -> Option<CellPx> {
-        self.cell
+        match self {
+            Self::Unknown => None,
+            Self::Estimated(cell) | Self::Exact(cell) => Some(cell),
+        }
     }
 
-    pub fn exact(self) -> bool {
-        self.exact
+    pub fn is_exact(self) -> bool {
+        matches!(self, Self::Exact(_))
     }
 
-    /// Zero is used only at interfaces that represent absent pixel geometry
-    /// with zero-valued axes.
-    pub fn width(self) -> u32 {
-        self.cell.map_or(0, |cell| cell.width.get())
-    }
-
-    pub fn height(self) -> u32 {
-        self.cell.map_or(0, |cell| cell.height.get())
+    /// What a connection keeps after a newer observation: an unknown newer
+    /// observation keeps this cell, demoted to an estimate.
+    pub fn refreshed_by(self, next: Self) -> Self {
+        match (next, self.cell()) {
+            (Self::Unknown, Some(cell)) => Self::Estimated(cell),
+            _ => next,
+        }
     }
 }
 
@@ -323,18 +430,11 @@ impl HostCellGeometry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostGeometry {
     grid: GridSize,
-    cell: HostCellGeometry,
+    cell: HostCell,
 }
 
 impl HostGeometry {
-    pub fn new(cols: u16, rows: u16, width: u32, height: u32, exact: bool) -> Self {
-        Self::with_cell(
-            GridSize::clamped(cols, rows),
-            HostCellGeometry::from_host(width, height, exact),
-        )
-    }
-
-    pub fn with_cell(grid: GridSize, cell: HostCellGeometry) -> Self {
+    pub fn new(grid: GridSize, cell: HostCell) -> Self {
         Self { grid, cell }
     }
 
@@ -346,16 +446,8 @@ impl HostGeometry {
         self.grid
     }
 
-    pub fn cell_geometry(self) -> HostCellGeometry {
+    pub fn cell(self) -> HostCell {
         self.cell
-    }
-
-    pub fn cell(self) -> Option<CellPx> {
-        self.cell.cell()
-    }
-
-    pub fn exact(self) -> bool {
-        self.cell.exact()
     }
 
     pub fn cols(self) -> u16 {
@@ -364,14 +456,6 @@ impl HostGeometry {
 
     pub fn rows(self) -> u16 {
         self.grid.rows.get()
-    }
-
-    pub fn cell_width(self) -> u32 {
-        self.cell.width()
-    }
-
-    pub fn cell_height(self) -> u32 {
-        self.cell.height()
     }
 }
 
@@ -398,32 +482,67 @@ mod tests {
     fn geometry_rejects_zero_components() {
         assert!(GridSize::new(0, 24).is_none());
         assert!(CellPx::new(8, 0).is_none());
-        assert_eq!(PaneGeometry::new(80, 24, 8, 0).cell(), None);
-        assert!(!HostGeometry::new(80, 24, 8, 0, true).exact());
+        assert!(CellReport::new(0, 16).is_none());
+        assert_eq!(HostCell::from_host(8, 0, true), HostCell::Unknown);
+        assert!(PanePixelExtent::new(GridSize::clamped(80, 24), 0, 1).is_none());
     }
 
     #[test]
-    fn host_geometry_keeps_small_grids_and_bounds_cell_exactness() {
-        let small = HostGeometry::new(1, 1, 8, 16, true);
-        assert_eq!(small.grid(), GridSize::clamped(1, 1));
-        assert!(small.exact());
-        assert_eq!(
-            small.with_grid(GridSize::clamped(2, 3)).cell_geometry(),
-            small.cell_geometry()
-        );
+    fn cell_px_is_bounded_and_serde_goes_through_the_report() {
+        assert!(CellPx::new(CellPx::MAX_DIMENSION, 1).is_some());
+        assert!(CellPx::new(CellPx::MAX_DIMENSION + 1, 1).is_none());
+        let oversized = CellReport::new(CellPx::MAX_DIMENSION + 1, 16).expect("nonzero");
+        assert_eq!(oversized.cell(), None);
+        assert_eq!(CellPx::try_from(oversized), Err(oversized));
+        let cell = CellPx::new(8, 16).expect("valid");
+        assert_eq!(CellReport::from(cell).cell(), Some(cell));
+    }
 
-        let oversized = HostGeometry::new(1, 1, CellPx::MAX_DIMENSION + 1, 16, true);
-        assert_eq!(oversized.cell_width(), CellPx::MAX_DIMENSION);
-        assert!(!oversized.exact());
+    #[test]
+    fn host_cell_keeps_exactness_and_bounds_reports() {
+        let cell = CellPx::new(8, 16).expect("valid");
+        assert_eq!(HostCell::from_host(8, 16, true), HostCell::Exact(cell));
+        assert_eq!(HostCell::from_host(8, 16, false), HostCell::Estimated(cell));
+        assert!(HostCell::from_host(8, 16, true).is_exact());
+        assert!(!HostCell::Unknown.is_exact());
+
+        let clamped = CellPx::new(CellPx::MAX_DIMENSION, 16).expect("valid");
         assert_eq!(
-            HostCellGeometry::from_wire(CellPx::MAX_DIMENSION + 1, 16, true).cell(),
-            None
+            HostCell::from_host(CellPx::MAX_DIMENSION + 1, 16, true),
+            HostCell::Estimated(clamped)
         );
+    }
+
+    #[test]
+    fn host_cell_refresh_demotes_a_cell_an_unknown_observation_keeps() {
+        let cell = CellPx::new(8, 16).expect("valid");
+        let other = CellPx::new(9, 18).expect("valid");
+        assert_eq!(
+            HostCell::Exact(cell).refreshed_by(HostCell::Unknown),
+            HostCell::Estimated(cell)
+        );
+        assert_eq!(
+            HostCell::Unknown.refreshed_by(HostCell::Unknown),
+            HostCell::Unknown
+        );
+        assert_eq!(
+            HostCell::Estimated(cell).refreshed_by(HostCell::Exact(other)),
+            HostCell::Exact(other)
+        );
+    }
+
+    #[test]
+    fn host_geometry_keeps_small_grids_and_its_cell() {
+        let cell = HostCell::from_host(8, 16, true);
+        let small = HostGeometry::new(GridSize::clamped(1, 1), cell);
+        assert_eq!(small.grid(), GridSize::clamped(1, 1));
+        assert!(small.cell().is_exact());
+        assert_eq!(small.with_grid(GridSize::clamped(2, 3)).cell(), cell);
     }
 
     #[test]
     fn pane_geometry_uses_the_shared_minimum_grid() {
-        let pane = PaneGeometry::new(0, 1, 8, 16);
+        let pane = PaneGeometry::with_cell(0, 1, CellPx::new(8, 16));
         assert_eq!((pane.cols(), pane.rows()), (PANE_MIN_COLS, PANE_MIN_ROWS));
         let generic = GridSize::clamped(0, 0);
         assert_eq!((generic.cols.get(), generic.rows.get()), (1, 1));
@@ -447,11 +566,40 @@ mod tests {
 
     #[test]
     fn pixel_extent_uses_winsize_limits() {
-        let small = PaneGeometry::new(80, 24, 9, 18);
-        assert_eq!(small.text_area_px(), Some((720, 432)));
+        let small = PaneGeometry::with_cell(80, 24, CellPx::new(9, 18)).pixel_extent();
+        let small = small.expect("cell known");
+        assert_eq!((small.width().get(), small.height().get()), (720, 432));
+        assert_eq!(small.grid(), GridSize::clamped(80, 24));
 
-        let large = PaneGeometry::new(80, 24, 100_000, 100_000);
-        assert_eq!(large.text_area_px(), Some((u16::MAX, u16::MAX)));
-        assert_eq!(PaneGeometry::new(80, 24, 0, 18).text_area_px(), None);
+        let large = PaneGeometry::with_cell(80, 24, CellPx::new(CellPx::MAX_DIMENSION, 4096))
+            .pixel_extent()
+            .expect("cell known");
+        assert_eq!(
+            (large.width().get(), large.height().get()),
+            (u16::MAX, u16::MAX)
+        );
+        assert_eq!(PaneGeometry::cells_only(80, 24).pixel_extent(), None);
+        assert_eq!(
+            small.cell_pitch(),
+            (
+                NonZeroU32::new(9).expect("nonzero"),
+                NonZeroU32::new(18).expect("nonzero")
+            )
+        );
+        assert_eq!(large.cell_pitch().0.get(), 65535 / 80);
+    }
+
+    #[test]
+    fn pane_pixel_extent_cell_origin_is_one_based_top_left() {
+        let extent = PaneGeometry::with_cell(80, 24, CellPx::new(9, 18))
+            .pixel_extent()
+            .expect("cell known");
+        assert_eq!(extent.cell_origin(0, 0), (1, 1));
+        assert_eq!(extent.cell_origin(2, 3), (19, 55));
+        assert!(extent.contains(1, 1));
+        assert!(extent.contains(720, 432));
+        assert!(!extent.contains(0, 1));
+        assert!(!extent.contains(721, 1));
+        assert!(!extent.contains(1, 433));
     }
 }

@@ -158,9 +158,19 @@ pub(crate) const SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION: &str = "NumberOfPas
 #[derive(Clone, Copy)]
 pub(crate) struct SshKeepalive {
     /// Seconds between probes of an idle SSH connection.
-    pub(crate) interval_secs: u32,
+    interval_secs: u32,
     /// Unanswered probes allowed before the SSH connection is treated as lost.
-    pub(crate) count_max: u32,
+    count_max: u32,
+}
+
+impl SshKeepalive {
+    /// The managed config's `Host *` keepalive lines.
+    pub(crate) fn config_lines(&self) -> String {
+        format!(
+            "  ServerAliveInterval {}\n  ServerAliveCountMax {}\n",
+            self.interval_secs, self.count_max
+        )
+    }
 }
 
 /// OpenSSH keepalive policy probes idle connections and declares a link lost

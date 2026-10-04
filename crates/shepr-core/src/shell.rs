@@ -11,6 +11,11 @@ pub struct ResolvedShell(PathBuf);
 
 impl ResolvedShell {
     /// Mint a shell only after the caller's shell validation succeeds.
+    ///
+    /// The check is a callback because recognizing a usable shell name lives in
+    /// shepr-platform, which core cannot depend on; moving the type into
+    /// platform instead would tie pty and config to it for one check, and test
+    /// fixtures pass a permissive check so stand-in shells are accepted.
     pub fn validate(
         path: PathBuf,
         validate: impl FnOnce(&Path) -> Result<(), String>,

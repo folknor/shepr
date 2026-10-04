@@ -160,12 +160,13 @@ pub fn suspended_agent_processes(child_pid: Pid) -> Vec<Agent> {
     agents
 }
 
-/// Detect state using screen content plus OSC title/progress strings.
+/// Detect state using screen content plus the OSC title and progress evidence,
+/// each `None` when there is none.
 pub fn detect_agent_with_osc(
     agent: Option<Agent>,
     screen_content: &str,
-    osc_title: &str,
-    osc_progress: &str,
+    osc_title: Option<&str>,
+    osc_progress: Option<&str>,
 ) -> AgentDetection {
     let Some(agent) = agent else {
         return AgentDetection::State(Detection::Unknown);
@@ -721,7 +722,7 @@ fn is_python_runtime(name: &str) -> bool {
 /// If `agent` is `None`, returns `Unknown`.
 #[cfg(test)]
 pub fn detect_state(agent: Option<Agent>, screen_content: &str) -> AgentState {
-    detect_agent_with_osc(agent, screen_content, "", "").state()
+    detect_agent_with_osc(agent, screen_content, None, None).state()
 }
 
 // ---------------------------------------------------------------------------
@@ -1587,7 +1588,7 @@ mod tests {
             false,
         );
         let mut spawned = spawn_pty(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
             &command,
             Box::new(drop),
         )
@@ -1641,7 +1642,7 @@ mod tests {
             false,
         );
         let mut spawned = spawn_pty(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
             &cmd,
             Box::new(drop),
         )
@@ -1698,7 +1699,7 @@ mod tests {
             false,
         );
         let mut spawned = spawn_pty(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
             &cmd,
             Box::new(drop),
         )

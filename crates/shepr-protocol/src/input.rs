@@ -204,32 +204,19 @@ impl ClientMouseKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[expect(
-    variant_size_differences,
-    reason = "a Copy value of at most a dozen bytes; boxing the pixel form would allocate per mouse event"
-)]
 pub enum ClientMousePosition {
     Cell {
         column: u16,
         row: u16,
     },
+    /// A pixel position mapped into the pane's extent. The report echoes the
+    /// extent it mapped against, so the server can recognise one that crossed
+    /// a resize.
     Pixels {
-        x: u32,
-        y: u32,
         column: u16,
         row: u16,
+        report: shepr_term::mouse::PixelReport,
     },
-}
-
-/// The child pane's whole pixel extent, used to reject an in-flight mouse
-/// event after the pane resizes. It is separate from host cell pitch: pane
-/// extents are capped by ioctl limits, while the host may include padding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientMouseGeometry {
-    pub cols: u16,
-    pub rows: u16,
-    pub width_px: u32,
-    pub height_px: u32,
 }
 
 /// Modifier bits carried by semantic input messages.
@@ -287,6 +274,11 @@ impl std::ops::BitOrAssign for WireModifiers {
 /// A key carries no physical key identity: the Linux host terminal reports
 /// none, so a key is identified by its code alone, and a press that committed
 /// `generated_text` gets no release.
+///
+/// `Key` is deliberately not `shepr_term::key::TerminalKey`: that type holds
+/// crossterm's `KeyCode`, `KeyModifiers` and `KeyEventKind`, which have no
+/// wire form, and the wire carries only the closed key set `ClientKeyCode`
+/// names, with the conversions to and from the host model beside it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientPaneInputEvent {
     Key {
@@ -301,7 +293,6 @@ pub enum ClientPaneInputEvent {
     Mouse {
         kind: ClientMouseKind,
         position: ClientMousePosition,
-        geometry: Option<ClientMouseGeometry>,
         modifiers: WireModifiers,
         lines: u16,
     },
@@ -351,24 +342,11 @@ pub enum ClientMessage {
     HealthPing,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClientHostColor {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClientHostDefaultColorKind {
-    Foreground,
-    Background,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ClientHostAppearance {
-    Dark,
-    Light,
-}
+// The host's colours and appearance are the terminal vocabulary of
+// `shepr-term`, carried on the wire as they are.
+pub use shepr_term::ColorScheme as ClientHostAppearance;
+pub use shepr_term::DefaultColor as ClientHostDefaultColorKind;
+pub use shepr_term::RgbColor as ClientHostColor;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientHostThemeUpdate {

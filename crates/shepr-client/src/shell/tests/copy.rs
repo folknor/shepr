@@ -1,84 +1,77 @@
 use crate::endpoint::{ClientEndpointId, EndpointFailureStatus};
-use crate::shell::endpoints::ClientEndpointFocusTarget;
-use crate::shell::ledger::DropReason;
-use crate::shell::navigation::location::{Location, LocationTarget};
-use crate::shell::presentation::render;
-use crate::shell::state::{
-    ClientChromeDrag, ClientCopyOperation, ClientCopySelection, ClientNavigatorFilter,
-    ClientShellAction, ClientShellConfig, ClientShellEndpointError, ClientShellInput,
-    ClientShellMode, ClientShellOverlay, ClientShellRequest,
+use crate::shell::config::ClientShellConfig;
+use crate::shell::copy::{
+    ClientCopyOperation, ClientCopySearch, ClientCopySearchPrompt, ClientCopySelection, CopyEntry,
+    CopySession,
 };
+use crate::shell::ledger::DropReason;
+use crate::shell::overlays::Overlay;
+use crate::shell::overlays::help::HelpOverlay;
+use crate::shell::state::{
+    ClientShellAction, ClientShellEndpointError, ClientShellInput, ClientShellMode,
+    ClientShellRequest, ClientShellState,
+};
+use crossterm::event::MouseEvent;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
 use shepr_config::ClientConfig;
 use shepr_config::theme::Palette;
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
-use shepr_protocol::{AgentStatus, ClientMessage, ClientPaneInputEvent, FrameData};
-use shepr_protocol::{ClientShellAgent, ClientShellPane, ClientShellSnapshot, SurfaceRect};
+use shepr_protocol::{ClientMessage, ClientPaneInputEvent, FrameData};
+use shepr_protocol::{ClientShellPane, SurfaceRect};
 use shepr_surface::ratatui_conversion::{FrameDataExt as _, WireColorExt as _};
 use shepr_term::host::DefaultColorKind;
 use shepr_term::host::HostAppearance;
 use shepr_termio::input::raw_input::RawInputEvent;
 use shepr_termio::text_editor::TextEditor;
 
-use crate::shell::state::{
-    ClientCopyModeState, ClientCopySearch, ClientCopySearchPrompt, ClientHelpOverlay,
-    ClientNavigatorOverlay, ClientShellState,
-};
-
-use crossterm::event::MouseEvent;
-
-use crate::shell::tests::{
-    cell_bg, cell_fg, cell_is_bold, cell_symbol_position, frame_rows, snapshot, surface,
-};
-
+use crate::shell::tests::{cell_bg, frame_rows, snapshot, surface};
 use crate::shell::tests::{copy_search_result, pane_scroll_result};
-use crate::tests::{test_pane_id, test_workspace_id};
+use crate::tests::test_pane_id;
 
 #[test]
 fn pasted_help_and_copy_queries_normalize_single_line_text() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
-        query: TextEditor::default(),
+    state.overlay = Some(Overlay::Help(HelpOverlay {
         search_focused: true,
-        scroll: 0,
+        ..HelpOverlay::default()
     }));
 
     assert!(state.insert_overlay_text("work\nspace"));
     assert!(matches!(
         state.overlay,
-        Some(ClientShellOverlay::Help(ClientHelpOverlay { ref query, .. }))
+        Some(Overlay::Help(HelpOverlay { ref query, .. }))
             if query.as_str() == "work space"
     ));
 
     state.overlay = None;
-    state.mode = ClientShellMode::Copy;
-    state.copy_mode = Some(ClientCopyModeState {
-        scroll: shepr_term::ScrollMetrics::new(0, 0, 24, shepr_term::AbsRow(0)),
-        pane_id: test_pane_id("w1:p1"),
-        geometry: (80, 24),
-        alternate_screen_active: false,
-        cursor: shepr_protocol::command::PaneTextPoint {
-            row: shepr_term::AbsRow(0),
-            col: 0,
-        },
-        entry_offset_from_bottom: 0,
-        selection: None,
-        search: Some(ClientCopySearch {
+    state.mode.set(ClientShellMode::Copy);
+    state.copy = Some(
+        CopySession::start(CopyEntry {
+            pane_id: test_pane_id("w1:p1"),
+            scroll: shepr_term::ScrollMetrics::new(0, 0, 24, shepr_term::AbsRow(0)),
+            geometry: (80, 24),
+            alternate_screen_active: false,
+            cursor: shepr_protocol::command::PaneTextPoint {
+                row: shepr_term::AbsRow(0),
+                col: 0,
+            },
+            rows: crate::shell::ledger::Ticket::fixture(1),
+        })
+        .with_search(ClientCopySearch {
             prompt: Some(ClientCopySearchPrompt {
                 direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
                 query: TextEditor::default(),
             }),
             ..Default::default()
         }),
-        operation_generation: 0,
-    });
+    );
 
     assert!(state.insert_copy_search_text("needle\r\n"));
     assert_eq!(
         state
-            .copy_mode
+            .copy
             .as_ref()
             .and_then(|copy_mode| copy_mode.search.as_ref())
             .and_then(|search| search.prompt.as_ref())
@@ -97,7 +90,8 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
         .map(|row| format!("{row:<width$}", width = usize::from(area.width)))
         .collect::<Vec<_>>();
     pane_surface.frame =
-        FrameData::from_ratatui_buffer_with_hyperlinks(&Buffer::with_lines(lines), None, &[]);
+        FrameData::from_ratatui_buffer_with_hyperlinks(&Buffer::with_lines(lines), None, &[])
+            .expect("test buffer is a valid frame");
     let rect = SurfaceRect {
         x: 0,
         y: 0,
@@ -112,7 +106,14 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
         usize::from(area.height),
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("terminal frame");
     let mut outcome = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut outcome));
@@ -126,7 +127,7 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
     assert!(rows[usize::from(area.y)].contains("COPY"));
     assert!(!rows[usize::from(bottom)].contains("COPY"));
     assert_eq!(
-        frame.cells[usize::from(bottom) * 106 + usize::from(area.x)].bg,
+        frame.cells()[usize::from(bottom) * 106 + usize::from(area.x)].bg,
         accent
     );
 
@@ -136,19 +137,19 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
     let rows = frame_rows(&frame);
     assert!(rows[usize::from(bottom)].contains("COPY"));
     assert_eq!(
-        frame.cells[usize::from(bottom - 1) * 106 + usize::from(area.x)].bg,
+        frame.cells()[usize::from(bottom - 1) * 106 + usize::from(area.x)].bg,
         accent
     );
 
     // Scrolled back, a motion onto the covered row scrolls one line instead of hiding the
     // cursor under the bar.
     let height = u64::from(area.height);
-    if let Some(copy_mode) = state.copy_mode.as_mut() {
+    if let Some(copy_mode) = state.copy.as_mut() {
         copy_mode.scroll = copy_mode.scroll.with_offset(10);
         copy_mode.cursor.row = shepr_term::AbsRow(40 + height - 2);
     }
     state.handle_input_bytes(b"j");
-    let copy_mode = state.copy_mode.as_ref().expect("still in copy mode");
+    let copy_mode = state.copy.as_ref().expect("still in copy mode");
     assert_eq!(copy_mode.cursor.row, shepr_term::AbsRow(40 + height - 1));
     assert_eq!(copy_mode.scroll.offset_from_bottom, 9);
 }
@@ -163,9 +164,16 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
         config.palette = Palette::terminal();
         let mut state = ClientShellState::new(config);
         state.set_snapshot(Box::new(snapshot()));
-        state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+        state.receive_pane_surface_from(
+            surface(),
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
         state.compose(106, 20).expect("composed frame");
-        let pane = state.hits.panes[0].clone();
+        let pane = state.pane_hits()[0].clone();
         for (kind, column) in [
             (MouseEventKind::Down(MouseButton::Left), pane.inner_rect.x),
             (
@@ -183,7 +191,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
         let cell_index = usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x);
         let fallback = state.compose(106, 20).expect("fallback frame");
         assert_eq!(
-            fallback.cells[cell_index].bg,
+            fallback.cells()[cell_index].bg,
             shepr_protocol::WireColor::from_ratatui(Color::DarkGray)
         );
         if explicit_appearance {
@@ -207,7 +215,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
                     .any(|request| matches!(request, ClientShellRequest::HostTheme(_)))
             );
             let frame = state.compose(106, 20).expect("host-colored selection");
-            let cell = &frame.cells[cell_index];
+            let cell = &frame.cells()[cell_index];
             assert_eq!(
                 cell.bg,
                 shepr_protocol::WireColor::from_ratatui(Color::Rgb(
@@ -236,9 +244,16 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
 fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
 
     let down = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -278,7 +293,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
     );
     let selected = state.compose(106, 20).expect("selected frame");
     let selected_cell =
-        &selected.cells[usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x)];
+        &selected.cells()[usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x)];
     assert_ne!(
         selected_cell.bg,
         shepr_protocol::WireColor::from_ratatui(ratatui::style::Color::Reset)
@@ -331,9 +346,16 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.copy_on_select = false;
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
     for event in [
         crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -357,9 +379,16 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
         state.handle_raw_events(vec![RawInputEvent::Mouse(event)]);
         // Output can arrive between drag and release, including an in-flight revision.
         let mut updated = state.pane_surface().cloned().expect("pane surface");
-        updated.panes[0].content_revision += 1;
-        updated.frame.cells[0].symbol = "x".into();
-        state.receive_pane_surface_from(updated, state.active_snapshot_generation.unwrap_or(1));
+        updated.panes[0].content_revision = shepr_test_fixtures::counter_at(1);
+        updated.frame.cells_mut()[0].symbol = "x".into();
+        state.receive_pane_surface_from(
+            updated,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
     }
     assert!(
         state
@@ -371,8 +400,8 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
 
     // A patch that redraws selected text must retain the same live terminal range.
     let mut updated = state.pane_surface().cloned().expect("pane surface");
-    updated.panes[0].content_revision += 1;
-    let mut cell = updated.frame.cells[0].clone();
+    updated.panes[0].content_revision = shepr_test_fixtures::counter_at(1);
+    let mut cell = updated.frame.cells()[0].clone();
     cell.symbol = "y".into();
     assert!(matches!(
         state.apply_pane_surface_patch_from(
@@ -390,9 +419,13 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
                     y: 0,
                     cells: vec![cell]
                 }],
-                cursor: updated.frame.cursor,
+                cursor: updated.frame.cursor().cloned(),
             },
-            state.active_snapshot_generation.unwrap_or(1)
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST)
         ),
         crate::shell::presentation::surface_patch::ClientPaneSurfacePatchOutcome::Applied(_)
     ));
@@ -406,10 +439,10 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
 
     let highlighted = state.compose(106, 20).expect("highlighted frame");
     let cell_index = usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x);
-    let selected_cell = highlighted.cells[cell_index].clone();
+    let selected_cell = highlighted.cells()[cell_index].clone();
     let selection = state.mouse_selection.selection.take();
     let unselected = state.compose(106, 20).expect("unselected frame");
-    assert_ne!(selected_cell.bg, unselected.cells[cell_index].bg);
+    assert_ne!(selected_cell.bg, unselected.cells()[cell_index].bg);
     state.mouse_selection.selection = selection;
 
     let copy = state.handle_raw_events(vec![RawInputEvent::Key(
@@ -452,7 +485,8 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
         &Buffer::with_lines(["    ", "LIVE", "PANE"]),
         None,
         &[],
-    );
+    )
+    .expect("test buffer is a valid frame");
     pane_surface.panes[0].rect.y = 1;
     pane_surface.panes[0].inner_rect.y = 1;
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
@@ -461,9 +495,16 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
-    let pane = state.hits.panes[0].clone();
+    let pane = state.pane_hits()[0].clone();
     assert_eq!(pane.inner_rect.y, 1);
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -524,14 +565,21 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
 
     let mut enter = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
-    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
     assert_eq!(
-        state.copy_mode.as_ref().map(|mode| mode.cursor.row),
+        state.copy.as_ref().map(|mode| mode.cursor.row),
         Some(shepr_term::AbsRow(21))
     );
     assert!(enter.actions.is_empty());
@@ -540,18 +588,18 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         KeyCode::Char('b'),
         KeyModifiers::CONTROL,
     ))]);
-    assert_eq!(state.mode, ClientShellMode::Prefix);
+    assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
     state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
         KeyCode::Esc,
         KeyModifiers::empty(),
     ))]);
-    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
 
     let page = state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_term::key::TerminalKey::new(KeyCode::PageUp, KeyModifiers::empty()),
     )]);
     assert_eq!(
-        state.copy_mode.as_ref().map(|mode| mode.cursor.row),
+        state.copy.as_ref().map(|mode| mode.cursor.row),
         Some(shepr_term::AbsRow(20))
     );
     assert!(matches!(
@@ -574,7 +622,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     ))]);
     assert!(top.actions.is_empty());
     assert_eq!(
-        state.copy_mode.as_ref().map(|mode| mode.cursor.row),
+        state.copy.as_ref().map(|mode| mode.cursor.row),
         Some(shepr_term::AbsRow(0))
     );
     let (_, top_actions) = state
@@ -618,8 +666,8 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     let copy = state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_term::key::TerminalKey::new(KeyCode::Char('y'), KeyModifiers::empty()),
     )]);
-    assert_eq!(state.mode, ClientShellMode::Terminal);
-    assert!(state.copy_mode.is_none());
+    assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
+    assert!(state.copy.is_none());
     assert!(state.mouse_selection.selection.is_none());
     assert_eq!(copy.actions.len(), 2);
     assert!(copy.actions.iter().any(|action| matches!(
@@ -654,7 +702,11 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
         ));
         state.receive_pane_surface_from(
             pane_surface.clone(),
-            state.active_snapshot_generation.unwrap_or(1),
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
         );
         state.compose(106, 20).expect("composed frame");
         state.handle_input_bytes(b"\x02[");
@@ -665,20 +717,26 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
             .selection
             .as_ref()
             .expect("selected range")
-            .ordered_cells();
+            .ordered_rows();
 
         pane_surface.surface_revision = pane_surface
             .surface_revision
             .checked_next()
             .expect("test precondition");
-        pane_surface.panes[0].content_revision += 2;
-        pane_surface.frame.cells[0].symbol = "X".into();
-        state
-            .receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
-        assert_eq!(state.mode, ClientShellMode::Copy);
+        pane_surface.panes[0].content_revision.advance();
+        pane_surface.frame.cells_mut()[0].symbol = "X".into();
+        state.receive_pane_surface_from(
+            pane_surface,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
+        assert_eq!(state.mode.kind(), ClientShellMode::Copy);
         assert!(
             state
-                .copy_mode
+                .copy
                 .as_ref()
                 .expect("test precondition")
                 .selection
@@ -690,7 +748,7 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
                 .selection
                 .as_ref()
                 .expect("retained range")
-                .ordered_cells(),
+                .ordered_rows(),
             range
         );
 
@@ -698,7 +756,10 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
         // selection is requested as its own range.
         let expected = if selection_key == b"V" {
             let width = state.copy_hit().expect("copy hit").inner_rect.width;
-            ((range.0.0, 0), (range.1.0, width.saturating_sub(1)))
+            (
+                shepr_term::Point::new(range.0.row, 0),
+                shepr_term::Point::new(range.1.row, width.saturating_sub(1)),
+            )
         } else {
             range
         };
@@ -707,12 +768,12 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
             action,
             ClientShellAction::Endpoint { request, .. }
                 if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
-                    if (params.anchor.row, params.anchor.col) == expected.0
-                        && (params.cursor.row, params.cursor.col) == expected.1)
+                    if (params.anchor.row, params.anchor.col) == (expected.0.row, expected.0.col)
+                        && (params.cursor.row, params.cursor.col) == (expected.1.row, expected.1.col))
         )));
-        assert_eq!(state.mode, ClientShellMode::Terminal);
+        assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
         assert!(state.mouse_selection.selection.is_none());
-        assert!(state.copy_mode.is_none());
+        assert!(state.copy.is_none());
     }
 }
 
@@ -727,7 +788,14 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     state.handle_input_bytes(b"\x02[");
     let search = state.handle_input_bytes(b"/LIVE\r");
@@ -783,7 +851,11 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
         ));
         state.receive_pane_surface_from(
             pane_surface.clone(),
-            state.active_snapshot_generation.unwrap_or(1),
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
         );
         state.compose(106, 20).expect("composed frame");
         state.handle_input_bytes(b"\x02[");
@@ -793,18 +865,24 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
             .surface_revision
             .checked_next()
             .expect("test precondition");
-        pane_surface.panes[0].content_revision += 2;
+        pane_surface.panes[0].content_revision.advance();
         if screen_switch {
             pane_surface.panes[0].alternate_screen_active = true;
         } else {
             pane_surface.panes[0].inner_rect.width -= 1;
         }
-        state
-            .receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+        state.receive_pane_surface_from(
+            pane_surface,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
         assert!(state.mouse_selection.selection.is_none());
         assert!(
             state
-                .copy_mode
+                .copy
                 .as_ref()
                 .expect("test precondition")
                 .selection
@@ -830,11 +908,18 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
-    let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+    let origin = state.copy.as_ref().expect("copy mode").cursor;
 
     let motion = state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_term::key::TerminalKey::new(KeyCode::Char('w'), KeyModifiers::empty()),
@@ -867,10 +952,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
         .into_parts();
     assert!(repaint);
     assert!(actions.is_empty());
-    assert_eq!(
-        state.copy_mode.as_ref().map(|mode| mode.cursor.col),
-        Some(3)
-    );
+    assert_eq!(state.copy.as_ref().map(|mode| mode.cursor.col), Some(3));
 }
 
 #[test]
@@ -884,11 +966,18 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
-    let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+    let origin = state.copy.as_ref().expect("copy mode").cursor;
     let key = |code| {
         RawInputEvent::Key(shepr_term::key::TerminalKey::new(
             code,
@@ -904,7 +993,7 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
     // `q` waits behind the motion like every key typed in copy mode, so it
     // cannot run ahead of input typed before it, and `x` waits behind `q`.
     let typed = state.handle_raw_events(vec![key(KeyCode::Char('q')), key(KeyCode::Char('x'))]);
-    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
     assert!(typed.requests.is_empty());
 
     // The reply applies, then `q` leaves copy mode and `x`, typed after the
@@ -920,9 +1009,9 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
             },
         }),
     );
-    assert_eq!(state.mode, ClientShellMode::Terminal);
-    assert!(state.copy_mode.is_none());
-    assert!(state.copy_pipeline.keys_is_empty());
+    assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
+    assert!(state.copy.is_none());
+    assert!(state.copy_keys_empty());
     assert!(
         replayed.requests.iter().any(|request| matches!(
             request,
@@ -951,17 +1040,24 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
-    let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+    let origin = state.copy.as_ref().expect("copy mode").cursor;
 
     state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
         KeyCode::Char('?'),
         KeyModifiers::SHIFT,
     ))]);
-    assert!(state.copy_mode.as_ref().is_some_and(|mode| {
+    assert!(state.copy.as_ref().is_some_and(|mode| {
         mode.search
             .as_ref()
             .and_then(|search| search.prompt.as_ref())
@@ -973,7 +1069,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         KeyCode::Esc,
         KeyModifiers::empty(),
     ))]);
-    assert!(state.copy_mode.as_ref().is_none_or(|mode| {
+    assert!(state.copy.as_ref().is_none_or(|mode| {
         mode.search
             .as_ref()
             .is_none_or(|search| search.prompt.is_none())
@@ -996,7 +1092,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     ))]);
     assert_eq!(
         state
-            .copy_mode
+            .copy
             .as_ref()
             .and_then(|mode| mode.search.as_ref())
             .and_then(|search| search.prompt.as_ref())
@@ -1051,7 +1147,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         .into_parts();
     assert!(repaint);
     assert_eq!(
-        state.copy_mode.as_ref().map(|mode| mode.cursor.row),
+        state.copy.as_ref().map(|mode| mode.cursor.row),
         Some(shepr_term::AbsRow(5))
     );
     assert!(actions.iter().any(|action| matches!(
@@ -1089,10 +1185,14 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     }
     state.receive_pane_surface_from(
         scrolled_surface,
-        state.active_snapshot_generation.unwrap_or(1),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
     let frame = state.compose(106, 20).expect("search frame");
-    let hit = state.hits.panes[0].clone();
+    let hit = state.pane_hits()[0].clone();
     let viewport_top = 5u16;
     assert_eq!(
         cell_bg(
@@ -1141,7 +1241,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         );
     }
     assert_eq!(
-        state.copy_mode.as_ref().map(|mode| mode.cursor.row),
+        state.copy.as_ref().map(|mode| mode.cursor.row),
         Some(shepr_term::AbsRow(15))
     );
     assert!(
@@ -1190,8 +1290,8 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         KeyCode::Esc,
         KeyModifiers::empty(),
     ))]);
-    assert_eq!(state.mode, ClientShellMode::Copy);
-    assert!(state.copy_mode.as_ref().is_some_and(|mode| {
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
+    assert!(state.copy.as_ref().is_some_and(|mode| {
         mode.search
             .as_ref()
             .is_none_or(|search| search.query.is_empty())
@@ -1200,7 +1300,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     let exit = state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_term::key::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
     )]);
-    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
     assert!(exit.actions.iter().any(|action| matches!(
         action,
         ClientShellAction::Endpoint { request, .. }
@@ -1210,793 +1310,6 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
                     if params.offset_from_bottom == 0
             )
     )));
-}
-
-#[test]
-fn navigator_workspace_headings_use_the_active_themes_primary_text() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
-    state.open_navigator_overlay();
-    for palette in [
-        Palette::catppuccin(),
-        Palette::catppuccin_latte(),
-        Palette::terminal(),
-    ] {
-        state.config.palette = palette;
-        let frame = state.compose(106, 30).expect("navigator");
-        let (rect, _) = state
-            .hits
-            .navigator_rows
-            .iter()
-            .find(|(_, target)| matches!(target.target, LocationTarget::Workspace(_)))
-            .expect("workspace heading");
-        let position = cell_symbol_position(&frame, *rect, "client-shell");
-        assert_eq!(cell_fg(&frame, position), state.config.palette.text);
-        assert!(cell_is_bold(&frame, position));
-    }
-}
-
-#[test]
-fn navigator_renders_every_terminal_in_workspace_sections() {
-    let mut snapshot = snapshot();
-    snapshot.focused_pane_id = None;
-    snapshot.panes[0].label = Some("agent".into());
-    let mut shell = snapshot.panes[0].clone();
-    shell.pane_id = test_pane_id("w1:p2");
-    shell.label = Some("shell".into());
-    snapshot.panes.push(shell);
-    for label in ["notes", "logs"] {
-        let mut pane = snapshot.panes[0].clone();
-        pane.pane_id = shepr_protocol::PublicPaneId::new(
-            &crate::tests::test_workspace_id("w1"),
-            shepr_protocol::PanePublicNumber::new(snapshot.panes.len() + 1)
-                .expect("nonzero test number"),
-        );
-        pane.label = Some(label.into());
-        snapshot.panes.push(pane);
-    }
-    let mut workspace = snapshot.workspaces[0].clone();
-    workspace.workspace_id = test_workspace_id("w2");
-    workspace.label = "second".into();
-    let mut pane = snapshot.panes[0].clone();
-    pane.pane_id = test_pane_id("w2:p1");
-    snapshot.workspaces.push(workspace);
-    snapshot.panes.push(pane);
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
-    state.open_navigator_overlay();
-    let visible_rows = |state: &mut ClientShellState, height| {
-        let frame = state.compose(106, height).expect("navigator frame");
-        state
-            .hits
-            .navigator_rows
-            .iter()
-            .map(|(rect, _)| {
-                frame.cells[rect.y as usize * frame.width as usize + rect.x as usize..]
-                    .iter()
-                    .take(rect.width as usize)
-                    .map(|cell| cell.symbol.as_str())
-                    .collect::<String>()
-            })
-            .collect::<Vec<_>>()
-    };
-    let visible = visible_rows(&mut state, 30);
-    assert_eq!(visible.len(), 7);
-    for (row, prefix) in visible
-        .iter()
-        .zip([" client", " ├─ ", " ├─ ", " ├─ ", " └─ ", " second", " └─ "])
-    {
-        assert!(
-            row.starts_with(prefix),
-            "{row:?} should start with {prefix:?}"
-        );
-    }
-    for (row, label) in visible.iter().zip([
-        "client-shell",
-        "agent · 1",
-        "shell · 2",
-        "notes · 3",
-        "logs · 4",
-        "second",
-        "agent",
-    ]) {
-        assert!(row.contains(label), "{row:?} should contain {label}");
-        assert!(!row.contains("/repo"));
-        assert!(!row.contains("──"));
-    }
-
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("expected navigator");
-    };
-    navigator.scroll = 2;
-    navigator.selected = Some(Location::pane(
-        state.endpoints.presented().clone(),
-        test_pane_id("w1:p2"),
-    ));
-    let visible = visible_rows(&mut state, 11);
-    assert_eq!(visible.len(), 2);
-    assert!(visible.iter().any(|row| row.contains("shell · 2")));
-    assert!(visible[0].starts_with(" ├─ "));
-    assert!(visible[1].starts_with(" ├─ "));
-
-    // Filtering by the pane's id retains the section and the exact split destination.
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("expected navigator");
-    };
-    navigator.query = "w1:p2".into();
-    navigator.scroll = 0;
-    let visible = visible_rows(&mut state, 30);
-    assert_eq!(visible.len(), 2);
-    assert!(visible[1].starts_with(" └─ "));
-    assert!(visible.iter().any(|row| row.contains("shell · 2")));
-    assert!(visible.iter().all(|row| !row.contains("second")));
-}
-
-#[test]
-fn navigator_search_matches_non_adjacent_words_without_losing_the_pane_target() {
-    let mut projected = snapshot();
-    projected.panes[0].label = Some("alpha beta gamma".into());
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(projected));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
-    state.open_navigator_overlay();
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("navigator");
-    };
-    for (query, matches) in [
-        ("alpha gamma", true),
-        ("  ALP\tGAM  ", true),
-        ("gamma alpha", true),
-        ("beta gamma", true),
-        ("alpha missing", false),
-        ("alphagamma", false),
-    ] {
-        navigator.query = query.into();
-        navigator.selected = None;
-        let rows =
-            render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
-        let target = crate::shell::navigation::aggregate_navigation::selected_navigator_target(
-            &rows, navigator,
-        );
-        assert_eq!(
-            target,
-            matches.then(|| {
-                Location::pane(state.endpoints.presented().clone(), test_pane_id("w1:p1"))
-            }),
-            "query={query:?}"
-        );
-    }
-}
-
-#[test]
-fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actionable() {
-    let mut projected = snapshot();
-    projected.panes[0].pane_id = test_pane_id("w1:p1");
-    projected.focused_pane_id = Some(test_pane_id("w1:p1"));
-    let mut second = projected.panes[0].clone();
-    second.pane_id = test_pane_id("w1:p2");
-    second.foreground_cwd = Some("/repo/subproject".into());
-    projected.panes.push(second);
-    let first_agent = ClientShellAgent {
-        pane_id: test_pane_id("w1:p1"),
-        agent: Some(shepr_config::ConfigAgent::Pi),
-        terminal_title: None,
-        terminal_title_stripped: None,
-        agent_status: AgentStatus::Working,
-        state_change_seq: 1,
-    };
-    let mut second_agent = first_agent.clone();
-    second_agent.pane_id = "w1:p2".parse().expect("test precondition");
-    second_agent.agent = Some(shepr_config::ConfigAgent::Claude);
-    second_agent.terminal_title_stripped = Some("checking navigation".into());
-    second_agent.agent_status = AgentStatus::Blocked;
-    projected.agents = vec![first_agent, second_agent];
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(projected));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
-    state.open_navigator_overlay();
-    for (query, filter, expected) in [
-        ("", None, vec!["w1:p1", "w1:p2"]),
-        ("client-shell", None, vec!["w1:p1", "w1:p2"]),
-        ("main", None, vec!["w1:p1", "w1:p2"]),
-        ("claude", None, vec!["w1:p2"]),
-        ("checking navigation", None, vec!["w1:p2"]),
-        ("/repo/subproject", None, vec!["w1:p2"]),
-        (
-            "client-shell",
-            Some(ClientNavigatorFilter::Blocked),
-            vec!["w1:p2"],
-        ),
-        ("", Some(ClientNavigatorFilter::Working), vec!["w1:p1"]),
-        ("no such agent", None, vec![]),
-    ] {
-        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-            panic!("navigator");
-        };
-        navigator.query = query.into();
-        navigator.filter = filter;
-        navigator.selected = None;
-        let rows =
-            render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
-        let pane_ids = rows
-            .iter()
-            .filter_map(|row| row.target.pane_id().map(|pane_id| pane_id.to_string()))
-            .collect::<Vec<_>>();
-        assert_eq!(pane_ids, expected, "query={query:?} filter={filter:?}");
-        assert_eq!(
-            rows.len(),
-            if expected.is_empty() {
-                0
-            } else {
-                expected.len() + 1
-            }
-        );
-        if !expected.is_empty() {
-            let selected =
-                crate::shell::navigation::aggregate_navigation::navigator_selected_index(
-                    &rows, navigator,
-                )
-                .expect("search destination");
-            assert!(rows[selected].target.pane_id().is_some());
-        }
-    }
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("navigator");
-    };
-    navigator.query.clear();
-    let frame = state.compose(160, 48).expect("navigator");
-    assert_eq!(state.hits.navigator_popup.width, 116);
-    let pane_rows = state
-        .hits
-        .navigator_rows
-        .iter()
-        .filter(|(_, target)| target.pane_id().is_some())
-        .collect::<Vec<_>>();
-    assert_eq!(pane_rows.len(), 2);
-    for ((rect, _), (name, kind, status)) in pane_rows.iter().zip([
-        ("pi · 1", "pi", "working"),
-        ("checking navigation", "claude", "blocked"),
-    ]) {
-        cell_symbol_position(&frame, *rect, name);
-        cell_symbol_position(&frame, *rect, kind);
-        cell_symbol_position(&frame, *rect, status);
-    }
-    let rect = pane_rows[1].0;
-    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: rect.right() - 1,
-        row: rect.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    // An explicit pick goes through the runtime, which knows whether the
-    // endpoint is shown.
-    assert!(matches!(
-        outcome.actions.as_slice(),
-        [ClientShellAction::ActivateEndpoint {
-            endpoint_id: ClientEndpointId::Local,
-            target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
-        }] if pane_id == &crate::tests::test_pane_id("w1:p2")
-    ));
-}
-
-#[test]
-fn navigator_distinguishes_unnamed_terminals_in_one_workspace() {
-    let mut projected = snapshot();
-    for number in [2, 3] {
-        let mut pane = projected.panes[0].clone();
-        pane.pane_id = shepr_protocol::PublicPaneId::new(
-            &crate::tests::test_workspace_id("w1"),
-            shepr_protocol::PanePublicNumber::new(number).expect("nonzero test number"),
-        );
-        projected.panes.push(pane);
-    }
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(projected));
-    state.open_navigator_overlay();
-    let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
-        panic!("navigator");
-    };
-    let rows =
-        render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
-    let labels = rows
-        .iter()
-        .filter(|row| row.target.pane_id().is_some())
-        .map(|row| row.label.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(labels, ["terminal · 1", "terminal · 2", "terminal · 3"]);
-}
-
-#[test]
-fn navigator_keeps_empty_workspaces_searchable_without_status_filters() {
-    let mut projected = snapshot();
-    projected.panes.clear();
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(projected));
-    state.open_navigator_overlay();
-    for (query, filter, expected) in [
-        ("", None, true),
-        ("client-shell", None, true),
-        ("main", None, true),
-        ("missing", None, false),
-        ("main", Some(ClientNavigatorFilter::Idle), false),
-        ("", Some(ClientNavigatorFilter::Working), false),
-    ] {
-        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-            panic!("navigator");
-        };
-        navigator.query = query.into();
-        navigator.filter = filter;
-        let rows =
-            render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
-        assert_eq!(
-            rows.len(),
-            usize::from(expected),
-            "query={query:?}, filter={filter:?}"
-        );
-        let target = crate::shell::navigation::aggregate_navigation::selected_navigator_target(
-            &rows, navigator,
-        );
-        assert_eq!(
-            target,
-            expected.then(|| {
-                Location::workspace(ClientEndpointId::Local, shepr_test_fixtures::id("w1"))
-            })
-        );
-    }
-}
-
-#[test]
-fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
-    let mut projected = snapshot();
-    projected.panes[0].label = Some("needle-first".into());
-    let mut sibling = projected.panes[0].clone();
-    sibling.pane_id = test_pane_id("w1:p2");
-    sibling.label = Some("other".into());
-    projected.panes.push(sibling);
-    let mut empty = projected.workspaces[0].clone();
-    empty.workspace_id = test_workspace_id("w8");
-    empty.label = "empty".into();
-    projected.workspaces.push(empty);
-    let mut last = projected.workspaces[0].clone();
-    last.workspace_id = test_workspace_id("w9");
-    last.label = "last".into();
-    for (id, label) in [("w9:p1", "needle-last"), ("w9:p2", "other-last")] {
-        let mut pane = projected.panes[0].clone();
-        pane.pane_id = test_pane_id(id);
-        pane.label = Some(label.into());
-        projected.panes.push(pane);
-    }
-    projected.workspaces.push(last);
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(projected));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
-    state.open_navigator_overlay();
-    let press = |state: &mut ClientShellState, code| {
-        let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
-            shepr_term::key::TerminalKey::new(code, KeyModifiers::empty()),
-        )]);
-        assert!(outcome.actions.is_empty());
-    };
-    let selected = |state: &ClientShellState| {
-        let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
-            panic!("navigator");
-        };
-        navigator.selected.clone()
-    };
-    let target = |id: &str| Some(Location::pane(ClientEndpointId::Local, test_pane_id(id)));
-    press(&mut state, KeyCode::Left);
-    assert_eq!(selected(&state), target("w1:p1"));
-    press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("w9:p1"));
-    press(&mut state, KeyCode::Down);
-    assert_eq!(selected(&state), target("w9:p2"));
-    press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("w9:p2"));
-    press(&mut state, KeyCode::Left);
-    assert_eq!(selected(&state), target("w1:p1"));
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("navigator");
-    };
-    navigator.query = "needle".into();
-    press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("w9:p1"));
-    press(&mut state, KeyCode::Left);
-    assert_eq!(selected(&state), target("w1:p1"));
-    press(&mut state, KeyCode::Char('/'));
-    press(&mut state, KeyCode::Left);
-    press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), target("w1:p1"));
-    press(&mut state, KeyCode::Left);
-    press(&mut state, KeyCode::Char('X'));
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("navigator");
-    };
-    assert_eq!(navigator.query.as_str(), "needlXe");
-    navigator.search_focused = false;
-    navigator.selected = None;
-    press(&mut state, KeyCode::Left);
-    press(&mut state, KeyCode::Right);
-    assert_eq!(selected(&state), None);
-}
-
-#[test]
-fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
-    state.open_navigator_overlay();
-    state.compose(106, 24).expect("small navigator");
-    assert!(state.hits.navigator_scrollbar.is_empty());
-
-    let mut projected = snapshot();
-    for index in 2..=60 {
-        let mut pane = projected.panes[0].clone();
-        pane.pane_id = shepr_protocol::PublicPaneId::new(
-            &crate::tests::test_workspace_id("w1"),
-            shepr_protocol::PanePublicNumber::new(index).expect("nonzero test number"),
-        );
-        pane.label = Some(format!("agent {index}"));
-        projected.panes.push(pane);
-    }
-    state.set_snapshot(Box::new(projected));
-    let frame = state.compose(106, 24).expect("overflowing navigator");
-    let track = state.hits.navigator_scrollbar;
-    let metrics = state.hits.navigator_scroll_metrics.expect("scroll metrics");
-    assert!(!track.is_empty());
-    assert_eq!(metrics.start(), 0);
-    assert!(track.y > state.hits.navigator_search.y);
-    assert!(track.bottom() < state.hits.navigator_popup.bottom() - 3);
-    assert!(
-        state
-            .hits
-            .navigator_rows
-            .iter()
-            .all(|(rect, _)| rect.right() == track.x)
-    );
-    assert_eq!(
-        cell_fg(&frame, (track.x, track.y)),
-        state.config.palette.overlay1
-    );
-    assert_eq!(
-        cell_fg(&frame, (track.x, track.bottom() - 1)),
-        state.config.palette.overlay0
-    );
-    let mouse = |state: &mut ClientShellState, kind, row| {
-        let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
-            kind,
-            column: track.x,
-            row,
-            modifiers: KeyModifiers::empty(),
-        })]);
-        assert!(outcome.actions.is_empty());
-        assert!(matches!(
-            state.overlay,
-            Some(ClientShellOverlay::Navigator(_))
-        ));
-    };
-    mouse(
-        &mut state,
-        MouseEventKind::Down(MouseButton::Left),
-        track.bottom() - 1,
-    );
-    state.compose(106, 24).expect("track jump");
-    assert_eq!(
-        state
-            .hits
-            .navigator_scroll_metrics
-            .expect("metrics")
-            .start(),
-        metrics.max_start()
-    );
-    let last_pane = shepr_protocol::PublicPaneId::new(
-        &crate::tests::test_workspace_id("w1"),
-        shepr_protocol::PanePublicNumber::new(60).expect("nonzero literal"),
-    );
-    assert!(
-        state
-            .hits
-            .navigator_rows
-            .iter()
-            .any(|(_, target)| target.pane_id() == Some(last_pane))
-    );
-    mouse(&mut state, MouseEventKind::Down(MouseButton::Left), track.y);
-    state.compose(106, 24).expect("jump back to top");
-    assert_eq!(
-        state
-            .hits
-            .navigator_scroll_metrics
-            .expect("metrics")
-            .start(),
-        0
-    );
-    let thumb = shepr_term::scroll::scrollbar_thumb(
-        metrics,
-        crate::shell::navigation::scroll::scroll_track(track),
-    )
-    .expect("thumb");
-    let grab = thumb.len - 1;
-    mouse(
-        &mut state,
-        MouseEventKind::Down(MouseButton::Left),
-        thumb.top + grab,
-    );
-    assert!(
-        matches!(state.chrome_drag, Some(ClientChromeDrag::NavigatorScrollbar { grab_row_offset }) if grab_row_offset == grab)
-    );
-    mouse(
-        &mut state,
-        MouseEventKind::Drag(MouseButton::Left),
-        thumb.top + grab,
-    );
-    state.compose(106, 24).expect("grab does not move viewport");
-    assert_eq!(
-        state
-            .hits
-            .navigator_scroll_metrics
-            .expect("metrics")
-            .start(),
-        0
-    );
-    mouse(
-        &mut state,
-        MouseEventKind::Drag(MouseButton::Left),
-        track.bottom() + 5,
-    );
-    state.compose(106, 24).expect("drag to bottom");
-    assert_eq!(
-        state
-            .hits
-            .navigator_scroll_metrics
-            .expect("metrics")
-            .start(),
-        metrics.max_start()
-    );
-    mouse(
-        &mut state,
-        MouseEventKind::Up(MouseButton::Left),
-        track.bottom() + 5,
-    );
-    assert!(state.chrome_drag.is_none());
-    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
-        KeyCode::Up,
-        KeyModifiers::empty(),
-    ))]);
-    state.compose(106, 24).expect("keyboard resumes after drag");
-    assert_eq!(
-        state
-            .hits
-            .navigator_scroll_metrics
-            .expect("metrics")
-            .start(),
-        metrics.max_start() - 1
-    );
-
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-        panic!("navigator");
-    };
-    // The last pane's id is the only text that matches it alone.
-    navigator.query = last_pane.to_string().as_str().into();
-    navigator.selected = None;
-    state.compose(106, 24).expect("filtered navigator");
-    assert!(state.hits.navigator_scrollbar.is_empty());
-    assert_eq!(state.hits.navigator_rows.len(), 2);
-    state.compose(106, 90).expect("tall filtered navigator");
-    assert!(state.hits.navigator_scrollbar.is_empty());
-}
-
-#[test]
-fn navigator_narrow_layout_and_long_search_stay_inside_the_popup() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
-    state.open_navigator_overlay();
-    for (width, height) in [(24, 12), (50, 24), (106, 30)] {
-        let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
-            panic!("navigator");
-        };
-        navigator.search_focused = true;
-        navigator.query = "界".repeat(100).as_str().into();
-        let frame = state.compose(width, height).expect("navigator frame");
-        let popup = state.hits.navigator_popup;
-        let cursor = frame.cursor.as_ref().expect("search cursor");
-        assert!(crate::shell::input::hit_test::contains(
-            popup,
-            (cursor.x, cursor.y)
-        ));
-        assert!(state.hits.navigator_rows.is_empty());
-        assert!(popup.right() <= width && popup.bottom() <= height);
-    }
-}
-
-fn navigator_scale_snapshot(workspaces: usize, panes: usize) -> ClientShellSnapshot {
-    let mut result = snapshot();
-    let workspace_template = result.workspaces[0].clone();
-    let pane_template = result.panes[0].clone();
-    result.workspaces.clear();
-    result.panes.clear();
-    for w in 0..workspaces {
-        let mut workspace = workspace_template.clone();
-        workspace.workspace_id =
-            shepr_protocol::WorkspaceId::from_number(w + 1).expect("one-based workspace number");
-        workspace.label = format!("workspace {w}");
-        for p in 0..panes {
-            let mut pane = pane_template.clone();
-            pane.pane_id = shepr_protocol::PublicPaneId::new(
-                &workspace.workspace_id,
-                shepr_protocol::PanePublicNumber::new(p + 1).expect("nonzero test number"),
-            );
-            pane.label = Some(format!("terminal {p}"));
-            result.panes.push(pane);
-        }
-        result.workspaces.push(workspace);
-    }
-    result.focused_workspace_id = Some(result.workspaces[0].workspace_id);
-    result.focused_pane_id = Some(result.panes[0].pane_id);
-    result
-}
-
-#[test]
-fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
-    let mut snapshot = navigator_scale_snapshot(2, 2);
-    snapshot.panes.reverse();
-    let expected = snapshot
-        .workspaces
-        .iter()
-        .flat_map(|workspace| {
-            snapshot
-                .panes
-                .iter()
-                .filter(|pane| pane.pane_id.workspace_id() == &workspace.workspace_id)
-                .map(|pane| pane.pane_id)
-        })
-        .collect::<Vec<_>>();
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    let remote = shepr_config::MachineConfig {
-        label: shepr_config::MachineLabel::parse("Remote").expect("test precondition"),
-        ssh: shepr_config::SshTarget::parse("dev@example.invalid").expect("test precondition"),
-    };
-    let remote_id = ClientEndpointId::Ssh(remote.label.clone());
-    state.set_machines(&[remote]);
-    state.connect_endpoint_with_snapshot(&remote_id, 1, Box::new(snapshot.clone()));
-    state.set_snapshot(Box::new(snapshot));
-    state.open_navigator_overlay();
-    let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
-        panic!("navigator")
-    };
-    let rows =
-        render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
-    let actual = rows
-        .iter()
-        .filter_map(|row| {
-            row.target.pane_id().map(|pane_id| {
-                assert!(
-                    row.target.endpoint == *state.endpoints.presented()
-                        || row.target.endpoint == remote_id
-                );
-                (row.target.endpoint.clone(), pane_id)
-            })
-        })
-        .collect::<Vec<_>>();
-    let expected = [state.endpoints.presented().clone(), remote_id]
-        .into_iter()
-        .flat_map(|endpoint| {
-            expected
-                .iter()
-                .copied()
-                .map(move |pane| (endpoint.clone(), pane))
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(actual, expected);
-}
-
-#[test]
-fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
-    let mut open = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindAction::OpenNavigator,
-        &mut open,
-    );
-    let navigator = state.compose(106, 30).expect("navigator overlay");
-    let navigator_text = navigator
-        .cells
-        .chunks(navigator.width as usize)
-        .map(|row| {
-            row.iter()
-                .map(|cell| cell.symbol.as_str())
-                .collect::<String>()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(navigator_text.contains("client-shell"));
-    assert!(navigator_text.contains("terminal"));
-    assert!(!navigator_text.contains("pane 1"));
-
-    let search = state.hits.navigator_search;
-    let focus_search =
-        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: search.x,
-            row: search.y,
-            modifiers: KeyModifiers::empty(),
-        })]);
-    assert!(focus_search.repaint);
-    assert!(matches!(
-        state.overlay,
-        Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
-            search_focused: true,
-            ..
-        }))
-    ));
-    assert!(state.handle_input_bytes(b"client").actions.is_empty());
-    let filtered = state.compose(106, 30).expect("filtered navigator");
-    assert!(
-        filtered
-            .cursor
-            .as_ref()
-            .is_some_and(|cursor| cursor.visible)
-    );
-
-    state.handle_input_bytes(b"\x1b");
-    state.handle_input_bytes(b"a");
-    state.compose(106, 30).expect("navigator rows");
-    let pane_target = {
-        let ClientShellOverlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator")
-        else {
-            panic!("expected navigator");
-        };
-        render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator)
-            .iter()
-            .find(|row| row.target.pane_id().is_some())
-            .map(|row| row.target.clone())
-            .expect("pane row")
-    };
-    let pane_rect = state
-        .hits
-        .navigator_rows
-        .iter()
-        .find(|(_, target)| *target == pane_target)
-        .map(|(rect, _)| *rect)
-        .expect("visible pane row");
-    let select =
-        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-            kind: MouseEventKind::Moved,
-            column: pane_rect.x + 6,
-            row: pane_rect.y,
-            modifiers: KeyModifiers::empty(),
-        })]);
-    assert!(select.repaint);
-    let accept =
-        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: pane_rect.x + 6,
-            row: pane_rect.y,
-            modifiers: KeyModifiers::empty(),
-        })]);
-    // The pick goes through the runtime, which focuses an endpoint that owns
-    // the presentation through the endpoint API.
-    let [
-        ClientShellAction::ActivateEndpoint {
-            endpoint_id: ClientEndpointId::Local,
-            target: Some(target),
-        },
-    ] = &accept.actions[..]
-    else {
-        panic!("navigator pane click should be an explicit local pick");
-    };
-    let focus = state.focus_endpoint_target(*target);
-    let [ClientShellAction::Endpoint { request, .. }] = &focus[..] else {
-        panic!("navigator pane click should use endpoint API");
-    };
-    assert!(matches!(
-        &request.command,
-        EndpointCommand::PaneFocus(target) if target.pane_id == crate::tests::test_pane_id("w1:p1")
-    ));
-    assert!(state.overlay.is_none());
 }
 
 #[test]
@@ -2011,7 +1324,14 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
@@ -2022,13 +1342,13 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         row: 0,
         modifiers: KeyModifiers::empty(),
     })]);
-    assert_eq!(state.mode, ClientShellMode::Copy);
-    assert!(state.copy_mode.is_some());
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
+    assert!(state.copy.is_some());
 
     state.handle_input_bytes(b"v");
     assert!(
         state
-            .copy_mode
+            .copy
             .as_ref()
             .is_some_and(|copy_mode| copy_mode.selection.is_some())
     );
@@ -2043,10 +1363,10 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         right_click_passthrough: false,
     });
     state.set_snapshot(Box::new(unfocused.clone()));
-    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
     assert!(
         state
-            .copy_mode
+            .copy
             .as_ref()
             .is_some_and(|copy_mode| copy_mode.selection.is_some())
     );
@@ -2060,12 +1380,12 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         prefix_modifiers,
     ))]);
     state.set_snapshot(Box::new(unfocused.clone()));
-    assert_eq!(state.mode, ClientShellMode::Prefix);
+    assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
     state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
         KeyCode::Esc,
         KeyModifiers::empty(),
     ))]);
-    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
 
     let mut other_selection = shepr_term::selection::Selection::range(
         test_pane_id("w1:p2"),
@@ -2087,14 +1407,25 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     other_surface.panes[0].pane_id = test_pane_id("w1:p2");
     state.receive_pane_surface_from(
         other_surface.clone(),
-        state.active_snapshot_generation.unwrap_or(1),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
     other_surface.surface_revision = other_surface
         .surface_revision
         .checked_next()
         .expect("test precondition");
-    other_surface.panes[0].content_revision = 1;
-    state.receive_pane_surface_from(other_surface, state.active_snapshot_generation.unwrap_or(1));
+    other_surface.panes[0].content_revision = shepr_test_fixtures::counter_at(1);
+    state.receive_pane_surface_from(
+        other_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     assert!(state.mouse_selection.selection.is_some());
     let copy = state.handle_raw_events(vec![RawInputEvent::Key(
         shepr_term::key::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
@@ -2107,8 +1438,8 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     );
 
     state.set_snapshot(Box::new(snapshot()));
-    assert_eq!(state.mode, ClientShellMode::Copy);
-    assert!(state.copy_mode.is_some());
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
+    assert!(state.copy.is_some());
     assert!(
         state
             .mouse_selection
@@ -2125,12 +1456,12 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p1"))
     );
 
-    state.mode = ClientShellMode::Navigate;
+    state.mode.enter_navigate(None);
     state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
         KeyCode::Esc,
         KeyModifiers::empty(),
     ))]);
-    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
     assert!(
         state
             .mouse_selection
@@ -2138,12 +1469,12 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .as_ref()
             .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p1"))
     );
-    state.mode = ClientShellMode::Resize;
+    state.mode.set(ClientShellMode::Resize);
     state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
         KeyCode::Esc,
         KeyModifiers::empty(),
     ))]);
-    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
     assert!(
         state
             .mouse_selection
@@ -2170,11 +1501,18 @@ fn clicking_the_pane_scrollbar_preserves_copy_mode_for_its_focused_pane() {
         width: 1,
         height: 2,
     });
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
-    let track = state.hits.panes[0]
+    let track = state.pane_hits()[0]
         .scrollbar_rect
         .expect("pane scrollbar hit");
 
@@ -2185,8 +1523,8 @@ fn clicking_the_pane_scrollbar_preserves_copy_mode_for_its_focused_pane() {
         modifiers: KeyModifiers::empty(),
     })]);
 
-    assert_eq!(state.mode, ClientShellMode::Copy);
-    assert!(state.copy_mode.is_some());
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
+    assert!(state.copy.is_some());
 }
 
 #[test]
@@ -2195,7 +1533,14 @@ fn retained_selection_copy_suppresses_key_repeats() {
     config.ui.copy_on_select = false;
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     let mut selection = shepr_term::selection::Selection::range(
         test_pane_id("w1:p1"),
         shepr_term::Point::new(shepr_term::AbsRow(0), 0),
@@ -2235,11 +1580,18 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
-    let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+    let origin = state.copy.as_ref().expect("copy mode").cursor;
 
     let first = state.handle_input_bytes(b"w");
     let second = state.handle_input_bytes(b"w");
@@ -2285,11 +1637,18 @@ fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
-    let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+    let origin = state.copy.as_ref().expect("copy mode").cursor;
     let motion = state.handle_input_bytes(b"w");
     state.handle_input_bytes(b"l");
     let shepr_term::key::KeyChord {
@@ -2301,11 +1660,11 @@ fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
         prefix_modifiers,
     ))]);
     // The prefix waits behind the motion and the key typed before it.
-    assert_eq!(state.mode, ClientShellMode::Copy);
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
 
     let detach = state.handle_input_bytes(b"q");
     assert!(!detach.detach);
-    assert_eq!(state.copy_pipeline.keys_len(), 3);
+    assert_eq!(state.copy_keys_len(), 3);
 
     let motion_id = match &motion.actions[0] {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
@@ -2321,7 +1680,7 @@ fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
     );
     // Replay runs `l`, then the prefix, then `q` as the prefix's detach.
     assert!(replayed.detach);
-    assert!(state.copy_pipeline.keys_is_empty());
+    assert!(state.copy_keys_empty());
 }
 
 #[test]
@@ -2340,12 +1699,18 @@ fn copy_mode_exit_keys_act_after_earlier_queued_input() {
             2,
             shepr_term::AbsRow(0),
         ));
-        state
-            .receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+        state.receive_pane_surface_from(
+            pane_surface,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
         assert!(state.enter_copy_mode(&mut enter));
-        let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+        let origin = state.copy.as_ref().expect("copy mode").cursor;
         let motion = state.handle_input_bytes(b"w");
         let motion_id = match &motion.actions[0] {
             ClientShellAction::Endpoint { request, .. } => request.id.clone(),
@@ -2356,9 +1721,9 @@ fn copy_mode_exit_keys_act_after_earlier_queued_input() {
         state.handle_raw_events(vec![RawInputEvent::Key(key)]);
 
         // The exit key queues behind `l` and the motion it follows.
-        assert_eq!(state.mode, ClientShellMode::Copy);
-        assert!(state.copy_pipeline.in_flight());
-        assert_eq!(state.copy_pipeline.keys_len(), 2);
+        assert_eq!(state.mode.kind(), ClientShellMode::Copy);
+        assert!(state.copy_in_flight());
+        assert_eq!(state.copy_keys_len(), 2);
 
         state.handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
@@ -2369,10 +1734,10 @@ fn copy_mode_exit_keys_act_after_earlier_queued_input() {
             }),
         );
 
-        assert_eq!(state.mode, ClientShellMode::Terminal);
-        assert!(state.copy_mode.is_none());
-        assert!(!state.copy_pipeline.in_flight());
-        assert!(state.copy_pipeline.keys_is_empty());
+        assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
+        assert!(state.copy.is_none());
+        assert!(!state.copy_in_flight());
+        assert!(state.copy_keys_empty());
     }
 }
 
@@ -2389,23 +1754,29 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
             2,
             shepr_term::AbsRow(0),
         ));
-        state
-            .receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+        state.receive_pane_surface_from(
+            pane_surface,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
         assert!(state.enter_copy_mode(&mut enter));
-        let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+        let origin = state.copy.as_ref().expect("copy mode").cursor;
         let motion = state.handle_input_bytes(b"w");
         let motion_id = match &motion.actions[0] {
             ClientShellAction::Endpoint { request, .. } => request.id.clone(),
             _ => unreachable!(),
         };
-        for _ in 0..crate::limits::MAX_COPY_INPUT_QUEUE {
+        for _ in 0..crate::shell::input::MAX_COPY_INPUT_QUEUE {
             state.handle_input_bytes(b"j");
         }
         assert_eq!(
-            state.copy_pipeline.keys_len(),
-            crate::limits::MAX_COPY_INPUT_QUEUE
+            state.copy_keys_len(),
+            crate::shell::input::MAX_COPY_INPUT_QUEUE
         );
 
         let key = if exit_with_escape {
@@ -2420,15 +1791,15 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
         state.handle_raw_events(vec![RawInputEvent::Key(key)]);
 
         // The request that stopped answering and the keys behind it are given up.
-        assert!(!state.copy_pipeline.in_flight());
-        assert!(state.copy_pipeline.keys_is_empty());
+        assert!(!state.copy_in_flight());
+        assert!(state.copy_keys_empty());
         if exit_with_escape {
-            assert_eq!(state.mode, ClientShellMode::Terminal);
-            assert!(state.copy_mode.is_none());
+            assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
+            assert!(state.copy.is_none());
         } else {
-            assert_eq!(state.mode, ClientShellMode::Prefix);
+            assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
         }
-        let cursor_before = state.copy_mode.as_ref().map(|copy_mode| copy_mode.cursor);
+        let cursor_before = state.copy.as_ref().map(|copy_mode| copy_mode.cursor);
 
         let late = state.handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
@@ -2444,10 +1815,10 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
         assert!(late.actions.is_empty());
         assert!(late.requests.is_empty());
         assert_eq!(
-            state.copy_mode.as_ref().map(|copy_mode| copy_mode.cursor),
+            state.copy.as_ref().map(|copy_mode| copy_mode.cursor),
             cursor_before
         );
-        assert!(state.copy_pipeline.keys_is_empty());
+        assert!(state.copy_keys_empty());
     }
 }
 
@@ -2462,11 +1833,18 @@ fn failed_copy_operation_replays_keys_while_the_copy_pane_still_owns_input() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
-    let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+    let origin = state.copy.as_ref().expect("copy mode").cursor;
 
     let motion = state.handle_input_bytes(b"w");
     state.handle_input_bytes(b"l");
@@ -2481,13 +1859,10 @@ fn failed_copy_operation_replays_keys_while_the_copy_pane_still_owns_input() {
     );
 
     assert_eq!(
-        state
-            .copy_mode
-            .as_ref()
-            .map(|copy_mode| copy_mode.cursor.col),
+        state.copy.as_ref().map(|copy_mode| copy_mode.cursor.col),
         Some(origin.col.saturating_add(1))
     );
-    assert!(state.copy_pipeline.keys_is_empty());
+    assert!(state.copy_keys_empty());
 }
 
 #[test]
@@ -2501,19 +1876,26 @@ fn deferred_copy_input_is_bounded() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
     state.handle_input_bytes(b"w");
 
-    for _ in 0..crate::limits::MAX_COPY_INPUT_QUEUE + 8 {
+    for _ in 0..crate::shell::input::MAX_COPY_INPUT_QUEUE + 8 {
         state.handle_input_bytes(b"j");
     }
 
     assert_eq!(
-        state.copy_pipeline.keys_len(),
-        crate::limits::MAX_COPY_INPUT_QUEUE
+        state.copy_keys_len(),
+        crate::shell::input::MAX_COPY_INPUT_QUEUE
     );
     assert!(state.endpoint_error.message().is_some());
 }
@@ -2535,7 +1917,11 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                 ));
                 state.receive_pane_surface_from(
                     pane_surface,
-                    state.active_snapshot_generation.unwrap_or(1),
+                    state
+                        .endpoints
+                        .active
+                        .generation()
+                        .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
                 );
                 state.compose(106, 20).expect("composed frame");
                 let mut enter = ClientShellInput::default();
@@ -2548,7 +1934,7 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                 let buffered = state.handle_input_bytes(queued);
                 assert!(buffered.actions.is_empty());
                 assert!(buffered.requests.is_empty());
-                assert!(!state.copy_pipeline.keys_is_empty());
+                assert!(!state.copy_keys_empty());
 
                 assert_eq!(
                     if unsent {
@@ -2560,15 +1946,15 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                 );
 
                 assert!(state.ledger.is_empty());
-                assert!(!state.copy_pipeline.in_flight());
-                assert!(state.copy_pipeline.ops_is_empty());
-                assert!(state.copy_pipeline.keys_is_empty());
+                assert!(!state.copy_in_flight());
+                assert!(state.copy_ops_empty());
+                assert!(state.copy_keys_empty());
                 assert!(state.notices.visible().is_none());
                 assert!(state.scroll_lanes.is_idle());
-                assert_eq!(state.mode, ClientShellMode::Copy);
+                assert_eq!(state.mode.kind(), ClientShellMode::Copy);
                 assert!(
                     !state
-                        .copy_mode
+                        .copy
                         .as_ref()
                         .expect("copy mode")
                         .search
@@ -2581,7 +1967,7 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                     next.actions.as_slice(),
                     [ClientShellAction::Endpoint { .. }]
                 ));
-                assert!(state.copy_pipeline.in_flight());
+                assert!(state.copy_in_flight());
                 assert_eq!(state.ledger.len(), 1);
             }
         }
@@ -2599,7 +1985,14 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
@@ -2610,7 +2003,7 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
     };
     let request_id = request.id.clone();
     assert!(state.handle_input_bytes(b"w").actions.is_empty());
-    assert!(!state.copy_pipeline.keys_is_empty());
+    assert!(!state.copy_keys_empty());
 
     let outcome = state.answer_request(
         &crate::tests::test_boot_id("replacement-boot"),
@@ -2623,9 +2016,9 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
 
     assert!(outcome.repaint);
     assert!(state.ledger.is_empty());
-    assert!(!state.copy_pipeline.in_flight());
-    assert!(state.copy_pipeline.ops_is_empty());
-    assert!(state.copy_pipeline.keys_is_empty());
+    assert!(!state.copy_in_flight());
+    assert!(state.copy_ops_empty());
+    assert!(state.copy_keys_empty());
     assert!(state.notices.visible().is_none());
 }
 
@@ -2640,7 +2033,14 @@ fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
@@ -2651,11 +2051,11 @@ fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
     let old_id = request.id.clone();
     // An exit key only acts ahead of the old request once the queue behind it
     // is full; that abandons the old session with its request still pending.
-    for _ in 0..crate::limits::MAX_COPY_INPUT_QUEUE {
+    for _ in 0..crate::shell::input::MAX_COPY_INPUT_QUEUE {
         state.handle_input_bytes(b"j");
     }
     state.handle_input_bytes(b"q");
-    assert!(state.copy_mode.is_none());
+    assert!(state.copy.is_none());
     assert!(state.enter_copy_mode(&mut enter));
     let current = state.handle_input_bytes(b"w");
     let [ClientShellAction::Endpoint { request, .. }] = &current.actions[..] else {
@@ -2666,10 +2066,9 @@ fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
 
     state.drop_request(&old_id, DropReason::Unsent);
 
-    assert!(state.copy_pipeline.is_awaiting(&current_id));
-    assert!(state.copy_pipeline.in_flight());
-    assert_eq!(state.copy_pipeline.keys_len(), 1);
-    assert!(state.ledger.contains(current_id.as_str()));
+    assert!(state.copy_in_flight());
+    assert_eq!(state.copy_keys_len(), 1);
+    assert!(state.ledger.contains(&current_id));
 }
 
 #[test]
@@ -2683,7 +2082,14 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut enter));
@@ -2721,7 +2127,7 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
         request,
         ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { .. })
     )));
-    assert!(state.copy_pipeline.keys_is_empty());
+    assert!(state.copy_keys_empty());
 }
 
 #[test]
@@ -2735,12 +2141,19 @@ fn reentering_copy_mode_on_the_same_pane_is_a_no_op() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut first = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut first));
     {
-        let copy_mode = state.copy_mode.as_mut().expect("copy mode");
+        let copy_mode = state.copy.as_mut().expect("copy mode");
         copy_mode.scroll = copy_mode.scroll.with_offset(10);
     }
     let mut reenter = ClientShellInput::default();
@@ -2748,7 +2161,7 @@ fn reentering_copy_mode_on_the_same_pane_is_a_no_op() {
     assert!(reenter.actions.is_empty());
     assert_eq!(
         state
-            .copy_mode
+            .copy
             .as_ref()
             .map(|copy_mode| copy_mode.entry_offset_from_bottom),
         Some(0)
@@ -2766,12 +2179,19 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         2,
         shepr_term::AbsRow(0),
     ));
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     state.handle_input_bytes(b"v");
-    let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
+    let origin = state.copy.as_ref().expect("copy mode").cursor;
     let motion = state.handle_input_bytes(b"w");
     let queued_copy = state.handle_input_bytes(b"y");
     assert!(queued_copy.actions.is_empty());
@@ -2793,7 +2213,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
             }),
         )
         .into_parts();
-    assert_eq!(state.mode, ClientShellMode::Terminal);
+    assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
     assert!(actions.iter().any(|action| matches!(
         action,
         ClientShellAction::Endpoint { request, .. }
@@ -2821,12 +2241,16 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     ));
     state.receive_pane_surface_from(
         pane_surface.clone(),
-        state.active_snapshot_generation.unwrap_or(1),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
-    let copy_mode = state.copy_mode.as_mut().expect("copy mode");
+    let copy_mode = state.copy.as_mut().expect("copy mode");
     let search = copy_mode
         .search
         .get_or_insert_with(ClientCopySearch::default);
@@ -2859,7 +2283,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
         .surface_revision
         .checked_next()
         .expect("test precondition");
-    pane_surface.panes[0].content_revision = 2;
+    pane_surface.panes[0].content_revision = shepr_test_fixtures::counter_at(2);
     {
         let metrics = pane_surface.panes[0]
             .scroll
@@ -2874,9 +2298,13 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     }
     state.receive_pane_surface_from(
         pane_surface.clone(),
-        state.active_snapshot_generation.unwrap_or(1),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
-    let copy_mode = state.copy_mode.as_ref().expect("copy mode retained");
+    let copy_mode = state.copy.as_ref().expect("copy mode retained");
     let search = copy_mode.search.as_ref().expect("search state retained");
     assert_eq!(search.results.matches, vec![found_on(6)]);
     assert_eq!(search.results.total, 1);
@@ -2900,8 +2328,11 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
             .selection
             .as_ref()
             .expect("clamped copy selection")
-            .ordered_cells(),
-        ((shepr_term::AbsRow(5), 1), (shepr_term::AbsRow(5), 2))
+            .ordered_rows(),
+        (
+            shepr_term::Point::new(shepr_term::AbsRow(5), 1),
+            shepr_term::Point::new(shepr_term::AbsRow(5), 2)
+        )
     );
 
     pane_surface.surface_revision = pane_surface
@@ -2909,8 +2340,15 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
         .checked_next()
         .expect("test precondition");
     pane_surface.panes[0].inner_rect.width -= 1;
-    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
-    let copy_mode = state.copy_mode.as_ref().expect("copy mode retained");
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    let copy_mode = state.copy.as_ref().expect("copy mode retained");
     let search = copy_mode.search.as_ref().expect("search state retained");
     assert!(search.results.matches.is_empty());
     assert_eq!(search.results.total, 0);
@@ -2921,9 +2359,16 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
 fn word_selection_result_survives_focus_snapshot_lag() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("composed frame");
-    let hit = state.hits.panes[0].clone();
+    let hit = state.pane_hits()[0].clone();
     let mut request = ClientShellInput::default();
     let metrics = shepr_term::ScrollMetrics::new(0, 0, 2, shepr_term::AbsRow(0));
     state.request_word_selection(&hit, metrics, 0, 1, &mut request);
@@ -2967,8 +2412,14 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             2,
             shepr_term::AbsRow(0),
         ));
-        state
-            .receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
+        state.receive_pane_surface_from(
+            pane_surface,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
         state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
@@ -2985,8 +2436,8 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
         state.set_snapshot(Box::new(next));
         // The last composed frame is still on screen, so its hit map stays valid until
         // the matching surface is composed.
-        assert!(!state.hits.panes.is_empty());
-        assert_eq!(state.mode, ClientShellMode::Copy);
+        assert!(!state.pane_hits().is_empty());
+        assert_eq!(state.mode.kind(), ClientShellMode::Copy);
         if selection_before_gap == Some(false) {
             state.handle_input_bytes(b"V");
             assert_eq!(
@@ -2995,8 +2446,11 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                     .selection
                     .as_ref()
                     .expect("linewise selection")
-                    .ordered_cells(),
-                ((shepr_term::AbsRow(20), 0), (shepr_term::AbsRow(20), 0))
+                    .ordered_rows(),
+                (
+                    shepr_term::Point::new(shepr_term::AbsRow(20), 0),
+                    shepr_term::Point::new(shepr_term::AbsRow(20), 0)
+                )
             );
             assert_eq!(
                 state
@@ -3031,10 +2485,10 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                     .selection
                     .as_ref()
                     .expect("linewise selection")
-                    .ordered_cells(),
+                    .ordered_rows(),
                 (
-                    (shepr_term::AbsRow(19), 0),
-                    (
+                    shepr_term::Point::new(shepr_term::AbsRow(19), 0),
+                    shepr_term::Point::new(
                         shepr_term::AbsRow(if selection_before_gap == Some(true) {
                             21
                         } else {
@@ -3046,13 +2500,10 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             );
         }
 
-        assert_eq!(state.mode, ClientShellMode::Copy);
-        assert!(state.copy_mode.is_some());
+        assert_eq!(state.mode.kind(), ClientShellMode::Copy);
+        assert!(state.copy.is_some());
         assert_eq!(
-            state
-                .copy_mode
-                .as_ref()
-                .map(|copy_mode| copy_mode.cursor.row),
+            state.copy.as_ref().map(|copy_mode| copy_mode.cursor.row),
             Some(shepr_term::AbsRow(19))
         );
     }
@@ -3062,7 +2513,14 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
 fn a_failed_submit_drops_the_queued_operations_and_keeps_the_invariant() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("compose");
     assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
     let out = state.handle_input_bytes(b"w");
@@ -3071,26 +2529,31 @@ fn a_failed_submit_drops_the_queued_operations_and_keeps_the_invariant() {
     };
     let id = request.id.clone();
     for _ in 0..3 {
-        state.copy_pipeline.push_op(ClientCopyOperation::Search {
-            query: "needle".into(),
-            direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
-            repeat: false,
-        });
+        state
+            .copy
+            .as_mut()
+            .expect("a live copy session")
+            .pipeline_mut()
+            .push_op(ClientCopyOperation::Search {
+                query: "needle".into(),
+                direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
+                repeat: false,
+            });
     }
     state
-        .copy_mode
+        .copy
         .as_mut()
         .expect("copy")
         .search
         .get_or_insert_with(ClientCopySearch::default)
         .copy_after_result = true;
     state.handle_input_bytes(b"v");
-    assert_eq!(state.copy_pipeline.keys_len(), 1);
+    assert_eq!(state.copy_keys_len(), 1);
     state.set_endpoint_status(
         &ClientEndpointId::Local,
         EndpointFailureStatus::Reconnecting,
     );
-    let cursor = state.copy_mode.as_ref().expect("copy").cursor;
+    let cursor = state.copy.as_ref().expect("copy").cursor;
     state.handle_endpoint_result(
         &crate::tests::test_boot_id("boot-1"),
         &id,
@@ -3099,10 +2562,10 @@ fn a_failed_submit_drops_the_queued_operations_and_keeps_the_invariant() {
             cursor,
         }),
     );
-    assert!(!state.copy_pipeline.in_flight());
-    assert!(state.copy_pipeline.ops_is_empty());
-    assert!(state.copy_pipeline.keys_is_empty());
-    let copy = state.copy_mode.as_ref().expect("copy");
+    assert!(!state.copy_in_flight());
+    assert!(state.copy_ops_empty());
+    assert!(state.copy_keys_empty());
+    let copy = state.copy.as_ref().expect("copy");
     assert!(
         !copy
             .search
@@ -3115,7 +2578,14 @@ fn a_failed_submit_drops_the_queued_operations_and_keeps_the_invariant() {
 fn a_search_that_exits_copy_mode_does_not_replay_or_dispatch() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
     state.compose(106, 20).expect("compose");
     assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
     let out = state.handle_input_bytes(b"/needle\r");
@@ -3125,7 +2595,7 @@ fn a_search_that_exits_copy_mode_does_not_replay_or_dispatch() {
     let id = request.id.clone();
     state.handle_input_bytes(b"w");
     state
-        .copy_mode
+        .copy
         .as_mut()
         .expect("copy")
         .search
@@ -3143,10 +2613,10 @@ fn a_search_that_exits_copy_mode_does_not_replay_or_dispatch() {
             },
         }),
     );
-    assert!(state.copy_mode.is_none());
-    assert!(!state.copy_pipeline.in_flight());
-    assert!(state.copy_pipeline.keys_is_empty());
-    assert!(state.copy_pipeline.ops_is_empty());
+    assert!(state.copy.is_none());
+    assert!(!state.copy_in_flight());
+    assert!(state.copy_keys_empty());
+    assert!(state.copy_ops_empty());
     assert!(out.requests.is_empty());
     assert!(out.actions.iter().all(|action| !matches!(
         action,

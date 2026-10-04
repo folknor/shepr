@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use shepr_protocol::{PublicPaneId, RequestId};
+use crate::shell::ledger::Ticket;
+use shepr_protocol::PublicPaneId;
 /// Per-pane scroll requests: one in flight, the newest offset queued behind it, and the
 /// target offset until a surface shows it.
 #[derive(Default)]
@@ -12,7 +13,7 @@ struct ScrollLane {
     flight: Option<ScrollFlight>,
 }
 struct ScrollFlight {
-    request: RequestId,
+    ticket: Ticket,
     /// Queued work exists only inside the flight it waits behind.
     queued: Option<usize>,
 }
@@ -39,13 +40,13 @@ impl ScrollLanes {
     }
     /// Every dispatch, a queued one included, records its offset as the target, so a
     /// surface still showing the confirmed in-between offset does not clear it.
-    pub(in crate::shell) fn sent(&mut self, pane: PublicPaneId, request: RequestId, offset: usize) {
+    pub(in crate::shell) fn sent(&mut self, pane: PublicPaneId, flight: Ticket, offset: usize) {
         self.0.insert(
             pane,
             ScrollLane {
                 target: Some(offset),
                 flight: Some(ScrollFlight {
-                    request,
+                    ticket: flight,
                     queued: None,
                 }),
             },
@@ -59,13 +60,13 @@ impl ScrollLanes {
     pub(in crate::shell) fn answered(
         &mut self,
         pane: &PublicPaneId,
-        request: &RequestId,
+        flight: Ticket,
         confirmed: Option<usize>,
     ) -> ScrollAnswer {
         let Some(lane) = self.0.get_mut(pane) else {
             return ScrollAnswer::Stale;
         };
-        if lane.flight.as_ref().is_none_or(|f| &f.request != request) {
+        if lane.flight.as_ref().is_none_or(|f| f.ticket != flight) {
             return ScrollAnswer::Stale;
         }
         let queued = lane.flight.take().and_then(|f| f.queued);
@@ -77,14 +78,14 @@ impl ScrollLanes {
         }
         ScrollAnswer::Next(queued)
     }
-    /// Removes the whole lane (target, flight and queued offset) when `request` is its
+    /// Removes the whole lane (target, flight and queued offset) when `flight` is its
     /// flight. Returns whether it was.
-    pub(in crate::shell) fn failed(&mut self, pane: &PublicPaneId, request: &RequestId) -> bool {
+    pub(in crate::shell) fn failed(&mut self, pane: &PublicPaneId, flight: Ticket) -> bool {
         if self
             .0
             .get(pane)
             .and_then(|l| l.flight.as_ref())
-            .is_some_and(|f| &f.request == request)
+            .is_some_and(|f| f.ticket == flight)
         {
             self.0.remove(pane);
             true
@@ -108,8 +109,8 @@ impl ScrollLanes {
             self.0.remove(pane);
         }
     }
-    /// Drops lanes of panes missing from a new snapshot, flights included; their ledger
-    /// entries stay until answered, and the answer is then stale.
+    /// Drops lanes of panes missing from a new snapshot, flights included. An answer for
+    /// a dropped flight finds no lane holding its ticket and is stale.
     pub(in crate::shell) fn retain_panes(&mut self, mut exists: impl FnMut(&PublicPaneId) -> bool) {
         self.0.retain(|id, _| exists(id));
     }
@@ -136,12 +137,13 @@ impl ScrollLanes {
 mod tests {
     use super::PublicPaneId;
     use crate::shell::input::scroll_lanes::{ScrollAnswer, ScrollLanes, ScrollWant};
+    use crate::shell::ledger::Ticket;
     fn pane() -> PublicPaneId {
         crate::tests::test_pane_id("w1:p1")
     }
     fn flying() -> ScrollLanes {
         let mut s = ScrollLanes::default();
-        s.sent(pane(), "first".into(), 3);
+        s.sent(pane(), Ticket::fixture(1), 3);
         s
     }
     #[test]
@@ -149,9 +151,9 @@ mod tests {
         let mut s = ScrollLanes::default();
         assert!(matches!(s.want(&pane(), 3), ScrollWant::Send));
         assert!(s.queued(&pane()).is_none());
-        s.sent(pane(), "first".into(), 3);
+        s.sent(pane(), Ticket::fixture(1), 3);
         s.want(&pane(), 7);
-        s.failed(&pane(), &"first".into());
+        s.failed(&pane(), Ticket::fixture(1));
         assert!(s.is_idle());
     }
     #[test]
@@ -165,7 +167,7 @@ mod tests {
     fn an_answer_for_another_request_is_stale() {
         let mut s = flying();
         assert_eq!(
-            s.answered(&pane(), &"other".into(), Some(8)),
+            s.answered(&pane(), Ticket::fixture(3), Some(8)),
             ScrollAnswer::Stale
         );
         assert!(s.in_flight(&pane()));
@@ -175,7 +177,7 @@ mod tests {
         let mut s = flying();
         s.shown(&pane(), 3, 10);
         assert_eq!(
-            s.answered(&pane(), &"first".into(), Some(3)),
+            s.answered(&pane(), Ticket::fixture(1), Some(3)),
             ScrollAnswer::Next(None)
         );
         assert!(s.is_idle());
@@ -185,10 +187,10 @@ mod tests {
         let mut s = flying();
         s.want(&pane(), 7);
         assert_eq!(
-            s.answered(&pane(), &"first".into(), Some(3)),
+            s.answered(&pane(), Ticket::fixture(1), Some(3)),
             ScrollAnswer::Next(Some(7))
         );
-        s.sent(pane(), "second".into(), 7);
+        s.sent(pane(), Ticket::fixture(2), 7);
         s.shown(&pane(), 3, 10);
         assert_eq!(s.target(&pane()), Some(7));
     }
@@ -196,13 +198,13 @@ mod tests {
     fn a_failure_removes_target_and_queue_together() {
         let mut s = flying();
         s.want(&pane(), 7);
-        assert!(s.failed(&pane(), &"first".into()));
+        assert!(s.failed(&pane(), Ticket::fixture(1)));
         assert!(s.is_idle());
     }
     #[test]
     fn a_surface_showing_the_target_removes_it_and_an_empty_lane() {
         let mut s = flying();
-        s.answered(&pane(), &"first".into(), Some(3));
+        s.answered(&pane(), Ticket::fixture(1), Some(3));
         s.shown(&pane(), 3, 10);
         assert!(s.is_idle());
     }

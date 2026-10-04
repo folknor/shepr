@@ -59,8 +59,8 @@ impl TestManifests {
 fn screen_input(screen: &str) -> DetectionInput<'_> {
     DetectionInput {
         screen,
-        osc_title: "",
-        osc_progress: "",
+        osc_title: None,
+        osc_progress: None,
     }
 }
 
@@ -225,8 +225,8 @@ not = [
     );
     let working = DetectionInput {
         screen: "output\nesc to interrupt",
-        osc_title: "spin task",
-        osc_progress: "",
+        osc_title: Some("spin task"),
+        osc_progress: None,
     };
     assert_eq!(
         detect_loaded(&loaded, working).as_deref(),
@@ -234,14 +234,14 @@ not = [
     );
     let dialog = DetectionInput {
         screen: "Do you want to proceed?\nEsc to cancel",
-        osc_title: "spin task",
-        osc_progress: "",
+        osc_title: Some("spin task"),
+        osc_progress: None,
     };
     assert_eq!(detect_loaded(&loaded, dialog), None);
     let stale_dialog = DetectionInput {
         screen: "Do you want to proceed?\nEsc to cancel\nlater output\nmore output",
-        osc_title: "spin task",
-        osc_progress: "",
+        osc_title: Some("spin task"),
+        osc_progress: None,
     };
     assert_eq!(
         detect_loaded(&loaded, stale_dialog).as_deref(),
@@ -270,8 +270,8 @@ fn claude_title_spinner_stands_down_while_a_permission_dialog_is_live() {
     let claude = bundled_loaded(Agent::Claude);
     let spinner = DetectionInput {
         screen: "some output\n* Thinking… (3s · esc to interrupt)\n",
-        osc_title: "\u{2810} Claude Code",
-        osc_progress: "",
+        osc_title: Some("\u{2810} Claude Code"),
+        osc_progress: None,
     };
     let working = explain_loaded_manifest(Agent::Claude, spinner, &claude);
     assert_eq!(working.verdict.state(), AgentState::Working);
@@ -282,8 +282,8 @@ fn claude_title_spinner_stands_down_while_a_permission_dialog_is_live() {
 
     let dialog = DetectionInput {
         screen: "Bash command\n  rm -rf build\nDo you want to proceed?\n 1. Yes\n  2. No\nEsc to cancel\n",
-        osc_title: "\u{2810} Claude Code",
-        osc_progress: "",
+        osc_title: Some("\u{2810} Claude Code"),
+        osc_progress: None,
     };
     let blocked = explain_loaded_manifest(Agent::Claude, dialog, &claude);
     assert_eq!(blocked.verdict.state(), AgentState::Blocked, "{blocked:?}");
@@ -467,25 +467,25 @@ regex = ['^progress-marker$']
 "#,
         ));
         for (screen, title, progress, state, rule) in [
-            ("screen-marker", "", "", AgentState::Idle, "screen"),
+            ("screen-marker", None, None, AgentState::Idle, "screen"),
             (
                 "screen-marker",
-                "title-marker",
-                "",
+                Some("title-marker"),
+                None,
                 AgentState::Working,
                 "title",
             ),
             (
                 "screen-marker",
-                "title-marker",
-                "progress-marker",
+                Some("title-marker"),
+                Some("progress-marker"),
                 AgentState::Blocked,
                 "progress",
             ),
             (
                 "screen-marker title-marker progress-marker",
-                "",
-                "",
+                None,
+                None,
                 AgentState::Idle,
                 "screen",
             ),
@@ -514,8 +514,8 @@ regex = ['^progress-marker$']
             Agent::Codex,
             DetectionInput {
                 screen: "",
-                osc_title: "progress-marker",
-                osc_progress: "title-marker",
+                osc_title: Some("progress-marker"),
+                osc_progress: Some("title-marker"),
             },
         );
         assert!(swapped.matched_rule.is_none());
@@ -602,8 +602,8 @@ fn screen_regions_extract_structure_without_classifying_agent_state() {
             region(
                 DetectionInput {
                     screen,
-                    osc_title: "",
-                    osc_progress: ""
+                    osc_title: None,
+                    osc_progress: None
                 },
                 spec
             ),
@@ -814,8 +814,8 @@ fn bottom_non_empty_lines_uses_bottom_occurrence_for_repeated_text() {
         region(
             DetectionInput {
                 screen: content,
-                osc_title: "",
-                osc_progress: ""
+                osc_title: None,
+                osc_progress: None
             },
             "bottom_non_empty_lines(2)"
         ),
@@ -830,8 +830,8 @@ fn top_non_empty_lines_uses_top_occurrence_for_repeated_text() {
         region(
             DetectionInput {
                 screen: content,
-                osc_title: "",
-                osc_progress: ""
+                osc_title: None,
+                osc_progress: None
             },
             "top_non_empty_lines(2)"
         ),

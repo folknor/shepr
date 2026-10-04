@@ -33,9 +33,7 @@ use tracing::info;
 use crate::daemon_exit::DaemonExit;
 use crate::failure::RemoteFailureClass;
 use crate::guidance;
-use crate::invocation::{
-    CLIENT_SPAWNED_FLAG, SERVER_BINARY_NAME, VERSION_FLAG, parse_server_version_line,
-};
+use crate::invocation::{SERVER_BINARY_NAME, ServerInvocation, parse_server_version_line};
 use crate::limits::{
     BOOT_LOG_MAX_BYTES, DAEMON_RESTART_INTERVAL, LAUNCH_LOCK_WAIT_GRACE,
     SIBLING_VERSION_OUTPUT_BYTES, SIBLING_VERSION_TIMEOUT, SOCKET_POLL_INTERVAL,
@@ -89,6 +87,11 @@ pub enum LaunchError {
     },
     Executable(io::Error),
     LaunchLock(io::Error),
+    /// Deliberately one variant: it carries the `io::Error` of the version-line
+    /// read and of the daemon spawn, and nothing branches on it beyond
+    /// `kind()`, so splitting it would add variants no caller distinguishes.
+    /// The failures a caller does tell apart, `Executable` and `LaunchLock`,
+    /// are already separate variants.
     Io(io::Error),
 }
 
@@ -550,7 +553,7 @@ fn read_server_version_line(server: &Path, timeout: Duration) -> io::Result<Stri
 
     let mut command = shepr_platform::child_command(server, Path::new("/"));
     command
-        .arg(VERSION_FLAG)
+        .args(ServerInvocation::Version.args())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -637,7 +640,10 @@ fn acquire_launch_lock_with(
 ) -> io::Result<FlockLock> {
     let deadline = now() + wait;
     loop {
-        match shepr_platform::ipc::acquire_flock_lock(lock_path, false) {
+        match shepr_platform::ipc::acquire_flock_lock(
+            lock_path,
+            shepr_platform::ipc::LockWait::FailIfHeld,
+        ) {
             Ok(lock) => return Ok(lock),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 if now() >= deadline {
@@ -1001,7 +1007,12 @@ fn build_server_daemon_command(
 ) -> Command {
     let mut command = shepr_platform::child_command(exe, working_dir);
     command
-        .arg(CLIENT_SPAWNED_FLAG)
+        .args(
+            ServerInvocation::Serve {
+                client_spawned: true,
+            }
+            .args(),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());

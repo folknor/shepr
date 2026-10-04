@@ -109,7 +109,7 @@ impl EndpointConnectionIo {
         accepted: AcceptedEndpoint,
         event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
         endpoint_id: endpoint::ClientEndpointId,
-        generation: u64,
+        generation: shepr_protocol::ConnectionGeneration,
     ) -> io::Result<Self> {
         let assemble = || -> io::Result<Self> {
             let reader = accepted.stream.try_clone()?;
@@ -145,7 +145,7 @@ fn spawn_endpoint_reader(
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     transport: &NativeEndpointTransport,
     endpoint_id: endpoint::ClientEndpointId,
-    generation: u64,
+    generation: shepr_protocol::ConnectionGeneration,
     wait: std::sync::mpsc::Receiver<()>,
 ) -> io::Result<()> {
     let event_tx = event_tx.clone();
@@ -198,7 +198,7 @@ fn server_reader_thread(
     transport_stopped: &Arc<AtomicBool>,
     read_activity: &EndpointReadActivity,
     endpoint_id: &endpoint::ClientEndpointId,
-    generation: u64,
+    generation: shepr_protocol::ConnectionGeneration,
     mut surface_decoder: shepr_surface::decode::Decoder,
 ) {
     // The reader is a clone of the writer's stream, sharing one file description, which
@@ -240,7 +240,7 @@ fn server_reader_thread(
             Err(EndpointReadError::Framing(shepr_protocol::FramingError::UnexpectedEof)) => {
                 debug!(
                     endpoint = %endpoint_id,
-                    generation,
+                    %generation,
                     "server closed connection"
                 );
                 report_disconnect(
@@ -260,7 +260,7 @@ fn server_reader_thread(
             Err(err) => {
                 warn!(
                     endpoint = %endpoint_id,
-                    generation,
+                    %generation,
                     error = %err,
                     "server read error"
                 );
@@ -415,8 +415,8 @@ mod tests {
                     source: Box::new(shepr_surface::decode::SurfaceDecodeError::BaselineMismatch),
                     subject: Box::new(shepr_surface::decode::SurfaceDecodeSubject {
                         boot_id: crate::tests::test_boot_id("boot"),
-                        projection_revision: shepr_protocol::ProjectionRevision::new(2),
-                        surface_revision: shepr_protocol::SurfaceRevision::new(3),
+                        projection_revision: shepr_test_fixtures::counter_at(2),
+                        surface_revision: shepr_test_fixtures::counter_at(3),
                         pane_ids: Vec::new(),
                     }),
                 },
@@ -458,7 +458,7 @@ mod tests {
             },
             &event_tx,
             endpoint::ClientEndpointId::Local,
-            7,
+            crate::tests::test_generation(7),
         )
         .expect("test connection assembly");
         shepr_protocol::write_message(&mut peer, &ServerMessage::HealthPong).expect("test frame");
@@ -475,7 +475,8 @@ mod tests {
             .expect("activated reader publishes");
         assert!(matches!(
             event,
-            ClientLoopEvent::ServerMessage { generation: 7, .. }
+            ClientLoopEvent::ServerMessage { generation, .. }
+                if generation == crate::tests::test_generation(7)
         ));
         writer.disconnect();
     }
@@ -496,7 +497,7 @@ mod tests {
             },
             &event_tx,
             endpoint::ClientEndpointId::Local,
-            7,
+            crate::tests::test_generation(7),
         )
         .expect("test connection assembly");
         drop(event_tx);

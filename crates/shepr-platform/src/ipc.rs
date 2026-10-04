@@ -3,6 +3,7 @@ use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -10,7 +11,6 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 pub use shepr_core::socket_path::SocketPath;
 
-pub type LocalListener = std::os::unix::net::UnixListener;
 pub type LocalStream = std::os::unix::net::UnixStream;
 
 /// A connected server whose peer uid was checked before any protocol write.
@@ -223,7 +223,7 @@ fn peek_first_byte_with_clock(
 ) -> io::Result<FirstByte> {
     let fd = stream.as_raw_fd();
     loop {
-        let timeout = super::child_io::poll_timeout_until(deadline, now()).unwrap_or(0);
+        let timeout = super::child_io::remaining_until(deadline, now()).unwrap_or_default();
         match super::child_io::poll_fd_readable(fd, timeout) {
             Ok(true) => {}
             Ok(false) => return Err(io::ErrorKind::TimedOut.into()),
@@ -358,13 +358,25 @@ impl OwnedSocketFile {
 /// Splitting transfers the listener to its serving thread while the owner
 /// keeps cleanup authority and the lock through its final save.
 pub struct BoundSocket {
-    listener: LocalListener,
+    listener: UnixListener,
     file: OwnedSocketFile,
     lock: SocketStartupLock,
 }
+
+/// The pieces of a [`BoundSocket`], handed to their separate owners.
+pub struct BoundSocketParts {
+    pub listener: UnixListener,
+    pub file: OwnedSocketFile,
+    pub lock: SocketStartupLock,
+}
+
 impl BoundSocket {
-    pub fn into_parts(self) -> (LocalListener, OwnedSocketFile, SocketStartupLock) {
-        (self.listener, self.file, self.lock)
+    pub fn into_parts(self) -> BoundSocketParts {
+        BoundSocketParts {
+            listener: self.listener,
+            file: self.file,
+            lock: self.lock,
+        }
     }
     pub fn remove_if_still_ours(self) -> io::Result<()> {
         drop(self.listener);
@@ -373,27 +385,29 @@ impl BoundSocket {
 }
 
 pub fn bind_owned_private_socket(path: &SocketPath) -> Result<BoundSocket, BindError> {
-    let (listener, lock, identity) = bind_private_socket(path.as_path())?;
-    Ok(BoundSocket {
-        listener,
-        lock,
-        file: OwnedSocketFile {
-            path: path.clone(),
-            identity,
-        },
-    })
+    bind_private_socket(path.as_path())
 }
 
 pub fn bind_owned_single_use_private_socket(path: &SocketPath) -> Result<BoundSocket, BindError> {
-    let (listener, lock, identity) = bind_single_use_private_socket(path.as_path())?;
-    Ok(BoundSocket {
-        listener,
-        lock,
-        file: OwnedSocketFile {
-            path: path.clone(),
-            identity,
-        },
-    })
+    bind_single_use_private_socket(path.as_path())
+}
+
+/// What a socket startup lock attempt did, as logged in `ipc.socket_lock`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SocketLockOutcome {
+    Acquired,
+    Busy,
+    Released,
+}
+
+impl SocketLockOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Acquired => "acquired",
+            Self::Busy => "busy",
+            Self::Released => "released",
+        }
+    }
 }
 
 /// An exclusive, nonblocking lock for a server socket's startup and lifetime.
@@ -412,7 +426,7 @@ impl Drop for SocketStartupLock {
         tracing::info!(
             event = "ipc.socket_lock",
             subsystem = "ipc",
-            outcome = "released",
+            outcome = SocketLockOutcome::Released.as_str(),
             path = %self.socket_path.as_path().display(),
             "server socket startup lock released"
         );
@@ -437,12 +451,21 @@ pub fn keyed_lock_path(lock_dir: &Path, key: &Path) -> PathBuf {
     lock_dir.join(format!("{file_name}.lock"))
 }
 
+/// What a lock request does when another holder has the lock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LockWait {
+    /// Wait until the holder releases the lock.
+    UntilFree,
+    /// Return `WouldBlock` at once.
+    FailIfHeld,
+}
+
 /// Opens a private sidecar file and takes an exclusive `flock` on it.
 ///
-/// `blocking` selects whether another holder makes this call wait or return
+/// `wait` selects whether another holder makes this call wait or return
 /// `WouldBlock`. The file remains on disk after the returned guard is dropped
 /// so callers racing on the same path continue to lock the same inode.
-pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockLock> {
+pub fn acquire_flock_lock(lock_path: &Path, wait: LockWait) -> io::Result<FlockLock> {
     if let Some(parent) = lock_path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -468,15 +491,15 @@ pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockL
         super::effective_uid(),
     )?;
     file.set_permissions(fs::Permissions::from_mode(super::limits::PRIVATE_FILE_MODE))?;
-    flock_exclusive(&file, blocking)?;
+    flock_exclusive(&file, wait)?;
     Ok(FlockLock { _file: file })
 }
 
-/// Takes an exclusive `flock` on `file`, waiting for another holder when
-/// `blocking` and returning `WouldBlock` otherwise.
-pub(crate) fn flock_exclusive(file: &fs::File, blocking: bool) -> io::Result<()> {
+/// Takes an exclusive `flock` on `file`, waiting for another holder or
+/// returning `WouldBlock` as `wait` says.
+pub(crate) fn flock_exclusive(file: &fs::File, wait: LockWait) -> io::Result<()> {
     let mut operation = libc::LOCK_EX;
-    if !blocking {
+    if wait == LockWait::FailIfHeld {
         operation |= libc::LOCK_NB;
     }
     loop {
@@ -503,13 +526,13 @@ fn acquire_socket_startup_lock(socket_path: &Path) -> Result<SocketStartupLock, 
     let checked_socket_path = SocketPath::new(socket_path.to_path_buf())?;
     socket_parent(socket_path)?;
     let lock_path = socket_startup_lock_path(socket_path);
-    let lock = match acquire_flock_lock(&lock_path, false) {
+    let lock = match acquire_flock_lock(&lock_path, LockWait::FailIfHeld) {
         Ok(lock) => lock,
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
             tracing::info!(
                 event = "ipc.socket_lock",
                 subsystem = "ipc",
-                outcome = "busy",
+                outcome = SocketLockOutcome::Busy.as_str(),
                 path = %socket_path.display(),
                 "server socket startup lock is already held"
             );
@@ -520,7 +543,7 @@ fn acquire_socket_startup_lock(socket_path: &Path) -> Result<SocketStartupLock, 
     tracing::info!(
         event = "ipc.socket_lock",
         subsystem = "ipc",
-        outcome = "acquired",
+        outcome = SocketLockOutcome::Acquired.as_str(),
         path = %socket_path.display(),
         "server socket startup lock acquired"
     );
@@ -538,9 +561,7 @@ fn acquire_socket_startup_lock(socket_path: &Path) -> Result<SocketStartupLock, 
 /// owns the lock, which could unlink a socket another server is about to use.
 /// A busy path is returned as a [`SocketBusy`] error naming it; the caller
 /// chooses any operator-facing wording.
-pub fn bind_private_socket(
-    path: &Path,
-) -> Result<(LocalListener, SocketStartupLock, SocketFileIdentity), BindError> {
+fn bind_private_socket(path: &Path) -> Result<BoundSocket, BindError> {
     let startup_lock = acquire_socket_startup_lock(path)?;
     bind_private_socket_with_lock(startup_lock)
 }
@@ -549,12 +570,19 @@ pub fn bind_private_socket(
 /// comes from the guard, so a lock for another socket cannot be used.
 fn bind_private_socket_with_lock(
     startup_lock: SocketStartupLock,
-) -> Result<(LocalListener, SocketStartupLock, SocketFileIdentity), BindError> {
+) -> Result<BoundSocket, BindError> {
     let path = startup_lock.socket_path.as_path();
     prepare_socket_path(path)?;
     let listener = bind_private_local_listener(path)?;
     let identity = socket_file_identity(path)?;
-    Ok((listener, startup_lock, identity))
+    Ok(BoundSocket {
+        listener,
+        file: OwnedSocketFile {
+            path: startup_lock.socket_path.clone(),
+            identity,
+        },
+        lock: startup_lock,
+    })
 }
 
 /// [`bind_private_socket`] for a path no other process will ever bind, such
@@ -569,9 +597,7 @@ fn bind_private_socket_with_lock(
 /// binder can race a single-use path for that inode, which is what makes the
 /// removal safe here and unsafe for [`bind_private_socket`]. The caller
 /// removes both when it is done, while still holding the returned lock.
-pub fn bind_single_use_private_socket(
-    path: &Path,
-) -> Result<(LocalListener, SocketStartupLock, SocketFileIdentity), BindError> {
+fn bind_single_use_private_socket(path: &Path) -> Result<BoundSocket, BindError> {
     let startup_lock = acquire_single_use_socket_lock(path)?;
     let mut listener_bound = false;
     let bound = prepare_socket_path(path)
@@ -582,7 +608,14 @@ pub fn bind_single_use_private_socket(
             Ok((listener, identity))
         });
     match bound {
-        Ok((listener, identity)) => Ok((listener, startup_lock, identity)),
+        Ok((listener, identity)) => Ok(BoundSocket {
+            listener,
+            file: OwnedSocketFile {
+                path: startup_lock.socket_path.clone(),
+                identity,
+            },
+            lock: startup_lock,
+        }),
         Err(error) => {
             // A socket that could not be removed keeps its sidecar: the
             // dead-owner sweep needs both artifacts to validate and reclaim
@@ -613,7 +646,7 @@ fn acquire_single_use_socket_lock(socket_path: &Path) -> Result<SocketStartupLoc
     tracing::info!(
         event = "ipc.socket_lock",
         subsystem = "ipc",
-        outcome = "acquired",
+        outcome = SocketLockOutcome::Acquired.as_str(),
         path = %socket_path.display(),
         "single-use socket lock acquired"
     );
@@ -780,9 +813,9 @@ pub fn connect_trusted_local_stream_within(
     }
 }
 
-pub fn bind_local_listener(path: &Path) -> io::Result<LocalListener> {
+pub fn bind_local_listener(path: &Path) -> io::Result<UnixListener> {
     // The caller owns socket path cleanup; dropping the listener only closes its fd.
-    LocalListener::bind(path)
+    UnixListener::bind(path)
 }
 
 /// Probe a local server socket and classify whether it is absent, stale, live,
@@ -863,7 +896,7 @@ const PRIVATE_SOCKET_MODE: u32 = super::limits::PRIVATE_FILE_MODE;
 /// or re-apply the mode afterwards. Access is also checked per connection by
 /// [`accept_peer`] with [`PeerAdmission::OwnerOrRoot`]; the file mode is not
 /// the only control.
-pub fn bind_private_local_listener(path: &Path) -> Result<LocalListener, BindError> {
+pub fn bind_private_local_listener(path: &Path) -> Result<UnixListener, BindError> {
     let parent = socket_parent(path)?;
     match bind_via_private_staging(path, parent) {
         Ok(listener) => {
@@ -902,7 +935,7 @@ pub fn bind_private_local_listener(path: &Path) -> Result<LocalListener, BindErr
     }
 }
 
-fn bind_in_place_then_restrict(path: &Path) -> Result<LocalListener, BindError> {
+fn bind_in_place_then_restrict(path: &Path) -> Result<UnixListener, BindError> {
     let listener = bind_local_listener(path).map_err(|error| {
         if error.kind() == io::ErrorKind::AddrInUse {
             SocketBusy::error(path)
@@ -952,22 +985,22 @@ fn socket_parent(path: &Path) -> io::Result<&Path> {
         })
 }
 
-fn bind_via_private_staging(path: &Path, parent: &Path) -> Result<LocalListener, StagedBindError> {
+fn bind_via_private_staging(path: &Path, parent: &Path) -> Result<UnixListener, StagedBindError> {
     use super::owned_runtime::{DirectoryKind, OwnedRuntimeEntry, RuntimeCreateError};
     let entry =
-        OwnedRuntimeEntry::create_directory(parent, DirectoryKind::Staging).map_err(|error| {
+        OwnedRuntimeEntry::create_directory(parent, DirectoryKind::STAGING).map_err(|error| {
             match error {
                 RuntimeCreateError::RandomSource(error) => StagedBindError::RandomSource(error),
                 RuntimeCreateError::Io(error) => StagedBindError::Unavailable(error),
             }
         })?;
-    let staged = DirectoryKind::Staging.content_path(entry.path());
+    let staged = DirectoryKind::STAGING.content_path(entry.path());
     let result = bind_staged_and_link(&staged, path);
     entry.release();
     result
 }
 
-fn bind_staged_and_link(staged: &Path, path: &Path) -> Result<LocalListener, StagedBindError> {
+fn bind_staged_and_link(staged: &Path, path: &Path) -> Result<UnixListener, StagedBindError> {
     let listener = bind_local_listener(staged).map_err(StagedBindError::Unavailable)?;
     restrict_socket_permissions(staged, PRIVATE_SOCKET_MODE)
         .map_err(StagedBindError::Unavailable)?;
@@ -1202,7 +1235,11 @@ mod tests {
         let dir = shepr_test_support::ScratchDir::new("hb");
         let path = dir.join("server.sock");
 
-        let (listener, startup_lock, _) = bind_private_socket(&path).expect("bind");
+        let BoundSocketParts {
+            listener,
+            lock: startup_lock,
+            ..
+        } = bind_private_socket(&path).expect("bind").into_parts();
         let mode = fs::metadata(&path)
             .expect("socket exists")
             .permissions()
@@ -1317,7 +1354,7 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("socket-liveness");
         let socket = scratch.join("server.sock");
         assert!(!socket_is_live(&socket).expect("absent"));
-        let listener = LocalListener::bind(&socket).expect("bind");
+        let listener = UnixListener::bind(&socket).expect("bind");
         assert!(socket_is_live(&socket).expect("live"));
         drop(listener);
         assert!(!socket_is_live(&socket).expect("stale"));
@@ -1385,7 +1422,8 @@ mod tests {
         {
             let _listener = std::os::unix::net::UnixListener::bind(&stale).expect("bind stale");
         }
-        let (listener, lock, _identity) = bind_private_socket(&stale).expect("reclaim");
+        let BoundSocketParts { listener, lock, .. } =
+            bind_private_socket(&stale).expect("reclaim").into_parts();
         let second = bind_private_socket(&stale)
             .err()
             .expect("the first binder holds the startup lock");
@@ -1452,8 +1490,13 @@ mod tests {
         let reservation = acquire_socket_startup_lock(&path).expect("reserve socket");
         assert!(!path.try_exists().expect("unpublished socket"));
         let before = fs::symlink_metadata(socket_startup_lock_path(&path)).expect("lock inode");
-        let (listener, lock, identity) =
-            bind_private_socket_with_lock(reservation).expect("bind reserved socket");
+        let BoundSocketParts {
+            listener,
+            file,
+            lock,
+        } = bind_private_socket_with_lock(reservation)
+            .expect("bind reserved socket")
+            .into_parts();
         let after =
             fs::symlink_metadata(socket_startup_lock_path(&path)).expect("lock inode after bind");
         assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
@@ -1464,7 +1507,7 @@ mod tests {
             &path,
         );
         drop(listener);
-        remove_socket_file_if_owned(&path, &identity).expect("cleanup socket");
+        file.remove_if_still_ours().expect("cleanup socket");
         drop(lock);
         let _next = acquire_socket_startup_lock(&path).expect("lock released at teardown");
     }
@@ -1545,23 +1588,19 @@ mod tests {
         fs::write(&unexpected, b"regular file").expect("unexpected socket content");
         let unmarked = stale_socket("shepr-s-c.0000000000000003.sock", b"");
         let held = stale_socket("shepr-s-d.0000000000000004.sock", dead_tag.as_bytes());
-        let _held_lock =
-            acquire_flock_lock(&socket_startup_lock_path(&held), false).expect("hold lock");
+        let _held_lock = acquire_flock_lock(&socket_startup_lock_path(&held), LockWait::FailIfHeld)
+            .expect("hold lock");
         let shared = runtime.join("server.sock");
-        let (shared_listener, shared_lock, _) = bind_private_socket(&shared).expect("bind");
-        drop(shared_listener);
-        drop(shared_lock);
+        drop(bind_private_socket(&shared).expect("bind"));
         let live = runtime.join("shepr-s-e.0000000000000005.sock");
-        let (_live_listener, _live_lock, _) =
-            bind_single_use_private_socket(&live).expect("bind single-use");
+        let _live = bind_single_use_private_socket(&live).expect("bind single-use");
         assert_eq!(
             fs::read_to_string(socket_startup_lock_path(&live)).expect("read marker"),
             live_tag,
             "a single-use lock records its owner"
         );
 
-        crate::remote_bridge_endpoint_path(runtime.path(), "shepr-s-f.sock", "shepr-s-f.sock")
-            .expect("allocate a bridge path");
+        sweep_abandoned_single_use_sockets(runtime.path());
 
         for path in [&dead, &dead_no_socket] {
             assert!(!exists(path), "{} swept", path.display());
@@ -1617,7 +1656,8 @@ mod tests {
 
         let dir = shepr_test_support::ScratchDir::new("flock-lock");
         let lock_path = dir.join("locks/resource.lock");
-        let lock = acquire_flock_lock(&lock_path, true).expect("acquire blocking lock");
+        let lock =
+            acquire_flock_lock(&lock_path, LockWait::UntilFree).expect("acquire blocking lock");
         let metadata = fs::metadata(&lock_path).expect("lock file exists");
         assert!(metadata.is_file());
         assert_eq!(
@@ -1632,14 +1672,15 @@ mod tests {
         );
         let first_inode = metadata.ino();
 
-        let error = match acquire_flock_lock(&lock_path, false) {
+        let error = match acquire_flock_lock(&lock_path, LockWait::FailIfHeld) {
             Ok(_) => panic!("second nonblocking lock unexpectedly succeeded"),
             Err(error) => error,
         };
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         drop(lock);
 
-        let _lock = acquire_flock_lock(&lock_path, true).expect("reacquire blocking lock");
+        let _lock =
+            acquire_flock_lock(&lock_path, LockWait::UntilFree).expect("reacquire blocking lock");
         assert_eq!(
             fs::metadata(&lock_path).expect("lock file persists").ino(),
             first_inode

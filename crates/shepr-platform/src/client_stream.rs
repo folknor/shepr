@@ -17,7 +17,7 @@ impl Read for ClientStreamReader<'_> {
             match self.0.read(data) {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     // Sleep until input or shutdown, without polling quiet observers.
-                    if let Err(error) = poll_fd_readable(self.0.as_raw_fd(), -1)
+                    if let Err(error) = poll_fd_readable(self.0.as_raw_fd(), Wait::Forever)
                         && error.kind() != std::io::ErrorKind::Interrupted
                     {
                         return Err(error);
@@ -88,8 +88,8 @@ fn write_client_stream_with_clock(
                 ) => {}
             Err(error) => return Err(error),
         }
-        let wait_ms = poll_timeout_until(progress + stall_timeout, now()).ok_or_else(timed_out)?;
-        match poll_fd(socket.as_raw_fd(), libc::POLLOUT, wait_ms) {
+        let remaining = remaining_until(progress + stall_timeout, now()).ok_or_else(timed_out)?;
+        match poll_fd(socket.as_raw_fd(), libc::POLLOUT, remaining) {
             Ok(false) => return Err(timed_out()),
             Ok(true) => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
@@ -104,7 +104,7 @@ pub fn wait_client_stream_readable(stream: &crate::ipc::LocalStream) -> std::io:
     // Bound cancellation latency without polling idle connections hundreds of times per second.
     match poll_fd_readable(
         stream.as_fd().as_raw_fd(),
-        super::limits::CLIENT_STREAM_POLL_INTERVAL_MS,
+        super::limits::CLIENT_STREAM_POLL_INTERVAL,
     ) {
         Err(error) if error.kind() != std::io::ErrorKind::Interrupted => Err(error),
         _ => Ok(()),

@@ -118,15 +118,6 @@ impl PaneRuntime {
             .encode_mouse_wheel_with_modes(modes, kind, position, modifiers)
     }
 
-    pub fn pixel_size(&self) -> Option<super::PanePixelSize> {
-        self.current_size
-            .text_area_px()
-            .map(|(width, height)| super::PanePixelSize {
-                width: u32::from(width),
-                height: u32::from(height),
-            })
-    }
-
     pub fn encode_alternate_scroll_with_modes(
         &self,
         modes: shepr_vt::InputModes,

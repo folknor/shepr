@@ -25,7 +25,6 @@ pub use remote_path::RemotePath;
 mod status;
 mod style;
 mod surface;
-mod theme_conversion;
 pub use limits::{
     BUILD_ID, InputBatchCharge, MAX_CELL_SIZE_PX, MAX_CLIENT_MESSAGE_SIZE,
     MAX_CLIENT_REQUEST_BYTES, MAX_FRAME_SIZE, MAX_INITIAL_REQUEST_BYTES, MAX_INPUT_EVENT_BATCH,
@@ -38,10 +37,8 @@ pub use frame::*;
 pub use framing::*;
 pub use geometry::*;
 pub use identity::*;
-pub use ids::{
-    PanePublicNumber, PublicIdParseError, PublicPaneId, decode_public_number, encode_public_number,
-};
-pub use ids::{TerminalId, TerminalIdParseError, WorkspaceId, WorkspaceIdParseError};
+pub use ids::{PanePublicNumber, PublicIdParseError, PublicPaneId};
+pub use ids::{WorkspaceId, WorkspaceIdParseError};
 pub use input::*;
 pub use limit::{Limit, LimitExceeded, LimitKind};
 pub use message::*;

@@ -4,13 +4,13 @@ use shepr_config::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResolvedToken {
-    pub kind: ResolvedTokenKind,
-    pub style: SidebarTokenStyle,
+pub(in crate::shell::sidebar) struct ResolvedToken {
+    pub(in crate::shell::sidebar) kind: ResolvedTokenKind,
+    pub(in crate::shell::sidebar) style: SidebarTokenStyle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ResolvedTokenKind {
+pub(in crate::shell::sidebar) enum ResolvedTokenKind {
     StateIcon,
     StateText(String),
     Machine(String),
@@ -43,17 +43,17 @@ impl ResolvedToken {
     }
 }
 
-pub(crate) struct AgentTokenContext<'a> {
-    pub(crate) machine: Option<&'a str>,
-    pub(crate) workspace: &'a str,
-    pub(crate) pane: Option<&'a str>,
-    pub(crate) agent_label: Option<&'a str>,
-    pub(crate) terminal_title: Option<&'a str>,
-    pub(crate) terminal_title_stripped: Option<&'a str>,
-    pub(crate) canonical_agent: Option<shepr_config::ConfigAgent>,
+pub(in crate::shell::sidebar) struct AgentTokenContext<'a> {
+    pub(in crate::shell::sidebar) machine: Option<&'a str>,
+    pub(in crate::shell::sidebar) workspace: &'a str,
+    pub(in crate::shell::sidebar) pane: Option<&'a str>,
+    pub(in crate::shell::sidebar) agent_label: Option<&'a str>,
+    pub(in crate::shell::sidebar) terminal_title: Option<&'a str>,
+    pub(in crate::shell::sidebar) terminal_title_stripped: Option<&'a str>,
+    pub(in crate::shell::sidebar) canonical_agent: Option<shepr_config::ConfigAgent>,
 }
 
-pub(crate) fn agent_rows(
+pub(in crate::shell::sidebar) fn agent_rows(
     config: &AgentsSidebarConfig,
     context: &AgentTokenContext<'_>,
     state_text: &str,
@@ -106,15 +106,15 @@ pub(crate) fn agent_rows(
         .collect()
 }
 
-pub(crate) struct SpaceTokenContext<'a> {
-    pub(crate) workspace: &'a str,
-    pub(crate) branch: Option<&'a str>,
-    pub(crate) state_text: &'a str,
+pub(in crate::shell::sidebar) struct SpaceTokenContext<'a> {
+    pub(in crate::shell::sidebar) workspace: &'a str,
+    pub(in crate::shell::sidebar) branch: Option<&'a str>,
+    pub(in crate::shell::sidebar) state_text: &'a str,
     /// Carries the projection's adjacent ahead and behind counts to the one renderer.
-    pub(crate) ahead_behind: Option<(usize, usize)>,
+    pub(in crate::shell::sidebar) ahead_behind: Option<(usize, usize)>,
 }
 
-pub(crate) fn space_rows(
+pub(in crate::shell::sidebar) fn space_rows(
     config: &SpacesSidebarConfig,
     context: &SpaceTokenContext<'_>,
 ) -> Vec<Vec<ResolvedToken>> {
@@ -158,7 +158,10 @@ pub(crate) fn space_rows(
         .collect()
 }
 
-pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'static str {
+pub(in crate::shell::sidebar) fn separator(
+    previous: &ResolvedToken,
+    current: &ResolvedToken,
+) -> &'static str {
     if matches!(previous.kind, ResolvedTokenKind::StateIcon)
         || matches!(current.kind, ResolvedTokenKind::GitStatus { .. })
     {
@@ -170,7 +173,7 @@ pub(crate) fn separator(previous: &ResolvedToken, current: &ResolvedToken) -> &'
 
 #[cfg(test)]
 impl ResolvedToken {
-    pub(in crate::shell) fn unstyled(kind: ResolvedTokenKind) -> Self {
+    fn unstyled(kind: ResolvedTokenKind) -> Self {
         Self::new(kind, SidebarTokenStyle::default())
     }
 }
@@ -282,7 +285,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
             );
             assert_eq!(spans.len(), 1);
             assert!(
-                crate::shell::sidebar::sidebar_tokens::display_width(&spans[0].content) <= width
+                crate::shell::presentation::text::rendered_text_width(&spans[0].content) <= width
             );
             assert_eq!(spans[0].style.fg, Some(Color::Rgb(255, 0, 0)));
             assert!(

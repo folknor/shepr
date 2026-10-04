@@ -1,25 +1,32 @@
+mod config;
+mod copy;
 mod input;
 mod navigation;
+mod notices;
 mod overlays;
 mod presentation;
 mod sidebar;
+mod view;
 
 mod endpoints;
-pub(crate) use endpoints::ClientEndpointFocusTarget;
+pub use navigation::location::{Location, LocationTarget};
 mod ledger;
-pub(crate) use ledger::DropReason;
+pub(crate) use ledger::{ClientShellEndpointRequest, DropReason};
+mod mode;
 
 mod state;
+mod transitions;
 
-pub(crate) use overlays::endpoint_notices::{EndpointNotice, EndpointNoticeKind};
+pub use config::ClientShellConfig;
+pub(crate) use notices::cards::{EndpointNotice, EndpointNoticeKind};
 pub(crate) use presentation::surface_patch::{
     ClientComposedSurfacePatch, ClientPaneSurfacePatchOutcome, PatchPresentation,
 };
+pub use state::ClientShellState;
 pub(crate) use state::{
-    ClientPresentationLogContext, ClientShellAction, ClientShellEndpointError,
-    ClientShellEndpointRequest, ClientShellInput, ClientShellRequest, Repaint,
+    ClientPresentationLogContext, ClientShellAction, ClientShellEndpointError, ClientShellInput,
+    ClientShellRequest, Repaint,
 };
-pub use state::{ClientShellConfig, ClientShellState};
 
 #[cfg(test)]
 mod tests;

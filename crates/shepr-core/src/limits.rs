@@ -67,3 +67,18 @@ pub(crate) const MIN_SPLIT_CHILD_CELLS: u16 = 1;
 pub(crate) const MIN_SPLIT_EXTENT_CELLS: u16 = MIN_SPLIT_CHILD_CELLS + MIN_SPLIT_CHILD_CELLS;
 /// Fewest panes a workspace keeps when removing or moving panes.
 pub(crate) const MIN_WORKSPACE_PANES: usize = 1;
+
+/// Estimated bytes one terminal cell costs in the emulator's grid. The
+/// emulator's cell is a `char`, two colours, a flag word and an optional
+/// shared extras pointer; `shepr-vt` tests this estimate against the real size
+/// so it cannot drift.
+pub const ESTIMATED_CELL_BYTES: usize = 24;
+
+/// Minimum line count retained for any non-zero scrollback budget. This keeps
+/// tiny budgets useful for scrolling, even on wide panes.
+pub const MIN_HISTORY_LINES: usize = 1_000;
+
+/// Maximum line count produced from a scrollback budget. The byte budget alone
+/// does not bound heap-held cell extras or history retained across a widening
+/// resize, so this caps the emulator's retained row count.
+pub const MAX_HISTORY_LINES: usize = 1_000_000;

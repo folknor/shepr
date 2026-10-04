@@ -10,15 +10,10 @@ pub(crate) struct TerminalTitleChanges {
 }
 
 impl App {
-    pub(crate) fn sync_pending_terminal_titles(&mut self) -> TerminalTitleChanges {
-        let sources = self.render_dirty.pending_terminal_title_sources();
-        let changes = self.sync_terminal_titles(&sources);
-        if changes.raw_changed || changes.stripped_changed {
-            self.invalidate_shared_view(true);
-        }
-        changes
-    }
-
+    /// Pulls the titles of `sources` from their runtimes. Any changed title
+    /// also changes the shell agent metadata, so it marks the shell projection
+    /// dirty here; callers fold the returned changes into their own view
+    /// change.
     pub(crate) fn sync_terminal_titles(
         &mut self,
         sources: &HashSet<PaneId>,
@@ -29,26 +24,23 @@ impl App {
 
         let mut observations = Vec::with_capacity(sources.len());
         for pane_id in sources {
-            let Some(terminal_id) = self
-                .find_pane(*pane_id)
-                .map(|(_ws_idx, pane)| pane.attached_terminal_id.clone())
-            else {
+            let Some(runtime) = self.terminal_runtimes.get(pane_id) else {
                 continue;
             };
-            let Some(runtime) = self.terminal_runtimes.get(&terminal_id) else {
-                continue;
-            };
-            observations.push((terminal_id, runtime.read().terminal_title()));
+            observations.push((*pane_id, runtime.read().terminal_title()));
         }
 
         let mut changes = TerminalTitleChanges::default();
-        for (terminal_id, title) in observations {
-            let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
+        for (pane_id, title) in observations {
+            let Some(record) = self.state.workspaces.pane_mut(pane_id) else {
                 continue;
             };
-            let change = terminal.set_terminal_title(title);
+            let change = record.terminal_mut().set_terminal_title(title);
             changes.raw_changed |= change.raw_changed;
             changes.stripped_changed |= change.stripped_changed;
+        }
+        if changes.raw_changed || changes.stripped_changed {
+            self.state.mark_shell_projection_dirty();
         }
 
         changes
@@ -65,20 +57,12 @@ mod tests {
 
     #[tokio::test]
     async fn sync_keeps_latest_raw_title_and_reports_stripped_changes() {
-        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+        let mut app = App::new(&ServerConfig::default());
         app.state
             .test_set_workspaces(vec![Workspace::test_new("one")]);
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].root_pane();
-        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
-            .attached_terminal_id
-            .clone();
-        let terminal = app
-            .state
-            .terminals
-            .get_mut(&terminal_id)
-            .expect("test precondition");
+        app.state.seed_bookmark_index(Some(0));
+        let pane_id = app.state.ws(0).tree().root();
+        let terminal = app.state.terminal_mut(pane_id);
         terminal
             .ownership_mut()
             .set_detected_state_with_screen_signals_at(
@@ -90,7 +74,7 @@ mod tests {
             );
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
         runtime.test_process_pty_bytes("\x1b]0;⠋ 修复\u{1F642}标题\x07".as_bytes());
-        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        app.terminal_runtimes.insert(pane_id, runtime);
         let sources = HashSet::from([pane_id]);
 
         assert_eq!(
@@ -109,7 +93,7 @@ mod tests {
         );
 
         app.terminal_runtimes
-            .get(&terminal_id)
+            .get(&pane_id)
             .expect("test precondition")
             .test_process_pty_bytes("\x1b]2;⠙ 修复\u{1F642}标题\x1b\\".as_bytes());
         assert_eq!(
@@ -127,13 +111,13 @@ mod tests {
         );
 
         app.terminal_runtimes
-            .get(&terminal_id)
+            .get(&pane_id)
             .expect("test precondition")
             .test_process_pty_bytes(b"\x1b]0;Done reviewing\x07");
         assert!(app.sync_terminal_titles(&sources).stripped_changed);
 
         app.terminal_runtimes
-            .get(&terminal_id)
+            .get(&pane_id)
             .expect("test precondition")
             .test_process_pty_bytes(b"\x1b]0;\x07");
         assert!(app.sync_terminal_titles(&sources).stripped_changed);
@@ -143,26 +127,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn syncing_pending_titles_preserves_sidebar_render_impact() {
-        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+    async fn title_sync_moves_the_shell_projection() {
+        let mut app = App::new(&ServerConfig::default());
         app.state
             .test_set_workspaces(vec![Workspace::test_new("one")]);
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
-        let pane_id = app.state.workspaces[0].root_pane();
-        let terminal_id = app.state.workspaces[0]
-            .terminal_id(pane_id)
-            .expect("test precondition")
-            .clone();
+        app.state.seed_bookmark_index(Some(0));
+        let pane_id = app.state.ws(0).tree().root();
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
         runtime.test_process_pty_bytes(b"\x1b]0;building\x07");
-        app.terminal_runtimes.insert(terminal_id, runtime);
-        app.render_dirty.request_terminal_title(pane_id);
+        app.terminal_runtimes.insert(pane_id, runtime);
+        let revision = app.state.shell_projection_revision;
 
-        let changes = app.sync_pending_terminal_titles();
+        let changes = app.sync_terminal_titles(&HashSet::from([pane_id]));
 
         assert!(changes.stripped_changed);
-        let render_request = app.render_dirty.take();
-        assert!(render_request.generic);
+        assert_ne!(app.state.shell_projection_revision, revision);
     }
 }

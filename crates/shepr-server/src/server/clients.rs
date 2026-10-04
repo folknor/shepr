@@ -1,6 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Index;
 
+use crate::app::HostAppearanceReport;
 use crate::server::outbox::ClientOutbox;
 use crate::server::render_stream::ClientRenderState;
 use shepr_protocol::WorkspaceId;
@@ -18,7 +19,7 @@ pub(crate) struct ClientPaneIdentity {
 /// Identity of a connection accepted by this server. Only the shared
 /// allocator mints production values; disconnecting never reuses one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ClientId(u64);
+pub(crate) struct ClientId(u64);
 
 /// Identifies the workspace selected by one client shell.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -66,6 +67,30 @@ impl std::fmt::Display for ClientId {
     }
 }
 
+/// The focus state of a shell's outer terminal, as last reported.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum OuterFocus {
+    /// The host terminal has not reported focus.
+    #[default]
+    Unreported,
+    Focused,
+    Unfocused,
+}
+
+impl OuterFocus {
+    pub(crate) fn reported(focused: bool) -> Self {
+        if focused {
+            Self::Focused
+        } else {
+            Self::Unfocused
+        }
+    }
+
+    pub(crate) fn is_focused(self) -> bool {
+        self == Self::Focused
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct ClientShellState {
     /// Whether this shell currently receives pane surfaces.
@@ -74,12 +99,11 @@ pub(crate) struct ClientShellState {
     pub(crate) mouse_capture: bool,
     /// Last host terminal default colors reported by this shell.
     pub(crate) host_terminal_theme: shepr_term::host::TerminalTheme,
-    /// Last host light/dark appearance reported by this shell.
-    pub(crate) host_terminal_appearance: Option<shepr_term::host::HostAppearance>,
-    /// Whether appearance came from an explicit host color-scheme report.
-    pub(crate) host_terminal_appearance_explicit: bool,
+    /// Last host light/dark appearance reported by this shell, and whether it
+    /// came from an explicit host color-scheme report.
+    pub(crate) host_terminal_appearance: crate::app::HostAppearanceReport,
     /// Last reported focus state for this shell's outer terminal.
-    pub(crate) outer_terminal_focus: Option<bool>,
+    pub(crate) outer_terminal_focus: OuterFocus,
     /// Presses forwarded by this shell that need release on abrupt teardown,
     /// keyed by target pane and the client's reported press identity. The
     /// client pins a pane mouse gesture's drag and release to its original
@@ -125,23 +149,23 @@ impl ClientShellState {
 
         match update {
             shepr_protocol::ClientHostThemeUpdate::DefaultColor { kind, color } => {
-                let kind: shepr_term::host::DefaultColorKind = (*kind).into();
-                let color = (*color).into();
+                let kind = *kind;
+                let color = *color;
                 next_theme = next_theme.with_color(kind, color);
                 if matches!(kind, shepr_term::host::DefaultColorKind::Background)
-                    && !self.host_terminal_appearance_explicit
+                    && !self.host_terminal_appearance.is_explicit()
                 {
-                    changed |= self.set_host_appearance(Some(color.appearance()), false);
+                    changed |= self
+                        .set_host_appearance(HostAppearanceReport::Inferred(color.appearance()));
                 }
             }
             shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors) => {
                 for &(index, color) in colors {
-                    next_theme = next_theme.with_palette_color(index, color.into());
+                    next_theme = next_theme.with_palette_color(index, color);
                 }
             }
             shepr_protocol::ClientHostThemeUpdate::Appearance(appearance) => {
-                let appearance = (*appearance).into();
-                changed |= self.set_host_appearance(Some(appearance), true);
+                changed |= self.set_host_appearance(HostAppearanceReport::Explicit(*appearance));
             }
         }
 
@@ -152,21 +176,14 @@ impl ClientShellState {
         changed
     }
 
-    fn set_host_appearance(
-        &mut self,
-        appearance: Option<shepr_term::host::HostAppearance>,
-        explicit: bool,
-    ) -> bool {
-        if self.host_terminal_appearance_explicit && !explicit {
+    fn set_host_appearance(&mut self, report: HostAppearanceReport) -> bool {
+        if self.host_terminal_appearance.is_explicit() && !report.is_explicit() {
             return false;
         }
-        if self.host_terminal_appearance == appearance
-            && self.host_terminal_appearance_explicit == explicit
-        {
+        if self.host_terminal_appearance == report {
             return false;
         }
-        self.host_terminal_appearance = appearance;
-        self.host_terminal_appearance_explicit = explicit;
+        self.host_terminal_appearance = report;
         true
     }
 }
@@ -175,12 +192,13 @@ impl ClientShellState {
 pub(crate) struct RenderTarget {
     pub(crate) client_id: ClientId,
     pub(crate) terminal_size: shepr_core::geometry::GridSize,
-    pub(crate) cell_size: shepr_term::host::HostCellSize,
 }
 
 impl RenderTarget {
-    pub(crate) fn geometry(&self) -> crate::app::SpawnGeometry {
-        crate::app::SpawnGeometry::for_grid(self.terminal_size, self.cell_size)
+    /// The client's surface area. A pane surface reads nothing else from the
+    /// target: the pixel extent it publishes is the pane's own.
+    pub(crate) fn area(&self) -> shepr_core::geometry::Rect {
+        self.terminal_size.rect()
     }
 }
 
@@ -226,7 +244,9 @@ pub(crate) struct ClientSurfaceChange {
 /// one effect a pane has one of whichever client views it, and receives
 /// clipboard writes from panes that no client views.
 pub(crate) struct ClientRegistry {
-    connections: HashMap<ClientId, ClientConnection>,
+    /// Ordered by id, so every walk of the connections is in id order without
+    /// collecting or sorting.
+    connections: BTreeMap<ClientId, ClientConnection>,
     foreground_client_id: Option<ClientId>,
     geometry_controllers: HashMap<WorkspaceId, ClientId>,
     next_activity_stamp: u64,
@@ -235,7 +255,7 @@ pub(crate) struct ClientRegistry {
 impl Default for ClientRegistry {
     fn default() -> Self {
         Self {
-            connections: HashMap::new(),
+            connections: BTreeMap::new(),
             foreground_client_id: None,
             geometry_controllers: HashMap::new(),
             next_activity_stamp: 1,
@@ -245,7 +265,7 @@ impl Default for ClientRegistry {
 
 impl<'a> IntoIterator for &'a ClientRegistry {
     type Item = (&'a ClientId, &'a ClientConnection);
-    type IntoIter = std::collections::hash_map::Iter<'a, ClientId, ClientConnection>;
+    type IntoIter = std::collections::btree_map::Iter<'a, ClientId, ClientConnection>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.connections.iter()
@@ -254,7 +274,7 @@ impl<'a> IntoIterator for &'a ClientRegistry {
 
 impl<'a> IntoIterator for &'a mut ClientRegistry {
     type Item = (&'a ClientId, &'a mut ClientConnection);
-    type IntoIter = std::collections::hash_map::IterMut<'a, ClientId, ClientConnection>;
+    type IntoIter = std::collections::btree_map::IterMut<'a, ClientId, ClientConnection>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.connections.iter_mut()
@@ -290,23 +310,23 @@ impl ClientRegistry {
         self.connections.insert(client_id.into(), client)
     }
 
-    pub(crate) fn keys(&self) -> std::collections::hash_map::Keys<'_, ClientId, ClientConnection> {
+    pub(crate) fn keys(&self) -> std::collections::btree_map::Keys<'_, ClientId, ClientConnection> {
         self.connections.keys()
     }
 
     pub(crate) fn values(
         &self,
-    ) -> std::collections::hash_map::Values<'_, ClientId, ClientConnection> {
+    ) -> std::collections::btree_map::Values<'_, ClientId, ClientConnection> {
         self.connections.values()
     }
 
     pub(crate) fn values_mut(
         &mut self,
-    ) -> std::collections::hash_map::ValuesMut<'_, ClientId, ClientConnection> {
+    ) -> std::collections::btree_map::ValuesMut<'_, ClientId, ClientConnection> {
         self.connections.values_mut()
     }
 
-    pub(crate) fn iter(&self) -> std::collections::hash_map::Iter<'_, ClientId, ClientConnection> {
+    pub(crate) fn iter(&self) -> std::collections::btree_map::Iter<'_, ClientId, ClientConnection> {
         self.connections.iter()
     }
 
@@ -607,16 +627,14 @@ pub(crate) struct ClientConnection {
     pub(crate) shell: ClientShellState,
     /// The client's terminal size after clamping.
     pub(crate) terminal_size: shepr_core::geometry::GridSize,
-    /// Pixel size of one client terminal cell.
-    pub(crate) cell_size: shepr_term::host::HostCellSize,
+    /// The host cell this client last reported: its pixel mode is
+    /// `host_cell.is_exact()`.
+    pub(crate) host_cell: shepr_core::geometry::HostCell,
     /// Monotonic activity stamp used to choose the fallback foreground client.
     pub(crate) last_activity: ActivityStamp,
-    /// Render baseline for the negotiated client encoding.
+    /// Render baseline for the negotiated client encoding, with the typed
+    /// identities of its panes.
     pub(crate) render_state: ClientRenderState,
-    /// Typed identities aligned with the panes in `render_state`'s baseline.
-    pub(crate) surface_pane_identities: Vec<ClientPaneIdentity>,
-    /// Whether this frontend preserves exact SGR pixel reports.
-    pub(crate) pixel_mouse: bool,
     /// Whether the client has been told that its current surface is too large
     /// to send even in parts (past `MAX_MESSAGE_SIZE`). Set on the first
     /// oversized surface, cleared once a surface goes out, so a client whose
@@ -630,18 +648,16 @@ impl ClientConnection {
     pub(crate) fn with_shell(
         shell: ClientShellState,
         terminal_size: shepr_core::geometry::GridSize,
-        cell_size: shepr_term::host::HostCellSize,
+        host_cell: shepr_core::geometry::HostCell,
         last_activity: ActivityStamp,
         outbox: ClientOutbox,
     ) -> Self {
         Self {
             shell,
             terminal_size,
-            cell_size,
+            host_cell,
             last_activity,
             render_state: ClientRenderState::new(),
-            surface_pane_identities: Vec::new(),
-            pixel_mouse: false,
             oversized_surface_reported: false,
             outbox,
         }
@@ -657,11 +673,6 @@ impl ClientConnection {
 
     pub(crate) fn request_repaint(&mut self) {
         self.render_state.request_repaint();
-        self.surface_pane_identities.clear();
-    }
-
-    pub(crate) fn commit_surface_pane_identities(&mut self, identities: Vec<ClientPaneIdentity>) {
-        self.surface_pane_identities = identities;
     }
 
     pub(crate) fn request_recompute(&mut self) {
@@ -713,14 +724,12 @@ impl ClientConnection {
                 ClientPaneInputEvent::Mouse {
                     kind: ClientMouseKind::Down(button),
                     position,
-                    geometry,
                     modifiers,
                     ..
                 }
                 | ClientPaneInputEvent::Mouse {
                     kind: ClientMouseKind::Drag(button),
                     position,
-                    geometry,
                     modifiers,
                     ..
                 } => {
@@ -740,7 +749,6 @@ impl ClientConnection {
                                 release: ClientPaneInputEvent::Mouse {
                                     kind: ClientMouseKind::Up(*button),
                                     position: *position,
-                                    geometry: *geometry,
                                     modifiers: *modifiers,
                                     lines: 1,
                                 },
@@ -790,19 +798,13 @@ impl ClientConnection {
 
 /// Every connected shell, including inactive shells that still receive
 /// control projections. Pane surfaces are sent only to the registry's
-/// presenting subset.
-pub(crate) fn render_targets(clients: &ClientRegistry) -> Vec<RenderTarget> {
-    let mut targets: Vec<RenderTarget> = clients
-        .iter()
-        .map(|(&client_id, client)| RenderTarget {
-            client_id,
-            terminal_size: client.terminal_size,
-            cell_size: client.cell_size,
-        })
-        .collect();
-
-    targets.sort_by_key(|target| target.client_id);
-    targets
+/// presenting subset. In ascending client id order, which the registry's own
+/// order gives: nothing is collected or sorted.
+pub(crate) fn render_targets(clients: &ClientRegistry) -> impl Iterator<Item = RenderTarget> + '_ {
+    clients.iter().map(|(&client_id, client)| RenderTarget {
+        client_id,
+        terminal_size: client.terminal_size,
+    })
 }
 
 #[cfg(test)]
@@ -849,7 +851,7 @@ impl PartialEq<i32> for ClientId {
 
 #[cfg(test)]
 impl ClientId {
-    pub fn test_new(value: u64) -> Self {
+    pub(crate) fn test_new(value: u64) -> Self {
         Self(value)
     }
 }
@@ -875,14 +877,14 @@ impl ClientShellLocation {
 impl ClientConnection {
     pub(crate) fn new(
         terminal_size: (u16, u16),
-        cell_size: shepr_term::host::HostCellSize,
+        host_cell: shepr_core::geometry::HostCell,
         last_activity: impl Into<ActivityStamp>,
         outbox: ClientOutbox,
     ) -> Self {
         Self::with_shell(
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(terminal_size.0, terminal_size.1),
-            cell_size,
+            host_cell,
             last_activity.into(),
             outbox,
         )
@@ -896,7 +898,7 @@ mod tests {
     fn shell_client() -> ClientConnection {
         ClientConnection::new(
             (80, 24),
-            shepr_term::host::HostCellSize::default(),
+            shepr_core::geometry::HostCell::Unknown,
             1,
             crate::server::outbox::ClientOutbox::detached(),
         )
@@ -916,7 +918,7 @@ mod tests {
         let first = ClientConnection::with_shell(
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            shepr_term::host::HostCellSize::default(),
+            shepr_core::geometry::HostCell::Unknown,
             registry.allocate_activity_stamp(),
             first_outbox,
         );
@@ -924,7 +926,7 @@ mod tests {
         let second = ClientConnection::with_shell(
             ClientShellState::default(),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            shepr_term::host::HostCellSize::default(),
+            shepr_core::geometry::HostCell::Unknown,
             registry.allocate_activity_stamp(),
             crate::server::outbox::ClientOutbox::detached(),
         );
@@ -974,6 +976,27 @@ mod tests {
     }
 
     #[test]
+    fn render_targets_iterate_in_client_id_order() {
+        let mut registry = ClientRegistry::default();
+        for id in [5, 2, 9, 1, 7] {
+            registry.insert(ClientId::test_new(id), shell_client());
+        }
+        let ids = render_targets(&registry)
+            .map(|target| target.client_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            [1, 2, 5, 7, 9].map(ClientId::test_new),
+            "targets come in id order whatever the insertion order"
+        );
+        assert_eq!(
+            registry.keys().copied().collect::<Vec<_>>(),
+            ids,
+            "every walk of the registry is in id order"
+        );
+    }
+
+    #[test]
     fn removing_a_client_closes_transport_handles_still_cloned_by_its_reader() {
         let mut registry = ClientRegistry::default();
         let ids = ClientIdAllocator::default();
@@ -982,12 +1005,7 @@ mod tests {
         let reader_control = writer.control_sender();
         registry.insert(
             client_id,
-            ClientConnection::new(
-                (80, 24),
-                shepr_term::host::HostCellSize::default(),
-                1,
-                writer,
-            ),
+            ClientConnection::new((80, 24), shepr_core::geometry::HostCell::Unknown, 1, writer),
         );
 
         assert!(matches!(

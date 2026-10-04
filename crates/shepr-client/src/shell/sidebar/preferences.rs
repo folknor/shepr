@@ -13,6 +13,8 @@ static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 
 use serde::{Deserialize, Serialize};
 
+use crate::shell::state::{ClientShellInput, ClientShellState};
+
 /// Sidebar chrome changed by hand, remembered by the client across launches.
 /// One file per local server socket, whichever endpoint is presented.
 ///
@@ -105,7 +107,7 @@ pub(crate) enum PreferencesProbeError {
 }
 
 impl PreferencesProbeError {
-    pub(crate) fn kind(&self) -> io::ErrorKind {
+    fn kind(&self) -> io::ErrorKind {
         match self {
             Self::InvalidPath { .. } => io::ErrorKind::InvalidInput,
             Self::CreateDirectory { source, .. }
@@ -321,6 +323,25 @@ pub(in crate::shell) fn store(
             cleanup,
         }
     })
+}
+
+impl ClientShellState {
+    pub(in crate::shell) fn persist_chrome_preferences(&mut self, outcome: &mut ClientShellInput) {
+        let Some(path) = self.config.preferences_path.as_deref() else {
+            return;
+        };
+        let preferences = ClientChromePreferences {
+            agent_panel_sort: self.agent_panel_sort_chrome.remembered_value(),
+            ..self.chrome.preferences()
+        }
+        // A value client.toml sets is only a session change: storing it would
+        // bring it back if the key were later removed from the config.
+        .without_configured(self.config.preferences.configured);
+        if let Err(error) = store(path, &preferences) {
+            self.set_endpoint_error(error.to_string(), self.now);
+            outcome.repaint = true;
+        }
+    }
 }
 
 #[cfg(test)]

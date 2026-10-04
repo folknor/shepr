@@ -1,232 +1,152 @@
-use crate::endpoint::ClientEndpointStatus;
-use crate::shell::presentation::render::{
-    ShellRenderState, display_width, put_right_text, put_text,
-};
+use crate::shell::presentation::text::{display_width, put_right_text, put_text};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 
-use crate::shell::endpoints::{ClientShellEndpoint, MachineHit, endpoint_status_presentation};
-use crate::shell::navigation::location::Location;
-use crate::shell::state::{ClientShellConfig, ShellHitMap, WorkspaceHit};
-use shepr_protocol::ClientShellSnapshot;
+use crate::shell::endpoints::{ClientShellEndpoint, endpoint_status_presentation};
+use crate::shell::notices::machine_diagnostics::MachineDiagnostics;
+use crate::shell::presentation::status::status_glyph;
+use crate::shell::sidebar::layout::{
+    CollapsedSidebarView, CollapsedSlot, ExpandedSidebarView, ExpandedSlot, SidebarInputs,
+    endpoint_signal,
+};
 
 use ratatui::layout::Rect;
 use shepr_config::theme::Palette;
 
-use crate::shell::presentation::status::status_glyph;
-use crate::shell::sidebar::sidebar_tokens::{
-    expanded_sidebar_sections, sidebar_section_divider_rect,
-};
-
-use crate::limits::WORKSPACE_HEADER_ROWS;
-
-pub(in crate::shell) fn render_collapsed(
+pub(in crate::shell) fn draw_collapsed(
     buffer: &mut Buffer,
-    area: Rect,
-    config: &ClientShellConfig,
-    state: &mut ShellRenderState<'_>,
-    hits: &mut ShellHitMap,
+    view: &CollapsedSidebarView,
+    inputs: &SidebarInputs<'_>,
 ) {
+    let config = inputs.config;
     let palette = &config.palette;
-    let single_endpoint = state.endpoints.len() == 1;
-    crate::shell::presentation::render::render_sidebar_background(buffer, area, palette);
-    let (workspace_area, divider_y, detail_area) =
-        crate::shell::sidebar::collapsed_sidebar_sections(area);
-    hits.workspace_body = workspace_area;
-    let mut total_rows = 0usize;
-    let mut selected_row = None;
-    let reveal = std::mem::take(state.reveal_navigation_workspace);
-    let reveal_focus = std::mem::take(state.reveal_focused_workspace);
-    for endpoint in state.endpoints {
-        total_rows += usize::from(!single_endpoint);
-        if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
-            continue;
-        }
-        if let Some(snapshot) = endpoint.snapshot() {
-            if reveal || reveal_focus {
-                let candidate = snapshot
-                    .workspaces
-                    .iter()
-                    .position(|workspace| {
-                        if reveal {
-                            state.selected_workspace_id.is_some_and(|target| {
-                                target.matches_workspace(
-                                    &endpoint.endpoint_id,
-                                    &workspace.workspace_id,
-                                )
-                            })
-                        } else {
-                            &endpoint.endpoint_id == state.active_endpoint_id
-                                && snapshot.focused_workspace_id.as_ref()
-                                    == Some(&workspace.workspace_id)
-                        }
-                    })
-                    .map(|index| total_rows + index);
-                selected_row = candidate.or(selected_row);
-            }
-            total_rows += snapshot.workspaces.len();
-        }
-    }
-    let height = usize::from(workspace_area.height);
-    let max_scroll = total_rows.saturating_sub(height);
-    *state.workspace_scroll = (*state.workspace_scroll).min(max_scroll);
-    if let Some(row) = selected_row.filter(|_| height > 0) {
-        let row_heights = vec![1; total_rows];
-        let gaps = vec![0; total_rows];
-        *state.workspace_scroll = crate::shell::navigation::scroll::list_scroll_start_to_reveal(
-            &row_heights,
-            &gaps,
-            workspace_area.height,
-            *state.workspace_scroll,
-            row,
-        );
-    }
-    hits.workspace_max_scroll = max_scroll;
-    let mut skip = *state.workspace_scroll;
-    let mut y = workspace_area.y;
-    let mut machine_number = 0usize;
-    for endpoint in state.endpoints {
-        if y >= workspace_area.bottom() {
-            break;
-        }
-        if !endpoint.endpoint_id.is_local() {
-            machine_number += 1;
-        }
-        let active = &endpoint.endpoint_id == state.active_endpoint_id;
-        let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
-        if !single_endpoint && skip > 0 {
-            skip -= 1;
-        } else if !single_endpoint {
-            let rect = Rect::new(workspace_area.x, y, workspace_area.width, 1);
-            if active && collapsed {
-                buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
-            }
-            let label = if endpoint.endpoint_id.is_local() {
-                "L".to_owned()
-            } else {
-                machine_number.to_string()
-            };
-            let marker = if collapsed { "▸" } else { "▾" };
-            put_text(
-                buffer,
-                rect.x,
-                rect.y,
-                rect.width.saturating_sub(1),
-                &format!("{marker}{label}"),
-                Style::default().fg(if endpoint.state.usable() {
-                    palette.text
+    let single_endpoint = inputs.single_endpoint();
+    crate::shell::presentation::text::render_sidebar_background(buffer, view.area, palette);
+    let workspace_area = view.workspaces.body;
+    for slot in &view.workspaces.slots {
+        match slot {
+            CollapsedSlot::Machine {
+                hit,
+                endpoint,
+                machine_number,
+            } => {
+                let endpoint = &inputs.endpoints[*endpoint];
+                let rect = hit.rect;
+                let active = &endpoint.endpoint_id == inputs.presented;
+                let collapsed = inputs.collapsed.contains(&endpoint.endpoint_id);
+                if active && collapsed {
+                    buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+                }
+                let label = if endpoint.endpoint_id.is_local() {
+                    "L".to_owned()
                 } else {
-                    palette.overlay0
-                }),
-            );
-            let mut status_badge = Rect::default();
-            if !endpoint.endpoint_id.is_local() {
-                let (glyph, _, color) =
-                    endpoint_status_presentation(endpoint.state.status(), palette);
-                let width = display_width(glyph).min(rect.width);
-                status_badge = Rect::new(rect.right().saturating_sub(width), rect.y, width, 1);
-                put_right_text(
+                    machine_number.to_string()
+                };
+                let marker = if collapsed { "▸" } else { "▾" };
+                put_text(
                     buffer,
-                    rect,
+                    rect.x,
                     rect.y,
-                    glyph,
-                    state.machine_diagnostics.badge_style(
-                        endpoint,
-                        palette,
-                        Style::default().fg(color),
-                    ),
-                );
-            }
-            hits.machines.push(MachineHit {
-                rect,
-                status_badge,
-                collapse_toggle: Rect::new(rect.x, rect.y, u16::from(rect.width > 1), 1),
-                location: Location::machine(endpoint.endpoint_id.clone()),
-            });
-            y = y.saturating_add(1);
-        }
-        if collapsed {
-            continue;
-        }
-        let Some(snapshot) = endpoint.snapshot() else {
-            continue;
-        };
-        for (workspace_index, workspace) in snapshot.workspaces.iter().enumerate() {
-            if skip > 0 {
-                skip -= 1;
-                continue;
-            }
-            if y >= workspace_area.bottom() {
-                break;
-            }
-            let rect = Rect::new(workspace_area.x, y, workspace_area.width, 1);
-            let focused =
-                active && snapshot.focused_workspace_id.as_ref() == Some(&workspace.workspace_id);
-            let selected = state.selected_workspace_id.is_some_and(|target| {
-                target.matches_workspace(&endpoint.endpoint_id, &workspace.workspace_id)
-            });
-            let selection_background =
-                crate::shell::sidebar::workspace_selection_background(palette);
-            if selected {
-                buffer.set_style(rect, Style::default().bg(selection_background));
-            } else if focused {
-                buffer.set_style(
-                    rect,
-                    Style::default().bg(crate::shell::sidebar::workspace_active_background(
-                        palette,
-                        state.selected_workspace_id.is_some(),
-                    )),
-                );
-            }
-            let stale = endpoint.state.stale();
-            let glyph = status_glyph(
-                workspace.agent_status,
-                config.status_indicators,
-                palette,
-                stale,
-            );
-            let number = if single_endpoint {
-                format!("{:<2}", workspace_index + 1)
-            } else {
-                format!(" {}", workspace_index + 1)
-            };
-            let number_width =
-                crate::shell::presentation::render::display_width(&number).min(rect.width);
-            let dim = if stale {
-                Modifier::DIM
-            } else {
-                Modifier::empty()
-            };
-            put_text(
-                buffer,
-                rect.x,
-                rect.y,
-                number_width,
-                &number,
-                Style::default()
-                    .fg(if focused && !stale {
+                    rect.width.saturating_sub(1),
+                    &format!("{marker}{label}"),
+                    Style::default().fg(if endpoint.state.usable() {
                         palette.text
                     } else {
                         palette.overlay0
-                    })
-                    .add_modifier(dim),
-            );
-            put_text(
-                buffer,
-                rect.x.saturating_add(number_width),
-                rect.y,
-                rect.width.saturating_sub(number_width),
-                glyph.text,
-                glyph.style,
-            );
-            hits.workspaces.push(WorkspaceHit {
-                rect,
-                location: Location::workspace(endpoint.endpoint_id.clone(), workspace.workspace_id),
-            });
-            y = y.saturating_add(1);
+                    }),
+                );
+                if !endpoint.endpoint_id.is_local() {
+                    let (glyph, _, color) =
+                        endpoint_status_presentation(endpoint.state.status(), palette);
+                    put_right_text(
+                        buffer,
+                        rect,
+                        rect.y,
+                        glyph,
+                        inputs.machine_diagnostics.badge_style(
+                            endpoint,
+                            palette,
+                            Style::default().fg(color),
+                        ),
+                    );
+                }
+            }
+            CollapsedSlot::Workspace {
+                hit,
+                endpoint,
+                entry,
+            } => {
+                let endpoint = &inputs.endpoints[*endpoint];
+                let Some(snapshot) = endpoint.snapshot() else {
+                    continue;
+                };
+                let Some(workspace) = snapshot.workspaces.get(*entry) else {
+                    continue;
+                };
+                let rect = hit.rect;
+                let active = &endpoint.endpoint_id == inputs.presented;
+                let focused = active
+                    && snapshot.focused_workspace_id.as_ref() == Some(&workspace.workspace_id);
+                let selected = inputs.selected.is_some_and(|target| {
+                    target.matches_workspace(&endpoint.endpoint_id, &workspace.workspace_id)
+                });
+                let selection_background =
+                    crate::shell::sidebar::workspace_selection_background(palette);
+                if selected {
+                    buffer.set_style(rect, Style::default().bg(selection_background));
+                } else if focused {
+                    buffer.set_style(
+                        rect,
+                        Style::default().bg(crate::shell::sidebar::workspace_active_background(
+                            palette,
+                            inputs.selected.is_some(),
+                        )),
+                    );
+                }
+                let stale = endpoint.state.stale();
+                let glyph = status_glyph(
+                    workspace.agent_status,
+                    config.status_indicators,
+                    palette,
+                    stale,
+                );
+                let number = if single_endpoint {
+                    format!("{:<2}", entry + 1)
+                } else {
+                    format!(" {}", entry + 1)
+                };
+                let number_width = display_width(&number).min(rect.width);
+                let dim = if stale {
+                    Modifier::DIM
+                } else {
+                    Modifier::empty()
+                };
+                put_text(
+                    buffer,
+                    rect.x,
+                    rect.y,
+                    number_width,
+                    &number,
+                    Style::default()
+                        .fg(if focused && !stale {
+                            palette.text
+                        } else {
+                            palette.overlay0
+                        })
+                        .add_modifier(dim),
+                );
+                put_text(
+                    buffer,
+                    rect.x.saturating_add(number_width),
+                    rect.y,
+                    rect.width.saturating_sub(number_width),
+                    glyph.text,
+                    glyph.style,
+                );
+            }
         }
     }
-    if let Some(divider_y) = divider_y {
+    if let Some(divider_y) = view.divider_y {
         put_text(
             buffer,
             workspace_area.x,
@@ -236,54 +156,27 @@ pub(in crate::shell) fn render_collapsed(
             Style::default().fg(palette.surface_dim),
         );
     }
-    crate::shell::sidebar::endpoint_agents::render_collapsed(
-        buffer,
-        detail_area,
-        state.active_endpoint_id,
-        single_endpoint,
-        config,
-        state.agent_panel_model,
-        hits,
-    );
-    hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {
-        Rect::default()
-    } else {
-        Rect::new(
-            workspace_area.x + workspace_area.width / 2,
-            area.bottom().saturating_sub(1),
-            1,
-            1,
-        )
-    };
+    crate::shell::sidebar::endpoint_agents::draw_collapsed(buffer, &view.agents, inputs);
     put_text(
         buffer,
-        hits.sidebar_toggle.x,
-        hits.sidebar_toggle.y,
-        hits.sidebar_toggle.width,
+        view.toggle.x,
+        view.toggle.y,
+        view.toggle.width,
         "»",
         Style::default().fg(palette.overlay0),
     );
 }
 
-pub(in crate::shell) fn render_expanded(
+pub(in crate::shell) fn draw_expanded(
     buffer: &mut Buffer,
-    area: Rect,
-    active_snapshot: Option<&ClientShellSnapshot>,
-    config: &ClientShellConfig,
-    state: &mut ShellRenderState<'_>,
-    hits: &mut ShellHitMap,
+    view: &ExpandedSidebarView,
+    inputs: &SidebarInputs<'_>,
 ) {
+    let config = inputs.config;
     let palette = &config.palette;
-    let single_endpoint = state.endpoints.len() == 1;
-    crate::shell::presentation::render::render_sidebar_background(buffer, area, palette);
-    hits.sidebar_divider = if area.is_empty() {
-        Rect::default()
-    } else {
-        Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
-    };
-    let (workspace_area, detail_area) =
-        expanded_sidebar_sections(area, state.sidebar_section_split);
-    hits.sidebar_section_divider = sidebar_section_divider_rect(area, state.sidebar_section_split);
+    let single_endpoint = inputs.single_endpoint();
+    let workspace_area = view.workspace_area;
+    crate::shell::presentation::text::render_sidebar_background(buffer, view.area, palette);
     put_text(
         buffer,
         workspace_area.x,
@@ -298,158 +191,30 @@ pub(in crate::shell) fn render_expanded(
             .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
-
-    enum Row {
-        Endpoint(usize),
-        Workspace { endpoint: usize, entry: usize },
-    }
-    let mut rows = Vec::new();
-    for (endpoint_index, endpoint) in state.endpoints.iter().enumerate() {
-        if !single_endpoint {
-            rows.push(Row::Endpoint(endpoint_index));
-        }
-        if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
-            continue;
-        }
-        if let Some(snapshot) = endpoint.snapshot() {
-            rows.extend((0..snapshot.workspaces.len()).map(|entry| Row::Workspace {
-                endpoint: endpoint_index,
-                entry,
-            }));
-        }
-    }
-    let body = Rect::new(
-        workspace_area.x,
-        workspace_area.y.saturating_add(WORKSPACE_HEADER_ROWS),
-        workspace_area.width,
-        workspace_area
-            .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
-    );
-    hits.workspace_body = body;
-    let row_heights = rows
-        .iter()
-        .map(|row| match row {
-            Row::Endpoint(_) => 1,
-            Row::Workspace { endpoint, entry } => {
-                let endpoint = &state.endpoints[*endpoint];
-                endpoint
-                    .snapshot()
-                    .and_then(|snapshot| {
-                        let workspace = snapshot.workspaces.get(*entry)?;
-                        let len = crate::shell::sidebar::workspace_rows(
-                            workspace,
-                            workspace.agent_status,
-                            &config.spaces,
-                        )
-                        .len()
-                        .max(1);
-                        Some(u16::try_from(len).unwrap_or(u16::MAX))
-                    })
-                    .unwrap_or(1)
-            }
-        })
-        .collect::<Vec<_>>();
-    let gaps = rows
-        .iter()
-        .enumerate()
-        .map(|(index, row)| match (row, rows.get(index + 1)) {
-            (
-                Row::Workspace { endpoint, .. },
-                Some(Row::Workspace {
-                    endpoint: next_endpoint,
-                    ..
-                }),
-            ) if endpoint == next_endpoint => config.spaces.row_gap,
-            _ => 0,
-        })
-        .collect::<Vec<_>>();
-    let reveal_navigation = !body.is_empty() && std::mem::take(state.reveal_navigation_workspace);
-    let reveal_focus = !body.is_empty() && std::mem::take(state.reveal_focused_workspace);
-    if reveal_navigation || reveal_focus {
-        let selected_row = rows.iter().position(|row| match row {
-            Row::Workspace { endpoint, entry } => {
-                let endpoint = &state.endpoints[*endpoint];
-                endpoint
-                    .snapshot()
-                    .and_then(|snapshot| snapshot.workspaces.get(*entry))
-                    .is_some_and(|workspace| {
-                        if reveal_navigation {
-                            state.selected_workspace_id.is_some_and(|target| {
-                                target.matches_workspace(
-                                    &endpoint.endpoint_id,
-                                    &workspace.workspace_id,
-                                )
-                            })
-                        } else {
-                            &endpoint.endpoint_id == state.active_endpoint_id
-                                && active_snapshot.is_some_and(|snapshot| {
-                                    snapshot.focused_workspace_id.as_ref()
-                                        == Some(&workspace.workspace_id)
-                                })
-                        }
-                    })
-            }
-            Row::Endpoint(_) => false,
-        });
-        if let Some(selected_row) = selected_row {
-            *state.workspace_scroll = crate::shell::navigation::scroll::list_scroll_start_to_reveal(
-                &row_heights,
-                &gaps,
-                body.height,
-                *state.workspace_scroll,
-                selected_row,
-            );
-        }
-    }
-    let metrics = crate::shell::navigation::scroll::list_scroll_metrics(
-        &row_heights,
-        &gaps,
-        body.height,
-        *state.workspace_scroll,
-    );
-    hits.workspace_max_scroll = metrics.max_start();
-    hits.workspace_scroll_metrics = Some(metrics);
-    *state.workspace_scroll = metrics.start();
-    let show_scrollbar = metrics.max_start() > 0 && body.width > 1;
-    let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
-    let mut y = body.y;
-    for (row_index, row) in rows.iter().enumerate().skip(*state.workspace_scroll) {
-        match row {
-            Row::Endpoint(index) => {
-                if y >= body.bottom() {
-                    break;
-                }
-                let endpoint = &state.endpoints[*index];
-                let rect = Rect::new(body.x, y, content_width, 1);
-                let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
+    let body = view.workspaces.body;
+    for slot in &view.workspaces.slots {
+        match slot {
+            ExpandedSlot::Machine { hit, endpoint } => {
+                let endpoint = &inputs.endpoints[*endpoint];
+                let collapsed = inputs.collapsed.contains(&endpoint.endpoint_id);
                 let marker = if collapsed { "▸" } else { "▾" };
-                let status_badge = render_endpoint_row(
+                draw_endpoint_row(
                     buffer,
-                    rect,
+                    hit.rect,
                     marker,
                     endpoint,
-                    collapsed && &endpoint.endpoint_id == state.active_endpoint_id,
-                    state.machine_diagnostics,
+                    collapsed && &endpoint.endpoint_id == inputs.presented,
+                    inputs.machine_diagnostics,
                     palette,
                 );
-                hits.machines.push(MachineHit {
-                    rect,
-                    status_badge,
-                    collapse_toggle: Rect::new(
-                        rect.x.saturating_add(1),
-                        rect.y,
-                        u16::from(rect.width > 1),
-                        1,
-                    ),
-                    location: Location::machine(endpoint.endpoint_id.clone()),
-                });
-                y = y
-                    .saturating_add(1)
-                    .saturating_add(gaps.get(row_index).copied().unwrap_or(0));
             }
-            Row::Workspace { endpoint, entry } => {
-                let endpoint = &state.endpoints[*endpoint];
+            ExpandedSlot::Workspace {
+                hit,
+                nested,
+                endpoint,
+                entry,
+            } => {
+                let endpoint = &inputs.endpoints[*endpoint];
                 let Some(snapshot) = endpoint.snapshot() else {
                     continue;
                 };
@@ -459,35 +224,18 @@ pub(in crate::shell) fn render_expanded(
                 let status = workspace.agent_status;
                 let tokens =
                     crate::shell::sidebar::workspace_rows(workspace, status, &config.spaces);
-                let height = u16::try_from(tokens.len().max(1))
-                    .unwrap_or(u16::MAX)
-                    .min(body.height);
-                if y.saturating_add(height) > body.bottom() {
-                    break;
-                }
-                let rect = Rect::new(body.x, y, content_width, height);
-                let nested = if single_endpoint {
-                    rect
-                } else {
-                    Rect::new(
-                        rect.x.saturating_add(2),
-                        rect.y,
-                        rect.width.saturating_sub(2),
-                        rect.height,
-                    )
-                };
-                let endpoint_active = &endpoint.endpoint_id == state.active_endpoint_id;
-                let selected = state.selected_workspace_id.is_some_and(|target| {
+                let endpoint_active = &endpoint.endpoint_id == inputs.presented;
+                let selected = inputs.selected.is_some_and(|target| {
                     target.matches_workspace(&endpoint.endpoint_id, &workspace.workspace_id)
                 });
                 // Drag-reordering moves workspaces of the active machine only.
                 let dragged = endpoint_active
-                    && state
-                        .dragged_workspace_id
+                    && inputs
+                        .dragged_workspace
                         .is_some_and(|id| id == &workspace.workspace_id);
                 crate::shell::sidebar::render_workspace_rows(
                     buffer,
-                    nested,
+                    *nested,
                     *entry + 1,
                     status,
                     config.status_indicators,
@@ -495,42 +243,31 @@ pub(in crate::shell) fn render_expanded(
                     endpoint_active
                         && snapshot.focused_workspace_id.as_ref() == Some(&workspace.workspace_id),
                     selected,
-                    state.selected_workspace_id.is_some(),
+                    inputs.selected.is_some(),
                     dragged,
                     palette,
                 );
                 if endpoint.state.stale() {
                     buffer.set_style(
-                        rect,
+                        hit.rect,
                         Style::default()
                             .fg(palette.overlay0)
                             .add_modifier(Modifier::DIM),
                     );
                 }
-                hits.workspaces.push(WorkspaceHit {
-                    rect,
-                    location: Location::workspace(
-                        endpoint.endpoint_id.clone(),
-                        workspace.workspace_id,
-                    ),
-                });
-                y = y
-                    .saturating_add(height)
-                    .saturating_add(gaps.get(row_index).copied().unwrap_or(0));
             }
         }
     }
-    if show_scrollbar {
-        let track = Rect::new(body.right().saturating_sub(1), body.y, 1, body.height);
-        hits.workspace_scrollbar = track;
-        crate::shell::navigation::scroll::render_list_scrollbar(buffer, track, metrics, palette);
+    if let Some(track) = view.workspaces.scrollbar {
+        crate::shell::view::list::render_list_scrollbar(
+            buffer,
+            track,
+            view.workspaces.scroll,
+            palette,
+        );
     }
 
-    // Same drop marker as the single-machine sidebar draws while a workspace is dragged.
-    if let Some(row) = state.workspace_drop_indicator_row.filter(|row| {
-        *row >= workspace_area.y.saturating_add(1)
-            && *row < workspace_area.bottom().saturating_sub(1)
-    }) {
+    if let Some(row) = view.drop_indicator {
         put_text(
             buffer,
             body.x,
@@ -541,33 +278,15 @@ pub(in crate::shell) fn render_expanded(
         );
     }
 
-    let footer_y = workspace_area.bottom().saturating_sub(1);
-    if config.mouse_capture {
-        let label = if single_endpoint {
-            " new".to_owned()
-        } else {
-            format!(" new · {}", active_endpoint_label(state))
-        };
-        hits.new_workspace = Rect::new(
-            workspace_area.x,
-            footer_y,
-            display_width(&label).min(workspace_area.width),
-            u16::from(workspace_area.height > 0),
-        );
+    if let Some(footer) = &view.footer {
+        let footer_y = footer.new_workspace.y;
         put_text(
             buffer,
             workspace_area.x,
             footer_y,
             workspace_area.width,
-            &label,
+            &footer.label,
             Style::default().fg(palette.overlay0),
-        );
-        let width = 6.min(workspace_area.width);
-        hits.global_launcher = Rect::new(
-            workspace_area.right().saturating_sub(width),
-            footer_y,
-            width,
-            1,
         );
         put_right_text(
             buffer,
@@ -577,67 +296,32 @@ pub(in crate::shell) fn render_expanded(
             Style::default().fg(palette.overlay0),
         );
     }
-    crate::shell::sidebar::endpoint_agents::render_expanded(
-        buffer,
-        detail_area,
-        state.active_endpoint_id,
-        config,
-        state.agent_panel_model,
-        state.agent_scroll,
-        hits,
-    );
-    hits.sidebar_toggle = Rect::new(
-        area.right().saturating_sub(2),
-        area.bottom().saturating_sub(1),
-        u16::from(area.width > 1),
-        u16::from(area.height > 0),
-    );
+    if let Some(panel) = &view.agents {
+        crate::shell::sidebar::endpoint_agents::draw_agent_panel(buffer, panel, inputs);
+    }
     put_text(
         buffer,
-        hits.sidebar_toggle.x,
-        hits.sidebar_toggle.y,
-        hits.sidebar_toggle.width,
+        view.toggle.x,
+        view.toggle.y,
+        view.toggle.width,
         "«",
         Style::default().fg(palette.overlay0),
     );
 }
 
-fn active_endpoint_label<'a>(state: &'a ShellRenderState<'_>) -> &'a str {
-    state
-        .endpoints
-        .iter()
-        .find(|endpoint| &endpoint.endpoint_id == state.active_endpoint_id)
-        .map_or(state.active_endpoint_id.display_label(), |endpoint| {
-            endpoint.endpoint_id.display_label()
-        })
-}
-
-fn render_endpoint_row(
+fn draw_endpoint_row(
     buffer: &mut Buffer,
     rect: Rect,
     marker: &str,
     endpoint: &ClientShellEndpoint,
     highlighted: bool,
-    auth: &crate::shell::overlays::machine_diagnostics::MachineDiagnostics,
+    diagnostics: &MachineDiagnostics,
     palette: &Palette,
-) -> Rect {
+) {
     if highlighted {
         buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
     }
-    let (glyph, state, color) = endpoint_status_presentation(endpoint.state.status(), palette);
-    let state = if endpoint.state.usable() { "" } else { state };
-    let signal = if auth.required_for(endpoint) {
-        "! auth".to_owned()
-    } else if endpoint.state.status() == ClientEndpointStatus::Attention {
-        // The shared status presentation spells it, Local included.
-        format!("{glyph} {state}")
-    } else if endpoint.endpoint_id.is_local() {
-        String::new()
-    } else if state.is_empty() {
-        glyph.to_owned()
-    } else {
-        format!("{glyph} {state}")
-    };
+    let (signal, color) = endpoint_signal(endpoint, diagnostics, palette);
     let signal_width = display_width(&signal).min(rect.width);
     put_text(
         buffer,
@@ -654,12 +338,6 @@ fn render_endpoint_row(
         rect,
         rect.y,
         &signal,
-        auth.badge_style(endpoint, palette, Style::default().fg(color)),
+        diagnostics.badge_style(endpoint, palette, Style::default().fg(color)),
     );
-    Rect::new(
-        rect.right().saturating_sub(signal_width),
-        rect.y,
-        signal_width,
-        1,
-    )
 }

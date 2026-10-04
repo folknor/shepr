@@ -1,13 +1,18 @@
 //! Double-click word selection. Cached rows hold pane text read back from the
 //! endpoint; that content must stay out of logs and error messages here.
 
-use crate::shell::ledger::Work;
+use crate::shell::ledger::{Submitted, Ticket, Work};
 
-use crate::shell::state::{
-    ClientShellEndpointError, ClientShellInput, ClientShellState, PaneHit, Repaint,
-};
+use crate::shell::input::selection::MouseSelection;
+use crate::shell::state::{ClientShellEndpointError, ClientShellInput, ClientShellState, Repaint};
+use crate::shell::view::PaneHit;
 
 use super::word_bounds::word_bounds_at_column;
+
+/// Keep a completed word-selection highlight visible for this interval.
+///
+/// The timeout leaves brief visual feedback after the selection copy completes.
+const WORD_SELECTION_HIGHLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Held second press. Keep only one row read in flight and use the latest
 /// pointer position when it returns, so remote latency cannot queue up motion.
@@ -20,9 +25,26 @@ pub(in crate::shell) struct ClientWordSelection {
     cursor: shepr_term::Point<shepr_term::AbsRow>,
     end_col: u16,
     cached_row: Option<(shepr_term::AbsRow, String)>,
-    pending: Option<shepr_protocol::RequestId>,
+    pending: Option<Ticket>,
     pub(in crate::shell) dragged: bool,
     pub(in crate::shell) released: bool,
+}
+
+impl MouseSelection {
+    /// The rollback of a dropped row read: ends the gesture whose read holds `read`.
+    /// A gesture that was replaced or is gone is untouched.
+    pub(in crate::shell) fn drop_word_read(&mut self, read: Ticket) -> Repaint {
+        if self
+            .word_gesture
+            .as_ref()
+            .is_some_and(|g| g.pending == Some(read))
+        {
+            self.clear_range();
+            Repaint::Needed
+        } else {
+            Repaint::Unchanged
+        }
+    }
 }
 
 impl ClientShellState {
@@ -38,8 +60,9 @@ impl ClientShellState {
         self.mouse_selection.word_gesture = Some(ClientWordSelection {
             pane_id: hit.pane_id,
             focus_confirmed: self
-                .snapshot
-                .as_deref()
+                .endpoints
+                .active
+                .snapshot()
                 .and_then(|snapshot| snapshot.focused_pane_id.as_ref())
                 == Some(&hit.pane_id),
             anchor: shepr_term::Point::new(row, col),
@@ -78,13 +101,15 @@ impl ClientShellState {
                 col: gesture.end_col,
             },
         };
-        if let Some(id) = self.submit(
+        let read = self.ledger.ticket();
+        if self.submit(
             shepr_protocol::command::EndpointCommand::PaneSelectionRead(params),
-            Work::WordSelection { pane_id, row },
+            Work::WordSelection { pane_id, row, read },
             outcome,
-        ) {
+        ) == Submitted::Opened
+        {
             if let Some(gesture) = self.mouse_selection.word_gesture.as_mut() {
-                gesture.pending = Some(id);
+                gesture.pending = Some(read);
             }
         } else {
             self.cancel_word_selection();
@@ -159,11 +184,8 @@ impl ClientShellState {
                     self.mouse_selection.clear_range();
                 } else {
                     self.mouse_selection.highlight_clear_deadline = Some(
-                        crate::limits::Deadline::after(
-                            now,
-                            crate::limits::WORD_SELECTION_HIGHLIGHT_TIMEOUT,
-                        )
-                        .instant(),
+                        crate::deadline::Deadline::after(now, WORD_SELECTION_HIGHLIGHT_TIMEOUT)
+                            .instant(),
                     );
                 }
             }
@@ -171,26 +193,9 @@ impl ClientShellState {
         outcome.repaint = true;
     }
 
-    pub(in crate::shell) fn drop_word_selection(
-        &mut self,
-        request: &shepr_protocol::RequestId,
-    ) -> Repaint {
-        if self
-            .mouse_selection
-            .word_gesture
-            .as_ref()
-            .is_some_and(|g| g.pending.as_ref() == Some(request))
-        {
-            self.cancel_word_selection();
-            Repaint::Needed
-        } else {
-            Repaint::Unchanged
-        }
-    }
-
     pub(in crate::shell) fn complete_word_selection_row(
         &mut self,
-        request: &shepr_protocol::RequestId,
+        read: Ticket,
         pane_id: &shepr_protocol::PublicPaneId,
         absolute_row: shepr_term::AbsRow,
         result: Result<shepr_protocol::command::PaneSelectionReply, ClientShellEndpointError>,
@@ -201,13 +206,14 @@ impl ClientShellState {
             .mouse_selection
             .word_gesture
             .as_ref()
-            .is_none_or(|g| g.pending.as_ref() != Some(request))
+            .is_none_or(|g| g.pending != Some(read))
         {
             return Repaint::Unchanged;
         }
         if self
-            .snapshot
-            .as_deref()
+            .endpoints
+            .active
+            .snapshot()
             .is_none_or(|snapshot| !snapshot.panes.iter().any(|pane| pane.pane_id == *pane_id))
         {
             self.cancel_word_selection();

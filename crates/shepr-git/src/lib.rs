@@ -31,7 +31,7 @@ pub(crate) enum RefBackend {
 
 pub use self::{
     discovery::{discover_checkout_root, fallback_label_from_cwd},
-    refresh::{GitRefresher, RefreshOutcome, RefreshTarget, RefreshedStatus},
+    refresh::{RefreshOutcome, RefreshTarget, RefreshedStatus},
     worker::{GitStatusWorker, RefreshProgress},
 };
 pub use runner::{GitCommandError, run_git};

@@ -29,6 +29,18 @@ pub(crate) enum AttemptOutcome {
     Abandoned,
 }
 
+/// What the app reports about its agent resume plans at the start of a pass.
+/// Eligible candidates imply pending plans, so there is no fourth state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResumePlans {
+    /// No plan is pending.
+    None,
+    /// Plans are pending but no candidate can be launched yet.
+    Waiting,
+    /// Plans are pending and some candidate can be launched.
+    Eligible,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Pending {
     not_before: Option<Instant>,
@@ -40,6 +52,11 @@ pub(crate) struct ResumeSchedule {
     theme_wait: Duration,
     spacing: Duration,
     pending: Option<Pending>,
+    /// A live foreground client reported host colours this boot.
+    live_theme_reported: bool,
+    /// No plan is pending and none can appear: plans are minted only by
+    /// session restore, before the first pass. Once set, nothing scans.
+    retired: bool,
 }
 
 impl ResumeSchedule {
@@ -51,20 +68,40 @@ impl ResumeSchedule {
             theme_wait,
             spacing,
             pending: None,
+            live_theme_reported: false,
+            retired: false,
         }
+    }
+
+    /// A live foreground client reported its host colours: the restored theme
+    /// no longer needs to be waited out. Never bypasses a barrier.
+    pub(crate) fn note_live_theme(&mut self) {
+        self.live_theme_reported = true;
+    }
+
+    /// Whether the schedule has seen the last plan go: nothing pends and
+    /// nothing can appear, so callers skip scanning for resumes.
+    pub(crate) fn is_retired(&self) -> bool {
+        self.retired
     }
 
     /// Records what the app reports at the start of a pass: whether any plan is
     /// pending at all and whether any candidate is eligible (workspace laid
     /// out, pane in layout, no runtime, unconsumed plan). No pending plans
-    /// resets the schedule, which is how work that disappeared without a
-    /// launch (a pane or workspace removed) stops holding a barrier. The theme
-    /// wait starts the first time candidates are eligible and is kept after.
-    pub(crate) fn observe(&mut self, now: Instant, has_pending_plans: bool, eligible: bool) {
-        if !has_pending_plans {
-            self.pending = None;
+    /// retires the schedule for good, which is how work that disappeared
+    /// without a launch (a pane or workspace removed) stops holding a barrier.
+    /// The theme wait starts the first time candidates are eligible and is kept
+    /// after.
+    pub(crate) fn observe(&mut self, now: Instant, plans: ResumePlans) {
+        if self.retired {
             return;
         }
+        if plans == ResumePlans::None {
+            self.pending = None;
+            self.retired = true;
+            return;
+        }
+        let eligible = plans == ResumePlans::Eligible;
         let theme_wait = self.theme_wait;
         let pending = self.pending.get_or_insert(Pending {
             not_before: None,
@@ -79,18 +116,13 @@ impl ResumeSchedule {
     /// eligible (the barrier is kept for when something is) or nothing holds
     /// an eligible candidate back, otherwise the later future deadline. An
     /// expired deadline is omitted so the loop does not spin on it.
-    pub(crate) fn wakeup(
-        &self,
-        now: Instant,
-        eligible: bool,
-        live_theme_reported: bool,
-    ) -> Option<Instant> {
+    pub(crate) fn wakeup(&self, now: Instant, eligible: bool) -> Option<Instant> {
         if !eligible {
             return None;
         }
         let pending = self.pending?;
         let barrier = pending.not_before.filter(|deadline| *deadline > now);
-        let theme_wait = if live_theme_reported {
+        let theme_wait = if self.live_theme_reported {
             None
         } else {
             pending.theme_wait_until.filter(|deadline| *deadline > now)
@@ -100,11 +132,11 @@ impl ResumeSchedule {
 
     /// Whether an attempt may run now: candidates are eligible and neither the
     /// barrier nor the theme wait still holds them back.
-    pub(crate) fn is_due(&self, now: Instant, eligible: bool, live_theme_reported: bool) -> bool {
+    pub(crate) fn is_due(&self, now: Instant, eligible: bool) -> bool {
         eligible
             && self.pending.is_some()
             && self
-                .wakeup(now, eligible, live_theme_reported)
+                .wakeup(now, eligible)
                 .is_none_or(|wakeup| now >= wakeup)
     }
 
@@ -210,7 +242,7 @@ mod tests {
     fn a_walk_continues_past_abandonments_to_a_launch() {
         let mut schedule = schedule(100);
         let now = Instant::now();
-        schedule.observe(now, true, true);
+        schedule.observe(now, ResumePlans::Eligible);
         let attempted = run(
             &mut schedule,
             now + THEME_WAIT,
@@ -231,23 +263,24 @@ mod tests {
     fn a_launch_spaces_the_next_attempt_out() {
         let mut schedule = schedule(250);
         let start = Instant::now();
-        schedule.observe(start, true, true);
+        schedule.observe(start, ResumePlans::Eligible);
+        schedule.note_live_theme();
         let now = start + THEME_WAIT;
         let attempted = run(&mut schedule, now, &[AttemptOutcome::Launched; 3]);
         assert_eq!(attempted, 1, "the walk stops after a launch");
         let barrier = now + Duration::from_millis(250);
         assert_eq!(schedule.not_before(), Some(barrier));
-        schedule.observe(now, true, true);
-        assert_eq!(schedule.wakeup(start, true, true), Some(barrier));
-        assert!(!schedule.is_due(barrier - Duration::from_millis(1), true, true));
-        assert!(schedule.is_due(barrier, true, true));
+        schedule.observe(now, ResumePlans::Eligible);
+        assert_eq!(schedule.wakeup(start, true), Some(barrier));
+        assert!(!schedule.is_due(barrier - Duration::from_millis(1), true));
+        assert!(schedule.is_due(barrier, true));
     }
 
     #[test]
     fn zero_spacing_launches_every_candidate_in_one_pass() {
         let mut schedule = schedule(0);
         let start = Instant::now();
-        schedule.observe(start, true, true);
+        schedule.observe(start, ResumePlans::Eligible);
         let attempted = run(&mut schedule, start, &[AttemptOutcome::Launched; 3]);
         assert_eq!(attempted, 3);
         assert_eq!(schedule.not_before(), None);
@@ -257,12 +290,12 @@ mod tests {
     fn an_abandonment_sets_no_spacing() {
         let mut schedule = schedule(250);
         let start = Instant::now();
-        schedule.observe(start, true, true);
+        schedule.observe(start, ResumePlans::Eligible);
         let now = start + THEME_WAIT;
         let attempted = run(&mut schedule, now, &[AttemptOutcome::Abandoned; 3]);
         assert_eq!(attempted, 3);
         assert_eq!(schedule.not_before(), None);
-        assert!(schedule.is_due(now, true, false));
+        assert!(schedule.is_due(now, true));
         // The pass that abandoned something reports it.
         let mut pass = schedule.begin_pass(now);
         assert!(!pass.changed());
@@ -274,16 +307,16 @@ mod tests {
     fn repeated_passes_do_not_restart_the_theme_wait() {
         let mut schedule = schedule(100);
         let start = Instant::now();
-        schedule.observe(start, true, true);
+        schedule.observe(start, ResumePlans::Eligible);
         let deadline = start + THEME_WAIT;
-        assert_eq!(schedule.wakeup(start, true, false), Some(deadline));
+        assert_eq!(schedule.wakeup(start, true), Some(deadline));
         // A loop that keeps running (any pane printing) observes on every
         // iteration; none of them moves the wait.
         for step in 1..7 {
             let now = start + Duration::from_millis(step * 100);
-            schedule.observe(now, true, true);
-            assert_eq!(schedule.wakeup(now, true, false), Some(deadline));
-            assert_eq!(schedule.is_due(now, true, false), now >= deadline);
+            schedule.observe(now, ResumePlans::Eligible);
+            assert_eq!(schedule.wakeup(now, true), Some(deadline));
+            assert_eq!(schedule.is_due(now, true), now >= deadline);
         }
     }
 
@@ -291,78 +324,75 @@ mod tests {
     fn a_live_theme_report_bypasses_the_wait_but_not_a_barrier() {
         let mut schedule = schedule(250);
         let start = Instant::now();
-        schedule.observe(start, true, true);
-        assert!(!schedule.is_due(start, true, false));
+        schedule.observe(start, ResumePlans::Eligible);
+        assert!(!schedule.is_due(start, true));
+        schedule.note_live_theme();
         assert!(
-            schedule.is_due(start, true, true),
+            schedule.is_due(start, true),
             "a live theme report ends the wait"
         );
         run(&mut schedule, start, &[AttemptOutcome::Launched]);
         let barrier = start + Duration::from_millis(250);
-        assert!(!schedule.is_due(start, true, true));
-        assert_eq!(schedule.wakeup(start, true, true), Some(barrier));
+        assert!(!schedule.is_due(start, true));
+        assert_eq!(schedule.wakeup(start, true), Some(barrier));
     }
 
     #[test]
     fn no_wakeup_while_nothing_is_eligible_and_the_barrier_is_kept() {
         let mut schedule = schedule(250);
         let start = Instant::now();
-        schedule.observe(start, true, true);
+        schedule.observe(start, ResumePlans::Eligible);
         run(&mut schedule, start, &[AttemptOutcome::Launched]);
         let barrier = start + Duration::from_millis(250);
 
         // Plans are pending but none is eligible (workspace not laid out).
-        schedule.observe(start, true, false);
-        assert_eq!(schedule.wakeup(start, false, true), None);
-        assert_eq!(schedule.wakeup(start, false, false), None);
-        assert!(!schedule.is_due(barrier, false, true));
+        schedule.observe(start, ResumePlans::Waiting);
+        assert_eq!(schedule.wakeup(start, false), None);
+        schedule.note_live_theme();
+        assert_eq!(schedule.wakeup(start, false), None);
+        assert!(!schedule.is_due(barrier, false));
 
         // Something becomes eligible again: the barrier still holds.
-        schedule.observe(start, true, true);
-        assert_eq!(schedule.wakeup(start, true, true), Some(barrier));
+        schedule.observe(start, ResumePlans::Eligible);
+        assert_eq!(schedule.wakeup(start, true), Some(barrier));
     }
 
     #[test]
     fn the_theme_wait_starts_when_candidates_first_become_eligible() {
         let mut schedule = schedule(0);
         let start = Instant::now();
-        schedule.observe(start, true, false);
-        assert_eq!(schedule.wakeup(start, true, false), None);
+        schedule.observe(start, ResumePlans::Waiting);
+        assert_eq!(schedule.wakeup(start, true), None);
         let later = start + Duration::from_secs(5);
-        schedule.observe(later, true, true);
-        assert_eq!(
-            schedule.wakeup(later, true, false),
-            Some(later + THEME_WAIT)
-        );
+        schedule.observe(later, ResumePlans::Eligible);
+        assert_eq!(schedule.wakeup(later, true), Some(later + THEME_WAIT));
         // Never restarted, even across a stretch with nothing eligible.
-        schedule.observe(later + Duration::from_secs(1), true, false);
-        schedule.observe(later + Duration::from_secs(2), true, true);
-        assert_eq!(
-            schedule.wakeup(later + Duration::from_secs(2), true, false),
-            None
-        );
+        schedule.observe(later + Duration::from_secs(1), ResumePlans::Waiting);
+        schedule.observe(later + Duration::from_secs(2), ResumePlans::Eligible);
+        assert_eq!(schedule.wakeup(later + Duration::from_secs(2), true), None);
     }
 
     #[test]
-    fn no_pending_plans_resets_the_schedule() {
+    fn no_pending_plans_retires_the_schedule() {
         let mut schedule = schedule(250);
         let start = Instant::now();
-        schedule.observe(start, true, true);
+        schedule.observe(start, ResumePlans::Eligible);
         run(&mut schedule, start, &[AttemptOutcome::Launched]);
         assert!(schedule.not_before().is_some());
+        assert!(!schedule.is_retired());
 
         // The pane went away without a launch.
-        schedule.observe(start, false, false);
+        schedule.observe(start, ResumePlans::None);
+        assert!(schedule.is_retired());
         assert!(!schedule.is_pending());
-        assert_eq!(schedule.wakeup(start, true, false), None);
+        assert_eq!(schedule.wakeup(start, true), None);
 
-        // New plans start from scratch: fresh theme wait, no old barrier.
+        // Plans are minted only by restore, before the first pass; one that
+        // appears after the schedule retired is ignored.
         let later = start + Duration::from_secs(1);
-        schedule.observe(later, true, true);
-        assert_eq!(schedule.not_before(), None);
-        assert_eq!(
-            schedule.wakeup(later, true, false),
-            Some(later + THEME_WAIT)
-        );
+        schedule.observe(later, ResumePlans::Eligible);
+        assert!(schedule.is_retired());
+        assert_eq!(schedule.wakeup(later, true), None);
+        assert!(!schedule.is_due(later, true));
     }
 }

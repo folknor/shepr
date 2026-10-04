@@ -26,6 +26,21 @@ pub enum ServerInvocation {
 }
 
 impl ServerInvocation {
+    /// The arguments (after the executable name) that spell this invocation:
+    /// the one place a producer takes them from, and what [`Self::parse`]
+    /// reads back.
+    pub fn args(self) -> &'static [&'static str] {
+        match self {
+            Self::Serve {
+                client_spawned: false,
+            } => &[],
+            Self::Serve {
+                client_spawned: true,
+            } => &[CLIENT_SPAWNED_FLAG],
+            Self::Version => &[VERSION_FLAG],
+        }
+    }
+
     /// The invocation `args` (after the executable name) spell, or `None` for
     /// any other argument list.
     pub fn parse(args: &[&str]) -> Option<Self> {
@@ -116,6 +131,17 @@ mod tests {
             assert_eq!(ServerInvocation::parse(other), None, "{other:?}");
         }
         assert_eq!(server_usage(), "usage: shepr-server [--version]");
+        for invocation in [
+            ServerInvocation::Serve {
+                client_spawned: false,
+            },
+            ServerInvocation::Serve {
+                client_spawned: true,
+            },
+            ServerInvocation::Version,
+        ] {
+            assert_eq!(ServerInvocation::parse(invocation.args()), Some(invocation));
+        }
     }
 
     #[test]

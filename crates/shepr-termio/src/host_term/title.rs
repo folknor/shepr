@@ -5,16 +5,15 @@ use std::io::{self, Write};
 /// Writes `OSC 0` to set the host terminal's window title; `None` resets it to
 /// "shepr".
 ///
-/// Every control character is dropped, not just the OSC terminators: titles
+/// The title is stripped by `shepr_term::title`, the one displayable-title
+/// rule, with no length cap: the host writes whatever the server already
+/// bounded. Every control character is dropped, not just the OSC terminators: titles
 /// carry cwd and branch text, and a C0 (CAN/SUB abort the OSC, CR/LF garble
 /// it), DEL or a UTF-8-encoded C1 (U+009B CSI, U+0090 DCS, U+009C ST) would
 /// otherwise reach the host terminal's parser.
 pub fn write_window_title<W: Write>(writer: &mut W, title: Option<&str>) -> io::Result<()> {
     let title = title.unwrap_or("shepr");
-    let safe_title = title
-        .chars()
-        .filter(|ch| !ch.is_control())
-        .collect::<String>();
+    let safe_title = shepr_term::title::strip_non_displayable(title);
     write!(writer, "\x1b]0;{safe_title}\x07")?;
     writer.flush()
 }
@@ -25,10 +24,10 @@ fn osc52_sequence(bytes: &[u8]) -> String {
     format!("\x1b]52;c;{encoded}\x07")
 }
 
-/// Write clipboard bytes with native Linux tools when the host has a local
-/// clipboard, falling back to an OSC 52 write through the host terminal.
+/// Write clipboard bytes with the helpers `route` names when the host has a
+/// local clipboard, falling back to an OSC 52 write through the host terminal.
 ///
-/// Remote and VS Code remote sessions use OSC 52 so bytes reach the
+/// Remote and VS Code remote sessions route to OSC 52 so bytes reach the
 /// terminal on the user's machine. Some terminals still only honor BEL-
 /// terminated writes, so OSC 52 uses BEL here.
 ///
@@ -39,17 +38,13 @@ fn osc52_sequence(bytes: &[u8]) -> String {
 /// diagnostics should include only their byte count and error kind.
 pub fn write_clipboard_bytes<W: Write>(
     bytes: &[u8],
-    prefers_osc52_clipboard: bool,
+    route: shepr_platform::ClipboardRoute,
     writer: &mut W,
 ) -> io::Result<()> {
-    if native_clipboard_write_succeeded(bytes, prefers_osc52_clipboard) {
+    if route.write_with_helpers(bytes) {
         return Ok(());
     }
     write_osc52(bytes, writer)
-}
-
-fn native_clipboard_write_succeeded(bytes: &[u8], prefers_osc52_clipboard: bool) -> bool {
-    !prefers_osc52_clipboard && shepr_platform::write_clipboard(bytes)
 }
 
 fn write_osc52<W: Write>(bytes: &[u8], writer: &mut W) -> io::Result<()> {

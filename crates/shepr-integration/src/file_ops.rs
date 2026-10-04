@@ -84,15 +84,15 @@ pub(crate) fn write_managed_asset(
     contents: &[u8],
     executable: bool,
 ) -> io::Result<()> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| io::Error::other(format!("{} has no file name", path.display())))?
-        .to_string_lossy()
-        .into_owned();
+    if path.file_name().is_none() {
+        return Err(io::Error::other(format!(
+            "{} has no file name",
+            path.display()
+        )));
+    }
 
     let replacement = AtomicReplace::prepare_with_policy(
         path,
-        &format!(".{name}.shepr"),
         PermissionPolicy::ManagedAsset { executable },
         contents,
     )?;

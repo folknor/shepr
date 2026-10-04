@@ -234,7 +234,7 @@ impl AgentOwnership {
 
     pub(super) fn transition_pane_exit(
         &mut self,
-        exit_reason: shepr_platform::ChildExitReason,
+        needs_checkpoint: bool,
         now: Instant,
     ) -> AgentOwnershipMutation {
         if self.pane_ended {
@@ -246,7 +246,7 @@ impl AgentOwnership {
         let candidate = self.checkpoint_candidate.take();
         self.pane_ended = true;
         let mut mutation = self.transition_detection(agent, AgentState::Idle, false, true, now);
-        if exit_reason.requires_session_checkpoint() {
+        if needs_checkpoint {
             // What the pane held when it died; failing that, an identity a
             // detector release removed just before, as a group kill that took
             // the agent first leaves it. The pane is gone once its checkpoint
@@ -256,10 +256,7 @@ impl AgentOwnership {
             let identity = previous_session.clone().or_else(|| {
                 candidate
                     .filter(|candidate| {
-                        candidate.qualifies(CheckpointContext::PaneEnding {
-                            reason: exit_reason,
-                            ended_at: now,
-                        })
+                        candidate.qualifies(CheckpointContext::PaneEnding { ended_at: now })
                     })
                     .map(|candidate| candidate.identity)
             });
@@ -301,10 +298,8 @@ impl CheckpointCandidate {
     fn qualifies(&self, context: CheckpointContext) -> bool {
         let grace = crate::limits::AGENT_PROCESS_EXIT_RELEASE_GRACE;
         match context {
-            CheckpointContext::PaneEnding { reason, ended_at } => {
-                reason.requires_session_checkpoint()
-                    && self.observed_at <= ended_at
-                    && ended_at.duration_since(self.observed_at) <= grace
+            CheckpointContext::PaneEnding { ended_at } => {
+                self.observed_at <= ended_at && ended_at.duration_since(self.observed_at) <= grace
             }
             // The release can land on either side of the signal: the agent
             // may die from the same kill a moment before or after the server

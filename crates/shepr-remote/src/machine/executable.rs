@@ -1,7 +1,11 @@
 use std::fmt;
 use std::path::Path;
 
+use crate::args::RemoteCliCommand;
 use crate::limits::MAX_REMOTE_EXECUTABLE_BYTES;
+use crate::shell_command::{
+    AccountShellCommand, PosixScript, posix_remote_output_command, posix_shell_command,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteExecutableError {
@@ -66,8 +70,33 @@ impl RemoteExecutable {
         self.as_str()
     }
 
-    pub(crate) fn is_shell_plain_word(value: &str) -> bool {
+    fn is_shell_plain_word(value: &str) -> bool {
         shepr_core::shell_quote::is_plain_word(value)
+    }
+
+    /// The remote CLI invocation as a script for `RemoteSsh::sh_output`.
+    pub(crate) fn command(&self, args: &[&str]) -> PosixScript {
+        let arguments = shepr_core::shell_quote::join_argv(args.iter().copied());
+        PosixScript::new(if arguments.is_empty() {
+            self.shell_word().to_owned()
+        } else {
+            format!("{} {arguments}", self.shell_word())
+        })
+    }
+
+    pub(crate) fn status_client_command(&self) -> PosixScript {
+        let args = RemoteCliCommand::ClientStatus.args();
+        self.command(&args)
+    }
+
+    /// The bridge launch as the command sshd hands the account shell.
+    pub(crate) fn bridge_command(&self) -> AccountShellCommand {
+        let args = RemoteCliCommand::ClientBridge.args();
+        // sshd hands this string to the user's account shell, which need not be POSIX
+        // (xonsh, fish, nushell). Run the script under /bin/sh (discovery feeds its
+        // script to `/bin/sh -s` instead), so the account shell only has to launch one
+        // quoted command.
+        posix_shell_command(&posix_remote_output_command(&self.command(&args)))
     }
 }
 
@@ -112,7 +141,7 @@ mod tests {
             "/opt/shepr-0.1+dev",
         ] {
             assert_eq!(
-                crate::shell_quote(value) == value,
+                crate::shell_command::shell_quote(value) == value,
                 RemoteExecutable::is_shell_plain_word(value),
                 "{value:?}"
             );

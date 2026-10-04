@@ -67,10 +67,20 @@ impl BindingTrigger {
     }
 }
 
+/// The label the help screen and diagnostics show: the chord, behind
+/// `prefix+` for a prefix trigger.
+impl std::fmt::Display for BindingTrigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Direct(chord) => f.write_str(&format_key_chord(*chord)),
+            Self::Prefix(chord) => write!(f, "prefix+{}", format_key_chord(*chord)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedBinding {
     pub trigger: BindingTrigger,
-    pub label: String,
 }
 
 impl ResolvedBinding {
@@ -100,7 +110,7 @@ impl ActionKeybinds {
     pub fn labels(&self) -> Vec<String> {
         self.bindings
             .iter()
-            .map(|binding| binding.label.clone())
+            .map(|binding| binding.trigger.to_string())
             .collect()
     }
 
@@ -118,13 +128,7 @@ impl ActionKeybinds {
             .bindings
             .iter()
             .filter(|binding| binding.trigger.is_prefix())
-            .map(|binding| {
-                binding
-                    .label
-                    .strip_prefix("prefix+")
-                    .unwrap_or(&binding.label)
-                    .to_string()
-            })
+            .map(|binding| format_key_chord(binding.trigger.chord()))
             .collect();
         if labels.is_empty() {
             None
@@ -134,20 +138,37 @@ impl ActionKeybinds {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IndexedKeybind {
-    pub trigger: BindingTrigger,
-    pub label: String,
+/// One configured indexed binding: a single key, or a whole digit range kept
+/// as one value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexedKeybind {
+    Key(BindingTrigger),
+    Range(IndexedRange),
 }
 
-/// The configured digit range shared by indexed bindings and their help labels.
+/// The configured digit range (`1..9`) behind one trigger kind and one set of
+/// modifiers, shared by indexed bindings and their help labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct IndexedRange {
-    modifiers: KeyModifiers,
+pub struct IndexedRange {
+    pub prefix: bool,
+    pub modifiers: KeyModifiers,
+}
+
+/// The label of the range as the user writes it, such as `prefix+alt+1..9`.
+impl std::fmt::Display for IndexedRange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.prefix {
+            f.write_str("prefix+")?;
+        }
+        let mut parts = modifier_labels(self.modifiers, KeyCode::Char(FIRST_INDEXED_BINDING_KEY));
+        parts.push(Self::syntax());
+        f.write_str(&parts.join("+"))
+    }
 }
 
 impl IndexedRange {
-    fn parse(s: &str) -> Option<Self> {
+    /// Parse a range body (no `prefix+`); `prefix` records the trigger kind.
+    fn parse(s: &str, prefix: bool) -> Option<Self> {
         let syntax = Self::syntax();
         let mut modifiers = KeyModifiers::empty();
         let mut saw_range = false;
@@ -162,7 +183,7 @@ impl IndexedRange {
                 modifiers |= parse_modifier_token(trimmed)?;
             }
         }
-        saw_range.then_some(Self { modifiers })
+        saw_range.then_some(Self { prefix, modifiers })
     }
 
     /// Return the range syntax derived from the configured first and last keys.
@@ -170,47 +191,78 @@ impl IndexedRange {
         format!("{FIRST_INDEXED_BINDING_KEY}..{LAST_INDEXED_BINDING_KEY}")
     }
 
-    fn expand(self, prefix: bool) -> Vec<ResolvedBinding> {
+    fn trigger(self, key: char) -> BindingTrigger {
+        let chord = KeyChord::new(KeyCode::Char(key), self.modifiers);
+        if self.prefix {
+            BindingTrigger::Prefix(chord)
+        } else {
+            BindingTrigger::Direct(chord)
+        }
+    }
+
+    /// Every key of the range as its own binding, in index order. Validation
+    /// checks each against the registry; the live keymap keeps the range whole.
+    fn expand(self) -> Vec<ResolvedBinding> {
         (FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
-            .map(|key| {
-                let chord = KeyChord::new(KeyCode::Char(key), self.modifiers);
-                let key_label = format_key_chord(chord);
-                ResolvedBinding {
-                    trigger: if prefix {
-                        BindingTrigger::Prefix(chord)
-                    } else {
-                        BindingTrigger::Direct(chord)
-                    },
-                    label: if prefix {
-                        format!("prefix+{key_label}")
-                    } else {
-                        key_label
-                    },
-                }
+            .map(|key| ResolvedBinding {
+                trigger: self.trigger(key),
             })
             .collect()
     }
 
-    /// Compress a complete ordered indexed run into a help label.
-    fn label(bindings: &[IndexedKeybind]) -> Option<(String, usize)> {
-        let run_len = Self::key_count();
-        let run = bindings.get(..run_len)?;
-        let prefix = run.first()?.label.strip_suffix(FIRST_INDEXED_BINDING_KEY)?;
-        for (offset, binding) in run.iter().enumerate() {
-            let key = Self::key_at_offset(offset)?;
-            if binding.label.strip_suffix(key) != Some(prefix) {
-                return None;
+    /// The index of the range key that `key` matches, if any.
+    fn matched_index(self, key: &TerminalKey) -> Option<usize> {
+        (FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
+            .position(|number| self.trigger(number).chord().matches(key))
+    }
+
+    fn contains_key(code: KeyCode) -> bool {
+        matches!(
+            code,
+            KeyCode::Char(FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
+        )
+    }
+}
+
+/// Every indexed binding's label is its trigger's (a range's is its own).
+impl std::fmt::Display for IndexedKeybind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Key(trigger) => std::fmt::Display::fmt(trigger, f),
+            Self::Range(range) => std::fmt::Display::fmt(range, f),
+        }
+    }
+}
+
+impl IndexedKeybind {
+    pub fn is_direct(&self) -> bool {
+        match self {
+            Self::Key(trigger) => trigger.is_direct(),
+            Self::Range(range) => !range.prefix,
+        }
+    }
+
+    pub fn is_prefix(&self) -> bool {
+        !self.is_direct()
+    }
+
+    /// Whether the binding's modifiers are exactly the ones `key` reports.
+    pub fn modifiers_match_exactly(&self, key: &TerminalKey) -> bool {
+        match self {
+            Self::Key(trigger) => trigger.chord().modifiers_match_exactly(key),
+            Self::Range(range) => {
+                KeyChord::new(KeyCode::Char(FIRST_INDEXED_BINDING_KEY), range.modifiers)
+                    .modifiers_match_exactly(key)
             }
         }
-        Some((format!("{prefix}{}", Self::syntax()), run_len))
     }
 
     /// Match an indexed key, preferring bindings with exactly reported modifiers.
-    fn matched_index(bindings: &[IndexedKeybind], key: &TerminalKey) -> Option<usize> {
+    pub fn matched_range_index(bindings: &[Self], key: &TerminalKey) -> Option<usize> {
         for exact_modifiers in [true, false] {
             for binding in bindings {
-                if binding.trigger.is_direct()
-                    && binding.trigger.chord().modifiers_match_exactly(key) == exact_modifiers
+                if binding.is_direct()
+                    && binding.modifiers_match_exactly(key) == exact_modifiers
                     && let Some(index) = binding.matched_index(key)
                 {
                     return Some(index);
@@ -220,51 +272,22 @@ impl IndexedRange {
         None
     }
 
-    fn contains_key(code: KeyCode) -> bool {
-        matches!(
-            code,
-            KeyCode::Char(FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
-        )
-    }
-
-    fn key_count() -> usize {
-        (FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY).count()
-    }
-
-    fn key_at_offset(offset: usize) -> Option<char> {
-        let codepoint =
-            u32::from(FIRST_INDEXED_BINDING_KEY).checked_add(u32::try_from(offset).ok()?)?;
-        (codepoint <= u32::from(LAST_INDEXED_BINDING_KEY))
-            .then(|| char::from_u32(codepoint))
-            .flatten()
-    }
-}
-
-impl IndexedKeybind {
-    /// Compress a complete ordered indexed run into a help label, if it is uniform.
-    pub fn range_label(bindings: &[Self]) -> Option<(String, usize)> {
-        IndexedRange::label(bindings)
-    }
-
-    /// Match an indexed key, preferring bindings with exactly reported modifiers.
-    pub fn matched_range_index(bindings: &[Self], key: &TerminalKey) -> Option<usize> {
-        IndexedRange::matched_index(bindings, key)
-    }
-
     pub fn matched_index(&self, key: &TerminalKey) -> Option<usize> {
-        let chord = self.trigger.chord();
-        let KeyCode::Char(key_number) = chord.normalized().code else {
-            return None;
-        };
-        if !IndexedRange::contains_key(KeyCode::Char(key_number)) {
-            return None;
-        }
-        let index =
-            usize::try_from(u32::from(key_number) - u32::from(FIRST_INDEXED_BINDING_KEY)).ok()?;
-        if chord.matches(key) {
-            Some(index)
-        } else {
-            None
+        match self {
+            Self::Range(range) => range.matched_index(key),
+            Self::Key(trigger) => {
+                let chord = trigger.chord();
+                let KeyCode::Char(key_number) = chord.normalized().code else {
+                    return None;
+                };
+                if !IndexedRange::contains_key(KeyCode::Char(key_number)) {
+                    return None;
+                }
+                let index =
+                    usize::try_from(u32::from(key_number) - u32::from(FIRST_INDEXED_BINDING_KEY))
+                        .ok()?;
+                chord.matches(key).then_some(index)
+            }
         }
     }
 }
@@ -305,10 +328,10 @@ define_navigate_aliases! {
 /// Parsed keybinds for Shepr actions.
 macro_rules! define_resolved_keybinds {
     (
-        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
+        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
     ) => {
         #[derive(Debug, Clone, Default)]
         pub struct NavigateKeybinds {
@@ -353,7 +376,7 @@ pub(crate) struct KeybindValidation {
 #[derive(Clone)]
 enum ParsedBinding {
     Single(ResolvedBinding),
-    Range(Vec<ResolvedBinding>),
+    Range(IndexedRange),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -523,10 +546,10 @@ impl ClientConfig {
         }
         macro_rules! apply_keybinding_table {
             (
-                actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-                navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-                navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+                actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
+                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+                navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+                navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
             ) => {
                 for source in [BindingSource::User, BindingSource::Default] {
                     $(apply_action!(keybinds.$action_field, $action_field, source);)*
@@ -550,10 +573,10 @@ impl ClientConfig {
 fn reserve_navigate_runtime_keys(registry: &mut BindingRegistry) {
     macro_rules! reserve_aliases {
         (
-            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
+            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
         ) => {
             $(
                 if let Some(chord) = crate::navigate_alias!($navigate_alias) {
@@ -692,18 +715,20 @@ fn parse_indexed_bindings(
         }
         match parse_binding_string(raw) {
             Some(ParsedBinding::Single(binding)) => {
-                push_indexed_binding(field, binding, registry, diagnostics, source, &mut bindings);
+                if accept_indexed_binding(field, &binding, registry, diagnostics, source) {
+                    bindings.push(IndexedKeybind::Key(binding.trigger));
+                }
             }
             Some(ParsedBinding::Range(range)) => {
-                for binding in range {
-                    push_indexed_binding(
-                        field,
-                        binding,
-                        registry,
-                        diagnostics,
-                        source,
-                        &mut bindings,
-                    );
+                // Check every key so each conflict is reported, then keep the
+                // range whole.
+                let mut all_accepted = true;
+                for binding in range.expand() {
+                    all_accepted &=
+                        accept_indexed_binding(field, &binding, registry, diagnostics, source);
+                }
+                if all_accepted {
+                    bindings.push(IndexedKeybind::Range(range));
                 }
             }
             None => {
@@ -730,25 +755,23 @@ fn parse_navigate_indexed_bindings(
         }
         match parse_binding_string(raw) {
             Some(ParsedBinding::Single(binding)) => {
-                push_navigate_indexed_binding(
-                    field,
-                    binding,
-                    registry,
-                    diagnostics,
-                    source,
-                    &mut bindings,
-                );
+                if accept_navigate_indexed_binding(field, &binding, registry, diagnostics, source) {
+                    bindings.push(IndexedKeybind::Key(binding.trigger));
+                }
             }
             Some(ParsedBinding::Range(range)) => {
-                for binding in range {
-                    push_navigate_indexed_binding(
+                let mut all_accepted = true;
+                for binding in range.expand() {
+                    all_accepted &= accept_navigate_indexed_binding(
                         field,
-                        binding,
+                        &binding,
                         registry,
                         diagnostics,
                         source,
-                        &mut bindings,
                     );
+                }
+                if all_accepted {
+                    bindings.push(IndexedKeybind::Range(range));
                 }
             }
             None => {
@@ -759,63 +782,58 @@ fn parse_navigate_indexed_bindings(
     bindings
 }
 
-fn push_indexed_binding(
+/// Validates one key of an indexed binding and registers it; false when it
+/// was rejected (the diagnostic is recorded).
+fn accept_indexed_binding(
     field: &str,
-    binding: ResolvedBinding,
+    binding: &ResolvedBinding,
     registry: &mut BindingRegistry,
     diagnostics: &mut Vec<ConfigDiagnostic>,
     source: BindingSource,
-    bindings: &mut Vec<IndexedKeybind>,
-) {
+) -> bool {
     if !IndexedRange::contains_key(binding.trigger.chord().code) {
         let diag = ConfigDiagnostic::validation(
             ConfigKeyPath::from_dotted(field),
             format!(
                 "indexed keybinding must use {}: {:?}",
                 IndexedRange::syntax(),
-                binding.label
+                binding.trigger.to_string()
             ),
         );
         diagnostics.push(diag);
-        return;
+        return false;
     }
-    if reject_binding(field, &binding, registry, diagnostics, source) {
-        return;
+    if reject_binding(field, binding, registry, diagnostics, source) {
+        return false;
     }
-    registry.register(&binding, field, source);
-    bindings.push(IndexedKeybind {
-        trigger: binding.trigger,
-        label: binding.label,
-    });
+    registry.register(binding, field, source);
+    true
 }
 
-fn push_navigate_indexed_binding(
+/// As `accept_indexed_binding`, for the navigate keymap.
+fn accept_navigate_indexed_binding(
     field: &str,
-    binding: ResolvedBinding,
+    binding: &ResolvedBinding,
     registry: &mut BindingRegistry,
     diagnostics: &mut Vec<ConfigDiagnostic>,
     source: BindingSource,
-    bindings: &mut Vec<IndexedKeybind>,
-) {
+) -> bool {
     if !IndexedRange::contains_key(binding.trigger.chord().code) {
         diagnostics.push(ConfigDiagnostic::validation(
             ConfigKeyPath::from_dotted(field),
             format!(
                 "indexed keybinding must use {}: {:?}",
                 IndexedRange::syntax(),
-                binding.label
+                binding.trigger.to_string()
             ),
         ));
-        return;
+        return false;
     }
-    if reject_navigate_binding(field, &binding, registry, diagnostics, source) {
-        return;
+    if reject_navigate_binding(field, binding, registry, diagnostics, source) {
+        return false;
     }
-    registry.register(&binding, field, source);
-    bindings.push(IndexedKeybind {
-        trigger: binding.trigger,
-        label: binding.label,
-    });
+    registry.register(binding, field, source);
+    true
 }
 
 fn reject_navigate_binding(
@@ -830,7 +848,7 @@ fn reject_navigate_binding(
             ConfigKeyPath::from_dotted(field),
             format!(
                 "navigate keybinding must not include prefix: {:?}",
-                binding.label
+                binding.trigger.to_string()
             ),
         );
         diagnostics.push(diag);
@@ -867,7 +885,7 @@ fn reject_binding(
                 vec![prefix_key],
                 format!(
                     "reserved keybinding: default value {:?} conflicts with configured prefix {prefix:?}; set this key explicitly to replace or clear its default",
-                    binding.label
+                    binding.trigger.to_string()
                 ),
             )
         } else {
@@ -876,7 +894,7 @@ fn reject_binding(
                 vec![prefix_key],
                 format!(
                     "reserved keybinding value {:?} uses prefix {prefix:?} as the action key; pressing the prefix twice sends a literal prefix key",
-                    binding.label
+                    binding.trigger.to_string()
                 ),
             )
         };
@@ -897,12 +915,12 @@ fn reject_binding(
             .canonical()
             .is_unmodified_printable()
     {
-        let suggestion = format!("prefix+{}", binding.label);
+        let label = binding.trigger.to_string();
+        let suggestion = format!("prefix+{label}");
         let diag = ConfigDiagnostic::validation(
             ConfigKeyPath::from_dotted(field),
             format!(
-                "unsafe direct keybinding value {:?} would intercept typing; use {:?} to require the prefix",
-                binding.label, suggestion
+                "unsafe direct keybinding value {label:?} would intercept typing; use {suggestion:?} to require the prefix"
             ),
         );
         diagnostics.push(diag);
@@ -925,19 +943,20 @@ fn keybinding_conflict_diagnostic(
             related_keys,
             format!(
                 "keybinding conflict: default value {:?} conflicts with a configured binding; set this key explicitly to replace or clear its default",
-                binding.label
+                binding.trigger.to_string()
             ),
         )
     } else {
         let reason = if first_binding.key.is_none() {
             format!(
                 "keybinding conflict: {:?} is assigned to reserved {}",
-                binding.label, first_binding.field
+                binding.trigger.to_string(),
+                first_binding.field
             )
         } else {
             format!(
                 "keybinding conflict: {:?} is assigned to another binding",
-                binding.label
+                binding.trigger.to_string()
             )
         };
         ConfigDiagnostic::validation_related(
@@ -956,28 +975,22 @@ fn parse_binding_string(raw: &str) -> Option<ParsedBinding> {
         (false, trimmed)
     };
 
-    if let Some(range) = IndexedRange::parse(body) {
-        return Some(ParsedBinding::Range(range.expand(trigger_prefix)));
+    if let Some(range) = IndexedRange::parse(body, trigger_prefix) {
+        return Some(ParsedBinding::Range(range));
     }
 
     let chord = parse_key_chord(body)?;
-    let label = if trigger_prefix {
-        format!("prefix+{}", format_key_chord(chord))
-    } else {
-        format_key_chord(chord)
-    };
     Some(ParsedBinding::Single(ResolvedBinding {
         trigger: if trigger_prefix {
             BindingTrigger::Prefix(chord)
         } else {
             BindingTrigger::Direct(chord)
         },
-        label,
     }))
 }
 
-pub fn format_key_chord(chord: KeyChord) -> String {
-    let KeyChord { code, modifiers } = chord;
+/// The modifier words `format_key_chord` writes before the key, in order.
+fn modifier_labels(modifiers: KeyModifiers, code: KeyCode) -> Vec<String> {
     let mut parts = Vec::new();
     if modifiers.contains(KeyModifiers::CONTROL) {
         parts.push("ctrl".to_string());
@@ -998,6 +1011,12 @@ pub fn format_key_chord(chord: KeyChord) -> String {
     if modifiers.contains(KeyModifiers::HYPER) {
         parts.push("hyper".to_string());
     }
+    parts
+}
+
+pub fn format_key_chord(chord: KeyChord) -> String {
+    let KeyChord { code, modifiers } = chord;
+    let mut parts = modifier_labels(modifiers, code);
 
     let key = match code {
         KeyCode::Char(' ') => "space".to_string(),
@@ -1787,12 +1806,42 @@ switch_workspace = "prefix+shift+1..9"
         )
         .expect("test precondition");
         let kb = parse_keybinds(&config, &[]).expect("valid keybindings");
-        assert_eq!(kb.switch_workspace.len(), 9);
         assert_eq!(
-            kb.switch_workspace[0].trigger,
+            kb.switch_workspace,
+            vec![IndexedKeybind::Range(IndexedRange {
+                prefix: true,
+                modifiers: KeyModifiers::SHIFT,
+            })]
+        );
+        assert_eq!(kb.switch_workspace[0].to_string(), "prefix+shift+1..9");
+        assert_eq!(
+            IndexedRange {
+                prefix: true,
+                modifiers: KeyModifiers::SHIFT,
+            }
+            .expand()[0]
+                .trigger,
             BindingTrigger::Prefix(KeyChord::new(KeyCode::Char('1'), KeyModifiers::SHIFT))
         );
-        assert_eq!(kb.switch_workspace[0].label, "prefix+shift+1");
+    }
+
+    #[test]
+    fn single_indexed_keys_and_ranges_label_themselves() {
+        let config: ClientConfig = toml::from_str(
+            r#"
+[keys]
+focus_agent = ["prefix+alt+1..9", "ctrl+alt+2"]
+"#,
+        )
+        .expect("test precondition");
+        let kb = parse_keybinds(&config, &["focus_agent"]).expect("valid keybindings");
+        let labels: Vec<String> = kb.focus_agent.iter().map(ToString::to_string).collect();
+        assert_eq!(labels, ["prefix+alt+1..9", "ctrl+alt+2"]);
+        assert_eq!(
+            BindingTrigger::Prefix(KeyChord::new(KeyCode::Char('n'), KeyModifiers::empty()))
+                .to_string(),
+            "prefix+n"
+        );
     }
 
     #[test]
@@ -1808,16 +1857,10 @@ navigate_switch_workspace = "shift+1..9"
         let kb = parse_keybinds(&config, &["switch_workspace", "navigate_switch_workspace"])
             .expect("valid keybindings");
 
+        assert_eq!(kb.switch_workspace[0].to_string(), "prefix+alt+1..9");
+        assert_eq!(kb.navigate.switch_workspace[0].to_string(), "shift+1..9");
         assert_eq!(
-            IndexedRange::label(&kb.switch_workspace),
-            Some(("prefix+alt+1..9".to_owned(), 9))
-        );
-        assert_eq!(
-            IndexedRange::label(&kb.navigate.switch_workspace),
-            Some(("shift+1..9".to_owned(), 9))
-        );
-        assert_eq!(
-            IndexedRange::matched_index(
+            IndexedKeybind::matched_range_index(
                 &kb.navigate.switch_workspace,
                 &TerminalKey::new(KeyCode::Char('!'), KeyModifiers::empty()),
             ),
@@ -1867,12 +1910,8 @@ switch_workspace = "prefix+?"
                 KeyModifiers::empty()
             ))]
         );
-        assert_eq!(kb.switch_workspace.len(), 9);
-        assert!(
-            kb.switch_workspace
-                .iter()
-                .all(|binding| binding.trigger.is_prefix())
-        );
+        assert_eq!(kb.switch_workspace.len(), 1);
+        assert!(kb.switch_workspace.iter().all(IndexedKeybind::is_prefix));
         assert!(
             kb.new_workspace
                 .bindings

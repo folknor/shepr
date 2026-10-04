@@ -298,10 +298,9 @@ pub enum ServerMessage {
 
     /// Whether the client should currently capture host mouse input.
     MouseCapture {
-        /// True when Shepr mouse UI is enabled or the focused pane app requests mouse reporting.
-        enabled: bool,
-        /// True only while the focused pane requests DEC SGR pixel mode 1016.
-        sgr_pixels: bool,
+        /// `Cells` when Shepr mouse UI is enabled or the focused pane app requests mouse
+        /// reporting; `Pixels` only when this client may also address that pane in pixels.
+        mode: shepr_term::mouse::HostMouseCapture,
     },
 
     /// Focused-workspace pane content rendered at a client-requested origin-relative size.

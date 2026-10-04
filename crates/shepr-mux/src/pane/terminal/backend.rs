@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use super::super::teardown::ChildLiveness;
 use super::*;
 use crate::workspace::SurfaceChange;
 use shepr_protocol::MAX_SURFACE_HYPERLINKS;
@@ -16,11 +15,11 @@ impl PaneTerminal {
     }
 
     /// Construct a pane terminal with the id needed by later mutation reports
-    /// and the server's local host name for OSC 7 cwd reports.
+    /// and the server's local host names for OSC 7 cwd reports.
     pub(crate) fn new_with_pane_id(
         pane_id: PaneId,
         terminal: shepr_vt::Terminal,
-        local_host: Option<std::sync::Arc<str>>,
+        local_host: Option<std::sync::Arc<shepr_platform::HostNames>>,
     ) -> Self {
         Self::new_inner(Some(pane_id), terminal, local_host)
     }
@@ -28,32 +27,33 @@ impl PaneTerminal {
     fn new_inner(
         pane_id: Option<PaneId>,
         mut terminal: shepr_vt::Terminal,
-        local_host: Option<std::sync::Arc<str>>,
+        local_host: Option<std::sync::Arc<shepr_platform::HostNames>>,
     ) -> Self {
         // Replies to anything written before the pane existed have no reader.
         let _ = terminal.take_pty_responses();
+
+        terminal.set_osc_body_capture(osc_debug::enabled());
 
         let mut render_state = shepr_vt::RenderState::new();
         render_state.update(&terminal);
         Self {
             core: TerminalCore::new(PaneTerminalCore {
-                content_revision: 0,
-                detection_content_seq: 0,
+                content_revision: ContentRevision::default(),
+                detection_seq: DetectionSeq::default(),
                 dirty_collection_hook: None,
                 terminal,
-                synchronized_output_epoch: 0,
-                history_epoch: 0,
+                synchronized_output_epoch: SyncEpoch::default(),
+                history_epoch: HistoryEpoch::default(),
                 render_state,
                 host_terminal_theme: shepr_term::host::TerminalTheme::default(),
                 transient_default_color_owner_pgid: None,
-                default_color_generation: 0,
-                osc_debug_tracker: OscDebugTracker::default(),
+                default_color_generation: DefaultColorGeneration::default(),
                 agent_osc_state: AgentOscStateTracker::default(),
                 local_host,
             }),
             pane_id,
-            render_queued: std::sync::Arc::new(AtomicBool::new(false)),
             screen_flipped: AtomicBool::new(false),
+            synchronized_output: AtomicBool::new(false),
             mutation_failure_reported: AtomicBool::new(false),
             oversized_clipboard_reported: AtomicBool::new(false),
             dirty_patch_fallback_reported: AtomicBool::new(false),
@@ -70,7 +70,7 @@ impl PaneTerminal {
         };
         // The server filters identical host themes before dispatching this
         // update, so each call installs a new set of pane defaults.
-        core.record_mutation(CoreMutation::Presentation);
+        self.commit_mutation(&mut core, CoreMutation::Presentation);
         core.host_terminal_theme = theme;
         if !has_default_color_override(&core.terminal) {
             core.transient_default_color_owner_pgid = None;
@@ -103,7 +103,7 @@ impl PaneTerminal {
         // Only a change of the stored scheme, including one between unknown
         // and known, can change the pane; repeating the current one cannot.
         if previous != color_scheme {
-            core.record_mutation(CoreMutation::Presentation);
+            self.commit_mutation(&mut core, CoreMutation::Presentation);
         }
 
         let transitioned = matches!(
@@ -125,44 +125,33 @@ impl PaneTerminal {
         })
     }
 
-    pub(in crate::pane) fn maybe_restore_host_terminal_theme(
-        &self,
-        pane_id: PaneId,
-        child_liveness: &ChildLiveness,
-    ) -> bool {
-        {
-            // A read stays silent: the PTY actor reports a poisoned core and
-            // closes the pane. Only the mutating lock below reports.
-            let Ok(core) = self.core.lock() else {
-                return false;
-            };
-            if !should_probe_host_terminal_theme_restore(&core) {
-                return false;
-            }
-        }
+    /// The foreground group whose default-colour overrides the runtime may
+    /// restore to the host theme: one is recorded, the host theme is known and
+    /// the main screen is showing. A read: a poisoned core is reported by the
+    /// PTY actor, which closes the pane.
+    pub(crate) fn theme_restore_owner(&self) -> Option<shepr_platform::Pgid> {
+        self.core.lock().ok()?.theme_restore_owner()
+    }
 
-        let Some((shell_pid, foreground_job)) =
-            child_liveness.observe(|pid| (pid, shepr_platform::foreground_job(pid)))
-        else {
-            return false;
-        };
+    /// Drops the child's OSC 10/11 default-colour overrides so the host theme
+    /// shows again, provided `owner` is still the group they are recorded
+    /// against and the terminal is in a state to restore
+    /// ([`Self::theme_restore_owner`]). The runtime calls it once its process
+    /// check shows the owner has left the foreground. This clears the core's
+    /// override slots directly; nothing is written into the child's byte
+    /// stream. Returns whether overrides were dropped.
+    pub(crate) fn drop_default_color_overrides_if(&self, owner: shepr_platform::Pgid) -> bool {
         let Ok(mut core) = self.core.lock() else {
             self.report_terminal_mutation_failure(TerminalMutation::HostThemeRestore);
             return false;
         };
-
-        let alternate_screen = core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate;
-        let restored = restore_host_terminal_theme_if_needed(
-            &mut core,
-            pane_id,
-            shell_pid,
-            alternate_screen,
-            foreground_job.as_ref(),
-        );
-        if restored {
-            core.record_mutation(CoreMutation::Presentation);
+        if core.theme_restore_owner() != Some(owner) {
+            return false;
         }
-        restored
+        core.transient_default_color_owner_pgid = None;
+        core.terminal.reset_default_color_overrides();
+        self.commit_mutation(&mut core, CoreMutation::Presentation);
+        true
     }
 
     pub(crate) fn terminal_title(&self) -> Option<String> {
@@ -175,7 +164,7 @@ impl PaneTerminal {
     /// Reads the three inputs to screen detection under one terminal-core
     /// lock, so they describe the same observed terminal state. The OSC title
     /// is the latest OSC 0/2 title retained for detection and the progress the
-    /// latest OSC 9;4 payload; each is `""` when none was seen or it was cleared.
+    /// latest OSC 9;4 report; each is `None` when none was seen or it was cleared.
     pub(crate) fn agent_detection_inputs(&self) -> AgentDetectionInputs {
         let Ok(core) = self.core.lock() else {
             // A read stays silent: the PTY actor reports a poisoned core and
@@ -184,8 +173,11 @@ impl PaneTerminal {
         };
         AgentDetectionInputs {
             screen_text: terminal_detection_text(&core.terminal).unwrap_or_default(),
-            osc_title: core.agent_osc_state.latest_title().to_owned(),
-            osc_progress: core.agent_osc_state.latest_progress().to_owned(),
+            osc_title: core.agent_osc_state.latest_title().map(str::to_owned),
+            osc_progress: core
+                .agent_osc_state
+                .latest_progress()
+                .map(|progress| progress.to_string()),
         }
     }
 
@@ -206,16 +198,6 @@ impl PaneTerminal {
         now: Instant,
         mut core: std::sync::MutexGuard<'_, PaneTerminalCore>,
     ) -> ProcessBytesResult {
-        core.osc_debug_tracker.observe(bytes);
-        for event in core.osc_debug_tracker.drain_pending() {
-            debug!(
-                pane = pane_id.raw(),
-                osc_command = %event.command,
-                osc_payload = ?event.payload,
-                "agent OSC evidence observed"
-            );
-        }
-
         // The runtime tick for a read: a synchronized update whose timeout
         // passed ends before these bytes are parsed, under the same lock, so
         // its effects are collected with theirs and its replies queue first.
@@ -224,21 +206,20 @@ impl PaneTerminal {
         // carries.
         let screen_before = core.terminal.active_screen();
         let flushed = core.terminal.tick(now);
-        let synchronized_output_before = core
-            .terminal
-            .mode_get(shepr_vt::DecMode::SynchronizedOutput);
+        let synchronized_output_before = core.terminal.sync_update_buffering();
         core.terminal.write_at(bytes, now);
         self.note_screen_flip(screen_before, core.terminal.active_screen());
         let effects = collect_core_effects(&mut core);
 
-        let synchronized_output = core
-            .terminal
-            .mode_get(shepr_vt::DecMode::SynchronizedOutput);
-        core.record_mutation(CoreMutation::Output {
-            bytes,
-            flushed,
-            sync_changed: synchronized_output != synchronized_output_before,
-        });
+        let synchronized_output = core.terminal.sync_update_buffering();
+        self.commit_mutation(
+            &mut core,
+            CoreMutation::Output {
+                bytes,
+                flushed,
+                sync_changed: synchronized_output != synchronized_output_before,
+            },
+        );
         // A synchronized update that never ends is force-flushed by the core
         // after its timeout; schedule a render for then so the pane does not
         // stay frozen until the next PTY read.
@@ -255,6 +236,7 @@ impl PaneTerminal {
         };
         let dropped_clipboard_store_bytes = effects.dropped_clipboard_store_bytes.first().copied();
         drop(core);
+        osc_debug::log(pane_id, &effects.osc_debug);
         if let Some(bytes) = dropped_clipboard_store_bytes {
             self.report_oversized_clipboard_store(pane_id, bytes);
         }
@@ -268,39 +250,27 @@ impl PaneTerminal {
         })
     }
 
-    /// Records which foreground program overrode a default colour, so the
-    /// detection tick can drop the override once that program is gone.
-    ///
-    /// Finding the program means scanning `/proc`. The caller releases the
-    /// terminal and reply-order locks before this scan, then this
-    /// generation-checked setter records the owner only if that OSC 10/11
-    /// override is still current.
-    pub(in crate::pane) fn resolve_default_color_owner(
+    /// Records which foreground program group overrode a default colour, so the
+    /// runtime can drop the override once that program is gone
+    /// ([`Self::drop_default_color_overrides_if`]). Finding the group is the
+    /// runtime's process question; this generation-checked setter records it
+    /// only if the OSC 10/11 override it was looked up for is still current.
+    /// Returns whether it was recorded.
+    pub(crate) fn note_default_color_owner(
         &self,
-        pane_id: PaneId,
-        child_liveness: &ChildLiveness,
         generation: DefaultColorGeneration,
-    ) {
-        let Some(owner_pgid) = child_liveness
-            .observe(current_transient_default_color_owner)
-            .flatten()
-        else {
-            return;
-        };
+        owner: shepr_platform::Pgid,
+    ) -> bool {
         let Ok(mut core) = self.core.lock() else {
             self.report_terminal_mutation_failure(TerminalMutation::DefaultColorOwnerUpdate);
-            return;
+            return false;
         };
-        if core.default_color_generation == generation.0
-            && has_default_color_override(&core.terminal)
+        if core.default_color_generation == generation && has_default_color_override(&core.terminal)
         {
-            core.transient_default_color_owner_pgid = Some(owner_pgid);
-            debug!(
-                pane = pane_id.raw(),
-                owner_pgid = owner_pgid.get(),
-                "tracked transient default color override"
-            );
+            core.transient_default_color_owner_pgid = Some(owner);
+            return true;
         }
+        false
     }
 
     /// Flushes a synchronized update whose timeout has passed and returns
@@ -320,10 +290,13 @@ impl PaneTerminal {
         let flushed = core.terminal.tick(now);
         if flushed {
             self.note_screen_flip(screen_before, core.terminal.active_screen());
-            core.record_mutation(CoreMutation::SyncFlush);
+            self.commit_mutation(&mut core, CoreMutation::SyncFlush);
         }
         let effects = collect_core_effects(&mut core);
         drop(core);
+        if let Some(pane_id) = self.pane_id {
+            osc_debug::log(pane_id, &effects.osc_debug);
+        }
         // A synchronized update parses its buffered bytes when it flushes, so
         // an oversized OSC 52 store inside one surfaces here, not on a read.
         if let (Some(pane_id), Some(bytes)) = (
@@ -357,7 +330,7 @@ impl PaneTerminal {
             self.report_terminal_mutation_failure(TerminalMutation::HistorySeed);
             return;
         };
-        core.record_mutation(CoreMutation::Presentation);
+        self.commit_mutation(&mut core, CoreMutation::Presentation);
         core.terminal.write(ansi.as_bytes());
         // Saved history is trimmed, so it normally ends on the last restored
         // line with no line break. Without one the cursor stays at the end of
@@ -375,6 +348,9 @@ impl PaneTerminal {
         // live clipboard writes, directory reports or title and colour
         // changes.
         discard_core_effects(&mut core.terminal);
+        // The replayed history may itself have left an update open, after the
+        // mutation above was committed.
+        self.mirror_synchronized_output(&core);
     }
 
     pub(crate) fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) -> Vec<Bytes> {
@@ -386,9 +362,7 @@ impl PaneTerminal {
                 return Vec::new();
             }
         };
-        let synchronized_output_before = core
-            .terminal
-            .mode_get(shepr_vt::DecMode::SynchronizedOutput);
+        let synchronized_output_before = core.terminal.sync_update_buffering();
         let offset_from_bottom = core.terminal.scrollbar().offset_from_bottom;
         let resize_recovery_probe_lines = usize::from(rows)
             .saturating_mul(8)
@@ -400,13 +374,14 @@ impl PaneTerminal {
         let grid_before = (core.terminal.cols(), core.terminal.rows());
         core.terminal.resize(geometry);
         let grid_changed = (core.terminal.cols(), core.terminal.rows()) != grid_before;
-        let synchronized_output_after = core
-            .terminal
-            .mode_get(shepr_vt::DecMode::SynchronizedOutput);
-        core.record_mutation(CoreMutation::Resize {
-            grid_changed,
-            sync_changed: synchronized_output_after != synchronized_output_before,
-        });
+        let synchronized_output_after = core.terminal.sync_update_buffering();
+        self.commit_mutation(
+            &mut core,
+            CoreMutation::Resize {
+                grid_changed,
+                sync_changed: synchronized_output_after != synchronized_output_before,
+            },
+        );
         let terminal_responses = drain_terminal_responses(core.terminal.take_pty_responses());
 
         terminal_set_scroll_offset_from_bottom(&mut core.terminal, offset_from_bottom);
@@ -416,7 +391,7 @@ impl PaneTerminal {
             // introduces just one new row at the bottom.
             let viewport = core.terminal.scrollbar();
             let mut scratch = String::new();
-            let viewport_start = viewport.viewport_start();
+            let viewport_start = viewport.viewport_start().0;
             let viewport_has_text = (viewport_start
                 ..viewport_start.saturating_add(viewport.viewport_rows))
                 .any(|row| {
@@ -429,6 +404,7 @@ impl PaneTerminal {
                         .terminal
                         .scrollbar()
                         .viewport_start()
+                        .0
                         .saturating_add(viewport.viewport_rows);
                     core.terminal
                         .scroll_viewport_delta(shepr_vt::ScrollTowards::Newer(1));
@@ -461,7 +437,7 @@ impl PaneTerminal {
         if offset_before == offset_after {
             return SurfaceChange::Unchanged;
         }
-        core.record_mutation(CoreMutation::Presentation);
+        self.commit_mutation(&mut core, CoreMutation::Presentation);
         SurfaceChange::Changed
     }
 
@@ -490,7 +466,7 @@ impl PaneTerminal {
             .map_err(|_| PaneClearError::TerminalLockPoisoned)?;
         match core.terminal.clear_screen() {
             shepr_vt::ClearScreenOutcome::Cleared => {
-                core.record_mutation(CoreMutation::Clear);
+                self.commit_mutation(&mut core, CoreMutation::Clear);
                 Ok(SurfaceChange::Changed)
             }
             shepr_vt::ClearScreenOutcome::AlternateScreenActive => {
@@ -548,7 +524,7 @@ impl PaneTerminal {
                 builder.discard_line();
                 row = origin;
             }
-            let chunk_end = end.min(row.saturating_add(SCAN_CHUNK_ROWS));
+            let chunk_end = end.min(row.saturating_add(super::history::SCAN_CHUNK_ROWS));
             while row < chunk_end {
                 let Some(y) = terminal.screen_row_for_absolute(row) else {
                     break;
@@ -618,8 +594,14 @@ impl PaneTerminal {
         self.modify_other_keys_mode()
     }
 
-    pub(crate) fn sgr_pixel_mouse_enabled(&self) -> bool {
-        self.mode_enabled(shepr_vt::DecMode::MouseSgrPixels)
+    /// Mode 1016 and the extent the child was told, in one core hold. A
+    /// poisoned core reads as off.
+    pub(crate) fn pixel_mouse(&self) -> shepr_term::mouse::PanePixelMouse {
+        self.core
+            .lock()
+            .map_or(shepr_term::mouse::PanePixelMouse::OFF, |core| {
+                core.terminal.pixel_mouse()
+            })
     }
 
     fn mode_enabled(&self, mode: shepr_vt::DecMode) -> bool {
@@ -639,25 +621,39 @@ impl PaneTerminal {
             .is_ok_and(|core| core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate)
     }
 
-    pub(crate) fn cursor_state(&self) -> Option<TerminalCursorState> {
-        let mut core = self.core.lock().ok()?;
-        current_cursor_state(&mut core)
+    /// The cursor, with the synchronized-output gate decided in the same core
+    /// hold ([`CursorRead`]), so callers need no check of their own first.
+    pub(crate) fn cursor_read(&self) -> CursorRead {
+        let Ok(mut core) = self.core.lock() else {
+            return CursorRead::Unavailable;
+        };
+        if core.terminal.sync_update_buffering() {
+            return CursorRead::Deferred;
+        }
+        current_cursor_state(&mut core).map_or(CursorRead::Unavailable, CursorRead::Shown)
     }
 
+    /// Whether a synchronized update is open, read from the mirror without the
+    /// core lock. A poisoned core reads as not active; see [`Self::surface_held`].
     pub(crate) fn synchronized_output_active(&self) -> bool {
-        self.core.lock().ok().is_some_and(|core| {
-            core.terminal
-                .mode_get(shepr_vt::DecMode::SynchronizedOutput)
-        })
+        self.synchronized_output.load(Ordering::Acquire)
     }
 
-    pub(crate) fn synchronized_output_state(&self) -> Option<(bool, u64)> {
-        let core = self.core.lock().ok()?;
-        Some((
-            core.terminal
-                .mode_get(shepr_vt::DecMode::SynchronizedOutput),
-            core.synchronized_output_epoch,
-        ))
+    /// Whether the pane's surface cannot be drawn now: its core is poisoned or
+    /// a synchronized update is open. Lock-free; the locked
+    /// [`Self::synchronized_output_state`] stays the authority that defers a
+    /// racing draw.
+    pub(crate) fn surface_held(&self) -> bool {
+        self.core.is_poisoned() || self.synchronized_output_active()
+    }
+
+    /// The synchronized-output flag and epoch read together; see
+    /// [`SyncState`].
+    pub(crate) fn synchronized_output_state(&self) -> SyncState {
+        match self.core.lock() {
+            Ok(core) => core.sync_state(),
+            Err(_) => SyncState::Poisoned,
+        }
     }
 
     pub(crate) fn detection_text(&self) -> String {
@@ -683,19 +679,22 @@ impl PaneTerminal {
     /// (added to the frame's link table) go straight to the wire form.
     ///
     /// Draws nothing while a synchronized update is open or the core is
-    /// unreadable. The part of `area` outside the frame is not drawn, and rows
-    /// or columns the screen does not have are blank in the terminal's default
-    /// colours.
-    pub(crate) fn render_into(&self, frame: &mut FrameData, area: Rect) {
+    /// unreadable, and says which ([`PaneDraw::Deferred`],
+    /// [`PaneDraw::Unreadable`]), decided in the same core hold as the cells,
+    /// so callers need no check of their own beforehand. The part of `area`
+    /// outside the frame is not drawn, and rows or columns the screen does not
+    /// have are blank in the terminal's default colours.
+    pub(crate) fn render_into(&self, frame: &mut FrameData, area: Rect) -> PaneDraw {
         let Ok(mut core) = self.core.lock() else {
-            return;
+            return PaneDraw::Unreadable;
         };
-        if core
-            .terminal
-            .mode_get(shepr_vt::DecMode::SynchronizedOutput)
-        {
-            return;
-        }
+        let SyncState::Idle(sync_epoch) = core.sync_state() else {
+            return PaneDraw::Deferred;
+        };
+        let drawn = PaneDraw::Drawn {
+            sync_epoch,
+            content_revision: core.content_revision,
+        };
 
         let PaneTerminalCore {
             terminal,
@@ -711,13 +710,10 @@ impl PaneTerminal {
         let resolved_bg = Some(terminal_color(colors.background));
         let palette_overrides = PaletteOverrides::new(colors.palette_overrides());
 
-        let frame_width = usize::from(frame.width);
-        if frame.cells.len() != frame_width * usize::from(frame.height) {
-            return;
-        }
-        let area = area.intersection(Rect::new(0, 0, frame.width, frame.height));
+        let frame_width = usize::from(frame.width());
+        let area = area.intersection(Rect::new(0, 0, frame.width(), frame.height()));
         if area.is_empty() {
-            return;
+            return drawn;
         }
         let blank = CellPaint::blank(default_fg, default_bg);
         let mut symbol_scratch = String::new();
@@ -729,7 +725,6 @@ impl PaneTerminal {
             for cell_view in row.cells().take(usize::from(area.width)) {
                 let basic = cell_view.basic_data();
                 let paint = terminal_cell_paint(
-                    &cell_view,
                     &basic,
                     default_fg,
                     default_bg,
@@ -744,7 +739,7 @@ impl PaneTerminal {
                 let hyperlink = if basic.has_hyperlink {
                     let x = u16::try_from(x).unwrap_or(u16::MAX);
                     terminal
-                        .viewport_hyperlink_uri(x, ViewportRow(row.y()))
+                        .viewport_hyperlink_uri(x, row.y())
                         .ok()
                         .flatten()
                         .and_then(|uri| {
@@ -755,11 +750,11 @@ impl PaneTerminal {
                 } else {
                     None
                 };
-                let cell = &mut frame.cells[row_start + x];
+                let cell = &mut frame.cells_mut()[row_start + x];
                 paint.write_cell(cell, symbol, terminal_grid_width(basic.wide), hyperlink);
                 x += 1;
             }
-            for cell in &mut frame.cells[row_start + x..row_start + usize::from(area.width)] {
+            for cell in &mut frame.cells_mut()[row_start + x..row_start + usize::from(area.width)] {
                 blank.write_cell(cell, " ", GridCellWidth::One, None);
             }
             // The area can be narrower than the terminal, and the emulator can
@@ -768,13 +763,13 @@ impl PaneTerminal {
             // above, so the frame's link table can keep an entry no cell
             // names; that costs one table slot and draws nothing.
             shepr_surface::pane_row::normalize_pane_row(
-                &mut frame.cells[row_start..row_start + usize::from(area.width)],
+                &mut frame.cells_mut()[row_start..row_start + usize::from(area.width)],
             );
             rows_drawn += 1;
         }
         for y in rows_drawn..area.height {
             let row_start = usize::from(area.y + y) * frame_width + usize::from(area.x);
-            for cell in &mut frame.cells[row_start..row_start + usize::from(area.width)] {
+            for cell in &mut frame.cells_mut()[row_start..row_start + usize::from(area.width)] {
                 blank.write_cell(cell, " ", GridCellWidth::One, None);
             }
         }
@@ -782,6 +777,7 @@ impl PaneTerminal {
         // leaves the flags alone: they belong to dirty-patch collection
         // alone. Clearing them here let a full frame drawn for one purpose
         // swallow rows a later patch still had to send.
+        drawn
     }
 
     pub(in crate::pane) fn collect_dirty_patch_snapshot(
@@ -796,10 +792,7 @@ impl PaneTerminal {
         if let Some(hook) = core.dirty_collection_hook.take() {
             hook();
         }
-        if core
-            .terminal
-            .mode_get(shepr_vt::DecMode::SynchronizedOutput)
-        {
+        if core.terminal.sync_update_buffering() {
             return Err(PatchUnavailable::SynchronizedOutput);
         }
         let patch = match terminal_collect_dirty_patch(&mut core, area_width, area_height) {
@@ -816,7 +809,7 @@ impl PaneTerminal {
             content_revision: core.content_revision,
             scroll_metrics: terminal_scroll_metrics(&core.terminal),
             mouse_reporting: core.terminal.mouse_tracking_enabled(),
-            sgr_pixel_mouse: core.terminal.mode_get(shepr_vt::DecMode::MouseSgrPixels),
+            pixel_mouse: core.terminal.pixel_mouse(),
             alternate_screen_active: core.terminal.active_screen()
                 == shepr_vt::ActiveScreen::Alternate,
         })
@@ -838,8 +831,8 @@ fn terminal_screen_row_has_text(
 }
 
 fn seed_hyperlink_indices(frame: &FrameData) -> HashMap<String, u32> {
-    let mut indices = HashMap::with_capacity(frame.hyperlinks.len().min(MAX_SURFACE_HYPERLINKS));
-    for (index, uri) in frame.hyperlinks.iter().enumerate() {
+    let mut indices = HashMap::with_capacity(frame.hyperlinks().len().min(MAX_SURFACE_HYPERLINKS));
+    for (index, uri) in frame.hyperlinks().iter().enumerate() {
         let Ok(index) = u32::try_from(index) else {
             break;
         };
@@ -853,9 +846,9 @@ fn intern_render_hyperlink(
     indices: &mut HashMap<String, u32>,
     uri: String,
 ) -> Option<u32> {
-    if frame.hyperlinks.last().is_some_and(|known| known == &uri) {
+    if frame.hyperlinks().last().is_some_and(|known| known == &uri) {
         return frame
-            .hyperlinks
+            .hyperlinks()
             .len()
             .checked_sub(1)
             .and_then(|index| u32::try_from(index).ok());
@@ -863,11 +856,7 @@ fn intern_render_hyperlink(
     if let Some(index) = indices.get(&uri) {
         return Some(*index);
     }
-    if frame.hyperlinks.len() >= MAX_SURFACE_HYPERLINKS {
-        return None;
-    }
-    let index = u32::try_from(frame.hyperlinks.len()).ok()?;
-    frame.hyperlinks.push(uri.clone());
+    let index = frame.push_hyperlink(uri.clone())?;
     indices.insert(uri, index);
     Some(index)
 }
@@ -943,6 +932,13 @@ impl PaneTerminal {
         self.process_pty_bytes_locked(pane_id, bytes, now, core)
     }
 
+    /// The cursor without the synchronized-output gate that
+    /// [`Self::cursor_read`] applies.
+    pub(crate) fn cursor_state(&self) -> Option<TerminalCursorState> {
+        let mut core = self.core.lock().ok()?;
+        current_cursor_state(&mut core)
+    }
+
     pub(crate) fn has_transient_default_color_override(&self) -> bool {
         self.core
             .lock()
@@ -1000,7 +996,10 @@ mod tests {
 
     #[test]
     fn writing_into_a_blank_seeded_row_makes_it_live() {
-        let pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 4, 0));
+        let pane = PaneTerminal::new(shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 4),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        ));
         pane.seed_history_ansi("saved first row\r\n\r\nsaved third row");
 
         let mut core = pane.core.lock().expect("terminal core");
@@ -1028,13 +1027,20 @@ mod tests {
 
     #[test]
     fn resize_returns_queued_replies_before_its_own() {
-        let pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
+        let pane = PaneTerminal::new(shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        ));
         {
             let mut core = pane.core.lock().expect("terminal core");
             core.terminal.write(b"\x1b[?2048h\x1b[5n");
         }
 
-        let replies = pane.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
+        let replies = pane.resize(shepr_core::geometry::PaneGeometry::with_cell(
+            80,
+            24,
+            shepr_core::geometry::CellPx::new(9, 18),
+        ));
 
         assert_eq!(replies.len(), 2);
         assert_eq!(replies[0].as_ref(), b"\x1b[0n");

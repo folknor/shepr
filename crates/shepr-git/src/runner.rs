@@ -5,11 +5,16 @@
 
 use std::ffi::OsStr;
 use std::io::{self, Read};
+use std::os::fd::AsRawFd;
 use std::path::Path;
-use std::process::{ChildStderr, ChildStdout, Output, Stdio};
+use std::process::{Child, Output, Stdio};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
-use crate::limits::{GIT_COMMAND_TIMEOUT, GIT_PROCESS_POLL_INTERVAL};
+use crate::limits::{
+    GIT_COMMAND_TIMEOUT, GIT_KILL_REAP_GRACE, GIT_PROCESS_POLL_INTERVAL, MAX_UNREAPED_GIT_CHILDREN,
+    UNREAPED_GIT_CHILD_POLL_INTERVAL,
+};
 
 /// Why a Git probe produced no output to interpret.
 #[derive(Debug)]
@@ -37,6 +42,13 @@ impl std::error::Error for GitCommandError {}
 /// Runs Git in `cwd` with one budget for launch, execution and pipe draining.
 /// The synchronous OS spawn cannot be interrupted; if it exceeds
 /// `GIT_COMMAND_TIMEOUT`, the child is stopped as soon as spawn returns.
+/// Past that spawn, the call returns within the budget plus
+/// `GIT_KILL_REAP_GRACE` and a few poll intervals: a child that outlives its
+/// SIGKILL (stuck in an uninterruptible wait) is handed to a background
+/// reaper rather than waited for, and the pipe reader threads stop reading at
+/// the budget's deadline themselves, so no thread outlives it by more than one
+/// poll. A killed child still stuck is a process that lives on until the kernel
+/// releases it; only its reaping is deferred.
 /// A nonzero exit is an `Ok` output; the caller decides which failures are
 /// ordinary answers.
 pub fn run_git(cwd: &Path, args: &[&str]) -> Result<Output, GitCommandError> {
@@ -96,11 +108,11 @@ fn run_git_with_program_and_clock(
     let mut child = command.spawn().map_err(GitCommandError::Spawn)?;
     // Both pipes are drained while the child runs, so output larger than a
     // pipe buffer cannot stall Git into a spurious timeout.
-    let stdout = child.stdout.take().map(drain_pipe::<ChildStdout>);
-    let stderr = child.stderr.take().map(drain_pipe::<ChildStderr>);
+    let stdout = child.stdout.take().map(|pipe| drain_pipe(pipe, deadline));
+    let stderr = child.stderr.take().map(|pipe| drain_pipe(pipe, deadline));
     let status = loop {
         if now() >= deadline {
-            kill_and_reap(&mut child);
+            kill_and_reap(child, GIT_KILL_REAP_GRACE);
             return Err(GitCommandError::TimedOut);
         }
         match child.try_wait() {
@@ -109,7 +121,7 @@ fn run_git_with_program_and_clock(
                 std::thread::sleep(GIT_PROCESS_POLL_INTERVAL);
             }
             Err(error) => {
-                kill_and_reap(&mut child);
+                kill_and_reap(child, GIT_KILL_REAP_GRACE);
                 return Err(GitCommandError::Process(error));
             }
         }
@@ -124,13 +136,38 @@ fn run_git_with_program_and_clock(
 
 type Drain = Result<std::thread::JoinHandle<io::Result<Vec<u8>>>, io::Error>;
 
-fn drain_pipe<R: Read + Send + 'static>(mut pipe: R) -> Drain {
+/// Reads `pipe` to its end on its own thread, or until `deadline` passes,
+/// which fails the read with [`io::ErrorKind::TimedOut`]. The thread waits for
+/// readiness with a timeout, so a descendant that keeps the pipe's write end
+/// open after Git is gone cannot hold it past the deadline.
+fn drain_pipe<R: Read + AsRawFd + Send + 'static>(mut pipe: R, deadline: Instant) -> Drain {
     std::thread::Builder::new()
         .name("shepr-git-pipe".into())
-        .spawn(move || {
-            let mut bytes = Vec::new();
-            pipe.read_to_end(&mut bytes).map(|_| bytes)
-        })
+        .spawn(move || read_until(&mut pipe, deadline))
+}
+
+fn read_until(pipe: &mut (impl Read + AsRawFd), deadline: Instant) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0_u8; crate::limits::GIT_PIPE_READ_CHUNK_BYTES];
+    loop {
+        // clock-io-ok: the reader thread runs against the real clock.
+        let Some(remaining) = shepr_platform::remaining_until(deadline, Instant::now()) else {
+            return Err(io::ErrorKind::TimedOut.into());
+        };
+        match shepr_platform::poll_fd_readable(pipe.as_raw_fd(), remaining) {
+            Ok(true) => {}
+            Ok(false) => return Err(io::ErrorKind::TimedOut.into()),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+        // Readable, or hung up: the read returns data or the end at once.
+        match pipe.read(&mut chunk) {
+            Ok(0) => return Ok(bytes),
+            Ok(count) => bytes.extend_from_slice(&chunk[..count]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn join_drain(drain: Option<Drain>) -> Result<Vec<u8>, GitCommandError> {
@@ -139,6 +176,7 @@ fn join_drain(drain: Option<Drain>) -> Result<Vec<u8>, GitCommandError> {
     };
     let handle = drain.map_err(GitCommandError::Process)?;
     match handle.join() {
+        Ok(Err(error)) if error.kind() == io::ErrorKind::TimedOut => Err(GitCommandError::TimedOut),
         Ok(read) => read.map_err(GitCommandError::Process),
         Err(_) => Err(GitCommandError::Process(io::Error::other(
             "git output reader panicked",
@@ -147,7 +185,9 @@ fn join_drain(drain: Option<Drain>) -> Result<Vec<u8>, GitCommandError> {
 }
 
 /// Waits for both pipe readers without extending the child deadline. A child
-/// can exit while a descendant still holds one of its inherited pipe ends.
+/// can exit while a descendant still holds one of its inherited pipe ends; the
+/// readers give up at that same deadline on their own, so a reader this
+/// returns without joining is already on its way out.
 fn join_drains_until(
     stdout: Option<Drain>,
     stderr: Option<Drain>,
@@ -173,14 +213,93 @@ fn drain_finished(drain: &Option<Drain>) -> bool {
     }
 }
 
-fn kill_and_reap(child: &mut std::process::Child) {
+/// Kills `child` and waits at most `grace` for it to be reaped. A child that
+/// is still alive after that (SIGKILL does not act on a process in an
+/// uninterruptible wait until the kernel call returns) goes to the background
+/// reaper, so the caller is never held by it.
+fn kill_and_reap(mut child: Child, grace: Duration) {
     if let Err(error) = child.kill()
         && error.kind() != io::ErrorKind::InvalidInput
     {
         tracing::debug!(%error, "failed to stop a git probe");
     }
-    if let Err(error) = child.wait() {
-        tracing::debug!(%error, "failed to reap a git probe");
+    // clock-io-ok: the grace is a real-time bound on the caller.
+    let give_up = Instant::now() + grace;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) => {}
+            Err(error) => {
+                tracing::debug!(%error, "failed to reap a git probe");
+                return;
+            }
+        }
+        // clock-io-ok: as above.
+        if Instant::now() >= give_up {
+            break;
+        }
+        std::thread::sleep(GIT_PROCESS_POLL_INTERVAL);
+    }
+    hand_to_reaper(child);
+}
+
+/// Killed children that outlived their grace, and whether the thread that
+/// reaps them is running. One thread polls them all and exits when none is
+/// left, so a hung mount costs one thread however many probes it stalls.
+struct Reaper {
+    children: Vec<Child>,
+    running: bool,
+}
+
+static REAPER: Mutex<Reaper> = Mutex::new(Reaper {
+    children: Vec::new(),
+    running: false,
+});
+
+fn lock_reaper() -> MutexGuard<'static, Reaper> {
+    // Every critical section is a push, a retain or a flag, so a panic on the
+    // holder leaves the value whole.
+    REAPER.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn hand_to_reaper(child: Child) {
+    let mut reaper = lock_reaper();
+    if reaper.children.len() >= MAX_UNREAPED_GIT_CHILDREN {
+        tracing::warn!(
+            pid = child.id(),
+            "too many killed git probes are still unreaped; leaving this one a zombie until \
+             shepr exits"
+        );
+        return;
+    }
+    tracing::debug!(pid = child.id(), "handed a killed git probe to the reaper");
+    reaper.children.push(child);
+    if reaper.running {
+        return;
+    }
+    reaper.running = true;
+    if let Err(error) = std::thread::Builder::new()
+        .name("shepr-git-reaper".into())
+        .spawn(reap_until_empty)
+    {
+        // The children stay queued; the next hand-over starts the thread again.
+        reaper.running = false;
+        tracing::debug!(%error, "could not start the git probe reaper");
+    }
+}
+
+fn reap_until_empty() {
+    loop {
+        std::thread::sleep(UNREAPED_GIT_CHILD_POLL_INTERVAL);
+        let mut reaper = lock_reaper();
+        // A child that cannot be waited for any more has nothing left to reap.
+        reaper
+            .children
+            .retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+        if reaper.children.is_empty() {
+            reaper.running = false;
+            return;
+        }
     }
 }
 
@@ -314,6 +433,79 @@ mod tests {
             elapsed < Duration::from_secs(1),
             "pipe drain exceeded its deadline: {elapsed:?}"
         );
+    }
+
+    /// A descendant that keeps the pipe's write end open must not keep the
+    /// reader thread alive past the deadline.
+    #[test]
+    fn pipe_reader_gives_up_at_its_deadline_while_the_write_end_stays_open() {
+        let (reader, _writer) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let started = Instant::now();
+        let drain = drain_pipe(reader, started + Duration::from_millis(50)).expect("reader starts");
+        let finished = loop {
+            if drain.is_finished() {
+                break true;
+            }
+            if started.elapsed() > Duration::from_secs(10) {
+                break false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(finished, "the reader outlived its deadline");
+        let error = drain
+            .join()
+            .expect("reader did not panic")
+            .expect_err("the reader timed out");
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn pipe_reader_returns_what_was_written_once_the_write_end_closes() {
+        use std::io::Write;
+        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        let drain =
+            drain_pipe(reader, Instant::now() + Duration::from_secs(30)).expect("reader starts");
+        writer.write_all(b"status").expect("write");
+        drop(writer);
+        let bytes = drain
+            .join()
+            .expect("reader did not panic")
+            .expect("reader finished");
+        assert_eq!(bytes, b"status");
+    }
+
+    /// A killed child that is not reaped within the grace is handed to the
+    /// background reaper: the caller returns at once and the child is still
+    /// reaped later (a zombie stays in /proc until it is).
+    #[test]
+    fn a_killed_child_not_reaped_in_its_grace_is_reaped_in_the_background() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let root = shepr_test_support::ScratchDir::new("git-runner-reaper");
+        let slow = stand_in(
+            root.path(),
+            "slow-git",
+            &[Step::Sleep(Duration::from_secs(30))],
+        );
+        let child = shepr_platform::child_command(slow.as_os_str(), root.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("stand-in starts");
+        let proc_entry = std::path::PathBuf::from(format!("/proc/{}", child.id()));
+
+        let started = Instant::now();
+        kill_and_reap(child, Duration::ZERO);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the caller waited for the child"
+        );
+
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while proc_entry.try_exists().expect("stat the proc entry") {
+            assert!(Instant::now() < deadline, "the child was never reaped");
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// The child already starts in `cwd`. Passing it again as `-C <cwd>`

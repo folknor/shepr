@@ -6,7 +6,6 @@ use shepr_core::layout::PaneId;
 
 #[derive(Debug, Default)]
 pub struct RenderRequest {
-    pub generic: bool,
     pub pty_sources: HashSet<PaneId>,
     pub terminal_title_sources: HashSet<PaneId>,
 }
@@ -19,11 +18,18 @@ pub struct RenderSignal {
     state: Mutex<RenderSignalState>,
 }
 
+/// One pane's coalescing state for [`RenderSignal::request_pty_coalesced`]:
+/// whether its PTY damage is already queued in the signal. The pane runtime
+/// owns one per pane and hands clones to the tasks that request renders; the
+/// terminal knows nothing of it.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PaneRenderSlot(Arc<AtomicBool>);
+
 #[derive(Debug, Default)]
 struct RenderSignalState {
     request: RenderRequest,
     immediate_pty_sources: HashSet<PaneId>,
-    queued_pty_flags: Vec<Arc<AtomicBool>>,
+    queued_pty_slots: Vec<PaneRenderSlot>,
 }
 
 impl RenderSignal {
@@ -35,21 +41,15 @@ impl RenderSignal {
         self.pending.load(Ordering::Acquire)
     }
 
-    pub fn request_generic(&self) {
-        let mut state = shepr_core::locks::lock_auxiliary(&self.state);
-        state.request.generic = true;
-        self.pending.store(true, Ordering::Release);
-    }
-
     /// Repeated reads of an already queued pane need only an atomic exchange.
     /// The collector clears enrolled flags under the same lock that drains the
     /// request, so a concurrent producer either joins this batch or the next.
-    pub(crate) fn request_pty_coalesced(&self, pane_id: PaneId, queued: &Arc<AtomicBool>) -> bool {
-        if queued.swap(true, Ordering::AcqRel) {
+    pub(crate) fn request_pty_coalesced(&self, pane_id: PaneId, slot: &PaneRenderSlot) -> bool {
+        if slot.0.swap(true, Ordering::AcqRel) {
             return false;
         }
         let mut state = shepr_core::locks::lock_auxiliary(&self.state);
-        state.queued_pty_flags.push(Arc::clone(queued));
+        state.queued_pty_slots.push(slot.clone());
         let source_added = state.request.pty_sources.insert(pane_id);
         let wake_for_source = source_added && state.immediate_pty_sources.contains(&pane_id);
         let became_pending = !self.pending.swap(true, Ordering::AcqRel);
@@ -65,8 +65,7 @@ impl RenderSignal {
 
     pub fn has_immediate_work(&self) -> bool {
         let state = shepr_core::locks::lock_auxiliary(&self.state);
-        state.request.generic
-            || !state.request.terminal_title_sources.is_empty()
+        !state.request.terminal_title_sources.is_empty()
             || state
                 .request
                 .pty_sources
@@ -95,11 +94,18 @@ impl RenderSignal {
 
     pub fn take(&self) -> RenderRequest {
         let mut state = shepr_core::locks::lock_auxiliary(&self.state);
-        for queued in state.queued_pty_flags.drain(..) {
-            queued.store(false, Ordering::Release);
+        for queued in state.queued_pty_slots.drain(..) {
+            queued.0.store(false, Ordering::Release);
         }
         self.pending.store(false, Ordering::Release);
         std::mem::take(&mut state.request)
+    }
+}
+
+#[cfg(test)]
+impl PaneRenderSlot {
+    fn is_queued(&self) -> bool {
+        self.0.load(Ordering::Acquire)
     }
 }
 
@@ -111,11 +117,9 @@ mod tests {
     fn enqueue_pty(
         signal: &RenderSignal,
         pane_id: PaneId,
-        queued_flags: &mut HashMap<PaneId, Arc<AtomicBool>>,
+        queued_flags: &mut HashMap<PaneId, PaneRenderSlot>,
     ) -> bool {
-        let queued = queued_flags
-            .entry(pane_id)
-            .or_insert_with(|| Arc::new(AtomicBool::new(false)));
+        let queued = queued_flags.entry(pane_id).or_default();
         signal.request_pty_coalesced(pane_id, queued)
     }
 
@@ -123,14 +127,14 @@ mod tests {
     fn repeated_pty_reads_do_not_lock_and_collection_rearms_the_pane() {
         let signal = RenderSignal::new();
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-        let queued = Arc::new(AtomicBool::new(false));
+        let queued = PaneRenderSlot::default();
         assert!(signal.request_pty_coalesced(pane_id, &queued));
         {
             let _guard = shepr_core::locks::lock_auxiliary(&signal.state);
             assert!(!signal.request_pty_coalesced(pane_id, &queued));
         }
         assert_eq!(signal.take().pty_sources, HashSet::from([pane_id]));
-        assert!(!queued.load(Ordering::Acquire));
+        assert!(!queued.is_queued());
         assert!(signal.request_pty_coalesced(pane_id, &queued));
         assert_eq!(signal.take().pty_sources, HashSet::from([pane_id]));
     }
@@ -141,8 +145,8 @@ mod tests {
         let hidden = shepr_test_fixtures::fixed_pane_id(1);
         let visible = shepr_test_fixtures::fixed_pane_id(2);
         signal.set_immediate_pty_sources(HashSet::from([visible]));
-        let hidden_queued = Arc::new(AtomicBool::new(false));
-        let visible_queued = Arc::new(AtomicBool::new(false));
+        let hidden_queued = PaneRenderSlot::default();
+        let visible_queued = PaneRenderSlot::default();
         assert!(signal.request_pty_coalesced(hidden, &hidden_queued));
         assert!(!signal.request_pty_coalesced(hidden, &hidden_queued));
         assert!(signal.request_pty_coalesced(visible, &visible_queued));
@@ -161,7 +165,6 @@ mod tests {
         assert!(!enqueue_pty(&signal, second, &mut queued_flags));
 
         let request = signal.take();
-        assert!(!request.generic);
         assert_eq!(request.pty_sources, HashSet::from([first, second]));
         assert!(request.terminal_title_sources.is_empty());
         assert!(!signal.is_pending());
@@ -251,19 +254,5 @@ mod tests {
         let request = signal.take();
         assert!(request.pty_sources.is_empty());
         assert_eq!(request.terminal_title_sources, HashSet::from([pane_id]));
-    }
-
-    #[test]
-    fn keeps_generic_and_pty_requests_distinct() {
-        let signal = RenderSignal::new();
-        let mut queued_flags = HashMap::new();
-        let pane_id = shepr_test_fixtures::fixed_pane_id(10);
-
-        signal.request_generic();
-        assert!(!enqueue_pty(&signal, pane_id, &mut queued_flags));
-
-        let request = signal.take();
-        assert!(request.generic);
-        assert_eq!(request.pty_sources, HashSet::from([pane_id]));
     }
 }

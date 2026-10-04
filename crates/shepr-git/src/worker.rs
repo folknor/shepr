@@ -11,7 +11,11 @@
 //! detached and joined only once it has finished; it publishes nothing more,
 //! and the paths its stalled step reads are left out of later refreshes until
 //! it finishes, so a mount that stays hung holds one thread, not one per
-//! refresh. At most [`MAX_ABANDONED_GIT_REFRESH_THREADS`] are left alive at once.
+//! refresh. A thread stalled with no step running (blocked in a destructor,
+//! say) is abandoned too, since the handle is wedged behind it, but it has no
+//! paths to keep out; a recurring one holds an abandonment slot each time
+//! until it finishes. At most [`MAX_ABANDONED_GIT_REFRESH_THREADS`] are left
+//! alive at once, and past that a stall is waited out.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -210,16 +214,28 @@ impl<T: Send + 'static> GitStatusWorker<T> {
     /// deliver an outcome and then panic. A refresh whose thread is abandoned
     /// is reported by [`Self::abandon_stalled`] and never published.
     pub fn new(publish: impl Fn(RefreshOutcome<T>) + Send + Sync + 'static) -> Self {
-        Self::with_refresh(publish, |refresher, targets, progress| {
+        Self::with_refresher(publish, |refresher, targets, progress| {
             refresher.refresh(targets, progress)
         })
     }
 
     /// [`Self::new`] with the refresh itself handed in: the seam a test
-    /// double stands a stalled or failing refresh in through. `refresh` runs
-    /// on the worker thread with that thread's refresher, and reports each
-    /// step it starts to the progress it is given.
+    /// double stands a stalled or failing refresh in through, in place of the
+    /// real refresh and its cache. `refresh` runs on the worker thread and
+    /// reports each step it starts to the progress it is given.
     pub fn with_refresh(
+        publish: impl Fn(RefreshOutcome<T>) + Send + Sync + 'static,
+        refresh: impl Fn(Vec<RefreshTarget<T>>, &RefreshProgress) -> RefreshOutcome<T>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        Self::with_refresher(publish, move |_, targets, progress| {
+            refresh(targets, progress)
+        })
+    }
+
+    fn with_refresher(
         publish: impl Fn(RefreshOutcome<T>) + Send + Sync + 'static,
         refresh: impl Fn(
             &mut GitRefresher,
@@ -395,11 +411,22 @@ impl<T: Send + 'static> GitStatusWorker<T> {
         if !shared.leave_running(Phase::Abandoned) {
             return None;
         }
-        tracing::warn!(
-            paths = ?stuck,
-            "git status refresh made no progress within its bound; abandoned its worker \
-             thread and left these paths out of refreshes until it finishes"
-        );
+        if stuck.is_empty() {
+            // Blocked with no step running (in a destructor, say): nothing
+            // names what to keep out, but the handle is wedged behind the
+            // thread, so it is abandoned all the same. It holds a slot until
+            // it finishes, which bounds the threads a recurring one can hold.
+            tracing::warn!(
+                "git status worker made no progress within its bound with no step running; \
+                 abandoned its thread, with no paths to leave out of refreshes"
+            );
+        } else {
+            tracing::warn!(
+                paths = ?stuck,
+                "git status refresh made no progress within its bound; abandoned its worker \
+                 thread and left these paths out of refreshes until it finishes"
+            );
+        }
         Some(stuck)
     }
 
@@ -621,15 +648,11 @@ mod tests {
         stuck: PathBuf,
         entered: mpsc::Sender<PathBuf>,
         released: Arc<AtomicBool>,
-    ) -> impl Fn(
-        &mut GitRefresher,
-        Vec<RefreshTarget<usize>>,
-        &RefreshProgress,
-    ) -> RefreshOutcome<usize>
+    ) -> impl Fn(Vec<RefreshTarget<usize>>, &RefreshProgress) -> RefreshOutcome<usize>
     + Send
     + Sync
     + 'static {
-        move |_, targets, progress| {
+        move |targets, progress| {
             for target in &targets {
                 if target.cwd.starts_with(&stuck) {
                     progress.step(vec![target.cwd.clone()]);
@@ -838,7 +861,7 @@ mod tests {
                 let ids: Vec<usize> = outcome.statuses.iter().map(|s| s.owner.id).collect();
                 sender.send(ids).ok();
             },
-            |_, targets, _| answer_all(targets),
+            |targets, _| answer_all(targets),
         );
         let (dropping, dropping_receiver) = mpsc::channel();
         let (release, release_receiver) = mpsc::channel();
@@ -885,7 +908,7 @@ mod tests {
             move |outcome: RefreshOutcome<usize>| {
                 sender.send(outcome).ok();
             },
-            |_, targets, _| answer_all(targets),
+            |targets, _| answer_all(targets),
         );
 
         worker
@@ -957,6 +980,53 @@ mod tests {
             .expect("refresh accepted");
         let outcome = outcomes.recv_timeout(WAIT).expect("refresh outcome");
         assert_eq!(owners(&outcome), [5]);
+        assert!(outcomes.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_stall_with_no_step_running_is_abandoned_and_keeps_no_path_out() {
+        let scratch = shepr_test_support::ScratchDir::new("git-worker-no-step");
+        let cwd = scratch.join("cwd");
+        let (sender, outcomes) = mpsc::channel();
+        let (entered, entered_receiver) = mpsc::channel();
+        let released = Arc::new(AtomicBool::new(false));
+        let double_released = Arc::clone(&released);
+        let first = AtomicBool::new(true);
+        let mut worker = GitStatusWorker::with_refresh(
+            move |outcome: RefreshOutcome<usize>| {
+                sender.send(outcome).ok();
+            },
+            move |targets, _| {
+                // The first refresh blocks without starting a step.
+                if first.swap(false, Ordering::SeqCst) {
+                    entered.send(()).ok();
+                    let deadline = Instant::now() + WAIT;
+                    while !double_released.load(Ordering::SeqCst) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                answer_all(targets)
+            },
+        );
+
+        worker
+            .refresh(vec![target(0, &cwd)])
+            .expect("worker starts");
+        entered_receiver.recv_timeout(WAIT).expect("blocked");
+        assert!(worker.abandon_stalled(past_the_stall_bound()));
+        assert_eq!(worker.abandoned.len(), 1);
+        assert!(worker.abandoned[0].stuck.is_empty());
+
+        // Nothing is kept out: the same cwd is refreshed by the replacement.
+        worker
+            .refresh(vec![target(1, &cwd)])
+            .expect("a new worker starts");
+        let outcome = outcomes.recv_timeout(WAIT).expect("refresh outcome");
+        assert_eq!(owners(&outcome), [1]);
+
+        released.store(true, Ordering::SeqCst);
+        wait_for_abandoned_threads(&mut worker);
+        assert!(!worker.take_lost_refresh());
         assert!(outcomes.try_recv().is_err());
     }
 

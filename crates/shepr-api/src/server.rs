@@ -98,9 +98,12 @@ pub fn start_server(
     boot_id: shepr_protocol::BootId,
 ) -> Result<ServerHandle, shepr_platform::ipc::BindError> {
     let path = paths.server_address().socket().to_path_buf();
-    let (listener, socket_file, startup_lock) =
-        shepr_platform::ipc::bind_owned_private_socket(paths.server_address().socket_path())?
-            .into_parts();
+    let shepr_platform::ipc::BoundSocketParts {
+        listener,
+        file: socket_file,
+        lock: startup_lock,
+    } = shepr_platform::ipc::bind_owned_private_socket(paths.server_address().socket_path())?
+        .into_parts();
     info!(path = %path.display(), "server socket listening");
     let running = Arc::new(AtomicBool::new(true));
     let gate = ClientGate::default();
@@ -128,7 +131,7 @@ pub fn start_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_platform::ipc::{bind_private_socket, remove_socket_file_if_owned};
+    use shepr_platform::ipc::bind_owned_private_socket;
     use shepr_test_support::ScratchDir;
     use tokio::sync::mpsc;
 
@@ -136,10 +139,13 @@ mod tests {
     fn dropping_the_handle_stops_the_listener_thread() {
         let path = ScratchDir::new("listener-drop").join("s");
         let socket_path = shepr_platform::ipc::SocketPath::new(path.clone()).expect("socket path");
-        let (listener, socket_file, startup_lock) =
-            shepr_platform::ipc::bind_owned_private_socket(&socket_path)
-                .expect("bind")
-                .into_parts();
+        let shepr_platform::ipc::BoundSocketParts {
+            listener,
+            file: socket_file,
+            lock: startup_lock,
+        } = shepr_platform::ipc::bind_owned_private_socket(&socket_path)
+            .expect("bind")
+            .into_parts();
         let running = Arc::new(AtomicBool::new(true));
         let gate = ClientGate::default();
         let (tx, _rx) = mpsc::channel(1);
@@ -161,7 +167,9 @@ mod tests {
             gate,
             _startup_lock: startup_lock,
         };
-        let refusal = bind_private_socket(&path).err().expect("path stays locked");
+        let refusal = bind_owned_private_socket(&socket_path)
+            .err()
+            .expect("path stays locked");
         let shepr_platform::ipc::BindError::Busy(busy) = refusal else {
             panic!("expected a busy socket")
         };
@@ -169,8 +177,9 @@ mod tests {
         drop(handle);
         assert_eq!(Arc::strong_count(&alive), 1, "listener has exited");
         assert!(!path.try_exists().expect("socket removed"));
-        let (_listener, _lock, identity) =
-            bind_private_socket(&path).expect("released lock and listener");
-        remove_socket_file_if_owned(&path, &identity).expect("cleanup");
+        bind_owned_private_socket(&socket_path)
+            .expect("released lock and listener")
+            .remove_if_still_ours()
+            .expect("cleanup");
     }
 }

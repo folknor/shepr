@@ -1,18 +1,10 @@
 use ratatui::{buffer::Buffer, layout::Rect, style::Style};
 use shepr_term::scroll::{ScrollTrack, ScrollbarMetrics, ScrollbarPart, scrollbar_rows};
 
+use super::PaneSurface;
 use super::chrome::overlay_buffer;
 use crate::app::AppState;
-use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
 use shepr_protocol::FrameData;
-
-pub(crate) fn pane_scrollbar_rect(info: &PaneInfo) -> Option<Rect> {
-    info.scrollbar_rect
-}
-
-pub(crate) fn should_show_scrollbar(metrics: shepr_mux::pane::ScrollMetrics) -> bool {
-    PaneInfo::scrollbar_visible(metrics.max_offset_from_bottom)
-}
 
 fn render_scrollbar_buffer(
     buffer: &mut Buffer,
@@ -36,7 +28,7 @@ fn render_scrollbar_buffer(
     }
 }
 
-pub(crate) fn render_pane_scrollbar_buffer(
+fn render_pane_scrollbar_buffer(
     buffer: &mut Buffer,
     metrics: shepr_mux::pane::ScrollMetrics,
     track: Rect,
@@ -59,24 +51,37 @@ pub(crate) fn render_pane_scrollbar_buffer(
     );
 }
 
+/// A buffer over `track` holding the scrollbar for `metrics`, or blank cells
+/// when there is none.
+pub(super) fn scrollbar_track_buffer(
+    track: Rect,
+    metrics: Option<shepr_mux::pane::ScrollMetrics>,
+    palette: &shepr_config::theme::Palette,
+    focused: bool,
+) -> Buffer {
+    let mut buffer = Buffer::empty(track);
+    if let Some(metrics) = metrics {
+        render_pane_scrollbar_buffer(&mut buffer, metrics, track, palette, focused);
+    }
+    buffer
+}
+
 pub(super) fn render_pane_scrollbar(
     app: &AppState,
     frame: &mut FrameData,
-    info: &PaneInfo,
+    info: &PaneSurface,
     rt: &shepr_mux::pane::PaneRuntime,
 ) {
     let Some(metrics) = rt.read().scroll_metrics() else {
         return;
     };
-    let Some(track) = pane_scrollbar_rect(info) else {
+    let Some(track) = info.scrollbar_rect else {
         return;
     };
-    let mut scratch = Buffer::empty(track);
-    render_pane_scrollbar_buffer(
-        &mut scratch,
-        metrics,
+    let scratch = scrollbar_track_buffer(
         track,
-        &app.settings.palette,
+        Some(metrics),
+        &app.settings().palette,
         info.is_focused,
     );
     // The scrollbar draws its whole track.

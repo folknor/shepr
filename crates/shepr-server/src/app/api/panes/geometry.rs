@@ -1,5 +1,9 @@
 use super::*;
 
+/// The fraction of a split one resize step moves its edge by.
+const DEFAULT_PANE_RESIZE_AMOUNT: shepr_core::layout::RatioDelta =
+    shepr_core::layout::RatioDelta::new(0.05);
+
 impl App {
     /// Focuses the neighbour of the pane in the given direction and moves the
     /// requester onto its workspace. A neighbour that already holds focus
@@ -10,16 +14,13 @@ impl App {
     ) -> HandlerResult {
         // Direction and edges use the tiled layout even when this workspace is
         // zoomed, matching TUI navigation.
-        let (ws_idx, source_pane_id) = self.endpoint_pane(&params.pane_id)?;
+        let (workspace_id, source_pane_id) = self.endpoint_pane(&params.pane_id)?;
         let Some(target_pane_id) =
-            self.directional_pane_target(ws_idx, source_pane_id, params.direction)
+            self.directional_pane_target(&workspace_id, source_pane_id, params.direction)
         else {
             return Handled::done();
         };
-        let effects = self
-            .state
-            .focus_pane_in_workspace(ws_idx, target_pane_id)
-            .into();
+        let effects = self.state.focus_pane(target_pane_id).into();
         Handled::navigating_with_effects(
             EndpointReply::Done,
             *params.pane_id.workspace_id(),
@@ -30,18 +31,18 @@ impl App {
     pub(crate) fn handle_pane_resize(&mut self, params: &PaneResizeParams) -> HandlerResult {
         // Direction and edges use the tiled layout even when this workspace is
         // zoomed, matching TUI navigation.
-        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
-        let direction: NavDirection = super::nav_direction(params.direction);
-        let area = shepr_mux::workspace::layout_rect(self.state.workspace_layout_area(ws_idx));
+        let (workspace_id, pane_id) = self.endpoint_pane(&params.pane_id)?;
+        let direction = params.direction;
+        let area = self.state.workspace(&workspace_id).map_or_else(
+            || self.state.settings().headless_rect(),
+            |workspace| self.state.layout_area(workspace),
+        );
         // A resize that moves no split edge is a successful no-op.
-        let outcome = self.state.edit_workspace_geometry(ws_idx, |workspace| {
-            workspace.resize_pane(
-                pane_id,
-                direction,
-                crate::limits::DEFAULT_PANE_RESIZE_AMOUNT,
-                area,
-            )
-        });
+        let outcome = self
+            .state
+            .edit_workspace_geometry(&workspace_id, |workspace| {
+                workspace.resize_pane(pane_id, direction, DEFAULT_PANE_RESIZE_AMOUNT, area)
+            });
         Handled::done_with_effects(outcome.into())
     }
 
@@ -53,31 +54,30 @@ impl App {
     pub(crate) fn handle_pane_swap(&mut self, params: &PaneSwapParams) -> HandlerResult {
         let swap = match params {
             PaneSwapParams::Direction { pane_id, direction } => {
-                let (ws_idx, source_pane_id) = self.endpoint_pane(pane_id)?;
-                self.directional_pane_target(ws_idx, source_pane_id, *direction)
-                    .map(|target_pane_id| (ws_idx, source_pane_id, target_pane_id))
+                let (workspace_id, source_pane_id) = self.endpoint_pane(pane_id)?;
+                self.directional_pane_target(&workspace_id, source_pane_id, *direction)
+                    .map(|target_pane_id| (workspace_id, source_pane_id, target_pane_id))
             }
             PaneSwapParams::Panes { source, target } => {
-                match (self.resolve_pane_id(source), self.resolve_pane_id(target)) {
-                    (Some((source_ws, source)), Some((target_ws, target)))
-                        if source != target && source_ws == target_ws =>
+                match (
+                    self.state.resolve_pane(source),
+                    self.state.resolve_pane(target),
+                ) {
+                    (Some(source), Some(target))
+                        if source.id() != target.id()
+                            && source.workspace().id() == target.workspace().id() =>
                     {
-                        Some((source_ws, source, target))
+                        Some((source.workspace().id(), source.id(), target.id()))
                     }
                     _ => None,
                 }
             }
         };
 
-        let Some((ws_idx, source_pane_id, target_pane_id)) = swap else {
+        let Some((workspace_id, source_pane_id, target_pane_id)) = swap else {
             return Handled::done();
         };
-        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
-            return Handled::done();
-        };
-        let outcome = self
-            .state
-            .swap_workspace_panes(ws_idx, source_pane_id, target_pane_id);
+        let outcome = self.state.swap_panes(source_pane_id, target_pane_id);
         if !outcome.changed() {
             return Handled::done();
         }
@@ -88,8 +88,8 @@ impl App {
     /// moves the requester onto that workspace even when the toggle changes
     /// nothing (a workspace of one pane has nothing to zoom over).
     pub(crate) fn handle_pane_zoom(&mut self, params: &PaneZoomParams) -> HandlerResult {
-        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
-        let Some(outcome) = self.state.toggle_pane_zoom(ws_idx, pane_id) else {
+        let (_, pane_id) = self.endpoint_pane(&params.pane_id)?;
+        let Some(outcome) = self.state.toggle_pane_zoom(pane_id) else {
             // toggle_pane_zoom returns None only when the pane is absent. Its
             // one-pane zoom no-op is handled before set_zoomed can refuse it.
             return Err(pane_missing(&params.pane_id).into());

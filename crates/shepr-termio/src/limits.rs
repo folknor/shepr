@@ -6,22 +6,22 @@ use std::time::Duration;
 ///
 /// A short delay keeps lone Escape responsive while allowing bytes from one
 /// terminal write to arrive together.
-pub const RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS: i32 = 10;
+pub const RAW_INPUT_IDLE_FLUSH_TIMEOUT: Duration = Duration::from_millis(10);
 
 /// Wait this long before flushing a possible mouse sequence when host mouse
 /// reporting is active; the interval accommodates fragmented reports.
-pub const MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS: i32 = 150;
+pub const MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT: Duration = Duration::from_millis(150);
 
 /// Wait this long before flushing a lone `ESC [` when host mouse reporting is
 /// active: long enough for a mouse report split right after its introducer
 /// (seen 33 ms apart), short enough that a legacy Alt+[ is not glued to the
 /// next key.
-pub const MOUSE_ACTIVE_CSI_INTRODUCER_FLUSH_TIMEOUT_MS: i32 = 50;
+pub const MOUSE_ACTIVE_CSI_INTRODUCER_FLUSH_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// How long a mouse report prefix is kept after it outlived keyboard timing
 /// while the host sends Escape disambiguated (`CSI 27u`), so its tail can still
 /// arrive (seen 350 ms late). Any other input ends the wait early.
-pub const DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS: i32 = 500;
+pub const DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Largest bracketed paste body the framer holds while waiting for its
 /// terminator. Past this the held part is closed and delivered as one paste and

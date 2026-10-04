@@ -10,24 +10,37 @@
 //! the result to the persister.
 //!
 //! The loop learns that a save finished from the persister's completion
-//! signal ([`SessionSaver::save_finished`]), not by polling: it waits on the
-//! signal and reaps the save when it fires. While a save is in flight no
+//! signal (the `save_finished` notification `App::open` hands the persister
+//! and `AppOutputs` waits on), not by polling: it waits on the signal and
+//! reaps the save when it fires. While a save is in flight no
 //! save deadline is reported, since nothing can start before the save ends,
 //! and its end wakes the loop to reconsider them.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{App, Backoff};
-use crate::limits::{CHECKPOINT_MAX_FAILURES, CHECKPOINT_RETRY_MAX_DELAY, SESSION_SAVE_RETRY_MIN};
+use super::App;
+use crate::backoff::Backoff;
 
 mod autosave;
 mod exit_checkpoint;
 mod host_checkpoint;
 use autosave::Autosave;
 use exit_checkpoint::{PaneExitCheckpoint, PreservedLayout};
+pub(crate) use host_checkpoint::HostCheckpointOutcome;
 use host_checkpoint::HostShutdownCheckpoint;
+
+/// Coalesce ordinary session writes to avoid saving on every event.
+pub(in crate::app) const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
+/// First session-save retry: prompt recovery without a busy loop.
+const SESSION_SAVE_RETRY_MIN: Duration = Duration::from_millis(250);
+/// Longest session-save retry, limiting failing-disk pressure.
+const SESSION_SAVE_RETRY_MAX: Duration = Duration::from_secs(30);
+/// Longest retry delay of a failed pane-exit or host-shutdown checkpoint.
+const CHECKPOINT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
+/// Repeated failed critical checkpoints release shutdown delay or exited panes;
+/// persistence must not stall either indefinitely.
+pub(crate) const CHECKPOINT_MAX_FAILURES: u8 = 3;
 
 /// Identity of a pane-exit checkpoint request, minted by `PaneExitCheckpoint`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -94,8 +107,8 @@ pub(crate) struct SessionSaver {
     /// capture reaches the persister after the one before it finished.
     in_flight: Option<InFlightSave>,
     persister: shepr_mux::persist::SessionPersister,
-    /// Fired by the persister each time a submitted save ends.
-    save_finished: Arc<tokio::sync::Notify>,
+    /// Whether pane history is captured into a save, from the config.
+    pane_history: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -120,12 +133,23 @@ enum SavePolicy {
 }
 
 impl SavePolicy {
-    fn new(persists: bool) -> Self {
-        if persists {
-            Self::Persisting
-        } else {
-            Self::Never
+    fn new(policy: shepr_mux::persist::SessionOpenPolicy) -> Self {
+        match policy {
+            shepr_mux::persist::SessionOpenPolicy::Persist => Self::Persisting,
+            shepr_mux::persist::SessionOpenPolicy::Never => Self::Never,
         }
+    }
+
+    /// Persisting or stopped, now or before a freeze.
+    fn persists_this_boot(self) -> bool {
+        matches!(
+            self,
+            Self::Persisting
+                | Self::Stopped
+                | Self::Frozen {
+                    resume_to: SaveMode::Persisting | SaveMode::Stopped
+                }
+        )
     }
 
     fn allows_saves(self) -> bool {
@@ -190,32 +214,37 @@ fn checkpoint_retry_delay(failures_before: u8) -> Duration {
 }
 
 impl SessionSaver {
-    /// `save_finished` is the signal `persister` was built with.
+    /// The persister fires its own completion signal, which the app's outputs
+    /// own; the saver keeps no copy.
     pub(crate) fn new(
         persister: shepr_mux::persist::SessionPersister,
-        save_finished: Arc<tokio::sync::Notify>,
-        persists: bool,
+        policy: shepr_mux::persist::SessionOpenPolicy,
+        pane_history: bool,
     ) -> Self {
         Self {
-            policy: SavePolicy::new(persists),
+            policy: SavePolicy::new(policy),
             autosave: Autosave::new(),
             exit: PaneExitCheckpoint::new(),
             host: HostShutdownCheckpoint::new(),
             in_flight: None,
             persister,
-            save_finished,
+            pane_history,
         }
     }
 
-    /// The signal the persister fires when a save ends. The headless loop
-    /// waits on it; a firing with nothing to reap is harmless.
-    pub(crate) fn save_finished(&self) -> &tokio::sync::Notify {
-        &self.save_finished
+    /// Whether this boot persists the session, frozen or not.
+    pub(crate) fn persists_this_boot(&self) -> bool {
+        self.policy.persists_this_boot()
+    }
+
+    /// Whether saves capture pane history.
+    pub(crate) fn pane_history(&self) -> bool {
+        self.pane_history
     }
 
     /// Whether nothing may start now whatever is requested or due: a save is
-    /// in flight (its end fires [`Self::save_finished`], which wakes the
-    /// loop), or the host checkpoint finished unsaved and no pane exit is
+    /// in flight (its end fires the persister's completion signal, which wakes
+    /// the loop), or the host checkpoint finished unsaved and no pane exit is
     /// held (the lifecycle freezes saves once it takes that result), or this
     /// boot's persister has stopped.
     fn blocked(&self) -> bool {
@@ -350,22 +379,31 @@ impl SessionSaver {
 }
 
 impl App {
-    /// Freezes the saver and marks the app suspended as one lifecycle change.
+    /// Freezes the saver for a host shutdown.
     pub(crate) fn freeze_session_saves(&mut self) {
-        self.policy = super::AppPolicy::Suspended;
         self.session_saver.freeze();
     }
 
-    /// Restores the app's pre-freeze policy and thaws the saver together.
-    pub(crate) fn thaw_session_saves(&mut self, policy: super::AppPolicy) {
+    /// Restores the saver's own pre-freeze policy.
+    pub(crate) fn thaw_session_saves(&mut self) {
         self.session_saver.thaw();
-        self.policy = policy;
+    }
+
+    /// Thaw after a cancelled host shutdown: the live session is dirty again.
+    pub(crate) fn resume_session_saves_after_cancel(&mut self) {
+        self.thaw_session_saves();
+        self.state.mark_session_dirty();
+    }
+
+    /// Whether this boot persists the session, frozen or not.
+    pub(crate) fn session_persists(&self) -> bool {
+        self.session_saver.persists_this_boot()
     }
 
     /// The current AppState dirty bit is the authority for a saved exit layout;
     /// saver mutation notifications only schedule writes and invalidate caches.
     pub(super) fn preserves_pane_exit_checkpoint(&self) -> bool {
-        self.session_saver.exit.preserved().is_some() && !self.state.session_dirty
+        self.session_saver.exit.preserved().is_some() && !self.state.session_dirty()
     }
 
     // A missing identity must never replace the protected layout with the
@@ -375,7 +413,7 @@ impl App {
             .session_saver
             .exit
             .preserved()
-            .filter(|_| !self.state.session_dirty)
+            .filter(|_| !self.state.session_dirty())
         else {
             return Some(self.capture_session_save_job().0);
         };
@@ -392,11 +430,8 @@ impl App {
     /// once for this loop pass. AppState mutations and App-owned mutations use
     /// the same flag, so a handler cannot schedule the same change twice.
     pub(crate) fn sync_session_save_schedule(&mut self) {
-        if self.state.session_dirty {
-            self.state.session_dirty = false;
-            if self.session_saver.policy.allows_saves() {
-                self.session_saver.note_mutation(self.clock.now);
-            }
+        if self.state.take_session_dirty() && self.session_saver.policy.allows_saves() {
+            self.session_saver.note_mutation(self.clock.now);
         }
     }
 
@@ -447,7 +482,7 @@ impl App {
                                 exit.generation,
                                 // This catches a mutation not yet consumed by
                                 // the loop's save-scheduling pass.
-                                exit.layout.filter(|_| !self.state.session_dirty),
+                                exit.layout.filter(|_| !self.state.session_dirty()),
                             );
                         } else {
                             self.session_saver.exit.discard_layout();
@@ -506,46 +541,30 @@ impl App {
         &self,
     ) -> (
         shepr_mux::persist::PersistJob,
-        HashMap<shepr_mux::persist::snapshot::SavedPaneRef, shepr_protocol::TerminalId>,
+        HashMap<shepr_mux::persist::SavedPaneRef, shepr_core::layout::PaneId>,
     ) {
         shepr_mux::persist::capture_job(
             &self.state.workspaces,
-            &self.state.terminals,
             &self.terminal_runtimes,
             self.paths.fallback_cwd(),
-            self.state.bookmark_index(),
-            self.state.host_terminal_theme,
-            self.persist_pane_history,
+            self.state.host_terminal_theme(),
+            self.session_saver.pane_history(),
         )
     }
 
     /// The layout a pane-exit checkpoint preserves from its capture, or
-    /// `None` unless `job` is a save and every pane of every workspace has a
-    /// terminal identity to refresh its history and cwd from at the final
-    /// save.
+    /// `None` unless `job` is a save. Every pane the capture saved is in
+    /// `pane_ids`, since a saved pane is a record in a workspace's tree.
     fn capture_preserved_layout(
         job: &shepr_mux::persist::PersistJob,
-        terminal_ids: HashMap<
-            shepr_mux::persist::snapshot::SavedPaneRef,
-            shepr_protocol::TerminalId,
-        >,
+        pane_ids: HashMap<shepr_mux::persist::SavedPaneRef, shepr_core::layout::PaneId>,
     ) -> Option<PreservedLayout> {
         let shepr_mux::persist::PersistJob::Save(bundle) = job else {
             return None;
         };
-        if terminal_ids.len()
-            != bundle
-                .snapshot
-                .workspaces
-                .iter()
-                .map(|workspace| workspace.panes.len())
-                .sum::<usize>()
-        {
-            return None;
-        }
         Some(PreservedLayout {
             snapshot: bundle.snapshot.clone(),
-            terminal_ids,
+            pane_ids,
         })
     }
 
@@ -553,19 +572,17 @@ impl App {
         &self,
         layout: &PreservedLayout,
     ) -> Option<shepr_mux::persist::PersistJob> {
-        let cwds = shepr_mux::persist::snapshot::capture_pending_cwds_for_snapshot(
+        let cwds = shepr_mux::persist::capture_pending_cwds_for_snapshot(
             &layout.snapshot,
-            &layout.terminal_ids,
+            &layout.pane_ids,
             &self.terminal_runtimes,
         )?;
-        let history = if self.persist_pane_history {
-            Some(
-                shepr_mux::persist::snapshot::capture_pending_history_for_snapshot(
-                    &layout.snapshot,
-                    &layout.terminal_ids,
-                    &self.terminal_runtimes,
-                )?,
-            )
+        let history = if self.session_saver.pane_history() {
+            Some(shepr_mux::persist::capture_pending_history_for_snapshot(
+                &layout.snapshot,
+                &layout.pane_ids,
+                &self.terminal_runtimes,
+            )?)
         } else {
             None
         };
@@ -590,15 +607,15 @@ impl App {
                 exit_generation,
                 host,
             }) => {
-                if std::mem::take(&mut self.state.session_dirty) {
+                if self.state.take_session_dirty() {
                     self.session_saver.note_mutation(self.clock.now);
                 }
                 self.session_saver.autosave.clear();
-                let (job, terminal_ids) = self.capture_session_save_job();
+                let (job, pane_ids) = self.capture_session_save_job();
                 let ticket = CheckpointTicket {
                     exit: exit_generation.map(|generation| ExitTicket {
                         generation,
-                        layout: Self::capture_preserved_layout(&job, terminal_ids).map(Box::new),
+                        layout: Self::capture_preserved_layout(&job, pane_ids).map(Box::new),
                     }),
                     host,
                 };
@@ -629,7 +646,10 @@ impl App {
         if !self.session_saver.policy.allows_saves() {
             return None;
         }
-        let generation = self.session_saver.exit.request(self.state.session_dirty)?;
+        let generation = self
+            .session_saver
+            .exit
+            .request(self.state.session_dirty())?;
         self.start_background_session_save();
         Some(generation)
     }
@@ -656,7 +676,7 @@ impl App {
         self.session_saver.host.is_finished()
     }
 
-    pub(crate) fn take_host_shutdown_checkpoint_result(&mut self) -> Option<bool> {
+    pub(crate) fn take_host_shutdown_checkpoint_result(&mut self) -> Option<HostCheckpointOutcome> {
         self.session_saver.host.take_result()
     }
 
@@ -720,6 +740,23 @@ impl App {
             self.session_saver.autosave.clear();
         }
         saved
+    }
+
+    /// The final save of this boot, when the boot persists. During a host
+    /// shutdown saving is frozen, so this writes nothing and the checkpoint
+    /// taken on the warning stands. A signal quit's instant adopts checkpoint
+    /// candidates first: after a signal the panes' deaths were left
+    /// unprocessed, so a pane whose agent died from the same kill just before
+    /// it gets that identity back here.
+    pub(crate) async fn save_session_for_exit(&mut self, signal_quit_at: Option<Instant>) {
+        if !self.session_saver.persists_this_boot() {
+            return;
+        }
+        if let Some(signaled_at) = signal_quit_at {
+            self.state
+                .adopt_checkpoint_candidates_for_shutdown(signaled_at);
+        }
+        self.save_session_before_teardown_async().await;
     }
 
     pub(crate) async fn save_session_before_teardown_async(&mut self) {
@@ -823,9 +860,14 @@ impl SessionSaver {
 impl App {
     /// Turns a test app into a persisting one, as production boots: the
     /// lease-only persister gives way to a threaded one on the same data
-    /// directory, and the policy becomes Production. Tests set up their state
-    /// first, so that setup schedules no saves.
-    pub(crate) fn persist_for_test(&mut self) {
+    /// directory, and the saver's policy becomes Persisting. Tests set up
+    /// their state first, so that setup schedules no saves. `save_finished` is
+    /// the signal whoever owns this app's outputs waits on (`TestApp::persist`,
+    /// `HeadlessServer::persist_for_test`).
+    pub(crate) fn persist_with_signal(
+        &mut self,
+        save_finished: std::sync::Arc<tokio::sync::Notify>,
+    ) {
         self.session_saver.persister.retire();
         let lease = shepr_mux::persist::DataDirLease::acquire(self.paths.data_dir())
             .expect("the test data directory lease is free");
@@ -833,10 +875,9 @@ impl App {
             lease,
             shepr_mux::persist::SessionBackupPolicy::NoBackupNeeded,
             shepr_mux::persist::HistoryCarry::default(),
-            Arc::clone(&self.session_saver.save_finished),
+            save_finished,
         );
         self.session_saver.policy = SavePolicy::Persisting;
-        self.policy = super::AppPolicy::Production;
     }
 
     /// Blocks until the save in flight, if any, has finished, records its
@@ -885,33 +926,50 @@ impl App {
 mod tests {
     use super::*;
 
-    fn test_app() -> App {
-        App::new(
-            &shepr_config::ServerConfig::default(),
-            super::super::AppPolicy::Suspended,
-        )
+    fn test_app() -> crate::app::TestApp {
+        App::new(&shepr_config::ServerConfig::default())
     }
 
     /// An app whose saver admits saves, for tests of the saver's scheduling
     /// alone: no persister runs, so only what the saver decides is observed.
-    fn saving_test_app() -> App {
+    fn saving_test_app() -> crate::app::TestApp {
         let mut app = test_app();
         app.session_saver.admit_saves_for_test();
         app
     }
 
+    #[test]
+    fn persists_this_boot_survives_freeze_and_stop() {
+        for (mode, persists) in [
+            (SaveMode::Persisting, true),
+            (SaveMode::Stopped, true),
+            (SaveMode::Never, false),
+        ] {
+            let frozen = SavePolicy::Frozen { resume_to: mode };
+            assert_eq!(frozen.persists_this_boot(), persists);
+        }
+        assert!(SavePolicy::Persisting.persists_this_boot());
+        assert!(SavePolicy::Stopped.persists_this_boot());
+        assert!(!SavePolicy::Never.persists_this_boot());
+    }
+
     /// A production-policy app with one workspace of two panes, returning the
     /// pane that will exit.
-    fn two_pane_app(name: &str) -> (App, shepr_core::layout::PaneId, shepr_core::layout::PaneId) {
+    fn two_pane_app(
+        name: &str,
+    ) -> (
+        crate::app::TestApp,
+        shepr_core::layout::PaneId,
+        shepr_core::layout::PaneId,
+    ) {
         use crate::test_support::WorkspaceFixture as _;
         let mut app = test_app();
-        app.persist_for_test();
+        app.persist();
         let mut workspace = shepr_mux::workspace::Workspace::test_new(name);
-        let exiting = workspace.root_pane();
+        let exiting = workspace.tree().root();
         let staying = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.test_set_workspaces(vec![workspace]);
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
+        app.state.seed_bookmark_index(Some(0));
         app.insert_idle_test_runtime(exiting);
         app.insert_idle_test_runtime(staying);
         (app, exiting, staying)
@@ -921,11 +979,19 @@ mod tests {
     fn interrupted_exit(app: &App, pane_id: shepr_core::layout::PaneId) -> AppEvent {
         app.from_pane_runtime(
             pane_id,
-            AppEvent::PaneDied {
-                pane_id,
-                exit_reason: shepr_platform::ChildExitReason::Interrupted,
+            shepr_mux::events::RuntimeEvent::PaneDied {
+                ending: shepr_mux::pane::PaneEnding::new(shepr_mux::pane::PaneEndReason::Signalled),
                 ended_at: std::time::Instant::now(),
             },
+        )
+    }
+
+    /// The same signalled exit, admitted: the input `prepare_pane_exit` takes.
+    fn interrupted_death(app: &App, pane_id: shepr_core::layout::PaneId) -> crate::app::PaneDeath {
+        app.test_pane_death(
+            pane_id,
+            shepr_mux::pane::PaneEndReason::Signalled,
+            std::time::Instant::now(),
         )
     }
 
@@ -936,12 +1002,12 @@ mod tests {
                 .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
         )
         .expect("read the session file");
-        shepr_mux::persist::snapshot::parse_session_file(&saved)
+        shepr_mux::persist::schema::parse_session_file(&saved)
             .expect("parse the session file")
             .snapshot
             .workspaces
             .iter()
-            .map(|workspace| workspace.panes.len())
+            .map(|workspace| workspace.layout.panes().len())
             .collect()
     }
 
@@ -949,12 +1015,10 @@ mod tests {
     fn a_held_pane_exit_settles_on_its_checkpoint_although_the_session_changed_meanwhile() {
         let (mut app, exiting, _) = two_pane_app("held");
 
+        let death = interrupted_death(&app, exiting);
         let generation = app
-            .prepare_pane_exit(
-                exiting,
-                shepr_platform::ChildExitReason::Interrupted,
-                std::time::Instant::now(),
-            )
+            .prepare_pane_exit(death)
+            .prepared
             .held_generation()
             .expect("a signalled exit is held for a checkpoint");
         assert!(app.session_saver.save_in_flight());
@@ -978,12 +1042,10 @@ mod tests {
         let (mut app, exiting, _) = two_pane_app("earlier-save");
         let earlier = app.session_saver.hold_test_save_in_flight();
 
+        let death = interrupted_death(&app, exiting);
         let generation = app
-            .prepare_pane_exit(
-                exiting,
-                shepr_platform::ChildExitReason::Interrupted,
-                std::time::Instant::now(),
-            )
+            .prepare_pane_exit(death)
+            .prepared
             .held_generation()
             .expect("a signalled exit is held for a checkpoint");
         earlier.complete(Ok(()));
@@ -1002,17 +1064,13 @@ mod tests {
     fn exits_after_a_pane_exit_checkpoint_keep_its_layout() {
         let (app, exiting, staying) = two_pane_app("burst");
         let mut server = crate::server::headless::tests::test_headless_server();
-        server.app = app;
+        server.install_test_app(app);
 
         server.handle_test_runtime_exit_and_replay(interrupted_exit(&server.app, exiting));
         assert_eq!(saved_pane_counts(&server.app), vec![2]);
-        assert_eq!(
-            server.app.prepare_pane_exit(
-                staying,
-                shepr_platform::ChildExitReason::Interrupted,
-                std::time::Instant::now(),
-            ),
-            crate::app::PreparedPaneExit::Settled,
+        let death = interrupted_death(&server.app, staying);
+        assert!(
+            server.app.prepare_pane_exit(death).prepared.is_settled(),
             "the checkpoint on disk already holds the second pane"
         );
     }
@@ -1021,9 +1079,9 @@ mod tests {
     async fn the_final_save_rewrites_the_checkpoint_layout_instead_of_skipping_it() {
         let (app, exiting, _) = two_pane_app("final");
         let mut server = crate::server::headless::tests::test_headless_server();
-        server.app = app;
+        server.install_test_app(app);
         server.handle_test_runtime_exit_and_replay(interrupted_exit(&server.app, exiting));
-        assert_eq!(server.app.state.workspaces[0].panes().len(), 1);
+        assert_eq!(server.app.state.ws(0).tree().len(), 1);
         // A final save that skipped would leave no session file behind.
         std::fs::remove_file(
             server
@@ -1048,14 +1106,14 @@ mod tests {
     async fn a_final_save_with_missing_checkpoint_identities_keeps_the_durable_layout() {
         let (app, exiting, _) = two_pane_app("identities");
         let mut server = crate::server::headless::tests::test_headless_server();
-        server.app = app;
+        server.install_test_app(app);
         server.handle_test_runtime_exit_and_replay(interrupted_exit(&server.app, exiting));
         server
             .app
             .session_saver
             .preserved_layout_mut()
             .expect("saved checkpoint")
-            .terminal_ids
+            .pane_ids
             .clear();
 
         server.app.save_session_before_teardown_async().await;
@@ -1084,7 +1142,7 @@ mod tests {
     #[test]
     fn repeated_pane_exit_checkpoint_failures_release_the_held_exit() {
         let mut app = test_app();
-        app.persist_for_test();
+        app.persist();
         let generation = app.session_saver.exit.request(true).expect("held");
         for _ in 1..CHECKPOINT_MAX_FAILURES {
             app.finish_session_save(exit_kind(generation), disk_full());
@@ -1107,7 +1165,7 @@ mod tests {
     #[test]
     fn a_refused_save_stops_persistence_and_tells_every_client() {
         let mut app = test_app();
-        app.persist_for_test();
+        app.persist();
         let generation = app.session_saver.exit.request(true).expect("held");
         let projection_before = app.state.shell_projection_revision;
         assert!(!app.session_saves_stopped());
@@ -1246,12 +1304,12 @@ mod tests {
         let generation = app.session_saver.exit.request(false).expect("held");
         let layout = Box::new(PreservedLayout {
             snapshot: shepr_mux::persist::SessionSnapshot {
-                version: shepr_mux::persist::snapshot::SNAPSHOT_VERSION,
+                version: shepr_mux::persist::schema::SNAPSHOT_VERSION,
                 host_theme: Default::default(),
                 workspaces: vec![],
                 active: None,
             },
-            terminal_ids: HashMap::new(),
+            pane_ids: HashMap::new(),
         });
         let completion = app
             .session_saver
@@ -1275,7 +1333,8 @@ mod tests {
                 ..
             })
         ));
-        app.session_saver.note_mutation(app.clock.now);
+        let now = app.clock.now;
+        app.session_saver.note_mutation(now);
         assert!(matches!(
             &app.session_saver.in_flight,
             Some(InFlightSave {
@@ -1296,7 +1355,8 @@ mod tests {
     fn freezing_clears_the_autosave_and_releases_a_held_exit() {
         let mut app = test_app();
         let generation = app.session_saver.exit.request(false).expect("held");
-        app.session_saver.autosave.schedule(app.clock.now);
+        let now = app.clock.now;
+        app.session_saver.autosave.schedule(now);
         app.session_saver.freeze();
         assert_eq!(app.session_saver.autosave_deadline(), None);
         assert!(app.session_saver.exit.is_released(generation));
@@ -1347,7 +1407,10 @@ mod tests {
         assert!(app.session_saver.save_in_flight());
         app.wait_for_session_save();
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
-        assert_eq!(app.take_host_shutdown_checkpoint_result(), Some(true));
+        assert_eq!(
+            app.take_host_shutdown_checkpoint_result(),
+            Some(HostCheckpointOutcome::Saved)
+        );
     }
 
     #[test]
@@ -1356,7 +1419,10 @@ mod tests {
         app.request_host_shutdown_checkpoint();
         app.wait_for_session_save();
         assert!(app.host_shutdown_checkpoint_result_ready());
-        assert_eq!(app.take_host_shutdown_checkpoint_result(), Some(true));
+        assert_eq!(
+            app.take_host_shutdown_checkpoint_result(),
+            Some(HostCheckpointOutcome::Saved)
+        );
         assert_eq!(app.take_host_shutdown_checkpoint_result(), None);
         assert_eq!(saved_pane_counts(&app), vec![2]);
     }
@@ -1365,7 +1431,7 @@ mod tests {
     fn a_host_checkpoint_supersedes_a_preserved_pane_exit_layout() {
         let (app, exiting, _) = two_pane_app("host-supersedes");
         let mut server = crate::server::headless::tests::test_headless_server();
-        server.app = app;
+        server.install_test_app(app);
         server.handle_test_runtime_exit_and_replay(interrupted_exit(&server.app, exiting));
         assert!(server.app.preserves_pane_exit_checkpoint());
         server.app.request_host_shutdown_checkpoint();
@@ -1374,7 +1440,7 @@ mod tests {
         assert!(!server.app.preserves_pane_exit_checkpoint());
         assert_eq!(
             server.app.take_host_shutdown_checkpoint_result(),
-            Some(true)
+            Some(HostCheckpointOutcome::Saved)
         );
     }
 
@@ -1382,7 +1448,7 @@ mod tests {
     fn a_mutation_pending_when_a_checkpoint_starts_discards_the_preserved_layout() {
         let (app, exiting, _) = two_pane_app("pending-mutation");
         let mut server = crate::server::headless::tests::test_headless_server();
-        server.app = app;
+        server.install_test_app(app);
         server.handle_test_runtime_exit_and_replay(interrupted_exit(&server.app, exiting));
         assert!(server.app.preserves_pane_exit_checkpoint());
         server.app.state.mark_session_dirty();
@@ -1417,7 +1483,10 @@ mod tests {
         app.start_background_session_save();
         assert!(app.session_saver.save_in_flight());
         app.wait_for_session_save();
-        assert_eq!(app.take_host_shutdown_checkpoint_result(), Some(true));
+        assert_eq!(
+            app.take_host_shutdown_checkpoint_result(),
+            Some(HostCheckpointOutcome::Saved)
+        );
         assert_eq!(saved_pane_counts(&app), vec![2]);
     }
 
@@ -1426,21 +1495,21 @@ mod tests {
         let (mut app, first, second) = two_pane_app("overlapping");
         app.state
             .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
-        app.state.ensure_test_terminals();
-        let reason = shepr_platform::ChildExitReason::Interrupted;
-        let first_prepared = app.prepare_pane_exit(first, reason, std::time::Instant::now());
-        let second_prepared = app.prepare_pane_exit(second, reason, std::time::Instant::now());
+        let first_death = interrupted_death(&app, first);
+        let first_prepared = app.prepare_pane_exit(first_death).prepared;
+        let second_death = interrupted_death(&app, second);
+        let second_prepared = app.prepare_pane_exit(second_death).prepared;
         let first_generation = first_prepared.held_generation().expect("first held");
         let second_generation = second_prepared.held_generation().expect("second held");
         app.wait_for_session_save();
         assert!(app.pane_exit_checkpoint_generation_settled(first_generation));
         assert!(app.pane_exit_checkpoint_generation_settled(second_generation));
         assert!(!app.session_saver.exit.is_requested());
-        assert!(app.handle_prepared_pane_exit(interrupted_exit(&app, first), first_prepared));
-        assert!(app.handle_prepared_pane_exit(interrupted_exit(&app, second), second_prepared));
+        assert!(app.handle_prepared_pane_exit(&first_prepared));
+        assert!(app.handle_prepared_pane_exit(&second_prepared));
         // Both exits were applied, so the three panes saved below are the
         // preserved pre-exit layout, not the live one.
-        assert_eq!(app.state.workspaces[0].panes().len(), 1);
+        assert_eq!(app.state.ws(0).tree().len(), 1);
         app.sync_session_save_schedule();
         app.save_session_before_teardown_async().await;
         assert_eq!(saved_pane_counts(&app), vec![3]);
@@ -1465,7 +1534,7 @@ mod tests {
     #[tokio::test]
     async fn a_restore_that_drops_a_workspace_backs_up_the_saved_session_before_the_first_save() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
-        use shepr_mux::persist::snapshot::{
+        use shepr_mux::persist::schema::{
             DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionFile, SessionSnapshot,
             WorkspaceSnapshot,
         };
@@ -1482,55 +1551,45 @@ mod tests {
 
         // A working directory that does not exist: each pane's shell launch
         // fails in its chdir.
-        let pane = |public_number| PaneSnapshot {
-            cwd: scratch.join("missing-cwd"),
-            public_number,
+        let number = |value: usize| shepr_protocol::PanePublicNumber::new(value).expect("number");
+        let pane = |public_number: usize| PaneSnapshot {
+            cwd: shepr_core::absolute_path::AbsolutePath::new(scratch.join("missing-cwd"))
+                .expect("a scratch path is absolute"),
+            public_number: number(public_number),
             label: None,
             agent_session: None,
         };
-        let workspace =
-            |id: &str, name: &str, layout: LayoutSnapshot, ids: &[u32]| WorkspaceSnapshot {
+        let workspace = |id: &str, name: &str, layout: LayoutSnapshot, next: usize| {
+            let first = layout.panes()[0].public_number;
+            WorkspaceSnapshot {
                 id: id.parse().expect("workspace id"),
                 custom_name: Some(name.into()),
                 layout,
-                panes: ids
-                    .iter()
-                    .enumerate()
-                    .map(|(index, id)| {
-                        (
-                            *id,
-                            pane(shepr_protocol::PanePublicNumber::new(index + 1).expect("number")),
-                        )
-                    })
-                    .collect(),
-                next_public_pane_number: shepr_protocol::PanePublicNumber::new(ids.len() + 1)
-                    .expect("next number"),
+                next_public_pane_number: number(next),
                 zoomed: false,
-                focused: ids[0],
-                root_pane: ids[0],
-            };
+                focused: first,
+                root_pane: first,
+            }
+        };
         // A saved split ratio out of range refuses the whole file at decode,
         // so the workspace-level defect here is two panes sharing one public
         // number, which drops only that workspace.
-        let mut colliding = workspace(
+        let colliding = workspace(
             "w2",
             "colliding numbers",
             LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
                 ratio: shepr_core::layout::SplitRatio::EVEN,
-                first: Box::new(LayoutSnapshot::Pane(2)),
-                second: Box::new(LayoutSnapshot::Pane(3)),
+                first: Box::new(LayoutSnapshot::Pane(pane(1))),
+                second: Box::new(LayoutSnapshot::Pane(pane(1))),
             },
-            &[2, 3],
+            2,
         );
-        for pane in colliding.panes.values_mut() {
-            pane.public_number = shepr_protocol::PanePublicNumber::new(1).expect("number");
-        }
         let snapshot = SessionSnapshot {
-            version: shepr_mux::persist::snapshot::SNAPSHOT_VERSION,
+            version: shepr_mux::persist::schema::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![
-                workspace("w1", "healthy", LayoutSnapshot::Pane(1), &[1]),
+                workspace("w1", "healthy", LayoutSnapshot::Pane(pane(1)), 2),
                 colliding,
             ],
             active: Some(0),
@@ -1544,18 +1603,18 @@ mod tests {
         let session_file = data_dir.join("session.json");
         std::fs::write(&session_file, &original).expect("test precondition");
 
-        let mut app = App::with_paths(
+        let (mut app, _outputs) = App::open(
             &config,
             &paths,
             lease,
-            super::super::AppPolicy::Production,
+            shepr_mux::persist::SessionOpenPolicy::Persist,
             super::super::tests::test_clock(),
         );
         assert_eq!(
             app.state
                 .workspaces
                 .iter()
-                .map(|workspace| workspace.custom_name.clone())
+                .map(|workspace| workspace.custom_name().map(str::to_owned))
                 .collect::<Vec<_>>(),
             vec![Some("healthy".to_owned())],
             "the saved session loaded and only the invalid workspace was dropped"
@@ -1575,7 +1634,7 @@ mod tests {
 
         assert!(app.save_session_now(), "first save");
         assert_eq!(directory_files(&backups), vec![original.clone()]);
-        let saved = shepr_mux::persist::snapshot::parse_session_file(
+        let saved = shepr_mux::persist::schema::parse_session_file(
             &std::fs::read_to_string(&session_file).expect("read the new session"),
         )
         .expect("parse the new session")
@@ -1616,11 +1675,11 @@ mod tests {
         let original = b"{ this is not a session".to_vec();
         std::fs::write(data_dir.join("session.json"), &original).expect("test precondition");
 
-        let mut app = App::with_paths(
+        let (mut app, _outputs) = App::open(
             &config,
             &paths,
             lease,
-            super::super::AppPolicy::Production,
+            shepr_mux::persist::SessionOpenPolicy::Persist,
             super::super::tests::test_clock(),
         );
         let backups = data_dir.join("session-backups");
@@ -1658,13 +1717,607 @@ mod tests {
         );
         let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
             .expect("test session lease");
-        let app = App::with_paths(
+        let (app, _outputs) = App::open(
             &config,
             &paths,
             lease,
-            super::super::AppPolicy::Production,
+            shepr_mux::persist::SessionOpenPolicy::Persist,
             super::super::tests::test_clock(),
         );
         assert_eq!(app.restore_notice, None);
+    }
+
+    /// Autosave scheduling, checkpoints and the restore backup, run on the app
+    /// fixture `app::tests` shares (it sets the test shell).
+    mod autosave_and_checkpoints {
+        use super::super::SESSION_SAVE_DEBOUNCE;
+        use crate::app::tests::{test_app, test_clock};
+        use crate::app::*;
+        use crate::test_support::*;
+        use shepr_agent::{Agent, AgentState};
+        use shepr_config::ServerConfig;
+        use shepr_mux::workspace::Workspace;
+
+        /// The pane's exit as its current runtime reports it.
+        fn runtime_pane_exit(
+            app: &App,
+            pane_id: shepr_core::layout::PaneId,
+            reason: shepr_mux::pane::PaneEndReason,
+            ended_at: Instant,
+        ) -> AppEvent {
+            app.from_pane_runtime(
+                pane_id,
+                shepr_mux::events::RuntimeEvent::PaneDied {
+                    ending: shepr_mux::pane::PaneEnding::new(reason),
+                    ended_at,
+                },
+            )
+        }
+
+        /// The detector's exit report for the pane's agent, then its withdrawal,
+        /// as the pane's current runtime publishes them.
+        fn release_agent(app: &mut App, pane_id: shepr_core::layout::PaneId) {
+            for (agent, process_exited) in [(Some(Agent::Claude), true), (None, false)] {
+                let event = app.from_pane_runtime(
+                    pane_id,
+                    shepr_mux::events::RuntimeEvent::StateChanged {
+                        agent,
+                        detection: shepr_detect::Detection::new(AgentState::Idle, false),
+                        process_exited,
+                        observed_at: app.clock.now,
+                    },
+                );
+                app.handle_internal_event(event);
+            }
+        }
+
+        #[tokio::test]
+        async fn restore_with_damage_backs_up_the_saved_session_before_the_first_save() {
+            use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
+            use shepr_mux::persist::schema::{
+                LayoutSnapshot, PaneSnapshot, SessionFile, SessionSnapshot, WorkspaceSnapshot,
+            };
+
+            let scratch = crate::test_support::ScratchDir::new("damaged-restore-backup");
+            let paths = shepr_paths::AppPaths::test_at(&scratch);
+            let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
+                ServerConfig::default(),
+                paths.clone(),
+            );
+            let data_dir = paths.data_dir().to_path_buf();
+            let lease =
+                shepr_mux::persist::DataDirLease::acquire(&data_dir).expect("test session lease");
+
+            let number =
+                |value: usize| shepr_protocol::PanePublicNumber::new(value).expect("number");
+            let pane = |cwd: std::path::PathBuf, public_number: usize| PaneSnapshot {
+                cwd: shepr_core::absolute_path::AbsolutePath::new(cwd)
+                    .expect("test cwd is absolute"),
+                public_number: number(public_number),
+                label: None,
+                agent_session: None,
+            };
+            // Two saved workspaces claim one ID: the second is restored under a
+            // fresh ID and the restore reports damage, which is what makes the
+            // saved file worth keeping. (A relative cwd cannot be saved at all
+            // now: the file that held one fails to parse.)
+            let workspace = |name: &str, cwd: std::path::PathBuf| WorkspaceSnapshot {
+                id: "w1".parse().expect("id"),
+                custom_name: Some(name.into()),
+                next_public_pane_number: number(2),
+                layout: LayoutSnapshot::Pane(pane(cwd, 1)),
+                zoomed: false,
+                focused: number(1),
+                root_pane: number(1),
+            };
+            let snapshot = SessionSnapshot {
+                version: shepr_mux::persist::schema::SNAPSHOT_VERSION,
+                host_theme: Default::default(),
+                workspaces: vec![
+                    workspace("first", scratch.join("missing-cwd")),
+                    workspace("repeat", scratch.join("another-missing-cwd")),
+                ],
+                active: Some(0),
+            };
+            let original = serde_json::to_vec(&SessionFile {
+                snapshot,
+                history_digest: None,
+            })
+            .expect("encode the saved session");
+            let session_file = data_dir.join("session.json");
+            std::fs::write(&session_file, &original).expect("write the saved session");
+
+            let (mut app, _outputs) = App::open(
+                &config,
+                &paths,
+                lease,
+                shepr_mux::persist::SessionOpenPolicy::Persist,
+                test_clock(),
+            );
+            assert_eq!(app.state.workspaces.len(), 2);
+            assert_eq!(app.state.workspaces.records().count(), 2);
+
+            assert!(app.save_session_now(), "first save");
+            let backups = data_dir.join("session-backups");
+            let backup_files = std::fs::read_dir(&backups)
+                .expect("backup directory")
+                .map(|entry| entry.expect("backup entry").path())
+                .collect::<Vec<_>>();
+            assert_eq!(backup_files.len(), 1);
+            assert_eq!(
+                std::fs::read(&backup_files[0]).expect("read backup"),
+                original
+            );
+        }
+
+        #[test]
+        fn session_dirty_flag_schedules_debounced_save() {
+            let mut app = test_app();
+            app.persist();
+            let sample = AppClock {
+                now: app.clock.now + Duration::from_secs(42),
+                wall_now: app.clock.wall_now,
+            };
+            app.set_clock(sample);
+            app.state.session_dirty = true;
+
+            app.sync_session_save_schedule();
+
+            assert!(!app.state.session_dirty);
+            assert_eq!(
+                app.session_saver.autosave_deadline(),
+                Some(sample.now + SESSION_SAVE_DEBOUNCE)
+            );
+        }
+
+        #[test]
+        fn due_session_save_starts_background_writer() {
+            let mut app = test_app();
+            app.persist();
+            app.state
+                .test_set_workspaces(vec![Workspace::test_new("autosave")]);
+            app.session_saver
+                .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
+
+            app.start_background_session_save();
+
+            assert!(app.session_saver.save_in_flight());
+            assert!(app.session_saver.autosave_deadline().is_none());
+            app.save_session_now();
+            assert!(
+                app.paths
+                    .data_dir()
+                    .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
+                    .try_exists()
+                    .expect("stat session file")
+            );
+        }
+
+        #[test]
+        fn background_session_save_reschedules_when_writer_is_busy() {
+            let mut app = test_app();
+            app.persist();
+            let release = app.session_saver.hold_test_save_in_flight();
+            app.session_saver
+                .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
+
+            app.start_background_session_save();
+
+            assert!(app.session_saver.save_in_flight());
+            assert!(app.session_saver.autosave_deadline().is_some());
+
+            release.complete(Ok(()));
+            app.freeze_session_saves();
+            app.save_session_now();
+        }
+
+        #[test]
+        fn final_session_save_joins_background_writer_before_returning() {
+            let mut app = test_app();
+            let release = app.session_saver.hold_test_save_in_flight();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let releaser = std::thread::spawn(move || {
+                // Keep the save in flight while the final-save call reaches its wait.
+                std::thread::sleep(Duration::from_millis(30));
+                done_tx.send(()).expect("test precondition");
+                release.complete(Ok(()));
+            });
+
+            app.save_session_now();
+
+            done_rx
+                .try_recv()
+                .expect("the final save returned only after the save in flight finished");
+            releaser.join().expect("test precondition");
+            assert!(!app.session_saver.save_in_flight());
+        }
+
+        #[tokio::test]
+        async fn pane_exit_checkpoint_survives_automatic_workspace_creation_on_shutdown() {
+            let mut server = crate::server::headless::tests::test_headless_server();
+            server.install_test_app(test_app());
+            server.persist_for_test();
+            let mut workspace = Workspace::test_new("preserved");
+            let first_pane = workspace.tree().root();
+            let second_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
+            server.app.state.test_set_workspaces(vec![workspace]);
+            server.app.state.seed_bookmark_index(Some(0));
+            server.app.insert_idle_test_runtime(first_pane);
+            server.app.insert_idle_test_runtime(second_pane);
+
+            server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+                &server.app,
+                first_pane,
+                shepr_mux::pane::PaneEndReason::Signalled,
+                std::time::Instant::now(),
+            ));
+            server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+                &server.app,
+                second_pane,
+                shepr_mux::pane::PaneEndReason::Signalled,
+                std::time::Instant::now(),
+            ));
+            assert!(server.app.state.workspaces.is_empty());
+            let geometry = server.app.headless_spawn_geometry();
+            assert_eq!(
+                server.app.create_default_workspace(geometry),
+                crate::app::DefaultWorkspace::Created
+            );
+
+            server.app.save_session_before_teardown_async().await;
+            server.app.retire_session_writer();
+
+            let lease = shepr_mux::persist::DataDirLease::acquire(server.app.paths.data_dir())
+                .expect("test lease");
+            let snapshot = shepr_mux::persist::load(&lease)
+                .into_snapshot()
+                .expect("checkpointed session should survive");
+            assert_eq!(snapshot.workspaces.len(), 1);
+            assert_eq!(snapshot.workspaces[0].layout.panes().len(), 2);
+        }
+
+        #[tokio::test]
+        async fn detector_release_before_pane_exit_keeps_checkpoint_resume_identity() {
+            use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
+            let _env = crate::test_support::IsolatedEnv::new();
+            let mut server = crate::server::headless::tests::test_headless_server();
+            server.install_test_app(test_app());
+            let geometry = server.app.headless_spawn_geometry();
+            assert_eq!(
+                server.app.create_default_workspace(geometry),
+                crate::app::DefaultWorkspace::Created
+            );
+            let pane_id = server.app.state.ws(0).tree().root();
+            // Let the real child exit, but keep its PaneDied queued. This exercises
+            // the gap where the detector release can reach the app first.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while !server
+                    .app
+                    .terminal_runtimes
+                    .get(&pane_id)
+                    .expect("runtime")
+                    .child_has_exited()
+                {
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .expect("pane child exits");
+            let session = PersistedAgentSession::from_report(
+                "shepr:claude",
+                "claude",
+                AgentSessionRef::id("checkpoint-resume").expect("session id"),
+            )
+            .expect("official session");
+            let now = server.app.clock.now;
+            let terminal = server.app.state.terminal_mut(pane_id);
+            terminal
+                .ownership_mut()
+                .set_detected_agent_process_at(Agent::Claude, now);
+            terminal
+                .ownership_mut()
+                .set_persisted_agent_session(session.clone());
+            // Delivered from the live runtime, so admission passes them and only
+            // the exited child decides that they are ignored.
+            release_agent(&mut server.app, pane_id);
+            assert_eq!(
+                server
+                    .app
+                    .state
+                    .terminal(pane_id)
+                    .expect("terminal")
+                    .ownership()
+                    .detected_agent(),
+                Some(Agent::Claude),
+            );
+            assert_eq!(
+                server
+                    .app
+                    .state
+                    .terminal(pane_id)
+                    .expect("terminal")
+                    .ownership()
+                    .current_session_identity_for_persistence(),
+                Some(session.clone()),
+            );
+            server.persist_for_test();
+            server.app.state.mark_session_dirty();
+            server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+                &server.app,
+                pane_id,
+                shepr_mux::pane::PaneEndReason::Signalled,
+                std::time::Instant::now(),
+            ));
+            server.app.save_session_before_teardown_async().await;
+            server.app.retire_session_writer();
+            let lease = shepr_mux::persist::DataDirLease::acquire(server.app.paths.data_dir())
+                .expect("test lease");
+            let snapshot = shepr_mux::persist::load(&lease)
+                .into_snapshot()
+                .expect("saved checkpoint");
+            let saved = snapshot.workspaces[0].layout.panes()[0]
+                .agent_session
+                .as_ref()
+                .expect("saved resume identity");
+            assert_eq!(saved.source(), session.source());
+            assert_eq!(saved.agent(), session.agent());
+            assert_eq!(saved.session_ref(), session.session_ref());
+        }
+
+        /// A pane with a live agent session, ready to have its agent released by
+        /// the detector while its shell still runs.
+        async fn app_with_agent_session() -> (
+            TestApp,
+            shepr_core::layout::PaneId,
+            shepr_agent::resume::PersistedAgentSession,
+        ) {
+            use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
+            let mut app = test_app();
+            let geometry = app.headless_spawn_geometry();
+            assert_eq!(
+                app.create_default_workspace(geometry),
+                crate::app::DefaultWorkspace::Created
+            );
+            let pane_id = app.state.ws(0).tree().root();
+            let session = PersistedAgentSession::from_report(
+                "shepr:claude",
+                "claude",
+                AgentSessionRef::id("group-killed").expect("session id"),
+            )
+            .expect("official session");
+            let now = app.clock.now;
+            let terminal = app.state.terminal_mut(pane_id);
+            terminal
+                .ownership_mut()
+                .set_detected_agent_process_at(Agent::Claude, now);
+            terminal
+                .ownership_mut()
+                .set_persisted_agent_session(session.clone());
+            (app, pane_id, session)
+        }
+
+        /// The resume identity the saved session holds for its only pane.
+        fn saved_agent_session(app: &App) -> shepr_mux::persist::schema::PaneAgentSessionSnapshot {
+            let lease = shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir())
+                .expect("test lease");
+            shepr_mux::persist::load(&lease)
+                .into_snapshot()
+                .expect("saved session")
+                .workspaces[0]
+                .layout
+                .panes()[0]
+                .agent_session
+                .clone()
+                .expect("saved resume identity")
+        }
+
+        #[tokio::test]
+        async fn a_signal_death_just_after_the_agents_exit_checkpoints_its_identity() {
+            let _env = crate::test_support::IsolatedEnv::new();
+            let (app, pane_id, session) = app_with_agent_session().await;
+            let mut server = crate::server::headless::tests::test_headless_server();
+            server.install_test_app(app);
+            release_agent(&mut server.app, pane_id);
+            // The release took effect at once: no agent, nothing to resume.
+            assert_eq!(
+                server
+                    .app
+                    .state
+                    .terminal(pane_id)
+                    .expect("terminal")
+                    .ownership()
+                    .detected_agent(),
+                None
+            );
+            assert_eq!(
+                server
+                    .app
+                    .state
+                    .terminal(pane_id)
+                    .expect("terminal")
+                    .ownership()
+                    .current_session_identity_for_persistence(),
+                None
+            );
+            server.persist_for_test();
+            server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+                &server.app,
+                pane_id,
+                shepr_mux::pane::PaneEndReason::Signalled,
+                server.app.clock.now + Duration::from_millis(100),
+            ));
+            server.app.save_session_before_teardown_async().await;
+            server.app.retire_session_writer();
+            let saved = saved_agent_session(&server.app);
+            assert_eq!(saved.session_ref(), session.session_ref());
+        }
+
+        #[tokio::test]
+        async fn a_signal_shutdown_just_after_the_agents_exit_saves_its_identity() {
+            let _env = crate::test_support::IsolatedEnv::new();
+            let (mut app, pane_id, session) = app_with_agent_session().await;
+            release_agent(&mut app, pane_id);
+            app.persist();
+            // The final save after a signal: the pane's death is never processed.
+            let quit_at = app.clock.now + Duration::from_millis(100);
+            app.state.adopt_checkpoint_candidates_for_shutdown(quit_at);
+            assert_eq!(
+                app.state
+                    .terminal(pane_id)
+                    .expect("terminal")
+                    .ownership()
+                    .current_session_identity_for_persistence()
+                    .map(|identity| identity.session_ref().clone()),
+                Some(session.session_ref().clone())
+            );
+            app.save_session_before_teardown_async().await;
+            app.retire_session_writer();
+            let saved = saved_agent_session(&app);
+            assert_eq!(saved.session_ref(), session.session_ref());
+        }
+
+        #[test]
+        fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
+            let mut server = crate::server::headless::tests::test_headless_server();
+            server.install_test_app(test_app());
+            server.persist_for_test();
+            let workspace = Workspace::test_new("closed");
+            let pane_id = workspace.tree().root();
+            server.app.state.test_set_workspaces(vec![workspace]);
+            server.app.state.seed_bookmark_index(Some(0));
+            server.app.insert_idle_test_runtime(pane_id);
+
+            server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+                &server.app,
+                pane_id,
+                shepr_mux::pane::PaneEndReason::Signalled,
+                std::time::Instant::now(),
+            ));
+            assert!(
+                server.app.state.workspaces.is_empty(),
+                "the exit was applied"
+            );
+            // The app still holds the data-dir lease, so the checkpoint is parsed
+            // directly rather than through `persist::load`.
+            let checkpoint = std::fs::read_to_string(
+                server
+                    .app
+                    .paths
+                    .data_dir()
+                    .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
+            )
+            .expect("the pane exit writes a checkpoint");
+            assert!(shepr_mux::persist::schema::parse_session_file(&checkpoint).is_ok());
+            assert!(
+                server.app.session_saver.autosave_deadline().is_some(),
+                "the pane exit schedules the normal autosave"
+            );
+
+            // The loop starts the autosave once its debounce has elapsed.
+            server
+                .app
+                .session_saver
+                .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
+            server.app.start_background_session_save();
+            assert!(server.app.session_saver.save_in_flight());
+            server.app.wait_for_session_save();
+            server.app.save_session_before_teardown();
+            server.app.retire_session_writer();
+
+            assert!(
+                !server
+                    .app
+                    .paths
+                    .data_dir()
+                    .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
+                    .try_exists()
+                    .expect("test stat")
+            );
+        }
+
+        #[test]
+        fn reader_panic_removes_the_pane_without_a_checkpoint() {
+            let mut server = crate::server::headless::tests::test_headless_server();
+            server.install_test_app(test_app());
+            server.persist_for_test();
+            let workspace = Workspace::test_new("broken");
+            let pane_id = workspace.tree().root();
+            server.app.state.test_set_workspaces(vec![workspace]);
+            server.app.state.seed_bookmark_index(Some(0));
+            server.app.insert_idle_test_runtime(pane_id);
+
+            server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+                &server.app,
+                pane_id,
+                shepr_mux::pane::PaneEndReason::ReaderPanicked,
+                std::time::Instant::now(),
+            ));
+
+            assert!(server.app.state.workspaces.is_empty());
+            assert!(
+                !server
+                    .app
+                    .paths
+                    .data_dir()
+                    .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
+                    .try_exists()
+                    .expect("test stat")
+            );
+        }
+
+        #[test]
+        fn durable_mutation_after_pane_exit_checkpoint_wins_on_shutdown() {
+            for another_interrupted_exit in [false, true] {
+                let mut server = crate::server::headless::tests::test_headless_server();
+                server.install_test_app(test_app());
+                server.persist_for_test();
+                let workspace = Workspace::test_new("old");
+                let pane_id = workspace.tree().root();
+                server.app.state.test_set_workspaces(vec![workspace]);
+                server.app.state.seed_bookmark_index(Some(0));
+                server.app.insert_idle_test_runtime(pane_id);
+
+                server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+                    &server.app,
+                    pane_id,
+                    shepr_mux::pane::PaneEndReason::Signalled,
+                    std::time::Instant::now(),
+                ));
+                assert!(
+                    server.app.state.workspaces.is_empty(),
+                    "the first exit was applied"
+                );
+                server
+                    .app
+                    .state
+                    .test_set_workspaces(vec![Workspace::test_new("newer")]);
+                server.app.state.seed_bookmark_index(Some(0));
+                server.app.state.mark_session_dirty();
+                if another_interrupted_exit {
+                    let newer_pane = server.app.state.ws(0).tree().root();
+                    server.app.insert_idle_test_runtime(newer_pane);
+                    server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+                        &server.app,
+                        newer_pane,
+                        shepr_mux::pane::PaneEndReason::Signalled,
+                        std::time::Instant::now(),
+                    ));
+                    assert!(
+                        server.app.state.workspaces.is_empty(),
+                        "the second exit was applied"
+                    );
+                }
+                server.app.save_session_before_teardown();
+                server.app.retire_session_writer();
+
+                let lease = shepr_mux::persist::DataDirLease::acquire(server.app.paths.data_dir())
+                    .expect("test lease");
+                let snapshot = shepr_mux::persist::load(&lease)
+                    .into_snapshot()
+                    .expect("newer session should be saved");
+                assert_eq!(snapshot.workspaces.len(), 1);
+                assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("newer"));
+            }
+        }
     }
 }

@@ -14,6 +14,37 @@ pub enum AgentState {
 
 pub use shepr_core::agent_state::PresentedAgentState;
 
+/// The place of a pane's last change of presented agent state in the order
+/// one server saw those changes. A pane whose state never changed has
+/// [`Self::NEVER`], which sorts before every change. It orders panes for
+/// attention and, as an equality token, tells a client that a pane changed.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+)]
+#[serde(transparent)]
+pub struct StateChangeSeq(u64);
+
+impl StateChangeSeq {
+    /// No change has been seen.
+    pub const NEVER: Self = Self(0);
+
+    /// Moves to the next place in the order. The sequence cannot reach the end
+    /// of the integer range in a process lifetime; it saturates there.
+    pub fn advance(&mut self) {
+        self.0 = self.0.saturating_add(1);
+    }
+}
+
 impl AgentState {
     /// Collapse an unknown state to idle for user-facing presentation.
     pub const fn presentation_state(self) -> PresentedAgentState {
@@ -27,6 +58,18 @@ impl AgentState {
     /// Rank agent states for attention, from least to most urgent.
     pub const fn attention_rank(self) -> u8 {
         self.presentation_state().attention_rank()
+    }
+}
+
+/// The snake_case spelling serde uses, for operator text.
+impl std::fmt::Display for AgentState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Blocked => "blocked",
+            Self::Unknown => "unknown",
+        })
     }
 }
 

@@ -54,10 +54,10 @@ const NESTED_SHEPR_MESSAGES: &[&str] = &[
     "recursion detected. base case not found. aborting.",
 ];
 
-mod autodetect;
 mod cli;
 mod limits;
 mod preflight;
+mod tui;
 
 fn random_nested_message() -> &'static str {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -157,30 +157,8 @@ fn launch_client(mode: ClientLaunch) -> CliResult<ProcessExit> {
             cli::finish_client(shepr_client::run_client(&loaded_config, paths))
                 .map(ProcessExit::from_cli_code)
         }
-        ClientLaunch::Tui => launch_tui(&loaded_config, paths),
+        ClientLaunch::Tui => tui::launch(&loaded_config, paths),
     }
-}
-
-fn launch_tui(
-    loaded_config: &shepr_config::ValidatedClientConfig,
-    paths: &shepr_paths::AppPaths,
-) -> CliResult<ProcessExit> {
-    autodetect::ensure_terminal_geometry()
-        .map_err(|error| CliError::Client(shepr_client::ClientRunError::Launch(error)))?;
-
-    init_client_logging(paths)?;
-    // Prompts and restart offers must run before the client takes the
-    // terminal: it connects to machines with BatchMode and cannot answer one.
-    let connectors = preflight::run(loaded_config, paths);
-    let client = autodetect::auto_detect_launch(
-        loaded_config,
-        paths,
-        shepr_launch::local_server::SERVER_READY_TIMEOUT,
-        connectors,
-        shepr_client::run_client_with_connectors,
-    )
-    .map_err(CliError::Launch)?;
-    cli::finish_client(client).map(ProcessExit::from_cli_code)
 }
 
 /// A bridge that ended on its idle watchdog logs the measured idle duration

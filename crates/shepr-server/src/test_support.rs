@@ -4,17 +4,16 @@
 //! The mux fixture traits stay here rather than moving there: mux
 //! dev-depends on `shepr-test-fixtures`, so that crate cannot depend on mux.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use shepr_agent::{Agent, AgentState};
 use shepr_core::layout::{Direction, PaneId};
-use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry, PaneState};
+use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
 use shepr_mux::terminal::{EffectiveStateChange, TerminalState};
-use shepr_mux::workspace::{PaneRemoval, PaneRemovalScope, Workspace, WorkspacePane};
-use shepr_protocol::TerminalId;
+use shepr_mux::workspace::{PaneRecord, Workspace};
 use tokio::sync::{Notify, mpsc};
 
 pub(crate) use shepr_test_fixtures::{AppPathsFixture, ValidatedServerConfigFixture};
@@ -81,9 +80,8 @@ impl PaneRuntimeFixture for PaneRuntime {
         let (io, rx) = shepr_test_fixtures::ChannelChildIo::new(channel_capacity);
         (
             Self::with_child_io(
-                cols,
-                rows,
-                scrollback_limit_bytes,
+                shepr_core::geometry::PaneGeometry::cells_only(cols, rows),
+                shepr_core::scrollback::ScrollbackBudget::new(scrollback_limit_bytes),
                 bytes,
                 Box::new(io),
                 Arc::new(Notify::new()),
@@ -143,11 +141,11 @@ impl PaneRuntimeFixture for PaneRuntime {
 
 pub(crate) trait PaneRuntimeRegistryFixture {
     /// Take every runtime out of the registry.
-    fn drain(&mut self) -> std::collections::hash_map::IntoIter<TerminalId, PaneRuntime>;
+    fn drain(&mut self) -> std::collections::hash_map::IntoIter<PaneId, PaneRuntime>;
 }
 
 impl PaneRuntimeRegistryFixture for PaneRuntimeRegistry {
-    fn drain(&mut self) -> std::collections::hash_map::IntoIter<TerminalId, PaneRuntime> {
+    fn drain(&mut self) -> std::collections::hash_map::IntoIter<PaneId, PaneRuntime> {
         std::mem::take(self).into_iter()
     }
 }
@@ -158,21 +156,23 @@ pub(crate) trait WorkspaceFixture: Sized {
     /// exists on every host, so tests that launch the pane can, and that is
     /// neither the runner's cwd nor a git repository.
     fn test_new(name: &str) -> Self;
+    /// One pane whose terminal reports `cwd`, which is also the workspace's
+    /// identity cwd; `label` is the workspace's custom name, if any.
+    fn test_at(label: Option<&str>, cwd: &Path) -> Self;
     /// Split the focused pane; returns the new pane.
     fn test_split(&mut self, direction: Direction) -> PaneId;
     /// A workspace whose raw pane ids and public pane numbers differ, so code
     /// that confuses them is caught.
     fn test_adversarial_identity_state() -> Self;
-    fn assert_invariants_for_test(&self);
-    fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneRemoval>;
-    fn resolved_identity_cwd(&self) -> Option<PathBuf>;
+    /// Removes a pane that is not the workspace's last; its record.
+    fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneRecord>;
 }
 
 /// The allocator this crate's fixture workspaces share, so every fixture in
-/// the test binary has its own ID, as workspaces of one session do. A state
-/// that takes a fixture moves its own allocator past the fixture's ID
-/// (`AppState::test_push_workspace`, `test_set_workspaces`).
-fn next_fixture_workspace_id() -> shepr_protocol::WorkspaceId {
+/// the test binary has its own ID, as workspaces of one session do. A state's
+/// workspace set that takes a fixture moves its own allocator past the
+/// fixture's ID (`AppState::test_push_workspace`, `test_set_workspaces`).
+pub(crate) fn next_fixture_workspace_id() -> shepr_protocol::WorkspaceId {
     static TEST_WORKSPACE_IDS: std::sync::Mutex<shepr_mux::workspace::WorkspaceIdAllocator> =
         std::sync::Mutex::new(shepr_mux::workspace::WorkspaceIdAllocator::new());
     TEST_WORKSPACE_IDS
@@ -183,22 +183,22 @@ fn next_fixture_workspace_id() -> shepr_protocol::WorkspaceId {
 
 impl WorkspaceFixture for Workspace {
     fn test_new(name: &str) -> Self {
-        let identity_cwd = PathBuf::from("/");
+        Self::test_at(Some(name), Path::new("/"))
+    }
+
+    fn test_at(label: Option<&str>, cwd: &Path) -> Self {
         Self::test_from_pane(
             next_fixture_workspace_id(),
-            Some(name.to_string()),
-            &identity_cwd,
+            label.map(str::to_owned),
+            cwd,
             PaneId::alloc(),
-            WorkspacePane::new(
-                PaneState::new(shepr_mux::terminal::allocate_terminal_id()),
-                shepr_protocol::PanePublicNumber::FIRST,
-            ),
+            TerminalState::new(cwd.to_path_buf()),
         )
     }
 
     fn test_split(&mut self, direction: Direction) -> PaneId {
-        let geometry = shepr_mux::workspace::PaneGeometry {
-            area: ratatui::layout::Rect::new(0, 0, 80, 24),
+        let chrome = shepr_mux::workspace::WorkspaceChrome {
+            area: shepr_core::geometry::Rect::new(0, 0, 80, 24),
             pane_borders: shepr_config::PaneBordersConfig::Off,
             pane_gaps: false,
             pane_outer_borders: false,
@@ -206,111 +206,38 @@ impl WorkspaceFixture for Workspace {
         };
         let prepared = self
             .prepare_split(
-                self.focused_pane_id(),
+                self.tree().focused(),
                 direction,
-                &geometry,
+                &chrome,
                 None,
                 PathBuf::from("/"),
-                true,
             )
             .expect("test split prepares");
-        let new_id = prepared.pane_id();
-        self.commit_new_pane(prepared, false)
-            .expect("test split commits");
-        new_id
+        self.commit_split(prepared).expect("test split commits")
     }
 
     fn test_adversarial_identity_state() -> Self {
         let mut ws = Self::test_new("adversarial-identity");
         let removed_pane = ws.test_split(Direction::Horizontal);
         ws.test_split(Direction::Vertical);
-        assert_eq!(
-            ws.close_pane(removed_pane).map(|removal| removal.scope),
-            Some(PaneRemovalScope::Pane)
-        );
+        assert!(ws.close_pane(removed_pane).is_some());
         let _unused_raw_id = PaneId::alloc();
         let later_pane = ws.test_split(Direction::Horizontal);
 
         assert_ne!(
             later_pane.raw() as usize,
-            ws.public_pane_number(later_pane)
-                .expect("test pane has a public pane number")
+            ws.tree()
+                .pane(later_pane)
+                .expect("test pane has a record")
+                .number()
                 .get(),
             "adversarial pane must distinguish raw pane id from public pane number"
         );
         ws
     }
 
-    fn assert_invariants_for_test(&self) {
-        let mut terminal_ids = std::collections::HashSet::new();
-        let mut pane_numbers = std::collections::HashSet::new();
-        let mut max_pane_number = 0usize;
-
-        assert!(
-            self.panes().contains_key(&self.root_pane()),
-            "workspace {} root pane {:?} is missing from its panes",
-            self.id,
-            self.root_pane()
-        );
-        let layout_panes = self.layout().pane_ids();
-        let layout_set: std::collections::HashSet<_> = layout_panes.iter().copied().collect();
-        assert_eq!(
-            layout_panes.len(),
-            layout_set.len(),
-            "workspace {} layout contains duplicate pane ids",
-            self.id
-        );
-        assert!(
-            layout_set.contains(&self.layout().focused()),
-            "workspace {} focused pane {:?} is not in layout",
-            self.id,
-            self.layout().focused()
-        );
-        let pane_set: std::collections::HashSet<_> = self.panes().keys().copied().collect();
-        assert_eq!(
-            layout_set, pane_set,
-            "workspace {} layout panes must exactly match pane records",
-            self.id
-        );
-        assert!(
-            !self.zoomed() || self.pane_count() > 1,
-            "workspace {} is zoomed with a single pane",
-            self.id
-        );
-
-        for (pane_id, pane) in self.panes() {
-            assert!(
-                pane_numbers.insert(pane.public_number),
-                "workspace {} duplicate public pane number {} for pane {:?}",
-                self.id,
-                pane.public_number,
-                pane_id
-            );
-            max_pane_number = max_pane_number.max(pane.public_number.get());
-            assert!(
-                terminal_ids.insert(pane.attached_terminal_id.clone()),
-                "workspace {} terminal {} is attached to multiple panes",
-                self.id,
-                pane.attached_terminal_id
-            );
-        }
-
-        assert!(
-            self.next_public_pane_number.get() > max_pane_number,
-            "workspace {} next_public_pane_number {} must be greater than max live public pane number {}",
-            self.id,
-            self.next_public_pane_number,
-            max_pane_number
-        );
-    }
-
-    fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneRemoval> {
-        let plan = self.prepare_pane_removal(pane_id)?;
-        self.remove_pane(&plan)
-    }
-
-    fn resolved_identity_cwd(&self) -> Option<PathBuf> {
-        Some(self.identity_cwd.clone())
+    fn close_pane(&mut self, pane_id: PaneId) -> Option<PaneRecord> {
+        self.remove_pane(pane_id).ok()
     }
 }
 

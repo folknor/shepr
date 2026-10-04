@@ -21,7 +21,7 @@
 
 mod client_loop;
 mod clipboard_forwarding;
-mod dispatch;
+mod deadline;
 pub mod endpoint;
 mod errors;
 mod events;
@@ -30,10 +30,8 @@ mod handshake;
 mod input;
 pub(crate) mod input_wire;
 mod launch;
-mod limits;
 pub(crate) mod logging;
 mod loop_config;
-mod reconcile;
 mod shell;
 mod shell_runtime;
 mod startup;
@@ -42,11 +40,11 @@ mod terminal_geometry;
 mod terminal_setup;
 
 pub use errors::{ClientExit, ClientRunError};
-pub use shell::{ClientShellConfig, ClientShellState};
+pub use shell::{ClientShellConfig, ClientShellState, Location, LocationTarget};
 pub use startup::{run_client, run_client_with_connectors};
 
 #[cfg(test)]
-use client_loop::ClientLoop;
+use client_loop::{ClientLoop, EventQueue, HostCellReport, LoopSignals};
 #[cfg(test)]
 use errors::LoopExit;
 #[cfg(test)]
@@ -67,8 +65,8 @@ use terminal_geometry::{
 };
 #[cfg(test)]
 use terminal_setup::{
-    HostModes, effective_sgr_pixel_mouse, should_draw_host_cursor,
-    write_host_color_scheme_report_mode, write_terminal_restore_postlude,
+    HostModes, should_draw_host_cursor, write_host_color_scheme_report_mode,
+    write_terminal_restore_postlude,
 };
 #[cfg(test)]
 mod tests;

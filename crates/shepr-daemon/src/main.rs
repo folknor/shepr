@@ -10,7 +10,7 @@ use std::process::ExitCode;
 
 use shepr_launch::daemon_exit::DaemonExit;
 use shepr_launch::invocation::{ServerInvocation, server_usage, server_version_line};
-use shepr_server::server::headless::{RunServerError, run_server};
+use shepr_server::{RunServerError, ServerReady, run_server};
 
 fn main() -> ExitCode {
     let args: Vec<String> = match std::env::args_os()
@@ -58,7 +58,7 @@ fn serve(client_spawned: bool) -> ExitCode {
         Ok(config) => config,
         Err(diagnostics) => return config_error(&diagnostics),
     };
-    let on_ready = |ready: &shepr_server::server::headless::ServerReady| {
+    let on_ready = |ready: &ServerReady| {
         if !client_spawned {
             eprintln!("{ready}");
         } else if ready.log_file_unavailable.is_some() {
@@ -108,6 +108,11 @@ where
     exit_with(DaemonExit::ConfigRefused)
 }
 
+/// Maps a `RunServerError` onto `shepr_launch::daemon_exit::DaemonExit`. The
+/// classification stays here in the daemon main, not in shepr-launch, because
+/// it matches `RunServerError`, which lives in shepr-server, a crate above
+/// shepr-launch; launch owns only the `DaemonExit` vocabulary it maps onto.
+///
 /// A server already holding the runtime, by either socket or by the data lock,
 /// reads the same to the operator and ends with the same exit code.
 fn report_server_error(error: RunServerError) -> ExitCode {
@@ -129,7 +134,11 @@ fn report_server_error(error: RunServerError) -> ExitCode {
         | RunServerError::Runtime(error)
         | RunServerError::Lease(error)
         | RunServerError::Logging(error)
-        | RunServerError::Serve(error) => {
+        | RunServerError::SignalInstall(error) => {
+            eprintln!("error: {error}");
+            exit_with(DaemonExit::Failed)
+        }
+        RunServerError::Shutdown(error) => {
             eprintln!("error: {error}");
             exit_with(DaemonExit::Failed)
         }

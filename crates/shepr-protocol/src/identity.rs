@@ -170,78 +170,27 @@ impl PartialEq<BootId> for String {
 /// Correlates one client operation with its endpoint response.
 ///
 /// Live clients allocate identities from one process-wide sequence. Request purpose
-/// and view ownership live in the client's ledger and lanes, never in this text.
-/// Text construction remains available for explicit external correlation values.
+/// and view ownership live in the client's ledger and lanes, never in this value.
+/// It travels as one number; a client allocates every identity it sends and a
+/// server only echoes it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub struct RequestId(String);
+pub struct RequestId(u64);
 
 impl RequestId {
     /// Allocates a distinct identity across all request lanes in this client process.
     pub fn allocate() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        // The counter would wrap at u64::MAX, which no process reaches: at a
+        // billion requests per second that takes centuries.
         let value = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Self(value.to_string())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl From<String> for RequestId {
-    fn from(value: String) -> Self {
         Self(value)
-    }
-}
-
-impl From<&str> for RequestId {
-    fn from(value: &str) -> Self {
-        Self(value.to_owned())
-    }
-}
-
-impl Deref for RequestId {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
-    }
-}
-
-impl std::borrow::Borrow<str> for RequestId {
-    fn borrow(&self) -> &str {
-        self.as_str()
     }
 }
 
 impl fmt::Display for RequestId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl PartialEq<str> for RequestId {
-    fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl PartialEq<&str> for RequestId {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl PartialEq<String> for RequestId {
-    fn eq(&self, other: &String) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl PartialEq<RequestId> for String {
-    fn eq(&self, other: &RequestId) -> bool {
-        self == other.as_str()
+        fmt::Display::fmt(&self.0, f)
     }
 }
 

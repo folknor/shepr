@@ -1,12 +1,26 @@
-use crate::limits::AGENT_PENDING_IDLE_CONFIRMATIONS;
-pub(super) use crate::limits::{
-    AGENT_ABSENCE_STARTUP_HOLD, AGENT_PENDING_IDLE_CAP, AGENT_PENDING_IDLE_RECHECK,
-    AGENT_STARTUP_GRACE_WINDOW, STABLE_VISIBLE_SIGNAL_REFRESH,
-};
-
 use shepr_agent::{Agent, AgentState, PresentedAgentState};
 use shepr_detect::Detection;
 use shepr_detect::manifest::screen_unknown_is_stable;
+
+/// Recheck cadence while visible output suggests a pending idle transition.
+pub(super) const AGENT_PENDING_IDLE_RECHECK: std::time::Duration =
+    std::time::Duration::from_millis(100);
+/// Matching idle observations needed before publishing idle, filtering a
+/// single transient frame.
+const AGENT_PENDING_IDLE_CONFIRMATIONS: u8 = 3;
+/// Longest time to hold a pending idle transition before publishing it.
+const AGENT_PENDING_IDLE_CAP: std::time::Duration = std::time::Duration::from_millis(700);
+/// Refresh cadence for a stable visible signal, avoiding a stale detection
+/// result without polling every frame.
+const STABLE_VISIBLE_SIGNAL_REFRESH: std::time::Duration = std::time::Duration::from_millis(800);
+/// Startup grace for the first agent signal while a launched shell settles.
+pub(super) const AGENT_STARTUP_GRACE_WINDOW: std::time::Duration =
+    std::time::Duration::from_secs(3);
+/// Time allowed for a restored agent to appear after its resume launch.
+const AGENT_RESUME_DETECTION_HOLD: std::time::Duration = std::time::Duration::from_secs(30);
+/// A restored pane holds absence for the same interval as agent resume, so
+/// detection cannot clear the agent before its process has time to appear.
+pub(super) const AGENT_ABSENCE_STARTUP_HOLD: std::time::Duration = AGENT_RESUME_DETECTION_HOLD;
 
 #[derive(Debug, Default)]
 pub(super) struct PendingIdleConfirmation {
@@ -235,8 +249,8 @@ pub(super) fn withhold_agent_absence(
 pub(super) fn detection_update_for_publish_with_osc(
     agent: Option<Agent>,
     content: &str,
-    osc_title: &str,
-    osc_progress: &str,
+    osc_title: Option<&str>,
+    osc_progress: Option<&str>,
     process_exited: bool,
 ) -> Option<Detection> {
     if process_exited {
@@ -248,16 +262,6 @@ pub(super) fn detection_update_for_publish_with_osc(
     // must preserve that provenance before state matching.
     let detection = shepr_detect::detect_agent_with_osc(agent, content, osc_title, osc_progress);
     detection.detection()
-}
-
-pub(super) fn observe_detection_content_change(bytes: &[u8], detection_content_seq: &mut u64) {
-    if !bytes.is_empty() {
-        *detection_content_seq = detection_content_seq.wrapping_add(1);
-    }
-}
-
-pub(super) fn mark_detection_content_changed(detection_content_seq: &mut u64) {
-    *detection_content_seq = detection_content_seq.wrapping_add(1);
 }
 
 #[cfg(test)]
@@ -336,7 +340,10 @@ mod tests {
 
     #[test]
     fn restored_claude_dialog_is_excluded_from_a_new_working_frame() {
-        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(80, 12, 4096));
+        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 12),
+            shepr_core::scrollback::ScrollbackBudget::new(4096),
+        ));
         pane.seed_history_ansi("Run a dynamic workflow?\r\nChoose a workflow\r\nEsc to cancel");
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         pane.process_pty_bytes(pane_id, b"* Waiting for 1 background agent to finish\r\n");
@@ -351,8 +358,8 @@ mod tests {
         let detection = detection_update_for_publish_with_osc(
             Some(Agent::Claude),
             &inputs.screen_text,
-            &inputs.osc_title,
-            &inputs.osc_progress,
+            inputs.osc_title.as_deref(),
+            inputs.osc_progress.as_deref(),
             false,
         )
         .expect("screen detector reports a state");
@@ -363,7 +370,10 @@ mod tests {
 
     #[test]
     fn rewriting_a_seeded_row_makes_it_live_detection_evidence() {
-        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(80, 12, 4096));
+        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 12),
+            shepr_core::scrollback::ScrollbackBudget::new(4096),
+        ));
         pane.seed_history_ansi("saved first row\r\nsaved second row");
         assert!(pane.agent_detection_inputs().screen_text.trim().is_empty());
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
@@ -383,16 +393,22 @@ mod tests {
 
     #[test]
     fn seeded_rows_remain_masked_after_column_reflow() {
-        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(80, 12, 4096));
+        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 12),
+            shepr_core::scrollback::ScrollbackBudget::new(4096),
+        ));
         pane.seed_history_ansi("restored agent dialog that wraps after a resize");
-        pane.resize(shepr_core::geometry::PaneGeometry::new(12, 12, 0, 0));
+        pane.resize(shepr_core::geometry::PaneGeometry::cells_only(12, 12));
 
         assert!(pane.agent_detection_inputs().screen_text.trim().is_empty());
     }
 
     #[test]
     fn seeded_rows_remain_masked_when_zero_scrollback_evicts_them() {
-        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(80, 4, 0));
+        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 4),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        ));
         pane.seed_history_ansi("saved first row\r\nsaved second row");
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         pane.process_pty_bytes(pane_id, b"live one\r\nlive two\r\n");
@@ -404,7 +420,10 @@ mod tests {
 
     #[test]
     fn scrolling_seeded_rows_does_not_make_them_live() {
-        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(80, 4, 4096));
+        let pane = crate::pane::PaneTerminal::new(shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 4),
+            shepr_core::scrollback::ScrollbackBudget::new(4096),
+        ));
         pane.seed_history_ansi("saved first row\r\nsaved second row");
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         pane.process_pty_bytes(pane_id, b"live one\r\nlive two\r\n");
@@ -650,28 +669,5 @@ mod tests {
                 process_exited: false,
             }
         );
-    }
-
-    #[test]
-    fn detection_content_change_tracks_raw_nonempty_reads_for_scan_scheduling() {
-        let mut seq = 0;
-
-        observe_detection_content_change(b"", &mut seq);
-        assert_eq!(seq, 0);
-
-        observe_detection_content_change(b"\x1b[?2026h", &mut seq);
-        assert_eq!(seq, 1);
-
-        observe_detection_content_change(b"body bytes", &mut seq);
-        assert_eq!(seq, 2);
-    }
-
-    #[test]
-    fn local_terminal_mutations_can_invalidate_idle_scan_skip() {
-        let mut seq = 0;
-
-        mark_detection_content_changed(&mut seq);
-
-        assert_eq!(seq, 1);
     }
 }

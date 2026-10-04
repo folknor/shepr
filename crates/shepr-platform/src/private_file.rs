@@ -106,39 +106,26 @@ impl PrivateFile {
     }
 }
 
+/// Why a directory failed [`require_private_directory`]: the filesystem could
+/// not be read, or what it holds is not a private directory.
 #[derive(Debug)]
-pub(crate) struct PrivateDirectoryPolicyError {
-    path: PathBuf,
+pub enum PrivateDirError {
+    Io(std::io::Error),
+    /// Not a directory owned by the current user with the private mode, or a
+    /// symlink.
+    Policy,
 }
-
-impl fmt::Display for PrivateDirectoryPolicyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{} must be a directory owned by the current user with mode {:04o}, and not a symlink",
-            self.path.display(),
-            super::limits::PRIVATE_DIRECTORY_MODE,
-        )
-    }
-}
-
-impl std::error::Error for PrivateDirectoryPolicyError {}
 
 /// Shared exact-mode policy for directories that contain private runtime state.
 pub(crate) struct PrivateDir;
 
 impl PrivateDir {
-    pub(crate) fn require(path: &Path) -> std::io::Result<()> {
-        let metadata = std::fs::symlink_metadata(path)?;
+    pub(crate) fn require(path: &Path) -> Result<(), PrivateDirError> {
+        let metadata = std::fs::symlink_metadata(path).map_err(PrivateDirError::Io)?;
         if Self::is_owned_private(&metadata, super::effective_uid()) {
             Ok(())
         } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                PrivateDirectoryPolicyError {
-                    path: path.to_path_buf(),
-                },
-            ))
+            Err(PrivateDirError::Policy)
         }
     }
 
@@ -147,18 +134,19 @@ impl PrivateDir {
             .is_ok_and(|metadata| Self::is_owned_private(&metadata, expected_uid))
     }
 
-    pub(crate) fn is_policy_refusal(error: &std::io::Error) -> bool {
-        error
-            .get_ref()
-            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<PrivateDirectoryPolicyError>)
-    }
-
     fn is_owned_private(metadata: &std::fs::Metadata, expected_uid: u32) -> bool {
         metadata.is_dir()
             && metadata.uid() == expected_uid
             && metadata.mode() & super::limits::PERMISSION_BITS
                 == super::limits::PRIVATE_DIRECTORY_MODE
     }
+}
+
+/// Requires `path` to be a directory owned by the current user with the
+/// private mode that is not a symlink, the policy for directories that hold
+/// private runtime state.
+pub fn require_private_directory(path: &Path) -> Result<(), PrivateDirError> {
+    PrivateDir::require(path)
 }
 
 pub fn create_private_file(path: &Path) -> std::io::Result<std::fs::File> {

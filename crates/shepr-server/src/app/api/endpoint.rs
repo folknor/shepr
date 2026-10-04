@@ -156,7 +156,7 @@ impl From<&crate::app::actions::PaneRemovalOutcome> for EndpointEffects {
             pane_surface_changed: true,
             focus_changed: outcome.focus_changed,
             layout_changed: true,
-            workspace_membership_changed: outcome.removal.scope
+            workspace_membership_changed: outcome.scope
                 == shepr_mux::workspace::PaneRemovalScope::Workspace,
             ..Self::default()
         }
@@ -294,23 +294,27 @@ pub(crate) fn pane_missing(pane_id: &PublicPaneId) -> EndpointError {
 }
 
 impl App {
-    /// The index of the workspace a command names, or the refusal for a
+    /// The workspace a command names, checked present, or the refusal for a
     /// workspace that is gone.
     pub(super) fn endpoint_workspace(
         &self,
         workspace_id: &WorkspaceId,
-    ) -> Result<usize, EndpointError> {
-        self.resolve_workspace_id(workspace_id)
+    ) -> Result<WorkspaceId, EndpointError> {
+        self.state
+            .workspace(workspace_id)
+            .map(shepr_mux::workspace::Workspace::id)
             .ok_or_else(|| workspace_missing(workspace_id))
     }
 
-    /// The workspace index and pane a command names, or the refusal for a pane
-    /// that is gone.
+    /// The workspace and pane a command names, or the refusal for a pane that
+    /// is gone.
     pub(super) fn endpoint_pane(
         &self,
         pane_id: &PublicPaneId,
-    ) -> Result<(usize, PaneId), EndpointError> {
-        self.resolve_pane_id(pane_id)
+    ) -> Result<(WorkspaceId, PaneId), EndpointError> {
+        self.state
+            .resolve_pane(pane_id)
+            .map(|pane| (pane.workspace().id(), pane.id()))
             .ok_or_else(|| pane_missing(pane_id))
     }
 }

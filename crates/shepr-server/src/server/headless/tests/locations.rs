@@ -18,25 +18,21 @@ fn server_with_workspaces(names: &[&str]) -> (HeadlessServer, Vec<shepr_core::la
         .collect::<Vec<_>>();
     let panes = workspaces
         .iter()
-        .map(shepr_mux::workspace::Workspace::root_pane)
+        .map(|workspace| workspace.tree().root())
         .collect::<Vec<_>>();
-    server.app.state.test_set_workspaces(workspaces);
+    server.app.test_state_mut().test_set_workspaces(workspaces);
     for pane_id in &panes {
         server.app.insert_test_runtime(
             *pane_id,
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"SCREEN"),
         );
     }
-    server.app.state.ensure_test_terminals();
-    server.app.state.set_bookmark_index(Some(0));
+    server.app.test_state_mut().seed_bookmark_index(Some(0));
     (server, panes)
 }
 
 fn workspace_id(server: &HeadlessServer, index: usize) -> WorkspaceId {
-    server
-        .app
-        .public_workspace_id(index)
-        .expect("test precondition")
+    server.app.state().ws(index).id()
 }
 
 fn connect(
@@ -126,7 +122,7 @@ async fn a_rejected_focus_command_moves_nobody() {
         .location
         .clone();
     let gone = WorkspaceId::from_number(9_999).expect("nonzero number");
-    let bookmark = server.app.state.bookmark;
+    let bookmark = server.app.state().workspaces().bookmark();
 
     let result = run(
         &mut server,
@@ -141,7 +137,7 @@ async fn a_rejected_focus_command_moves_nobody() {
             .location,
         before
     );
-    assert_eq!(server.app.state.bookmark, bookmark);
+    assert_eq!(server.app.state().workspaces().bookmark(), bookmark);
     shutdown_test_runtimes(&mut server);
 }
 
@@ -152,7 +148,10 @@ async fn navigation_moves_the_requester_and_the_bookmark_only_from_an_active_cli
     let (_control_8, _render_8) = connect(&mut server, 8);
     let first = workspace_id(&server, 0);
     let second = workspace_id(&server, 1);
-    assert_eq!(server.app.state.bookmark.as_ref(), Some(&first));
+    assert_eq!(
+        server.app.state().workspaces().bookmark().as_ref(),
+        Some(&first)
+    );
 
     // An active client's navigation moves its own location and the bookmark.
     assert!(
@@ -167,26 +166,32 @@ async fn navigation_moves_the_requester_and_the_bookmark_only_from_an_active_cli
     );
     assert_eq!(location_of(&server, 7), Some(second));
     assert_eq!(location_of(&server, 8), Some(first));
-    assert_eq!(server.app.state.bookmark.as_ref(), Some(&second));
-    assert!(server.app.state.session_dirty, "the bookmark is saved");
+    assert_eq!(
+        server.app.state().workspaces().bookmark().as_ref(),
+        Some(&second)
+    );
+    assert!(server.app.state().session_dirty(), "the bookmark is saved");
 
     // A client whose surface is not active moves itself and nothing shared.
     assert!(
         server
             .set_client_shell_surface_active(ClientId::test_new(8), false)
-            .is_some_and(|(changed, _)| changed)
+            .is_some_and(|activation| activation.changed)
     );
     assert!(server.navigate_shell_client(ClientId::test_new(8), &second));
     assert_eq!(location_of(&server, 8), Some(second));
     assert!(server.navigate_shell_client(ClientId::test_new(8), &first));
-    assert_eq!(server.app.state.bookmark.as_ref(), Some(&second));
+    assert_eq!(
+        server.app.state().workspaces().bookmark().as_ref(),
+        Some(&second)
+    );
     shutdown_test_runtimes(&mut server);
 }
 
 #[tokio::test]
 async fn a_new_client_starts_at_the_bookmark() {
     let (mut server, _panes) = server_with_workspaces(&["first", "second"]);
-    server.app.state.set_bookmark_index(Some(1));
+    server.app.test_state_mut().seed_bookmark_index(Some(1));
 
     let (_control, _render) = connect(&mut server, 7);
 
@@ -206,7 +211,7 @@ async fn a_client_whose_workspace_vanished_lands_by_remembered_index_across_a_mo
     );
     // Client 7 views b (index 1), and so does the bookmark.
     assert!(server.place_test_client_on_workspace(ClientId::test_new(7), &b));
-    server.app.state.set_bookmark_index(Some(1));
+    server.app.test_state_mut().seed_bookmark_index(Some(1));
     assert_eq!(
         server.clients[&ClientId::test_new(7)]
             .shell_state()
@@ -237,11 +242,11 @@ async fn a_client_whose_workspace_vanished_lands_by_remembered_index_across_a_mo
         0,
         "the move refreshed the remembered index"
     );
-    assert_eq!(server.app.state.bookmark_index(), Some(0));
+    assert_eq!(server.app.state().bookmark_index(), Some(0));
 
     // Then b closes: client 7 lands on the workspace now at index 0 (c), not
     // at the index it had before the move (which would be a).
-    server.app.state.session_dirty = false;
+    server.app.test_state_mut().test_clear_session_dirty();
     assert!(
         run(
             &mut server,
@@ -251,9 +256,12 @@ async fn a_client_whose_workspace_vanished_lands_by_remembered_index_across_a_mo
         .is_ok()
     );
     assert_eq!(location_of(&server, 7), Some(c));
-    assert_eq!(server.app.state.bookmark.as_ref(), Some(&c));
+    assert_eq!(
+        server.app.state().workspaces().bookmark().as_ref(),
+        Some(&c)
+    );
     assert!(
-        server.app.state.session_dirty,
+        server.app.state().session_dirty(),
         "the repaired bookmark is saved"
     );
     // Client 8 never viewed b, and keeps its workspace.
@@ -268,8 +276,10 @@ async fn the_last_workspace_closing_leaves_a_fresh_one_for_the_requester() {
     let closing = workspace_id(&server, 0);
     let pane_id = server
         .app
-        .public_pane_id(0, panes[0])
-        .expect("test precondition");
+        .state()
+        .pane(panes[0])
+        .expect("test precondition")
+        .public_id();
 
     assert!(
         run(
@@ -280,7 +290,7 @@ async fn the_last_workspace_closing_leaves_a_fresh_one_for_the_requester() {
         .is_ok()
     );
 
-    assert_eq!(server.app.state.workspaces.len(), 1);
+    assert_eq!(server.app.state().workspaces().len(), 1);
     let replacement = workspace_id(&server, 0);
     assert_ne!(replacement, closing);
     assert_eq!(location_of(&server, 7), Some(replacement));
@@ -303,7 +313,7 @@ fn presenting_client(
         client_id,
         ClientConnection::new(
             size,
-            shepr_term::host::HostCellSize::default(),
+            shepr_core::geometry::HostCell::Unknown,
             client_id,
             writer,
         ),
@@ -313,7 +323,7 @@ fn presenting_client(
 
 fn created_workspace(server: &HeadlessServer) -> WorkspaceId {
     assert_eq!(
-        server.app.state.workspaces.len(),
+        server.app.state().workspaces().len(),
         1,
         "one workspace created"
     );
@@ -337,8 +347,9 @@ async fn automatic_creation_is_controlled_by_the_trigger_when_it_presents_a_surf
     assert_eq!(
         server
             .app
-            .state
-            .workspace_spawn_geometry(0)
+            .state()
+            .ws(0)
+            .spawn_geometry()
             .map(|geometry| geometry.area),
         Some(Rect::new(0, 0, 100, 30))
     );
@@ -358,7 +369,7 @@ fn non_presenting_client(activity: u64) -> ClientConnection {
     ClientConnection::with_shell(
         crate::server::clients::ClientShellState::with_surface_active(false),
         shepr_core::geometry::GridSize::clamped(120, 40),
-        shepr_term::host::HostCellSize::default(),
+        shepr_core::geometry::HostCell::Unknown,
         crate::server::clients::ActivityStamp::from(activity),
         crate::server::outbox::ClientOutbox::test_pair().0,
     )
@@ -383,8 +394,9 @@ async fn automatic_creation_falls_back_to_the_lowest_id_presenting_client() {
     assert_eq!(
         server
             .app
-            .state
-            .workspace_spawn_geometry(0)
+            .state()
+            .ws(0)
+            .spawn_geometry()
             .map(|geometry| geometry.area),
         Some(Rect::new(0, 0, 70, 20))
     );
@@ -403,7 +415,7 @@ async fn automatic_creation_with_no_presenting_client_is_headless_with_no_contro
     let created = created_workspace(&server);
     assert_eq!(server.clients.geometry_controller(&created), None);
     assert_eq!(
-        server.app.state.workspace_spawn_geometry(0),
+        server.app.state().ws(0).spawn_geometry(),
         Some(server.app.headless_spawn_geometry())
     );
     shutdown_test_runtimes(&mut server);
@@ -414,7 +426,7 @@ async fn the_loop_creates_nothing_for_a_session_no_client_looks_at() {
     let mut server = test_headless_server();
 
     assert!(!server.create_automatic_workspace(None));
-    assert!(server.app.state.workspaces.is_empty());
+    assert!(server.app.state().workspaces().is_empty());
     shutdown_test_runtimes(&mut server);
 }
 
@@ -426,7 +438,10 @@ async fn workspace_create_sizes_the_first_pty_for_the_requester_and_navigates_it
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
-            geometry: shepr_core::geometry::HostGeometry::new(100, 30, 9, 18, false),
+            geometry: shepr_core::geometry::HostGeometry::new(
+                shepr_core::geometry::GridSize::clamped(100, 30),
+                shepr_core::geometry::HostCell::from_host(9, 18, false)
+            ),
             mouse_capture: false,
             surface_active: true,
             outbox: writer,
@@ -444,27 +459,33 @@ async fn workspace_create_sizes_the_first_pty_for_the_requester_and_navigates_it
     );
     assert_eq!(result, Ok(EndpointReply::Done));
 
-    assert_eq!(server.app.state.workspaces.len(), 2);
+    assert_eq!(server.app.state().workspaces().len(), 2);
     let created = workspace_id(&server, 1);
-    let root = server.app.state.workspaces[1].root_pane();
+    let root = server.app.state().ws(1).tree().root();
     let runtime = server.app.test_runtime(root);
     let grid = runtime.grid_size();
     assert_eq!(
-        runtime.pixel_size(),
-        Some(shepr_mux::pane::PanePixelSize {
-            width: u32::from(grid.cols.get()) * 9,
-            height: u32::from(grid.rows.get()) * 18,
-        }),
+        runtime.read().pixel_mouse().extent().map(|extent| (
+            u32::from(extent.width().get()),
+            u32::from(extent.height().get())
+        )),
+        Some((
+            u32::from(grid.cols.get()) * 9,
+            u32::from(grid.rows.get()) * 18
+        )),
         "the first window size carries the requester's cell size"
     );
     assert_eq!(location_of(&server, 7), Some(created));
-    assert_eq!(server.app.state.bookmark.as_ref(), Some(&created));
+    assert_eq!(
+        server.app.state().workspaces().bookmark().as_ref(),
+        Some(&created)
+    );
     assert_eq!(
         server.clients.geometry_controller(&created),
         Some(client_id),
         "the requester controls what it navigated to"
     );
-    assert_eq!(server.app.state.workspaces[1].display_name(), "fresh");
+    assert_eq!(server.app.state().ws(1).display_name(), "fresh");
     shutdown_test_runtimes(&mut server);
 }
 
@@ -474,12 +495,16 @@ async fn pane_replies_name_the_requested_target() {
     let (_control, _render) = connect(&mut server, 7);
     let first_pane = server
         .app
-        .public_pane_id(0, panes[0])
-        .expect("test precondition");
+        .state()
+        .pane(panes[0])
+        .expect("test precondition")
+        .public_id();
     let second_pane = server
         .app
-        .public_pane_id(1, panes[1])
-        .expect("test precondition");
+        .state()
+        .pane(panes[1])
+        .expect("test precondition")
+        .public_id();
 
     // Focusing a pane of the other workspace navigates the requester there.
     let Ok(EndpointReply::PaneInfo { pane }) = run(

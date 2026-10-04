@@ -48,7 +48,7 @@ pub(crate) const GETDENTS_READ_BUFFER_BYTES: usize = 4 * KIBIBYTE_BYTES;
 /// Idle timeout for the PTY actor's `poll` call. Wake-pipe and PTY readiness
 /// drive normal responsiveness; this is only a fallback for a missed
 /// wake.
-pub(crate) const ACTOR_IDLE_POLL_MS: i32 = 1_000;
+pub(crate) const ACTOR_IDLE_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Total queued PTY input and terminal-reply bytes allowed while other items
 /// are outstanding. A lone oversized item is admitted by the inbox; this

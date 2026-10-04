@@ -68,11 +68,6 @@ impl SshTarget {
         &self.0
     }
 
-    /// The destination identity for platform control-socket naming.
-    pub fn control_key(&self) -> shepr_platform::SshControlKey<'_> {
-        shepr_platform::SshControlKey::from_identity_bytes(self.0.as_bytes())
-    }
-
     /// Append this checked destination as one command-line argument.
     pub fn append_to(&self, command: &mut std::process::Command) {
         command.arg(self.as_str());

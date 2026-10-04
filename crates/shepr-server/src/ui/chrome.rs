@@ -5,9 +5,9 @@
 //! through a ratatui `Buffer`. The chrome the server still draws with ratatui
 //! widgets goes into a scratch buffer of its own and is laid over the frame
 //! with `overlay_buffer`, so the frame is only ever written through
-//! `put_run`, which cannot leave half a glyph of what it replaces. Both are
-//! `shepr_surface::glyph_repair`'s, which owns the repair the client's
-//! compositor shares. Chrome cells only ever carry what ratatui can express
+//! `put_run`. Both are `shepr_surface::glyph_repair`'s, whose one repair rule
+//! (the client compositor's) blanks the uncovered half of any glyph the
+//! written region splits, and an orphaned empty tail right after it. Chrome cells only ever carry what ratatui can express
 //! (colours, flags, a single underline), which `CellData::from_ratatui_cell`
 //! converts without loss.
 
@@ -41,18 +41,19 @@ mod tests {
                 }
             })
             .collect::<Vec<_>>();
-        FrameData {
-            width: u16::try_from(cells.len()).expect("test row fits"),
-            height: 1,
-            cells,
-            cursor: None,
-            hyperlinks: Vec::new(),
-        }
+        FrameData::new(
+            cells.clone(),
+            u16::try_from(cells.len()).expect("test row fits"),
+            1,
+            None,
+            Vec::new(),
+        )
+        .expect("test row is a valid frame")
     }
 
     fn text(frame: &FrameData) -> String {
         frame
-            .cells
+            .cells()
             .iter()
             .map(|cell| cell.symbol.as_str())
             .collect()
@@ -61,12 +62,13 @@ mod tests {
     #[test]
     fn put_run_replaces_cells_and_clips_to_the_frame() {
         let mut frame = frame("abcd");
-        frame.cells[1].hyperlink = Some(0);
-        frame.cells[1].skip = true;
+        frame
+            .set_hyperlinks(vec!["https://example.test".into()])
+            .expect("no cell links yet");
+        frame.cells_mut()[1].hyperlink = Some(0);
         put_run(&mut frame, 1, 0, &[cell("X"), cell("Y")]);
         assert_eq!(text(&frame), "aXYd");
-        assert_eq!(frame.cells[1].hyperlink, None);
-        assert!(!frame.cells[1].skip);
+        assert_eq!(frame.cells()[1].hyperlink, None);
         put_run(&mut frame, 3, 0, &[cell("1"), cell("2"), cell("3")]);
         assert_eq!(text(&frame), "aXY1");
         put_run(&mut frame, 4, 0, &[cell("no")]);
@@ -77,16 +79,16 @@ mod tests {
     #[test]
     fn put_run_blanks_the_uncovered_half_of_a_split_wide_glyph() {
         // Lead replaced: the tail left behind becomes a blank, keeping its
-        // style but not its skip or link.
+        // style but not its link.
         let mut lead = frame("a漢~d");
-        lead.cells[2].bg = WireColor::Green;
-        lead.cells[2].hyperlink = Some(0);
-        lead.cells[2].skip = true;
+        lead.set_hyperlinks(vec!["https://example.test".into()])
+            .expect("no cell links yet");
+        lead.cells_mut()[2].bg = WireColor::Green;
+        lead.cells_mut()[2].hyperlink = Some(0);
         put_run(&mut lead, 1, 0, &[cell("#")]);
         assert_eq!(text(&lead), "a# d");
-        assert_eq!(lead.cells[2].bg, WireColor::Green);
-        assert!(!lead.cells[2].skip);
-        assert_eq!(lead.cells[2].hyperlink, None);
+        assert_eq!(lead.cells()[2].bg, WireColor::Green);
+        assert_eq!(lead.cells()[2].hyperlink, None);
 
         // Tail replaced: the lead becomes a blank.
         let mut tail = frame("a漢~d");
@@ -103,11 +105,11 @@ mod tests {
     fn put_run_blanks_a_split_pane_glyph_by_its_grid_width() {
         // A pane's wide lead whose tail is replaced loses its two-column claim.
         let mut wide = frame("a漢~d");
-        wide.cells[1].grid_width = GridCellWidth::Two;
-        wide.cells[2].grid_width = GridCellWidth::One;
+        wide.cells_mut()[1].grid_width = GridCellWidth::WideLead;
+        wide.cells_mut()[2].grid_width = GridCellWidth::WideTail;
         put_run(&mut wide, 2, 0, &[cell("#")]);
         assert_eq!(text(&wide), "a #d");
-        assert_eq!(wide.cells[1].grid_width, GridCellWidth::Grapheme);
+        assert_eq!(wide.cells()[1].grid_width, GridCellWidth::Grapheme);
     }
 
     #[test]
@@ -118,11 +120,49 @@ mod tests {
     }
 
     #[test]
+    fn put_run_blanks_an_orphaned_empty_tail_after_a_narrow_cell() {
+        // The tail's lead is already gone (a narrow cell stands before it), and
+        // the span ends right before it.
+        let mut frame = frame("ab~d");
+        put_run(&mut frame, 0, 0, &[cell("#"), cell("#")]);
+        assert_eq!(text(&frame), "## d");
+    }
+
+    #[test]
+    fn put_run_blanks_a_wide_lead_whose_tail_is_a_space_continuation() {
+        // The form chrome writes: a lead followed by a space, not an empty
+        // symbol.
+        let mut tail = frame("a漢 d");
+        put_run(&mut tail, 2, 0, &[cell("#")]);
+        assert_eq!(text(&tail), "a #d");
+
+        let mut lead = frame("a漢 d");
+        put_run(&mut lead, 1, 0, &[cell("#")]);
+        assert_eq!(text(&lead), "a# d");
+        assert_eq!(lead.cells()[2].grid_width, GridCellWidth::Grapheme);
+    }
+
+    #[test]
+    fn overlay_blanks_a_scratch_continuation_at_the_left_edge() {
+        // The wide glyph's lead is outside the covered area; its continuation
+        // cell, whatever the scratch holds there, is not copied.
+        let mut frame = frame("abcd");
+        let mut scratch = Buffer::empty(Rect::new(0, 0, 4, 1));
+        scratch.set_string(1, 0, "漢", Style::default());
+        scratch.cell_mut((2, 0)).expect("in area").set_symbol("x");
+        overlay_buffer(&mut frame, &scratch, Rect::new(2, 0, 1, 1));
+        assert_eq!(text(&frame), "ab d");
+    }
+
+    #[test]
     fn overlay_replaces_only_the_covered_cells() {
         let mut frame = frame("abcd");
-        frame.cells[1].bg = WireColor::Green;
-        frame.cells[2].hyperlink = Some(0);
-        frame.cells[2].style.underline = shepr_vt::UnderlineStyle::Curly;
+        frame
+            .set_hyperlinks(vec!["https://example.test".into()])
+            .expect("no cell links yet");
+        frame.cells_mut()[1].bg = WireColor::Green;
+        frame.cells_mut()[2].hyperlink = Some(0);
+        frame.cells_mut()[2].style.underline = shepr_vt::UnderlineStyle::Curly;
         let mut scratch = Buffer::empty(Rect::new(1, 0, 3, 1));
         scratch.set_string(
             2,
@@ -136,8 +176,8 @@ mod tests {
         assert_eq!(text(&frame), "abXd");
         // Cells of the scratch area outside the covered rect keep what was
         // under them.
-        assert_eq!(frame.cells[1].bg, WireColor::Green);
-        let drawn = &frame.cells[2];
+        assert_eq!(frame.cells()[1].bg, WireColor::Green);
+        let drawn = &frame.cells()[2];
         assert_eq!(drawn.fg, WireColor::Red);
         assert!(drawn.style.flags.contains(WireStyleFlags::BOLD));
         assert_eq!(drawn.style.underline, shepr_vt::UnderlineStyle::Single);
@@ -156,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn overlay_skip_comes_from_the_scratch_cell() {
+    fn overlay_drops_ratatuis_skip_hint() {
         let mut frame = frame("ab");
         let mut scratch = Buffer::empty(Rect::new(0, 0, 2, 1));
         if let Some(cell) = scratch.cell_mut((0, 0)) {
@@ -164,8 +204,7 @@ mod tests {
             cell.set_diff_option(ratatui::buffer::CellDiffOption::Skip);
         }
         overlay_buffer(&mut frame, &scratch, Rect::new(0, 0, 1, 1));
-        assert!(frame.cells[0].skip);
-        assert!(!frame.cells[1].skip);
+        assert_eq!(text(&frame), "zb");
     }
 
     #[test]
@@ -183,7 +222,7 @@ mod tests {
         let mut scratch = Buffer::empty(Rect::new(0, 0, 4, 1));
         scratch.set_string(1, 0, "漢", Style::default());
         overlay_buffer(&mut frame, &scratch, Rect::new(1, 0, 2, 1));
-        assert_eq!(frame.cells[1].symbol, "漢");
+        assert_eq!(frame.cells()[1].symbol, "漢");
         assert_eq!(text(&frame), "a漢 d");
 
         // Over a pane's wide glyph: nothing half-drawn is left.

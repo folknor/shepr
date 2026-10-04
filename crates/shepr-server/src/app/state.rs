@@ -1,95 +1,76 @@
-use ratatui::layout::Rect;
 use shepr_config::NewTerminalCwd;
+use shepr_core::geometry::Rect;
 use shepr_protocol::WorkspaceId;
 
-use shepr_mux::workspace::Workspace;
-use shepr_term::host::HostCellSize;
+use shepr_mux::workspace::{PaneRef, SpawnGeometry, Workspace, WorkspaceSet};
 use shepr_term::host::{HostAppearance, TerminalTheme};
 
-pub use shepr_config::theme::Palette;
+pub(crate) use shepr_config::theme::Palette;
 
-/// The area a workspace's panes are laid out in and the pixel size of one cell
-/// there: everything besides the pane tree that decides what size a pane's PTY
-/// gets, and so what a pane spawned into that workspace starts at.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SpawnGeometry {
-    pub(crate) area: Rect,
-    pub(crate) cell_size: HostCellSize,
+/// What a host terminal has told the server about its light or dark
+/// appearance, and how it was learned.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum HostAppearanceReport {
+    /// Nothing reported yet.
+    #[default]
+    Unknown,
+    /// Derived from the host's reported background colour.
+    Inferred(HostAppearance),
+    /// Reported by the host itself (Mode 2031). A colour-derived guess never
+    /// replaces it.
+    Explicit(HostAppearance),
 }
 
-impl SpawnGeometry {
-    pub(crate) fn for_grid(grid: shepr_core::geometry::GridSize, cell_size: HostCellSize) -> Self {
-        let area = grid.rect();
-        Self {
-            area: Rect::new(area.x, area.y, area.width, area.height),
-            cell_size: cell_size.or_default(),
+impl HostAppearanceReport {
+    pub(crate) fn appearance(self) -> Option<HostAppearance> {
+        match self {
+            Self::Unknown => None,
+            Self::Inferred(appearance) | Self::Explicit(appearance) => Some(appearance),
         }
     }
 
-    /// The pixel size of one cell, `None` when the host never reported one.
-    pub(crate) fn cell_px(&self) -> Option<shepr_core::geometry::CellPx> {
-        self.cell_size.cell()
+    pub(crate) fn is_explicit(self) -> bool {
+        matches!(self, Self::Explicit(_))
     }
 }
 
-/// All application state - pure data, no channels or async runtime.
-/// Testable without PTYs or a tokio runtime. Live pane runtimes and the
-/// channels they report through belong to `App` (`terminal_runtimes`,
-/// `pane_launcher`); App-level code supplies runtime observations to
-/// reducers instead of having state perform process or filesystem probes.
-pub struct AppState {
-    pub(crate) clock_now: std::time::Instant,
-    pub terminals:
-        std::collections::HashMap<shepr_protocol::TerminalId, shepr_mux::terminal::TerminalState>,
-    pub workspaces: Vec<Workspace>,
-    /// The allocator every workspace of this session takes its ID from.
-    /// Session restore moves it past the saved IDs before anything is
-    /// allocated from it, so IDs are unique among this state's workspaces.
-    pub(crate) workspace_ids: shepr_mux::workspace::WorkspaceIdAllocator,
-    /// The pane's attached terminal, kept in sync by restore, workspace
-    /// creation, split and removal (see `terminal_of`). This lets pane-originated events reach terminal
-    /// metadata and runtimes without searching the workspace list.
-    pub(super) pane_terminal_ids:
-        std::collections::HashMap<shepr_core::layout::PaneId, shepr_protocol::TerminalId>,
-    /// The session's bookmark: the workspace saved with the session and where
-    /// a new client starts. It is set only from the navigation of a client
-    /// whose surface is active, and no request acts on it: each client keeps
-    /// its own location on the server, and this is not a mirror of any
-    /// client's view. Every write goes through `set_bookmark` and
-    /// `set_bookmark_index`, which keep `bookmark_position` with it.
-    pub bookmark: Option<shepr_protocol::WorkspaceId>,
-    /// The index the bookmarked workspace had when it was last seen, kept
-    /// current on every change of workspace order. When the bookmarked
-    /// workspace vanishes, the workspace now at this index takes its place.
-    pub(super) bookmark_position: usize,
-    /// The geometry each workspace was last laid out in, keyed by its stable
-    /// ID: the area and cell
-    /// size the server last applied to that workspace's PTYs, or spawned its
-    /// first pane at. A pane has one PTY size whichever client set it, so this
-    /// is session data, not any client's view. Spawn sizing and API geometry
-    /// (directional focus, resize steps, layout snapshots) read it, so they
-    /// agree with the sizes the panes actually have. Only creation and the
-    /// server's geometry path write it (`record_workspace_geometry`).
-    pub(crate) workspace_geometry: std::collections::HashMap<WorkspaceId, SpawnGeometry>,
+/// The session's data: its workspaces (with their panes and terminals) and
+/// the presentation facts every client shares, plus the bookkeeping the App
+/// drains (`lifecycle_authority_dirty`, `session_dirty`). Live runtimes are
+/// the App's (`terminal_runtimes`, `pane_launcher`); reducers here take
+/// runtime observations as arguments instead of probing processes or the
+/// filesystem, so the state is testable without PTYs or a tokio runtime.
+///
+/// Everything is addressed by identity: a workspace by its `WorkspaceId`, a
+/// pane by its `PaneId`. Positions survive only where order is the subject
+/// (moving a workspace, the bookmark, the sidebar order). The fields are
+/// `pub(super)`, so the `app` module's files read them directly and everything
+/// outside goes through the methods.
+pub(crate) struct AppState {
+    /// The session's workspaces in display order, with the allocator their IDs
+    /// come from, the bookmark (the workspace saved with the session and where
+    /// a new client starts; set only from the navigation of a client whose
+    /// surface is active, and not a mirror of any client's view) and, through
+    /// each workspace, the geometry its PTYs were last laid out in and the
+    /// panes with their terminal state.
+    pub(super) workspaces: WorkspaceSet,
     /// Immutable settings resolved from the launch configuration.
-    pub(crate) settings: AppSettings,
-    pub next_agent_state_change_seq: u64,
-    /// Terminals whose ownership an update touched since `App` last mirrored
-    /// full-lifecycle authority into their runtimes. It holds ids, not
+    pub(super) settings: AppSettings,
+    pub(super) next_agent_state_change_seq: shepr_agent::StateChangeSeq,
+    /// Panes whose terminal ownership an update touched since `App` last
+    /// mirrored full-lifecycle authority into their runtimes. It holds ids, not
     /// values: the drain reads the live authority, so a change no mutation
-    /// reported is still delivered. A set, so it stays bounded by the terminal
-    /// count when no `App` drains it.
-    pub(super) lifecycle_authority_dirty: std::collections::HashSet<shepr_protocol::TerminalId>,
-    /// Last known foreground host terminal appearance.
-    pub host_terminal_appearance: Option<HostAppearance>,
-    /// True when the foreground host explicitly reported appearance via Mode 2031.
-    pub host_terminal_appearance_explicit: bool,
+    /// reported is still delivered. A set, so it stays bounded by the pane
+    /// count when no `App` drains it. `App` looks the runtime up by the pane.
+    pub(super) lifecycle_authority_dirty: std::collections::HashSet<shepr_core::layout::PaneId>,
+    /// Last known foreground host terminal appearance and how it was learned.
+    pub(super) host_terminal_appearance: HostAppearanceReport,
     /// Resolved host terminal default colors for theming embedded panes.
-    pub host_terminal_theme: TerminalTheme,
+    pub(super) host_terminal_theme: TerminalTheme,
     /// Set when a persisted session snapshot would change.
-    pub session_dirty: bool,
+    pub(super) session_dirty: bool,
     /// Invalidates the shell projection after state changes that can affect chrome.
-    pub(crate) shell_projection_revision: shepr_protocol::ProjectionRevision,
+    pub(super) shell_projection_revision: shepr_protocol::ProjectionRevision,
 }
 
 /// Runtime-ready settings copied once from the immutable launch config.
@@ -99,7 +80,7 @@ pub struct AppState {
 /// branch and ahead/behind whatever any sidebar shows.
 ///
 /// The pane launch settings (shell, login shell, scrollback limit) are absent
-/// too: `App::with_paths` hands them from the validated config straight to
+/// too: `App::open` hands them from the validated config straight to
 /// the `PaneLauncher`, their one holder. A copy here would be a second source
 /// that a test could change without the launcher noticing.
 #[derive(Debug, Clone)]
@@ -153,8 +134,8 @@ impl AppSettings {
         )
     }
 
-    pub(crate) fn pane_geometry_in(&self, area: Rect) -> shepr_mux::workspace::PaneGeometry {
-        shepr_mux::workspace::PaneGeometry {
+    pub(crate) fn pane_geometry_in(&self, area: Rect) -> shepr_mux::workspace::WorkspaceChrome {
+        shepr_mux::workspace::WorkspaceChrome {
             area,
             pane_borders: self.pane_borders,
             pane_gaps: self.pane_gaps,
@@ -191,67 +172,114 @@ impl AgentFilter {
 }
 
 impl AppState {
-    /// The current position of the bookmarked workspace, if it is still there.
-    pub(crate) fn bookmark_index(&self) -> Option<usize> {
-        let id = self.bookmark.as_ref()?;
-        self.workspace_index(id)
+    /// State around `workspaces` (restore's output, or an empty set), with
+    /// nothing marked dirty.
+    pub(crate) fn new(
+        settings: AppSettings,
+        workspaces: WorkspaceSet,
+        host_theme: TerminalTheme,
+    ) -> Self {
+        Self {
+            workspaces,
+            settings,
+            next_agent_state_change_seq: shepr_agent::StateChangeSeq::NEVER,
+            lifecycle_authority_dirty: std::collections::HashSet::new(),
+            host_terminal_appearance: HostAppearanceReport::Unknown,
+            host_terminal_theme: host_theme,
+            session_dirty: false,
+            shell_projection_revision: shepr_protocol::ProjectionRevision::ZERO,
+        }
     }
 
-    /// Bookmarks the workspace at `index` (or nothing), without marking the
-    /// session changed: startup and tests seed it this way.
-    pub(crate) fn set_bookmark_index(&mut self, index: Option<usize>) {
-        self.bookmark =
-            index.and_then(|index| self.workspaces.get(index).map(|workspace| workspace.id));
-        self.bookmark_position = index.filter(|_| self.bookmark.is_some()).unwrap_or(0);
+    /// The session's workspaces, their order, IDs and bookmark.
+    pub(crate) fn workspaces(&self) -> &WorkspaceSet {
+        &self.workspaces
+    }
+
+    /// The pane `pane_id` and the workspace that owns it; `None` for a closed
+    /// or unknown pane, including late events.
+    pub(crate) fn pane(&self, pane_id: shepr_core::layout::PaneId) -> Option<PaneRef<'_>> {
+        self.workspaces.pane(pane_id)
+    }
+
+    /// The workspace `id` names; `None` for a closed or unknown workspace.
+    pub(crate) fn workspace(&self, id: &WorkspaceId) -> Option<&Workspace> {
+        self.workspaces.get(id)
+    }
+
+    /// The pane `public_id` names, with its workspace; `None` for a closed or
+    /// unknown pane. Only the exact stable id resolves: positional forms
+    /// (`w_N`, bare `N`) never parse to an id, so a mistyped or index-style id
+    /// fails rather than silently targeting whichever workspace sits at that
+    /// position.
+    pub(crate) fn resolve_pane(
+        &self,
+        public_id: &shepr_protocol::PublicPaneId,
+    ) -> Option<PaneRef<'_>> {
+        self.workspaces.resolve(public_id)
+    }
+
+    /// The workspace that holds `pane_id`, for mutation.
+    pub(super) fn workspace_of_mut(
+        &mut self,
+        pane_id: shepr_core::layout::PaneId,
+    ) -> Option<&mut Workspace> {
+        let id = self.workspaces.pane(pane_id)?.workspace().id();
+        self.workspaces.get_mut(&id)
+    }
+
+    /// The settings resolved from the launch configuration.
+    pub(crate) fn settings(&self) -> &AppSettings {
+        &self.settings
+    }
+
+    /// Resolved host terminal default colors for theming embedded panes.
+    pub(crate) fn host_terminal_theme(&self) -> TerminalTheme {
+        self.host_terminal_theme
+    }
+
+    /// Last known foreground host terminal appearance.
+    pub(crate) fn host_terminal_appearance(&self) -> Option<HostAppearance> {
+        self.host_terminal_appearance.appearance()
+    }
+
+    /// The revision of the shell projection, which every state change that can
+    /// affect chrome advances.
+    pub(crate) fn shell_projection_revision(&self) -> shepr_protocol::ProjectionRevision {
+        self.shell_projection_revision
+    }
+
+    /// Whether a persisted session snapshot would change.
+    pub(crate) fn session_dirty(&self) -> bool {
+        self.session_dirty
+    }
+
+    /// Reads and clears the session-dirty flag: the session saver's one way to
+    /// claim the change it is about to save.
+    pub(crate) fn take_session_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.session_dirty)
+    }
+
+    /// The panes whose terminal ownership changed since the last drain; the
+    /// App mirrors their lifecycle authority into their runtimes.
+    pub(crate) fn drain_lifecycle_authority_dirty(&mut self) -> Vec<shepr_core::layout::PaneId> {
+        self.lifecycle_authority_dirty.drain().collect()
+    }
+
+    /// The current position of the bookmarked workspace, if it is still there.
+    pub(crate) fn bookmark_index(&self) -> Option<usize> {
+        self.workspaces.bookmark_index()
     }
 
     /// Bookmarks workspace `id`, the navigation of an active client. Saved
     /// with the session when it moved the bookmark; false when it did not (the
     /// workspace is already bookmarked, or is not a workspace).
-    pub(crate) fn set_bookmark(&mut self, id: &shepr_protocol::WorkspaceId) -> bool {
-        let Some(index) = self.workspace_index(id) else {
-            return false;
-        };
-        let moved = self.bookmark.as_ref() != Some(id);
-        self.bookmark = Some(*id);
-        self.bookmark_position = index;
+    pub(crate) fn set_bookmark(&mut self, id: &WorkspaceId) -> bool {
+        let moved = self.workspaces.set_bookmark(id);
         if moved {
             self.mark_session_dirty();
         }
         moved
-    }
-
-    /// Brings the bookmark in line with the workspaces after they changed. A
-    /// bookmarked workspace still there only has its remembered index
-    /// refreshed. One that vanished is replaced by the workspace now at that
-    /// index, clamped to the last one, or by nothing when none is left; that
-    /// repair schedules a save. Returns whether the bookmark moved.
-    pub(crate) fn reconcile_bookmark(&mut self) -> bool {
-        let Some(id) = self.bookmark else {
-            return false;
-        };
-        if let Some(index) = self.workspace_index(&id) {
-            self.bookmark_position = index;
-            return false;
-        }
-        let landed = self
-            .workspaces
-            .len()
-            .checked_sub(1)
-            .map(|last| self.bookmark_position.min(last));
-        self.set_bookmark_index(landed);
-        self.mark_session_dirty();
-        true
-    }
-
-    /// Position of the workspace with `id` in the current ordered list.
-    /// This index is local to synchronous state access, not an identity to
-    /// retain across events. Commands and geometry caches keep the stable ID;
-    /// an index still makes ordering operations and Vec access direct.
-    pub(crate) fn workspace_index(&self, id: &shepr_protocol::WorkspaceId) -> Option<usize> {
-        self.workspaces
-            .iter()
-            .position(|workspace| &workspace.id == id)
     }
 
     /// Records that persisted session data changed. App owns translating this
@@ -269,98 +297,35 @@ impl AppState {
             .unwrap_or(self.shell_projection_revision);
     }
 
-    /// The area workspace `ws_idx` is laid out in: where the server last
-    /// applied its PTY geometry, or the headless area when it has not yet.
-    pub(crate) fn workspace_layout_area(&self, ws_idx: usize) -> Rect {
-        self.workspace_area(ws_idx)
-            .unwrap_or_else(|| self.settings.headless_rect())
-    }
-
-    /// The recorded geometry of workspace `ws_idx`, if one was recorded.
-    pub(crate) fn workspace_spawn_geometry(&self, ws_idx: usize) -> Option<SpawnGeometry> {
-        let workspace = self.workspaces.get(ws_idx)?;
-        self.workspace_geometry.get(&workspace.id).copied()
-    }
-
-    /// The recorded layout area of workspace `ws_idx`, if the server has
-    /// applied geometry to it.
-    pub(crate) fn workspace_area(&self, ws_idx: usize) -> Option<Rect> {
-        self.workspace_spawn_geometry(ws_idx)
-            .map(|geometry| geometry.area)
+    /// The area `workspace` is laid out in: where the server last applied its
+    /// PTY geometry, or the headless area when it has not yet.
+    pub(crate) fn layout_area(&self, workspace: &Workspace) -> Rect {
+        workspace
+            .spawn_geometry()
+            .map_or_else(|| self.settings.headless_rect(), |geometry| geometry.area)
     }
 
     /// Records the geometry the server just applied a workspace's PTYs in, or
     /// spawned its first pane at.
-    pub(crate) fn record_workspace_geometry(
-        &mut self,
-        id: &shepr_protocol::WorkspaceId,
-        geometry: SpawnGeometry,
-    ) {
-        self.workspace_geometry.insert(*id, geometry);
-    }
-
-    /// Drops the recorded geometry of workspaces that no longer exist.
-    pub(crate) fn retain_live_workspace_geometry(&mut self) {
-        let live = self
-            .workspaces
-            .iter()
-            .map(|workspace| workspace.id)
-            .collect::<std::collections::HashSet<_>>();
-        self.workspace_geometry.retain(|id, _| live.contains(id));
+    pub(crate) fn record_workspace_geometry(&mut self, id: &WorkspaceId, geometry: SpawnGeometry) {
+        if let Some(workspace) = self.workspaces.get_mut(id) {
+            workspace.record_spawn_geometry(geometry);
+        }
     }
 
     /// The configured pane chrome applied to a workspace laid out in `area`.
-    pub(crate) fn pane_geometry_in(&self, area: Rect) -> shepr_mux::workspace::PaneGeometry {
+    pub(crate) fn chrome_in(&self, area: Rect) -> shepr_mux::workspace::WorkspaceChrome {
         self.settings.pane_geometry_in(area)
     }
 
-    /// The terminal attached to `pane_id`, wherever it lives. Pane events
-    /// carry pane ids while terminal metadata and runtimes are keyed by
-    /// terminal id, so this is the one state-level mapping between them.
-    ///
-    /// Creation, restore and removal maintain the index; fixture assembly
-    /// does the same. A missing id is a closed or unknown pane, including
-    /// late events, and never causes a workspace scan on this input path.
-    pub(crate) fn terminal_of(
+    /// The terminal state of `pane_id`, wherever the pane lives. The pane's
+    /// record owns it. `None` for a closed or unknown pane, including late
+    /// events.
+    pub(crate) fn terminal(
         &self,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<&shepr_protocol::TerminalId> {
-        self.pane_terminal_ids.get(&pane_id)
-    }
-
-    /// Adds the pane-to-terminal links from a workspace entering state.
-    pub(crate) fn index_workspace_terminals(&mut self, workspace: &Workspace) {
-        self.pane_terminal_ids.extend(
-            workspace
-                .panes()
-                .iter()
-                .map(|(pane_id, pane)| (*pane_id, pane.attached_terminal_id.clone())),
-        );
-    }
-
-    /// The live runtime for `pane_id`, when its attached terminal has one.
-    pub(crate) fn runtime_of<'a>(
-        &self,
-        terminal_runtimes: &'a shepr_mux::pane::PaneRuntimeRegistry,
-        pane_id: shepr_core::layout::PaneId,
-    ) -> Option<&'a shepr_mux::pane::PaneRuntime> {
-        terminal_runtimes.get(self.terminal_of(pane_id)?)
-    }
-
-    /// The live runtime of `pane_id` in workspace `ws_idx`: the pane's
-    /// terminal id looked up in `terminal_runtimes`. `None` when the pane is
-    /// not in that workspace or its terminal has no runtime (a restored pane
-    /// whose shell failed to start, or one still waiting on agent resume).
-    /// This lookup only returns a borrowed runtime; it does not itself probe
-    /// the process or perform I/O. App-level code should own any such probes.
-    pub(crate) fn runtime_for_pane_in_workspace<'a>(
-        &'a self,
-        terminal_runtimes: &'a shepr_mux::pane::PaneRuntimeRegistry,
-        ws_idx: usize,
-        pane_id: shepr_core::layout::PaneId,
-    ) -> Option<&'a shepr_mux::pane::PaneRuntime> {
-        let terminal_id = self.workspaces.get(ws_idx)?.terminal_id(pane_id)?;
-        terminal_runtimes.get(terminal_id)
+    ) -> Option<&shepr_mux::terminal::TerminalState> {
+        Some(self.workspaces.pane(pane_id)?.terminal())
     }
 }
 
@@ -373,44 +338,58 @@ use crate::test_support::{ValidatedServerConfigFixture as _, WorkspaceFixture as
 
 #[cfg(test)]
 impl AppState {
-    /// Chrome geometry of workspace `ws_idx`: its recorded layout area, or the
-    /// headless area when geometry has not been applied to it yet.
-    pub(crate) fn pane_geometry_for_workspace(
-        &self,
-        ws_idx: usize,
-    ) -> shepr_mux::workspace::PaneGeometry {
-        self.pane_geometry_in(self.workspace_layout_area(ws_idx))
+    /// Bookmarks the workspace at `index` (or nothing), without marking the
+    /// session changed: tests seed it this way.
+    pub(crate) fn seed_bookmark_index(&mut self, index: Option<usize>) {
+        self.workspaces.seed_bookmark_index(index);
     }
 
     /// Create an AppState for testing - no channels, no PTYs.
-    pub fn test_new() -> Self {
-        Self {
-            clock_now: super::tests::test_clock().now,
-            terminals: std::collections::HashMap::new(),
-            workspaces: Vec::new(),
-            workspace_ids: shepr_mux::workspace::WorkspaceIdAllocator::new(),
-            pane_terminal_ids: std::collections::HashMap::new(),
-            bookmark: None,
-            bookmark_position: 0,
-            workspace_geometry: std::collections::HashMap::new(),
-            settings: AppSettings::from_config(&shepr_config::ValidatedServerConfig::test_default()),
-            next_agent_state_change_seq: 0,
-            lifecycle_authority_dirty: std::collections::HashSet::new(),
-            host_terminal_appearance: None,
-            host_terminal_appearance_explicit: false,
-            host_terminal_theme: TerminalTheme::default(),
-            session_dirty: false,
-            shell_projection_revision: shepr_protocol::ProjectionRevision::ZERO,
-        }
+    pub(crate) fn test_new() -> Self {
+        Self::new(
+            AppSettings::from_config(&shepr_config::ValidatedServerConfig::test_default()),
+            WorkspaceSet::new(),
+            TerminalTheme::default(),
+        )
+    }
+
+    /// The settings, for a test that changes how the chrome is drawn.
+    pub(crate) fn settings_mut(&mut self) -> &mut AppSettings {
+        &mut self.settings
+    }
+
+    /// Whether the foreground host explicitly reported its appearance.
+    pub(crate) fn host_terminal_appearance_explicit(&self) -> bool {
+        self.host_terminal_appearance.is_explicit()
+    }
+
+    /// Clears the session-dirty flag, as a save would.
+    pub(crate) fn test_clear_session_dirty(&mut self) {
+        self.session_dirty = false;
+    }
+
+    /// The fixture workspace at display position `index`; a test names a
+    /// fixture by where it put it. Panics when there is none.
+    pub(crate) fn ws(&self, index: usize) -> &Workspace {
+        &self.workspaces.as_slice()[index]
+    }
+
+    /// The fixture workspace at display position `index`, for mutation.
+    /// Panics when there is none.
+    pub(crate) fn ws_mut(&mut self, index: usize) -> &mut Workspace {
+        let id = self.ws(index).id();
+        self.workspaces
+            .get_mut(&id)
+            .expect("a fixture workspace at this position")
     }
 
     /// Records `area` as the layout area of every workspace, as if the server
     /// had applied geometry to each of them in it, for a host that reported no
     /// cell size.
-    pub fn test_record_all_workspace_areas(&mut self, area: Rect) {
+    pub(crate) fn test_record_all_workspace_areas(&mut self, area: ratatui::layout::Rect) {
         self.test_record_all_workspace_geometry(SpawnGeometry {
-            area,
-            cell_size: HostCellSize::default(),
+            area: crate::ui::core_rect(area),
+            cell: None,
         });
     }
 
@@ -419,149 +398,64 @@ impl AppState {
         let ids = self
             .workspaces
             .iter()
-            .map(|workspace| workspace.id)
+            .map(Workspace::id)
             .collect::<Vec<_>>();
         for id in ids {
             self.record_workspace_geometry(&id, geometry);
         }
     }
 
-    /// Replace the fixture workspace set and its pane index together. The
-    /// state's allocator moves past the fixtures' IDs, so a workspace the
-    /// state creates later never repeats one.
+    /// Replace the fixture workspace set. The set's allocator moves past the
+    /// fixtures' IDs, so a workspace the state creates later never repeats
+    /// one. The bookmark is cleared.
     pub(crate) fn test_set_workspaces(&mut self, workspaces: Vec<Workspace>) {
-        self.workspace_ids
-            .reserve(workspaces.iter().map(|workspace| &workspace.id));
-        self.workspaces = workspaces;
-        self.test_reindex_panes();
+        self.workspaces = WorkspaceSet::restored(
+            shepr_mux::workspace::WorkspaceIdAllocator::new(),
+            workspaces,
+            None,
+        );
     }
 
-    /// Add a fixture workspace with the same index update as live creation,
-    /// moving the state's allocator past its ID.
-    pub(crate) fn test_push_workspace(&mut self, workspace: Workspace) {
-        self.workspace_ids.reserve([&workspace.id]);
-        self.index_workspace_terminals(&workspace);
-        self.workspaces.push(workspace);
+    /// Add a fixture workspace the way live creation does, moving the set's
+    /// allocator past its ID.
+    /// Returns the workspace's ID.
+    pub(crate) fn test_push_workspace(&mut self, workspace: Workspace) -> WorkspaceId {
+        let id = workspace.id();
+        assert!(
+            self.workspaces.insert(workspace).is_ok(),
+            "a fixture workspace repeats an id or a pane"
+        );
+        id
     }
 
-    /// Split a fixture workspace and register its new terminal link.
+    /// The terminal state of `pane`, for mutation. Panics when the pane is not
+    /// in the state.
+    pub(crate) fn terminal_mut(
+        &mut self,
+        pane: shepr_core::layout::PaneId,
+    ) -> &mut shepr_mux::terminal::TerminalState {
+        self.workspaces
+            .pane_mut(pane)
+            .expect("a fixture pane in the state")
+            .terminal_mut()
+    }
+
+    /// Split a fixture workspace.
     pub(crate) fn test_split_workspace(
         &mut self,
         ws_idx: usize,
         direction: shepr_core::layout::Direction,
     ) -> shepr_core::layout::PaneId {
-        let pane_id = self.workspaces[ws_idx].test_split(direction);
-        let terminal_id = self.workspaces[ws_idx]
-            .terminal_id(pane_id)
-            .expect("a fixture split attaches a terminal")
-            .clone();
-        self.pane_terminal_ids.insert(pane_id, terminal_id);
-        pane_id
+        self.ws_mut(ws_idx).test_split(direction)
     }
 
-    /// Rebuild the index after direct fixture removal or replacement.
-    pub(crate) fn test_reindex_panes(&mut self) {
-        self.pane_terminal_ids.clear();
-        for workspace in &self.workspaces {
-            self.pane_terminal_ids.extend(
-                workspace
-                    .panes()
-                    .iter()
-                    .map(|(pane_id, pane)| (*pane_id, pane.attached_terminal_id.clone())),
-            );
-        }
-    }
-
-    /// Populate missing `TerminalState` entries for every pane so tests that
-    /// read or write terminal metadata don't need to manually create them.
-    pub fn ensure_test_terminals(&mut self) {
-        use shepr_mux::terminal::TerminalState;
-        self.test_reindex_panes();
-        for ws in &self.workspaces {
-            for pane in ws.panes().values() {
-                if !self.terminals.contains_key(&pane.attached_terminal_id) {
-                    let cwd = ws.identity_cwd.clone();
-                    self.terminals.insert(
-                        pane.attached_terminal_id.clone(),
-                        TerminalState::new(pane.attached_terminal_id.clone(), cwd),
-                    );
-                }
-            }
-        }
-    }
-
-    pub fn test_with_adversarial_identity_state() -> Self {
+    pub(crate) fn test_with_adversarial_identity_state() -> Self {
         let mut state = Self::test_new();
         state.test_set_workspaces(vec![
             shepr_mux::workspace::Workspace::test_adversarial_identity_state(),
         ]);
-        state.set_bookmark_index(Some(0));
-        state.ensure_test_terminals();
+        state.seed_bookmark_index(Some(0));
         state
-    }
-
-    pub fn assert_invariants_for_test(&self) {
-        assert_eq!(
-            self.pane_terminal_ids.len(),
-            self.workspaces
-                .iter()
-                .map(Workspace::pane_count)
-                .sum::<usize>(),
-            "the pane terminal index must contain exactly the live panes"
-        );
-        if self.workspaces.is_empty() {
-            assert!(
-                self.bookmark.is_none(),
-                "empty app state must not have a bookmarked workspace"
-            );
-            return;
-        }
-
-        if let Some(bookmark) = &self.bookmark {
-            let position = self
-                .workspace_index(bookmark)
-                .expect("the bookmarked workspace id must resolve");
-            assert_eq!(
-                position, self.bookmark_position,
-                "the bookmark must remember the index it has"
-            );
-        }
-
-        let mut workspace_ids = std::collections::HashSet::new();
-        let mut pane_ids = std::collections::HashSet::new();
-        let mut attached_terminal_ids = std::collections::HashSet::new();
-        for (ws_idx, ws) in self.workspaces.iter().enumerate() {
-            assert!(
-                workspace_ids.insert(ws.id),
-                "duplicate workspace id {} at workspace index {}",
-                ws.id,
-                ws_idx
-            );
-            ws.assert_invariants_for_test();
-
-            for (pane_id, pane) in ws.panes() {
-                assert_eq!(
-                    self.terminal_of(*pane_id),
-                    Some(&pane.attached_terminal_id),
-                    "every pane attachment must be indexed"
-                );
-                assert!(
-                    pane_ids.insert(*pane_id),
-                    "pane {pane_id:?} appears in more than one workspace"
-                );
-                assert!(
-                    attached_terminal_ids.insert(pane.attached_terminal_id.clone()),
-                    "terminal {} is attached to more than one app pane",
-                    pane.attached_terminal_id
-                );
-                assert!(
-                    self.terminals.contains_key(&pane.attached_terminal_id),
-                    "pane {:?} is attached to missing terminal {}",
-                    pane_id,
-                    pane.attached_terminal_id
-                );
-            }
-        }
     }
 }
 
@@ -575,109 +469,191 @@ mod tests {
         let mut state = AppState::test_new();
         state.settings.headless_size = shepr_core::geometry::GridSize::clamped(132, 41);
         state.settings.pane_scrollbars = false;
-        state.test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("only")]);
+        let id = state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("only"));
+        let workspace = state.workspace(&id).expect("the pushed workspace");
 
-        assert_eq!(state.workspace_spawn_geometry(0), None);
-        assert_eq!(state.workspace_layout_area(0), Rect::new(0, 0, 132, 41));
+        assert_eq!(workspace.spawn_geometry(), None);
+        let area = state.layout_area(workspace);
+        assert_eq!(area, Rect::new(0, 0, 132, 41));
+        assert_eq!(state.chrome_in(area).area, Rect::new(0, 0, 132, 41));
         assert_eq!(
-            state.pane_geometry_for_workspace(0).area,
-            Rect::new(0, 0, 132, 41)
-        );
-        assert_eq!(
-            state.pane_geometry_for_workspace(0).sole_pane_size(),
-            (41, 132)
+            state.chrome_in(area).sole_pane_size(),
+            shepr_core::geometry::GridSize::clamped(132, 41)
         );
     }
 
     #[test]
     fn a_workspaces_layout_area_is_its_own_recorded_geometry_never_another_workspaces() {
         let mut state = AppState::test_with_adversarial_identity_state();
-        state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("second"));
-        state.ensure_test_terminals();
+        let second_id =
+            state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("second"));
         let first_area = Rect::new(0, 0, 97, 33);
-        let first_cell = HostCellSize {
-            width_px: 9,
-            height_px: 18,
-        };
-        let first_id = state.workspaces[0].id;
+        let first_cell = shepr_core::geometry::CellPx::new(9, 18);
+        let first_id = state.ws(0).id();
         state.record_workspace_geometry(
             &first_id,
             SpawnGeometry {
                 area: first_area,
-                cell_size: first_cell,
+                cell: first_cell,
             },
         );
 
         // The bookmark names the first workspace, and the unrecorded second
         // one does not borrow its area: it falls back to the headless area.
         assert_eq!(state.bookmark_index(), Some(0));
-        assert_eq!(state.workspace_layout_area(0), first_area);
-        assert_eq!(
-            state.workspace_spawn_geometry(0).map(|g| g.cell_size),
-            Some(first_cell)
-        );
-        assert_eq!(state.workspace_area(1), None);
-        assert_eq!(
-            state.workspace_layout_area(1),
-            state.settings.headless_rect()
-        );
-
-        // Closed workspaces drop their geometry.
-        state.workspaces.truncate(1);
-        state.test_reindex_panes();
-        state.workspace_geometry.insert(
-            WorkspaceId::from_number(usize::MAX).expect("nonzero id"),
-            SpawnGeometry {
-                area: Rect::new(0, 0, 61, 17),
-                cell_size: HostCellSize::default(),
-            },
-        );
-        state.retain_live_workspace_geometry();
-        assert!(state.workspace_area(0).is_some());
-        assert_eq!(state.workspace_geometry.len(), 1);
+        let first = state.workspace(&first_id).expect("the first workspace");
+        let second = state.workspace(&second_id).expect("the second workspace");
+        assert_eq!(state.layout_area(first), first_area);
+        assert_eq!(first.spawn_geometry().map(|g| g.cell), Some(first_cell));
+        assert_eq!(second.spawn_geometry(), None);
+        assert_eq!(state.layout_area(second), state.settings.headless_rect());
     }
 
     #[test]
-    fn the_bookmark_remembers_its_index_and_repairs_by_it() {
+    fn lookups_by_id_survive_a_reorder() {
+        let mut state = AppState::test_new();
+        let first = state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("first"));
+        let second = state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("second"));
+        let second_root = state.workspace(&second).expect("second").tree().root();
+        assert_eq!(state.workspaces().position(&second), Some(1));
+
+        state.move_workspace(&second, Some(&first));
+
+        assert_eq!(state.workspaces().position(&second), Some(0));
+        assert_eq!(state.workspace(&second).map(Workspace::id), Some(second));
+        assert_eq!(
+            state.pane(second_root).map(|pane| pane.workspace().id()),
+            Some(second)
+        );
+        assert_eq!(
+            state.rename_workspace(&first, Some("renamed".to_string())),
+            Some(crate::app::actions::ViewMutation::Metadata)
+        );
+        assert_eq!(
+            state.workspace(&first).map(Workspace::display_name),
+            Some("renamed")
+        );
+    }
+
+    #[test]
+    fn a_pane_resolves_to_its_workspace_after_an_earlier_workspace_closes() {
+        let mut state = AppState::test_new();
+        let first = state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("first"));
+        let second = state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("second"));
+        let second_root = state.workspace(&second).expect("second").tree().root();
+        let public = state
+            .pane(second_root)
+            .expect("the second workspace's root pane")
+            .public_id();
+
+        assert!(state.close_workspace(&first).is_some());
+
+        assert_eq!(state.workspaces().position(&second), Some(0));
+        let resolved = state
+            .resolve_pane(&public)
+            .expect("the pane still resolves");
+        assert_eq!(resolved.workspace().id(), second);
+        assert_eq!(resolved.id(), second_root);
+        assert!(state.workspace(&first).is_none());
+    }
+
+    #[test]
+    fn a_closed_workspaces_id_resolves_to_nothing() {
+        let mut state = AppState::test_new();
+        let only = state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("only"));
+        assert!(state.workspace(&only).is_some());
+
+        assert!(state.close_workspace(&only).is_some());
+
+        assert!(state.workspace(&only).is_none());
+        assert!(state.close_workspace(&only).is_none());
+        assert!(state.rename_workspace(&only, None).is_none());
+    }
+
+    #[test]
+    fn public_ids_resolve() {
+        let mut state = AppState::test_new();
+        state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("a"));
+        state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("b"));
+        let second = state.test_split_workspace(1, shepr_core::layout::Direction::Horizontal);
+
+        let public = state.pane(second).expect("the split pane").public_id();
+        let resolved = state
+            .resolve_pane(&public)
+            .expect("public pane id resolves");
+        assert_eq!(resolved.id(), second);
+        assert_eq!(resolved.workspace().id(), state.ws(1).id());
+    }
+
+    #[test]
+    fn unknown_public_pane_id_does_not_resolve() {
+        let mut state = AppState::test_new();
+        state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("a"));
+        state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("b"));
+        let retired_id = shepr_protocol::PublicPaneId::new(
+            &retired_workspace_id(),
+            shepr_protocol::PanePublicNumber::new(9).expect("number"),
+        );
+
+        assert!(state.resolve_pane(&retired_id).is_none());
+    }
+
+    #[test]
+    fn positional_and_raw_ids_are_rejected() {
+        let mut state = AppState::test_new();
+        state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("a"));
+        state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("b"));
+        let ws_id = state.ws(0).id();
+        let root = state.ws(0).tree().root();
+
+        for id in ["1", "2", "w_1", "w_2"] {
+            assert!(
+                id.parse::<shepr_protocol::WorkspaceId>()
+                    .ok()
+                    .and_then(|id| state.workspace(&id))
+                    .is_none(),
+                "workspace id {id:?}"
+            );
+        }
+        // Only the canonical text parses. Raw internal pane ids (`p_<raw>`)
+        // restart every process, so after a server restart they would name a
+        // different pane.
+        for id in [
+            format!("p_{}", root.raw()),
+            format!("p_1_{}", root.raw()),
+            format!("{ws_id}-1"),
+            "1:p1".to_string(),
+        ] {
+            assert!(
+                id.parse::<shepr_protocol::PublicPaneId>()
+                    .ok()
+                    .and_then(|id| state.resolve_pane(&id))
+                    .is_none(),
+                "pane id {id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn navigating_to_a_workspace_marks_the_session_only_when_the_bookmark_moves() {
         let mut state = AppState::test_new();
         state.test_set_workspaces(
-            ["a", "b", "c", "d"]
+            ["a", "b"]
                 .into_iter()
                 .map(shepr_mux::workspace::Workspace::test_new)
                 .collect(),
         );
-        let ids: Vec<_> = state.workspaces.iter().map(|w| w.id).collect();
+        let ids: Vec<_> = state
+            .workspaces()
+            .iter()
+            .map(shepr_mux::workspace::Workspace::id)
+            .collect();
 
-        assert!(state.set_bookmark(&ids[2]));
-        assert!(!state.set_bookmark(&ids[2]), "already bookmarked");
-        state.session_dirty = false;
-
-        // An order change refreshes the remembered index and moves nothing.
-        let moved = state.workspaces.remove(0);
-        state.test_reindex_panes();
-        state.test_push_workspace(moved);
-        assert!(!state.reconcile_bookmark());
-        assert_eq!(state.bookmark_index(), Some(1));
-        assert!(!state.session_dirty);
-
-        // The bookmarked workspace vanishes: the one now at its index takes
-        // over, and the repair schedules a save.
-        state.workspaces.remove(1);
-        state.test_reindex_panes();
-        assert!(state.reconcile_bookmark());
-        assert_eq!(state.bookmark.as_ref(), Some(&ids[3]));
-        assert_eq!(state.bookmark_index(), Some(1));
+        assert!(state.set_bookmark(&ids[1]));
         assert!(state.session_dirty);
-
-        // Past the end it clamps, and with nothing left it is none.
-        state.workspaces.truncate(1);
-        state.test_reindex_panes();
-        assert!(state.reconcile_bookmark());
-        assert_eq!(state.bookmark_index(), Some(0));
-        state.workspaces.clear();
-        state.test_reindex_panes();
-        assert!(state.reconcile_bookmark());
-        assert_eq!(state.bookmark, None);
+        state.session_dirty = false;
+        assert!(!state.set_bookmark(&ids[1]), "already bookmarked");
+        assert!(!state.session_dirty);
     }
 
     #[test]
@@ -686,93 +662,60 @@ mod tests {
         let area = Rect::new(5, 2, 120, 40);
         state.settings.pane_borders = shepr_config::PaneBordersConfig::Always;
         state.settings.pane_scrollbars = true;
-        let geometry = state.pane_geometry_in(area);
+        let geometry = state.chrome_in(area);
         assert_eq!(geometry.area, area);
 
         let (mut layout, root) = shepr_core::layout::TileLayout::new();
-        let new_pane = layout
-            .split_pane(
-                root,
-                shepr_core::layout::Direction::Horizontal,
-                shepr_core::layout::SplitRatio::clamped(0.25),
-            )
-            .expect("test precondition");
+        let new_pane = shepr_core::layout::PaneId::alloc();
+        assert!(layout.split_pane(
+            root,
+            shepr_core::layout::Direction::Horizontal,
+            shepr_core::layout::SplitRatio::clamped(0.25),
+            new_pane,
+        ));
 
         // Right three quarters (90 cols), minus left+right border and the
         // scrollbar gutter; rows minus top+bottom border.
-        assert_eq!(geometry.pane_size(&layout, false, new_pane), Some((38, 87)));
-    }
-
-    #[test]
-    fn fixture_changes_index_live_panes_and_retire_replaced_panes() {
-        let mut state = AppState::test_new();
-        let workspace = Workspace::test_new("first");
-        let old_pane = workspace.root_pane();
-        state.test_set_workspaces(vec![workspace]);
-        assert!(state.terminal_of(old_pane).is_some());
-        let split = state.test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
         assert_eq!(
-            state.terminal_of(split),
-            state.workspaces[0].terminal_id(split)
+            geometry.pane_size(&layout, false, new_pane),
+            Some(shepr_core::geometry::GridSize::clamped(87, 38))
         );
-
-        let next = Workspace::test_new("replacement");
-        let next_pane = next.root_pane();
-        state.test_set_workspaces(vec![next]);
-        assert!(state.terminal_of(old_pane).is_none());
-        assert!(state.terminal_of(split).is_none());
-        assert!(state.terminal_of(next_pane).is_some());
-        state.ensure_test_terminals();
-        state.assert_invariants_for_test();
     }
 
     #[tokio::test]
-    async fn runtime_lookup_goes_through_the_registry_by_terminal_id() {
+    async fn runtime_lookup_is_by_pane() {
         let mut state = AppState::test_new();
         let ws = shepr_mux::workspace::Workspace::test_new("test");
-        let pane_id = ws.root_pane();
-        let terminal_id = ws.panes()[&pane_id].attached_terminal_id.clone();
+        let pane_id = ws.tree().root();
         state.test_set_workspaces(vec![ws]);
         let mut registry = shepr_mux::pane::PaneRuntimeRegistry::new();
 
-        assert!(
-            state
-                .runtime_for_pane_in_workspace(&registry, 0, pane_id)
-                .is_none()
-        );
-
-        assert!(state.runtime_of(&registry, pane_id).is_none());
+        assert!(registry.get(&pane_id).is_none());
         registry.insert(
-            terminal_id,
+            pane_id,
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b""),
         );
-        assert!(
-            state
-                .runtime_for_pane_in_workspace(&registry, 0, pane_id)
-                .is_some()
-        );
-        assert!(
-            state
-                .runtime_for_pane_in_workspace(&registry, 1, pane_id)
-                .is_none()
-        );
-        assert!(state.runtime_of(&registry, pane_id).is_some());
+        assert!(registry.get(&pane_id).is_some());
+        assert!(registry.get(&shepr_core::layout::PaneId::alloc()).is_none());
         for (_, runtime) in registry.drain() {
             drop(runtime);
         }
     }
 
     #[test]
-    fn adversarial_identity_state_satisfies_app_invariants_after_mutation() {
+    fn a_split_pane_has_a_terminal_in_the_state() {
         let mut state = AppState::test_with_adversarial_identity_state();
-        state.assert_invariants_for_test();
 
-        let ws = &mut state.workspaces[0];
+        let ws = state.ws_mut(0);
         let new_pane = ws.test_split(shepr_core::layout::Direction::Horizontal);
-        assert!(ws.public_pane_number(new_pane).is_some());
-        state.ensure_test_terminals();
 
-        state.assert_invariants_for_test();
+        assert!(ws.tree().pane(new_pane).is_some());
+        assert!(state.terminal(new_pane).is_some());
+        assert!(
+            state
+                .terminal(shepr_core::layout::PaneId::alloc())
+                .is_none()
+        );
     }
 
     #[test]
@@ -786,19 +729,14 @@ mod tests {
         state.mark_shell_projection_dirty();
         assert_eq!(
             state.shell_projection_revision,
-            shepr_protocol::ProjectionRevision::new(2)
+            shepr_test_fixtures::counter_at::<shepr_protocol::ProjectionRevision>(2)
         );
 
-        state.shell_projection_revision = shepr_protocol::ProjectionRevision::new(u64::MAX - 1);
+        let max = shepr_test_fixtures::counter_at::<shepr_protocol::ProjectionRevision>(u64::MAX);
+        state.shell_projection_revision = shepr_test_fixtures::counter_at(u64::MAX - 1);
         state.mark_shell_projection_dirty();
-        assert_eq!(
-            state.shell_projection_revision,
-            shepr_protocol::ProjectionRevision::new(u64::MAX)
-        );
+        assert_eq!(state.shell_projection_revision, max);
         state.mark_shell_projection_dirty();
-        assert_eq!(
-            state.shell_projection_revision,
-            shepr_protocol::ProjectionRevision::new(u64::MAX)
-        );
+        assert_eq!(state.shell_projection_revision, max);
     }
 }

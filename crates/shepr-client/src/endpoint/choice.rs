@@ -1,5 +1,5 @@
 use super::ClientEndpointId;
-use crate::shell::ClientEndpointFocusTarget;
+use crate::shell::{Location, LocationTarget};
 use shepr_protocol::{RequestId, TerminalGeometry};
 use std::time::Instant;
 mod focus_lane;
@@ -8,7 +8,8 @@ pub use preparing::*;
 
 /// The live or stale endpoint presentation, and the move toward the one the client wants.
 /// The shell and transport routing both derive their endpoint identity from this owner. Plain data: no method takes the registry or
-/// sends anything; the I/O lives in `endpoint::view` and the client loop's reconcile.
+/// sends anything; the I/O lives in `endpoint::view`, sequenced by the endpoint hub, the
+/// only production code that transitions it.
 #[derive(Debug)]
 pub enum EndpointChoice {
     /// The endpoint is selected and on screen.
@@ -50,17 +51,17 @@ impl Presentation {
 #[derive(Debug)]
 pub enum MoveStage {
     /// Nothing sent yet: `to` has no connection with metadata for its current generation.
-    /// `focus` is the navigation the user asked for, handed to the focus lane when preparing
-    /// starts.
-    Waiting {
-        focus: Option<ClientEndpointFocusTarget>,
-    },
+    /// `focus` is the navigation the user asked for (`Machine`: none), handed to the focus
+    /// lane when preparing starts.
+    Waiting { focus: LocationTarget },
     /// `to` has been turned on and the client is collecting a coherent pair.
     Preparing(Box<Preparing>),
     /// Only with nothing shown: preparing `to` failed on connection generation `generation`.
     /// Not retried until `to` has a connection of another generation with metadata, or the
     /// user selects again. With a shown `from` a failure returns to showing it instead.
-    Failed { generation: u64 },
+    Failed {
+        generation: shepr_protocol::ConnectionGeneration,
+    },
 }
 
 /// How an inbound message from one connection relates to the choice. `Target` only while the
@@ -80,7 +81,7 @@ pub enum Selection {
     Unchanged,
     /// Already shown, and the pick carried navigation: the caller applies it through the
     /// ordinary endpoint-command path.
-    FocusShown(ClientEndpointFocusTarget),
+    FocusShown(LocationTarget),
     /// The choice is now (or still) a move; the reconcile drives it.
     Moving,
 }
@@ -98,7 +99,7 @@ pub enum Lost {
 pub struct PendingStart<'a> {
     pub to: &'a ClientEndpointId,
     pub from: Option<&'a ClientEndpointId>,
-    pub failed_generation: Option<u64>,
+    pub failed_generation: Option<shepr_protocol::ConnectionGeneration>,
 }
 
 pub struct FailedMove {
@@ -122,7 +123,9 @@ impl EndpointChoice {
         Self::Moving(Move {
             from: Presentation::Stale(to.clone()),
             to,
-            stage: MoveStage::Waiting { focus: None },
+            stage: MoveStage::Waiting {
+                focus: LocationTarget::Machine,
+            },
         })
     }
     /// The endpoint whose live or stale presentation the client draws.
@@ -161,15 +164,19 @@ impl EndpointChoice {
 
     /// Applies a shell pick. Selecting the shown endpoint cancels any move; selecting the
     /// target again only replaces its navigation (and rearms a failed move); anything else
-    /// starts a new move from the shown endpoint.
-    pub fn select(
-        &mut self,
-        endpoint: ClientEndpointId,
-        focus: Option<ClientEndpointFocusTarget>,
-    ) -> Selection {
+    /// starts a new move from the shown endpoint. The pick's navigation is its location's
+    /// target.
+    pub fn select(&mut self, destination: Location) -> Selection {
+        let Location {
+            endpoint,
+            target: focus,
+        } = destination;
         if self.live() == Some(&endpoint) {
             *self = Self::Showing(endpoint);
-            return focus.map_or(Selection::Unchanged, Selection::FocusShown);
+            return match focus {
+                LocationTarget::Machine => Selection::Unchanged,
+                navigation => Selection::FocusShown(navigation),
+            };
         }
         if let Self::Moving(m) = self
             && m.to == endpoint
@@ -208,7 +215,9 @@ impl EndpointChoice {
             if let Some(from) = m.from.live() {
                 *self = Self::Showing(from.clone());
             } else {
-                m.stage = MoveStage::Waiting { focus: None };
+                m.stage = MoveStage::Waiting {
+                    focus: LocationTarget::Machine,
+                };
             }
             Lost::Target
         } else {
@@ -260,8 +269,8 @@ impl EndpointChoice {
             && !matches!(m.stage, MoveStage::Preparing(_))
         {
             let focus = match &mut m.stage {
-                MoveStage::Waiting { focus } => focus.take(),
-                _ => None,
+                MoveStage::Waiting { focus } => std::mem::replace(focus, LocationTarget::Machine),
+                _ => LocationTarget::Machine,
             };
             m.stage = MoveStage::Preparing(Box::new(Preparing::new(
                 lease,
@@ -341,29 +350,32 @@ mod tests {
         ClientEndpointId::Ssh(super::super::MachineLabel::parse("build").expect("machine"))
     }
     pub(super) fn geometry() -> TerminalGeometry {
-        TerminalGeometry::new(80, 24, 8, 16, false)
+        TerminalGeometry::from_host(
+            shepr_core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::HostCell::from_host(8, 16, false),
+        )
     }
     pub(super) fn lease() -> ViewLease {
         ViewLease {
             endpoint_id: remote(),
-            generation: 7,
+            generation: crate::tests::test_generation(7),
             boot_id: crate::tests::test_boot_id("remote-boot"),
-            minimum_revision: 1.into(),
+            minimum_revision: shepr_protocol::ProjectionRevision::FIRST,
         }
+    }
+    /// The one view request the tests' preparing moves send.
+    pub(super) fn view_request() -> RequestId {
+        static ID: std::sync::OnceLock<RequestId> = std::sync::OnceLock::new();
+        ID.get_or_init(RequestId::allocate).clone()
     }
     pub(super) fn preparing() -> EndpointChoice {
         let mut choice = EndpointChoice::showing(ClientEndpointId::Local);
-        choice.select(remote(), None);
-        choice.begin_preparing(
-            lease(),
-            "client-shell-view:1:on".into(),
-            geometry(),
-            Instant::now(),
-        );
+        choice.select(Location::machine(remote()));
+        choice.begin_preparing(lease(), view_request(), geometry(), Instant::now());
         choice
     }
-    fn navigation() -> ClientEndpointFocusTarget {
-        ClientEndpointFocusTarget::Workspace(crate::tests::test_workspace_id("w1"))
+    fn navigation() -> LocationTarget {
+        LocationTarget::Workspace(crate::tests::test_workspace_id("w1"))
     }
     #[test]
     fn a_launch_with_local_connected_shows_local() {
@@ -382,7 +394,7 @@ mod tests {
     fn selecting_the_shown_endpoint_changes_nothing() {
         let mut c = EndpointChoice::showing(ClientEndpointId::Local);
         assert_eq!(
-            c.select(ClientEndpointId::Local, None),
+            c.select(Location::machine(ClientEndpointId::Local)),
             Selection::Unchanged
         );
         assert!(c.pending_start().is_none());
@@ -391,14 +403,17 @@ mod tests {
     fn selecting_the_shown_endpoint_with_navigation_asks_to_focus_it() {
         let mut c = EndpointChoice::showing(ClientEndpointId::Local);
         assert_eq!(
-            c.select(ClientEndpointId::Local, Some(navigation())),
+            c.select(Location {
+                endpoint: ClientEndpointId::Local,
+                target: navigation(),
+            }),
             Selection::FocusShown(navigation())
         );
     }
     #[test]
     fn selecting_another_endpoint_keeps_the_shown_one_until_commit() {
         let mut c = EndpointChoice::showing(ClientEndpointId::Local);
-        c.select(remote(), None);
+        c.select(Location::machine(remote()));
         assert_eq!(c.live(), Some(&ClientEndpointId::Local));
         assert_eq!(c.pending_start().expect("waiting").to, &remote());
     }
@@ -406,7 +421,7 @@ mod tests {
     fn a_newer_selection_replaces_the_target_and_only_the_new_one_is_wanted() {
         let mut c = preparing();
         let next = ClientEndpointId::Ssh(super::super::MachineLabel::parse("next").expect("label"));
-        c.select(next.clone(), None);
+        c.select(Location::machine(next.clone()));
         assert_eq!(c.pending_start().expect("waiting").to, &next);
         assert_eq!(c.live(), Some(&ClientEndpointId::Local));
         assert!(!c.wants_view(&remote()));
@@ -415,7 +430,7 @@ mod tests {
     fn selecting_the_shown_endpoint_during_a_move_cancels_it() {
         let mut c = preparing();
         assert_eq!(
-            c.select(ClientEndpointId::Local, None),
+            c.select(Location::machine(ClientEndpointId::Local)),
             Selection::Unchanged
         );
         assert!(c.preparing().is_none());
@@ -424,13 +439,11 @@ mod tests {
     #[test]
     fn begin_preparing_takes_the_waiting_focus() {
         let mut c = EndpointChoice::waiting_for(remote());
-        c.select(remote(), Some(navigation()));
-        c.begin_preparing(
-            lease(),
-            "client-shell-view:1:on".into(),
-            geometry(),
-            Instant::now(),
-        );
+        c.select(Location {
+            endpoint: remote(),
+            target: navigation(),
+        });
+        c.begin_preparing(lease(), view_request(), geometry(), Instant::now());
         let request = c
             .preparing_mut()
             .expect("preparing")
@@ -466,7 +479,7 @@ mod tests {
         c.connection_lost(&ClientEndpointId::Local);
         c.fail_move();
         let p = c.pending_start().expect("failed");
-        assert_eq!(p.failed_generation, Some(7));
+        assert_eq!(p.failed_generation, Some(crate::tests::test_generation(7)));
         assert!(c.live().is_none());
     }
     #[test]
@@ -474,19 +487,22 @@ mod tests {
         let mut c = preparing();
         c.connection_lost(&ClientEndpointId::Local);
         c.fail_move();
-        c.select(remote(), Some(navigation()));
+        c.select(Location {
+            endpoint: remote(),
+            target: navigation(),
+        });
         assert_eq!(c.pending_start().expect("waiting").failed_generation, None);
     }
     #[test]
     fn abandon_returns_to_the_shown_source_only_from_waiting() {
         let mut c = preparing();
         assert!(c.abandon().is_none());
-        c.select(remote(), None);
+        c.select(Location::machine(remote()));
         assert!(c.abandon().is_none());
         let mut c = EndpointChoice::waiting_for(remote());
         assert!(c.abandon().is_none());
         c = EndpointChoice::showing(ClientEndpointId::Local);
-        c.select(remote(), None);
+        c.select(Location::machine(remote()));
         assert_eq!(c.abandon(), Some(remote()));
         assert_eq!(c.live(), Some(&ClientEndpointId::Local));
     }
@@ -550,7 +566,7 @@ mod tests {
     fn role_is_target_only_while_preparing() {
         let mut c = EndpointChoice::waiting_for(remote());
         assert_eq!(c.role(&remote()), ConnectionRole::Other);
-        c.begin_preparing(lease(), "request".into(), geometry(), Instant::now());
+        c.begin_preparing(lease(), view_request(), geometry(), Instant::now());
         assert_eq!(c.role(&remote()), ConnectionRole::Target);
         c.fail_move();
         assert_eq!(c.role(&remote()), ConnectionRole::Other);

@@ -1,10 +1,15 @@
 //! Request ownership. Work can carry typed text; log ids and kinds only.
 
-use crate::shell::overlays::notices::{ClientEndpointNoticeKind, NoticeCode};
+use crate::shell::copy::CopySession;
+use crate::shell::copy::keys::drop_copy_flight;
+use crate::shell::input::scroll_lanes::ScrollLanes;
+use crate::shell::input::selection::MouseSelection;
+use crate::shell::navigation::workspace_navigation::PendingWorkspaceHighlight;
+use crate::shell::notices::{ClientEndpointNoticeKind, NoticeCode};
+use crate::shell::overlays::{Overlay, drop_label_lookup};
 use crate::shell::state::ClientShellAction;
 use crate::shell::state::{
-    ClientShellEndpointError, ClientShellEndpointRequest, ClientShellInput, ClientShellState,
-    Repaint, TypedText,
+    ClientShellEndpointError, ClientShellInput, ClientShellState, Repaint, TypedText,
 };
 use crate::shell::{EndpointNotice, EndpointNoticeKind};
 use shepr_protocol::command::{
@@ -21,26 +26,56 @@ fn decode_reply<T: TryFrom<EndpointReply, Error = EndpointError>>(
     result.and_then(|reply| T::try_from(reply).map_err(Into::into))
 }
 
+/// The token a continuation is checked against. A feature holds the ticket of the
+/// answer it waits for, and that answer's `Work` carries the same ticket back. One
+/// counter issues tickets for the life of the shell and does not wrap in practice, so a
+/// ticket held by a value that was dropped and rebuilt can never match an answer meant
+/// for the value it replaced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::shell) struct Ticket(u64);
+
+/// One command bound for the active endpoint, with the id its answer comes back
+/// under.
+pub(crate) struct ClientShellEndpointRequest {
+    pub(crate) id: RequestId,
+    pub(crate) command: EndpointCommand,
+}
+
+impl std::fmt::Debug for ClientShellEndpointRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientShellEndpointRequest")
+            .field("id", &self.id)
+            .field("command", &"[redacted]")
+            .finish()
+    }
+}
+
 /// Owns shell request work. Only answer and drop paths take entries.
 pub(in crate::shell) struct Ledger {
-    next: u64,
+    next_ticket: u64,
     entries: HashMap<RequestId, Entry>,
 }
 impl Default for Ledger {
     fn default() -> Self {
         Self {
-            next: 1,
+            next_ticket: 1,
             entries: HashMap::new(),
         }
     }
 }
 pub(in crate::shell) struct Entry {
-    issued_at: u64,
     pub(in crate::shell) boot_id: BootId,
     pub(in crate::shell) command: CommandKind,
     pub(in crate::shell) work: Work,
 }
 impl Ledger {
+    /// A ticket no other feature or earlier request holds.
+    pub(in crate::shell) fn ticket(&mut self) -> Ticket {
+        let ticket = Ticket(self.next_ticket);
+        // A u64 counter of user requests does not run out in practice.
+        self.next_ticket = self.next_ticket.saturating_add(1);
+        ticket
+    }
     /// Allocates a request identity and records its shell work.
     pub(in crate::shell) fn open(
         &mut self,
@@ -49,38 +84,15 @@ impl Ledger {
         work: Work,
     ) -> RequestId {
         let id = RequestId::allocate();
-        let issued_at = self.next;
-        // A u64 counter of user requests does not run out in practice.
-        self.next = self.next.saturating_add(1);
         self.entries.insert(
             id.clone(),
             Entry {
-                issued_at,
                 boot_id,
                 command,
                 work,
             },
         );
         id
-    }
-    pub(in crate::shell) fn work(&self, id: &RequestId) -> Option<&Work> {
-        self.entries.get(id).map(|e| &e.work)
-    }
-    /// The serial the next `open` issues. Serials only grow, so comparing two marks
-    /// tells whether anything was opened between them, even if it was removed since.
-    pub(in crate::shell) fn mark(&self) -> u64 {
-        self.next
-    }
-    /// The entries still held that were opened at or after `mark`, in issue order.
-    fn opened_since(&self, mark: u64) -> Vec<RequestId> {
-        let mut opened: Vec<_> = self
-            .entries
-            .iter()
-            .filter(|(_, entry)| entry.issued_at >= mark)
-            .map(|(id, entry)| (entry.issued_at, id.clone()))
-            .collect();
-        opened.sort_unstable_by_key(|(issued_at, _)| *issued_at);
-        opened.into_iter().map(|(_, id)| id).collect()
     }
     pub(in crate::shell) fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -97,18 +109,27 @@ impl Ledger {
 pub(in crate::shell) enum Work {
     /// A command whose answer needs no shell state.
     Plain,
+    /// A focus command. A workspace highlight installed for it holds `highlight`.
+    Focus {
+        highlight: Ticket,
+    },
     SelectionCopy,
-    WorkspaceLabel,
+    WorkspaceLabel {
+        lookup: Ticket,
+    },
     PaneScroll {
         pane_id: shepr_protocol::PublicPaneId,
+        flight: Ticket,
     },
     WordSelection {
         pane_id: shepr_protocol::PublicPaneId,
         row: shepr_term::AbsRow,
+        read: Ticket,
     },
     CopyMotion {
         pane_id: shepr_protocol::PublicPaneId,
         origin: shepr_protocol::command::PaneTextPoint,
+        flight: Ticket,
     },
     CopySearch {
         pane_id: shepr_protocol::PublicPaneId,
@@ -116,18 +137,36 @@ pub(in crate::shell) enum Work {
         query: TypedText,
         direction: shepr_protocol::command::PaneCopySearchDirection,
         repeat: bool,
-        /// The copy-mode search generation, not a request guard.
-        generation: u64,
+        flight: Ticket,
+        rows: Ticket,
     },
+}
+
+/// Everything a request's drop may restore, as disjoint borrows of the shell's feature
+/// state. It holds no path to the ledger or to `ClientShellState`, so a drop cannot open
+/// a request.
+pub(in crate::shell) struct Rollback<'a> {
+    copy: &'a mut Option<CopySession>,
+    mouse_selection: &'a mut MouseSelection,
+    scroll_lanes: &'a mut ScrollLanes,
+    overlay: &'a mut Option<Overlay>,
+    highlight: &'a mut Option<PendingWorkspaceHighlight>,
+}
+
+/// Whether `submit` opened a ledger entry. A refused submit holds nothing, so the
+/// caller has no ticket to revoke.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::shell) enum Submitted {
+    Opened,
+    Refused,
 }
 
 /// Why a request leaves the ledger without an answer.
 #[derive(Clone, Copy)]
 pub(crate) enum DropReason {
     /// The request may have reached the server and its outcome is unknown: the
-    /// connection was lost, the lane cancelled it as possibly sent, or its endpoint is no
-    /// longer the active one when its answer or lane expiry arrives. Only a `Plain`
-    /// request shows the interruption notice; read requests only supply presentation.
+    /// connection was lost, or the lane cancelled it as possibly sent. Only work that
+    /// reports interruption shows the interruption notice.
     Interrupted,
     /// Rejected before entering the send lane, so its outcome is known.
     Unsent,
@@ -139,26 +178,46 @@ pub(crate) enum DropReason {
 impl Work {
     fn accepts_reply(&self, reply: &EndpointReply) -> bool {
         match self {
-            Self::Plain => true,
+            Self::Plain | Self::Focus { .. } => true,
             Self::SelectionCopy | Self::WordSelection { .. } => {
                 matches!(reply, EndpointReply::PaneSelection { .. })
             }
-            Self::WorkspaceLabel => matches!(reply, EndpointReply::WorkspaceCheckoutRoot { .. }),
+            Self::WorkspaceLabel { .. } => {
+                matches!(reply, EndpointReply::WorkspaceCheckoutRoot { .. })
+            }
             Self::PaneScroll { .. } => matches!(reply, EndpointReply::PaneInfo { .. }),
             Self::CopyMotion { .. } => matches!(reply, EndpointReply::PaneCopyMotion { .. }),
             Self::CopySearch { .. } => matches!(reply, EndpointReply::PaneCopySearch { .. }),
         }
     }
+    /// Whether losing it unanswered shows the interruption notice: commands that change
+    /// server state. Reads only supply presentation.
+    fn reports_interruption(&self) -> bool {
+        matches!(self, Self::Plain | Self::Focus { .. })
+    }
     /// The request ends without an answer. Restores exactly the state this request owns
-    /// and returns a repaint decision. It has no `outcome` sink, so it cannot dispatch the
-    /// queued work its caller may no longer have a connection for.
-    fn dropped(self, shell: &mut ClientShellState, request: &RequestId) -> Repaint {
+    /// and returns a repaint decision. `parts` holds no path to the ledger or to
+    /// `ClientShellState`, and there is no `outcome` sink, so a drop can neither open a
+    /// request nor dispatch the queued work its caller may no longer have a connection for.
+    fn dropped(self, parts: &mut Rollback<'_>) -> Repaint {
         match self {
             Self::Plain | Self::SelectionCopy => Repaint::Needed,
-            Self::WorkspaceLabel => shell.complete_workspace_label_lookup(request, None),
-            Self::PaneScroll { pane_id } => shell.drop_pane_scroll(request, &pane_id),
-            Self::WordSelection { .. } => shell.drop_word_selection(request),
-            Self::CopyMotion { .. } | Self::CopySearch { .. } => shell.drop_copy_operation(request),
+            Self::Focus { highlight } => {
+                PendingWorkspaceHighlight::release(parts.highlight, highlight);
+                Repaint::Needed
+            }
+            Self::WorkspaceLabel { lookup } => drop_label_lookup(parts.overlay, lookup),
+            Self::PaneScroll { pane_id, flight } => {
+                if parts.scroll_lanes.failed(&pane_id, flight) {
+                    Repaint::Needed
+                } else {
+                    Repaint::Unchanged
+                }
+            }
+            Self::WordSelection { read, .. } => parts.mouse_selection.drop_word_read(read),
+            Self::CopyMotion { flight, .. } | Self::CopySearch { flight, .. } => {
+                drop_copy_flight(parts.copy, flight)
+            }
         }
     }
     /// The request was answered (a reply, a timeout or a server error). May queue input,
@@ -166,7 +225,6 @@ impl Work {
     fn answered(
         self,
         shell: &mut ClientShellState,
-        request: &RequestId,
         result: Result<EndpointReply, ClientShellEndpointError>,
         now: Instant,
         outcome: &mut ClientShellInput,
@@ -181,12 +239,23 @@ impl Work {
                     Repaint::Unchanged
                 }
             }
-            Self::WorkspaceLabel => shell.complete_workspace_label_lookup(
-                request,
+            Self::Focus { highlight } => {
+                if result.is_err() {
+                    PendingWorkspaceHighlight::release(
+                        &mut shell.pending_workspace_highlight,
+                        highlight,
+                    );
+                    Repaint::Needed
+                } else {
+                    Repaint::Unchanged
+                }
+            }
+            Self::WorkspaceLabel { lookup } => shell.complete_workspace_label_lookup(
+                lookup,
                 decode_reply::<WorkspaceCheckoutRootReply>(result).ok(),
             ),
-            Self::PaneScroll { pane_id } => shell.answer_pane_scroll(
-                request,
+            Self::PaneScroll { pane_id, flight } => shell.answer_pane_scroll(
+                flight,
                 &pane_id,
                 decode_reply::<PaneInfoReply>(result),
                 outcome,
@@ -212,16 +281,20 @@ impl Work {
                 }
                 Err(_) => Repaint::Needed,
             },
-            Self::WordSelection { pane_id, row } => shell.complete_word_selection_row(
-                request,
+            Self::WordSelection { pane_id, row, read } => shell.complete_word_selection_row(
+                read,
                 &pane_id,
                 row,
                 decode_reply::<PaneSelectionReply>(result),
                 now,
                 outcome,
             ),
-            Self::CopyMotion { pane_id, origin } => shell.complete_copy_motion(
-                request,
+            Self::CopyMotion {
+                pane_id,
+                origin,
+                flight,
+            } => shell.complete_copy_motion(
+                flight,
                 &pane_id,
                 origin,
                 &decode_reply::<PaneCopyMotionReply>(result),
@@ -233,15 +306,16 @@ impl Work {
                 query,
                 direction,
                 repeat,
-                generation,
+                flight,
+                rows,
             } => shell.complete_copy_search(
-                request,
+                flight,
+                rows,
                 &pane_id,
                 origin,
                 query,
                 direction,
                 repeat,
-                generation,
                 decode_reply::<PaneCopySearchReply>(result),
                 outcome,
             ),
@@ -252,14 +326,14 @@ impl Work {
 
 impl ClientShellState {
     /// Opens a ledger entry for `command` at the current snapshot's boot and appends the
-    /// endpoint action. `None` (and no entry) when the endpoint is not online or has no
+    /// endpoint action. `Refused` (and no entry) when the endpoint is not online or has no
     /// snapshot.
     pub(in crate::shell) fn submit(
         &mut self,
         command: EndpointCommand,
         work: Work,
         outcome: &mut ClientShellInput,
-    ) -> Option<shepr_protocol::RequestId> {
+    ) -> Submitted {
         if command.traits().changes_focus {
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
@@ -269,10 +343,12 @@ impl ClientShellState {
                 endpoint,
                 EndpointNoticeKind::NotReady,
             ));
-            return None;
+            return Submitted::Refused;
         }
         let command_kind = command.kind();
-        let snapshot = self.snapshot.as_deref()?;
+        let Some(snapshot) = self.endpoints.active.snapshot() else {
+            return Submitted::Refused;
+        };
         let request_id = self
             .ledger
             .open(snapshot.boot_id.clone(), command_kind, work);
@@ -280,11 +356,11 @@ impl ClientShellState {
             endpoint_id: self.endpoints.presented().clone(),
             boot_id: snapshot.boot_id.clone(),
             request: Box::new(ClientShellEndpointRequest {
-                id: request_id.clone(),
+                id: request_id,
                 command,
             }),
         });
-        Some(request_id)
+        Submitted::Opened
     }
 
     pub(in crate::shell) fn push_endpoint_command(
@@ -293,18 +369,6 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         self.submit(command, Work::Plain, outcome);
-    }
-    fn release_highlight(&mut self, request: &RequestId) -> Repaint {
-        if self
-            .pending_workspace_highlight
-            .as_ref()
-            .is_some_and(|h| &h.request_id == request)
-        {
-            self.pending_workspace_highlight = None;
-            Repaint::Needed
-        } else {
-            Repaint::Unchanged
-        }
     }
     /// Notices report the server answer even if a feature no longer awaits it.
     pub(crate) fn answer_request(
@@ -318,14 +382,14 @@ impl ClientShellState {
         let Some(entry) = self.ledger.take(request_id) else {
             return outcome;
         };
-        let request = request_id.clone();
         if entry.boot_id != *boot_id
             || self
-                .snapshot
-                .as_deref()
+                .endpoints
+                .active
+                .snapshot()
                 .is_none_or(|s| s.boot_id != *boot_id)
         {
-            self.dropped_entry(entry, &request, DropReason::WrongBoot)
+            self.dropped_entry(entry, DropReason::WrongBoot)
                 .apply_to(&mut outcome);
             return outcome;
         }
@@ -345,7 +409,6 @@ impl ClientShellState {
                 .command_succeeded(&entry.boot_id, entry.command);
         }
         if let Err(error) = &result {
-            self.release_highlight(request_id).apply_to(&mut outcome);
             let message = error.to_string();
             let (kind, code, title, body) = match error {
                 ClientShellEndpointError::Timeout => (
@@ -370,15 +433,23 @@ impl ClientShellState {
             outcome.repaint |=
                 self.push_endpoint_notice_at_boot(Some(entry.boot_id), kind, code, title, body);
         }
-        entry
-            .work
-            .answered(self, &request, result, now, &mut outcome);
+        entry.work.answered(self, result, now, &mut outcome);
         outcome
     }
-    fn dropped_entry(&mut self, entry: Entry, request: &RequestId, reason: DropReason) -> Repaint {
-        let mut repaint = self.release_highlight(request);
+    /// Disjoint borrows of the feature state a drop restores.
+    fn rollback(&mut self) -> Rollback<'_> {
+        Rollback {
+            copy: &mut self.copy,
+            mouse_selection: &mut self.mouse_selection,
+            scroll_lanes: &mut self.scroll_lanes,
+            overlay: &mut self.overlay,
+            highlight: &mut self.pending_workspace_highlight,
+        }
+    }
+    fn dropped_entry(&mut self, entry: Entry, reason: DropReason) -> Repaint {
+        let mut repaint = Repaint::Unchanged;
         if matches!(reason, DropReason::Interrupted)
-            && matches!(entry.work, Work::Plain)
+            && entry.work.reports_interruption()
             && self.push_endpoint_notice_at_boot(
                 Some(entry.boot_id),
                 ClientEndpointNoticeKind::Unavailable,
@@ -389,33 +460,16 @@ impl ClientShellState {
         {
             repaint |= Repaint::Needed;
         }
-        let mark = self.ledger.mark();
-        repaint |= entry.work.dropped(self, request);
-        // A rollback that called `submit` with a throwaway input would open an orphan
-        // entry whose action is lost; the types cannot rule that out. The rollback test
-        // pins that no `Work` kind does (the ledger mark does not move across a drop).
-        // Should one slip through, its action never left the shell, so it is dropped as
-        // unsent instead of waiting forever for an answer.
-        let orphans = self.ledger.opened_since(mark);
-        if !orphans.is_empty() {
-            tracing::error!(
-                request = %request,
-                orphans = orphans.len(),
-                "request rollback opened requests; dropping them as unsent"
-            );
-            for orphan in orphans {
-                repaint |= self.drop_request(&orphan, DropReason::Unsent);
-            }
-        }
+        repaint |= entry.work.dropped(&mut self.rollback());
         repaint
     }
-    /// Ends a request without an answer: releases its highlight, shows the interruption
-    /// notice where `reason` calls for it and runs its rollback. Returns a repaint decision.
+    /// Ends a request without an answer: shows the interruption notice where `reason`
+    /// calls for it and runs its rollback (a focus request's releases its highlight). Returns a repaint decision.
     pub(crate) fn drop_request(&mut self, request_id: &RequestId, reason: DropReason) -> Repaint {
         let Some(entry) = self.ledger.take(request_id) else {
             return Repaint::Unchanged;
         };
-        self.dropped_entry(entry, request_id, reason)
+        self.dropped_entry(entry, reason)
     }
     pub(in crate::shell) fn drop_all_requests(&mut self, reason: DropReason) -> Repaint {
         if self.ledger.is_empty() {
@@ -428,6 +482,16 @@ impl ClientShellState {
         repaint
     }
 }
+
+#[cfg(test)]
+impl Ticket {
+    /// For tests that build feature state by hand. Counts down from the top of the
+    /// range, which a ledger never reaches.
+    pub(in crate::shell) const fn fixture(n: u64) -> Self {
+        Self(u64::MAX - n)
+    }
+}
+
 #[cfg(test)]
 impl ClientShellState {
     /// Applies an endpoint response and returns everything it produced.
@@ -437,19 +501,14 @@ impl ClientShellState {
     /// host queries, not just repaints and actions. The caller must route the
     /// whole outcome (`finish_client_shell_input`), or the replayed keystrokes
     /// are lost.
-    pub(crate) fn handle_endpoint_result(
+    pub(in crate::shell) fn handle_endpoint_result(
         &mut self,
         boot_id: &shepr_protocol::BootId,
-        request_id: &str,
+        request_id: &RequestId,
         result: Result<EndpointReply, ClientShellEndpointError>,
     ) -> ClientShellInput {
         // clock-io-ok: this test-only wrapper stands in for the client loop.
-        self.answer_request(
-            boot_id,
-            &request_id.into(),
-            result,
-            std::time::Instant::now(),
-        )
+        self.answer_request(boot_id, request_id, result, std::time::Instant::now())
     }
 }
 
@@ -459,7 +518,7 @@ impl Ledger {
     pub(in crate::shell) fn retain(&mut self, mut keep: impl FnMut(&RequestId) -> bool) {
         self.entries.retain(|id, _| keep(id));
     }
-    pub(in crate::shell) fn contains(&self, id: &str) -> bool {
+    pub(in crate::shell) fn contains(&self, id: &RequestId) -> bool {
         self.entries.contains_key(id)
     }
     pub(in crate::shell) fn len(&self) -> usize {
@@ -470,7 +529,7 @@ impl Ledger {
 impl ClientShellState {
     /// Whether the ledger holds `id`. For `crate::tests`, which cannot see the
     /// `pub(in crate::shell)` `ledger` field.
-    pub(crate) fn has_request(&self, id: &str) -> bool {
+    pub(crate) fn has_request(&self, id: &RequestId) -> bool {
         self.ledger.contains(id)
     }
 }
@@ -487,6 +546,12 @@ mod tests {
         l.take(&a);
         let b = l.open(boot, CommandKind::WorkspaceRename, Work::Plain);
         assert_ne!(a, b);
+    }
+    #[test]
+    fn tickets_are_never_reissued() {
+        let mut l = Ledger::default();
+        let tickets: Vec<_> = (0..1000).map(|_| l.ticket()).collect();
+        assert!(tickets.windows(2).all(|pair| pair[0].0 < pair[1].0));
     }
     #[test]
     fn an_entry_is_taken_once() {

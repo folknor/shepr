@@ -44,10 +44,10 @@
 
 [terminal]
 # Executable used for new interactive panes.
-# Empty means $SHELL, or /bin/sh when SHELL is unset. A SHELL that is not
+# Unset means $SHELL, or /bin/sh when SHELL is unset. A SHELL that is not
 # a usable shell shepr recognizes fails the launch, like a bad value here.
 # Surrounding whitespace, here or in the shell environment variable, fails the launch too.
-# default_shell = ""
+# default_shell = "/bin/sh"
 
 # Start new interactive pane shells as login shells.
 # login_shell = false

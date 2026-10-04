@@ -17,7 +17,8 @@ fn patch(s: &shepr_protocol::PaneSurfaceFrame) -> shepr_protocol::PaneSurfacePat
 fn assert_connected(f: &Fixture) {
     assert!(
         f.client
-            .write_stream
+            .hub()
+            .registry()
             .connection(&ClientEndpointId::Local)
             .is_some(),
         "patch must preserve the connection"
@@ -56,7 +57,8 @@ fn a_patch_that_does_not_follow_its_baseline_fails_the_connection() {
     f.inbound_patch(&ClientEndpointId::Local, patch(&s));
     assert!(
         f.client
-            .write_stream
+            .hub()
+            .registry()
             .connection(&ClientEndpointId::Local)
             .is_none()
     );
@@ -69,22 +71,22 @@ fn the_commit_baseline_is_the_evidence_surface_and_the_next_patch_applies() {
     f.reconcile();
     let id = super::endpoint_choice::remote();
     assert!(
-        f.client.state.shell.endpoint_is_active(&id),
+        f.client.state().shell.endpoint_is_active(&id),
         "the move committed"
     );
     let mut s = surface(&id, 2, f.size(), "TARGET");
     let first = patch(&s);
     s.surface_revision = first.surface_revision;
     f.inbound_patch(&id, first);
-    assert!(f.client.write_stream.connection(&id).is_some());
+    assert!(f.client.hub().registry().connection(&id).is_some());
     // The first patch reached the shell and advanced its baseline: the next one follows.
     // The committed endpoint's connection generation (the fixture connects it at 7) is
     // the one its patches carry.
     assert!(matches!(
         f.client
-            .state
+            .state_mut()
             .shell
-            .apply_pane_surface_patch_from(&patch(&s), 7),
+            .apply_pane_surface_patch_from(&patch(&s), crate::tests::test_generation(7)),
         shell::ClientPaneSurfacePatchOutcome::Applied(_)
     ));
 }

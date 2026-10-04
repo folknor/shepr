@@ -2,8 +2,14 @@ use crate::server::outbox::ReplyTicket;
 use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use tokio::sync::mpsc;
+
+/// Refuse new checkout-root work when this combined count of worker threads
+/// and queued completions reaches the limit. Resume checks add at most one
+/// completion per restored agent pane in a finite restore batch.
+pub(super) const MAX_WORKER_COMPLETION_BACKLOG: usize = 8;
 
 pub(super) type CheckoutRootRunner = Arc<
     dyn Fn(PathBuf) -> Result<Option<shepr_protocol::RemotePath>, shepr_git::GitReadError>
@@ -56,6 +62,25 @@ pub(super) struct EndpointWorkers {
     sender: mpsc::UnboundedSender<WorkerCompletion>,
     receiver: mpsc::UnboundedReceiver<WorkerCompletion>,
     runner: CheckoutRootRunner,
+    /// Worker threads that have started and not yet finished.
+    running: Arc<AtomicUsize>,
+}
+
+/// One running worker thread's claim on the admission count, released when
+/// the thread ends (or never starts).
+struct RunningWorker(Arc<AtomicUsize>);
+
+impl RunningWorker {
+    fn start(running: &Arc<AtomicUsize>) -> Self {
+        running.fetch_add(1, Ordering::AcqRel);
+        Self(Arc::clone(running))
+    }
+}
+
+impl Drop for RunningWorker {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl EndpointWorkers {
@@ -65,25 +90,25 @@ impl EndpointWorkers {
             sender,
             receiver,
             runner: default_checkout_root_runner(),
+            running: Arc::new(AtomicUsize::new(0)),
         }
     }
 
     /// Counts running workers and queued completions. During a send the
     /// overlap counts twice, making admission conservative.
     pub(super) fn can_admit(&self) -> bool {
-        self.sender
-            .strong_count()
-            .saturating_sub(1)
+        self.running
+            .load(Ordering::Acquire)
             .saturating_add(self.receiver.len())
-            < crate::limits::MAX_WORKER_COMPLETION_BACKLOG
+            < MAX_WORKER_COMPLETION_BACKLOG
     }
 
     pub(super) async fn recv(&mut self) -> Option<WorkerCompletion> {
         self.receiver.recv().await
     }
 
-    /// Starts a checkout root worker thread. Its sender clone is what
-    /// [`Self::can_admit`] counts as running until the completion is sent.
+    /// Starts a checkout root worker thread. [`Self::can_admit`] counts it as
+    /// running until it ends, which is after its completion is sent.
     pub(super) fn checkout_root(
         &self,
         ticket: ReplyTicket,
@@ -94,9 +119,11 @@ impl EndpointWorkers {
     ) -> io::Result<()> {
         let completion_tx = self.sender.clone();
         let runner = Arc::clone(&self.runner);
+        let running = RunningWorker::start(&self.running);
         thread::Builder::new()
             .name("shepr-checkout-root".to_owned())
             .spawn(move || {
+                let _running = running;
                 let result = runner(cwd);
                 let completion = WorkerCompletion::CheckoutRoot {
                     ticket,
@@ -186,11 +213,11 @@ mod tests {
     #[tokio::test]
     async fn admission_counts_running_workers_and_queued_completions() {
         let mut workers = EndpointWorkers::new();
-        let running = (0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG - 1)
-            .map(|_| workers.sender.clone())
+        let running = (0..MAX_WORKER_COMPLETION_BACKLOG - 1)
+            .map(|_| RunningWorker::start(&workers.running))
             .collect::<Vec<_>>();
         assert!(workers.can_admit());
-        let last = workers.sender.clone();
+        let last = RunningWorker::start(&workers.running);
         assert!(!workers.can_admit());
         drop(last);
         assert!(workers.can_admit());
@@ -200,7 +227,7 @@ mod tests {
                 seq: crate::server::outbox::ReplySeq::test_new(0),
             },
             boot_id: shepr_test_fixtures::fixed_boot_id(1),
-            request_id: "queued".into(),
+            request_id: shepr_protocol::RequestId::allocate(),
             home: None,
             result: Ok(None),
         });

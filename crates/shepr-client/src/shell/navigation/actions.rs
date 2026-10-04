@@ -3,17 +3,27 @@ use shepr_protocol::command::PaneSwapParams;
 use shepr_protocol::command::SplitDirection;
 
 use crate::endpoint::ClientEndpointId;
-use crate::shell::endpoints::ClientEndpointFocusTarget;
-use crate::shell::ledger::Work;
-use crate::shell::overlays::notices::{ClientEndpointNoticeKind, NoticeCode};
-use crate::shell::state::{
-    ClientHelpOverlay, ClientShellAction, ClientShellInput, ClientShellState,
-};
-use crate::shell::state::{ClientShellMode, ClientShellOverlay};
+use crate::shell::ledger::{Submitted, Work};
+use crate::shell::navigation::location::{Location, LocationTarget};
+use crate::shell::notices::{ClientEndpointNoticeKind, NoticeCode};
+use crate::shell::overlays::Overlay;
+use crate::shell::overlays::help::HelpOverlay;
+use crate::shell::state::ClientShellMode;
+use crate::shell::state::{ClientShellAction, ClientShellInput, ClientShellState};
 use crate::shell::{EndpointNotice, EndpointNoticeKind};
-use shepr_termio::text_editor::TextEditor;
 
 use shepr_protocol::command::EndpointCommand;
+
+/// A command for the presented endpoint and the sidebar reveal it implies.
+pub(in crate::shell) struct ActionCommand {
+    pub(in crate::shell) command: EndpointCommand,
+    pub(in crate::shell) reveal: Option<ActionReveal>,
+}
+
+pub(in crate::shell) enum ActionReveal {
+    Workspace(shepr_protocol::WorkspaceId),
+    Agent(Location),
+}
 
 impl ClientShellState {
     pub(in crate::shell) fn record_binding(
@@ -27,7 +37,7 @@ impl ClientShellState {
             }
             shepr_termio::input::KeybindAction::ToggleSidebar => {
                 self.chrome.toggle_collapsed();
-                self.reveal_navigation_workspace = true;
+                self.sidebar_scroll.reveal_selected_workspace();
                 // The retained surface stays on screen, clipped to the new pane area, until the
                 // endpoint answers the resize.
                 outcome.repaint = true;
@@ -58,11 +68,7 @@ impl ClientShellState {
                     return;
                 }
                 if action == shepr_termio::input::KeybindAction::Help {
-                    self.overlay = Some(ClientShellOverlay::Help(ClientHelpOverlay {
-                        query: TextEditor::default(),
-                        search_focused: false,
-                        scroll: 0,
-                    }));
+                    self.overlay = Some(Overlay::Help(HelpOverlay::default()));
                     outcome.repaint = true;
                     return;
                 }
@@ -120,14 +126,14 @@ impl ClientShellState {
                 }
                 if action == shepr_termio::input::KeybindAction::WorkspacePicker {
                     self.pending_workspace_highlight = None;
-                    self.mode = ClientShellMode::Navigate;
-                    self.navigate_workspace_id = self.focused_navigation_target();
-                    self.reveal_navigation_workspace = true;
+                    let preview = self.focused_navigation_target();
+                    self.mode.enter_navigate(preview);
+                    self.sidebar_scroll.reveal_selected_workspace();
                     outcome.repaint = true;
                     return;
                 }
                 if action == shepr_termio::input::KeybindAction::EnterResizeMode {
-                    self.mode = ClientShellMode::Resize;
+                    self.mode.set(ClientShellMode::Resize);
                     outcome.repaint = true;
                     return;
                 }
@@ -140,8 +146,19 @@ impl ClientShellState {
                 if self.handle_endpoint_navigation(action, outcome) {
                     return;
                 }
-                if let Some(command) = self.endpoint_command_for_action(action) {
+                if let Some(ActionCommand { command, reveal }) =
+                    self.endpoint_command_for_action(action)
+                {
                     self.push_endpoint_command(command, outcome);
+                    match reveal {
+                        Some(ActionReveal::Workspace(workspace_id)) => {
+                            self.request_workspace_reveal(&workspace_id);
+                        }
+                        Some(ActionReveal::Agent(location)) => {
+                            self.sidebar_scroll.reveal_agent(location);
+                        }
+                        None => {}
+                    }
                 }
             }
         }
@@ -156,17 +173,17 @@ impl ClientShellState {
         };
         let pane_id = selection.pane_id;
         let (anchor, cursor) = match selection.shape() {
-            shepr_term::selection::SelectionShape::Range => selection.ordered_cells(),
+            shepr_term::selection::SelectionShape::Range => selection.ordered_rows(),
             shepr_term::selection::SelectionShape::Lines => {
                 let (start, end) = selection.ordered_rows();
                 let width = self
-                    .hits
-                    .panes
+                    .presentation
+                    .pane_hits()
                     .iter()
                     .find(|hit| hit.pane_id == pane_id)
                     .map(|hit| hit.inner_rect.width)
                     .or_else(|| {
-                        self.copy_mode
+                        self.copy
                             .as_ref()
                             .filter(|copy_mode| copy_mode.pane_id == pane_id)
                             .map(|copy_mode| copy_mode.geometry.0)
@@ -175,19 +192,22 @@ impl ClientShellState {
                 let Some(width) = width else {
                     return;
                 };
-                ((start.row, 0), (end.row, width.saturating_sub(1)))
+                (
+                    shepr_term::Point::new(start.row, 0),
+                    shepr_term::Point::new(end.row, width.saturating_sub(1)),
+                )
             }
         };
         self.submit(
             EndpointCommand::PaneSelectionRead(shepr_protocol::command::PaneSelectionReadParams {
                 pane_id,
                 anchor: shepr_protocol::command::PaneTextPoint {
-                    row: anchor.0,
-                    col: anchor.1,
+                    row: anchor.row,
+                    col: anchor.col,
                 },
                 cursor: shepr_protocol::command::PaneTextPoint {
-                    row: cursor.0,
-                    col: cursor.1,
+                    row: cursor.row,
+                    col: cursor.col,
                 },
             }),
             Work::SelectionCopy,
@@ -205,8 +225,9 @@ impl ClientShellState {
         let boot_id = if kind == ClientEndpointNoticeKind::Unavailable {
             None
         } else {
-            self.snapshot
-                .as_deref()
+            self.endpoints
+                .active
+                .snapshot()
                 .map(|snapshot| snapshot.boot_id.clone())
         };
         self.push_endpoint_notice_at_boot(boot_id, kind, code, title, body)
@@ -318,34 +339,68 @@ impl ClientShellState {
 
     pub(crate) fn focus_endpoint_target(
         &mut self,
-        target: ClientEndpointFocusTarget,
+        target: LocationTarget,
     ) -> Vec<ClientShellAction> {
         let workspace_id = match &target {
-            ClientEndpointFocusTarget::Workspace(workspace_id) => Some(*workspace_id),
-            ClientEndpointFocusTarget::Pane(_) => None,
+            LocationTarget::Workspace(workspace_id) => Some(*workspace_id),
+            LocationTarget::Pane(_) | LocationTarget::Machine => None,
         };
         let command = match target {
-            ClientEndpointFocusTarget::Workspace(workspace_id) => {
+            LocationTarget::Workspace(workspace_id) => {
                 EndpointCommand::WorkspaceFocus(shepr_protocol::command::WorkspaceTarget {
                     workspace_id,
                 })
             }
-            ClientEndpointFocusTarget::Pane(pane_id) => {
+            LocationTarget::Pane(pane_id) => {
                 EndpointCommand::PaneFocus(shepr_protocol::command::PaneTarget { pane_id })
             }
+            // The endpoint itself has no navigation to carry out.
+            LocationTarget::Machine => return Vec::new(),
         };
         let mut outcome = ClientShellInput::default();
-        let request = self.submit(command, Work::Plain, &mut outcome);
-        if let (Some(workspace_id), Some(request)) = (workspace_id, request)
+        let highlight = self.ledger.ticket();
+        let submitted = self.submit(command, Work::Focus { highlight }, &mut outcome);
+        if let (Some(workspace_id), Submitted::Opened) = (workspace_id, submitted)
             && let Some(target) = self.navigation_target(self.endpoints.presented(), &workspace_id)
         {
-            self.keep_workspace_highlight_until_snapshot(target, &request, self.now);
+            self.keep_workspace_highlight_until_snapshot(target, highlight, self.now);
         }
         outcome.actions
     }
 
+    /// The command a keybinding sends the presented endpoint, with the sidebar reveal it
+    /// implies. The caller requests the reveal; nothing here touches scroll state.
     pub(in crate::shell) fn endpoint_command_for_action(
-        &mut self,
+        &self,
+        action: shepr_termio::input::KeybindAction,
+    ) -> Option<ActionCommand> {
+        use shepr_termio::input::KeybindAction;
+
+        let command = self.plain_command_for_action(action)?;
+        let reveal = match (&command, action) {
+            (
+                EndpointCommand::WorkspaceFocus(target),
+                KeybindAction::SwitchWorkspace(_)
+                | KeybindAction::PreviousWorkspace
+                | KeybindAction::NextWorkspace,
+            ) => Some(ActionReveal::Workspace(target.workspace_id)),
+            // Relative moves can land on a row scrolled out of the sidebar, so they ask
+            // for it to be brought into view (a no-op for a shown row); a numbered pick
+            // already names a shown one.
+            (
+                EndpointCommand::PaneFocus(target),
+                KeybindAction::PreviousAgent | KeybindAction::NextAgent,
+            ) => Some(ActionReveal::Agent(Location::pane(
+                self.endpoints.presented().clone(),
+                target.pane_id,
+            ))),
+            _ => None,
+        };
+        Some(ActionCommand { command, reveal })
+    }
+
+    fn plain_command_for_action(
+        &self,
         action: shepr_termio::input::KeybindAction,
     ) -> Option<EndpointCommand> {
         use shepr_protocol::command::{
@@ -354,7 +409,7 @@ impl ClientShellState {
         };
         use shepr_termio::input::KeybindAction;
 
-        let snapshot = self.snapshot.as_deref()?;
+        let snapshot = self.endpoints.active.snapshot()?;
         let focused_workspace = snapshot.focused_workspace_id.as_ref();
         let focused_pane = snapshot.focused_pane_id;
         let direction = |action| match action {
@@ -377,7 +432,7 @@ impl ClientShellState {
             KeybindAction::FocusAgent(_)
             | KeybindAction::PreviousAgent
             | KeybindAction::NextAgent => {
-                let agents = self.agent_panel_model.targets();
+                let agents = self.endpoints.agent_panel_model.targets();
                 let index = crate::shell::navigation::aggregate_navigation::agent_target_index(
                     agents,
                     self.endpoints.presented(),
@@ -388,27 +443,11 @@ impl ClientShellState {
                 if target.endpoint != *self.endpoints.presented() {
                     return None;
                 }
-                let target_endpoint_id = target.endpoint.clone();
                 let pane_id = target.pane_id()?;
-                // Relative moves can land on a row scrolled out of the sidebar;
-                // bring it into view, as a numbered pick already names a shown one.
-                if matches!(
-                    action,
-                    KeybindAction::PreviousAgent | KeybindAction::NextAgent
-                ) && !self
-                    .hits
-                    .agent_hits
-                    .iter()
-                    .any(|hit| hit.location.pane_id() == Some(pane_id))
-                {
-                    let body_height = self.hits.agent_body.height;
-                    self.reveal_endpoint_agent(&target_endpoint_id, &pane_id, body_height);
-                }
                 Some(EndpointCommand::PaneFocus(PaneTarget { pane_id }))
             }
             KeybindAction::SwitchWorkspace(index) => {
                 let workspace_id = snapshot.workspaces.get(index)?.workspace_id;
-                self.reveal_workspace(&workspace_id);
                 Some(EndpointCommand::WorkspaceFocus(WorkspaceTarget {
                     workspace_id,
                 }))
@@ -432,7 +471,6 @@ impl ClientShellState {
                     delta,
                 )?;
                 let workspace_id = workspaces[next].workspace_id;
-                self.reveal_workspace(&workspace_id);
                 Some(EndpointCommand::WorkspaceFocus(WorkspaceTarget {
                     workspace_id,
                 }))
@@ -497,7 +535,7 @@ impl ClientShellState {
                 }))
             }
             KeybindAction::LastPane => {
-                let pane_id = self.previous_pane_id.as_ref()?;
+                let pane_id = self.endpoints.active.previous_pane_id()?;
                 if Some(pane_id) == focused_pane.as_ref()
                     || !snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id)
                 {

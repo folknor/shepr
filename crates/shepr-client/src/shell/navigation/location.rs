@@ -1,29 +1,31 @@
 use crate::endpoint::ClientEndpointId;
-use crate::shell::endpoints::ClientEndpointFocusTarget;
 
-/// A shell destination always names the endpoint that owns it.
+/// What a shell destination names inside its endpoint. `Machine` is the endpoint itself:
+/// selecting it navigates nowhere.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::shell) enum LocationTarget {
+pub enum LocationTarget {
     Machine,
     Workspace(shepr_protocol::WorkspaceId),
     Pane(shepr_protocol::PublicPaneId),
 }
 
+/// A shell destination always names the endpoint that owns it. It is also the one value an
+/// endpoint pick carries to the endpoint hub and its choice.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::shell) struct Location {
-    pub(in crate::shell) endpoint: ClientEndpointId,
-    pub(in crate::shell) target: LocationTarget,
+pub struct Location {
+    pub endpoint: ClientEndpointId,
+    pub target: LocationTarget,
 }
 
 impl Location {
-    pub(in crate::shell) fn machine(endpoint: ClientEndpointId) -> Self {
+    pub fn machine(endpoint: ClientEndpointId) -> Self {
         Self {
             endpoint,
             target: LocationTarget::Machine,
         }
     }
 
-    pub(in crate::shell) fn workspace(
+    pub fn workspace(
         endpoint: ClientEndpointId,
         workspace_id: shepr_protocol::WorkspaceId,
     ) -> Self {
@@ -33,10 +35,7 @@ impl Location {
         }
     }
 
-    pub(in crate::shell) fn pane(
-        endpoint: ClientEndpointId,
-        pane_id: shepr_protocol::PublicPaneId,
-    ) -> Self {
+    pub fn pane(endpoint: ClientEndpointId, pane_id: shepr_protocol::PublicPaneId) -> Self {
         Self {
             endpoint,
             target: LocationTarget::Pane(pane_id),
@@ -56,24 +55,12 @@ impl Location {
             LocationTarget::Machine | LocationTarget::Workspace(_) => None,
         }
     }
-
-    /// The shell action carries this operand alongside `endpoint`, then the choice stores it
-    /// under that endpoint's move. Shell-facing destinations retain the complete Location.
-    pub(in crate::shell) fn focus_target(&self) -> Option<ClientEndpointFocusTarget> {
-        match self.target {
-            LocationTarget::Machine => None,
-            LocationTarget::Workspace(workspace_id) => {
-                Some(ClientEndpointFocusTarget::Workspace(workspace_id))
-            }
-            LocationTarget::Pane(pane_id) => Some(ClientEndpointFocusTarget::Pane(pane_id)),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::shell) struct SnapshotIdentity {
     boot_id: shepr_protocol::BootId,
-    generation: u64,
+    generation: shepr_protocol::ConnectionGeneration,
 }
 
 /// A location captured from one snapshot. It is valid only while both snapshot identity
@@ -88,7 +75,7 @@ impl PinnedLocation {
     pub(in crate::shell) fn new(
         location: Location,
         boot_id: shepr_protocol::BootId,
-        generation: u64,
+        generation: shepr_protocol::ConnectionGeneration,
     ) -> Self {
         Self {
             location,
@@ -111,7 +98,7 @@ impl PinnedLocation {
         &self.snapshot.boot_id
     }
 
-    pub(in crate::shell) fn generation(&self) -> u64 {
+    pub(in crate::shell) fn generation(&self) -> shepr_protocol::ConnectionGeneration {
         self.snapshot.generation
     }
 }

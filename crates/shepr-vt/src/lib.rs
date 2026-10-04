@@ -34,6 +34,9 @@
 
 mod cell;
 mod color;
+mod damage;
+mod effects;
+mod emulator;
 mod format;
 mod handler;
 mod history;
@@ -50,6 +53,7 @@ pub use format::AnsiCarry;
 // The terminal vocabulary the emulator speaks lives in `shepr-term`, so the
 // client can share it without linking the emulator; it is re-exported here so
 // emulator users name one crate.
+pub use shepr_term::mouse::PanePixelMouse;
 pub use shepr_term::width::{
     is_halfwidth_katakana_voiced_grapheme, is_halfwidth_katakana_voiced_mark,
     unicode_codepoint_width, unicode_display_units, unicode_text_width,
@@ -66,33 +70,30 @@ pub const PANE_TERM: &str = "xterm-256color";
 pub const PANE_COLORTERM: &str = "truecolor";
 
 pub use color::ColorQuery;
+pub use effects::{PtyResponse, TerminalEffects, TitleUpdate};
 pub use render::{CursorVisualStyle, Dirty, RenderState};
-pub use scan::{ProgressReport, WorkingDirectoryReport};
+pub use scan::{Progress, ProgressState, WorkingDirectoryReport};
 
-use shepr_core::locks::lock_auxiliary;
-
-use std::cell::Cell as ClockCell;
 use std::fmt;
 use std::mem;
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use alacritty_terminal::event::{Event, EventListener};
 use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
-use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
-use vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb, Timeout};
+use alacritty_terminal::term::{Config, Osc52, Term, TermMode};
+use vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb};
 
+use self::color::HostDefaults;
+use self::damage::Damage;
+use self::effects::{Effects, Listener};
+use self::emulator::{Emulator, SyncUpdateTimeout};
 use self::format::Format;
-use self::handler::{CoreHandler, KeyboardStackDepth};
+use self::handler::CoreHandler;
 use self::history::HistoryCapacity;
 use self::rows::RowOrigin;
 use self::scan::{ScanEvent, Scanner};
-use crate::limits::{
-    MAX_CLIPBOARD_BYTES, MAX_SCROLLBACK_LINES, MIN_SCROLLBACK_CELL_BYTES, MIN_SCROLLBACK_COLUMNS,
-    MIN_SCROLLBACK_LINES,
-};
+use shepr_core::scrollback::ScrollbackBudget;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadError {
@@ -147,7 +148,7 @@ pub struct InputModes {
     focus_reporting: bool,
     mouse_protocol: Option<MouseProtocol>,
     /// Mode 1016 may be enabled before mouse tracking itself is enabled.
-    sgr_pixel_mouse: bool,
+    pixel_mouse: PanePixelMouse,
     mouse_alternate_scroll: bool,
     kitty_keyboard_flags: KittyKeyboardFlags,
     modify_other_keys: ModifyOtherKeysLevel,
@@ -175,8 +176,8 @@ impl InputModes {
         self.mouse_protocol
     }
 
-    pub const fn sgr_pixel_mouse_enabled(self) -> bool {
-        self.sgr_pixel_mouse
+    pub const fn pixel_mouse(self) -> PanePixelMouse {
+        self.pixel_mouse
     }
 
     pub const fn mouse_alternate_scroll_enabled(self) -> bool {
@@ -215,24 +216,6 @@ pub enum ScrollTowards {
     Newer(usize),
 }
 
-/// A reply the terminal wants written back to the child, in byte order.
-#[derive(Debug)]
-pub enum PtyResponse {
-    Bytes(Vec<u8>),
-    ColorQuery(ColorQuery),
-}
-
-fn scrollback_lines(max_scrollback_bytes: usize, columns: usize) -> usize {
-    if max_scrollback_bytes == 0 {
-        return 0;
-    }
-    let bytes_per_line = columns
-        .max(MIN_SCROLLBACK_COLUMNS)
-        .saturating_mul(mem::size_of::<Cell>())
-        .max(MIN_SCROLLBACK_CELL_BYTES);
-    (max_scrollback_bytes / bytes_per_line).clamp(MIN_SCROLLBACK_LINES, MAX_SCROLLBACK_LINES)
-}
-
 fn term_config(scrolling_history: usize) -> Config {
     Config {
         scrolling_history,
@@ -261,81 +244,6 @@ impl Dimensions for TermSize {
     }
 }
 
-/// Events retained by the adapter, in emission order.
-enum TerminalEvent {
-    PtyWrite(Vec<u8>),
-    ColorQuery(ColorQuery),
-    ClipboardStore(ClipboardType, String),
-    Title(String),
-    ResetTitle,
-}
-
-/// Collects the alacritty events the adapter acts on, in emission order.
-/// Bells are not among them: nothing in shepr surfaces a bell.
-#[derive(Clone)]
-struct Listener(Arc<Mutex<Vec<TerminalEvent>>>);
-
-impl EventListener for Listener {
-    fn send_event(&self, event: Event) {
-        let event = match event {
-            Event::PtyWrite(text) => Some(TerminalEvent::PtyWrite(text.into_bytes())),
-            Event::ClipboardStore(clipboard, text) => {
-                Some(TerminalEvent::ClipboardStore(clipboard, text))
-            }
-            Event::Title(title) => Some(TerminalEvent::Title(title)),
-            Event::ResetTitle => Some(TerminalEvent::ResetTitle),
-            _ => None,
-        };
-        if let Some(event) = event {
-            crate::lock_auxiliary(&self.0).push(event);
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ExtraModes {
-    x10_mouse: bool,
-    sgr_pixels_mouse: bool,
-    color_scheme_report: bool,
-    in_band_resize: bool,
-    /// xterm modifyOtherKeys level.
-    modify_other_keys: ModifyOtherKeysLevel,
-    /// The child chose a cursor shape (DECSCUSR 1-6 or OSC 50) and has not
-    /// asked for the default back (DECSCUSR 0, RIS).
-    cursor_shape_set: bool,
-    /// Between vte's BSU and ESU (or timeout) as the handler sees them, which
-    /// inside a buffered frame is replay order. Only DECRQM ?2026 reads it;
-    /// [`Terminal::mode_get`] asks the parser.
-    synchronized_update: bool,
-}
-
-/// A parsed title event; absence of an event is represented by `None` at the
-/// collection boundary.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TitleUpdate {
-    Set(String),
-    Reset,
-}
-
-/// Effects collected from the terminal since its previous effect drain.
-#[must_use = "terminal effects must be handled or explicitly discarded"]
-pub struct TerminalEffects {
-    /// Replies to write to the child in parser order.
-    pub pty_responses: Vec<PtyResponse>,
-    /// Working-directory reports observed in child output.
-    pub pwd_changes: Vec<WorkingDirectoryReport>,
-    /// Clipboard stores requested by the child.
-    pub clipboard_writes: Vec<Vec<u8>>,
-    /// Sizes of clipboard stores dropped for exceeding the configured limit.
-    pub dropped_clipboard_store_bytes: Vec<usize>,
-    /// The latest uncollected window-title change.
-    pub title_update: Option<TitleUpdate>,
-    /// The latest uncollected OSC 9;4 progress report.
-    pub progress_update: Option<ProgressReport>,
-    /// Whether the child set a default foreground or background since the drain.
-    pub default_color_set: bool,
-}
-
 /// Result of a host-requested clear operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClearScreenOutcome {
@@ -343,70 +251,24 @@ pub enum ClearScreenOutcome {
     AlternateScreenActive,
 }
 
+/// The terminal, as parts with one concern each. Parser-driven mutation
+/// borrows the parts it needs side by side (`with_handler`).
 pub struct Terminal {
-    term: Term<Listener>,
-    parser: Processor<SyncUpdateTimeout>,
-    /// Mirror of alacritty's keyboard-mode stack depths; the parser must only
-    /// ever drive `term` through a [`CoreHandler`] so it stays exact.
-    keyboard_depth: KeyboardStackDepth,
-    events: Arc<Mutex<Vec<TerminalEvent>>>,
+    /// `Term`, its parser and the adapter state that tracks both.
+    emu: Emulator,
+    /// Scans the sequences vte never dispatches (`scan.rs`).
     scanner: Scanner,
-    max_scrollback: usize,
-    /// History capacity in lines. It grows with the resize budget, decreases
-    /// only after a primary-screen width change (never below the content held)
-    /// or an explicit primary-history purge, and never on a height change.
-    history_lines: usize,
-    default_palette: [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT],
-    cell: Option<shepr_core::geometry::CellPx>,
-    modes: ExtraModes,
-    color_scheme: Option<ColorScheme>,
-    /// The host's default foreground/background. They sit under the child's
-    /// OSC 10/11 overrides (alacritty's `colors` slots) and over the built-in
-    /// defaults, so host theme changes never go through the child's parser.
-    host_foreground: Option<RgbColor>,
-    host_background: Option<RgbColor>,
-    responses: Vec<PtyResponse>,
-    pwd_changes: Vec<WorkingDirectoryReport>,
-    clipboard_writes: Vec<Vec<u8>>,
-    dropped_clipboard_store_bytes: Vec<usize>,
-    /// The latest title change not yet collected.
-    title_update: Option<TitleUpdate>,
-    /// The latest OSC 9;4 progress payload (after `9;`) not yet collected.
-    progress_update: Option<ProgressReport>,
-    /// The child set the default foreground or background since the last
-    /// [`Terminal::take_effects`].
-    default_color_set: bool,
-    /// Monotonic damage counter; [`RenderState`] remembers the last value it saw.
-    damage_generation: u64,
-    /// Generation of the most recent whole-viewport damage.
-    full_damage_generation: u64,
-    /// Per viewport row: generation of the most recent damage to that row.
-    row_damage_generations: Vec<u64>,
+    /// The history line capacity and the byte budget behind it.
+    history: HistoryCapacity,
     /// Absolute row accounting (`rows.rs`): lines evicted from the top of
     /// the primary screen, so `origin + screen row` never shifts.
     rows: RowOrigin,
-}
-
-/// VTE calls `set_timeout` while parsing BSU, but its default handler reads
-/// the process clock there. The caller sets `now` before each parser advance;
-/// `Processor::sync_timeout` exposes only a shared reference, so the adapter
-/// uses cells for the caller's clock and VTE's timeout state. The deadline is
-/// the authority for both runtime expiry and VTE buffering, so a deadline
-/// that cannot be represented never leaves output buffered without an expiry.
-#[derive(Debug, Default)]
-struct SyncUpdateTimeout {
-    now: ClockCell<Option<Instant>>,
-    deadline: ClockCell<Option<Instant>>,
-}
-
-impl SyncUpdateTimeout {
-    fn set_now(&self, now: Instant) {
-        self.now.set(Some(now));
-    }
-
-    fn deadline(&self) -> Option<Instant> {
-        self.deadline.get()
-    }
+    /// The host's palette, default colours, cell pitch and colour scheme.
+    host: HostDefaults,
+    /// The effects outbox the pane collects.
+    effects: Effects,
+    /// Generation counters [`RenderState`] reads.
+    damage: Damage,
 }
 
 /// The one rule for selecting the active alacritty grid.
@@ -414,71 +276,36 @@ fn primary_screen_active<T>(term: &Term<T>) -> bool {
     !term.mode().contains(TermMode::ALT_SCREEN)
 }
 
-impl Timeout for SyncUpdateTimeout {
-    fn set_timeout(&mut self, duration: std::time::Duration) {
-        // Every parser advance sets `now` first, so the clock read is only a
-        // guard: a buffering frame always gets a deadline.
-        // clock-io-ok: unreachable while `advance` sets the caller's clock.
-        let now = self.now.get().unwrap_or_else(Instant::now);
-        // A duration past the clock's range expires the frame at once rather
-        // than leaving output buffered with no deadline.
-        self.deadline
-            .set(Some(now.checked_add(duration).unwrap_or(now)));
-    }
-
-    fn clear_timeout(&mut self) {
-        self.deadline.set(None);
-    }
-
-    fn pending_timeout(&self) -> bool {
-        self.deadline.get().is_some()
-    }
-}
-
 impl Terminal {
-    pub fn new(cols: u16, rows: u16, max_scrollback: usize) -> Self {
-        let grid = shepr_core::geometry::GridSize::clamped_pane(cols, rows);
-        let columns = usize::from(grid.cols.get());
-        let screen_lines = usize::from(grid.rows.get());
-        let history_lines = scrollback_lines(max_scrollback, columns);
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let mut term = Term::new(
-            term_config(history_lines),
-            &TermSize {
-                columns,
-                screen_lines,
-            },
-            Listener(Arc::clone(&events)),
+    pub fn new(geometry: shepr_core::geometry::PaneGeometry, scrollback: ScrollbackBudget) -> Self {
+        let columns = usize::from(geometry.cols());
+        let screen_lines = usize::from(geometry.rows());
+        let history = HistoryCapacity::new(scrollback, columns);
+        let effects = Effects::new();
+        let emu = Emulator::new(
+            history.lines().get(),
+            columns,
+            screen_lines,
+            effects.listener(),
         );
-        // alacritty starts fully damaged; our own generation counters already
-        // start "full", so begin alacritty's tracking from a clean slate.
-        term.reset_damage();
+        let mut host = HostDefaults::new();
+        host.set_cell(geometry.cell());
         Self {
-            term,
-            parser: Processor::new(),
-            keyboard_depth: KeyboardStackDepth::default(),
-            events,
+            emu,
             scanner: Scanner::default(),
-            max_scrollback,
-            history_lines,
-            default_palette: default_palette(),
-            cell: None,
-            modes: ExtraModes::default(),
-            color_scheme: None,
-            host_foreground: None,
-            host_background: None,
-            responses: Vec::new(),
-            pwd_changes: Vec::new(),
-            clipboard_writes: Vec::new(),
-            dropped_clipboard_store_bytes: Vec::new(),
-            title_update: None,
-            progress_update: None,
-            default_color_set: false,
-            damage_generation: 1,
-            full_damage_generation: 1,
-            row_damage_generations: vec![0; screen_lines],
+            history,
             rows: RowOrigin::default(),
+            host,
+            effects,
+            damage: Damage::new(screen_lines),
         }
+    }
+
+    /// Turns the collection of complete OSC bodies on or off. While on,
+    /// [`TerminalEffects::osc_bodies`] carries every OSC the terminal saw,
+    /// framed the way the parser framed it. Off by default.
+    pub fn set_osc_body_capture(&mut self, capture: bool) {
+        self.scanner.set_capture_osc_bodies(capture);
     }
 
     /// Feed child output into the terminal. Replies are queued in byte order
@@ -540,7 +367,7 @@ impl Terminal {
     }
 
     fn advance(&mut self, bytes: &[u8], now: Instant) {
-        self.parser.sync_timeout().set_now(now);
+        self.emu.set_clock(now);
         self.with_handler(|handler, parser| parser.advance(handler, bytes));
     }
 
@@ -552,21 +379,20 @@ impl Terminal {
         operation: impl FnOnce(&mut CoreHandler<'_, Listener>, &mut Processor<SyncUpdateTimeout>) -> R,
     ) -> R {
         let Self {
+            emu,
+            history,
+            rows,
+            host,
+            effects,
+            damage,
+            ..
+        } = self;
+        let Emulator {
             term,
             parser,
             keyboard_depth,
             modes,
-            cell,
-            events,
-            default_color_set,
-            rows,
-            history_lines,
-            max_scrollback,
-            default_palette,
-            host_foreground,
-            host_background,
-            ..
-        } = self;
+        } = emu;
 
         rows.begin(term);
         let result = {
@@ -574,27 +400,22 @@ impl Terminal {
                 term,
                 keyboard_depth,
                 modes,
-                cell: *cell,
-                events,
-                default_color_set,
+                host,
+                effects,
                 rows,
-                history_limit: history_lines,
-                max_scrollback: *max_scrollback,
-                default_palette,
-                host_foreground: *host_foreground,
-                host_background: *host_background,
+                history,
             };
             operation(&mut handler, parser)
         };
-        rows.finish(term, *history_lines);
-        self.drain_events();
-        self.collect_damage();
+        rows.finish(term, history.lines());
+        effects.drain();
+        damage.collect(term);
         result
     }
 
     /// The xterm modifyOtherKeys level the child selected (0, 1 or 2).
     pub fn modify_other_keys_level(&self) -> ModifyOtherKeysLevel {
-        self.modes.modify_other_keys
+        self.emu.modes.modify_other_keys
     }
 
     /// Ends a synchronized update (mode 2026) whose timeout has passed so its
@@ -614,42 +435,39 @@ impl Terminal {
         // vte arms this deadline on BSU; ending the frame also applies its mode
         // transition when the buffered content made no visible changes.
         let expired = self
-            .parser
-            .sync_timeout()
-            .deadline()
+            .emu
+            .sync_deadline()
             .is_some_and(|deadline| now >= deadline);
         if expired {
-            self.parser.sync_timeout().set_now(now);
+            self.emu.set_clock(now);
             self.with_handler(|handler, parser| parser.stop_sync(handler));
         }
         expired
     }
 
+    /// Whether the parser is buffering a synchronized update (BSU seen, ESU or
+    /// timeout not yet): the screen is not drawable. This is the parser's
+    /// deadline, which `mode_get(DecMode::SynchronizedOutput)` answers from; it
+    /// is not the replay-order flag DECRQM ?2026 reads
+    /// (`ExtraModes::sync_update_in_replay`), which differs inside a buffered
+    /// frame.
+    pub fn sync_update_buffering(&self) -> bool {
+        self.emu.sync_deadline().is_some()
+    }
+
     /// When the pending synchronized update will be force-ended, if one is active.
     pub fn synchronized_output_deadline(&self) -> Option<Instant> {
-        self.parser.sync_timeout().deadline()
+        self.emu.sync_deadline()
     }
 
     pub fn take_pty_responses(&mut self) -> Vec<PtyResponse> {
-        mem::take(&mut self.responses)
+        self.effects.take_responses()
     }
 
     /// Collect every queued effect at one boundary. The returned value can be
     /// dropped when the caller intentionally discards all effects.
     pub fn take_effects(&mut self) -> TerminalEffects {
-        TerminalEffects {
-            pty_responses: mem::take(&mut self.responses),
-            pwd_changes: mem::take(&mut self.pwd_changes),
-            clipboard_writes: mem::take(&mut self.clipboard_writes),
-            dropped_clipboard_store_bytes: mem::take(&mut self.dropped_clipboard_store_bytes),
-            title_update: self.title_update.take(),
-            progress_update: self.progress_update.take(),
-            default_color_set: mem::take(&mut self.default_color_set),
-        }
-    }
-
-    fn push_bytes(&mut self, bytes: Vec<u8>) {
-        self.responses.push(PtyResponse::Bytes(bytes));
+        self.effects.take()
     }
 
     fn apply_scan_event(&mut self, event: ScanEvent, now: Instant) {
@@ -657,25 +475,30 @@ impl Terminal {
             // `write_at` consumes these boundaries while slicing parser input.
             ScanEvent::AbortOversizedOsc | ScanEvent::ResumeAfterOversizedOsc => {}
             ScanEvent::ColorSchemeQuery => {
-                if let Some(scheme) = self.color_scheme {
-                    self.push_bytes(scheme.report().to_vec());
+                if let Some(scheme) = self.host.color_scheme() {
+                    self.effects.push_bytes(scheme.report().to_vec());
                 }
             }
             ScanEvent::CellSizeQuery => {
-                if let Some(cell) = self.cell {
-                    let reply = format!("\x1b[6;{};{}t", cell.height, cell.width);
-                    self.push_bytes(reply.into_bytes());
+                // The pitch of the extent the child was told, so its cell
+                // size times its grid matches that extent even when the
+                // extent was clamped.
+                if let Some(extent) = self.pixel_extent() {
+                    let (cell_width, cell_height) = extent.cell_pitch();
+                    let reply = format!("\x1b[6;{cell_height};{cell_width}t");
+                    self.effects.push_bytes(reply.into_bytes());
                 }
             }
             ScanEvent::Xtgettcap(replies) => {
                 for reply in replies {
-                    self.push_bytes(reply);
+                    self.effects.push_bytes(reply);
                 }
             }
             // Working-directory and progress payloads describe live child
             // state, not parser state, so publish them as bytes arrive.
-            ScanEvent::WorkingDirectory(payload) => self.pwd_changes.push(payload),
-            ScanEvent::Progress(payload) => self.progress_update = Some(payload),
+            ScanEvent::WorkingDirectory(payload) => self.effects.push_working_directory(payload),
+            ScanEvent::Progress(progress) => self.effects.set_progress(progress),
+            ScanEvent::OscBody(body) => self.effects.push_osc_body(body),
             // The parser has just consumed (and ignored) `CSI ? 3 J`; feed the
             // ED3 spelling it does dispatch. Going through the parser keeps
             // the erase in byte order even inside a synchronized update.
@@ -691,51 +514,18 @@ impl Terminal {
 
     fn push_in_band_size_report(&mut self) {
         if let Some(report) = handler::in_band_size_report(self.current_geometry()) {
-            self.push_bytes(report.into_bytes());
+            self.effects.push_bytes(report.into_bytes());
         }
     }
 
     fn current_geometry(&self) -> shepr_core::geometry::PaneGeometry {
-        handler::geometry_for_terminal(self.term.columns(), self.term.screen_lines(), self.cell)
-    }
-
-    fn drain_events(&mut self) {
-        let events = {
-            let mut queue = crate::lock_auxiliary(&self.events);
-            mem::take(&mut *queue)
-        };
-        for event in events {
-            match event {
-                TerminalEvent::PtyWrite(bytes) => self.push_bytes(bytes),
-                TerminalEvent::ColorQuery(query) => {
-                    self.responses.push(PtyResponse::ColorQuery(query));
-                }
-                // Clipboard effects carry only non-empty clipboard-target
-                // payloads; empty and selection-target stores are ignored.
-                TerminalEvent::ClipboardStore(ClipboardType::Clipboard, text)
-                    if !text.is_empty() && text.len() <= MAX_CLIPBOARD_BYTES =>
-                {
-                    self.clipboard_writes.push(text.into_bytes());
-                }
-                TerminalEvent::ClipboardStore(ClipboardType::Clipboard, text)
-                    if text.len() > MAX_CLIPBOARD_BYTES =>
-                {
-                    // `text` is already decoded valid UTF-8, so `len()` is
-                    // the decoded OSC 52 store size in bytes. Keep only that
-                    // count for the pane's diagnostic; never retain the text.
-                    self.dropped_clipboard_store_bytes.push(text.len());
-                }
-                TerminalEvent::Title(title) => self.title_update = Some(TitleUpdate::Set(title)),
-                TerminalEvent::ResetTitle => self.title_update = Some(TitleUpdate::Reset),
-                _ => {}
-            }
-        }
+        self.host.geometry(&self.emu.term)
     }
 
     /// Whether the child chose a cursor shape (DECSCUSR 1-6 or OSC 50) that
     /// is still in effect.
     pub fn cursor_shape_overridden(&self) -> bool {
-        self.modes.cursor_shape_set
+        self.emu.modes.cursor_shape_set
     }
 
     pub fn resize(&mut self, geometry: shepr_core::geometry::PaneGeometry) {
@@ -744,9 +534,9 @@ impl Terminal {
         let cell = geometry.cell();
         let columns = usize::from(cols);
         let screen_lines = usize::from(rows);
-        let columns_changed = columns != self.term.columns();
-        let lines_changed = screen_lines != self.term.screen_lines();
-        let geometry_changed = columns_changed || lines_changed || cell != self.cell;
+        let columns_changed = columns != self.emu.term.columns();
+        let lines_changed = screen_lines != self.emu.term.screen_lines();
+        let geometry_changed = columns_changed || lines_changed || cell != self.host.cell();
 
         // A column change re-wraps every line, so no earlier row id may keep
         // naming one. So does any reflow of the primary screen while the
@@ -754,26 +544,27 @@ impl Terminal {
         // A height change on the primary screen only moves lines between
         // screen and history (evicting at the history limit), which the
         // tracker follows.
-        let alternate = !primary_screen_active(&self.term);
+        let alternate = !primary_screen_active(&self.emu.term);
         let rewraps = columns_changed || (alternate && lines_changed);
         if rewraps {
-            self.rows.invalidate_primary(&self.term);
+            self.rows.invalidate_primary(&self.emu.term);
         } else {
-            self.rows.begin(&self.term);
+            self.rows.begin(&self.emu.term);
             // A shorter screen pushes its top lines into history.
             self.rows
-                .count_pushed(self.term.screen_lines().saturating_sub(screen_lines));
+                .count_pushed(self.emu.term.screen_lines().saturating_sub(screen_lines));
         }
 
         // Grow capacity before reflow. A height change never lowers it:
         // growing the height pulls history onto the screen, and a capacity
         // floor at the shrunken history would leave no room to put those
         // lines back on the next shrink, recycling the oldest retained rows.
-        let budget_lines = scrollback_lines(self.max_scrollback, columns);
-        if budget_lines > self.history_lines {
-            self.set_history_lines(budget_lines);
+        let budget_lines = self.history.budget_lines(columns);
+        if budget_lines > self.history.lines() {
+            self.history
+                .set(&mut self.emu.term, &self.effects, budget_lines);
         }
-        self.term.resize(TermSize {
+        self.emu.term.resize(TermSize {
             columns,
             screen_lines,
         });
@@ -789,39 +580,30 @@ impl Terminal {
         // the capacity is left alone there.
         if columns_changed && !alternate {
             let held = self
+                .emu
                 .term
                 .history_size()
-                .saturating_add(self.term.screen_lines());
-            let settled = budget_lines.max(held).min(self.history_lines);
-            if settled < self.history_lines {
-                self.set_history_lines(settled);
+                .saturating_add(self.emu.term.screen_lines());
+            let settled = budget_lines.at_least(held).min(self.history.lines());
+            if settled < self.history.lines() {
+                self.history.set(&mut self.emu.term, &self.effects, settled);
             }
         }
         if rewraps {
-            self.rows.observe(&self.term);
+            self.rows.observe(&self.emu.term);
         } else {
-            self.rows.finish(&self.term, self.history_lines);
+            self.rows.finish(&self.emu.term, self.history.lines());
         }
-        self.cell = cell;
-        self.drain_events();
-        self.collect_damage();
-        if geometry_changed && self.modes.in_band_resize {
+        self.host.set_cell(cell);
+        self.effects.drain();
+        self.damage.collect(&mut self.emu.term);
+        if geometry_changed && self.emu.modes.in_band_resize {
             self.push_in_band_size_report();
         }
     }
 
-    fn set_history_lines(&mut self, history_lines: usize) {
-        HistoryCapacity::new(
-            &mut self.term,
-            &self.events,
-            &mut self.history_lines,
-            self.max_scrollback,
-        )
-        .set(history_lines);
-    }
-
     pub fn set_color_scheme(&mut self, color_scheme: Option<ColorScheme>) -> Option<ColorScheme> {
-        mem::replace(&mut self.color_scheme, color_scheme)
+        self.host.replace_color_scheme(color_scheme)
     }
 
     /// The live value of a DEC private mode; `false` when the table in
@@ -830,19 +612,19 @@ impl Terminal {
         let spec = modes::lookup(mode);
         match spec.get {
             modes::Getter::Term(flag) if flag == TermMode::ALT_SCREEN => {
-                !primary_screen_active(&self.term)
+                !primary_screen_active(&self.emu.term)
             }
-            modes::Getter::Term(flag) => self.term.mode().contains(flag),
-            modes::Getter::CursorBlink => self.term.cursor_style().blinking,
-            modes::Getter::Extra(extra) => extra.get(&self.modes),
-            modes::Getter::SynchronizedOutput => self.synchronized_output_deadline().is_some(),
+            modes::Getter::Term(flag) => self.emu.term.mode().contains(flag),
+            modes::Getter::CursorBlink => self.emu.term.cursor_style().blinking,
+            modes::Getter::Extra(extra) => extra.get(&self.emu.modes),
+            modes::Getter::SyncUpdateBuffering => self.sync_update_buffering(),
             modes::Getter::Unsupported => false,
         }
     }
 
     /// Active kitty keyboard flags (bit 0 disambiguate through bit 4 associated text).
     pub fn kitty_keyboard_flags(&self) -> KittyKeyboardFlags {
-        let mode = *self.term.mode();
+        let mode = *self.emu.term.mode();
         let mut flags = KittyKeyboardFlags::NONE;
         for (term_mode, flag) in [
             (
@@ -874,13 +656,13 @@ impl Terminal {
     }
 
     pub fn mouse_tracking_enabled(&self) -> bool {
-        self.mouse_tracking_mode(*self.term.mode()).is_some()
+        self.mouse_tracking_mode(*self.emu.term.mode()).is_some()
     }
 
     /// The tracking and coordinate protocol the child selected, with the
     /// same precedence used by every pane input path.
     pub fn mouse_protocol(&self) -> Option<MouseProtocol> {
-        self.mouse_protocol_for_terminal_mode(*self.term.mode())
+        self.mouse_protocol_for_terminal_mode(*self.emu.term.mode())
     }
 
     fn mouse_tracking_mode(&self, terminal_mode: TermMode) -> Option<MouseProtocolMode> {
@@ -890,7 +672,7 @@ impl Terminal {
             Some(MouseProtocolMode::ButtonMotion)
         } else if terminal_mode.contains(TermMode::MOUSE_REPORT_CLICK) {
             Some(MouseProtocolMode::PressRelease)
-        } else if self.modes.x10_mouse {
+        } else if self.emu.modes.x10_mouse {
             Some(MouseProtocolMode::Press)
         } else {
             None
@@ -906,33 +688,38 @@ impl Terminal {
         } else {
             MouseEncoding::Default
         };
-        Some(MouseProtocol {
-            mode,
-            encoding,
-            pixels_requested: self.modes.sgr_pixels_mouse,
-        })
+        Some(MouseProtocol { mode, encoding })
+    }
+
+    /// Whether the child set mode 1016 and the extent it was told. The one
+    /// reader of the 1016 bit for everything outside the parser.
+    pub fn pixel_mouse(&self) -> PanePixelMouse {
+        PanePixelMouse::new(
+            self.emu.modes.sgr_pixels_mouse,
+            self.current_geometry().pixel_extent(),
+        )
     }
 
     /// Capture every mode needed to route and encode one pane input event.
     /// Pane wrappers call this while holding the shared core lock.
     pub fn input_modes(&self) -> InputModes {
-        let terminal_mode = *self.term.mode();
+        let terminal_mode = *self.emu.term.mode();
         InputModes {
             alternate_screen: self.active_screen() == ActiveScreen::Alternate,
             application_cursor_keys: terminal_mode.contains(TermMode::APP_CURSOR),
             bracketed_paste: terminal_mode.contains(TermMode::BRACKETED_PASTE),
             focus_reporting: terminal_mode.contains(TermMode::FOCUS_IN_OUT),
             mouse_protocol: self.mouse_protocol_for_terminal_mode(terminal_mode),
-            sgr_pixel_mouse: self.modes.sgr_pixels_mouse,
+            pixel_mouse: self.pixel_mouse(),
             mouse_alternate_scroll: terminal_mode.contains(TermMode::ALTERNATE_SCROLL),
             kitty_keyboard_flags: self.kitty_keyboard_flags(),
             modify_other_keys: self.modify_other_keys_level(),
-            color_scheme_reporting: self.modes.color_scheme_report,
+            color_scheme_reporting: self.emu.modes.color_scheme_report,
         }
     }
 
     pub fn active_screen(&self) -> ActiveScreen {
-        if primary_screen_active(&self.term) {
+        if primary_screen_active(&self.emu.term) {
             ActiveScreen::Primary
         } else {
             ActiveScreen::Alternate
@@ -940,21 +727,21 @@ impl Terminal {
     }
 
     pub fn total_rows(&self) -> usize {
-        self.term.total_lines()
+        self.emu.term.total_lines()
     }
 
     pub fn scrollbar(&self) -> ScrollMetrics {
         ScrollMetrics::new(
-            self.term.grid().display_offset(),
-            self.term.history_size(),
-            self.term.screen_lines(),
+            self.emu.term.grid().display_offset(),
+            self.emu.term.history_size(),
+            self.emu.term.screen_lines(),
             self.history_origin(),
         )
     }
 
     pub fn set_scroll_offset_from_bottom(&mut self, offset: usize) {
-        let offset = offset.min(self.term.history_size());
-        self.scroll_viewport_row(ScreenRow(self.term.history_size() - offset));
+        let offset = offset.min(self.emu.term.history_size());
+        self.scroll_viewport_row(ScreenRow(self.emu.term.history_size() - offset));
     }
 
     /// The absolute row id of screen row 0, the oldest retained line.
@@ -981,7 +768,7 @@ impl Terminal {
     /// longer (or not yet) retained.
     pub fn screen_row_for_absolute(&self, row: AbsRow) -> Option<ScreenRow> {
         let y = usize::try_from(row.0.checked_sub(self.rows.origin())?).ok()?;
-        (y < self.term.total_lines()).then_some(ScreenRow(y))
+        (y < self.emu.term.total_lines()).then_some(ScreenRow(y))
     }
 
     /// The absolute row id of screen row `y`.
@@ -999,13 +786,13 @@ impl Terminal {
     /// `AlternateScreenActive` while the alternate screen is active: the full-screen app owns
     /// that screen, and the primary history must survive until it exits.
     pub fn clear_screen(&mut self) -> ClearScreenOutcome {
-        if !primary_screen_active(&self.term) {
+        if !primary_screen_active(&self.emu.term) {
             return ClearScreenOutcome::AlternateScreenActive;
         }
-        let screen_lines = self.term.screen_lines();
-        let last_column = self.term.last_column();
-        let history = self.term.history_size();
-        let grid = self.term.grid_mut();
+        let screen_lines = self.emu.term.screen_lines();
+        let last_column = self.emu.term.last_column();
+        let history = self.emu.term.history_size();
+        let grid = self.emu.term.grid_mut();
         // This is a host action, not the child's erase, so vacated rows are
         // blank in default colours rather than filled with the child's current
         // pen (`scroll_up` and `reset_region` fill from the cursor template).
@@ -1046,29 +833,20 @@ impl Terminal {
         // Everything above the kept line is gone: the history and the
         // `shift` screen rows the kept line moved up over.
         self.rows.evict(history.saturating_add(shift));
-        self.restore_scrollback_budget_after_history_purge();
-        self.bump_full_damage();
+        self.history
+            .restore_after_purge(&mut self.emu.term, &self.effects);
+        self.damage.bump_full();
         ClearScreenOutcome::Cleared
     }
 
-    fn restore_scrollback_budget_after_history_purge(&mut self) {
-        HistoryCapacity::new(
-            &mut self.term,
-            &self.events,
-            &mut self.history_lines,
-            self.max_scrollback,
-        )
-        .restore_after_history_purge();
-    }
-
     pub fn scroll_viewport_bottom(&mut self) {
-        self.term.scroll_display(Scroll::Bottom);
-        self.collect_damage();
+        self.emu.term.scroll_display(Scroll::Bottom);
+        self.damage.collect(&mut self.emu.term);
     }
 
     /// Scroll the user-visible viewport without signed caller conventions.
     pub fn scroll_viewport_delta(&mut self, towards: ScrollTowards) {
-        let current = self.term.grid().display_offset();
+        let current = self.emu.term.grid().display_offset();
         let target = match towards {
             ScrollTowards::Older(rows) => current.saturating_add(rows),
             ScrollTowards::Newer(rows) => current.saturating_sub(rows),
@@ -1079,9 +857,9 @@ impl Terminal {
     /// Scrolls so the viewport's top row is screen row `row` (0 = oldest),
     /// clamped to the available history.
     pub fn scroll_viewport_row(&mut self, row: ScreenRow) {
-        let history = self.term.history_size();
+        let history = self.emu.term.history_size();
         let target_offset = history - row.0.min(history);
-        let current = self.term.grid().display_offset();
+        let current = self.emu.term.grid().display_offset();
         let target_offset_i64 = i64::try_from(target_offset).unwrap_or(i64::MAX);
         let current_i64 = i64::try_from(current).unwrap_or(i64::MAX);
         // row.min(history) keeps the first subtraction nonnegative. These
@@ -1092,39 +870,35 @@ impl Terminal {
         )
         .unwrap_or(i32::MAX);
         if delta != 0 {
-            self.term.scroll_display(Scroll::Delta(delta));
-            self.collect_damage();
+            self.emu.term.scroll_display(Scroll::Delta(delta));
+            self.damage.collect(&mut self.emu.term);
         }
     }
 
     pub fn cols(&self) -> u16 {
-        saturating_u16(self.term.columns())
+        saturating_u16(self.emu.term.columns())
     }
 
     pub fn rows(&self) -> u16 {
-        saturating_u16(self.term.screen_lines())
+        saturating_u16(self.emu.term.screen_lines())
     }
 
-    pub fn cursor_y(&self) -> u16 {
-        let line = self.term.grid().cursor.point.line.0.max(0);
-        u16::try_from(line).unwrap_or(u16::MAX)
+    /// The cursor's row in the retained screen buffer: the live screen starts
+    /// at the buffer's last `rows()` rows, whatever the viewport shows.
+    pub fn cursor_screen_row(&self) -> ScreenRow {
+        let line = self.emu.term.grid().cursor.point.line.0.max(0);
+        let line = usize::try_from(line).unwrap_or(usize::MAX);
+        let live_top = self
+            .emu
+            .term
+            .total_lines()
+            .saturating_sub(self.emu.term.screen_lines());
+        ScreenRow(live_top.saturating_add(line))
     }
 
     /// The pane's ioctl-representable pixel extent, absent without a cell pitch.
-    pub fn text_area_px(&self) -> Option<(u16, u16)> {
-        self.current_geometry().text_area_px()
-    }
-
-    // Mouse encoding currently consumes zero-valued axes for an absent
-    // extent. Keep that conversion at these adapters; geometry observations
-    // themselves use the optional extent above.
-    pub fn width_px(&self) -> u32 {
-        self.text_area_px().map_or(0, |(width, _)| u32::from(width))
-    }
-
-    pub fn height_px(&self) -> u32 {
-        self.text_area_px()
-            .map_or(0, |(_, height)| u32::from(height))
+    pub fn pixel_extent(&self) -> Option<shepr_core::geometry::PanePixelExtent> {
+        self.current_geometry().pixel_extent()
     }
 }
 
@@ -1150,12 +924,12 @@ impl PtyResponse {
 #[cfg(test)]
 impl Terminal {
     pub fn scrollback_rows(&self) -> usize {
-        self.term.history_size()
+        self.emu.term.history_size()
     }
 
     /// The cursor colour set with OSC 12, if any.
     fn effective_cursor_color(&self) -> Option<RgbColor> {
-        self.term.colors()[NamedColor::Cursor].map(color::rgb_from_vte)
+        self.emu.term.colors()[NamedColor::Cursor].map(color::rgb_from_vte)
     }
 }
 

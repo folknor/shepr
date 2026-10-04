@@ -39,7 +39,7 @@ pub(super) const HELPER_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(
 
 /// Poll interval used to bound cancellation latency on client streams.
 /// The interval limits shutdown delay without continuously polling.
-pub(super) const CLIENT_STREAM_POLL_INTERVAL_MS: i32 = 100;
+pub(super) const CLIENT_STREAM_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Startup allowance for clipboard selection owners before detaching them.
 /// The delay gives desktop helpers time to claim a selection.

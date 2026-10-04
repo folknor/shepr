@@ -137,8 +137,36 @@ pub(super) fn resolve_launch_executable(
     Ok(executable)
 }
 
-/// The machine's node name, as shown by tmux's `#h`.
-pub fn hostname() -> Option<String> {
+/// The machine's node name in both spellings: the full name as the kernel
+/// reports it (possibly fully qualified), and the short form up to the first
+/// dot that tmux's `#h` shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostNames {
+    full: String,
+    short: String,
+}
+
+impl HostNames {
+    /// `None` when the name is empty or has an empty short form.
+    pub fn from_node_name(name: &str) -> Option<Self> {
+        let short = short_hostname(name);
+        (!short.is_empty()).then(|| Self {
+            full: name.to_owned(),
+            short: short.to_owned(),
+        })
+    }
+
+    pub fn full(&self) -> &str {
+        &self.full
+    }
+
+    pub fn short(&self) -> &str {
+        &self.short
+    }
+}
+
+/// The machine's node name, `None` when it cannot be read or is empty.
+pub fn host_names() -> Option<HostNames> {
     let mut buffer = [0_u8; super::limits::HOSTNAME_BUFFER_BYTES];
     // SAFETY: gethostname(2) writes at most `buffer.len()` bytes into a live
     // stack buffer.
@@ -152,8 +180,7 @@ pub fn hostname() -> Option<String> {
         .position(|&byte| byte == 0)
         .unwrap_or(buffer.len());
     let name = String::from_utf8_lossy(&buffer[..end]);
-    let short_name = short_hostname(&name);
-    (!short_name.is_empty()).then(|| short_name.to_owned())
+    HostNames::from_node_name(&name)
 }
 
 fn short_hostname(name: &str) -> &str {
@@ -167,11 +194,22 @@ pub(super) fn effective_uid() -> libc::uid_t {
 
 #[cfg(test)]
 mod tests {
-    use super::short_hostname;
+    use super::{HostNames, short_hostname};
 
     #[test]
     fn hostname_matches_tmux_short_hostname_form() {
         assert_eq!(short_hostname("buildbox.example.org"), "buildbox");
         assert_eq!(short_hostname("buildbox"), "buildbox");
+    }
+
+    #[test]
+    fn host_names_keep_the_full_name_and_the_short_form() {
+        let names = HostNames::from_node_name("buildbox.example.org").expect("a name");
+        assert_eq!(names.full(), "buildbox.example.org");
+        assert_eq!(names.short(), "buildbox");
+        let plain = HostNames::from_node_name("buildbox").expect("a name");
+        assert_eq!((plain.full(), plain.short()), ("buildbox", "buildbox"));
+        assert_eq!(HostNames::from_node_name(""), None);
+        assert_eq!(HostNames::from_node_name(".lan"), None);
     }
 }

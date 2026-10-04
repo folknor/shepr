@@ -14,3 +14,30 @@ pub mod glyph_repair;
 mod limits;
 pub mod pane_row;
 pub mod ratatui_conversion;
+
+/// Counters at small positions for this crate's tests, reached the way an
+/// owner reaches them: by stepping from zero.
+#[cfg(test)]
+mod test_counters {
+    use shepr_protocol::{ContentRevision, ProjectionRevision, SurfaceRevision};
+
+    pub(crate) fn projection(steps: u64) -> ProjectionRevision {
+        (0..steps).fold(ProjectionRevision::ZERO, |revision, _| {
+            revision.checked_next().expect("a small test position")
+        })
+    }
+
+    pub(crate) fn surface(steps: u64) -> SurfaceRevision {
+        (0..steps).fold(SurfaceRevision::ZERO, |revision, _| {
+            revision.checked_next().expect("a small test position")
+        })
+    }
+
+    pub(crate) fn content(mutations: u64) -> ContentRevision {
+        let mut revision = ContentRevision::default();
+        for _ in 0..mutations {
+            revision.advance();
+        }
+        revision
+    }
+}

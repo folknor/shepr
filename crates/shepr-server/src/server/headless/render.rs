@@ -2,8 +2,11 @@ use super::client_views::ViewedWorkspace;
 use super::*;
 use crate::server::ClientId;
 use crate::server::render_stream::{PreparedSurface, ViewEpoch};
+use shepr_term::mouse::HostMouseCapture;
 
-pub(super) use crate::limits::SHELL_CWD_REFRESH_INTERVAL;
+/// Refresh shell cwd projections periodically when no OSC 7 report arrives.
+pub(super) const SHELL_CWD_REFRESH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(1);
 
 /// The layout-free session snapshot every shell projection is built from,
 /// shared by all shell clients.
@@ -12,7 +15,7 @@ pub(super) struct ShellSessionCache {
     pub(super) revision: shepr_protocol::ProjectionRevision,
     /// When the snapshot last read the `/proc`-derived fields.
     pub(super) built_at: Instant,
-    pub(super) session: crate::app::SessionSnapshot,
+    pub(super) session: crate::app::ProjectionInput,
     /// Projections already checked by the cwd timer, available to the render
     /// pass that the first changed projection requests.
     pub(super) timer_projections: HashMap<ClientId, CachedShellProjection>,
@@ -24,21 +27,21 @@ pub(super) struct CachedShellProjection {
     snapshot: shepr_protocol::ClientShellSnapshot,
 }
 
-type PaneSurfaceRenderKey = (Option<shepr_protocol::WorkspaceId>, u16, u16, u32, u32);
+type PaneSurfaceRenderKey = (Option<shepr_protocol::WorkspaceId>, u16, u16);
 
 fn pane_surface_render_key(
-    target: Option<&shepr_protocol::WorkspaceId>,
-    area: Rect,
-    cell_size: shepr_term::host::HostCellSize,
+    target: Option<crate::ui::SurfaceTarget>,
+    area: shepr_core::geometry::Rect,
 ) -> PaneSurfaceRenderKey {
-    let cell_size = cell_size.or_default();
-    (
-        target.copied(),
-        area.width,
-        area.height,
-        cell_size.width_px,
-        cell_size.height_px,
-    )
+    (target.map(|target| target.id), area.width, area.height)
+}
+
+/// One client of a full render step, resolved once for the pass: where it
+/// draws, the workspace it views and whether it can take a surface now.
+struct PassClient {
+    target: crate::server::clients::RenderTarget,
+    view: Option<crate::ui::SurfaceTarget>,
+    deliverable: bool,
 }
 
 /// What one loop iteration owes, derived by `render_plan`.
@@ -76,14 +79,13 @@ pub(super) trait SurfaceBoundary {
     fn render(
         &self,
         app: &app::App,
-        workspace: Option<&shepr_protocol::WorkspaceId>,
-        area: Rect,
-        cell_size: shepr_term::host::HostCellSize,
+        workspace: Option<crate::ui::SurfaceTarget>,
+        area: shepr_core::geometry::Rect,
     ) -> Result<
         crate::server::pane_surface::RenderedPaneSurface,
         crate::server::pane_surface::SurfaceRenderDeferred,
     > {
-        render_client_shell_pane_surface(app, workspace, area, cell_size)
+        render_client_shell_pane_surface(app, workspace, area)
     }
 }
 
@@ -102,7 +104,16 @@ struct SharedSurfaces<B: SurfaceBoundary> {
         >,
     >,
     surface_renders: usize,
-    oversized_notices: Vec<(ClientId, usize, usize)>,
+    oversized_notices: Vec<OversizedNotice>,
+}
+
+/// A client whose surface was too large to send, to be told once.
+struct OversizedNotice {
+    client_id: ClientId,
+    /// The surface message's size.
+    claimed: usize,
+    /// The size limit it exceeded.
+    max: usize,
 }
 
 /// How one client's full step ended; `render_full` maps it to the client's
@@ -137,9 +148,9 @@ impl HeadlessServer {
 
     fn rebuild_shell_session_cache(&mut self) {
         self.shell_session_cache = Some(ShellSessionCache {
-            revision: self.app.state.shell_projection_revision,
-            built_at: self.app.clock.now,
-            session: self.app.session_snapshot(),
+            revision: self.app.state().shell_projection_revision(),
+            built_at: self.app.clock().now,
+            session: self.app.projection_input(),
             timer_projections: HashMap::new(),
         });
     }
@@ -149,7 +160,7 @@ impl HeadlessServer {
     /// one current source. A rebuild advances the generation, so existing
     /// clients see that change too. Afterwards the cache is always present.
     pub(super) fn refresh_stale_shell_session_cache(&mut self) {
-        let app_revision = self.app.state.shell_projection_revision;
+        let app_revision = self.app.state().shell_projection_revision();
         let cache_is_current = self
             .shell_session_cache
             .as_ref()
@@ -213,11 +224,9 @@ impl HeadlessServer {
         client_id: ClientId,
     ) -> Option<(&shepr_mux::pane::PaneRuntime, shepr_core::layout::PaneId)> {
         let view = self.viewed_workspace_for_client(client_id)?;
-        let workspace_index = view.index;
-        let pane_id = view.workspace.focused_pane_id();
+        let pane_id = view.workspace.tree().focused();
         self.app
-            .state
-            .runtime_for_pane_in_workspace(&self.app.terminal_runtimes, workspace_index, pane_id)
+            .pane_runtime(pane_id)
             .map(|runtime| (runtime, pane_id))
     }
 
@@ -231,23 +240,56 @@ impl HeadlessServer {
                 let focused = presenting
                     .then(|| self.shell_focused_runtime(client_id))
                     .flatten();
+                let modes = focused.and_then(|(runtime, _)| runtime.read().input_modes());
                 let child_requests_mouse =
-                    focused.is_some_and(|(runtime, _)| runtime.read().mouse_reporting_enabled());
-                let sgr_pixels = client.pixel_mouse
-                    && focused.is_some_and(|(runtime, _)| runtime.read().sgr_pixel_mouse_enabled());
-                (
-                    client_id,
-                    presenting && (shell.mouse_capture || child_requests_mouse),
-                    presenting && sgr_pixels,
-                )
+                    modes.is_some_and(shepr_vt::InputModes::mouse_tracking_enabled);
+                // Pixels are for a client whose own host is exact, looking at a
+                // pane whose child asked for 1016 and was told an extent, at
+                // the grid the PTY has. The one rule is `pixel_mouse_eligible`.
+                let pixels = presenting
+                    && focused.zip(modes).is_some_and(|((runtime, _), modes)| {
+                        self.presented_pane_grid(client_id, runtime)
+                            .is_some_and(|grid| {
+                                shepr_term::mouse::pixel_mouse_eligible(
+                                    client.host_cell,
+                                    modes.pixel_mouse(),
+                                    grid,
+                                )
+                                .is_some()
+                            })
+                    });
+                let capture = presenting && (shell.mouse_capture || child_requests_mouse);
+                (client_id, HostMouseCapture::new(capture, pixels))
             })
             .collect::<Vec<_>>();
 
-        for (client_id, enabled, sgr_pixels) in requested {
+        for (client_id, mode) in requested {
             if let Some(client) = self.clients.get_mut(&client_id) {
-                client.outbox.tell_mouse_capture(enabled, sgr_pixels);
+                client.outbox.tell_mouse_capture(mode);
             }
         }
+    }
+
+    /// The grid at which `client_id` presents the pane `runtime` of the
+    /// workspace it views, when that is the PTY's grid: its surface area is the
+    /// area the workspace's PTYs were last laid out in (layout is a pure
+    /// function of state and area). `None` when the areas differ: the client
+    /// shows the pane at another grid, which is never eligible. Advisory: it
+    /// picks the host's report mode, and the per-report decisions (the client's
+    /// hit mapping, the server's admission) check the exact presented grid.
+    fn presented_pane_grid(
+        &self,
+        client_id: ClientId,
+        runtime: &shepr_mux::pane::PaneRuntime,
+    ) -> Option<shepr_core::geometry::GridSize> {
+        let view = self.viewed_workspace_for_client(client_id)?;
+        let client = self.clients.get(&client_id)?;
+        (view
+            .workspace
+            .spawn_geometry()
+            .map(|geometry| geometry.area)
+            == Some(client.terminal_size.rect()))
+        .then(|| runtime.grid_size())
     }
 
     pub(super) fn stream_shell_keyboard_mode(&mut self) {
@@ -277,24 +319,10 @@ impl HeadlessServer {
 
     pub(super) fn sync_immediate_pty_sources(&self) {
         let mut pane_ids = HashSet::new();
-        for (&client_id, _) in &self.clients {
-            if !self.clients.is_presenting(&client_id) {
-                continue;
-            }
-            let Some(target) = self.shell_target_for_client(client_id) else {
-                continue;
-            };
-            let Some(workspace) = self
-                .app
-                .state
-                .workspace_index(&target)
-                .and_then(|workspace_index| self.app.state.workspaces.get(workspace_index))
-            else {
-                continue;
-            };
-            pane_ids.extend(workspace.visible_pane_ids());
+        for (_, view) in self.presented_views() {
+            pane_ids.extend(view.workspace.tree().visible_pane_ids());
         }
-        self.app.render_dirty.set_immediate_pty_sources(pane_ids);
+        self.outputs.render().set_immediate_pty_sources(pane_ids);
     }
 
     pub(super) fn pty_sources_visible_to_any_render_target(
@@ -305,44 +333,26 @@ impl HeadlessServer {
             return false;
         }
 
-        sources.iter().copied().any(|pane_id| {
-            self.terminal_id_for_pane(pane_id).is_none()
-                || self.any_shell_surface_contains_pane(pane_id)
-        })
-    }
-
-    fn terminal_id_for_pane(
-        &self,
-        pane_id: shepr_core::layout::PaneId,
-    ) -> Option<&shepr_protocol::TerminalId> {
-        self.app
-            .find_pane(pane_id)
-            .map(|(_, pane)| &pane.attached_terminal_id)
-    }
-
-    fn any_shell_surface_contains_pane(&self, pane_id: shepr_core::layout::PaneId) -> bool {
-        self.clients.iter().any(|(&client_id, _)| {
-            if !self.clients.is_presenting(&client_id) {
-                return false;
-            }
-            let Some(target) = self.shell_target_for_client(client_id) else {
-                return false;
-            };
-            self.app
-                .state
-                .workspace_index(&target)
-                .and_then(|workspace_index| self.app.state.workspaces.get(workspace_index))
-                .is_some_and(|workspace| workspace.shows_pane(pane_id))
-        })
+        // A source that is no longer a pane is visible (its removal needs a
+        // render); otherwise some presenting client's workspace must show one.
+        // Each client's view is resolved once, not once per source.
+        sources
+            .iter()
+            .any(|&pane_id| self.app.state().pane(pane_id).is_none())
+            || self.presented_views().any(|(_, view)| {
+                sources
+                    .iter()
+                    .any(|&pane_id| view.workspace.tree().shows(pane_id))
+            })
     }
 
     /// What each attached client is owed this iteration, derived from its own
     /// settle point, location, baseline and slot plus the server-wide epoch.
     /// The checks run cheapest first: a client already due for a full pass
-    /// never reaches `surface_deliverable`, which may lock terminal cores.
+    /// never reaches `surface_deliverable`, which reads each visible pane's
+    /// lock-free synchronized-output mirror.
     pub(super) fn render_plan(&mut self, render_signal_pending: bool) -> RenderPlan {
         self.settle_workspace_geometry_before_plan(render_signal_pending);
-        let targets = render_targets(&self.clients);
         // With no client attached nothing is drawn: settlement above already
         // laid out every workspace without a recorded area at the headless
         // geometry, so no render pass is owed for that.
@@ -350,8 +360,7 @@ impl HeadlessServer {
             full: Vec::new(),
             patch: Vec::new(),
         };
-        let mut held = HashMap::new();
-        for target in targets {
+        for target in render_targets(&self.clients) {
             let Some(client) = self.clients.get(&target.client_id) else {
                 continue;
             };
@@ -360,7 +369,10 @@ impl HeadlessServer {
                 || shell.projection_due(self.shell_session_generation)
                 || (client.presents_surface()
                     && client.render_state.surface_debt()
-                    && self.surface_deliverable(target.client_id, &mut held));
+                    && self.surface_deliverable(
+                        target.client_id,
+                        self.surface_target_for_client(target.client_id),
+                    ));
             if full {
                 plan.full.push(target.client_id);
             } else if render_signal_pending
@@ -378,37 +390,38 @@ impl HeadlessServer {
     /// poisoned. Either clears by itself (the update ends with a PTY repaint
     /// signal, a poisoned pane's actor closes it), so a client held here
     /// stays out of the plan rather than retrying.
-    fn workspace_surface_held(&self, target: &shepr_protocol::WorkspaceId) -> bool {
-        self.visible_pane_runtimes(target)
-            .into_iter()
-            .any(|runtime| {
-                runtime
-                    .read()
-                    .synchronized_output_state()
-                    .is_none_or(|(active, _)| active)
-            })
+    ///
+    /// Reads the panes' lock-free mirror (`surface_held`), so planning never
+    /// waits on a PTY reader. The mirror can lag a racing update by one
+    /// mutation at worst; the surface render's own locked check still defers
+    /// a frame drawn from a held pane.
+    fn workspace_surface_held(&self, target: crate::ui::SurfaceTarget) -> bool {
+        target.workspace(self.app.state()).is_some_and(|workspace| {
+            self.runtimes_shown_by(workspace)
+                .any(|runtime| runtime.read().surface_held())
+        })
+    }
+
+    /// The workspace `id` views, resolved against the current state: its
+    /// position and id, or `None` when its location names no live workspace.
+    fn surface_target_for_client(&self, id: ClientId) -> Option<crate::ui::SurfaceTarget> {
+        self.viewed_workspace_for_client(id)
+            .map(|view| view.target())
     }
 
     /// Whether `id` can take a surface now: its slot is free and the
-    /// workspace it views is not held. `held` memoizes the workspace check
-    /// for one plan or step, so each workspace's cores are locked once.
-    fn surface_deliverable(
-        &self,
-        id: ClientId,
-        held: &mut HashMap<shepr_protocol::WorkspaceId, bool>,
-    ) -> bool {
+    /// workspace it views (`view`, resolved by the caller) is not held.
+    fn surface_deliverable(&self, id: ClientId, view: Option<crate::ui::SurfaceTarget>) -> bool {
         let Some(client) = self.clients.get(&id) else {
             return false;
         };
         if !client.outbox.surface_slot_free() {
             return false;
         }
-        let Some(workspace) = self.shell_target_for_client(id) else {
+        let Some(view) = view else {
             return true;
         };
-        !*held
-            .entry(workspace)
-            .or_insert_with(|| self.workspace_surface_held(&workspace))
+        !self.workspace_surface_held(view)
     }
 
     pub(super) fn render_pass(
@@ -459,15 +472,20 @@ impl HeadlessServer {
         report: &mut PassReport,
         boundary: B,
     ) {
-        let render_targets = render_targets(&self.clients)
-            .into_iter()
+        // Each client's view is resolved once here and carried through the
+        // pass, along with whether it can take a surface.
+        let pass_clients = render_targets(&self.clients)
             .filter(|target| ids.contains(&target.client_id))
+            .map(|target| {
+                let view = self.surface_target_for_client(target.client_id);
+                let deliverable = self.surface_deliverable(target.client_id, view);
+                PassClient {
+                    target,
+                    view,
+                    deliverable,
+                }
+            })
             .collect::<Vec<_>>();
-        let mut held = HashMap::new();
-        let deliverable = ids
-            .iter()
-            .map(|&id| (id, self.surface_deliverable(id, &mut held)))
-            .collect::<HashMap<_, _>>();
         let mut shared = SharedSurfaces {
             boundary,
             remaining: HashMap::new(),
@@ -475,31 +493,26 @@ impl HeadlessServer {
             surface_renders: 0,
             oversized_notices: Vec::new(),
         };
-        for target in &render_targets {
-            let Some(client) = self.clients.get(&target.client_id) else {
+        for pass_client in &pass_clients {
+            let Some(client) = self.clients.get(&pass_client.target.client_id) else {
                 continue;
             };
-            if !client.presents_surface()
-                || !deliverable.get(&target.client_id).copied().unwrap_or(false)
-            {
+            if !client.presents_surface() || !pass_client.deliverable {
                 continue;
             }
-            let area = target.geometry().area;
-            let shell_target = self.shell_target_for_client(target.client_id);
-            let key = pane_surface_render_key(shell_target.as_ref(), area, target.cell_size);
+            let key = pane_surface_render_key(pass_client.view, pass_client.target.area());
             *shared.remaining.entry(key).or_insert(0usize) += 1;
         }
 
         // Rebuild the shared session only when application state that feeds
         // it changed. `/proc`-derived fields are rechecked by the headless
         // loop's timer (`refresh_shell_projection_sources`), not here.
-        if !render_targets.is_empty() {
+        if !pass_clients.is_empty() {
             self.refresh_stale_shell_session_cache();
         }
-        for target in render_targets {
-            let client_id = target.client_id;
-            let takes_surface = deliverable.get(&client_id).copied().unwrap_or(false);
-            let outcome = self.render_client_full(&target, takes_surface, &mut shared);
+        for pass_client in pass_clients {
+            let client_id = pass_client.target.client_id;
+            let outcome = self.render_client_full(&pass_client, &mut shared);
             report.full.push(client_id);
             // The single exit: every outcome but a closed outbox maps to the
             // client's debt and settles it at the pass epoch, so no path can
@@ -521,7 +534,12 @@ impl HeadlessServer {
         }
 
         report.surface_renders += shared.surface_renders;
-        for (client_id, claimed, max) in shared.oversized_notices {
+        for OversizedNotice {
+            client_id,
+            claimed,
+            max,
+        } in shared.oversized_notices
+        {
             let notice = ServerMessage::ClientShellError {
                 kind: shepr_protocol::NoticeKind::LimitExceeded(
                     shepr_protocol::LimitExceeded::new(
@@ -538,18 +556,14 @@ impl HeadlessServer {
     }
     fn render_client_full<B: SurfaceBoundary>(
         &mut self,
-        target: &crate::server::clients::RenderTarget,
-        deliverable: bool,
+        pass_client: &PassClient,
         shared: &mut SharedSurfaces<B>,
     ) -> ClientPassOutcome {
-        let client_id = target.client_id;
-        let geometry = target.geometry();
-        let cell_size = geometry.cell_size;
-        let area = geometry.area;
-        let viewed = self.clients.get(&client_id).and_then(|client| {
-            ViewedWorkspace::for_location(&self.app, &client.shell_state().location)
-        });
-        let shell_target = viewed.as_ref().map(|view| view.workspace.id);
+        let client_id = pass_client.target.client_id;
+        let area = pass_client.target.area();
+        let deliverable = pass_client.deliverable;
+        let shell_target = pass_client.view;
+        let viewed = shell_target.and_then(|view| ViewedWorkspace::at(&self.app, view));
         let Some(client) = self.clients.get_mut(&client_id) else {
             return ClientPassOutcome::Closed;
         };
@@ -633,8 +647,7 @@ impl HeadlessServer {
             return ClientPassOutcome::Owed;
         }
         let shell_render = {
-            let render_cell_size = cell_size.or_default();
-            let key = pane_surface_render_key(shell_target.as_ref(), area, render_cell_size);
+            let key = pane_surface_render_key(shell_target, area);
             let remaining = shared.remaining.get_mut(&key).map_or(1, |remaining| {
                 let current = *remaining;
                 *remaining = remaining.saturating_sub(1);
@@ -647,20 +660,13 @@ impl HeadlessServer {
             let result = if remaining == 1 {
                 shared.rendered.remove(&key).unwrap_or_else(|| {
                     shared.surface_renders += 1;
-                    shared
-                        .boundary
-                        .render(&self.app, shell_target.as_ref(), area, render_cell_size)
+                    shared.boundary.render(&self.app, shell_target, area)
                 })
             } else if let Some(result) = shared.rendered.get(&key) {
                 result.clone()
             } else {
                 shared.surface_renders += 1;
-                let result = shared.boundary.render(
-                    &self.app,
-                    shell_target.as_ref(),
-                    area,
-                    render_cell_size,
-                );
+                let result = shared.boundary.render(&self.app, shell_target, area);
                 shared.rendered.insert(key, result.clone());
                 result
             };
@@ -695,23 +701,17 @@ impl HeadlessServer {
         let frame =
             std::sync::Arc::try_unwrap(frame).unwrap_or_else(|shared| shared.as_ref().clone());
 
-        // A public pane ID can outlive a layout update with no change to
-        // the wire fields, but its internal pane identity still belongs
-        // in the committed baseline used by retained rendering.
-        if client.surface_pane_identities != pane_identities {
-            client.render_state.request_recompute();
-        }
-
-        let prepared = client
-            .render_state
-            .prepare_pane_surface(shepr_protocol::PaneSurfaceFrame {
+        let prepared = client.render_state.prepare_surface(
+            shepr_protocol::PaneSurfaceFrame {
                 boot_id: self.client_shell_boot_id.clone(),
                 projection_revision: shell_projection_revision,
-                surface_revision: shepr_protocol::SurfaceRevision::new(0),
+                surface_revision: shepr_protocol::SurfaceRevision::ZERO,
                 frame,
                 panes,
                 splits,
-            });
+            },
+            pane_identities,
+        );
         let prepared = match prepared {
             PreparedSurface::Ready(prepared) => *prepared,
             PreparedSurface::Unchanged => return ClientPassOutcome::Unchanged,
@@ -746,7 +746,11 @@ impl HeadlessServer {
                         claimed, max, "skipping oversized surface for client"
                     );
                     client.oversized_surface_reported = true;
-                    shared.oversized_notices.push((client_id, claimed, max));
+                    shared.oversized_notices.push(OversizedNotice {
+                        client_id,
+                        claimed,
+                        max,
+                    });
                 }
                 return ClientPassOutcome::Refused;
             }
@@ -759,7 +763,6 @@ impl HeadlessServer {
         match client.outbox.offer_surface(serialized) {
             crate::server::outbox::SurfaceOffer::Queued => {
                 client.render_state.commit_sent_frame(prepared);
-                client.commit_surface_pane_identities(pane_identities);
                 client.oversized_surface_reported = false;
                 ClientPassOutcome::Delivered
             }
@@ -772,7 +775,7 @@ impl HeadlessServer {
 }
 
 impl HeadlessServer {
-    /// Projects an already built `app.session_snapshot()` for one shell
+    /// Projects an already built `app.projection_input()` for one shell
     /// client.
     ///
     /// The session snapshot underneath is cached by the headless server and shared
@@ -785,7 +788,7 @@ impl HeadlessServer {
     /// only the client that moved.
     pub(in crate::server) fn snapshot_from_session(
         app: &app::App,
-        snapshot: &crate::app::SessionSnapshot,
+        snapshot: &crate::app::ProjectionInput,
         boot_id: &shepr_protocol::BootId,
         revision: shepr_protocol::ProjectionRevision,
         location: &crate::server::clients::ClientShellLocation,
@@ -796,39 +799,32 @@ impl HeadlessServer {
 
     fn snapshot_from_viewed_workspace(
         app: &app::App,
-        snapshot: &crate::app::SessionSnapshot,
+        snapshot: &crate::app::ProjectionInput,
         boot_id: &shepr_protocol::BootId,
         revision: shepr_protocol::ProjectionRevision,
         viewed: Option<&ViewedWorkspace<'_>>,
     ) -> shepr_protocol::ClientShellSnapshot {
         // A client with no live workspace has no focus; never use the bookmark.
-        let focused_workspace_id = viewed.as_ref().map(|view| view.workspace.id);
-        let focused_pane_id = viewed
-            .as_ref()
-            .and_then(|view| app.public_pane_id(view.index, view.workspace.focused_pane_id()));
+        let focused_workspace_id = viewed.as_ref().map(|view| view.workspace.id());
+        let focused_pane_id = viewed.as_ref().and_then(|view| {
+            view.workspace
+                .tree()
+                .pane(view.workspace.tree().focused())
+                .map(|record| {
+                    shepr_protocol::PublicPaneId::new(&view.workspace.id(), record.number())
+                })
+        });
         // Snapshot entries are joined to live state by their public ids, never by
         // position: a snapshot that filtered or reordered entries would otherwise
-        // hand one workspace's labels and branch to another. The snapshot is built
-        // from this same `app`, so the positional slot is tried first and the id
-        // lookup only runs when it does not match.
+        // hand one workspace's labels and branch to another.
         let workspaces = snapshot
             .workspaces
             .iter()
-            .enumerate()
-            .map(|(position, workspace)| {
+            .map(|workspace| {
                 let workspace_id = &workspace.workspace_id;
-                let workspace_index = app
-                    .state
-                    .workspaces
-                    .get(position)
-                    .is_some_and(|state| &state.id == workspace_id)
-                    .then_some(position)
-                    .or_else(|| app.resolve_workspace_id(workspace_id));
-                let state = workspace_index.and_then(|index| app.state.workspaces.get(index));
-                let new_workspace_cwd = workspace_index.map(|workspace_index| {
-                    shepr_protocol::RemotePath::from(
-                        app.resolved_new_workspace_cwd(workspace_index),
-                    )
+                let state = app.state().workspace(workspace_id);
+                let new_workspace_cwd = state.map(|_| {
+                    shepr_protocol::RemotePath::from(app.resolved_new_workspace_cwd(workspace_id))
                 });
                 shepr_protocol::ClientShellWorkspace {
                     workspace_id: *workspace_id,
@@ -849,14 +845,9 @@ impl HeadlessServer {
             .iter()
             .map(|pane| {
                 let right_click_passthrough = app
-                    .resolve_pane_id(&pane.pane_id)
-                    .and_then(|(workspace_index, pane_id)| {
-                        app.state
-                            .workspaces
-                            .get(workspace_index)?
-                            .pane_state(pane_id)
-                    })
-                    .is_some_and(|pane| pane.right_click_passthrough);
+                    .state()
+                    .resolve_pane(&pane.pane_id)
+                    .is_some_and(|pane| pane.record().right_click_passthrough());
                 shepr_protocol::ClientShellPane {
                     pane_id: pane.pane_id,
                     label: pane.label.clone(),
@@ -882,7 +873,7 @@ impl HeadlessServer {
         shepr_protocol::ClientShellSnapshot {
             boot_id: boot_id.clone(),
             revision,
-            restore_notice: app.restore_notice.clone(),
+            restore_notice: app.restore_notice().cloned(),
             session_saves_stopped: app.session_saves_stopped(),
             focused_workspace_id,
             focused_pane_id,

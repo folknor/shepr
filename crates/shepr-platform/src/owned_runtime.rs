@@ -5,52 +5,69 @@ use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+use crate::ipc::LockWait;
 use crate::process_identity::ProcessIdentity;
 
 const OWNER_MARKER: &str = ".owner";
 
+/// What an owned directory holds besides its owner marker.
 #[derive(Clone, Copy)]
-pub(crate) enum DirectoryKind {
-    Staging,
-    SshConfig,
+enum DirectoryContent {
+    Socket,
+    RegularFile,
+}
+
+/// The layout of one family of owned runtime directories: the name prefix a
+/// directory carries before its collision token, and the one entry it holds
+/// besides the owner marker. Creation, release and dead-owner sweeping all
+/// read this one description, so they cannot disagree about it.
+#[derive(Clone, Copy)]
+pub struct DirectoryKind {
+    name_prefix: &'static str,
+    content_name: &'static str,
+    content: DirectoryContent,
 }
 
 impl DirectoryKind {
+    /// Private staging directories that hold one socket named `s`.
+    pub(crate) const STAGING: Self = Self {
+        name_prefix: ".s",
+        content_name: "s",
+        content: DirectoryContent::Socket,
+    };
+
+    /// A family of directories named `name_prefix` plus a 16 digit hex token,
+    /// each holding one regular file named `content_name`.
+    pub const fn regular_file(name_prefix: &'static str, content_name: &'static str) -> Self {
+        Self {
+            name_prefix,
+            content_name,
+            content: DirectoryContent::RegularFile,
+        }
+    }
+
     pub(crate) fn directory_name(self, token: u64) -> String {
-        format!("{}{token:016x}", self.name_prefix())
+        format!("{}{token:016x}", self.name_prefix)
     }
 
     fn has_valid_name(self, name: &str) -> bool {
-        let Some(token) = name.strip_prefix(self.name_prefix()) else {
+        let Some(token) = name.strip_prefix(self.name_prefix) else {
             return false;
         };
         token.len() == crate::limits::RUNTIME_TOKEN_HEX_BYTES
             && token.bytes().all(|byte| byte.is_ascii_hexdigit())
     }
 
-    const fn name_prefix(self) -> &'static str {
-        match self {
-            Self::Staging => ".s",
-            Self::SshConfig => "shepr-ssh-",
-        }
-    }
-
-    const fn content_name(self) -> &'static str {
-        match self {
-            Self::Staging => "s",
-            Self::SshConfig => "config",
-        }
-    }
-
-    pub(crate) fn content_path(self, directory: &Path) -> PathBuf {
-        directory.join(self.content_name())
+    /// The path of the content entry inside a directory of this kind.
+    pub fn content_path(self, directory: &Path) -> PathBuf {
+        directory.join(self.content_name)
     }
 
     fn content_is_owned(self, name: &OsStr, metadata: &fs::Metadata) -> bool {
-        name == OsStr::new(self.content_name())
-            && match self {
-                Self::Staging => metadata.file_type().is_socket(),
-                Self::SshConfig => metadata.is_file(),
+        name == OsStr::new(self.content_name)
+            && match self.content {
+                DirectoryContent::Socket => metadata.file_type().is_socket(),
+                DirectoryContent::RegularFile => metadata.is_file(),
             }
     }
 }
@@ -61,8 +78,9 @@ enum RuntimeKind {
     SocketSidecar,
 }
 
+/// Why an owned directory could not be created.
 #[derive(Debug)]
-pub(crate) enum RuntimeCreateError {
+pub enum RuntimeCreateError {
     RandomSource(io::Error),
     Io(io::Error),
 }
@@ -132,7 +150,7 @@ impl OwnedRuntimeEntry {
             .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
             .open(&marker)?;
         let result = (|| {
-            crate::ipc::flock_exclusive(&hold, false)?;
+            crate::ipc::flock_exclusive(&hold, LockWait::FailIfHeld)?;
             let owner = ProcessIdentity::current().inspect_err(|error| {
                 tracing::debug!(%error, "could not mark runtime artifact; abandoned entry will be retained");
             }).ok();
@@ -244,7 +262,9 @@ impl OwnedRuntimeEntry {
             };
             // Both proofs are required: ambiguous proc views and held locks
             // retain the entry. Keep the lock through validation and removal.
-            if !owner.is_provably_gone() || crate::ipc::flock_exclusive(&hold, false).is_err() {
+            if !owner.is_provably_gone()
+                || crate::ipc::flock_exclusive(&hold, LockWait::FailIfHeld).is_err()
+            {
                 continue;
             }
             let Ok(current) = fs::symlink_metadata(&marker) else {
@@ -355,12 +375,26 @@ fn release(path: &Path, kind: RuntimeKind, owner: Option<ProcessIdentity>) {
     }
 }
 
-/// Release a config directory created by this process. Used by both normal
-/// teardown and the process-exit registry; absence is already cleaned up.
-pub fn release_remote_ssh_config_dir(path: &Path) {
+/// Creates a directory of `kind` under the private directory `parent`, marked
+/// with this process as its owner, and hands its cleanup to the caller. Each
+/// creation first sweeps leftovers of hard-killed owners of the same kind: only
+/// current-uid directories whose locked marker records a process `/proc` proves
+/// has exited. Unmarked directories (created when the owner identity could not
+/// be read) are retained because their owner cannot be established. Callers
+/// remove the directory with [`release_owned_directory`], on normal teardown
+/// and from any process-exit registry; absence is already cleaned up.
+pub fn create_owned_directory(
+    parent: &Path,
+    kind: DirectoryKind,
+) -> Result<PathBuf, RuntimeCreateError> {
+    OwnedRuntimeEntry::create_directory(parent, kind).map(OwnedRuntimeEntry::into_path)
+}
+
+/// Releases a directory [`create_owned_directory`] created in this process.
+pub fn release_owned_directory(path: &Path, kind: DirectoryKind) {
     release(
         path,
-        RuntimeKind::Directory(DirectoryKind::SshConfig),
+        RuntimeKind::Directory(kind),
         ProcessIdentity::current().ok(),
     );
 }
@@ -375,6 +409,9 @@ pub fn release_single_use_socket_lock(path: &Path) {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
+
+    /// A regular-file family, standing in for a caller's own.
+    const TEST_FILES: DirectoryKind = DirectoryKind::regular_file("shepr-test-", "config");
 
     fn private_fixture(parent: &Path, name: &str, marker: Option<&str>) -> PathBuf {
         let path = parent.join(name);
@@ -397,7 +434,7 @@ mod tests {
 
     #[test]
     fn directory_sweeps_share_dead_owner_content_and_lock_checks() {
-        for kind in [DirectoryKind::Staging, DirectoryKind::SshConfig] {
+        for (kind, socket_content) in [(DirectoryKind::STAGING, true), (TEST_FILES, false)] {
             let scratch = shepr_test_support::ScratchDir::new("owned-runtime-sweep");
             fs::set_permissions(
                 scratch.path(),
@@ -411,21 +448,21 @@ mod tests {
                 private_fixture(scratch.path(), &kind.directory_name(token), marker)
             };
             let abandoned = fixture(1, Some(dead.as_str()));
-            match kind {
-                DirectoryKind::Staging => {
-                    drop(
-                        std::os::unix::net::UnixListener::bind(kind.content_path(&abandoned))
-                            .expect("fixture socket"),
-                    );
-                }
-                _ => fs::write(kind.content_path(&abandoned), "Host *\n").expect("fixture config"),
+            if socket_content {
+                drop(
+                    std::os::unix::net::UnixListener::bind(kind.content_path(&abandoned))
+                        .expect("fixture socket"),
+                );
+            } else {
+                fs::write(kind.content_path(&abandoned), "Host *\n").expect("fixture config");
             }
             let unmarked = fixture(2, None);
             let live_path = fixture(3, Some(live.as_str()));
             let malformed = fixture(4, Some("invalid"));
             let held = fixture(5, Some(dead.as_str()));
-            let _hold = crate::ipc::acquire_flock_lock(&held.join(OWNER_MARKER), false)
-                .expect("hold dead-marked fixture");
+            let _hold =
+                crate::ipc::acquire_flock_lock(&held.join(OWNER_MARKER), LockWait::FailIfHeld)
+                    .expect("hold dead-marked fixture");
             let unexpected = fixture(6, Some(dead.as_str()));
             fs::create_dir(unexpected.join("unexpected")).expect("unexpected directory");
             let oversized_owner = "x".repeat(
@@ -483,30 +520,31 @@ mod tests {
     #[test]
     fn creation_marks_and_holds_until_release_or_transfer() {
         let scratch = shepr_test_support::ScratchDir::new("owned-runtime-lifetime");
-        let entry = OwnedRuntimeEntry::create_directory(scratch.path(), DirectoryKind::SshConfig)
+        let entry = OwnedRuntimeEntry::create_directory(scratch.path(), TEST_FILES)
             .expect("create directory");
         let path = entry.path().to_path_buf();
         assert_eq!(
             fs::read_to_string(path.join(OWNER_MARKER)).expect("read marker"),
             ProcessIdentity::current().expect("current identity").tag()
         );
-        assert!(crate::ipc::acquire_flock_lock(&path.join(OWNER_MARKER), false).is_err());
-        fs::write(DirectoryKind::SshConfig.content_path(&path), "Host *\n").expect("write config");
+        assert!(
+            crate::ipc::acquire_flock_lock(&path.join(OWNER_MARKER), LockWait::FailIfHeld).is_err()
+        );
+        fs::write(TEST_FILES.content_path(&path), "Host *\n").expect("write config");
         entry.release();
         assert!(!path.try_exists().expect("stat released directory"));
 
-        let entry = OwnedRuntimeEntry::create_directory(scratch.path(), DirectoryKind::SshConfig)
+        let path = create_owned_directory(scratch.path(), TEST_FILES)
             .expect("create transferred directory");
-        let path = entry.into_path();
-        release_remote_ssh_config_dir(&path);
-        release_remote_ssh_config_dir(&path);
+        release_owned_directory(&path, TEST_FILES);
+        release_owned_directory(&path, TEST_FILES);
         assert!(!path.try_exists().expect("stat transferred directory"));
     }
 
     #[test]
     fn failed_directory_release_restores_marker_without_recursing() {
         let scratch = shepr_test_support::ScratchDir::new("owned-runtime-release");
-        let entry = OwnedRuntimeEntry::create_directory(scratch.path(), DirectoryKind::Staging)
+        let entry = OwnedRuntimeEntry::create_directory(scratch.path(), DirectoryKind::STAGING)
             .expect("create staging directory");
         let path = entry.path().to_path_buf();
         fs::create_dir(path.join("unexpected")).expect("unexpected directory");

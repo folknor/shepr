@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use super::super::Backoff;
-use crate::limits::{SESSION_SAVE_DEBOUNCE, SESSION_SAVE_RETRY_MAX, SESSION_SAVE_RETRY_MIN};
+use super::{SESSION_SAVE_DEBOUNCE, SESSION_SAVE_RETRY_MAX, SESSION_SAVE_RETRY_MIN};
+use crate::backoff::Backoff;
 
 const RETRY_BACKOFF: Backoff = Backoff::new(SESSION_SAVE_RETRY_MIN, SESSION_SAVE_RETRY_MAX);
 

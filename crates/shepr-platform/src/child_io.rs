@@ -2,47 +2,17 @@ use std::{
     io::{self, Read},
     os::fd::{AsRawFd, RawFd},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-/// How a pane's child ended, and whether that needs a final session
-/// checkpoint. It lives here rather than in mux because exit classification is
-/// platform's job and detection's pane ownership consumes it below mux.
+/// How a reaped child ended. What that means for the pane, and whether it
+/// needs a session checkpoint, is mux's `PaneEnding`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChildExitReason {
+pub enum ChildExitKind {
+    /// It exited with a status code.
     Exited,
-    Interrupted,
-    WaitFailed,
-    /// The pane's PTY reader panicked (or found the terminal core poisoned).
-    /// The child may still be running; the pane is ended so its session is
-    /// torn down, and no checkpoint is taken because the core is broken.
-    ReaderPanicked,
-    /// The PTY actor hit a hard IO failure and can no longer read the pane.
-    /// Its terminal core remains usable, so checkpoint the current pane state
-    /// before removing it and tearing down its session.
-    ReaderIoFailed,
-    /// Every holder closed the pane's terminal, and the child watcher had not
-    /// reported an exit a grace period later: usually the child closed its
-    /// terminal and kept going. Nothing can reach it through the pane any
-    /// more, so the pane ends; the terminal core is intact and is
-    /// checkpointed first.
-    TerminalClosed,
-}
-
-impl ChildExitReason {
-    /// A signal exit, a reader IO failure or a closed terminal needs a final
-    /// session checkpoint before pane removal. shepr-generated teardown
-    /// signals follow pane removal, or happen during startup failure before
-    /// any pane exit event, so they cannot skip a checkpoint for a pane that
-    /// is still live. A reader panic skips it because the core is broken; the
-    /// server also skips it for any reason when it finds the pane's core
-    /// broken as it decides.
-    pub fn requires_session_checkpoint(self) -> bool {
-        matches!(
-            self,
-            Self::Interrupted | Self::ReaderIoFailed | Self::TerminalClosed
-        )
-    }
+    /// A signal ended it.
+    Signalled,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -52,15 +22,14 @@ pub(super) enum LimitedRead {
     Oversized,
 }
 
-/// Classify an exit status returned by a successful child wait. Wait errors
-/// are classified as `WaitFailed` by the child-watcher call site.
-pub fn classify_child_exit(status: &std::process::ExitStatus) -> ChildExitReason {
+/// Classify an exit status returned by a successful child wait.
+pub fn classify_child_exit(status: &std::process::ExitStatus) -> ChildExitKind {
     use std::os::unix::process::ExitStatusExt;
 
     if status.signal().is_some() {
-        ChildExitReason::Interrupted
+        ChildExitKind::Signalled
     } else {
-        ChildExitReason::Exited
+        ChildExitKind::Exited
     }
 }
 
@@ -75,17 +44,62 @@ pub fn read_fd(fd: RawFd, data: &mut [u8]) -> std::io::Result<usize> {
     }
 }
 
-/// Wait up to `timeout_ms` (-1: forever) for `events` on `fd`. True when
-/// poll reported anything, including POLLHUP/POLLERR, which the next read or
-/// write then turns into EOF or an error.
-pub(super) fn poll_fd(fd: RawFd, events: libc::c_short, timeout_ms: i32) -> std::io::Result<bool> {
+/// How long a poll may block. The only place this becomes poll(2)'s `int`
+/// milliseconds is [`Wait::poll_millis`], at the libc call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+    /// Until the fd is ready, however long that takes.
+    Forever,
+    /// Up to this long.
+    After(Duration),
+    /// Do not block: report what is ready now.
+    Now,
+}
+
+impl From<Duration> for Wait {
+    fn from(duration: Duration) -> Self {
+        if duration.is_zero() {
+            Self::Now
+        } else {
+            Self::After(duration)
+        }
+    }
+}
+
+impl Wait {
+    /// The poll(2) timeout for this wait: -1 forever, 0 now, otherwise whole
+    /// milliseconds rounded down but at least 1, so a wait that is nearly due
+    /// still sleeps instead of spinning.
+    pub fn poll_millis(self) -> i32 {
+        match self {
+            Self::Forever => -1,
+            Self::Now => 0,
+            Self::After(duration) if duration.is_zero() => 0,
+            Self::After(duration) => i32::try_from(
+                duration
+                    .as_millis()
+                    .max(super::limits::MIN_POLL_TIMEOUT_MILLISECONDS),
+            )
+            .unwrap_or(i32::MAX),
+        }
+    }
+}
+
+/// Wait up to `wait` for `events` on `fd`. True when poll reported anything,
+/// including POLLHUP/POLLERR, which the next read or write then turns into EOF
+/// or an error.
+pub(super) fn poll_fd(
+    fd: RawFd,
+    events: libc::c_short,
+    wait: impl Into<Wait>,
+) -> std::io::Result<bool> {
     let mut descriptor = libc::pollfd {
         fd,
         events,
         revents: 0,
     };
     // SAFETY: one pollfd that lives on this stack frame for the call.
-    let result = unsafe { libc::poll(&mut descriptor, 1, timeout_ms) };
+    let result = unsafe { libc::poll(&mut descriptor, 1, wait.into().poll_millis()) };
     if result < 0 {
         Err(std::io::Error::last_os_error())
     } else {
@@ -93,8 +107,8 @@ pub(super) fn poll_fd(fd: RawFd, events: libc::c_short, timeout_ms: i32) -> std:
     }
 }
 
-pub fn poll_fd_readable(fd: RawFd, timeout_ms: i32) -> std::io::Result<bool> {
-    poll_fd(fd, libc::POLLIN, timeout_ms)
+pub fn poll_fd_readable(fd: RawFd, wait: impl Into<Wait>) -> std::io::Result<bool> {
+    poll_fd(fd, libc::POLLIN, wait)
 }
 
 /// A reader that waits for fd readiness only until one overall deadline.
@@ -123,31 +137,19 @@ impl<R> DeadlineReader<R> {
 
 impl<R: Read + AsRawFd> Read for DeadlineReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        let wait_ms = poll_timeout_until(self.deadline, (self.now)())
+        let remaining = remaining_until(self.deadline, (self.now)())
             .ok_or_else(|| io::Error::from(io::ErrorKind::TimedOut))?;
-        if !poll_fd_readable(self.inner.as_raw_fd(), wait_ms)? {
+        if !poll_fd_readable(self.inner.as_raw_fd(), remaining)? {
             return Err(io::Error::from(io::ErrorKind::TimedOut));
         }
         self.inner.read(buffer)
     }
 }
 
-/// Milliseconds left until `deadline` as a poll timeout, at least 1 so a
-/// wait that is nearly due still sleeps instead of spinning. `None` once the
-/// deadline has passed.
-pub fn poll_timeout_until(deadline: Instant, now: Instant) -> Option<i32> {
+/// Time left until `deadline`, or `None` once it has passed.
+pub fn remaining_until(deadline: Instant, now: Instant) -> Option<Duration> {
     let remaining = deadline.saturating_duration_since(now);
-    if remaining.is_zero() {
-        return None;
-    }
-    Some(
-        i32::try_from(
-            remaining
-                .as_millis()
-                .max(super::limits::MIN_POLL_TIMEOUT_MILLISECONDS),
-        )
-        .unwrap_or(i32::MAX),
-    )
+    (!remaining.is_zero()).then_some(remaining)
 }
 
 pub(crate) fn read_limited_reader(
@@ -227,25 +229,35 @@ pub fn set_cloexec(fd: RawFd) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChildExitReason, poll_timeout_until};
+    use super::{Wait, remaining_until};
     use std::time::{Duration, Instant};
-
-    #[test]
-    fn reader_failure_checkpoint_policy_distinguishes_a_broken_core() {
-        assert!(ChildExitReason::ReaderIoFailed.requires_session_checkpoint());
-        assert!(!ChildExitReason::ReaderPanicked.requires_session_checkpoint());
-    }
 
     #[test]
     fn poll_timeout_uses_the_supplied_clock_at_the_deadline() {
         let start = Instant::now();
         let deadline = start + Duration::from_millis(300);
 
-        assert_eq!(poll_timeout_until(deadline, start), Some(300));
-        assert_eq!(poll_timeout_until(deadline, deadline), None);
         assert_eq!(
-            poll_timeout_until(deadline, deadline + Duration::from_secs(1)),
+            remaining_until(deadline, start),
+            Some(Duration::from_millis(300))
+        );
+        assert_eq!(remaining_until(deadline, deadline), None);
+        assert_eq!(
+            remaining_until(deadline, deadline + Duration::from_secs(1)),
             None
+        );
+    }
+
+    #[test]
+    fn wait_converts_to_poll_millis_only_at_the_edge() {
+        assert_eq!(Wait::Forever.poll_millis(), -1);
+        assert_eq!(Wait::Now.poll_millis(), 0);
+        assert_eq!(Wait::from(Duration::ZERO), Wait::Now);
+        assert_eq!(Wait::from(Duration::from_micros(10)).poll_millis(), 1);
+        assert_eq!(Wait::from(Duration::from_millis(300)).poll_millis(), 300);
+        assert_eq!(
+            Wait::from(Duration::from_secs(u64::MAX)).poll_millis(),
+            i32::MAX
         );
     }
 }

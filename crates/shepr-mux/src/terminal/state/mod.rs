@@ -2,7 +2,6 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use shepr_agent::AgentState;
-use shepr_protocol::TerminalId;
 
 pub use names::Label;
 use shepr_detect::ownership::AgentOwnership;
@@ -183,13 +182,13 @@ fn copy_io_error(error: &std::io::Error) -> std::io::Error {
     }
 }
 
-/// Pure state for a server-owned terminal: identity, cwd, labels, restore
-/// state and the pane's [`AgentOwnership`].
+/// Pure state for a server-owned terminal: cwd, labels, restore state and the
+/// pane's [`AgentOwnership`].
 ///
-/// One-to-one with a pane-backed PTY. Agent arbitration lives in
-/// `shepr_detect::ownership`; this type only holds the machine.
+/// One-to-one with a pane-backed PTY, and identified by its pane. Agent
+/// arbitration lives in `shepr_detect::ownership`; this type only holds the
+/// machine.
 pub struct TerminalState {
-    pub id: TerminalId,
     cwd: PathBuf,
     terminal_title: Option<String>,
     manual_label: Option<Label>,

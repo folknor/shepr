@@ -1,19 +1,19 @@
 use super::MoveFailure;
-use crate::shell::ClientEndpointFocusTarget;
+use crate::shell::LocationTarget;
 use shepr_protocol::{
     BootId, ClientMessage, RequestId,
     command::{EndpointCommand, EndpointReply, PaneTarget, WorkspaceTarget},
 };
-/// The navigation a move must show on its first frame: the desired target, at most one
-/// request in flight, newer picks only replacing the desired target.
+/// The navigation a move must show on its first frame: the desired target (`Machine`: none),
+/// at most one request in flight, newer picks only replacing the desired target.
 #[derive(Debug)]
 pub(super) struct FocusLane {
-    pub(super) desired: Option<ClientEndpointFocusTarget>,
-    in_flight: Option<(RequestId, ClientEndpointFocusTarget)>,
-    acknowledged: Option<ClientEndpointFocusTarget>,
+    pub(super) desired: LocationTarget,
+    in_flight: Option<(RequestId, LocationTarget)>,
+    acknowledged: Option<LocationTarget>,
 }
 impl FocusLane {
-    pub(super) fn new(desired: Option<ClientEndpointFocusTarget>) -> Self {
+    pub(super) fn new(desired: LocationTarget) -> Self {
         Self {
             desired,
             in_flight: None,
@@ -21,7 +21,8 @@ impl FocusLane {
         }
     }
     pub(super) fn settled(&self) -> bool {
-        self.in_flight.is_none() && (self.desired.is_none() || self.desired == self.acknowledged)
+        self.in_flight.is_none()
+            && (self.desired == LocationTarget::Machine || Some(self.desired) == self.acknowledged)
     }
     pub(super) fn accepts(&self, id: &RequestId) -> bool {
         self.in_flight
@@ -32,18 +33,19 @@ impl FocusLane {
         if self.in_flight.is_some() || self.settled() {
             return None;
         }
-        let target = self.desired?;
-        let request_id = RequestId::allocate();
+        let target = self.desired;
         let command = match &target {
-            ClientEndpointFocusTarget::Pane(pane_id) => {
+            LocationTarget::Pane(pane_id) => {
                 EndpointCommand::PaneFocus(PaneTarget { pane_id: *pane_id })
             }
-            ClientEndpointFocusTarget::Workspace(workspace_id) => {
+            LocationTarget::Workspace(workspace_id) => {
                 EndpointCommand::WorkspaceFocus(WorkspaceTarget {
                     workspace_id: *workspace_id,
                 })
             }
+            LocationTarget::Machine => return None,
         };
+        let request_id = RequestId::allocate();
         self.in_flight = Some((request_id.clone(), target));
         Some(ClientMessage::ClientShellEndpointRequest {
             boot_id: boot_id.clone(),
@@ -58,13 +60,10 @@ impl FocusLane {
         // The reply acknowledges the resolved target; Preparing checks actual focus against
         // the coherent snapshot and surface pair before committing the move.
         let matches = match (&requested, result) {
-            (ClientEndpointFocusTarget::Pane(id), EndpointReply::PaneInfo { pane }) => {
-                &pane.pane_id == id
+            (LocationTarget::Pane(id), EndpointReply::PaneInfo { pane }) => &pane.pane_id == id,
+            (LocationTarget::Workspace(id), EndpointReply::WorkspaceInfo { workspace }) => {
+                &workspace.workspace_id == id
             }
-            (
-                ClientEndpointFocusTarget::Workspace(id),
-                EndpointReply::WorkspaceInfo { workspace },
-            ) => &workspace.workspace_id == id,
             _ => false,
         };
         if !matches {
@@ -78,8 +77,8 @@ impl FocusLane {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn target(id: &str) -> ClientEndpointFocusTarget {
-        ClientEndpointFocusTarget::Workspace(crate::tests::test_workspace_id(id))
+    fn target(id: &str) -> LocationTarget {
+        LocationTarget::Workspace(crate::tests::test_workspace_id(id))
     }
     fn reply(id: &str) -> EndpointReply {
         EndpointReply::WorkspaceInfo {
@@ -96,9 +95,9 @@ mod tests {
     }
     #[test]
     fn a_newer_focus_pick_replaces_the_desired_target_without_joining_the_request() {
-        let mut lane = FocusLane::new(Some(target("w1")));
+        let mut lane = FocusLane::new(target("w1"));
         let first = request(&mut lane).expect("first focus");
-        lane.desired = Some(target("w2"));
+        lane.desired = target("w2");
         assert!(request(&mut lane).is_none());
         lane.receive(&reply("w1")).expect("first reply");
         assert!(!lane.settled());
@@ -112,7 +111,7 @@ mod tests {
     }
     #[test]
     fn a_focus_request_is_built_once_until_its_response() {
-        let mut lane = FocusLane::new(Some(target("w1")));
+        let mut lane = FocusLane::new(target("w1"));
         assert!(request(&mut lane).is_some());
         assert!(request(&mut lane).is_none());
         lane.receive(&reply("w1")).expect("focus reply");
@@ -120,16 +119,16 @@ mod tests {
     }
     #[test]
     fn a_focus_response_for_another_target_is_rejected() {
-        let mut lane = FocusLane::new(Some(target("w1")));
+        let mut lane = FocusLane::new(target("w1"));
         request(&mut lane);
         assert!(lane.receive(&reply("w2")).is_err());
         assert!(!lane.settled());
     }
     #[test]
     fn removing_navigation_waits_for_the_in_flight_reply_then_settles() {
-        let mut lane = FocusLane::new(Some(target("w1")));
+        let mut lane = FocusLane::new(target("w1"));
         request(&mut lane).expect("focus request");
-        lane.desired = None;
+        lane.desired = LocationTarget::Machine;
         assert!(!lane.settled());
         lane.receive(&reply("w1")).expect("focus reply");
         assert!(lane.settled());

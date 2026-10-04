@@ -13,11 +13,10 @@
 //! `OutboxQueue::close_connection`, which shuts the socket and wakes the
 //! server loop; the loop's reap then removes the client.
 
-use crate::limits::{CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS};
-use crate::limits::{MAX_HELD_ENDPOINT_REPLIES, MAX_HELD_ENDPOINT_REPLY_BYTES};
 use crate::server::ClientId;
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::ServerMessage;
+use shepr_term::mouse::HostMouseCapture;
 use std::collections::VecDeque;
 use std::io;
 use std::net::Shutdown;
@@ -25,6 +24,25 @@ use std::sync::mpsc::{SendError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use tokio::sync::Notify;
 use tracing::{debug, warn};
+
+/// Bound each client's outstanding control messages, including the message
+/// currently being written to its socket. Control messages do not coalesce, and
+/// a healthy client can see bursts of them (a snapshot per changed projection
+/// while a pane animates its title, a run of clipboard writes, mode updates on
+/// reconnect), so the count sits well above a burst; the byte bound below is
+/// what holds memory.
+pub(crate) const CLIENT_CONTROL_QUEUE_MAX_ITEMS: usize = 1024;
+/// Bound control memory per client even when a peer reads slowly but continues
+/// to make enough progress to stay inside the socket stall timeout.
+pub(crate) const CLIENT_CONTROL_QUEUE_MAX_BYTES: usize = 16 * 1024 * 1024;
+/// Most endpoint replies held for one client, ready or waiting on a worker. A
+/// same-build client has one command in flight per endpoint, so a legitimate
+/// backlog is one or two entries; a client past this is dropped, not
+/// buffered for.
+const MAX_HELD_ENDPOINT_REPLIES: usize = 64;
+/// Most framed reply and refusal bytes held for one client. A held reply
+/// drains into the control lane, whose own byte budget is this size.
+const MAX_HELD_ENDPOINT_REPLY_BYTES: usize = CLIENT_CONTROL_QUEUE_MAX_BYTES;
 
 fn encode_message_or_close<M: serde::Serialize>(
     queue: &OutboxQueue,
@@ -485,12 +503,26 @@ struct ReplyQueue {
 #[derive(Debug)]
 struct HeldReply {
     seq: ReplySeq,
-    /// The reply, once there is one. An entry without it holds every later
-    /// entry of this client.
-    ready: Option<Vec<u8>>,
-    /// A pending worker reply's shutdown refusal, sent in its place if the
-    /// server stops first. Dropped when the reply arrives.
-    refusal: Option<Vec<u8>>,
+    state: ReplyState,
+}
+
+#[derive(Debug)]
+enum ReplyState {
+    /// A worker will complete the reply. It holds every later entry of this
+    /// client. `refusal` is the shutdown refusal sent in its place if the
+    /// server stops first; dropped when the reply arrives.
+    Reserved { refusal: Vec<u8> },
+    /// The framed reply, ready to move onto the control lane.
+    Ready(Vec<u8>),
+}
+
+impl ReplyState {
+    fn len(&self) -> usize {
+        match self {
+            Self::Reserved { refusal } => refusal.len(),
+            Self::Ready(bytes) => bytes.len(),
+        }
+    }
 }
 
 impl ClientOutbox {
@@ -511,23 +543,15 @@ impl ClientOutbox {
     }
 
     /// Appends an entry within the held-reply bounds, or closes the outbox.
-    fn push_reply(&mut self, ready: Option<Vec<u8>>, refusal: Option<Vec<u8>>) -> Option<ReplySeq> {
-        let total = self
-            .replies
-            .held_bytes
-            .saturating_add(ready.as_ref().map_or(0, Vec::len))
-            .saturating_add(refusal.as_ref().map_or(0, Vec::len));
+    fn push_reply(&mut self, state: ReplyState) -> Option<ReplySeq> {
+        let total = self.replies.held_bytes.saturating_add(state.len());
         if !self.admission(self.replies.entries.len().saturating_add(1), total) {
             return None;
         }
         let seq = ReplySeq(self.replies.next_seq);
         self.replies.next_seq = self.replies.next_seq.wrapping_add(1);
         self.replies.held_bytes = total;
-        self.replies.entries.push_back(HeldReply {
-            seq,
-            ready,
-            refusal,
-        });
+        self.replies.entries.push_back(HeldReply { seq, state });
         Some(seq)
     }
 
@@ -537,7 +561,7 @@ impl ClientOutbox {
         let Some(bytes) = self.frame(message) else {
             return;
         };
-        let _ = self.push_reply(Some(bytes), None);
+        let _ = self.push_reply(ReplyState::Ready(bytes));
     }
 
     /// Reserves the place of a reply a worker will complete, holding
@@ -545,28 +569,22 @@ impl ClientOutbox {
     /// outbox is closed or the reservation broke a bound (which closed it).
     pub(crate) fn reserve_reply(&mut self, refusal: &ServerMessage) -> Option<ReplySeq> {
         let bytes = self.frame(refusal)?;
-        self.push_reply(None, Some(bytes))
+        self.push_reply(ReplyState::Reserved { refusal: bytes })
     }
 
     /// Fills a reserved entry and drops its refusal. A completion for an
     /// entry already resolved (at shutdown) is ignored; encoding or held
     /// budget failure closes the queue for the loop to reap.
     pub(crate) fn complete_reply(&mut self, seq: ReplySeq, message: &ServerMessage) {
-        let Some(index) = self
-            .replies
-            .entries
-            .iter()
-            .position(|entry| entry.seq == seq && entry.ready.is_none())
-        else {
+        let Some(index) = self.replies.entries.iter().position(|entry| {
+            entry.seq == seq && matches!(entry.state, ReplyState::Reserved { .. })
+        }) else {
             return;
         };
         let Some(bytes) = self.frame(message) else {
             return;
         };
-        let refusal_bytes = self.replies.entries[index]
-            .refusal
-            .as_ref()
-            .map_or(0, Vec::len);
+        let refusal_bytes = self.replies.entries[index].state.len();
         let total = self
             .replies
             .held_bytes
@@ -575,9 +593,7 @@ impl ClientOutbox {
         if !self.admission(self.replies.entries.len(), total) {
             return;
         }
-        let entry = &mut self.replies.entries[index];
-        entry.refusal = None;
-        entry.ready = Some(bytes);
+        self.replies.entries[index].state = ReplyState::Ready(bytes);
         self.replies.held_bytes = total;
     }
 
@@ -585,8 +601,8 @@ impl ClientOutbox {
     /// refusal; the bytes move from refusal to reply, the total unchanged.
     pub(crate) fn resolve_replies_for_shutdown(&mut self) {
         for entry in &mut self.replies.entries {
-            if entry.ready.is_none() {
-                entry.ready = entry.refusal.take();
+            if let ReplyState::Reserved { refusal } = &mut entry.state {
+                entry.state = ReplyState::Ready(std::mem::take(refusal));
             }
         }
     }
@@ -598,9 +614,10 @@ impl ClientOutbox {
     /// wakes it when the writer drains the lane.
     pub(crate) fn release_replies(&mut self, mode: ReleaseMode) {
         while let Some(entry) = self.replies.entries.front_mut() {
-            let Some(bytes) = entry.ready.take() else {
+            let ReplyState::Ready(bytes) = &mut entry.state else {
                 break;
             };
+            let bytes = std::mem::take(bytes);
             let len = bytes.len();
             let result = match mode {
                 ReleaseMode::WithinBudget => self.queue.try_send_control_within_budget(bytes),
@@ -613,7 +630,7 @@ impl ClientOutbox {
                 }
                 Err(bytes) => {
                     if let Some(entry) = self.replies.entries.front_mut() {
-                        entry.ready = Some(bytes);
+                        entry.state = ReplyState::Ready(bytes);
                     }
                     break;
                 }
@@ -627,8 +644,7 @@ impl ClientOutbox {
 /// since the presentation was last reset".
 #[derive(Debug, Default)]
 struct Told {
-    /// (enabled, sgr_pixels)
-    mouse_capture: Option<(bool, bool)>,
+    mouse_capture: Option<HostMouseCapture>,
     keyboard_report_all: Option<bool>,
     /// `Some(None)` when the client was told to use its default title.
     window_title: Option<Option<String>>,
@@ -641,25 +657,17 @@ impl ClientOutbox {
         self.told = Told::default();
     }
 
-    /// Whether the client was last told to report SGR pixel mouse events.
-    pub(crate) fn told_sgr_pixels(&self) -> bool {
-        self.told.mouse_capture.is_some_and(|(_, pixels)| pixels)
-    }
-
     pub(crate) fn window_title_is_current(&self, title: &Option<String>) -> bool {
         self.told.window_title.as_ref() == Some(title)
     }
 
-    pub(crate) fn tell_mouse_capture(&mut self, enabled: bool, sgr_pixels: bool) {
-        if self.told.mouse_capture == Some((enabled, sgr_pixels)) {
+    pub(crate) fn tell_mouse_capture(&mut self, mode: HostMouseCapture) {
+        if self.told.mouse_capture == Some(mode) {
             return;
         }
-        let result = self.send(&ServerMessage::MouseCapture {
-            enabled,
-            sgr_pixels,
-        });
+        let result = self.send(&ServerMessage::MouseCapture { mode });
         if result == Delivery::Queued {
-            self.told.mouse_capture = Some((enabled, sgr_pixels));
+            self.told.mouse_capture = Some(mode);
         }
     }
 
@@ -726,12 +734,14 @@ impl ClientOutbox {
     }
 
     pub(crate) fn held_reply_message(&self, index: usize) -> Option<ServerMessage> {
-        let bytes = self.replies.entries.get(index)?.ready.as_ref()?;
+        let ReplyState::Ready(bytes) = &self.replies.entries.get(index)?.state else {
+            return None;
+        };
         shepr_protocol::read_message(&mut bytes.as_slice()).ok()
     }
 
-    pub(crate) fn told_mouse_capture(&self) -> Option<bool> {
-        self.told.mouse_capture.map(|(enabled, _)| enabled)
+    pub(crate) fn told_mouse_capture(&self) -> Option<HostMouseCapture> {
+        self.told.mouse_capture
     }
 
     pub(crate) fn told_keyboard_report_all(&self) -> Option<bool> {
@@ -977,7 +987,7 @@ mod tests {
         let reply =
             shepr_protocol::encode_message(&crate::server::client_commands::response_message(
                 shepr_test_fixtures::fixed_boot_id(1),
-                "request-a".into(),
+                shepr_protocol::RequestId::allocate(),
                 Ok(shepr_protocol::command::EndpointReply::Done),
             ))
             .expect("endpoint response frames");
@@ -1118,7 +1128,10 @@ mod tests {
                 .expect("frame")
                 .len()
         );
-        assert!(outbox.replies.entries[0].refusal.is_none());
+        assert!(matches!(
+            outbox.replies.entries[0].state,
+            ReplyState::Ready(_)
+        ));
     }
 
     #[tokio::test]
@@ -1167,17 +1180,15 @@ mod tests {
     #[test]
     fn told_values_send_only_changes_and_forget_on_presentation_reset() {
         let mut outbox = queued_outbox();
-        outbox.tell_mouse_capture(true, true);
+        outbox.tell_mouse_capture(HostMouseCapture::Pixels);
         outbox.tell_keyboard_report_all(false);
         outbox.tell_window_title(Some("title".into()));
-        outbox.tell_mouse_capture(true, true);
+        outbox.tell_mouse_capture(HostMouseCapture::Pixels);
         outbox.tell_keyboard_report_all(false);
         outbox.tell_window_title(Some("title".into()));
         assert_eq!(outbox.queue.lock_state().control_items, 3);
-        assert!(outbox.told_sgr_pixels());
         outbox.forget_presentation();
-        assert!(!outbox.told_sgr_pixels());
-        outbox.tell_mouse_capture(true, true);
+        outbox.tell_mouse_capture(HostMouseCapture::Pixels);
         outbox.tell_keyboard_report_all(false);
         outbox.tell_window_title(Some("title".into()));
         assert_eq!(outbox.queue.lock_state().control_items, 6);

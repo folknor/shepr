@@ -1,7 +1,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::ipc::{FlockLock, acquire_flock_lock};
+use crate::ipc::{FlockLock, LockWait, acquire_flock_lock};
 
 /// Exclusive ownership of a session data directory's lease file.
 pub struct DataDirectoryLease {
@@ -53,7 +53,7 @@ impl DataDirectoryLease {
 }
 
 fn try_acquire(path: &Path) -> io::Result<Option<FlockLock>> {
-    match acquire_flock_lock(path, false) {
+    match acquire_flock_lock(path, LockWait::FailIfHeld) {
         Ok(lock) => Ok(Some(lock)),
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(None),
         Err(error) => Err(error),

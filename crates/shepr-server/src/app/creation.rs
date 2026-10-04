@@ -1,10 +1,7 @@
 use std::path::PathBuf;
 
-use super::state::SpawnGeometry;
-use super::{App, api_helpers::presented_agent_status};
+use super::{App, SpawnGeometry, api_helpers::presented_agent_status};
 use shepr_config::NewTerminalCwd;
-use shepr_mux::workspace::Workspace;
-use shepr_term::host::HostCellSize;
 
 pub(crate) fn resolve_new_terminal_cwd(
     policy: &NewTerminalCwd,
@@ -25,48 +22,33 @@ pub(crate) fn resolve_new_terminal_cwd(
     }
 }
 
-pub(super) fn launch_cwd_for_terminal(
-    terminal_id: &shepr_protocol::TerminalId,
-    terminals: &std::collections::HashMap<
-        shepr_protocol::TerminalId,
-        shepr_mux::terminal::TerminalState,
-    >,
-    terminal_runtimes: &shepr_mux::pane::PaneRuntimeRegistry,
-) -> Option<PathBuf> {
-    shepr_mux::workspace::terminal_cwd(
-        terminal_runtimes.get(terminal_id),
-        terminals.get(terminal_id),
-        shepr_mux::workspace::CwdPurpose::FollowForNewPane,
-    )
-}
-
 impl App {
-    pub(super) fn seed_cwd_from_workspace(&self, ws_idx: usize) -> Option<PathBuf> {
-        let workspace = self.state.workspaces.get(ws_idx)?;
-        let root_pane_cwd = workspace.cwd_for_pane(
-            workspace.root_pane(),
-            &self.state.terminals,
-            &self.terminal_runtimes,
-        );
-        Some(workspace.resolved_identity_cwd_from_root_pane(root_pane_cwd))
+    pub(super) fn seed_cwd_from_workspace(
+        &self,
+        id: &shepr_protocol::WorkspaceId,
+    ) -> Option<PathBuf> {
+        let workspace = self.state.workspace(id)?;
+        Some(workspace.resolved_identity_cwd(&self.terminal_runtimes))
     }
 
-    pub(super) fn launch_cwd_for_pane_in_workspace(
+    pub(super) fn launch_cwd_for_pane(
         &self,
-        ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
     ) -> Option<PathBuf> {
-        let workspace = self.state.workspaces.get(ws_idx)?;
-        launch_cwd_for_terminal(
-            workspace.terminal_id(pane_id)?,
-            &self.state.terminals,
-            &self.terminal_runtimes,
+        let terminal = self.state.terminal(pane_id)?;
+        shepr_mux::workspace::terminal_cwd(
+            self.terminal_runtimes.get(&pane_id),
+            Some(terminal),
+            shepr_mux::workspace::CwdPurpose::FollowForNewPane,
         )
     }
 
-    pub(super) fn focused_pane_cwd_in_workspace(&self, ws_idx: usize) -> Option<PathBuf> {
-        let pane_id = self.state.workspaces.get(ws_idx)?.focused_pane_id();
-        self.launch_cwd_for_pane_in_workspace(ws_idx, pane_id)
+    pub(super) fn focused_pane_cwd_in_workspace(
+        &self,
+        id: &shepr_protocol::WorkspaceId,
+    ) -> Option<PathBuf> {
+        let pane_id = self.state.workspace(id)?.tree().focused();
+        self.launch_cwd_for_pane(pane_id)
     }
 
     pub(super) fn resolve_new_terminal_cwd(&self, follow_cwd: Option<PathBuf>) -> PathBuf {
@@ -78,13 +60,13 @@ impl App {
         )
     }
 
-    /// Where a new workspace starts when spawned from workspace `ws_idx`: the
+    /// Where a new workspace starts when spawned from workspace `id`: the
     /// focused pane's launch cwd, else the workspace's identity cwd, resolved
     /// through the new-terminal cwd policy.
-    pub(crate) fn resolved_new_workspace_cwd(&self, ws_idx: usize) -> PathBuf {
+    pub(crate) fn resolved_new_workspace_cwd(&self, id: &shepr_protocol::WorkspaceId) -> PathBuf {
         let follow_cwd = self
-            .focused_pane_cwd_in_workspace(ws_idx)
-            .or_else(|| self.seed_cwd_from_workspace(ws_idx));
+            .focused_pane_cwd_in_workspace(id)
+            .or_else(|| self.seed_cwd_from_workspace(id));
         self.resolve_new_terminal_cwd(follow_cwd)
     }
 
@@ -93,7 +75,7 @@ impl App {
     pub(crate) fn headless_spawn_geometry(&self) -> SpawnGeometry {
         SpawnGeometry {
             area: self.state.settings.headless_rect(),
-            cell_size: HostCellSize::default(),
+            cell: None,
         }
     }
 
@@ -107,9 +89,9 @@ impl App {
         &mut self,
         initial_cwd: &std::path::Path,
         geometry: SpawnGeometry,
-    ) -> std::io::Result<usize> {
+    ) -> std::io::Result<shepr_protocol::WorkspaceId> {
         self.create_workspace_outcome(initial_cwd, geometry)
-            .map(|outcome| outcome.workspace_index)
+            .map(|outcome| outcome.workspace_id)
     }
 
     pub(crate) fn create_workspace_outcome(
@@ -117,22 +99,23 @@ impl App {
         initial_cwd: &std::path::Path,
         geometry: SpawnGeometry,
     ) -> std::io::Result<super::actions::WorkspaceCreationOutcome> {
-        let chrome = self.state.pane_geometry_in(geometry.area);
-        let (ws, terminal, root_public_id) =
-            Workspace::prepare(&mut self.state.workspace_ids, initial_cwd);
+        let chrome = self.state.chrome_in(geometry.area);
+        let prepared = self.state.workspaces.prepare_workspace(initial_cwd);
         let runtime = self.launch_pane(
-            ws.root_pane(),
-            root_public_id,
+            prepared.root_pane(),
+            prepared.root_public_id(),
             chrome.sole_pane_spawn_geometry(geometry.cell_px()),
             initial_cwd,
             shepr_mux::pane::LaunchKind::Fresh,
         )?;
-        let terminal_id = terminal.id.clone();
-        let outcome = self.state.commit_workspace_creation(ws, terminal);
-        self.state
-            .record_workspace_geometry(&outcome.workspace_id, geometry);
-        self.install_terminal_runtime(terminal_id, runtime);
-        crate::logging::workspace_created(&outcome.workspace_id, outcome.root_pane.raw());
+        let Some(outcome) = self.state.commit_workspace_creation(prepared, geometry) else {
+            drop(runtime);
+            return Err(std::io::Error::other(
+                "the new workspace was refused by the session",
+            ));
+        };
+        self.install_runtime(outcome.root_pane, runtime);
+        crate::logging::workspace_created(&outcome.workspace_id, outcome.root_pane);
         Ok(outcome)
     }
 
@@ -141,45 +124,39 @@ impl App {
     /// snapshot entry with the `/proc` reads is `snapshot_pane`.
     pub(super) fn pane_info(
         &self,
-        ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
     ) -> Option<shepr_protocol::command::PaneInfo> {
-        let ws = self.state.workspaces.get(ws_idx)?;
-        if !ws.contains_pane(pane_id) {
-            return None;
-        }
+        let pane = self.state.pane(pane_id)?;
         let scroll = self
-            .state
-            .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
+            .terminal_runtimes
+            .get(&pane_id)
             .and_then(|runtime| runtime.read().scroll_metrics());
         Some(shepr_protocol::command::PaneInfo {
-            pane_id: self.public_pane_id(ws_idx, pane_id)?,
+            pane_id: pane.public_id(),
             scroll,
         })
     }
 
     pub(super) fn lookup_runtime(
         &self,
-        ws_idx: usize,
         pane_id: shepr_core::layout::PaneId,
     ) -> Option<&shepr_mux::pane::PaneRuntime> {
-        self.state
-            .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
+        self.terminal_runtimes.get(&pane_id)
     }
 
-    /// `None` when `index` names no workspace, like `pane_info`: every caller
-    /// either resolved the index a moment ago or carries it across an event,
-    /// and a stale index must not panic the server.
+    /// `None` when `id` names no workspace, like `pane_info`: a caller may
+    /// carry the id across an event, and a closed workspace must not panic the
+    /// server.
     pub(super) fn workspace_info(
         &self,
-        index: usize,
+        id: &shepr_protocol::WorkspaceId,
     ) -> Option<shepr_protocol::command::WorkspaceInfo> {
-        let ws = self.state.workspaces.get(index)?;
-        let agg_state = ws.aggregate_state(&self.state.terminals);
+        let ws = self.state.workspace(id)?;
+        let agg_state = ws.aggregate_state();
         Some(shepr_protocol::command::WorkspaceInfo {
-            workspace_id: self.public_workspace_id(index)?,
-            label: ws.display_name(),
-            pane_count: ws.pane_count(),
+            workspace_id: ws.id(),
+            label: ws.display_name().to_owned(),
+            pane_count: ws.tree().len(),
             agent_status: presented_agent_status(agg_state),
         })
     }

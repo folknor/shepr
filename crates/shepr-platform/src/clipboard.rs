@@ -26,8 +26,36 @@ fn system_clock() -> std::sync::Arc<dyn Fn() -> Instant + Send + Sync> {
     std::sync::Arc::new(Instant::now)
 }
 
-pub fn write_clipboard(bytes: &[u8]) -> bool {
-    write_clipboard_with(&clipboard_commands(ClipboardSession::from_env()), bytes)
+/// How clipboard writes leave this host, decided once from the host's
+/// environment: through the host terminal's OSC 52, or through the display
+/// server's clipboard helpers. Remote and VS Code remote sessions route through
+/// the terminal so bytes reach the user's own machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardRoute {
+    /// The host terminal carries the bytes; no helper is run.
+    Osc52,
+    /// Helpers for these display servers take the bytes first.
+    Helpers(ClipboardSession),
+}
+
+impl ClipboardRoute {
+    pub fn from_env() -> Self {
+        if crate::terminal_environment::prefers_osc52_clipboard() {
+            Self::Osc52
+        } else {
+            Self::Helpers(ClipboardSession::from_env())
+        }
+    }
+
+    /// Hands `bytes` to a clipboard helper. `false` means none took them: the
+    /// route is OSC 52, no display server is available, or every helper failed,
+    /// so the caller falls back to the terminal.
+    pub fn write_with_helpers(self, bytes: &[u8]) -> bool {
+        match self {
+            Self::Osc52 => false,
+            Self::Helpers(session) => write_clipboard_with(&clipboard_commands(session), bytes),
+        }
+    }
 }
 
 pub(super) fn write_clipboard_with(commands: &[ClipboardCommand], bytes: &[u8]) -> bool {
@@ -66,13 +94,21 @@ fn read_clipboard_text_with_clock(
 /// Which display servers the clipboard commands may talk to. Read from the
 /// environment once per call and passed in, so the command lists are pure and
 /// tests never have to mutate the process environment.
-#[derive(Debug, Clone, Copy)]
-pub(super) struct ClipboardSession {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClipboardSession {
     pub(super) wayland: bool,
     pub(super) x11: bool,
 }
 
 impl ClipboardSession {
+    /// A session with no display server, so no helper is selected.
+    pub const fn none() -> Self {
+        Self {
+            wayland: false,
+            x11: false,
+        }
+    }
+
     fn from_env() -> Self {
         Self {
             wayland: crate::env_present(shepr_core::env::EnvVar::WaylandDisplay),
@@ -204,9 +240,9 @@ fn write_all_until(
             Ok(written) => bytes = &bytes[written..],
             Err(error) if error.kind() == ErrorKind::Interrupted => {}
             Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                let wait_ms = poll_timeout_until(deadline, now())
+                let remaining = remaining_until(deadline, now())
                     .ok_or_else(|| std::io::Error::from(ErrorKind::TimedOut))?;
-                match poll_fd(pipe.as_raw_fd(), libc::POLLOUT, wait_ms) {
+                match poll_fd(pipe.as_raw_fd(), libc::POLLOUT, remaining) {
                     Ok(false) => return Err(ErrorKind::TimedOut.into()),
                     Ok(true) => {}
                     Err(error) if error.kind() == ErrorKind::Interrupted => {}

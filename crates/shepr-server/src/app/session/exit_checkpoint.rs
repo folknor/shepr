@@ -1,15 +1,14 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use super::{CheckpointGeneration, checkpoint_retry_delay};
-use crate::limits::CHECKPOINT_MAX_FAILURES;
+use super::{CHECKPOINT_MAX_FAILURES, CheckpointGeneration, checkpoint_retry_delay};
 
 /// The layout a pane-exit checkpoint made durable, kept so the final save can
 /// rewrite it (with fresh history and cwds) instead of the layout after the
 /// exited panes left.
 pub(super) struct PreservedLayout {
     pub(super) snapshot: shepr_mux::persist::SessionSnapshot,
-    pub(super) terminal_ids: HashMap<(usize, u32), shepr_protocol::TerminalId>,
+    pub(super) pane_ids: HashMap<shepr_mux::persist::SavedPaneRef, shepr_core::layout::PaneId>,
 }
 
 /// Generations are issued 1, 2, 3, ... per held exit. `through` is the newest
@@ -266,18 +265,18 @@ impl PaneExitCheckpoint {
 
 #[cfg(test)]
 mod tests {
+    use super::super::SESSION_SAVE_RETRY_MIN;
     use super::*;
-    use crate::limits::SESSION_SAVE_RETRY_MIN;
 
     fn layout() -> Box<PreservedLayout> {
         Box::new(PreservedLayout {
             snapshot: shepr_mux::persist::SessionSnapshot {
-                version: shepr_mux::persist::snapshot::SNAPSHOT_VERSION,
+                version: shepr_mux::persist::schema::SNAPSHOT_VERSION,
                 host_theme: Default::default(),
                 workspaces: vec![],
                 active: None,
             },
-            terminal_ids: HashMap::new(),
+            pane_ids: HashMap::new(),
         })
     }
     fn generation(value: u64) -> CheckpointGeneration {

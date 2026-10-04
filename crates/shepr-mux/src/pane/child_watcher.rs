@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use shepr_pty::backend::PaneChild;
 
-use super::exit_arbiter::{PaneEnding, PaneExitArbiter};
+use super::exit_arbiter::{PaneEndReason, PaneEnding, PaneExitArbiter, RecordedEnding};
 use super::teardown::ChildLiveness;
 use shepr_core::layout::PaneId;
 
@@ -24,7 +24,7 @@ pub(super) fn spawn(
             Ok(pidfd) => Some(pidfd),
             Err(err) => {
                 tracing::debug!(
-                    pane = pane_id.raw(),
+                    pane = %pane_id,
                     pid = %child.process_id(),
                     error = %err,
                     "could not duplicate child pidfd; falling back to child wait"
@@ -47,16 +47,16 @@ pub(super) fn spawn(
         // wait proves nothing about the child, which may still be alive.
         let (ending, logged) = match result {
             Ok(status) => (
-                PaneEnding::Observed {
-                    reason: shepr_platform::classify_child_exit(&status),
+                RecordedEnding::Observed {
+                    ending: PaneEnding::new(shepr_platform::classify_child_exit(&status).into()),
                     child_exit_confirmed: true,
                     ended_at,
                 },
                 Ok(status),
             ),
             Err(error) => (
-                PaneEnding::Observed {
-                    reason: shepr_platform::ChildExitReason::WaitFailed,
+                RecordedEnding::Observed {
+                    ending: PaneEnding::new(PaneEndReason::WaitFailed),
                     child_exit_confirmed: false,
                     ended_at,
                 },
@@ -65,8 +65,8 @@ pub(super) fn spawn(
         };
         arbiter.decide(ending);
         match logged {
-            Ok(status) => crate::logging::pane_exited(pane_id.raw(), &status),
-            Err(error) => crate::logging::pane_exit_failed(pane_id.raw(), &error.to_string()),
+            Ok(status) => super::logging::pane_exited(pane_id, &status),
+            Err(error) => super::logging::pane_exit_failed(pane_id, &error.to_string()),
         }
     });
 }
@@ -81,8 +81,8 @@ pub(super) fn reap_after_startup_failure(
 ) {
     reap_on_detached_thread(child, move |result| {
         match result {
-            Ok(status) => crate::logging::pane_exited(pane_id.raw(), &status),
-            Err(err) => crate::logging::pane_exit_failed(pane_id.raw(), &err.to_string()),
+            Ok(status) => super::logging::pane_exited(pane_id, &status),
+            Err(err) => super::logging::pane_exit_failed(pane_id, &err.to_string()),
         }
         if let Some(child_liveness) = child_liveness {
             child_liveness.mark_wait_completed();

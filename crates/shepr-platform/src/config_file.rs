@@ -4,7 +4,6 @@
 //! the syscalls it stands on.
 
 use std::{
-    io::Write,
     os::fd::{AsRawFd, RawFd},
     path::Path,
 };
@@ -12,30 +11,6 @@ use std::{
 pub fn config_file_link_count(path: &Path) -> std::io::Result<u64> {
     use std::os::unix::fs::MetadataExt;
     Ok(std::fs::metadata(path)?.nlink())
-}
-
-pub fn create_config_temporary(path: &Path) -> std::io::Result<std::fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o666)
-        .open(path)
-}
-
-/// Writes `contents` into a freshly created temporary through `output`, the
-/// handle its exclusive create returned, never a reopen by path: the path
-/// could have been swapped for a symlink since. With `source`, the file it
-/// will replace, the owner, access controls and mode are copied first, while
-/// the temporary is still empty.
-pub fn write_config_temporary(
-    source: Option<&Path>,
-    mut output: std::fs::File,
-    contents: &[u8],
-) -> std::io::Result<()> {
-    preserve_metadata(source, &output)?;
-    output.write_all(contents)?;
-    output.sync_all()
 }
 
 pub(crate) fn preserve_metadata(
@@ -209,6 +184,33 @@ fn copy_config_xattrs(source: RawFd, destination: RawFd) -> std::io::Result<()> 
 // refuses a copy.
 fn is_posix_acl_xattr(name: &std::ffi::CStr) -> bool {
     name.to_bytes().starts_with(b"system.posix_acl_")
+}
+
+#[cfg(test)]
+pub(crate) fn create_config_temporary(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o666)
+        .open(path)
+}
+
+/// Writes `contents` into a freshly created temporary through `output`, the
+/// handle its exclusive create returned, never a reopen by path: the path
+/// could have been swapped for a symlink since. With `source`, the file it
+/// will replace, the owner, access controls and mode are copied first, while
+/// the temporary is still empty.
+#[cfg(test)]
+pub(crate) fn write_config_temporary(
+    source: Option<&Path>,
+    mut output: std::fs::File,
+    contents: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    preserve_metadata(source, &output)?;
+    output.write_all(contents)?;
+    output.sync_all()
 }
 
 #[cfg(test)]

@@ -12,11 +12,24 @@ const SHEPR_ENV = process.env.SHEPR_ENV;
 const socketPath = process.env.SHEPR_SOCKET_PATH;
 const paneId = process.env.SHEPR_PANE_ID;
 const source = "shepr:pi";
-let requestQueue = Promise.resolve();
+const AGENT = "pi";
+const METHOD_SESSION = "pane.report_agent_session";
+const METHOD_STATE = "pane.report_agent";
+const SOCKET_WAIT_MS = 500;
 
+// Only a release pane of a shepr server has anything to report to, and the
+// agent's own decoder can stand the extension down further.
 function enabled() {
-  return process.env.SHEPR_BUILD_PROFILE === "release" && SHEPR_ENV === "1" && !!socketPath && !!paneId;
+  return (
+    process.env.SHEPR_BUILD_PROFILE === "release" &&
+    SHEPR_ENV === "1" &&
+    !!socketPath &&
+    !!paneId &&
+    agentEnabled()
+  );
 }
+
+let requestQueue = Promise.resolve();
 
 function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolean> {
   if (!enabled()) {
@@ -46,13 +59,13 @@ function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolea
   });
 }
 
-// This retry is for socket delivery. Pi's agent_settled event supplies the
-// state boundary, so it does not need OMP's state debounce or retry grace.
+// This retry is for socket delivery. It is not a state debounce: the agent's
+// own events supply the state boundaries.
 async function sendRequestNow(request: unknown): Promise<void> {
-  if (await sendRequestAttempt(request, 500)) {
+  if (await sendRequestAttempt(request, SOCKET_WAIT_MS)) {
     return;
   }
-  await sendRequestAttempt(request, 500);
+  await sendRequestAttempt(request, SOCKET_WAIT_MS);
 }
 
 function sendRequest(request: unknown): Promise<void> {
@@ -72,13 +85,16 @@ type QueuedState = {
   seq: number;
 };
 
+const STATE = { working: "working", blocked: "blocked", idle: "idle" };
+
 // Seqs are microseconds since the epoch plus one per report, while the shell
 // and Python hooks send nanoseconds. The units never meet: shepr orders seqs
-// per source string, and nothing else reports under this source. Nanoseconds
-// are not an option here: they exceed 2^53, where a JS number stops being
-// exact, so `+= 1` would round away. The wall-clock seed puts a restarted
-// process above its predecessor's last seq; after a backwards clock step,
-// shepr accepts any seq from a source that has been silent for a few seconds.
+// per source string, and every JavaScript reporter under one source uses this
+// unit. Nanoseconds are not an option here: they exceed 2^53, where a JS
+// number stops being exact, so `+= 1` would round away. The wall-clock seed
+// puts a restarted process above its predecessor's last seq; after a backwards
+// clock step, shepr accepts any seq from a source that has been silent for a
+// few seconds.
 let reportSeq = Date.now() * 1000;
 let currentAgentSessionId: string | undefined;
 let currentAgentSessionPath: string | undefined;
@@ -88,11 +104,14 @@ function nextReportSeq(): number {
   return reportSeq;
 }
 
+function isAbsoluteSessionPath(file: unknown): file is string {
+  return typeof file === "string" && path.posix.isAbsolute(file);
+}
+
 function updateSessionRef(ctx: any): void {
   try {
     const file = ctx?.sessionManager?.getSessionFile?.();
-    currentAgentSessionPath =
-      typeof file === "string" && path.posix.isAbsolute(file) ? file : undefined;
+    currentAgentSessionPath = isAbsoluteSessionPath(file) ? file : undefined;
   } catch {
     currentAgentSessionPath = undefined;
   }
@@ -134,13 +153,13 @@ function reportSession(sessionStartSource?: string): Promise<void> {
   const seq = nextReportSeq();
   return sendRequest({
     id: `${source}:${seq}`,
-    method: "pane.report_agent_session",
+    method: METHOD_SESSION,
     params: {
       pane_id: paneId,
       source,
-      agent: "pi",
+      agent: AGENT,
       seq,
-      session_start_source: sessionStartSource,
+      ...(sessionStartSource ? { session_start_source: sessionStartSource } : {}),
       ...sessionRef,
     },
   });
@@ -153,11 +172,11 @@ function sendState(state: AgentState, seq = nextReportSeq()): Promise<void> {
 
   return sendRequest({
     id: `${source}:${seq}`,
-    method: "pane.report_agent",
+    method: METHOD_STATE,
     params: withSessionRef({
       pane_id: paneId,
       source,
-      agent: "pi",
+      agent: AGENT,
       state,
       seq,
     }),
@@ -194,6 +213,12 @@ async function drainStateQueue(): Promise<void> {
   }
 }
 
+function agentEnabled() {
+  return true;
+}
+
+// Pi's agent_settled event supplies the state boundary, so it does not need
+// OMP's state debounce or retry grace.
 export default function (pi) {
   if (!enabled()) {
     return;
@@ -206,12 +231,12 @@ export default function (pi) {
 
   function desiredState() {
     if (blockedCount > 0) {
-      return "blocked" as const;
+      return STATE.blocked;
     }
     if (agentActive) {
-      return "working" as const;
+      return STATE.working;
     }
-    return "idle" as const;
+    return STATE.idle;
   }
 
   function publishState(force = false) {

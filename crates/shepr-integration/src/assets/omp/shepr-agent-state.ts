@@ -12,13 +12,21 @@ const SHEPR_ENV = process.env.SHEPR_ENV;
 const socketPath = process.env.SHEPR_SOCKET_PATH;
 const paneId = process.env.SHEPR_PANE_ID;
 const source = "shepr:omp";
-// OMP marks every shell it spawns with OMPCODE=1. A nested `omp` launched from
-// a parent session's shell inherits it, so that process is not the pane's root
-// agent and must not report its short-lived session over the parent's.
-const nestedOmpSession = process.env.OMPCODE === "1";
+const AGENT = "omp";
+const METHOD_SESSION = "pane.report_agent_session";
+const METHOD_STATE = "pane.report_agent";
+const SOCKET_WAIT_MS = 500;
 
+// Only a release pane of a shepr server has anything to report to, and the
+// agent's own decoder can stand the extension down further.
 function enabled() {
-  return process.env.SHEPR_BUILD_PROFILE === "release" && SHEPR_ENV === "1" && !!socketPath && !!paneId && !nestedOmpSession;
+  return (
+    process.env.SHEPR_BUILD_PROFILE === "release" &&
+    SHEPR_ENV === "1" &&
+    !!socketPath &&
+    !!paneId &&
+    agentEnabled()
+  );
 }
 
 let requestQueue = Promise.resolve();
@@ -51,19 +59,23 @@ function sendRequestAttempt(request: unknown, timeoutMs: number): Promise<boolea
   });
 }
 
+// This retry is for socket delivery. It is not a state debounce: the agent's
+// own events supply the state boundaries.
 async function sendRequestNow(request: unknown): Promise<void> {
-  if (await sendRequestAttempt(request, 500)) {
+  if (await sendRequestAttempt(request, SOCKET_WAIT_MS)) {
     return;
   }
-  await sendRequestAttempt(request, 500);
+  await sendRequestAttempt(request, SOCKET_WAIT_MS);
 }
 
 function sendRequest(request: unknown): Promise<void> {
-  requestQueue = requestQueue.then(
+  // Keep both attempts in one slot so a retry cannot arrive after a newer seq.
+  const pending = requestQueue.then(
     () => sendRequestNow(request),
     () => sendRequestNow(request),
   );
-  return requestQueue;
+  requestQueue = pending.catch(() => {});
+  return pending;
 }
 
 type AgentState = "working" | "blocked" | "idle";
@@ -73,22 +85,16 @@ type QueuedState = {
   seq: number;
 };
 
-// These timers describe OMP state events, not socket delivery retries. OMP can
-// report agent_end while an automatic provider retry is starting, so retain
-// Working during the retry window and delay Idle across a quick new turn. Pi's
-// separate agent_settled event already denotes settlement; other integrations
-// report their own lifecycle hooks, so this is not a shared agent policy.
-const idleDebounceMs = parseDurationEnv("SHEPR_OMP_IDLE_DEBOUNCE_MS", 250);
-const retryGraceMs = parseDurationEnv("SHEPR_OMP_RETRY_GRACE_MS", 2500);
-const retryableErrorPattern =
-  /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
+const STATE = { working: "working", blocked: "blocked", idle: "idle" };
+
 // Seqs are microseconds since the epoch plus one per report, while the shell
 // and Python hooks send nanoseconds. The units never meet: shepr orders seqs
-// per source string, and nothing else reports under this source. Nanoseconds
-// are not an option here: they exceed 2^53, where a JS number stops being
-// exact, so `+= 1` would round away. The wall-clock seed puts a restarted
-// process above its predecessor's last seq; after a backwards clock step,
-// shepr accepts any seq from a source that has been silent for a few seconds.
+// per source string, and every JavaScript reporter under one source uses this
+// unit. Nanoseconds are not an option here: they exceed 2^53, where a JS
+// number stops being exact, so `+= 1` would round away. The wall-clock seed
+// puts a restarted process above its predecessor's last seq; after a backwards
+// clock step, shepr accepts any seq from a source that has been silent for a
+// few seconds.
 let reportSeq = Date.now() * 1000;
 let currentAgentSessionId: string | undefined;
 let currentAgentSessionPath: string | undefined;
@@ -98,7 +104,7 @@ function nextReportSeq(): number {
   return reportSeq;
 }
 
-export function isAbsoluteSessionPath(file: unknown): file is string {
+function isAbsoluteSessionPath(file: unknown): file is string {
   return typeof file === "string" && path.posix.isAbsolute(file);
 }
 
@@ -128,18 +134,6 @@ function withSessionRef(params: Record<string, unknown>): Record<string, unknown
   return params;
 }
 
-function parseDurationEnv(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return fallback;
-  }
-  return parsed;
-}
-
 function currentSessionRef(): Record<string, unknown> | undefined {
   if (currentAgentSessionPath) {
     return { agent_session_path: currentAgentSessionPath };
@@ -159,11 +153,11 @@ function reportSession(sessionStartSource?: string): Promise<void> {
   const seq = nextReportSeq();
   return sendRequest({
     id: `${source}:${seq}`,
-    method: "pane.report_agent_session",
+    method: METHOD_SESSION,
     params: {
       pane_id: paneId,
       source,
-      agent: "omp",
+      agent: AGENT,
       seq,
       ...(sessionStartSource ? { session_start_source: sessionStartSource } : {}),
       ...sessionRef,
@@ -178,11 +172,11 @@ function sendState(state: AgentState, seq = nextReportSeq()): Promise<void> {
 
   return sendRequest({
     id: `${source}:${seq}`,
-    method: "pane.report_agent",
+    method: METHOD_STATE,
     params: withSessionRef({
       pane_id: paneId,
       source,
-      agent: "omp",
+      agent: AGENT,
       state,
       seq,
     }),
@@ -217,6 +211,37 @@ async function drainStateQueue(): Promise<void> {
       void drainStateQueue();
     }
   }
+}
+
+// OMP marks every shell it spawns with OMPCODE=1. A nested `omp` launched from
+// a parent session's shell inherits it, so that process is not the pane's root
+// agent and must not report its short-lived session over the parent's.
+const nestedOmpSession = process.env.OMPCODE === "1";
+
+function agentEnabled() {
+  return !nestedOmpSession;
+}
+
+// These timers describe OMP state events, not socket delivery retries. OMP can
+// report agent_end while an automatic provider retry is starting, so retain
+// Working during the retry window and delay Idle across a quick new turn. Pi's
+// separate agent_settled event already denotes settlement; other integrations
+// report their own lifecycle hooks, so this is not a shared agent policy.
+const idleDebounceMs = parseDurationEnv("SHEPR_OMP_IDLE_DEBOUNCE_MS", 250);
+const retryGraceMs = parseDurationEnv("SHEPR_OMP_RETRY_GRACE_MS", 2500);
+const retryableErrorPattern =
+  /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
+
+function parseDurationEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
 }
 
 function lastAssistantMessage(messages: unknown[]): any | undefined {
@@ -272,15 +297,15 @@ export default function (pi) {
 
   function desiredState() {
     if (blockedCount > 0) {
-      return "blocked" as const;
+      return STATE.blocked;
     }
     if (failureBlocked) {
-      return "blocked" as const;
+      return STATE.blocked;
     }
     if (agentActive || retryHoldActive) {
-      return "working" as const;
+      return STATE.working;
     }
-    return "idle" as const;
+    return STATE.idle;
   }
 
   function publishState(force = false) {

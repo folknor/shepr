@@ -1,9 +1,15 @@
 use super::*;
 
+/// How long a pane whose terminal closed waits for its child watcher to
+/// report the exit before ending the pane on its own. A child that exits
+/// closes its terminal moments before it is reaped, so this normally runs out
+/// only for a child that closed its terminal and kept running.
+const TERMINAL_CLOSED_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+
 // Every pane ending is recorded with the pane's exit arbiter, and the launch
 // coordinator publishes the first one. Reader failure can leave a live child
 // without an output reader, so it decides at once and the app tears the pane
-// down; IO failure checkpoints the usable terminal, a core panic does not. A
+// down; `PaneEnding` decides which of these are checkpointed. A
 // closed terminal is how a pane normally ends, so the child watcher gets
 // `closed_grace` (`TERMINAL_CLOSED_EXIT_GRACE` in production) to record the
 // real exit. If it has not by then, the pane ends anyway: usually the child
@@ -18,27 +24,27 @@ pub(super) fn reader_exit_callback(
 ) -> Box<dyn FnOnce(ReaderExit) + Send> {
     // clock-io-ok: when the reader saw the ending (a closed terminal ends
     // when it closed, not when its grace runs out).
-    let ending = |reason| PaneEnding::Observed {
-        reason,
+    let ending = |reason| RecordedEnding::Observed {
+        ending: PaneEnding::new(reason),
         child_exit_confirmed: false,
         ended_at: std::time::Instant::now(),
     };
     Box::new(move |exit| match exit {
         ReaderExit::ShutdownRequested => {}
         ReaderExit::Closed => {
-            let closed = ending(shepr_platform::ChildExitReason::TerminalClosed);
+            let closed = ending(PaneEndReason::TerminalClosed);
             if arbiter.decide_after(closed_grace, closed) {
                 warn!(
-                    pane = pane_id.raw(),
+                    pane = %pane_id,
                     "pane terminal closed and its child's exit was not reported in time; ending the pane"
                 );
             }
         }
         ReaderExit::Panicked => {
-            arbiter.decide(ending(shepr_platform::ChildExitReason::ReaderPanicked));
+            arbiter.decide(ending(PaneEndReason::ReaderPanicked));
         }
         ReaderExit::IoFailed => {
-            arbiter.decide(ending(shepr_platform::ChildExitReason::ReaderIoFailed));
+            arbiter.decide(ending(PaneEndReason::ReaderIoFailed));
         }
     })
 }
@@ -46,20 +52,17 @@ pub(super) fn reader_exit_callback(
 pub(super) fn prepare_terminal(
     pane_id: PaneId,
     geometry: shepr_core::geometry::PaneGeometry,
-    scrollback_limit_bytes: usize,
+    scrollback: shepr_core::scrollback::ScrollbackBudget,
     host_terminal_theme: shepr_term::host::TerminalTheme,
     host_terminal_appearance: Option<shepr_term::host::HostAppearance>,
     initial_history_ansi: Option<&str>,
-    local_host: Option<Arc<str>>,
+    local_host: Option<Arc<shepr_platform::HostNames>>,
 ) -> Arc<PaneTerminal> {
-    let cols = geometry.cols();
-    let rows = geometry.rows();
-    let terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
+    let terminal = shepr_vt::Terminal::new(geometry, scrollback);
     let pane_terminal = PaneTerminal::new_with_pane_id(pane_id, terminal, local_host);
-    // The cached size below claims the cell size, so the terminal learns it
-    // now: a later `resize` to the same geometry is a no-op and would never
-    // tell it. Nothing has enabled in-band size reports on a fresh
-    // terminal, so there is no reply to route.
+    // The terminal was built from `geometry`, cell size included, so this
+    // `resize` is a no-op for it. Nothing has enabled in-band size reports on
+    // a fresh terminal, so there is no reply to route.
     let _ = pane_terminal.resize(geometry);
     pane_terminal.apply_host_terminal_theme(host_terminal_theme);
     let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
@@ -82,6 +85,7 @@ struct PtySetup<'a> {
     events: &'a crate::events::EventSender,
     render_notify: &'a Arc<Notify>,
     render_dirty: &'a Arc<RenderSignal>,
+    pty_render: &'a PaneRenderSlot,
     teardown_tracker: &'a Arc<PaneTeardownTracker>,
     exit_arbiter: &'a Arc<PaneExitArbiter>,
 }
@@ -104,6 +108,7 @@ impl PtySetup<'_> {
             events,
             render_notify,
             render_dirty,
+            pty_render,
             teardown_tracker,
             exit_arbiter,
         } = self;
@@ -118,7 +123,7 @@ impl PtySetup<'_> {
                 status_sender.send(channel).ok();
             }),
         )
-        .inspect_err(|err| error!(pane = pane_id.raw(), error = %err, "failed to spawn shell"))?;
+        .inspect_err(|err| error!(pane = %pane_id, error = %err, "failed to spawn shell"))?;
 
         let mut child = spawned.child;
         let master_fd = spawned.master_fd;
@@ -126,12 +131,10 @@ impl PtySetup<'_> {
             channel: status_channel,
             registration: spawned.status,
             cwd_candidates: spawned.cwd_candidates,
-            // Launch status stores this as text and rebuilds the failure path;
-            // preserving non-UTF-8 bytes needs a path type through that payload.
-            program: cmd.program().to_string_lossy().into_owned(),
+            program: std::path::PathBuf::from(cmd.program()),
         };
         let pid = child.process_id();
-        crate::logging::pane_spawned(pane_id.raw(), pid);
+        crate::pane::logging::pane_spawned(pane_id, pid);
         let child_liveness = Arc::new(ChildLiveness::launching(child.handle()));
         let io: Box<dyn ChildIo> = {
             // Failure cleanup and read effects use the same child identity.
@@ -142,6 +145,7 @@ impl PtySetup<'_> {
                 terminal: Arc::clone(terminal),
                 render_notify: Arc::clone(render_notify),
                 render_dirty: Arc::clone(render_dirty),
+                pty_render: pty_render.clone(),
                 cwd: Arc::clone(cwd_state),
                 events: events.clone(),
                 child_liveness: Arc::clone(&child_liveness),
@@ -160,7 +164,7 @@ impl PtySetup<'_> {
             let on_reader_exit = reader_exit_callback(
                 pane_id,
                 Arc::clone(exit_arbiter),
-                crate::limits::TERMINAL_CLOSED_EXIT_GRACE,
+                TERMINAL_CLOSED_EXIT_GRACE,
             );
             let actor = PtyIoActor::spawn(PtyIoActorConfig {
                 pane_id,
@@ -185,7 +189,7 @@ impl PtySetup<'_> {
                     );
                     if let Err(kill_err) = child.kill() {
                         warn!(
-                            pane = pane_id.raw(),
+                            pane = %pane_id,
                             %pid,
                             error = %kill_err,
                             "failed to kill pane child after PTY actor startup failed"
@@ -224,11 +228,11 @@ pub struct PaneLauncher {
     handles: PaneSpawnHandles,
     shell: shepr_core::shell::ResolvedShell,
     login_shell: bool,
-    scrollback_limit_bytes: usize,
-    /// The server's host name, resolved once at its startup (`None` when it
-    /// could not be), which every pane matches OSC 7 `file://` reports
+    scrollback: shepr_core::scrollback::ScrollbackBudget,
+    /// The server's host names, resolved once at its startup (`None` when
+    /// they could not be), which every pane matches OSC 7 `file://` reports
     /// against.
-    local_host: Option<Arc<str>>,
+    local_host: Option<Arc<shepr_platform::HostNames>>,
 }
 
 #[derive(Clone)]
@@ -257,7 +261,7 @@ pub struct PaneLaunchRequest<'a> {
     pub pane_id: PaneId,
     pub public_id: shepr_protocol::PublicPaneId,
     pub geometry: shepr_core::geometry::PaneGeometry,
-    pub cwd: &'a std::path::Path,
+    pub cwd: &'a shepr_core::absolute_path::AbsolutePath,
     pub kind: LaunchKind,
     pub initial_history: Option<&'a str>,
     pub presentation: LaunchPresentation,
@@ -267,14 +271,14 @@ impl PaneLauncher {
     pub fn new(
         handles: PaneSpawnHandles,
         shell: PaneShellConfig<'_>,
-        scrollback_limit_bytes: usize,
-        local_host: Option<Arc<str>>,
+        scrollback: shepr_core::scrollback::ScrollbackBudget,
+        local_host: Option<Arc<shepr_platform::HostNames>>,
     ) -> Self {
         Self {
             handles,
             shell: shell.default_shell.clone(),
             login_shell: shell.login_shell,
-            scrollback_limit_bytes,
+            scrollback,
             local_host,
         }
     }
@@ -309,7 +313,7 @@ impl PaneLauncher {
             LaunchPresentation::Live { theme, appearance } => (theme, appearance),
             LaunchPresentation::Saved(theme) => (theme, None),
         };
-        let scrollback_limit_bytes = self.scrollback_limit_bytes;
+        let scrollback = self.scrollback;
         let render_notify = &self.handles.render_notify;
         let render_dirty = &self.handles.render_dirty;
         let mut cmd = pane_shell_command_builder(
@@ -325,12 +329,12 @@ impl PaneLauncher {
         // and a later `resize` to the same size is a no-op.
         let rows = geometry.rows();
         let cols = geometry.cols();
-        crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
+        crate::pane::logging::pane_spawn_started(pane_id, rows, cols, scrollback);
 
         let terminal = prepare_terminal(
             pane_id,
             geometry,
-            scrollback_limit_bytes,
+            scrollback,
             host_terminal_theme,
             host_terminal_appearance,
             initial_history,
@@ -345,6 +349,9 @@ impl PaneLauncher {
         // Created before the actor, which may end before the watcher exists;
         // the one instance goes to the actor, the watcher and the runtime.
         let exit_arbiter = Arc::new(PaneExitArbiter::default());
+        // The pane's render-coalescing state, shared by its read effects and
+        // its detection task; the terminal does not hold it.
+        let pty_render = PaneRenderSlot::default();
         let StartedPty {
             child,
             child_liveness,
@@ -359,6 +366,7 @@ impl PaneLauncher {
             events: &events,
             render_notify,
             render_dirty,
+            pty_render: &pty_render,
             teardown_tracker: &teardown_tracker,
             exit_arbiter: &exit_arbiter,
         }
@@ -391,11 +399,13 @@ impl PaneLauncher {
             super::detection_task::DetectionHandles {
                 terminal: Arc::clone(&terminal),
                 child_liveness: Arc::clone(&child_liveness),
+                exit_arbiter: Arc::clone(&exit_arbiter),
                 lifecycle_authority: Arc::clone(&full_lifecycle_authority_active),
                 reset: Arc::clone(&detect_reset_notify),
                 events: events.clone(),
                 render_notify: Arc::clone(render_notify),
                 render_dirty: Arc::clone(render_dirty),
+                pty_render,
             },
         ));
 

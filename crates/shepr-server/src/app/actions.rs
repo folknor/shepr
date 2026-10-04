@@ -3,11 +3,9 @@
 
 use shepr_core::layout::PaneId;
 use shepr_detect::ownership::{AgentOwnershipMutation, EffectiveStateChange};
-use shepr_mux::events::AppEvent;
+use shepr_mux::events::RuntimeEvent;
 use shepr_mux::git::WorkspaceGitStatus;
-use shepr_mux::workspace::{
-    PaneRemoval, PaneRemovalPlan as WorkspacePaneRemovalPlan, PaneRemovalScope,
-};
+use shepr_mux::workspace::PaneRemovalScope;
 
 use super::state::AppState;
 
@@ -39,58 +37,42 @@ pub(crate) enum StateUpdate {
     Released,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PaneRemovalPlan {
-    pub(crate) workspace_index: usize,
-    workspace_plan: WorkspacePaneRemovalPlan,
-}
-
+/// A pane removed from its workspace; a workspace's last pane takes the
+/// workspace with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneRemovalOutcome {
+    pub(crate) workspace_id: shepr_protocol::WorkspaceId,
+    pub(crate) pane_id: PaneId,
+    pub(crate) scope: PaneRemovalScope,
     pub(crate) focus_changed: bool,
-    pub(crate) workspace_index: usize,
-    pub(crate) removal: PaneRemoval,
-    /// Terminals the removal detached from state; the caller shuts down
-    /// their runtimes.
-    pub(crate) detached_terminal_ids: Vec<shepr_protocol::TerminalId>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[must_use = "a stale plan removed nothing; the caller must report it"]
-pub(crate) enum PaneRemovalCommit {
-    Removed(PaneRemovalOutcome),
-    Stale,
+    /// The panes that left; the caller shuts down their runtimes.
+    pub(crate) removed: Vec<PaneId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceRemovalOutcome {
     pub(crate) workspace_id: shepr_protocol::WorkspaceId,
-    pub(crate) pane_ids: Vec<PaneId>,
-    pub(crate) terminal_ids: Vec<shepr_protocol::TerminalId>,
-    /// Terminals the removal detached from state; the caller shuts down
-    /// their runtimes.
-    pub(crate) detached_terminal_ids: Vec<shepr_protocol::TerminalId>,
+    /// The panes that left; the caller shuts down their runtimes.
+    pub(crate) removed: Vec<PaneId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspaceCreationOutcome {
-    pub(crate) workspace_index: usize,
     pub(crate) workspace_id: shepr_protocol::WorkspaceId,
     pub(crate) root_pane: PaneId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneCreationOutcome {
-    pub(crate) workspace_index: usize,
+    pub(crate) workspace_id: shepr_protocol::WorkspaceId,
     pub(crate) pane_id: PaneId,
-    pub(crate) terminal_id: shepr_protocol::TerminalId,
 }
 
 /// What a zoom toggle did: whether the workspace's zoom and the pane focus moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PaneZoomOutcome {
-    pub changed: bool,
-    pub focus_changed: bool,
+    pub(crate) changed: bool,
+    pub(crate) focus_changed: bool,
 }
 
 mod events;

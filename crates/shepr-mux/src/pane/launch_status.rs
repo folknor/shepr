@@ -29,18 +29,32 @@
 //! on it, and shutdown does not wait for it.
 
 use std::os::fd::OwnedFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use shepr_pty::launch::{LaunchStatusEvent, LaunchStatusReader, Registration};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{oneshot, watch};
 
-use super::exit_arbiter::{PaneEnding, PaneExitArbiter};
+use super::exit_arbiter::{PaneExitArbiter, RecordedEnding};
 use super::teardown::ChildLiveness;
 use crate::events::EventSender;
 use crate::terminal::PaneStartFailure;
 use shepr_core::layout::PaneId;
+
+/// How long a pane launch whose child has exited still waits for that child's
+/// status channel. A child that connected before exiting is already in the
+/// listener's queue and is routed at once; this only bounds the wait for one
+/// that never connected (a failure before its first report).
+const LAUNCH_STATUS_AFTER_EXIT: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long a launch still unsettled when its pane ended with the child
+/// possibly alive (a failed PTY reader, a failed wait) may take to settle
+/// before it is settled as unconfirmed. Lets a failure report already sent
+/// arrive, without letting a child stuck in its chdir keep the pane open.
+const LAUNCH_SETTLE_AFTER_PANE_END: std::time::Duration = std::time::Duration::from_secs(1);
+/// How often a pane launch checks whether its child exited when it cannot
+/// watch the child's pidfd (the dup failed). Only that fallback polls.
+const LAUNCH_EXIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// How a pane launch ended, as the app is told.
 #[derive(Debug)]
@@ -89,7 +103,7 @@ pub(super) struct LaunchStatus {
     pub(super) channel: oneshot::Receiver<OwnedFd>,
     pub(super) registration: Registration,
     pub(super) cwd_candidates: Vec<PathBuf>,
-    pub(super) program: String,
+    pub(super) program: PathBuf,
 }
 
 /// Starts the coordinator. Returns the watch the detection task waits on.
@@ -170,10 +184,10 @@ async fn coordinate<Claim>(
     let settlement = tokio::select! {
         biased;
         ending = arbiter.decided() => match ending {
-            PaneEnding::Silent => return,
-            PaneEnding::Observed { child_exit_confirmed: true, .. } => settling.await,
-            PaneEnding::Observed { child_exit_confirmed: false, .. } => {
-                tokio::time::timeout(crate::limits::LAUNCH_SETTLE_AFTER_PANE_END, settling)
+            RecordedEnding::Silent => return,
+            RecordedEnding::Observed { child_exit_confirmed: true, .. } => settling.await,
+            RecordedEnding::Observed { child_exit_confirmed: false, .. } => {
+                tokio::time::timeout(LAUNCH_SETTLE_AFTER_PANE_END, settling)
                     .await
                     .unwrap_or(LaunchOutcome::Unconfirmed)
             }
@@ -183,14 +197,14 @@ async fn coordinate<Claim>(
     drop(claim);
     // A teardown recorded while the settlement finished: the pane is gone,
     // so nothing about it is published.
-    if arbiter.ending() == Some(PaneEnding::Silent) {
+    if arbiter.ending() == Some(RecordedEnding::Silent) {
         return;
     }
     let launched = matches!(settlement, LaunchOutcome::Launched { .. });
     child_liveness.settle_launch(launched);
     progress.send_replace(LaunchProgress);
     if let LaunchOutcome::Failed(failure) = &settlement {
-        tracing::warn!(pane = pane_id.raw(), %failure, "pane launch failed");
+        tracing::warn!(pane = %pane_id, %failure, "pane launch failed");
     }
     if let Err(error) = events
         .send(crate::events::RuntimeEvent::PaneLaunchSettled {
@@ -201,31 +215,28 @@ async fn coordinate<Claim>(
         })
         .await
     {
-        tracing::error!(pane = pane_id.raw(), %error, "failed to send PaneLaunchSettled event");
+        tracing::error!(pane = %pane_id, %error, "failed to send PaneLaunchSettled event");
         return;
     }
-    let PaneEnding::Observed {
-        reason, ended_at, ..
+    let RecordedEnding::Observed {
+        ending, ended_at, ..
     } = arbiter.decided().await
     else {
         return;
     };
     // Wait for channel capacity so this critical pane exit is not dropped.
     if let Err(error) = events
-        .send(crate::events::RuntimeEvent::PaneDied {
-            exit_reason: reason,
-            ended_at,
-        })
+        .send(crate::events::RuntimeEvent::PaneDied { ending, ended_at })
         .await
     {
-        tracing::error!(pane = pane_id.raw(), %error, "failed to send PaneDied event");
+        tracing::error!(pane = %pane_id, %error, "failed to send PaneDied event");
     }
 }
 
 async fn settle(
     mut channel: oneshot::Receiver<OwnedFd>,
     cwd_candidates: Vec<PathBuf>,
-    program: &str,
+    program: &Path,
     child_liveness: &ChildLiveness,
 ) -> LaunchOutcome {
     let exit = child_liveness
@@ -242,7 +253,7 @@ async fn settle(
             return;
         }
         while !(child_liveness.has_exited() || child_liveness.wait_completed()) {
-            tokio::time::sleep(crate::limits::LAUNCH_EXIT_POLL_INTERVAL).await;
+            tokio::time::sleep(LAUNCH_EXIT_POLL_INTERVAL).await;
         }
     };
     let channel = tokio::select! {
@@ -255,7 +266,7 @@ async fn settle(
             // instead of a placeholder that says why. Accepted, since the
             // bound is what keeps a child that never connected from holding
             // the settlement open.
-            tokio::time::timeout(crate::limits::LAUNCH_STATUS_AFTER_EXIT, channel)
+            tokio::time::timeout(LAUNCH_STATUS_AFTER_EXIT, channel)
                 .await
                 .ok()
                 .and_then(Result::ok)
@@ -288,7 +299,7 @@ async fn settle(
             }
             Ok(LaunchStatusEvent::ExecFailed(error)) => {
                 return LaunchOutcome::Failed(PaneStartFailure::ShellStartFailed {
-                    program: Some(PathBuf::from(program)),
+                    program: Some(program.to_path_buf()),
                     error,
                 });
             }
@@ -325,7 +336,7 @@ fn directory_failure(path: PathBuf, error: std::io::Error) -> PaneStartFailure {
 mod tests {
     use super::*;
     use crate::events::AppEvent;
-    use shepr_platform::ChildExitReason;
+    use crate::pane::{PaneEndReason, PaneEnding};
     use std::time::Duration;
     use tokio::sync::mpsc;
 
@@ -333,7 +344,7 @@ mod tests {
     #[derive(Debug, PartialEq, Eq)]
     enum Told {
         Settled(&'static str),
-        Died(ChildExitReason),
+        Died(PaneEndReason),
     }
 
     fn told(rx: &mut mpsc::Receiver<AppEvent>) -> Vec<Told> {
@@ -350,9 +361,7 @@ mod tests {
                         LaunchOutcome::Unconfirmed => "unconfirmed",
                     })
                 }
-                crate::events::RuntimeEvent::PaneDied { exit_reason, .. } => {
-                    Told::Died(exit_reason)
-                }
+                crate::events::RuntimeEvent::PaneDied { ending, .. } => Told::Died(ending.reason()),
                 _ => panic!("unexpected event"),
             });
         }
@@ -445,8 +454,8 @@ mod tests {
     #[tokio::test]
     async fn a_death_recorded_first_is_published_after_the_settlement() {
         let arbiter = PaneExitArbiter::default();
-        arbiter.decide(PaneEnding::Observed {
-            reason: ChildExitReason::Exited,
+        arbiter.decide(RecordedEnding::Observed {
+            ending: PaneEnding::new(PaneEndReason::Exited),
             child_exit_confirmed: true,
             ended_at: std::time::Instant::now(),
         });
@@ -457,7 +466,7 @@ mod tests {
         };
         assert_eq!(
             run(&arbiter, settling).await,
-            [Told::Settled("failed"), Told::Died(ChildExitReason::Exited)]
+            [Told::Settled("failed"), Told::Died(PaneEndReason::Exited)]
         );
     }
 
@@ -467,8 +476,8 @@ mod tests {
     #[tokio::test]
     async fn a_hung_launch_does_not_keep_a_failed_reader_from_ending_the_pane() {
         let arbiter = PaneExitArbiter::default();
-        arbiter.decide(PaneEnding::Observed {
-            reason: ChildExitReason::ReaderIoFailed,
+        arbiter.decide(RecordedEnding::Observed {
+            ending: PaneEnding::new(PaneEndReason::ReaderIoFailed),
             child_exit_confirmed: false,
             ended_at: std::time::Instant::now(),
         });
@@ -479,7 +488,7 @@ mod tests {
             run(&arbiter, settling).await,
             [
                 Told::Settled("unconfirmed"),
-                Told::Died(ChildExitReason::ReaderIoFailed)
+                Told::Died(PaneEndReason::ReaderIoFailed)
             ]
         );
     }
@@ -487,8 +496,8 @@ mod tests {
     #[tokio::test]
     async fn an_unconfirmed_ending_still_keeps_a_report_inside_the_window() {
         let arbiter = PaneExitArbiter::default();
-        arbiter.decide(PaneEnding::Observed {
-            reason: ChildExitReason::TerminalClosed,
+        arbiter.decide(RecordedEnding::Observed {
+            ending: PaneEnding::new(PaneEndReason::TerminalClosed),
             child_exit_confirmed: false,
             ended_at: std::time::Instant::now(),
         });
@@ -500,7 +509,7 @@ mod tests {
             run(&arbiter, settling).await,
             [
                 Told::Settled("failed"),
-                Told::Died(ChildExitReason::TerminalClosed)
+                Told::Died(PaneEndReason::TerminalClosed)
             ]
         );
     }
@@ -508,7 +517,7 @@ mod tests {
     #[tokio::test]
     async fn a_teardown_publishes_nothing() {
         let arbiter = PaneExitArbiter::default();
-        arbiter.decide(PaneEnding::Silent);
+        arbiter.decide(RecordedEnding::Silent);
         assert_eq!(run(&arbiter, std::future::pending()).await, []);
         // Nor when the settlement is ready by the time the task first runs.
         assert_eq!(run(&arbiter, std::future::ready(failed())).await, []);
@@ -523,7 +532,7 @@ mod tests {
                 // The pane is removed while its launch settles; the runtime's
                 // drop records a silent ending.
                 tokio::time::sleep(Duration::from_millis(1)).await;
-                arbiter.decide(PaneEnding::Silent);
+                arbiter.decide(RecordedEnding::Silent);
                 failed()
             }
         };
@@ -561,7 +570,7 @@ mod tests {
                 .is_err()
         );
         // The app removes the pane once the launch failed.
-        arbiter.decide(PaneEnding::Silent);
+        arbiter.decide(RecordedEnding::Silent);
         coordinating.await;
         assert_eq!(told(&mut rx), [Told::Settled("failed")]);
     }

@@ -29,8 +29,9 @@ pub use self::theme_config::CustomThemeColors;
 pub use self::{
     diagnostic::{ConfigDiagnostic, ConfigDiagnosticKind, ConfigKeyPath, ConfigKeyPathSegment},
     io::{load_client_validated, load_server_validated},
+    keybinding_table::HelpGroup,
     keybinds::{
-        ActionKeybinds, BindingConfig, IndexedKeybind, Keybinds, LiveKeybindConfig,
+        ActionKeybinds, BindingConfig, IndexedKeybind, IndexedRange, Keybinds, LiveKeybindConfig,
         format_key_chord, parse_key_chord,
     },
     model::{
@@ -229,8 +230,11 @@ mod tests {
             document.push_str(setting);
             document.push('\n');
         }
-        let documented: ServerConfig =
+        let mut documented: ServerConfig =
             toml::from_str(&document).expect("documented defaults parse");
+        // The shell is unset by default; the template shows an example value.
+        assert!(documented.terminal.default_shell.is_some());
+        documented.terminal.default_shell = None;
         let defaults = ServerConfig::default();
         assert_eq!(documented, defaults);
     }
@@ -343,14 +347,19 @@ mod tests {
     // its documented path is included in this list and the template.
     macro_rules! record_config_fields {
         ($fields:ident, $value:expr, $prefix:expr, $type:ident {
-            $($field:ident => $binding:pat),+ $(,)?
+            $($field:ident $(as $key:literal)? => $binding:pat),+ $(,)?
         }) => {
             let $type { $($field: $binding),+ } = $value;
             $(
+                // A field whose TOML key differs from its name (`as`) is
+                // documented under the key.
+                let key = stringify!($field);
+                let _ = key;
+                $(let key = $key;)?
                 let path = if ($prefix).is_empty() {
-                    stringify!($field).to_owned()
+                    key.to_owned()
                 } else {
-                    format!("{}.{}", $prefix, stringify!($field))
+                    format!("{}.{}", $prefix, key)
                 };
                 $fields.insert(path);
             )+
@@ -359,10 +368,10 @@ mod tests {
 
     macro_rules! record_key_config_fields {
         (
-            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
+            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
         ) => {
             fn record_key_config_fields(fields: &mut BTreeSet<String>, keys: KeysConfig) {
                 let KeysConfig {
@@ -505,7 +514,7 @@ mod tests {
         });
         record_config_fields!(fields, session, "session", SessionConfig {
             resume_agents_on_restore => _,
-            startup_per_agent_delay_ms => _,
+            startup_per_agent_delay as "startup_per_agent_delay_ms" => _,
         });
         record_config_fields!(fields, server, "server", HeadlessConfig {
             headless_cols => _,

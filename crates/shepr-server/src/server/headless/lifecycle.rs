@@ -2,12 +2,12 @@ use super::HeadlessServer;
 use crate::app;
 use crate::server::outbox::ReleaseMode;
 use shepr_protocol::ServerMessage;
-use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, info, warn};
 
-use crate::limits::SHUTDOWN_FLUSH_TIMEOUT;
+/// Upper bound on the wait for client writers to flush their shutdown frames.
+const SHUTDOWN_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 mod host_shutdown;
 use host_shutdown::HostShutdownMonitor;
@@ -41,7 +41,7 @@ impl std::fmt::Display for ShutdownStep {
 /// step is refused and the phase left as it was, so an illegal transition
 /// never lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct UnexpectedPhase {
+pub struct UnexpectedPhase {
     pub(super) step: ShutdownStep,
     pub(super) expected: ShutdownPhase,
     pub(super) actual: ShutdownPhase,
@@ -72,21 +72,9 @@ impl WarningGeneration {
 /// Session-save freeze held from a host shutdown warning until shutdown
 /// completes or is cancelled.
 pub(super) struct HostShutdownFreeze {
-    /// Whether session persistence was active before the freeze.
-    pub(super) persist_session: bool,
     /// The warning this checkpoint answered. A cancellation followed quickly
     /// by another warning may never expose `requested = false` to the loop.
     generation: Option<WarningGeneration>,
-}
-
-impl HostShutdownFreeze {
-    pub(super) fn restored_policy(&self) -> crate::app::AppPolicy {
-        if self.persist_session {
-            crate::app::AppPolicy::Production
-        } else {
-            crate::app::AppPolicy::Suspended
-        }
-    }
 }
 
 /// Owns the server's lifecycle phase and the asynchronous request latches that
@@ -191,7 +179,7 @@ impl ShutdownLifecycle {
     }
 
     /// Cancels either a warning not yet checkpointed or a completed freeze.
-    /// A returned freeze needs its saved policy restored by the caller.
+    /// A returned freeze means the saver is frozen and the caller thaws it.
     pub(super) fn cancel_host_shutdown(&mut self) -> Option<HostShutdownFreeze> {
         match self.phase {
             ShutdownPhase::HostShutdownWarning => {
@@ -214,15 +202,6 @@ impl ShutdownLifecycle {
         }
         self.phase = ShutdownPhase::HostShutdownWarning;
         self.freeze.take()
-    }
-
-    pub(super) fn frozen_session_policy(&self) -> Option<bool> {
-        match self.phase {
-            ShutdownPhase::Frozen | ShutdownPhase::Stopping => {
-                self.freeze.as_ref().map(|freeze| freeze.persist_session)
-            }
-            ShutdownPhase::Running | ShutdownPhase::HostShutdownWarning => None,
-        }
     }
 
     pub(super) fn frozen_warning_generation(&self) -> Option<WarningGeneration> {
@@ -277,9 +256,9 @@ impl ShutdownLifecycle {
 
         if !self.host_shutdown_requested() {
             let was_warning = self.phase() == ShutdownPhase::HostShutdownWarning;
-            if let Some(freeze) = self.cancel_host_shutdown() {
+            if self.cancel_host_shutdown().is_some() {
                 app.cancel_host_shutdown_checkpoint();
-                self.thaw_after_host_shutdown(app, &freeze);
+                self.thaw_after_host_shutdown(app);
             } else if was_warning {
                 app.cancel_host_shutdown_checkpoint();
             }
@@ -293,7 +272,7 @@ impl ShutdownLifecycle {
                 }
             }
             ShutdownPhase::HostShutdownWarning => {
-                if !app.policy.persists_session() || app.host_shutdown_checkpoint_result_ready() {
+                if !app.session_persists() || app.host_shutdown_checkpoint_result_ready() {
                     self.freeze_for_host_shutdown(app);
                 }
             }
@@ -303,9 +282,9 @@ impl ShutdownLifecycle {
                     .as_ref()
                     .and_then(HostShutdownMonitor::warning_generation);
                 if self.frozen_warning_generation() != generation
-                    && let Some(freeze) = self.restart_host_shutdown_warning()
+                    && self.restart_host_shutdown_warning().is_some()
                 {
-                    app.thaw_session_saves(freeze.restored_policy());
+                    app.thaw_session_saves();
                     self.freeze_for_host_shutdown(app);
                 }
             }
@@ -328,13 +307,12 @@ impl ShutdownLifecycle {
             .monitor
             .as_ref()
             .and_then(HostShutdownMonitor::warning_generation);
-        let persist_session = app.policy.persists_session();
-        if persist_session {
-            let Some(saved) = app.take_host_shutdown_checkpoint_result() else {
+        if app.session_persists() {
+            let Some(outcome) = app.take_host_shutdown_checkpoint_result() else {
                 app.request_host_shutdown_checkpoint();
                 return;
             };
-            if !saved {
+            if outcome == app::HostCheckpointOutcome::Unsaved {
                 warn!("host shutdown checkpoint failed repeatedly; releasing the delay lock");
             }
         }
@@ -342,18 +320,14 @@ impl ShutdownLifecycle {
         if let (Some(monitor), Some(generation)) = (self.monitor.as_ref(), generation) {
             monitor.release_delay_lock(generation);
         }
-        if let Err(error) = self.finish_host_shutdown_freeze(HostShutdownFreeze {
-            persist_session,
-            generation,
-        }) {
+        if let Err(error) = self.finish_host_shutdown_freeze(HostShutdownFreeze { generation }) {
             tracing::error!(%error, "host shutdown freeze did not land");
         }
     }
 
-    fn thaw_after_host_shutdown(&mut self, app: &mut app::App, freeze: &HostShutdownFreeze) {
+    fn thaw_after_host_shutdown(&mut self, app: &mut app::App) {
         info!("host shutdown cancelled; resuming session saves");
-        app.thaw_session_saves(freeze.restored_policy());
-        app.state.mark_session_dirty();
+        app.resume_session_saves_after_cancel();
     }
 }
 
@@ -384,12 +358,11 @@ impl HeadlessServer {
     /// server and does not start a daemon that would restore the previous
     /// save, or exit on the still-bound socket and leave the user waiting out
     /// the startup timeout.
-    pub(super) async fn complete_shutdown(&mut self) -> io::Result<()> {
+    pub(super) async fn complete_shutdown(&mut self) -> Result<(), UnexpectedPhase> {
         // Completing is only legal once `initiate_shutdown` marked the server
         // stopping; this step settles queued requests before notifying clients.
         self.lifecycle
-            .require_phase(ShutdownStep::CompleteShutdown, ShutdownPhase::Stopping)
-            .map_err(io::Error::other)?;
+            .require_phase(ShutdownStep::CompleteShutdown, ShutdownPhase::Stopping)?;
         info!("completing server shutdown");
         // A client whose outbox already closed leaves first, so a request it
         // left buffered finds no registered client and is dropped with it.
@@ -473,12 +446,6 @@ impl ShutdownLifecycle {
     pub(super) fn has_monitor(&self) -> bool {
         self.monitor.is_some()
     }
-
-    pub(super) fn set_frozen_session_policy_for_test(&mut self, persist_session: bool) {
-        if let Some(freeze) = self.freeze.as_mut() {
-            freeze.persist_session = persist_session;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -487,22 +454,20 @@ mod phase_tests {
     use tokio::sync::mpsc;
 
     fn freeze() -> HostShutdownFreeze {
-        HostShutdownFreeze {
-            persist_session: true,
-            generation: None,
-        }
+        HostShutdownFreeze { generation: None }
     }
 
     #[tokio::test]
     async fn host_shutdown_freeze_waits_for_monitor_cancellation() {
         let config = shepr_config::ServerConfig::default();
-        let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Suspended);
+        let mut app = crate::app::App::new(&config);
         let mut lifecycle = ShutdownLifecycle::new(Arc::default());
         lifecycle
             .host_shutdown_request_flag()
             .store(true, Ordering::Release);
         lifecycle.sync_host_shutdown_freeze(&mut app);
         assert_eq!(lifecycle.phase(), ShutdownPhase::Frozen);
+        assert!(!app.session_persists());
 
         lifecycle.sync_host_shutdown_freeze(&mut app);
         assert_eq!(lifecycle.phase(), ShutdownPhase::Frozen);
@@ -528,7 +493,6 @@ mod phase_tests {
             .expect_err("a running server cannot freeze");
         assert_eq!(refused.actual, ShutdownPhase::Running);
         assert_eq!(lifecycle.phase(), ShutdownPhase::Running);
-        assert_eq!(lifecycle.frozen_session_policy(), None);
 
         assert!(lifecycle.begin_stopping());
         assert!(lifecycle.finish_host_shutdown_freeze(freeze()).is_err());
@@ -543,7 +507,6 @@ mod phase_tests {
             .finish_host_shutdown_freeze(freeze())
             .expect("a warning freezes");
         assert_eq!(lifecycle.phase(), ShutdownPhase::Frozen);
-        assert_eq!(lifecycle.frozen_session_policy(), Some(true));
     }
 
     #[test]
@@ -551,7 +514,7 @@ mod phase_tests {
         // The precondition the test below relies on: a test server holds the
         // lease, so a probe while it is held really does fail.
         let server = super::super::tests::test_headless_server();
-        let data_dir = server.app.paths.data_dir().to_path_buf();
+        let data_dir = server.app.test_paths().data_dir().to_path_buf();
         assert!(shepr_mux::persist::DataDirLease::acquire(&data_dir).is_err());
         drop(server);
     }
@@ -562,14 +525,19 @@ mod phase_tests {
         // daemon would meet, observed at exactly that moment. `Drop` and
         // every stop path run this same sequence.
         let mut server = super::super::tests::test_headless_server();
-        let data_dir = server.app.paths.data_dir().to_path_buf();
-        let socket = server.app.paths.server_address().socket().to_path_buf();
-        let (tx, _rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
+        let data_dir = server.app.test_paths().data_dir().to_path_buf();
+        let socket = server
+            .app
+            .test_paths()
+            .server_address()
+            .socket()
+            .to_path_buf();
+        let (tx, _rx) = mpsc::channel(crate::server::headless::API_REQUEST_CHANNEL_CAPACITY);
         server.api_server = Some(
             shepr_api::start_server(
                 tx,
                 Arc::clone(server.lifecycle.stop_signal()),
-                &server.app.paths,
+                server.app.test_paths(),
                 server.client_shell_boot_id.clone(),
             )
             .expect("real server socket"),
@@ -591,7 +559,9 @@ mod phase_tests {
             .complete_shutdown()
             .await
             .expect_err("a running server cannot complete shutdown");
-        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(error.step, ShutdownStep::CompleteShutdown);
+        assert_eq!(error.expected, ShutdownPhase::Stopping);
+        assert_eq!(error.actual, ShutdownPhase::Running);
         assert_eq!(server.lifecycle.phase(), ShutdownPhase::Running);
     }
 }

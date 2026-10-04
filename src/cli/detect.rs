@@ -8,8 +8,8 @@ use clap::ArgMatches;
 
 use shepr_api::schema::{
     DetectionCapture, DetectionExplanation, DetectionStateSource, ErrorBody, ErrorResponse, Method,
-    PaneTarget, Request, ResponseResult, SuccessResponse, UnappliedHookOutcome,
-    UnappliedHookReport, UnappliedHookReportKind,
+    PaneTarget, Request, ResponseResult, UnappliedHookOutcome, UnappliedHookReport,
+    UnappliedHookReportKind,
 };
 
 use super::matches::{try_flag, try_string};
@@ -88,13 +88,9 @@ fn capture(
     paths: &shepr_paths::AppPaths,
     pane: &shepr_protocol::PublicPaneId,
 ) -> super::CliResult<i32> {
-    let response = decode_response(super::send_request(paths, &capture_request(pane))?)?;
-    let DetectResponse::Success(SuccessResponse {
-        result: ResponseResult::DetectCapture { capture, .. },
-        ..
-    }) = response
-    else {
-        return unexpected_or_error(response);
+    let capture = match super::send_request(paths, &capture_request(pane))? {
+        ResponseResult::DetectCapture { capture, .. } => capture,
+        other => return Err(super::unexpected_result(&other)),
     };
     println!(
         "{}",
@@ -109,21 +105,15 @@ pub(super) fn explain(
     json: bool,
     verbose: bool,
 ) -> super::CliResult<i32> {
-    let response = decode_response(super::send_request(
-        paths,
-        &Request {
-            id: "cli:detect:explain".into(),
-            method: Method::DetectExplain(PaneTarget {
-                pane_id: target.to_string(),
-            }),
-        },
-    )?)?;
-    let DetectResponse::Success(SuccessResponse {
-        result: ResponseResult::DetectExplain { explain },
-        ..
-    }) = response
-    else {
-        return unexpected_or_error(response);
+    let request = Request {
+        id: "cli:detect:explain".into(),
+        method: Method::DetectExplain(PaneTarget {
+            pane_id: target.to_string(),
+        }),
+    };
+    let explain = match super::send_request(paths, &request)? {
+        ResponseResult::DetectExplain { explain } => explain,
+        other => return Err(super::unexpected_result(&other)),
     };
     print_explain_output(&explain, json, verbose)?;
     Ok(0)
@@ -158,43 +148,6 @@ fn print_explain_output(
     Ok(())
 }
 
-#[expect(
-    clippy::large_enum_variant,
-    reason = "one short-lived value per CLI invocation, destructured by value in both callers"
-)]
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum DetectResponse {
-    Success(SuccessResponse),
-    Error(ErrorResponse),
-}
-
-fn decode_response(value: serde_json::Value) -> super::CliResult<DetectResponse> {
-    serde_json::from_value(value)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error).into())
-}
-
-fn unexpected_or_error(response: DetectResponse) -> super::CliResult<i32> {
-    match response {
-        DetectResponse::Error(response) => {
-            if response.error.code == shepr_api::error::ApiErrorCode::PaneTerminalUnavailable {
-                eprintln!("{}", response.error.message);
-            } else {
-                eprintln!(
-                    "{}",
-                    serde_json::to_string(&response).map_err(std::io::Error::other)?
-                );
-            }
-            Ok(1)
-        }
-        DetectResponse::Success(_) => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "unexpected detect response variant",
-        )
-        .into()),
-    }
-}
-
 /// Evaluates a saved capture against an agent's compiled manifest. Runs in
 /// the CLI process and needs no server.
 pub(super) fn explain_file(
@@ -226,8 +179,8 @@ pub(super) fn explain_file(
         agent_label,
         shepr_detect::manifest::DetectionInput {
             screen: &capture.screen,
-            osc_title: &capture.osc_title,
-            osc_progress: &capture.osc_progress,
+            osc_title: capture.osc_title_evidence(),
+            osc_progress: capture.osc_progress_evidence(),
         },
     )
     .into())
@@ -339,6 +292,7 @@ pub(super) fn print_explain_text(explain: &DetectionExplanation, verbose: bool) 
 mod tests {
     use super::super::tests::group_matches;
     use super::*;
+    use shepr_api::schema::SuccessResponse;
 
     fn command(args: &[&str]) -> Command {
         parse(&group_matches(args)).expect("test precondition")
@@ -467,8 +421,8 @@ mod tests {
             "codex",
             shepr_detect::manifest::DetectionInput {
                 screen: "",
-                osc_title: "",
-                osc_progress: "",
+                osc_title: None,
+                osc_progress: None,
             },
         )
         .into();
@@ -477,13 +431,13 @@ mod tests {
             result: ResponseResult::DetectExplain { explain },
         })
         .expect("encode explanation response");
-        assert!(decode_response(response.clone()).is_ok());
+        assert!(shepr_api::client::parse_response_value(response.clone()).is_ok());
         let fields = response["result"]["explain"]
             .as_object_mut()
             .expect("explanation object");
         let state = fields.remove("state").expect("state field");
         fields.insert("renamed_state".into(), state);
-        assert!(decode_response(response).is_err());
+        assert!(shepr_api::client::parse_response_value(response).is_err());
     }
 
     #[test]
@@ -531,7 +485,7 @@ mod tests {
 
         let explain =
             explain_file(&path, "codex").expect("file evaluation should not need a server");
-        assert_eq!(explain.state, shepr_api::schema::DetectionState::Blocked);
+        assert_eq!(explain.state, shepr_api::schema::PaneAgentState::Blocked);
         assert_eq!(
             explain.matched_rule.as_ref().expect("matched rule").id,
             "live_strong_blocker"
@@ -555,7 +509,7 @@ mod tests {
 
         let explain =
             explain_file(&path, "codex").expect("file evaluation should not need a server");
-        assert_eq!(explain.state, shepr_api::schema::DetectionState::Blocked);
+        assert_eq!(explain.state, shepr_api::schema::PaneAgentState::Blocked);
         assert_eq!(
             explain.matched_rule.as_ref().expect("matched rule").id,
             "osc_title_blocked"
@@ -576,7 +530,7 @@ mod tests {
 
         let explain =
             explain_file(&path, "letta").expect("file evaluation should not need a server");
-        assert_eq!(explain.state, shepr_api::schema::DetectionState::Blocked);
+        assert_eq!(explain.state, shepr_api::schema::PaneAgentState::Blocked);
         assert_eq!(
             explain.matched_rule.as_ref().expect("matched rule").id,
             "osc_progress_blocked"

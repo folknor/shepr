@@ -40,9 +40,17 @@ pub(crate) fn test_boot_id(name: &str) -> shepr_protocol::BootId {
         "restored-second" => 14,
         "saves-stopped" => 15,
         "saves-stopped-next" => 16,
+        "boot-2" => 17,
+        "rebooted" => 18,
         _ => panic!("{name:?} names no test server"),
     };
     fixed_boot_id(process_id)
+}
+
+/// The connection generation at position `position` of the test's own
+/// numbering: tests name generations by number the way they name servers.
+pub(crate) fn test_generation(position: u64) -> shepr_protocol::ConnectionGeneration {
+    counter_at(position)
 }
 
 #[test]
@@ -50,12 +58,12 @@ fn atomic_cell_size_keeps_width_and_height_in_one_snapshot() {
     let size = AtomicCellSize::new();
     assert_eq!(size.load(), None);
     assert_eq!(
-        size.store(shepr_core::geometry::CellPx::new(9, 18)),
+        size.store(shepr_core::geometry::CellReport::new(9, 18)),
         terminal_geometry::CellSizeUpdate::Changed
     );
-    assert_eq!(size.load(), shepr_core::geometry::CellPx::new(9, 18));
+    assert_eq!(size.load(), shepr_core::geometry::CellReport::new(9, 18));
     assert_eq!(
-        size.store(shepr_core::geometry::CellPx::new(9, 18)),
+        size.store(shepr_core::geometry::CellReport::new(9, 18)),
         terminal_geometry::CellSizeUpdate::Unchanged
     );
     assert_eq!(size.store(None), terminal_geometry::CellSizeUpdate::Changed);
@@ -64,22 +72,34 @@ fn atomic_cell_size_keeps_width_and_height_in_one_snapshot() {
 
 #[test]
 fn resize_signal_reports_even_when_polled_size_is_unchanged() {
-    let size = shepr_core::geometry::HostGeometry::new(120, 40, 8, 16, true);
+    let size = shepr_core::geometry::HostGeometry::new(
+        shepr_core::geometry::GridSize::clamped(120, 40),
+        shepr_core::geometry::HostCell::from_host(8, 16, true),
+    );
     assert!(resize_report_required(true, size, size));
     assert!(!resize_report_required(false, size, size));
     assert!(resize_report_required(
         false,
-        shepr_core::geometry::HostGeometry::new(120, 41, 8, 16, true),
+        shepr_core::geometry::HostGeometry::new(
+            shepr_core::geometry::GridSize::clamped(120, 41),
+            shepr_core::geometry::HostCell::from_host(8, 16, true)
+        ),
         size
     ));
     assert!(resize_report_required(
         false,
-        shepr_core::geometry::HostGeometry::new(120, 40, 9, 18, true),
+        shepr_core::geometry::HostGeometry::new(
+            shepr_core::geometry::GridSize::clamped(120, 40),
+            shepr_core::geometry::HostCell::from_host(9, 18, true)
+        ),
         size
     ));
     assert!(resize_report_required(
         false,
-        shepr_core::geometry::HostGeometry::new(120, 40, 8, 16, false),
+        shepr_core::geometry::HostGeometry::new(
+            shepr_core::geometry::GridSize::clamped(120, 40),
+            shepr_core::geometry::HostCell::from_host(8, 16, false)
+        ),
         size
     ));
 }
@@ -107,7 +127,10 @@ fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
 
     assert_eq!(
         geometry,
-        shepr_core::geometry::HostGeometry::new(80, 24, 9, 18, false)
+        shepr_core::geometry::HostGeometry::new(
+            shepr_core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::HostCell::from_host(9, 18, false)
+        )
     );
 }
 
@@ -123,15 +146,24 @@ fn client_host_size_clamps_the_grid_to_one_surface() {
 fn cell_geometry_is_bounded_before_wire_use_and_disables_inexact_pixel_mouse() {
     let geometry =
         super::terminal_geometry::bounded_cell_geometry(shepr_core::geometry::HostGeometry::new(
-            80,
-            24,
-            shepr_protocol::MAX_CELL_SIZE_PX + 1,
-            shepr_protocol::MAX_CELL_SIZE_PX + 2,
-            true,
+            shepr_core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::HostCell::from_host(
+                shepr_protocol::MAX_CELL_SIZE_PX + 1,
+                shepr_protocol::MAX_CELL_SIZE_PX + 2,
+                true,
+            ),
         ));
-    assert_eq!(geometry.cell_width(), shepr_protocol::MAX_CELL_SIZE_PX);
-    assert_eq!(geometry.cell_height(), shepr_protocol::MAX_CELL_SIZE_PX);
-    assert!(!geometry.exact());
+    assert_eq!(
+        geometry.cell(),
+        shepr_core::geometry::HostCell::Estimated(
+            shepr_core::geometry::CellPx::new(
+                shepr_protocol::MAX_CELL_SIZE_PX,
+                shepr_protocol::MAX_CELL_SIZE_PX,
+            )
+            .expect("the bound is a usable cell")
+        )
+    );
+    assert!(!geometry.cell().is_exact());
 }
 
 #[test]
@@ -217,7 +249,7 @@ fn reported_cell_size_is_taken_from_host_cell_size_events() {
     let events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b[6;21;10t\x1b[6;18;9t");
     assert_eq!(
         super::terminal_geometry::reported_cell_size_from_events(&events),
-        shepr_core::geometry::CellPx::new(9, 18)
+        shepr_core::geometry::CellReport::new(9, 18)
     );
 }
 
@@ -229,15 +261,32 @@ fn terminal_restore_postlude_restores_visible_default_cursor() {
 }
 
 #[test]
-fn sgr_pixel_mouse_needs_capture_a_request_and_exact_geometry() {
-    assert!(effective_sgr_pixel_mouse(true, true, true));
-    assert!(!effective_sgr_pixel_mouse(true, true, false));
+fn host_capture_applies_pixels_only_on_an_exact_host() {
+    use shepr_core::geometry::{CellPx, HostCell};
+    use shepr_term::mouse::HostMouseCapture;
+    let cell = CellPx::new(9, 18).expect("valid cell");
+    assert_eq!(
+        HostMouseCapture::Pixels.effective(HostCell::Exact(cell)),
+        HostMouseCapture::Pixels
+    );
+    assert_eq!(
+        HostMouseCapture::Pixels.effective(HostCell::Estimated(cell)),
+        HostMouseCapture::Cells
+    );
+    assert_eq!(
+        HostMouseCapture::Pixels.effective(HostCell::Unknown),
+        HostMouseCapture::Cells
+    );
+    assert_eq!(
+        HostMouseCapture::Off.effective(HostCell::Exact(cell)),
+        HostMouseCapture::Off
+    );
 }
 
 #[test]
 fn host_modes_restore_color_scheme_reports_when_enabled() {
     let mut output = Vec::new();
-    let host_modes = HostModes::new(false, false);
+    let host_modes = HostModes::new(false);
     host_modes
         .enable_color_scheme_reports(&mut output)
         .expect("test precondition");
@@ -325,15 +374,15 @@ fn client_error_display_connection_lost() {
 fn ioctl_cell_size_accepts_fractional_terminal_geometry() {
     assert_eq!(
         ioctl_cell_size(80, 24, 800, 480),
-        shepr_core::geometry::CellPx::new(10, 20)
+        shepr_core::geometry::CellReport::new(10, 20)
     );
     assert_eq!(
         ioctl_cell_size(80, 24, 805, 480),
-        shepr_core::geometry::CellPx::new(10, 20)
+        shepr_core::geometry::CellReport::new(10, 20)
     );
     assert_eq!(
         ioctl_cell_size(80, 24, 800, 485),
-        shepr_core::geometry::CellPx::new(10, 20)
+        shepr_core::geometry::CellReport::new(10, 20)
     );
     assert_eq!(ioctl_cell_size(80, 24, 0, 485), None);
 }
@@ -341,8 +390,12 @@ fn ioctl_cell_size_accepts_fractional_terminal_geometry() {
 #[test]
 fn forward_clipboard_writes_osc52_to_the_supplied_test_sink() {
     let mut output = Vec::new();
-    clipboard_forwarding::forward_clipboard(b"test", true, &mut output)
-        .expect("clipboard bytes are written through OSC 52");
+    clipboard_forwarding::forward_clipboard(
+        b"test",
+        shepr_platform::ClipboardRoute::Osc52,
+        &mut output,
+    )
+    .expect("clipboard bytes are written through OSC 52");
     assert_eq!(output, b"\x1b]52;c;dGVzdA==\x07");
 }
 

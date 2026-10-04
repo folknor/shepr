@@ -3,9 +3,8 @@
 //! baseline.
 
 use shepr_protocol::{
-    CellData, MAX_SURFACE_HYPERLINKS, MAX_SURFACE_PANES, MAX_SURFACE_PATCH_SPANS,
-    MAX_SURFACE_SPLIT_PATH, MAX_SURFACE_SPLITS, PaneSurfaceFrame, PaneSurfacePatchRow,
-    ServerMessage,
+    CellData, MAX_SURFACE_PANES, MAX_SURFACE_PATCH_SPANS, MAX_SURFACE_SPLIT_PATH,
+    MAX_SURFACE_SPLITS, PaneSurfaceFrame, PaneSurfacePatchRow, ServerMessage,
 };
 
 use crate::decode::Baseline;
@@ -32,11 +31,10 @@ impl std::fmt::Display for SurfaceDeltaError {
 // Display includes nested causes, so leave the source chain empty to avoid repeating them.
 impl std::error::Error for SurfaceDeltaError {}
 
-/// Whether a full surface can safely be represented as delta metadata.
+/// Whether a full surface can safely be represented as delta metadata. The
+/// frame's own grid and link table are within budget by construction.
 fn metadata_fits(surface: &PaneSurfaceFrame) -> bool {
-    surface.frame.grid().is_ok()
-        && surface.frame.hyperlinks.len() <= MAX_SURFACE_HYPERLINKS
-        && surface.panes.len() <= MAX_SURFACE_PANES
+    surface.panes.len() <= MAX_SURFACE_PANES
         && surface.splits.len() <= MAX_SURFACE_SPLITS
         && surface
             .splits
@@ -82,7 +80,7 @@ fn unchanged_message(
 fn projection_metadata_is_unchanged(last: &PaneSurfaceFrame, surface: &PaneSurfaceFrame) -> bool {
     surface.projection_revision == last.projection_revision
         && surface.topology().same_topology(&last.topology())
-        && surface.frame.cursor == last.frame.cursor
+        && surface.frame.cursor() == last.frame.cursor()
         && surface.panes == last.panes
 }
 
@@ -183,16 +181,12 @@ pub fn message(
         last.projection_revision,
         last.surface_revision,
     );
-    let Some(expected_cells) =
-        shepr_protocol::surface_grid_size(surface.frame.width, surface.frame.height)
-    else {
-        return Ok(unchanged_plan(last, surface, &baseline).unwrap_or(SurfaceDeltaPlan::Full));
-    };
+    // Both frames hold exactly width * height cells by construction, so equal
+    // dimensions mean equal cell counts.
+    let expected_cells = surface.frame.cells().len();
     if !baseline.accepts_surface(surface)
-        || last.frame.width != surface.frame.width
-        || last.frame.height != surface.frame.height
-        || last.frame.cells.len() != expected_cells
-        || surface.frame.cells.len() != expected_cells
+        || last.frame.width() != surface.frame.width()
+        || last.frame.height() != surface.frame.height()
     {
         return Ok(unchanged_plan(last, surface, &baseline).unwrap_or(SurfaceDeltaPlan::Full));
     }
@@ -202,8 +196,11 @@ pub fn message(
     // deltas on small grids or when most of the full message consists of
     // metadata.
     let full_size = expected_cells.saturating_mul(crate::limits::MIN_ENCODED_CELL_BYTES);
-    let Some(rows) = changed_rows(&last.frame.cells, &surface.frame.cells, surface.frame.width)
-    else {
+    let Some(rows) = changed_rows(
+        last.frame.cells(),
+        surface.frame.cells(),
+        surface.frame.width(),
+    ) else {
         return Ok(SurfaceDeltaPlan::Full);
     };
     // The cell scan already established an unchanged grid. Check the compact
@@ -245,20 +242,20 @@ mod tests {
     fn surface() -> PaneSurfaceFrame {
         PaneSurfaceFrame {
             boot_id: "1-1".parse().expect("canonical test boot id"),
-            projection_revision: shepr_protocol::ProjectionRevision::new(1),
-            surface_revision: shepr_protocol::SurfaceRevision::new(1),
-            frame: shepr_protocol::FrameData::blank(200, 100),
+            projection_revision: crate::test_counters::projection(1),
+            surface_revision: crate::test_counters::surface(1),
+            frame: shepr_protocol::FrameData::blank(200, 100).expect("test frame"),
             panes: Vec::new(),
             splits: Vec::new(),
         }
     }
 
     #[test]
-    fn truncated_candidate_cannot_be_reported_as_an_unchanged_grid() {
+    fn a_candidate_of_another_size_is_sent_in_full() {
         let last = surface();
         let mut next = last.clone();
-        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
-        next.frame.cells.pop();
+        next.surface_revision = crate::test_counters::surface(2);
+        next.frame = shepr_protocol::FrameData::blank(199, 100).expect("test frame");
         assert!(matches!(
             message(&last, &next).expect("planning"),
             SurfaceDeltaPlan::Full
@@ -268,10 +265,12 @@ mod tests {
     #[test]
     fn sparse_candidate_is_smaller_and_keeps_large_hyperlink_metadata_off_wire() {
         let mut last = surface();
-        last.frame.hyperlinks = vec!["https://example.test/".repeat(4096)];
+        last.frame
+            .set_hyperlinks(vec!["https://example.test/".repeat(4096)])
+            .expect("no cell links");
         let mut next = last.clone();
-        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
-        next.frame.cells[0].symbol = "z".into();
+        next.surface_revision = crate::test_counters::surface(2);
+        next.frame.cells_mut()[0].symbol = "z".into();
         let delta = match message(&last, &next).expect("planning") {
             SurfaceDeltaPlan::Compact(delta) => delta,
             _ => panic!("expected compact delta"),
@@ -291,8 +290,8 @@ mod tests {
     fn dense_changes_use_the_full_surface() {
         let last = surface();
         let mut next = last.clone();
-        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
-        for cell in &mut next.frame.cells {
+        next.surface_revision = crate::test_counters::surface(2);
+        for cell in next.frame.cells_mut() {
             cell.symbol = "z".into();
         }
         assert!(matches!(
@@ -305,7 +304,7 @@ mod tests {
     fn unchanged_surface_is_reported_after_the_cell_scan() {
         let last = surface();
         let mut next = last.clone();
-        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
+        next.surface_revision = crate::test_counters::surface(2);
         assert!(matches!(
             message(&last, &next).expect("planning"),
             SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(_))
@@ -313,37 +312,13 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_surface_with_oversized_metadata_is_reported_before_full_fallback() {
+    fn unchanged_surface_with_a_full_link_table_is_reported_compactly() {
         let mut last = surface();
-        last.frame.hyperlinks = vec![String::new(); MAX_SURFACE_HYPERLINKS + 1];
+        last.frame
+            .set_hyperlinks(vec![String::new(); shepr_protocol::MAX_SURFACE_HYPERLINKS])
+            .expect("table at its budget");
         let mut next = last.clone();
-        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
-
-        assert_unchanged_update_is_compact(message(&last, &next).expect("planning"));
-    }
-
-    #[test]
-    fn changed_surface_with_oversized_metadata_still_uses_the_full_surface() {
-        let mut last = surface();
-        last.frame.hyperlinks = vec![String::new(); MAX_SURFACE_HYPERLINKS + 1];
-        let mut next = last.clone();
-        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
-        next.frame.cells[0].symbol = "x".into();
-
-        assert!(matches!(
-            message(&last, &next).expect("planning"),
-            SurfaceDeltaPlan::Full
-        ));
-    }
-
-    #[test]
-    fn unchanged_surface_with_invalid_grid_is_reported_before_full_fallback() {
-        let mut last = surface();
-        last.frame.width = u16::MAX;
-        last.frame.height = 1;
-        last.frame.cells.clear();
-        let mut next = last.clone();
-        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
+        next.surface_revision = crate::test_counters::surface(2);
 
         assert_unchanged_update_is_compact(message(&last, &next).expect("planning"));
     }

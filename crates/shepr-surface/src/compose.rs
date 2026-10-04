@@ -40,7 +40,7 @@ const FLAG_MODIFIERS: [(Modifier, WireStyleFlags); 8] = [
 /// needs no special step: its resulting fields (both colours `Reset`, `sub_modifier` all)
 /// go through the same algorithm, so `Style::reset().add_modifier(UNDERLINED)` ends
 /// underlined. The underline is typed: adding it keeps an existing shape or sets `Single`,
-/// removing it clears the shape. Symbol, skip and hyperlink are never touched. Underline
+/// removing it clears the shape. Symbol and hyperlink are never touched. Underline
 /// colour has no wire form and is ignored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StylePatch {
@@ -87,7 +87,7 @@ impl StylePatch {
     }
 }
 
-/// Restyles `cells` in place. Symbol, skip and hyperlink are preserved.
+/// Restyles `cells` in place. Symbol and hyperlink are preserved.
 fn patch_style(cells: &mut [CellData], patch: StylePatch) {
     for cell in cells {
         patch.apply(cell);
@@ -98,62 +98,58 @@ fn scratch_at(scratch: &Buffer, x: usize, y: u16) -> Option<&ratatui::buffer::Ce
     scratch.cell((u16::try_from(x).ok()?, y))
 }
 
-/// The composition target. Its cell vector always holds exactly `width *
-/// height` cells and every cell's hyperlink index names an entry of its link
-/// table; every operation keeps both. Its dimensions are not bounded by the
-/// surface budgets (a host terminal can be larger), so the operations that
-/// copied cells only within a surface-sized grid still check that bound and
-/// leave a larger canvas untouched.
+/// The composition target. Its frame is a [`FrameData`], so its cell vector
+/// always holds exactly `width * height` cells within the surface budgets and
+/// its link table is within budget; every operation also keeps every cell's
+/// hyperlink index naming an entry of that table. A host terminal larger than
+/// the surface budgets has no canvas.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Canvas {
     frame: FrameData,
 }
 
 impl Canvas {
-    /// A canvas over `frame`, refused when its cell vector does not match its
-    /// dimensions or a cell names a hyperlink its table lacks.
+    /// A canvas over `frame`, refused when a cell names a hyperlink its table
+    /// lacks (cell edits through `FrameData::cells_mut` are not rechecked
+    /// until here).
     pub fn new(frame: FrameData) -> Result<Self, FrameGridError> {
-        if frame.cells.len() != usize::from(frame.width) * usize::from(frame.height) {
-            return Err(FrameGridError::InvalidCellCount);
-        }
-        shepr_protocol::validate_cell_hyperlinks(&frame.cells, &frame.hyperlinks)?;
+        frame.validate()?;
         Ok(Self { frame })
     }
 
     /// What a ratatui renderer drew into `buffer`, with no cursor and no
-    /// links, refused like [`Self::new`] when the buffer's cells do not match
-    /// its area (both are public fields, so nothing else keeps them in step).
+    /// links, refused when the buffer is not a grid the surface budgets admit.
     pub fn from_buffer(buffer: &Buffer) -> Result<Self, FrameGridError> {
         Self::new(FrameData::from_ratatui_buffer_with_hyperlinks(
             buffer,
             None,
             &[],
-        ))
+        )?)
     }
 
     pub fn width(&self) -> u16 {
-        self.frame.width
+        self.frame.width()
     }
 
     pub fn height(&self) -> u16 {
-        self.frame.height
+        self.frame.height()
     }
 
     /// The cells in row-major order.
     pub fn cells(&self) -> &[CellData] {
-        &self.frame.cells
+        self.frame.cells()
     }
 
     pub fn hyperlinks(&self) -> &[String] {
-        &self.frame.hyperlinks
+        self.frame.hyperlinks()
     }
 
     pub fn cursor(&self) -> Option<&CursorState> {
-        self.frame.cursor.as_ref()
+        self.frame.cursor()
     }
 
     pub fn set_cursor(&mut self, cursor: Option<CursorState>) {
-        self.frame.cursor = cursor;
+        self.frame.set_cursor(cursor);
     }
 
     /// The finished frame.
@@ -161,39 +157,35 @@ impl Canvas {
         self.frame
     }
 
-    /// Whether the canvas fits the surface budgets the copying operations
-    /// work within.
-    fn within_surface_bounds(&self) -> bool {
-        self.frame.grid().is_ok()
-    }
-
-    /// Restyles every cell. Symbol, skip and hyperlink are preserved.
+    /// Restyles every cell. Symbol and hyperlink are preserved.
     pub fn patch_all(&mut self, patch: StylePatch) {
-        patch_style(&mut self.frame.cells, patch);
+        patch_style(self.frame.cells_mut(), patch);
     }
 
     /// Restyles the cell at `(x, y)`; a position outside the canvas is ignored.
     pub fn patch_cell(&mut self, x: u16, y: u16, patch: StylePatch) {
-        if x >= self.frame.width || y >= self.frame.height {
+        let (width, height) = (self.frame.width(), self.frame.height());
+        if x >= width || y >= height {
             return;
         }
-        let index = usize::from(y) * usize::from(self.frame.width) + usize::from(x);
-        if let Some(cell) = self.frame.cells.get_mut(index) {
+        let index = usize::from(y) * usize::from(width) + usize::from(x);
+        if let Some(cell) = self.frame.cells_mut().get_mut(index) {
             patch.apply(cell);
         }
     }
 
     /// Restyles every cell inside `rect`, clipped to the canvas.
     pub fn patch_rect(&mut self, rect: Rect, patch: StylePatch) {
-        let width = usize::from(self.frame.width);
-        let rect = rect.intersection(Rect::new(0, 0, self.frame.width, self.frame.height));
-        if rect.is_empty() || !self.within_surface_bounds() {
+        let width = usize::from(self.frame.width());
+        let rect = rect.intersection(Rect::new(0, 0, self.frame.width(), self.frame.height()));
+        if rect.is_empty() {
             return;
         }
+        let cells = self.frame.cells_mut();
         for y in rect.top()..rect.bottom() {
             let start = usize::from(y) * width + usize::from(rect.x);
             let end = start + usize::from(rect.width);
-            patch_style(&mut self.frame.cells[start..end], patch);
+            patch_style(&mut cells[start..end], patch);
         }
     }
 
@@ -201,20 +193,20 @@ impl Canvas {
     ///
     /// Coordinates are absolute (a scratch buffer is full-screen at origin 0) and are
     /// clipped to the canvas first; the union is one replacement. Symbol, colours and
-    /// modifiers come from the scratch cell (its underline becomes `Single`), skip comes
-    /// from the replacement, and hyperlinks are cleared unconditionally: a link belongs
+    /// modifiers come from the scratch cell (its underline becomes `Single`), and
+    /// hyperlinks are cleared unconditionally: a link belongs
     /// to the text it was on, and the replacement is different text. Glyph repair is
     /// computed from the original destination and the source before anything is
     /// written: an underlying glyph split by the union's boundary has its uncovered part
-    /// blanked (a space in its own style, no skip, no link), and a scratch glyph that
+    /// blanked (a space in its own style, no link), and a scratch glyph that
     /// would cross the boundary becomes a blank.
     pub fn overwrite(&mut self, rects: &[Rect], scratch: &Buffer) {
-        let width = usize::from(self.frame.width);
-        if width == 0 || !self.within_surface_bounds() {
+        let width = usize::from(self.frame.width());
+        if width == 0 {
             return;
         }
         let bounds =
-            Rect::new(0, 0, self.frame.width, self.frame.height).intersection(scratch.area);
+            Rect::new(0, 0, self.frame.width(), self.frame.height()).intersection(scratch.area);
         let rects = rects
             .iter()
             .map(|rect| rect.intersection(bounds))
@@ -227,6 +219,7 @@ impl Canvas {
             return;
         };
         let mut covered = vec![false; width];
+        let cells = self.frame.cells_mut();
         for y in top..bottom {
             covered.fill(false);
             for rect in rects
@@ -239,7 +232,7 @@ impl Canvas {
                 continue;
             }
             let row_start = usize::from(y) * width;
-            let row = &mut self.frame.cells[row_start..row_start + width];
+            let row = &mut cells[row_start..row_start + width];
             let underlying = &*row;
             let underlying_remnants = split_glyph_cells(
                 width,
@@ -278,35 +271,42 @@ impl Canvas {
 
     /// Copies `source` cells into the canvas at `area`, clipped to both, keeping each
     /// cell's underline shape and remapping hyperlinks into the canvas's table (a link
-    /// `source`'s own table lacks is dropped). It shares only the glyph repair with
+    /// `source`'s own table lacks, or one the canvas's table has no room for, is
+    /// dropped). It shares only the glyph repair with
     /// [`Self::overwrite`]: a canvas glyph split by the pasted region loses its uncovered
     /// part, and a source glyph cut by the clip becomes a blank. The cursor becomes
     /// `source`'s, moved to `area`, when it falls in the copied part, and none otherwise.
     pub fn compose_pane(&mut self, source: &FrameData, area: Rect) {
         let target = &mut self.frame;
-        let target_width = usize::from(target.width);
-        let source_width = usize::from(source.width);
+        let (target_cols, target_rows) = (target.width(), target.height());
+        let target_width = usize::from(target_cols);
+        let source_width = usize::from(source.width());
         let copy_width = source
-            .width
+            .width()
             .min(area.width)
-            .min(target.width.saturating_sub(area.x));
+            .min(target_cols.saturating_sub(area.x));
         let copy_height = source
-            .height
+            .height()
             .min(area.height)
-            .min(target.height.saturating_sub(area.y));
-        let hyperlink_base = u32::try_from(target.hyperlinks.len()).unwrap_or(u32::MAX);
-        target.hyperlinks.extend(source.hyperlinks.iter().cloned());
-        let consistent = target.grid().is_ok() && source.grid().is_ok();
+            .min(target_rows.saturating_sub(area.y));
+        // Every source link is appended, used or not; one the table has no
+        // room for maps to no link.
+        let hyperlink_map: Vec<Option<u32>> = source
+            .hyperlinks()
+            .iter()
+            .map(|uri| target.push_hyperlink(uri.clone()))
+            .collect();
 
-        if consistent && copy_width > 0 {
+        if copy_width > 0 {
             let mut target_covered = vec![false; target_width];
             target_covered[usize::from(area.x)..usize::from(area.x + copy_width)].fill(true);
             let mut source_covered = vec![false; source_width];
             source_covered[..usize::from(copy_width)].fill(true);
+            let target_cells = target.cells_mut();
             for row in 0..copy_height {
-                let source_row = &source.cells[usize::from(row) * source_width..][..source_width];
+                let source_row = &source.cells()[usize::from(row) * source_width..][..source_width];
                 let target_start = usize::from(area.y + row) * target_width;
-                let target_row = &mut target.cells[target_start..target_start + target_width];
+                let target_row = &mut target_cells[target_start..target_start + target_width];
                 let target_view = &*target_row;
                 let target_remnants = split_glyph_cells(
                     target_width,
@@ -334,14 +334,15 @@ impl Canvas {
                     cell.hyperlink = source_cell.hyperlink.and_then(|index| {
                         usize::try_from(index)
                             .ok()
-                            .filter(|index| *index < source.hyperlinks.len())
-                            .and_then(|_| hyperlink_base.checked_add(index))
+                            .and_then(|index| hyperlink_map.get(index).copied().flatten())
                     });
                     if source_remnants.contains(&col) {
                         // A cut pane glyph becomes the blank the server emits for
                         // the same cut; chrome keeps its own repair.
                         match cell.grid_width {
-                            GridCellWidth::One | GridCellWidth::Two => {
+                            GridCellWidth::One
+                            | GridCellWidth::WideLead
+                            | GridCellWidth::WideTail => {
                                 crate::pane_row::blank_pane_cell(&mut cell);
                             }
                             GridCellWidth::Grapheme => blank(&mut cell),
@@ -352,14 +353,14 @@ impl Canvas {
             }
         }
 
-        target.cursor = source.cursor.as_ref().and_then(|cursor| {
+        target.set_cursor(source.cursor().and_then(|cursor| {
             (cursor.x < copy_width && cursor.y < copy_height).then(|| CursorState {
                 x: area.x + cursor.x,
                 y: area.y + cursor.y,
                 visible: cursor.visible,
                 shape: cursor.shape,
             })
-        });
+        }));
     }
 }
 
@@ -391,13 +392,12 @@ mod tests {
             fg: WireColor::Reset,
             bg: WireColor::Reset,
             style: WireStyle::default(),
-            skip: false,
             hyperlink: None,
         }
     }
 
-    /// One row of cells, one per char; `~` is an empty-symbol wide tail as pane surfaces
-    /// write them.
+    /// One row of cells, one per char; `~` is an empty-symbol cell, the trailing half of a
+    /// wide glyph as chrome writes it.
     fn frame(row: &str) -> FrameData {
         let cells = row
             .chars()
@@ -409,13 +409,14 @@ mod tests {
                 }
             })
             .collect::<Vec<_>>();
-        FrameData {
-            width: u16::try_from(cells.len()).expect("test row fits"),
-            height: 1,
-            cells,
-            cursor: None,
-            hyperlinks: Vec::new(),
-        }
+        FrameData::new(
+            cells.clone(),
+            u16::try_from(cells.len()).expect("test row fits"),
+            1,
+            None,
+            Vec::new(),
+        )
+        .expect("test row is a valid frame")
     }
 
     fn canvas(frame: FrameData) -> Canvas {
@@ -435,15 +436,14 @@ mod tests {
     }
 
     #[test]
-    fn a_canvas_refuses_a_frame_whose_shape_or_links_do_not_hold() {
-        let mut short = frame("abc");
-        short.width = 2;
-        assert_eq!(Canvas::new(short), Err(FrameGridError::InvalidCellCount));
+    fn a_canvas_refuses_a_frame_whose_links_do_not_hold() {
         let mut dangling = frame("ab");
-        dangling.cells[1].hyperlink = Some(0);
+        dangling.cells_mut()[1].hyperlink = Some(0);
         assert_eq!(Canvas::new(dangling), Err(FrameGridError::InvalidHyperlink));
-        let empty = Canvas::from_buffer(&blank_scratch(0, 0)).expect("an empty buffer is valid");
-        assert!(empty.cells().is_empty());
+        assert_eq!(
+            Canvas::from_buffer(&blank_scratch(0, 0)),
+            Err(FrameGridError::InvalidDimensions)
+        );
     }
 
     #[test]
@@ -463,10 +463,9 @@ mod tests {
     }
 
     #[test]
-    fn patch_applies_the_set_style_algorithm_and_keeps_symbol_skip_and_link() {
+    fn patch_applies_the_set_style_algorithm_and_keeps_symbol_and_link() {
         let mut cells = vec![cell("a")];
         cells[0].hyperlink = Some(3);
-        cells[0].skip = true;
         cells[0].fg = WireColor::Red;
         patch_style(
             &mut cells,
@@ -484,7 +483,6 @@ mod tests {
         assert!(cells[0].style.flags.contains(WireStyleFlags::BOLD));
         assert!(!cells[0].style.flags.contains(WireStyleFlags::ITALIC));
         assert_eq!(cells[0].symbol, "a");
-        assert!(cells[0].skip);
         assert_eq!(cells[0].hyperlink, Some(3));
     }
 
@@ -605,10 +603,9 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_copies_cells_with_typed_underline_and_skip_from_the_replacement() {
+    fn overwrite_copies_cells_with_typed_underline_from_the_replacement() {
         let mut source = frame("abcd");
-        source.cells[1].style.underline = UnderlineStyle::Dashed;
-        source.cells[1].skip = true;
+        source.cells_mut()[1].style.underline = UnderlineStyle::Dashed;
         let mut canvas = canvas(source);
         let mut scratch = blank_scratch(4, 1);
         scratch.set_string(
@@ -628,14 +625,13 @@ mod tests {
         assert!(replaced.style.flags.contains(WireStyleFlags::BOLD));
         // A scratch `UNDERLINED` is Single; the destination's Dashed shape is gone.
         assert_eq!(replaced.style.underline, UnderlineStyle::Single);
-        assert!(!replaced.skip, "skip comes from the replacement");
         // Outside the union nothing changes.
         assert_eq!(canvas.cells()[0].symbol, "a");
         assert_eq!(canvas.cells()[3].symbol, "d");
     }
 
     #[test]
-    fn overwrite_skip_comes_from_the_replacement() {
+    fn overwrite_drops_ratatuis_skip_hint() {
         let mut canvas = canvas(frame("ab"));
         let mut scratch = blank_scratch(2, 1);
         if let Some(cell) = scratch.cell_mut((0, 0)) {
@@ -643,15 +639,16 @@ mod tests {
             cell.set_diff_option(ratatui::buffer::CellDiffOption::Skip);
         }
         canvas.overwrite(&[Rect::new(0, 0, 2, 1)], &scratch);
-        assert!(canvas.cells()[0].skip);
-        assert!(!canvas.cells()[1].skip);
+        assert_eq!(text(&canvas), "z ");
     }
 
     #[test]
     fn overwrite_clears_hyperlinks_unconditionally_even_for_the_same_symbol() {
         let mut source = frame("abc");
-        source.hyperlinks = vec!["https://a.example".into()];
-        for cell in &mut source.cells {
+        source
+            .set_hyperlinks(vec!["https://a.example".into()])
+            .expect("no cell links yet");
+        for cell in source.cells_mut() {
             cell.hyperlink = Some(0);
         }
         let mut canvas = canvas(source);
@@ -688,19 +685,19 @@ mod tests {
     fn overwrite_blanks_the_uncovered_part_of_a_split_underlying_glyph() {
         // Lead covered, tail (empty symbol) not.
         let mut source = frame("a漢~d");
-        source.cells[1].bg = WireColor::Green;
-        source.cells[2].bg = WireColor::Green;
-        source.cells[2].hyperlink = Some(0);
-        source.hyperlinks = vec!["https://a.example".into()];
-        source.cells[2].skip = true;
+        source
+            .set_hyperlinks(vec!["https://a.example".into()])
+            .expect("no cell links yet");
+        source.cells_mut()[1].bg = WireColor::Green;
+        source.cells_mut()[2].bg = WireColor::Green;
+        source.cells_mut()[2].hyperlink = Some(0);
         let mut left = canvas(source);
         let mut scratch = blank_scratch(4, 1);
         scratch.set_string(1, 0, "#", Style::default());
         left.overwrite(&[Rect::new(1, 0, 1, 1)], &scratch);
         assert_eq!(text(&left), "a# d");
-        // The blanked tail keeps its own style but not skip or the link.
+        // The blanked tail keeps its own style but not the link.
         assert_eq!(left.cells()[2].bg, WireColor::Green);
-        assert!(!left.cells()[2].skip);
         assert_eq!(left.cells()[2].hyperlink, None);
 
         // Tail covered, lead not: the lead is blanked, also with space continuations.
@@ -727,9 +724,9 @@ mod tests {
     #[test]
     fn overlay_edge_after_narrow_vs16_cell_keeps_the_pane_glyph() {
         let mut source = frame("  ");
-        source.cells[0].symbol = "\u{26a0}\u{fe0f}".to_owned();
-        source.cells[0].grid_width = GridCellWidth::One;
-        source.cells[1].grid_width = GridCellWidth::One;
+        source.cells_mut()[0].symbol = "\u{26a0}\u{fe0f}".to_owned();
+        source.cells_mut()[0].grid_width = GridCellWidth::One;
+        source.cells_mut()[1].grid_width = GridCellWidth::One;
         let mut canvas = canvas(source);
         let mut scratch = blank_scratch(2, 1);
         scratch.set_string(1, 0, "x", Style::default());
@@ -757,7 +754,7 @@ mod tests {
         let voiced = "\u{ff76}\u{ff9e}";
         assert_eq!(shepr_term::width::text_width(voiced), 2);
         let mut source = frame("a~");
-        source.cells[0].symbol = voiced.to_owned();
+        source.cells_mut()[0].symbol = voiced.to_owned();
         let mut canvas = canvas(source);
         let mut scratch = blank_scratch(2, 1);
         scratch.set_string(0, 0, "#", Style::default());
@@ -767,13 +764,16 @@ mod tests {
 
     #[test]
     fn overwrite_repairs_a_split_emoji_variation_glyph() {
-        let mut canvas = canvas(FrameData {
-            cells: vec![cell("\u{2764}\u{fe0f}"), cell(""), cell("z")],
-            width: 3,
-            height: 1,
-            cursor: None,
-            hyperlinks: Vec::new(),
-        });
+        let mut canvas = canvas(
+            FrameData::new(
+                vec![cell("\u{2764}\u{fe0f}"), cell(""), cell("z")],
+                3,
+                1,
+                None,
+                Vec::new(),
+            )
+            .expect("test frame"),
+        );
         let mut scratch = blank_scratch(3, 1);
         scratch.set_string(0, 0, "#", Style::default());
 
@@ -788,9 +788,11 @@ mod tests {
         // The too-small hint restyles its whole row, then overwrites the prefix its text
         // actually wrote; a wide glyph the prefix boundary splits is blanked.
         let mut source = frame("ab漢~cd");
-        source.cells[3].hyperlink = Some(0);
-        source.cells[4].hyperlink = Some(0);
-        source.hyperlinks = vec!["https://a.example".into()];
+        source
+            .set_hyperlinks(vec!["https://a.example".into()])
+            .expect("no cell links yet");
+        source.cells_mut()[3].hyperlink = Some(0);
+        source.cells_mut()[4].hyperlink = Some(0);
         let mut canvas = canvas(source);
         let hint = Style::default()
             .fg(Color::Black)
@@ -810,32 +812,50 @@ mod tests {
     }
 
     #[test]
-    fn overwrite_and_patch_rect_leave_a_canvas_past_the_surface_budget_alone() {
+    fn a_buffer_past_the_surface_budget_has_no_canvas() {
         let wide = shepr_protocol::MAX_SURFACE_DIMENSION + 1;
-        let mut canvas =
-            Canvas::from_buffer(&blank_scratch(wide, 1)).expect("a fresh buffer is valid");
-        let before = canvas.clone();
-        let mut scratch = blank_scratch(wide, 1);
-        scratch.set_string(0, 0, "XYZ", Style::default());
-        canvas.overwrite(&[Rect::new(0, 0, 3, 1)], &scratch);
-        canvas.patch_rect(
-            Rect::new(0, 0, 3, 1),
-            StylePatch::from_style(Style::default().bg(Color::Red)),
+        assert_eq!(
+            Canvas::from_buffer(&blank_scratch(wide, 1)),
+            Err(FrameGridError::InvalidDimensions)
         );
-        assert_eq!(canvas, before);
+    }
+
+    #[test]
+    fn compose_drops_links_the_table_has_no_room_for() {
+        let mut target = frame("..");
+        target
+            .set_hyperlinks(vec![String::new(); shepr_protocol::MAX_SURFACE_HYPERLINKS])
+            .expect("table at its budget");
+        let mut target = canvas(target);
+        let mut source = frame("X");
+        source
+            .set_hyperlinks(vec!["https://new.example".into()])
+            .expect("no cell links yet");
+        source.cells_mut()[0].hyperlink = Some(0);
+        target.compose_pane(&source, Rect::new(0, 0, 1, 1));
+        assert_eq!(text(&target), "X.");
+        assert_eq!(target.cells()[0].hyperlink, None);
+        assert_eq!(
+            target.hyperlinks().len(),
+            shepr_protocol::MAX_SURFACE_HYPERLINKS
+        );
     }
 
     #[test]
     fn compose_keeps_shapes_remaps_links_and_repairs_a_split_target_glyph() {
         let mut target = frame("|漢~|");
-        target.hyperlinks = vec!["https://old.example".into()];
-        target.cells[3].hyperlink = Some(0);
+        target
+            .set_hyperlinks(vec!["https://old.example".into()])
+            .expect("no cell links yet");
+        target.cells_mut()[3].hyperlink = Some(0);
         let mut target = canvas(target);
         let mut source = frame("XY");
-        source.hyperlinks = vec!["https://new.example".into()];
-        source.cells[0].hyperlink = Some(0);
-        source.cells[1].style.underline = UnderlineStyle::Dotted;
-        source.cells[1].hyperlink = Some(7);
+        source
+            .set_hyperlinks(vec!["https://new.example".into()])
+            .expect("no cell links yet");
+        source.cells_mut()[0].hyperlink = Some(0);
+        source.cells_mut()[1].style.underline = UnderlineStyle::Dotted;
+        source.cells_mut()[1].hyperlink = Some(7);
         // Pasting over the tail only must not leave the target's lead as half a glyph.
         target.compose_pane(&source, Rect::new(2, 0, 1, 1));
         assert_eq!(text(&target), "| X|");
@@ -865,11 +885,10 @@ mod tests {
     fn compose_turns_a_cut_pane_glyph_into_the_servers_pane_blank() {
         let mut target = canvas(frame("...."));
         let mut source = frame("a\u{754c}~");
-        for cell in &mut source.cells {
-            cell.grid_width = GridCellWidth::One;
-        }
-        source.cells[1].grid_width = GridCellWidth::Two;
-        source.cells[1].style.underline = UnderlineStyle::Single;
+        source.cells_mut()[0].grid_width = GridCellWidth::One;
+        source.cells_mut()[1].grid_width = GridCellWidth::WideLead;
+        source.cells_mut()[2].grid_width = GridCellWidth::WideTail;
+        source.cells_mut()[1].style.underline = UnderlineStyle::Single;
         target.compose_pane(&source, Rect::new(0, 0, 2, 1));
         assert_eq!(text(&target), "a ..");
         assert_eq!(target.cells()[1].grid_width, GridCellWidth::One);
@@ -880,9 +899,9 @@ mod tests {
     fn compose_clip_edge_uses_grid_width_for_narrow_vs16_cells() {
         let mut target = canvas(frame(".."));
         let mut source = frame("  ");
-        source.cells[0].symbol = "\u{26a0}\u{fe0f}".to_owned();
-        source.cells[0].grid_width = GridCellWidth::One;
-        source.cells[1].grid_width = GridCellWidth::One;
+        source.cells_mut()[0].symbol = "\u{26a0}\u{fe0f}".to_owned();
+        source.cells_mut()[0].grid_width = GridCellWidth::One;
+        source.cells_mut()[1].grid_width = GridCellWidth::One;
 
         target.compose_pane(&source, Rect::new(0, 0, 1, 1));
 
@@ -895,12 +914,12 @@ mod tests {
     fn compose_clips_to_the_target_and_takes_the_cursor_from_the_visible_part() {
         let mut target = canvas(frame("...."));
         let mut source = frame("abcd");
-        source.cursor = Some(CursorState {
+        source.set_cursor(Some(CursorState {
             x: 3,
             y: 0,
             visible: true,
             shape: CursorShapeParam::Default,
-        });
+        }));
         target.compose_pane(&source, Rect::new(3, 0, 4, 1));
         assert_eq!(text(&target), "...a");
         assert_eq!(target.cursor(), None);

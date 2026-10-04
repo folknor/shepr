@@ -3,6 +3,8 @@
 use ratatui::layout::Rect;
 
 use crate::app::state::AppState;
+use crate::server::clients::ClientPaneIdentity;
+use crate::server::committed_baseline::CommittedBaseline;
 use shepr_mux::pane::PaneRuntimeRegistry;
 use shepr_protocol::{
     FrameData, PaneSurfaceFrame, PaneSurfacePatch, ServerMessage, SurfaceRevision,
@@ -30,8 +32,8 @@ fn warn_surface_encoding_failure(
         base_surface_revision = ?last.surface_revision,
         projection_revision = ?surface.projection_revision,
         surface_revision = ?surface.surface_revision,
-        width = surface.frame.width,
-        height = surface.frame.height,
+        width = surface.frame.width(),
+        height = surface.frame.height(),
         "failed to encode compact surface update"
     );
 }
@@ -43,8 +45,6 @@ fn warn_surface_encoding_failure(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ViewEpoch(u64);
 impl ViewEpoch {
-    /// Never current: a client settled here is stale at any epoch.
-    pub(crate) const ZERO: Self = Self(0);
     pub(crate) const INITIAL: Self = Self(1);
     pub(crate) fn advance(&mut self) {
         self.0 = self.0.saturating_add(1);
@@ -74,36 +74,39 @@ pub(crate) enum PreparedSurface {
     RevisionsExhausted,
 }
 
-/// Per-client render baseline: the last surface sent and its revision. The
-/// delta planner skips unchanged surfaces after its cell comparison pass.
+/// Per-client render baseline: the last surface sent with its pane identities,
+/// and its revision. The delta planner skips unchanged surfaces after its cell
+/// comparison pass.
 pub(crate) struct ClientRenderState {
-    last_surface: Option<Box<PaneSurfaceFrame>>,
+    committed: Option<Box<CommittedBaseline>>,
     surface_revision: SurfaceRevision,
     recompute_pending: bool,
-    settled: ViewEpoch,
+    /// The epoch this client last settled at; `None` is stale at any epoch
+    /// (never settled, or invalidated for this client alone).
+    settled: Option<ViewEpoch>,
     debt: SurfaceDebt,
 }
 
 impl ClientRenderState {
     pub(crate) fn new() -> Self {
         Self {
-            last_surface: None,
+            committed: None,
             surface_revision: SurfaceRevision::ZERO,
             recompute_pending: false,
-            settled: ViewEpoch::ZERO,
+            settled: None,
             debt: SurfaceDebt::Clear,
         }
     }
 
     pub(crate) fn is_settled_at(&self, epoch: ViewEpoch) -> bool {
-        self.settled == epoch
+        self.settled == Some(epoch)
     }
     pub(crate) fn settle(&mut self, epoch: ViewEpoch) {
-        self.settled = epoch;
+        self.settled = Some(epoch);
     }
     /// Makes this client alone stale, whatever the epoch.
     pub(crate) fn invalidate(&mut self) {
-        self.settled = ViewEpoch::ZERO;
+        self.settled = None;
     }
     pub(crate) fn owe(&mut self) {
         self.debt = SurfaceDebt::Owed;
@@ -131,11 +134,11 @@ impl ClientRenderState {
         match self.debt {
             SurfaceDebt::Owed => true,
             SurfaceDebt::Refused => false,
-            SurfaceDebt::Clear => self.last_surface.is_none() || self.recompute_pending,
+            SurfaceDebt::Clear => self.committed.is_none() || self.recompute_pending,
         }
     }
     pub(crate) fn takes_patches(&self) -> bool {
-        self.debt == SurfaceDebt::Clear && self.last_surface.is_some() && !self.recompute_pending
+        self.debt == SurfaceDebt::Clear && self.committed.is_some() && !self.recompute_pending
     }
 
     pub(crate) fn request_recompute(&mut self) {
@@ -146,25 +149,41 @@ impl ClientRenderState {
         self.recompute_pending
     }
 
+    /// Forgets what was committed, surface and pane identities together.
     pub(crate) fn request_repaint(&mut self) {
-        self.last_surface = None;
+        self.committed = None;
         self.clear_debt();
     }
 
-    pub(crate) fn last_pane_surface(&self) -> Option<&PaneSurfaceFrame> {
-        self.last_surface.as_deref()
+    pub(crate) fn committed_baseline(&self) -> Option<&CommittedBaseline> {
+        self.committed.as_deref()
     }
 
-    pub(crate) fn prepare_pane_surface(
+    pub(crate) fn last_pane_surface(&self) -> Option<&PaneSurfaceFrame> {
+        self.committed.as_deref().map(CommittedBaseline::surface)
+    }
+
+    /// Plans the send of `surface`, whose panes are `identities`. A surface
+    /// whose pane identities differ from the committed ones is a recompute
+    /// even when the wire fields match: a public pane id can outlive a layout
+    /// update, and retained rendering trusts the committed identities.
+    pub(crate) fn prepare_surface(
         &mut self,
         mut surface: PaneSurfaceFrame,
+        identities: Vec<ClientPaneIdentity>,
     ) -> PreparedSurface {
         let Self {
-            last_surface,
+            committed,
             surface_revision,
             recompute_pending,
             ..
         } = self;
+        if committed
+            .as_deref()
+            .is_some_and(|baseline| !baseline.has_identities(&identities))
+        {
+            *recompute_pending = true;
+        }
         // The client accepts a surface only at its exact successor revision,
         // so an exhausted counter (one step per sent frame, unreachable in
         // practice) closes the connection rather than repeating a revision.
@@ -172,15 +191,16 @@ impl ClientRenderState {
             return PreparedSurface::RevisionsExhausted;
         };
         surface.surface_revision = next_revision;
-        let plan = last_surface.as_deref().and_then(|last| {
-            match shepr_surface::delta::message(last, &surface) {
+        let plan = committed
+            .as_deref()
+            .map(CommittedBaseline::surface)
+            .and_then(|last| match shepr_surface::delta::message(last, &surface) {
                 Ok(plan) => Some(plan),
                 Err(error) => {
                     warn_surface_encoding_failure("delta", &error, last, &surface);
                     None
                 }
-            }
-        });
+            });
         let (message, committed_surface) = match plan {
             Some(shepr_surface::delta::SurfaceDeltaPlan::Unchanged(_message))
                 if !*recompute_pending =>
@@ -202,6 +222,7 @@ impl ClientRenderState {
         PreparedSurface::Ready(Box::new(PreparedRender::Semantic {
             message,
             committed_surface,
+            identities,
         }))
     }
 
@@ -210,15 +231,16 @@ impl ClientRenderState {
         mut patch: PaneSurfacePatch,
     ) -> Result<PreparedRender, PatchPreparationFailure> {
         let Self {
-            last_surface,
+            committed,
             surface_revision,
             ..
         } = self;
         if self.requires_recompute() {
             return Err(PatchPreparationFailure::RecomputePending);
         }
-        let last = last_surface
+        let last = committed
             .as_deref()
+            .map(CommittedBaseline::surface)
             .ok_or(PatchPreparationFailure::MissingBaseline)?;
         let next_revision = surface_revision
             .checked_next()
@@ -251,6 +273,7 @@ impl ClientRenderState {
             PreparedRender::Semantic {
                 message,
                 committed_surface,
+                identities,
             } => {
                 let committed_surface = match committed_surface {
                     Some(surface) => Some(surface),
@@ -261,11 +284,14 @@ impl ClientRenderState {
                 };
                 if let Some(committed_surface) = committed_surface {
                     self.surface_revision = committed_surface.surface_revision;
-                    self.last_surface = Some(committed_surface);
+                    self.committed = Some(Box::new(CommittedBaseline::new(
+                        *committed_surface,
+                        identities,
+                    )));
                     self.recompute_pending = false;
                 } else {
                     tracing::error!("full surface render did not contain a surface baseline");
-                    self.last_surface = None;
+                    self.committed = None;
                 }
             }
             PreparedRender::SemanticPatch { patch, .. } => {
@@ -274,13 +300,13 @@ impl ClientRenderState {
                 // run. If one does, the client holds a surface this side can no
                 // longer reproduce: drop the baseline so the next render sends a
                 // full surface rather than diffing against a wrong grid.
-                let applied = match self.last_surface.as_deref_mut() {
-                    Some(surface) => apply_pane_surface_patch(surface, &patch),
+                let applied = match self.committed.as_deref_mut() {
+                    Some(baseline) => apply_pane_surface_patch(baseline.surface_mut(), &patch),
                     None => Err(shepr_surface::decode::SurfaceDecodeError::MissingBaseline),
                 };
                 if let Err(reason) = applied {
                     tracing::warn!(%reason, "sent surface patch did not apply to its baseline");
-                    self.last_surface = None;
+                    self.committed = None;
                 }
                 self.surface_revision = patch.surface_revision;
             }
@@ -303,6 +329,8 @@ pub(crate) enum PreparedRender {
     Semantic {
         message: ServerMessage,
         committed_surface: Option<Box<PaneSurfaceFrame>>,
+        /// The identities of the surface's panes, committed beside it.
+        identities: Vec<ClientPaneIdentity>,
     },
     SemanticPatch {
         message: ServerMessage,
@@ -318,26 +346,38 @@ impl PreparedRender {
     }
 }
 
+/// One virtual render: the frame, the layout it drew and how each pane's draw
+/// went.
+pub(crate) type VirtualSurface = (
+    FrameData,
+    crate::ui::SurfaceLayout,
+    Vec<(shepr_core::layout::PaneId, shepr_mux::pane::PaneDraw)>,
+);
+
 /// Renders only the focused workspace's pane surface at an origin-relative
 /// client viewport, straight into wire form: the frame holds the cells, the
-/// links and the cursor.
+/// links and the cursor. The third part is how each pane's draw went.
 pub(crate) fn render_surface_virtual(
     app_state: &AppState,
     terminal_runtimes: &PaneRuntimeRegistry,
     layout: crate::ui::SurfaceLayout,
     area: Rect,
-) -> (FrameData, crate::ui::SurfaceLayout) {
+) -> Result<VirtualSurface, shepr_protocol::FrameGridError> {
     // Full rendering materializes every cell for new surfaces and retained-path
     // fallbacks; dirty-row updates take the retained renderer instead.
     let surface = crate::ui::SurfaceView {
-        target: layout.target.as_ref(),
-        pane_infos: &layout.pane_infos,
+        target: layout.target,
+        panes: &layout.panes,
         split_borders: &layout.split_borders,
     };
-    let mut frame = FrameData::blank(area.width, area.height);
-    crate::ui::render_surface(app_state, terminal_runtimes, surface, &mut frame);
-    frame.cursor = crate::ui::surface_cursor(app_state, terminal_runtimes, surface);
-    (frame, layout)
+    let mut frame = FrameData::blank(area.width, area.height)?;
+    let draws = crate::ui::render_surface(app_state, terminal_runtimes, surface, &mut frame);
+    frame.set_cursor(crate::ui::surface_cursor(
+        app_state,
+        terminal_runtimes,
+        surface,
+    ));
+    Ok((frame, layout, draws))
 }
 
 #[cfg(test)]
@@ -357,13 +397,25 @@ impl PreparedSurface {
 }
 #[cfg(test)]
 impl ClientRenderState {
+    /// Whether this client holds any settled epoch at all.
+    pub(crate) fn has_settled(&self) -> bool {
+        self.settled.is_some()
+    }
+
     pub(crate) fn exhaust_revisions(&mut self) {
-        self.surface_revision = SurfaceRevision::new(u64::MAX);
+        self.surface_revision = shepr_test_fixtures::counter_at(u64::MAX);
     }
 
     /// The last sent surface, mutable, so tests can stage a stale baseline.
     pub(crate) fn last_surface_mut(&mut self) -> Option<&mut PaneSurfaceFrame> {
-        self.last_surface.as_deref_mut()
+        self.committed
+            .as_deref_mut()
+            .map(CommittedBaseline::surface_mut)
+    }
+
+    /// Plans a surface with no panes, as most unit tests of the planner use.
+    fn prepare_pane_surface(&mut self, surface: PaneSurfaceFrame) -> PreparedSurface {
+        self.prepare_surface(surface, Vec::new())
     }
 }
 
@@ -377,9 +429,12 @@ mod tests {
         let pane = ratatui::buffer::Buffer::with_lines([content]);
         PaneSurfaceFrame {
             boot_id: shepr_test_fixtures::fixed_boot_id(1),
-            projection_revision: shepr_protocol::ProjectionRevision::new(1),
-            surface_revision: shepr_protocol::SurfaceRevision::new(1),
-            frame: FrameData::from_ratatui_buffer_with_hyperlinks(&pane, None, &[]),
+            projection_revision: shepr_test_fixtures::counter_at::<
+                shepr_protocol::ProjectionRevision,
+            >(1),
+            surface_revision: shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(1),
+            frame: FrameData::from_ratatui_buffer_with_hyperlinks(&pane, None, &[])
+                .expect("test buffer is a valid frame"),
             panes: Vec::new(),
             splits: Vec::new(),
         }
@@ -434,7 +489,8 @@ mod tests {
             &ratatui::buffer::Buffer::empty(Rect::new(0, 0, 120, 40)),
             None,
             &[],
-        );
+        )
+        .expect("test buffer is a valid frame");
         let initial = state
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
@@ -455,7 +511,7 @@ mod tests {
                 .last_pane_surface()
                 .expect("test precondition")
                 .surface_revision,
-            shepr_protocol::SurfaceRevision::new(2)
+            shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(2)
         );
         state.request_repaint();
         assert!(state.last_pane_surface().is_none());
@@ -463,7 +519,7 @@ mod tests {
             .prepare_pane_surface(surface)
             .expect("test precondition");
         assert!(
-            matches!(recovery.message(), ServerMessage::PaneSurface(frame) if frame.surface_revision == shepr_protocol::SurfaceRevision::new(3))
+            matches!(recovery.message(), ServerMessage::PaneSurface(frame) if frame.surface_revision == shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(3))
         );
     }
 
@@ -473,7 +529,8 @@ mod tests {
         let mut decoder = shepr_surface::decode::Decoder::default();
         let mut surface = test_surface("popup");
         let buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 240, 100));
-        surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
+        surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
+            .expect("test buffer is a valid frame");
         let initial = state
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
@@ -509,32 +566,37 @@ mod tests {
         assert_eq!(decoded.projection_revision, surface.projection_revision);
         assert_eq!(
             decoded.surface_revision,
-            shepr_protocol::SurfaceRevision::new(2)
+            shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(2)
         );
         state.commit_sent_frame(update);
 
-        let mut changed_cell = surface.frame.cells[0].clone();
+        let mut changed_cell = surface.frame.cells()[0].clone();
         changed_cell.symbol = "x".into();
-        let patch = state
-            .prepare_pane_surface_patch(PaneSurfacePatch {
-                boot_id: surface.boot_id.clone(),
-                projection_revision: surface.projection_revision,
-                base_surface_revision: shepr_protocol::SurfaceRevision::new(2),
-                surface_revision: shepr_protocol::SurfaceRevision::new(0),
-                rows: vec![shepr_protocol::PaneSurfacePatchRow {
-                    x: 0,
-                    y: 0,
-                    cells: vec![changed_cell.clone()],
-                }],
-                panes: Vec::new(),
-                cursor: None,
-            })
-            .expect("test precondition");
+        let patch =
+            state
+                .prepare_pane_surface_patch(PaneSurfacePatch {
+                    boot_id: surface.boot_id.clone(),
+                    projection_revision: surface.projection_revision,
+                    base_surface_revision: shepr_test_fixtures::counter_at::<
+                        shepr_protocol::SurfaceRevision,
+                    >(2),
+                    surface_revision: shepr_test_fixtures::counter_at::<
+                        shepr_protocol::SurfaceRevision,
+                    >(0),
+                    rows: vec![shepr_protocol::PaneSurfacePatchRow {
+                        x: 0,
+                        y: 0,
+                        cells: vec![changed_cell.clone()],
+                    }],
+                    panes: Vec::new(),
+                    cursor: None,
+                })
+                .expect("test precondition");
         decoder
             .decode(patch.message().clone())
             .expect("test precondition");
         state.commit_sent_frame(patch);
-        surface.frame.cells[0] = changed_cell;
+        surface.frame.cells_mut()[0] = changed_cell;
         surface.projection_revision = surface
             .projection_revision
             .checked_next()
@@ -551,12 +613,12 @@ mod tests {
         assert_eq!(decoded.frame, surface.frame);
         assert_eq!(
             decoded.surface_revision,
-            shepr_protocol::SurfaceRevision::new(4)
+            shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(4)
         );
         state.commit_sent_frame(update);
 
         // A changed border or terminal cell must still reach the client.
-        surface.frame.cells[0].symbol = "y".into();
+        surface.frame.cells_mut()[0].symbol = "y".into();
         let changed = state
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
@@ -587,7 +649,10 @@ mod tests {
         let mut surface = test_surface("popup");
         // Metadata alone past one frame: the update still carries it, split
         // across frames, and the client decodes it against its baseline.
-        surface.frame.hyperlinks = vec!["\"".repeat(shepr_protocol::MAX_FRAME_SIZE + 1)];
+        surface
+            .frame
+            .set_hyperlinks(vec!["\"".repeat(shepr_protocol::MAX_FRAME_SIZE + 1)])
+            .expect("no cell links yet");
         let mut decoder = shepr_surface::decode::Decoder::default();
         let initial = state
             .prepare_pane_surface(surface.clone())
@@ -623,13 +688,17 @@ mod tests {
         let before = surface.clone();
         let patch = PaneSurfacePatch {
             boot_id: surface.boot_id.clone(),
-            projection_revision: shepr_protocol::ProjectionRevision::new(1),
-            base_surface_revision: shepr_protocol::SurfaceRevision::new(1),
-            surface_revision: shepr_protocol::SurfaceRevision::new(2),
+            projection_revision: shepr_test_fixtures::counter_at::<
+                shepr_protocol::ProjectionRevision,
+            >(1),
+            base_surface_revision: shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(
+                1,
+            ),
+            surface_revision: shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(2),
             rows: vec![shepr_protocol::PaneSurfacePatchRow {
                 x: 2,
                 y: 0,
-                cells: vec![surface.frame.cells[0].clone(); 2],
+                cells: vec![surface.frame.cells()[0].clone(); 2],
             }],
             panes: Vec::new(),
             cursor: None,
@@ -691,7 +760,7 @@ mod tests {
                 .last_pane_surface()
                 .expect("committed surface")
                 .surface_revision,
-            shepr_protocol::SurfaceRevision::new(1)
+            shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(1)
         );
     }
 
@@ -709,7 +778,7 @@ mod tests {
             .expect("forced replacement surface");
         assert!(matches!(
             prepared.message(),
-            ServerMessage::PaneSurface(surface) if surface.surface_revision == shepr_protocol::SurfaceRevision::new(2)
+            ServerMessage::PaneSurface(surface) if surface.surface_revision == shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(2)
         ));
         state.commit_sent_frame(prepared);
         assert_eq!(
@@ -717,7 +786,7 @@ mod tests {
                 .last_pane_surface()
                 .expect("test precondition")
                 .surface_revision,
-            shepr_protocol::SurfaceRevision::new(2)
+            shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(2)
         );
     }
 
@@ -725,12 +794,15 @@ mod tests {
     fn dirty_patch_does_not_resend_the_retained_hyperlink_table() {
         let mut state = ClientRenderState::new();
         let mut first = test_surface("abc");
-        first.frame.hyperlinks = vec!["https://example.test/".repeat(4096)];
+        first
+            .frame
+            .set_hyperlinks(vec!["https://example.test/".repeat(4096)])
+            .expect("no cell links yet");
         let initial = state.prepare_pane_surface(first.clone()).expect("initial");
         let mut decoder = shepr_surface::decode::Decoder::default();
         decoder.decode(initial.message().clone()).expect("baseline");
         state.commit_sent_frame(initial);
-        let mut changed = first.frame.cells[0].clone();
+        let mut changed = first.frame.cells()[0].clone();
         changed.symbol = "z".into();
         let prepared = state
             .prepare_pane_surface_patch(PaneSurfacePatch {
@@ -759,8 +831,9 @@ mod tests {
             DecodedServerMessage::PaneSurfacePatch(_)
         ));
         state.commit_sent_frame(prepared);
-        first.surface_revision = shepr_protocol::SurfaceRevision::new(2);
-        first.frame.cells[0] = changed;
+        first.surface_revision =
+            shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(2);
+        first.frame.cells_mut()[0] = changed;
         assert_eq!(state.last_pane_surface(), Some(&first));
         assert_eq!(decoder.current_surface(), Some(first));
     }

@@ -21,13 +21,16 @@ pub(crate) fn shutdown() {
     );
 }
 
-pub(crate) fn workspace_created(workspace_id: &shepr_protocol::WorkspaceId, root_pane_id: u32) {
+pub(crate) fn workspace_created(
+    workspace_id: &shepr_protocol::WorkspaceId,
+    root_pane_id: shepr_core::layout::PaneId,
+) {
     tracing::info!(
         event = "workspace.create",
         subsystem = "workspace",
         outcome = "ok",
         %workspace_id,
-        pane_id = root_pane_id,
+        pane_id = %root_pane_id,
         "workspace created"
     );
 }

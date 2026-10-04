@@ -1,3 +1,6 @@
+/// Limit API requests per loop pass so client and scheduled work still get service.
+pub(super) const API_REQUEST_DRAIN_LIMIT: usize = 64;
+
 impl super::HeadlessServer {
     pub(super) fn handle_api_request_with_shutdown_check(
         &mut self,
@@ -16,7 +19,9 @@ impl super::HeadlessServer {
         let mut changed = self.dispatch_api_request(msg);
         if self.workspace_order() != topology_before {
             changed |= self.reconcile_client_shell_locations();
-            self.reapply_controlled_shell_workspace_geometry(false);
+            self.reapply_controlled_shell_workspace_geometry(
+                super::client_views::PendingResumes::Defer,
+            );
         }
         self.sync_pane_focus();
         changed
@@ -24,7 +29,7 @@ impl super::HeadlessServer {
 
     pub(super) fn drain_api_requests_with_shutdown_check(&mut self) -> bool {
         let mut changed = false;
-        for _ in 0..crate::limits::API_REQUEST_DRAIN_LIMIT {
+        for _ in 0..API_REQUEST_DRAIN_LIMIT {
             // Recheck before each dequeue so a stop during this batch leaves
             // later requests for shutdown refusal.
             if self.lifecycle.stop_requested() {

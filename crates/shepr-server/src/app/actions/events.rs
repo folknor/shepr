@@ -2,21 +2,19 @@ use super::*;
 use crate::app::events::StateEvent;
 
 impl StateEvent {
-    /// The state part of `event`; `None` for the events the App applies itself
-    /// (a pane's death, a clipboard write, a Git refresh).
-    pub(crate) fn from_app_event(event: AppEvent) -> Option<Self> {
+    /// The state part of a runtime payload from `pane_id`; `None` for the
+    /// payloads the App applies itself (a pane's death and launch settlement,
+    /// a clipboard write).
+    pub(crate) fn from_runtime(pane_id: PaneId, event: RuntimeEvent) -> Option<Self> {
         match event {
-            AppEvent::AgentProcessDetected {
-                pane_id,
-                agent,
-                observed_at,
-            } => Some(Self::AgentProcessDetected {
-                pane_id,
-                agent,
-                observed_at,
-            }),
-            AppEvent::StateChanged {
-                pane_id,
+            RuntimeEvent::AgentProcessDetected { agent, observed_at } => {
+                Some(Self::AgentProcessDetected {
+                    pane_id,
+                    agent,
+                    observed_at,
+                })
+            }
+            RuntimeEvent::StateChanged {
                 agent,
                 detection,
                 process_exited,
@@ -28,22 +26,14 @@ impl StateEvent {
                 process_exited,
                 observed_at,
             }),
-            AppEvent::TerminalCwdReported { pane_id, cwd } => {
+            RuntimeEvent::TerminalCwdReported { cwd } => {
                 Some(Self::TerminalCwdReported { pane_id, cwd })
             }
-            AppEvent::Runtime { .. }
-            | AppEvent::PaneLaunchSettled { .. }
-            | AppEvent::PaneDied { .. }
-            | AppEvent::ClipboardWrite { .. }
-            | AppEvent::GitStatusRefreshed { .. } => None,
+            RuntimeEvent::PaneLaunchSettled { .. }
+            | RuntimeEvent::PaneDied { .. }
+            | RuntimeEvent::ClipboardWrite { .. } => None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum HookReportKind {
-    State,
-    SessionStart,
 }
 
 /// Turns a hook admission outcome into the mutation the reducer applies. A
@@ -56,20 +46,20 @@ enum HookReportKind {
 /// explain` shows it without this log.
 fn admit_hook_outcome(
     pane_id: shepr_core::layout::PaneId,
-    kind: HookReportKind,
+    kind: shepr_detect::ownership::HookReportKind,
     source: &shepr_agent::AgentSource,
     outcome: shepr_detect::ownership::HookOutcome,
 ) -> Option<AgentOwnershipMutation> {
     match &outcome {
         shepr_detect::ownership::HookOutcome::Applied(_) => {}
         shepr_detect::ownership::HookOutcome::Parked => tracing::debug!(
-            pane = pane_id.raw(),
+            pane = %pane_id,
             ?kind,
             %source,
             "hook report parked until process evidence"
         ),
         shepr_detect::ownership::HookOutcome::Rejected(reason) => tracing::debug!(
-            pane = pane_id.raw(),
+            pane = %pane_id,
             ?kind,
             %source,
             ?reason,
@@ -92,8 +82,7 @@ impl AppState {
     ) -> bool {
         let mut changed = false;
         for (result, resolved_identity_cwd) in results {
-            let Some(workspace) = self.workspaces.iter_mut().find(|ws| ws.id == result.owner)
-            else {
+            let Some(workspace) = self.workspaces.get_mut(&result.owner) else {
                 continue;
             };
 
@@ -149,7 +138,12 @@ impl AppState {
                 let source = *origin.source();
                 let outcome =
                     terminal.report_hook_outcome_at(origin, state, session_ref, seq, sample);
-                admit_hook_outcome(pane_id, HookReportKind::State, &source, outcome)
+                admit_hook_outcome(
+                    pane_id,
+                    shepr_detect::ownership::HookReportKind::State(state),
+                    &source,
+                    outcome,
+                )
             }),
             StateEvent::AgentSessionReported {
                 pane_id,
@@ -167,15 +161,18 @@ impl AppState {
                     session_start_source,
                     sample,
                 );
-                admit_hook_outcome(pane_id, HookReportKind::SessionStart, &source, outcome)
+                admit_hook_outcome(
+                    pane_id,
+                    shepr_detect::ownership::HookReportKind::SessionStart(session_start_source),
+                    &source,
+                    outcome,
+                )
             }),
             StateEvent::TerminalCwdReported { pane_id, cwd } => {
-                let Some(terminal_id) = self.terminal_of(pane_id).cloned() else {
+                let Some(record) = self.workspaces.pane_mut(pane_id) else {
                     return StateUpdate::Unchanged;
                 };
-                let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
-                    return StateUpdate::Unchanged;
-                };
+                let terminal = record.terminal_mut();
                 if terminal.cwd() != cwd.as_path() {
                     terminal.set_cwd(cwd);
                     self.mark_session_dirty();
@@ -196,13 +193,11 @@ impl AppState {
     where
         F: FnOnce(&mut shepr_mux::terminal::TerminalState) -> Option<AgentOwnershipMutation>,
     {
-        let Some(terminal_id) = self.terminal_of(pane_id).cloned() else {
-            return StateUpdate::Unchanged;
-        };
         let (mutation, unchanged_change) = {
-            let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
+            let Some(record) = self.workspaces.pane_mut(pane_id) else {
                 return StateUpdate::Unchanged;
             };
+            let terminal = record.terminal_mut();
             let mutation = update(terminal);
             let unchanged_change = mutation
                 .as_ref()
@@ -214,7 +209,7 @@ impl AppState {
         // it returned. Relying on the mutation to report authority changes
         // would lose one made by an update that returns `None` or reports no
         // state change; the drain reads the live authority instead.
-        self.lifecycle_authority_dirty.insert(terminal_id.clone());
+        self.lifecycle_authority_dirty.insert(pane_id);
         let Some(mutation) = mutation else {
             return StateUpdate::Unchanged;
         };
@@ -226,7 +221,7 @@ impl AppState {
         let Some(change) = mutation.effective_state_change.or(unchanged_change) else {
             return StateUpdate::Unchanged;
         };
-        self.record_agent_state_change_seq(&terminal_id, &change);
+        self.record_agent_state_change_seq(pane_id, &change);
         self.mark_shell_projection_dirty();
         if agent_released {
             StateUpdate::Released
@@ -240,17 +235,19 @@ impl AppState {
     /// react to Unknown/Idle transitions that both display as Idle.
     pub(super) fn record_agent_state_change_seq(
         &mut self,
-        terminal_id: &shepr_protocol::TerminalId,
+        pane_id: PaneId,
         change: &EffectiveStateChange,
     ) {
         if change.previous_state.presentation_state() == change.state.presentation_state() {
             return;
         }
-        self.next_agent_state_change_seq += 1;
-        if let Some(terminal) = self.terminals.get_mut(terminal_id) {
-            terminal
+        self.next_agent_state_change_seq.advance();
+        let seq = self.next_agent_state_change_seq;
+        if let Some(record) = self.workspaces.pane_mut(pane_id) {
+            record
+                .terminal_mut()
                 .ownership_mut()
-                .record_agent_state_change_seq(self.next_agent_state_change_seq);
+                .record_agent_state_change_seq(seq);
         }
     }
 
@@ -263,14 +260,14 @@ impl AppState {
     pub(crate) fn publish_pane_process_exit(
         &mut self,
         pane_id: PaneId,
-        exit_reason: shepr_platform::ChildExitReason,
+        ending: shepr_mux::pane::PaneEnding,
         ended_at: std::time::Instant,
     ) -> bool {
         let update = self.update_terminal_state(pane_id, |terminal| {
             Some(
                 terminal
                     .ownership_mut()
-                    .set_pane_process_exit_at(exit_reason, ended_at),
+                    .set_pane_process_exit_at(ending.needs_checkpoint(), ended_at),
             )
         });
         update == StateUpdate::Released
@@ -284,21 +281,14 @@ impl AppState {
         signaled_at: std::time::Instant,
     ) {
         let mut adopted = false;
-        for terminal in self.terminals.values_mut() {
-            adopted |= terminal
+        for (_, record) in self.workspaces.records_mut() {
+            adopted |= record
+                .terminal_mut()
                 .ownership_mut()
                 .adopt_checkpoint_candidate_for_shutdown(signaled_at);
         }
         if adopted {
             self.mark_session_dirty();
         }
-    }
-
-    /// State-level tests use this to exercise the pure reducer from an event.
-    /// It omits App event admission and runtime effects, so event-path behavior
-    /// must be tested through `App::handle_internal_event`.
-    #[cfg(test)]
-    pub(crate) fn handle_app_event(&mut self, event: AppEvent) -> StateUpdate {
-        self.handle_state_event(StateEvent::from_app_event(event).expect("state event"))
     }
 }

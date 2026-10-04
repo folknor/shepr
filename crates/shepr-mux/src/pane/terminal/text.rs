@@ -390,15 +390,14 @@ impl RetainedTextBuffer {
 }
 
 fn text_class(text: &str) -> TextClass {
+    use shepr_term::word::WordClass;
     let Some(ch) = text.chars().next() else {
         return TextClass::Whitespace;
     };
-    if ch.is_whitespace() {
-        TextClass::Whitespace
-    } else if ch.is_ascii() && COPY_MODE_WORD_SEPARATORS.contains(ch) {
-        TextClass::Separator
-    } else {
-        TextClass::Word
+    match shepr_term::word::classify(ch) {
+        WordClass::Whitespace => TextClass::Whitespace,
+        WordClass::Separator => TextClass::Separator,
+        WordClass::Word => TextClass::Word,
     }
 }
 

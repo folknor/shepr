@@ -15,12 +15,12 @@ pub(super) enum ClientLoopEvent {
     TerminalUnavailable(io::Error),
     ServerMessage {
         endpoint_id: endpoint::ClientEndpointId,
-        generation: u64,
+        generation: shepr_protocol::ConnectionGeneration,
         message: Box<DecodedClientServerMessage>,
     },
     ServerDisconnected {
         endpoint_id: endpoint::ClientEndpointId,
-        generation: u64,
+        generation: shepr_protocol::ConnectionGeneration,
         error: std::io::Error,
     },
     EndpointSupervisor(endpoint::EndpointSupervisorEvent),

@@ -3,14 +3,16 @@ use ratatui::style::{Modifier, Style};
 pub(in crate::shell) mod agent_sidebar;
 pub(in crate::shell) mod endpoint_agents;
 pub(in crate::shell) mod endpoint_sidebar;
+pub(in crate::shell) mod layout;
 pub(in crate::shell) mod preferences;
+pub(in crate::shell) mod scroll;
 pub(in crate::shell) mod sidebar_tokens;
 mod token_definitions;
 
 use ratatui::buffer::Buffer;
 use shepr_protocol::ClientShellWorkspace;
 
-use crate::shell::presentation::render::{display_width, put_text};
+use crate::shell::presentation::text::{display_width, put_text};
 use crate::shell::sidebar::sidebar_tokens::{
     ResolvedToken, SpaceTokenContext, TokenStyles, resolved_token_spans, sidebar_space_rows,
 };
@@ -58,7 +60,7 @@ pub(in crate::shell) fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<
     )
 }
 
-pub(in crate::shell) fn workspace_rows(
+pub(in crate::shell::sidebar) fn workspace_rows(
     workspace: &ClientShellWorkspace,
     status: shepr_protocol::AgentStatus,
     config: &SpacesSidebarConfig,
@@ -74,7 +76,7 @@ pub(in crate::shell) fn workspace_rows(
     )
 }
 
-pub(in crate::shell) fn render_workspace_rows(
+pub(in crate::shell::sidebar) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
     workspace_number: usize,
@@ -140,7 +142,7 @@ pub(in crate::shell) fn render_workspace_rows(
             palette,
             area.right().saturating_sub(2).saturating_sub(x) as usize,
         );
-        crate::shell::presentation::render::put_spans(
+        crate::shell::presentation::text::put_spans(
             buffer,
             Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
             &spans,

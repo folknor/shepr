@@ -13,6 +13,9 @@ pub(crate) enum CliError {
     Usage(String),
     Io(std::io::Error),
     Launch(shepr_launch::local_server::LaunchError),
+    /// The host terminal has no usable geometry, so the TUI cannot attach. The
+    /// only cause is the terminal size query's io error.
+    Terminal(std::io::Error),
     /// `client.toml` could not be loaded; one entry per diagnostic, each
     /// carrying its file, key path and reason.
     Config(Vec<shepr_config::ConfigDiagnostic>),
@@ -50,6 +53,14 @@ impl CliError {
 
     pub(crate) fn print(&self) {
         match self {
+            // A pane without a terminal is an ordinary answer to a detect
+            // request, so it reads as a plain sentence, not as an envelope.
+            Self::Response(response)
+                if response.error.code
+                    == shepr_api::error::ApiErrorCode::PaneTerminalUnavailable =>
+            {
+                eprintln!("{}", response.error.message);
+            }
             Self::Response(response) => match serde_json::to_string(response) {
                 Ok(json) => eprintln!("{json}"),
                 Err(error) => eprintln!("error: {error}"),
@@ -69,6 +80,7 @@ impl CliError {
             }
             Self::Io(error) => eprintln!("error: {error}"),
             Self::Launch(error) => eprintln!("shepr: {error}"),
+            Self::Terminal(error) => eprintln!("shepr: {error}"),
             Self::Config(diagnostics) => {
                 eprintln!("shepr: configuration error:");
                 for diagnostic in diagnostics {
@@ -139,7 +151,7 @@ impl std::fmt::Display for CliError {
             Self::Response(response) => f.write_str(&response.error.message),
             Self::ServerStop(error) => error.fmt(f),
             Self::Usage(message) => f.write_str(message),
-            Self::Io(error) => error.fmt(f),
+            Self::Io(error) | Self::Terminal(error) => error.fmt(f),
             Self::Launch(error) => error.fmt(f),
             Self::Config(diagnostics) => {
                 f.write_str("configuration error:")?;
@@ -166,7 +178,7 @@ impl std::error::Error for CliError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ServerStop(error) => Some(error),
-            Self::Io(error) => Some(error),
+            Self::Io(error) | Self::Terminal(error) => Some(error),
             Self::Launch(error) => Some(error),
             Self::Client(error) => Some(error),
             Self::Paths(error) => Some(error),

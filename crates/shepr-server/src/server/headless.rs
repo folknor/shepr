@@ -21,12 +21,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::app;
-use crate::limits::SERVER_EVENT_CHANNEL_CAPACITY;
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
     ClientConnection, ClientDeparture, ClientRegistry, ClientShellLocationGeneration,
@@ -47,11 +45,31 @@ mod internal_events;
 mod lifecycle;
 mod render;
 mod retained_surface;
+mod schedule;
 mod surface_interest;
 mod worker;
 
 pub use bootstrap::{RunServerError, ServerReady, run_server};
+use lifecycle::UnexpectedPhase;
 use lifecycle::{ShutdownLifecycle, ShutdownPhase};
+use schedule::WakeInputs;
+
+/// Bounded queue capacity for events forwarded from client threads.
+const SERVER_EVENT_CHANNEL_CAPACITY: usize = 64;
+/// Limit server events per loop pass so API and scheduled work still get service.
+pub(crate) const SERVER_EVENT_DRAIN_LIMIT: usize = 64;
+/// How long server exit waits for pane teardowns: their signal budget, plus
+/// three more of it for the /proc session scans between signal rounds, which
+/// the signal budget does not count.
+const PANE_TEARDOWN_WAIT: std::time::Duration =
+    shepr_mux::pane::PaneTeardownTracker::BUDGET.saturating_mul(4);
+/// Bound queued API requests to the number of app-bound API requests in
+/// flight. Each has at most one request in the queue at a time. Requests whose
+/// connection gave up waiting stay queued, so a stalled loop can fill the
+/// queue; producers then refuse new requests with `server_unavailable` at
+/// once instead of growing it. A refused agent hook report is dropped, as it
+/// is when the server is down.
+pub(crate) const API_REQUEST_CHANNEL_CAPACITY: usize = shepr_api::MAX_APP_REQUESTS_IN_FLIGHT;
 
 /// Samples the clock app state reads. App code never reads the clock itself
 /// (the `app-state-reads-the-clock-seam` textlint); the server samples it
@@ -77,6 +95,15 @@ enum LoopEvent {
     WorkerCompletion(worker::WorkerCompletion),
 }
 
+/// What pulling the PTY-reported terminal titles changed.
+#[derive(Debug, PartialEq, Eq)]
+struct TitleSync {
+    /// Some pane title changed, so the shell projection is dirty.
+    sidebar_changed: bool,
+    /// A focused pane's title was forwarded as a client's window title.
+    window_title_synced: bool,
+}
+
 struct PendingCheckpointedPaneExit {
     event: shepr_mux::events::AppEvent,
     checkpoint_generation: app::CheckpointGeneration,
@@ -94,8 +121,7 @@ struct ClientViewKey {
     presenting: bool,
     location_generation: ClientShellLocationGeneration,
     terminal_size: shepr_core::geometry::GridSize,
-    cell_size: shepr_term::host::HostCellSize,
-    pixel_mouse: bool,
+    host_cell: shepr_core::geometry::HostCell,
 }
 
 /// Coordinates the event loop without a real terminal. Lifecycle policy and
@@ -103,10 +129,13 @@ struct ClientViewKey {
 /// application stays here because it can start resumes and send focus reports;
 /// render coordination settles each connection's location, baseline and outbox
 /// against the same app revision, rather than owning a second client registry.
-pub struct HeadlessServer {
+pub(crate) struct HeadlessServer {
     // Crate-visible so `app` module tests can drive an `App` through the
     // server's event envelope (`handle_test_runtime_exit_and_replay`).
     pub(crate) app: app::App,
+    /// What the app and its pane runtimes publish (events, render requests,
+    /// finished saves): the loop owns what it waits on.
+    pub(crate) outputs: app::AppOutputs,
     view_epoch: ViewEpoch,
     /// The server socket: startup opens its TUI gate
     /// (`open_client_protocol`), and dropping it tears down the listener and
@@ -132,7 +161,7 @@ pub struct HeadlessServer {
     /// Panes last told they hold terminal focus (`sync_pane_focus`), derived
     /// from the clients' views; the record of what the panes were sent, not a
     /// view of its own.
-    focused_panes: HashSet<(shepr_protocol::WorkspaceId, shepr_core::layout::PaneId)>,
+    focused_panes: HashSet<client_views::ShellFocusTarget>,
     /// Whether the set of panes whose PTY output should wake the loop at once
     /// (`sync_immediate_pty_sources`) may be stale. That set depends only on
     /// the clients' workspace views, pane membership, and focused pane when a
@@ -183,6 +212,12 @@ pub struct HeadlessServer {
     /// idle loop to reap, release replies, refresh surfaces, or sync shutdown.
     outbox_wake: Arc<tokio::sync::Notify>,
     workers: worker::EndpointWorkers,
+    /// This server's `ui.window_title` and host name; `None` when window
+    /// titles are disabled. Never part of `AppState`.
+    window_title: Option<crate::ui::WindowTitleSettings>,
+    /// The render cadence and the automatic workspace's retry backoff: the
+    /// loop's own timing, folded into its next wake by `LoopSchedule`.
+    schedule: schedule::LoopSchedule,
 }
 
 impl HeadlessServer {
@@ -191,26 +226,56 @@ impl HeadlessServer {
     /// `boot_id` is the boot `api_server` was started with.
     pub(super) fn new(
         app: app::App,
+        outputs: app::AppOutputs,
         api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
         api_server: shepr_api::ServerHandle,
         stop_signal: Arc<shepr_api::ServerStopSignal>,
         boot_id: shepr_protocol::BootId,
+        window_title: Option<crate::ui::WindowTitleSettings>,
     ) -> Self {
         // Channel for server events from client threads.
-        let (server_event_tx, server_event_rx) = mpsc::channel(SERVER_EVENT_CHANNEL_CAPACITY);
+        let server_events = mpsc::channel(SERVER_EVENT_CHANNEL_CAPACITY);
+        Self::assemble(
+            app,
+            outputs,
+            api_request_rx,
+            Some(api_server),
+            stop_signal,
+            boot_id,
+            window_title,
+            server_events,
+        )
+    }
 
+    /// The one place the struct's field list exists: `new` and the test
+    /// constructor differ only in what they pass.
+    fn assemble(
+        app: app::App,
+        outputs: app::AppOutputs,
+        api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
+        api_server: Option<shepr_api::ServerHandle>,
+        stop_signal: Arc<shepr_api::ServerStopSignal>,
+        boot_id: shepr_protocol::BootId,
+        window_title: Option<crate::ui::WindowTitleSettings>,
+        (server_event_tx, server_event_rx): (
+            mpsc::Sender<ServerEvent>,
+            mpsc::Receiver<ServerEvent>,
+        ),
+    ) -> Self {
         let outbox_wake = Arc::new(tokio::sync::Notify::new());
 
         Self {
             app,
+            outputs,
             view_epoch: ViewEpoch::INITIAL,
-            api_server: Some(api_server),
+            api_server,
             clients: ClientRegistry::default(),
             client_view_keys: HashMap::new(),
             client_shell_boot_id: boot_id,
             shell_session_cache: None,
             shell_session_generation: ShellSessionGeneration::default(),
             focused_panes: HashSet::new(),
+            schedule: schedule::LoopSchedule::default(),
             immediate_pty_sources_dirty: true,
             host_input_modes_dirty: true,
             retained_surface_fallback_reason: None,
@@ -225,6 +290,7 @@ impl HeadlessServer {
             pending_checkpointed_pane_exits: VecDeque::new(),
             outbox_wake,
             workers: worker::EndpointWorkers::new(),
+            window_title,
         }
     }
 
@@ -261,8 +327,7 @@ impl HeadlessServer {
                         presenting: self.clients.is_presenting(&client_id),
                         location_generation: client.shell_state().location.generation(),
                         terminal_size: client.terminal_size,
-                        cell_size: client.cell_size,
-                        pixel_mouse: client.pixel_mouse,
+                        host_cell: client.host_cell,
                     },
                 )
             })
@@ -332,7 +397,7 @@ impl HeadlessServer {
     /// - Reads client messages and routes input
     /// - Handles scheduled tasks (session save, metadata expiry, etc.)
     /// - Renders virtually and streams frames to clients
-    pub async fn run(&mut self) -> io::Result<()> {
+    pub(crate) async fn run(&mut self) -> Result<(), RunServerError> {
         crate::logging::startup();
         // The fallible setup below returns before the loop, so it skips the
         // final save; `Drop` still releases the lease and socket in order. No
@@ -343,7 +408,7 @@ impl HeadlessServer {
         // Register SIGINT handler for graceful shutdown.
         let stop_signal = Arc::clone(self.lifecycle.stop_signal());
         let signal_quit = Arc::clone(self.lifecycle.signal_quit_request_flag());
-        ctrlc_handler(stop_signal, signal_quit)?;
+        ctrlc_handler(stop_signal, signal_quit).map_err(RunServerError::SignalInstall)?;
         self.lifecycle
             .start_host_shutdown_monitor(&self.outbox_wake);
 
@@ -357,7 +422,7 @@ impl HeadlessServer {
                 self.resolve_pending_endpoint_replies_for_shutdown();
                 self.release_endpoint_replies(ReleaseMode::Shutdown);
                 if let Err(err) = self.complete_shutdown().await {
-                    run_error.get_or_insert(err);
+                    run_error.get_or_insert(RunServerError::Shutdown(err));
                 }
                 break;
             }
@@ -409,7 +474,6 @@ impl HeadlessServer {
             // 5. Handle scheduled tasks.
             let now = self.refresh_app_clock();
             if self.handle_scheduled_tasks_headless(now) {
-                self.app.state.mark_shell_projection_dirty();
                 self.mark_view_changed();
             }
 
@@ -432,25 +496,24 @@ impl HeadlessServer {
             }
 
             // Derive each connection's work from its view, baseline and slot.
-            let render_signal_pending = self.app.render_dirty.is_pending();
+            let render_signal_pending = self.outputs.render().is_pending();
             let plan = self.render_plan(render_signal_pending);
-            let render_cadence_due = self.app.can_render_now(now);
+            let render_cadence_due = self.schedule.cadence.can_render(now);
             if (plan.has_full() || render_signal_pending)
                 && (render_cadence_due
-                    || (self.app.can_present_now(now)
-                        && (plan.has_full() || self.app.render_dirty.has_immediate_work())))
+                    || (self.schedule.cadence.can_present(now)
+                        && (plan.has_full() || self.outputs.render().has_immediate_work())))
             {
                 let planned_at = self.view_epoch;
-                let request = self.app.render_dirty.take();
+                let request = self.outputs.render().take();
                 let pty_dirty = !request.pty_sources.is_empty();
                 if pty_dirty {
                     self.host_input_modes_dirty = true;
                 }
-                if request.generic {
-                    self.mark_view_changed();
-                }
-                let (sidebar_changed, title_synced) =
-                    self.sync_terminal_title_sources(&request.terminal_title_sources);
+                let TitleSync {
+                    sidebar_changed,
+                    window_title_synced: title_synced,
+                } = self.sync_terminal_title_sources(&request.terminal_title_sources);
                 if sidebar_changed {
                     self.mark_view_changed();
                 }
@@ -479,7 +542,7 @@ impl HeadlessServer {
                 };
                 self.render_pass(&plan, &sources);
                 self.report_retained_surface_fallback();
-                self.app.record_render_attempt(now, !hidden_only);
+                self.schedule.cadence.record(now, !hidden_only);
                 self.release_endpoint_replies(ReleaseMode::WithinBudget);
                 continue;
             }
@@ -487,16 +550,14 @@ impl HeadlessServer {
             if !plan.has_full() && !render_signal_pending {
                 self.release_endpoint_replies(ReleaseMode::WithinBudget);
             }
-            let next_deadline = self.app.next_headless_loop_deadline_with_git_refresh(
+            let next_deadline = self.schedule.next_wake(
                 now,
-                plan.has_full() || render_signal_pending,
-                self.has_app_client(),
+                WakeInputs {
+                    render_owed: plan.has_full() || render_signal_pending,
+                    app: self.app.next_deadline(self.has_app_client()),
+                    shell_cwd: self.shell_cwd_refresh_deadline(),
+                },
             );
-            let next_deadline = self
-                .shell_cwd_refresh_deadline()
-                .map_or(next_deadline, |cwd| {
-                    Some(next_deadline.map_or(cwd, |current| current.min(cwd)))
-                });
             let event = self.next_loop_event(next_deadline).await;
             // The wait above can last until the next deadline; dispatch reads
             // the time the event arrived, not the time the wait began.
@@ -567,28 +628,14 @@ impl HeadlessServer {
             }
         }
 
-        // Save session on exit. During a host shutdown saving is frozen
-        // (session persistence is suspended), so this writes nothing and the
-        // checkpoint taken on the warning stands; the writer is still retired.
+        // Save session on exit. During a host shutdown saving is frozen, so
+        // this writes nothing and the checkpoint taken on the warning stands;
+        // the writer is still retired.
         self.refresh_app_clock();
-        if self.app.policy.persists_session()
-            || self.lifecycle.frozen_session_policy().unwrap_or(false)
-        {
-            // After a signal the panes' deaths were left unprocessed, so a
-            // pane whose agent died from the same kill just before it gets
-            // that identity back here.
-            if let Some(signaled_at) = self.lifecycle.signal_quit_at() {
-                self.app
-                    .state
-                    .adopt_checkpoint_candidates_for_shutdown(signaled_at);
-            }
-            self.app.save_session_before_teardown_async().await;
-        }
-        self.app.terminal_runtimes.clear();
-        if !self
-            .app
-            .wait_for_pane_teardowns(crate::limits::PANE_TEARDOWN_WAIT)
-        {
+        self.app
+            .save_session_for_exit(self.lifecycle.signal_quit_at())
+            .await;
+        if !self.app.shut_down_pane_runtimes(PANE_TEARDOWN_WAIT) {
             warn!("pane session teardown did not finish before server exit");
         }
         // The save and the teardown wait can each take seconds.
@@ -634,11 +681,12 @@ impl HeadlessServer {
                     LoopEvent::Timer
                 }
             },
-            // App keeps the sender of its own event channel, so this cannot
-            // close while the loop runs.
-            maybe_ev = self.app.event_rx.recv() => match maybe_ev {
-                Some(ev) => LoopEvent::Internal(ev),
-                None => LoopEvent::Timer,
+            // An app event, a pane runtime's render request or a finished
+            // session save: the outputs the app publishes. A signal only
+            // wakes the pass, which reaps the save and renders what is owed.
+            wake = self.outputs.next() => match wake {
+                app::AppWake::Event(ev) => LoopEvent::Internal(ev),
+                app::AppWake::Signal => LoopEvent::Timer,
             },
             // The server holds a sender for its own event channel (it is
             // cloned to clients), so this cannot close while the loop runs.
@@ -653,10 +701,6 @@ impl HeadlessServer {
                 None => LoopEvent::Timer,
             },
             _ = sleep_until_or_pending(next_deadline) => LoopEvent::Timer,
-            // A save ended: the scheduled tasks reap it and start whatever
-            // save waited for it.
-            () = self.app.session_saver.save_finished().notified() => LoopEvent::Timer,
-            _ = self.app.render_notify.notified() => LoopEvent::Timer,
         }
     }
 
@@ -667,11 +711,8 @@ impl HeadlessServer {
     /// the one saved with the session) in place. Its appearance still applies
     /// independently. Returns whether anything changed.
     ///
-    /// Callers need no invalidation of their own, whatever made the theme
-    /// change: the app setters do all a change requires (see
-    /// `App::set_host_terminal_theme` and
-    /// `App::set_host_terminal_appearance_state`), so a caller may discard
-    /// the result.
+    /// A change marks the view changed here (pane cells are drawn with the
+    /// theme), so a caller may discard the result and still render.
     fn sync_host_theme_from_foreground(&mut self) -> bool {
         let Some(shell) = self
             .clients
@@ -681,17 +722,18 @@ impl HeadlessServer {
         else {
             return false;
         };
-        if shell.host_terminal_theme.is_empty() && shell.host_terminal_appearance.is_none() {
+        if shell.host_terminal_theme.is_empty()
+            && shell.host_terminal_appearance == app::HostAppearanceReport::Unknown
+        {
             return false;
         }
         let theme = shell.host_terminal_theme;
         let appearance = shell.host_terminal_appearance;
-        let appearance_explicit = shell.host_terminal_appearance_explicit;
-        let mut changed = self
-            .app
-            .set_host_terminal_appearance_state(appearance, appearance_explicit);
-        if !theme.is_empty() {
-            changed |= self.app.set_host_terminal_theme(theme);
+        let mut changed = self.app.set_host_terminal_appearance_state(appearance);
+        if !theme.is_empty() && self.app.set_host_terminal_theme(theme) {
+            // The theme colours pane cells: every client needs a full pass.
+            self.mark_view_changed();
+            changed = true;
         }
         changed
     }
@@ -701,7 +743,6 @@ impl HeadlessServer {
     fn promote_client_to_foreground(&mut self, client_id: ClientId) -> bool {
         let changed = self.clients.promote_to_foreground(client_id);
         if changed {
-            // The theme setters invalidate what a change reaches.
             self.sync_host_theme_from_foreground();
         }
         changed
@@ -750,7 +791,7 @@ impl HeadlessServer {
         self.sync_pane_focus();
         self.refresh_client_view_keys();
         if self.lifecycle.phase() != ShutdownPhase::Stopping {
-            self.reapply_controlled_shell_workspace_geometry(true);
+            self.reapply_controlled_shell_workspace_geometry(client_views::PendingResumes::Start);
             self.mark_view_changed();
         }
         foreground_changed
@@ -763,15 +804,15 @@ impl HeadlessServer {
     ) {
         for held in held_inputs {
             let pane_id = held.target;
-            let Some((workspace_index, runtime_pane_id)) = self.app.resolve_pane_id(&pane_id)
+            let Some(runtime_pane_id) = self
+                .app
+                .state()
+                .resolve_pane(&pane_id)
+                .map(|pane| pane.id())
             else {
                 continue;
             };
-            let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
-                &self.app.terminal_runtimes,
-                workspace_index,
-                runtime_pane_id,
-            ) else {
+            let Some(runtime) = self.app.pane_runtime(runtime_pane_id) else {
                 continue;
             };
             // The client is gone, so there is nobody to show a failure to.
@@ -846,7 +887,7 @@ impl HeadlessServer {
 
     /// Drains server events from the dedicated channel.
     fn drain_server_events(&mut self) {
-        for _ in 0..crate::limits::SERVER_EVENT_DRAIN_LIMIT {
+        for _ in 0..SERVER_EVENT_DRAIN_LIMIT {
             // Recheck before each dequeue so a stop during this batch leaves
             // later events for shutdown settlement.
             if self.lifecycle.stop_requested() {
@@ -923,6 +964,16 @@ impl HeadlessServer {
         }
     }
 
+    /// Pulls the titles of the panes the render signal still holds as dirty,
+    /// without taking the request, so an API request or endpoint command reads
+    /// current agent metadata. Returns whether any title changed (the shell
+    /// projection is then dirty); the caller folds that into its own change.
+    fn sync_pending_terminal_titles(&mut self) -> bool {
+        let sources = self.outputs.render().pending_terminal_title_sources();
+        let changes = self.app.sync_terminal_titles(&sources);
+        changes.raw_changed || changes.stripped_changed
+    }
+
     /// Pulls only titles reported dirty by the PTY parser. A title of a pane
     /// some client has focused is forwarded as that client's window title.
     /// Any changed title also updates the shell agent metadata, so it requires
@@ -930,52 +981,49 @@ impl HeadlessServer {
     fn sync_terminal_title_sources(
         &mut self,
         sources: &HashSet<shepr_core::layout::PaneId>,
-    ) -> (bool, bool) {
+    ) -> TitleSync {
         let focused_source = self
             .window_title_clients()
             .into_iter()
             .filter_map(|client_id| self.shell_focus_target(client_id))
             .any(|target| sources.contains(&target.pane_id));
         let changes = self.app.sync_terminal_titles(sources);
-        if changes.raw_changed || changes.stripped_changed {
-            self.app.state.mark_shell_projection_dirty();
-        }
-        let outer_title_synced = focused_source && self.app.window_title_uses_terminal_title();
+        let outer_title_synced = focused_source
+            && self
+                .window_title
+                .as_ref()
+                .is_some_and(crate::ui::WindowTitleSettings::uses_terminal_title);
         if outer_title_synced {
             self.sync_window_title();
         }
-        (
-            changes.raw_changed || changes.stripped_changed,
-            outer_title_synced,
-        )
+        TitleSync {
+            sidebar_changed: changes.raw_changed || changes.stripped_changed,
+            window_title_synced: outer_title_synced,
+        }
     }
 
-    /// The clients that show a window title: every active shell surface.
+    /// The clients that show a window title: every active shell surface, in id
+    /// order.
     fn window_title_clients(&self) -> Vec<ClientId> {
-        let mut clients = self
-            .clients
+        self.clients
             .presenting()
             .map(|(&client_id, _)| client_id)
-            .collect::<Vec<_>>();
-        clients.sort_unstable();
-        clients
+            .collect()
     }
 
     /// Renders `ui.window_title` against `client_id`'s own view. `None` means
     /// window titles are disabled or every token resolved empty, which leaves
     /// the client on Shepr's default title.
     fn configured_window_title(&self, client_id: ClientId) -> Option<String> {
-        self.shell_target_for_client(client_id)
-            .map_or_else(
-                || self.app.window_title_without_workspace(),
-                |target| {
-                    self.app
-                        .state
-                        .workspace_index(&target)
-                        .and_then(|workspace_index| self.app.window_title_for(workspace_index))
-                },
-            )
-            .and_then(|title| shepr_config::sanitize_window_title_text(&title))
+        let settings = self.window_title.as_ref()?;
+        // A client viewing a workspace that no longer resolves has no title,
+        // where a client with no location renders the template without one.
+        let target = self.shell_target_for_client(client_id);
+        if let Some(target) = &target {
+            self.app.state().workspace(target)?;
+        }
+        let title = crate::ui::render_window_title(settings, self.app.state(), target.as_ref());
+        shepr_config::sanitize_window_title_text(&title)
     }
 
     /// Pushes each client the configured outer window title of its own view
@@ -984,7 +1032,7 @@ impl HeadlessServer {
     /// never follows the session - which is what window managers read for tab
     /// and group bar labels.
     fn sync_window_title(&mut self) {
-        if !self.app.window_title_configured() {
+        if self.window_title.is_none() {
             return;
         }
         let pending = self
@@ -1148,25 +1196,22 @@ impl HeadlessServer {
                     ?client_id,
                     cols = geometry.cols(),
                     rows = geometry.rows(),
-                    cell_width_px = geometry.cell_width(),
-                    cell_height_px = geometry.cell_height(),
+                    cell = ?geometry.cell(),
                     surface_active,
                     "client connected"
                 );
                 let first_app_client = self.app_client_count() == 0;
                 let last_activity = self.clients.allocate_activity_stamp();
-                let observed = shepr_term::host::HostCellSize::from_cell(geometry.cell());
                 let mut connection = ClientConnection::with_shell(
                     ClientShellState::with_surface_active(surface_active),
                     geometry.grid(),
-                    observed,
+                    geometry.cell(),
                     last_activity,
                     outbox,
                 );
-                connection.pixel_mouse = geometry.exact();
                 let shell = &mut connection.shell;
                 shell.mouse_capture = mouse_capture;
-                shell.projection_revision = shepr_protocol::ProjectionRevision::new(1);
+                shell.projection_revision = shepr_protocol::ProjectionRevision::FIRST;
                 // The location is initialised before anything is projected: a
                 // new client starts where the session's bookmark is.
                 shell.location = self.initial_client_location();
@@ -1217,12 +1262,10 @@ impl HeadlessServer {
                 self.send_to_client(client_id, &snapshot_message);
                 if surface_active {
                     self.clients.promote_to_foreground(client_id);
-                    if self.sync_host_theme_from_foreground() {
-                        self.mark_view_changed();
-                    }
+                    self.sync_host_theme_from_foreground();
                 }
                 if first_app_client {
-                    self.app.mark_git_status_refresh_due(self.app.clock.now);
+                    self.app.mark_git_status_refresh_due(self.app.clock().now);
                 }
                 // A second surface changes no workspace's size: controlled
                 // workspaces keep their controller and uncontrolled ones keep
@@ -1258,17 +1301,10 @@ impl HeadlessServer {
                     let Some(client) = self.clients.get_mut(&client_id) else {
                         return;
                     };
-                    let previous_geometry =
-                        (client.terminal_size, client.cell_size, client.pixel_mouse);
+                    let previous_geometry = (client.terminal_size, client.host_cell);
                     client.terminal_size = geometry.grid();
-                    let observed = shepr_term::host::HostCellSize::from_cell(geometry.cell());
-                    if observed.is_known() {
-                        client.cell_size = observed;
-                    }
-                    client.pixel_mouse = geometry.exact();
-                    if previous_geometry
-                        == (client.terminal_size, client.cell_size, client.pixel_mouse)
-                    {
+                    client.host_cell = client.host_cell.refreshed_by(geometry.cell());
+                    if previous_geometry == (client.terminal_size, client.host_cell) {
                         return;
                     }
                     let active = client.is_active_shell_client();
@@ -1286,7 +1322,10 @@ impl HeadlessServer {
                 // pane-less clipboard destination.
                 // Geometry settlement invalidates the affected workspace's
                 // viewers; a resize must not advance unrelated clients' epoch.
-                self.resize_shell_workspaces_sized_for(client_id, true);
+                self.resize_shell_workspaces_sized_for(
+                    client_id,
+                    client_views::PendingResumes::Start,
+                );
             }
             ServerEvent::ShellHostTheme { client_id, update } => {
                 let is_foreground = self.clients.foreground_client_id() == Some(client_id);
@@ -1303,24 +1342,23 @@ impl HeadlessServer {
                 // sends every client through a full pass, which redraws the
                 // panes from their cores (the new defaults included) and
                 // diffs the result against its baseline; a forced recompute
-                // would add nothing. Bumping here only does early what the
-                // theme setter's own render request does at the next pass.
-                if self.sync_host_theme_from_foreground() {
-                    self.mark_view_changed();
-                }
+                // would add nothing.
+                self.sync_host_theme_from_foreground();
             }
             ServerEvent::ShellFocus { client_id, focused } => {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return;
                 };
                 if !client.presents_surface()
-                    || client.shell_state().outer_terminal_focus == Some(focused)
+                    || client.shell_state().outer_terminal_focus
+                        == crate::server::clients::OuterFocus::reported(focused)
                 {
                     return;
                 }
                 // Recorded on this connection only; the panes it views learn
                 // of it through `sync_pane_focus` once the event is applied.
-                client.shell_state_mut().outer_terminal_focus = Some(focused);
+                client.shell_state_mut().outer_terminal_focus =
+                    crate::server::clients::OuterFocus::reported(focused);
                 if focused {
                     self.promote_client_to_foreground(client_id);
                     if self
@@ -1354,34 +1392,29 @@ impl HeadlessServer {
                 {
                     return;
                 }
-                let pixel_mouse = self
-                    .clients
-                    .get(&client_id)
-                    .is_some_and(|client| client.pixel_mouse && client.outbox.told_sgr_pixels());
-                let mut events = events;
-                let Some((workspace_index, runtime_pane_id)) = self.app.resolve_pane_id(&pane_id)
+                let Some(host_cell) = self.clients.get(&client_id).map(|client| client.host_cell)
                 else {
                     return;
                 };
-                let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
-                    &self.app.terminal_runtimes,
-                    workspace_index,
-                    runtime_pane_id,
-                ) else {
+                let mut events = events;
+                let Some((workspace_id, runtime_pane_id)) = self
+                    .app
+                    .state()
+                    .resolve_pane(&pane_id)
+                    .map(|pane| (pane.workspace().id(), pane.id()))
+                else {
                     return;
                 };
-                super::pane_input::downgrade_ineligible_pixel_mouse(
+                let Some(runtime) = self.app.pane_runtime(runtime_pane_id) else {
+                    return;
+                };
+                super::pane_input::admit_pixel_reports(
                     &mut events,
-                    pixel_mouse,
-                    runtime.grid_size(),
-                    runtime.pixel_size(),
+                    host_cell,
+                    runtime.read().pixel_mouse(),
                 );
-                if !self.shell_client_views_pane(client_id, workspace_index, runtime_pane_id) {
-                    let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
-                        &self.app.terminal_runtimes,
-                        workspace_index,
-                        runtime_pane_id,
-                    ) else {
+                if !self.shell_client_views_pane(client_id, &workspace_id, runtime_pane_id) {
+                    let Some(runtime) = self.app.pane_runtime(runtime_pane_id) else {
                         return;
                     };
                     let releases = events
@@ -1422,11 +1455,7 @@ impl HeadlessServer {
                 if geometry_changed {
                     self.mark_view_changed();
                 }
-                let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
-                    &self.app.terminal_runtimes,
-                    workspace_index,
-                    runtime_pane_id,
-                ) else {
+                let Some(runtime) = self.app.pane_runtime(runtime_pane_id) else {
                     return;
                 };
                 let result = apply_client_pane_input_events(runtime, &events);
@@ -1469,6 +1498,7 @@ impl HeadlessServer {
         let method = msg.request.method.traits().name;
 
         let mut changed = self.drain_all_internal_events_with_forwarding();
+        changed |= self.sync_pending_terminal_titles();
 
         // API handlers read each workspace's recorded layout area for directional
         // focus, resize steps, layout snapshots and spawn sizes; the geometry
@@ -1495,12 +1525,7 @@ impl HeadlessServer {
             self.app.start_git_status_refresh_if_due(now);
         }
 
-        // The persister's completion signal wakes the loop when a save ends;
-        // reaping it may make the next save (or a held checkpoint) startable.
-        let save_reaped = self.app.reap_finished_session_save();
-        if save_reaped || self.app.session_saver.is_due(now) {
-            self.app.start_background_session_save();
-        }
+        self.app.service_session_saves(now);
 
         let mut synced_host_shutdown_for_exits = false;
         for _ in 0..self.pending_checkpointed_pane_exits.len() {
@@ -1530,13 +1555,13 @@ impl HeadlessServer {
         // across passes, so running this on every iteration (a pane printing
         // keeps one busy) cannot postpone the first restored agent.
         let resumed = self.app.start_pending_agent_resumes(now);
-        if resumed {
+        if resumed.consumed {
             // A resumed agent runs in a fresh runtime; one whose pane a
             // client has focused gets its focus-in report now rather than on
             // the next focus change.
-            self.sync_pane_focus();
+            self.sync_pane_focus_after(&resumed.replaced_runtimes);
         }
-        changed | resumed
+        changed | resumed.consumed
     }
 
     fn handle_worker_completion(&mut self, completion: worker::WorkerCompletion) -> bool {
@@ -1630,7 +1655,6 @@ impl HeadlessServer {
             return false;
         }
         let ids = render_targets(&self.clients)
-            .into_iter()
             .filter(|target| {
                 self.clients
                     .get(&target.client_id)

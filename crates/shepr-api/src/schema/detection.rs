@@ -7,37 +7,6 @@ use shepr_detect::ownership::HookRejection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum DetectionState {
-    Idle,
-    Working,
-    Blocked,
-    Unknown,
-}
-
-impl From<AgentState> for DetectionState {
-    fn from(state: AgentState) -> Self {
-        match state {
-            AgentState::Idle => Self::Idle,
-            AgentState::Working => Self::Working,
-            AgentState::Blocked => Self::Blocked,
-            AgentState::Unknown => Self::Unknown,
-        }
-    }
-}
-
-impl std::fmt::Display for DetectionState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Idle => "idle",
-            Self::Working => "working",
-            Self::Blocked => "blocked",
-            Self::Unknown => "unknown",
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ScreenDetectionSkipReason {
     HookAuthority,
     FullLifecycleHookAuthority,
@@ -65,7 +34,7 @@ pub enum DetectionStateSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetectionExplanation {
     pub agent: String,
-    pub state: DetectionState,
+    pub state: AgentState,
     pub state_source: DetectionStateSource,
     pub matched_rule: Option<DetectionMatchedRule>,
     pub visible_idle: bool,
@@ -103,7 +72,7 @@ pub struct UnappliedHookReport {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UnappliedHookReportKind {
     State {
-        state: DetectionState,
+        state: AgentState,
     },
     SessionStart {
         /// Absent when the report carried no start source.
@@ -187,9 +156,7 @@ impl UnappliedHookReport {
             hook_source: report.origin.source().as_str().to_owned(),
             agent: report.origin.agent().label().to_owned(),
             report: match report.kind {
-                HookReportKind::State(state) => UnappliedHookReportKind::State {
-                    state: state.into(),
-                },
+                HookReportKind::State(state) => UnappliedHookReportKind::State { state },
                 HookReportKind::SessionStart(start) => UnappliedHookReportKind::SessionStart {
                     start_source: ReportedStartSource::from_reported(start),
                 },
@@ -217,7 +184,7 @@ pub struct DetectionMatchedRule {
     pub id: String,
     pub priority: i32,
     pub region: String,
-    pub state: DetectionState,
+    pub state: AgentState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,7 +192,7 @@ pub struct DetectionEvaluatedRule {
     pub id: String,
     pub priority: i32,
     pub region: String,
-    pub state: DetectionState,
+    pub state: AgentState,
     pub matched: bool,
     pub evidence: DetectionRuleEvidence,
 }
@@ -246,13 +213,13 @@ impl From<DetectionExplain> for DetectionExplanation {
     fn from(explain: DetectionExplain) -> Self {
         Self {
             agent: explain.agent.label().to_owned(),
-            state: explain.verdict.state().into(),
+            state: explain.verdict.state(),
             state_source: DetectionStateSource::Screen,
             matched_rule: explain.matched_rule.map(|rule| DetectionMatchedRule {
                 id: rule.id,
                 priority: rule.priority,
                 region: rule.region.to_string(),
-                state: rule.state.into(),
+                state: rule.state,
             }),
             visible_idle: explain.verdict.visible_idle(),
             visible_blocker: explain.verdict.visible_blocker(),
@@ -267,7 +234,7 @@ impl From<DetectionExplain> for DetectionExplanation {
                     id: rule.id,
                     priority: rule.priority,
                     region: rule.region.to_string(),
-                    state: rule.state.into(),
+                    state: rule.state,
                     matched: rule.matched,
                     evidence: DetectionRuleEvidence {
                         contains: rule.evidence.contains,
@@ -295,7 +262,7 @@ impl DetectionExplanation {
     ) -> Self {
         Self {
             agent: agent.to_owned(),
-            state: state.into(),
+            state,
             state_source: DetectionStateSource::HookAuthority {
                 hook_source: hook_source.to_owned(),
                 skip_reason,
@@ -329,8 +296,8 @@ mod tests {
             "codex",
             shepr_detect::manifest::DetectionInput {
                 screen: "press enter to confirm or esc to cancel",
-                osc_title: "",
-                osc_progress: "",
+                osc_title: None,
+                osc_progress: None,
             },
         )
         .into();
@@ -471,8 +438,8 @@ mod tests {
             "not-yet-known",
             shepr_detect::manifest::DetectionInput {
                 screen: "",
-                osc_title: "",
-                osc_progress: "",
+                osc_title: None,
+                osc_progress: None,
             },
         )
         .into();

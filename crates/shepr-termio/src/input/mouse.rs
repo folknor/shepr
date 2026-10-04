@@ -1,4 +1,4 @@
-use shepr_term::mouse::Position;
+use shepr_core::geometry::PanePixelExtent;
 
 /// Whole-window pixel extent for mouse mapping. The terminal can include
 /// padding, so this cannot be reconstructed from the reported cell pitch.
@@ -73,12 +73,15 @@ impl HostPixelExtent {
 }
 
 impl HostPixels {
+    /// Maps this host pixel into `extent`, the pixel extent the pane's child
+    /// was told. `None` when the pixel is outside `inner` or the host window.
     pub fn pane_position(
         self,
         inner: ratatui::layout::Rect,
-        child_width_px: u32,
-        child_height_px: u32,
-    ) -> Option<Position> {
+        extent: PanePixelExtent,
+    ) -> Option<(u32, u32)> {
+        let child_width_px = u32::from(extent.width().get());
+        let child_height_px = u32::from(extent.height().get());
         let (host_column, host_row) = self.geometry.cell(self.x, self.y)?;
         let end_column = inner.x.checked_add(inner.width)?;
         let end_row = inner.y.checked_add(inner.height)?;
@@ -89,8 +92,8 @@ impl HostPixels {
         {
             return None;
         }
-        Some(Position::Pixels {
-            x: map_axis_within_cell(
+        Some((
+            map_axis_within_cell(
                 self.x,
                 host_column,
                 inner.x,
@@ -99,7 +102,7 @@ impl HostPixels {
                 self.geometry.width_px,
                 child_width_px,
             )?,
-            y: map_axis_within_cell(
+            map_axis_within_cell(
                 self.y,
                 host_row,
                 inner.y,
@@ -108,7 +111,7 @@ impl HostPixels {
                 self.geometry.height_px,
                 child_height_px,
             )?,
-        })
+        ))
     }
 }
 
@@ -173,6 +176,15 @@ fn scale(pixel: u32, source: u32, target: u32) -> u32 {
 mod tests {
     use super::*;
 
+    fn extent(cols: u16, rows: u16, width: u16, height: u16) -> PanePixelExtent {
+        PanePixelExtent::new(
+            shepr_core::geometry::GridSize::new(cols, rows).expect("test grid"),
+            width,
+            height,
+        )
+        .expect("test extent")
+    }
+
     #[test]
     fn integer_cell_pitch_ignores_trailing_pixel_remainder() {
         let geometry = HostPixelExtent::new(127, 31, 1_276, 626).expect("test precondition");
@@ -185,8 +197,8 @@ mod tests {
                 y: 61,
                 geometry,
             }
-            .pane_position(right_pane, 1_050, 400),
-            Some(Position::Pixels { x: 1, y: 1 })
+            .pane_position(right_pane, extent(105, 20, 1_050, 400)),
+            Some((1, 1))
         );
         assert_eq!(geometry.cell(1_270, 620), Some((126, 30)));
         assert_eq!(
@@ -195,22 +207,24 @@ mod tests {
                 y: 460,
                 geometry,
             }
-            .pane_position(right_pane, 1_050, 400),
-            Some(Position::Pixels { x: 1_050, y: 400 })
+            .pane_position(right_pane, extent(105, 20, 1_050, 400)),
+            Some((1_050, 400))
         );
 
         let full_grid = ratatui::layout::Rect::new(0, 0, 127, 31);
         for x in 1_271..=1_276 {
             assert_eq!(geometry.cell(x, 1), Some((126, 0)));
             assert_eq!(
-                HostPixels { x, y: 1, geometry }.pane_position(full_grid, 1_270, 620),
+                HostPixels { x, y: 1, geometry }
+                    .pane_position(full_grid, extent(127, 31, 1_270, 620)),
                 None
             );
         }
         for y in 621..=626 {
             assert_eq!(geometry.cell(1, y), Some((0, 30)));
             assert_eq!(
-                HostPixels { x: 1, y, geometry }.pane_position(full_grid, 1_270, 620),
+                HostPixels { x: 1, y, geometry }
+                    .pane_position(full_grid, extent(127, 31, 1_270, 620)),
                 None
             );
         }

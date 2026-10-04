@@ -162,10 +162,10 @@ impl<'de> Deserialize<'de> for NewTerminalCwdConfig {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct TerminalConfig {
-    /// Executable used for new interactive panes. Empty means `$SHELL`, or
+    /// Executable used for new interactive panes. Unset means `$SHELL`, or
     /// /bin/sh when `SHELL` is unset; an unusable `SHELL` fails the launch.
-    /// Nonempty values and `SHELL` must have no surrounding whitespace.
-    pub default_shell: String,
+    /// A set value and `SHELL` must have no surrounding whitespace.
+    pub default_shell: Option<String>,
     /// Start new interactive pane shells as login shells. Default: false.
     pub login_shell: bool,
     /// CWD policy for new interactive panes and workspaces.
@@ -178,16 +178,20 @@ pub struct SessionConfig {
     /// Resume supported AI-agent panes into their native conversation sessions
     /// when restoring a Shepr session. Default: true.
     pub resume_agents_on_restore: bool,
-    /// Milliseconds between automatic agent restores. Zero disables spacing.
-    /// Default: 100.
-    pub startup_per_agent_delay_ms: u32,
+    /// Time between automatic agent restores. Zero disables spacing. The TOML
+    /// key is `startup_per_agent_delay_ms`, in milliseconds. Default: 100 ms.
+    #[serde(
+        rename = "startup_per_agent_delay_ms",
+        deserialize_with = "deserialize_millis"
+    )]
+    pub startup_per_agent_delay: std::time::Duration,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             resume_agents_on_restore: true,
-            startup_per_agent_delay_ms: 100,
+            startup_per_agent_delay: crate::limits::DEFAULT_STARTUP_PER_AGENT_DELAY,
         }
     }
 }
@@ -260,10 +264,10 @@ pub struct ServerConfig {
 
 macro_rules! define_keys_config {
     (
-        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:literal, $action_label:literal, $action_doc:literal),)* }
-        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:literal, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:literal, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
+        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
+        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
+        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
     ) => {
         #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
         #[serde(default)]
@@ -292,24 +296,9 @@ macro_rules! define_keys_config {
 
 crate::keybinding_table!(define_keys_config);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PaneBordersConfig {
-    #[default]
-    Auto,
-    Always,
-    Off,
-}
-
-impl PaneBordersConfig {
-    pub fn draws_borders(self) -> bool {
-        !matches!(self, Self::Off)
-    }
-
-    pub fn shows_borders(self, multi_pane: bool) -> bool {
-        self.draws_borders() && (multi_pane || matches!(self, Self::Always))
-    }
-}
+/// The setting is the core chrome math's own mode, so the config value is what
+/// the pane chrome computation takes.
+pub use shepr_core::chrome::PaneBorders as PaneBordersConfig;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
@@ -423,11 +412,22 @@ pub struct HeadlessConfig {
 #[serde(default)]
 pub struct AdvancedConfig {
     /// Approximate scrollback budget in bytes per pane terminal, converted to a
-    /// line count for the pane's width; 0 disables scrollback. Not a hard cap:
+    /// line count for the pane's width (`shepr_core::scrollback::ScrollbackBudget`
+    /// owns the policy); 0 disables scrollback. Not a hard cap:
     /// any non-zero budget keeps at least 1000 lines, and a pane that is
     /// widened keeps the history it already holds rather than dropping it, so
     /// it can exceed the budget until it narrows again. Default: 10000000.
     pub scrollback_limit_bytes: usize,
+}
+
+/// A duration written in the TOML as whole milliseconds.
+fn deserialize_millis<'de, D>(deserializer: D) -> Result<std::time::Duration, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(std::time::Duration::from_millis(
+        u32::deserialize(deserializer)?.into(),
+    ))
 }
 
 fn deserialize_cjk_ime_agents<'de, D>(deserializer: D) -> Result<Vec<crate::ConfigAgent>, D::Error>
@@ -549,9 +549,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn terminal_default_shell_defaults_empty_and_parses() {
+    fn terminal_default_shell_defaults_unset_and_parses() {
         let default_config = ServerConfig::default();
-        assert!(default_config.terminal.default_shell.is_empty());
+        assert_eq!(default_config.terminal.default_shell, None);
         assert!(!default_config.terminal.login_shell);
 
         let toml = r#"
@@ -560,7 +560,7 @@ default_shell = "nu"
 login_shell = true
 "#;
         let config: ServerConfig = toml::from_str(toml).expect("test precondition");
-        assert_eq!(config.terminal.default_shell, "nu");
+        assert_eq!(config.terminal.default_shell.as_deref(), Some("nu"));
         assert!(config.terminal.login_shell);
     }
 
@@ -612,7 +612,10 @@ new_cwd = "~/Projects"
     fn resume_agents_on_restore_defaults_on_and_parses() {
         let default_config = ServerConfig::default();
         assert!(default_config.session.resume_agents_on_restore);
-        assert_eq!(default_config.session.startup_per_agent_delay_ms, 100);
+        assert_eq!(
+            default_config.session.startup_per_agent_delay,
+            std::time::Duration::from_millis(100)
+        );
 
         let toml = r#"
 [session]
@@ -621,7 +624,10 @@ startup_per_agent_delay_ms = 0
 "#;
         let config: ServerConfig = toml::from_str(toml).expect("test precondition");
         assert!(!config.session.resume_agents_on_restore);
-        assert_eq!(config.session.startup_per_agent_delay_ms, 0);
+        assert_eq!(
+            config.session.startup_per_agent_delay,
+            std::time::Duration::ZERO
+        );
     }
 
     #[test]

@@ -21,9 +21,21 @@ use shepr_protocol::{
     self, ClientMessage, ClientPaneInputEvent, InputBatchCharge, MAX_INPUT_PAYLOAD, ServerMessage,
 };
 
-use crate::limits::{
-    CLIENT_WRITE_STALL_TIMEOUT, HANDSHAKE_TIMEOUT, UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
-};
+/// Total time a client gets to deliver its complete handshake frame.
+///
+/// This is a single deadline across every read of the hello, not a per-read idle
+/// timeout: `shepr_platform::ipc::LocalStreamDeadlineReader` polls for readiness with only
+/// the time left before each read, so a peer trickling bytes cannot
+/// hold the handshake thread open. The deadline leaves room for OS timer slack,
+/// thread scheduling, and cleanup overhead.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
+/// Maximum time a client stream writer may make no progress before disconnecting it.
+const CLIENT_WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a transport thread waits for a client it could not register to
+/// receive its shutdown frame.
+const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+/// Poll spacing while that transport thread waits for the flush.
+const UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// The server's client protocol, installed into the listener's gate once
 /// panes are restored. Each TUI connection gets a fresh client id and runs
@@ -51,30 +63,6 @@ impl shepr_api::ClientProtocolHandler for ClientTransportHandler {
             debug!(?client_id, %error, "client transport failed");
         }
     }
-}
-
-/// Why a client shell's geometry is refused, if it is. The grid is already
-/// nonzero through `GridSize`; this checks the protocol's upper bounds. A
-/// same-build client clamps to them before asking.
-fn client_shell_geometry_error(
-    surface_size: shepr_protocol::ClientSurfaceSize,
-    cell_width_px: u32,
-    cell_height_px: u32,
-) -> Option<shepr_protocol::SurfaceRefusal> {
-    if surface_size.cols > shepr_protocol::MAX_SURFACE_DIMENSION
-        || surface_size.rows > shepr_protocol::MAX_SURFACE_DIMENSION
-    {
-        return Some(shepr_protocol::SurfaceRefusal::DimensionTooLarge);
-    }
-    if usize::from(surface_size.cols) * usize::from(surface_size.rows)
-        > shepr_protocol::MAX_SURFACE_CELLS
-    {
-        return Some(shepr_protocol::SurfaceRefusal::TooManyCells);
-    }
-    if !shepr_core::geometry::CellPx::within_host_limit(cell_width_px, cell_height_px) {
-        return Some(shepr_protocol::SurfaceRefusal::CellTooLarge);
-    }
-    None
 }
 
 fn write_endpoint_rejection(
@@ -279,20 +267,20 @@ fn handle_client_handshake(
         );
         return Ok(());
     };
-    let incompatibility = client_shell_geometry_error(
-        hello.geometry.surface_size(),
-        hello.geometry.width(),
-        hello.geometry.height(),
-    )
-    .map(shepr_protocol::HandshakeRefusal::InvalidSurface);
-    if let Some(reason) = incompatibility {
-        write_endpoint_rejection(&mut stream, client_id, reason);
-        return Ok(());
-    }
-
-    // Oversized raw dimensions were rejected above, so `cell_geometry`'s
-    // oversize fallback cannot be reached on this transport path.
-    let cell = hello.geometry.cell_geometry();
+    // The grid is already nonzero through `GridSize`; `host_geometry` checks
+    // the protocol's upper bounds. A same-build client clamps to them before
+    // asking.
+    let geometry = match hello.geometry.host_geometry() {
+        Ok(geometry) => geometry,
+        Err(refusal) => {
+            write_endpoint_rejection(
+                &mut stream,
+                client_id,
+                shepr_protocol::HandshakeRefusal::InvalidSurface(refusal),
+            );
+            return Ok(());
+        }
+    };
 
     if stop_signal.is_requested() {
         return Ok(());
@@ -328,7 +316,7 @@ fn handle_client_handshake(
     // The exact-build preamble guarantees support for semantic surfaces.
     let connected = ServerEvent::ShellConnected {
         client_id,
-        geometry: shepr_core::geometry::HostGeometry::with_cell(hello.geometry.grid(), cell),
+        geometry,
         mouse_capture: hello.mouse_capture,
         surface_active: hello.surface_active,
         outbox,
@@ -366,7 +354,7 @@ fn send_shutdown_to_unregistered_client(outbox: &ClientOutbox) {
             if std::time::Instant::now() >= deadline {
                 break;
             }
-            std::thread::sleep(crate::limits::UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL);
+            std::thread::sleep(UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL);
         }
     }
 }
@@ -474,20 +462,17 @@ fn client_read_loop_with_endpoint_controls(
 
         let event = match msg {
             ClientMessage::ClientShellResize { geometry } => {
-                let surface_size = geometry.surface_size();
-                if let Some(reason) =
-                    client_shell_geometry_error(surface_size, geometry.width(), geometry.height())
-                {
-                    warn!(?client_id, %reason, "invalid client shell resize, closing");
-                    send_client_disconnected(server_event_tx, client_id);
-                    break;
-                }
-                // Oversized raw dimensions were rejected above, so
-                // `cell_geometry`'s oversize fallback cannot be reached here.
-                let cell = geometry.cell_geometry();
+                let geometry = match geometry.host_geometry() {
+                    Ok(geometry) => geometry,
+                    Err(reason) => {
+                        warn!(?client_id, %reason, "invalid client shell resize, closing");
+                        send_client_disconnected(server_event_tx, client_id);
+                        break;
+                    }
+                };
                 ServerEvent::ShellResize {
                     client_id,
-                    geometry: shepr_core::geometry::HostGeometry::with_cell(geometry.grid(), cell),
+                    geometry,
                 }
             }
             ClientMessage::ClientShellHostTheme { update } => {
@@ -538,18 +523,8 @@ fn client_read_loop_with_endpoint_controls(
                 request_id,
                 command,
             } => {
-                // Request ids are echoed and held with replies. Boot ids are
-                // already canonical bounded values after protocol decoding.
-                if request_id.len() > crate::server::client_commands::MAX_ENDPOINT_REQUEST_ID_BYTES
-                {
-                    warn!(
-                        ?client_id,
-                        request_id_size = request_id.len(),
-                        "oversized client shell endpoint command ids, closing"
-                    );
-                    send_client_disconnected(server_event_tx, client_id);
-                    break;
-                }
+                // Request ids are fixed-size numbers and boot ids are already
+                // canonical bounded values after protocol decoding.
                 ServerEvent::ShellEndpointRequest {
                     client_id,
                     boot_id,
@@ -599,7 +574,7 @@ fn client_read_loop_with_endpoint_controls(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::limits::{CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS};
+    use crate::server::outbox::{CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS};
     use shepr_protocol::MAX_INPUT_EVENT_BATCH;
     use std::path::PathBuf;
     use std::sync::mpsc::{SendError, TrySendError};
@@ -642,12 +617,9 @@ mod tests {
 
     fn endpoint_hello(surface_cols: u16, surface_rows: u16) -> ClientMessage {
         let hello = shepr_protocol::endpoint::EndpointClientHello {
-            geometry: shepr_protocol::TerminalGeometry::new(
-                surface_cols,
-                surface_rows,
-                8,
-                16,
-                true,
+            geometry: shepr_protocol::TerminalGeometry::from_host(
+                shepr_core::geometry::GridSize::clamped(surface_cols, surface_rows),
+                shepr_core::geometry::HostCell::from_host(8, 16, true),
             ),
             mouse_capture: true,
             surface_active: true,
@@ -924,7 +896,7 @@ mod tests {
         use std::io::Read;
         let scratch = shepr_test_support::ScratchDir::new("foreign-gate");
         let paths = shepr_paths::AppPaths::test_at(&scratch);
-        let (tx, _rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
+        let (tx, _rx) = mpsc::channel(crate::server::headless::API_REQUEST_CHANNEL_CAPACITY);
         let stop = Arc::new(shepr_api::ServerStopSignal::default());
         let api = shepr_api::start_server(
             tx,
@@ -1025,48 +997,6 @@ mod tests {
     }
 
     #[test]
-    fn client_shell_geometry_rejects_unsafe_dimensions_and_cell_sizes() {
-        assert!(
-            client_shell_geometry_error(
-                shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
-                8,
-                16,
-            )
-            .is_none()
-        );
-        assert_eq!(
-            client_shell_geometry_error(
-                shepr_protocol::ClientSurfaceSize {
-                    cols: shepr_protocol::MAX_SURFACE_DIMENSION + 1,
-                    rows: 24,
-                },
-                8,
-                16,
-            ),
-            Some(shepr_protocol::SurfaceRefusal::DimensionTooLarge)
-        );
-        assert_eq!(
-            client_shell_geometry_error(
-                shepr_protocol::ClientSurfaceSize {
-                    cols: shepr_protocol::MAX_SURFACE_DIMENSION,
-                    rows: shepr_protocol::MAX_SURFACE_DIMENSION,
-                },
-                8,
-                16,
-            ),
-            Some(shepr_protocol::SurfaceRefusal::TooManyCells)
-        );
-        assert_eq!(
-            client_shell_geometry_error(
-                shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
-                shepr_protocol::MAX_CELL_SIZE_PX + 1,
-                16,
-            ),
-            Some(shepr_protocol::SurfaceRefusal::CellTooLarge)
-        );
-    }
-
-    #[test]
     fn dedicated_client_shell_handshake_uses_surface_viewport() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-shell-handshake");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
@@ -1102,8 +1032,10 @@ mod tests {
             } => {
                 assert_eq!(client_id, 43);
                 assert_eq!((geometry.cols(), geometry.rows()), (80, 29));
-                assert_eq!((geometry.cell_width(), geometry.cell_height()), (8, 16));
-                assert!(geometry.exact());
+                assert_eq!(
+                    geometry.cell(),
+                    shepr_core::geometry::HostCell::from_host(8, 16, true)
+                );
                 assert!(mouse_capture);
                 assert!(surface_active);
                 drop(writer);
@@ -1207,12 +1139,12 @@ mod tests {
         shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::ClientShellResize {
-                geometry: shepr_protocol::TerminalGeometry::new(
-                    shepr_protocol::MAX_SURFACE_DIMENSION,
-                    shepr_protocol::MAX_SURFACE_DIMENSION,
-                    8,
-                    16,
-                    false,
+                geometry: shepr_protocol::TerminalGeometry::from_host(
+                    shepr_core::geometry::GridSize::clamped(
+                        shepr_protocol::MAX_SURFACE_DIMENSION,
+                        shepr_protocol::MAX_SURFACE_DIMENSION,
+                    ),
+                    shepr_core::geometry::HostCell::from_host(8, 16, false),
                 ),
             },
         )
@@ -1246,7 +1178,10 @@ mod tests {
         shepr_protocol::write_message(
             &mut client_stream,
             &ClientMessage::ClientShellResize {
-                geometry: shepr_protocol::TerminalGeometry::new(60, 15, 8, 16, true),
+                geometry: shepr_protocol::TerminalGeometry::from_host(
+                    shepr_core::geometry::GridSize::clamped(60, 15),
+                    shepr_core::geometry::HostCell::from_host(8, 16, true),
+                ),
             },
         )
         .expect("write shell resize");
@@ -1256,7 +1191,7 @@ mod tests {
                 client_id,
                 geometry,
             } if client_id == ClientId::test_new(7)
-                && geometry == shepr_core::geometry::HostGeometry::new(60, 15, 8, 16, true)
+                && geometry == shepr_core::geometry::HostGeometry::new(shepr_core::geometry::GridSize::clamped(60, 15), shepr_core::geometry::HostCell::from_host(8, 16, true))
         ));
 
         shepr_protocol::write_message(&mut client_stream, &ClientMessage::Detach)
@@ -1381,7 +1316,6 @@ mod tests {
         let oversized_scroll = ClientPaneInputEvent::Mouse {
             kind: shepr_protocol::ClientMouseKind::ScrollUp,
             position: shepr_protocol::ClientMousePosition::Cell { column: 0, row: 0 },
-            geometry: None,
             modifiers: shepr_protocol::WireModifiers::NONE,
             lines: u16::try_from(MAX_INPUT_EVENT_BATCH + 1).unwrap_or(u16::MAX),
         };

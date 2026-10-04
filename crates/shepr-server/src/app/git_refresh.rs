@@ -5,17 +5,33 @@
 
 use std::time::Instant;
 
-use super::{App, GIT_REPO_DISCOVERY_REFRESH_INTERVAL};
-use crate::limits::GIT_REMOTE_STATUS_REFRESH_INTERVAL;
+use super::App;
 use shepr_mux::events::AppEvent;
 use shepr_protocol::WorkspaceId;
 
+/// Refresh Git ahead/behind status periodically while clients are connected,
+/// keeping it fresh without probing on every render.
+const GIT_REMOTE_STATUS_REFRESH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(1500);
+/// Rediscover repository roots periodically so external cwd changes settle.
+const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(5 * 60);
+
+/// Whether a Git status refresh is running, and whether another is already
+/// owed once it ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RefreshPhase {
+    Idle,
+    InFlight,
+    /// In flight, with a further refresh requested meanwhile.
+    InFlightThenDue,
+}
+
 pub(crate) struct GitRefreshScheduler {
-    pub(crate) next_git_remote_status_refresh: Instant,
-    pub(crate) last_git_repo_discovery_refresh: Instant,
-    pub(crate) git_refresh_in_flight: bool,
-    pub(crate) git_refresh_due_after_in_flight: bool,
-    pub(crate) git_identity_refresh_requested: bool,
+    next_git_remote_status_refresh: Instant,
+    last_git_repo_discovery_refresh: Instant,
+    refresh: RefreshPhase,
+    git_identity_refresh_requested: bool,
     /// While a refresh is in flight, when the loop next wakes to ask the
     /// worker whether that refresh was lost or has stalled.
     lost_refresh_check_at: Instant,
@@ -29,8 +45,7 @@ impl GitRefreshScheduler {
             // instead of manufacturing an instant before the clock's origin.
             next_git_remote_status_refresh: now,
             last_git_repo_discovery_refresh: now,
-            git_refresh_in_flight: false,
-            git_refresh_due_after_in_flight: false,
+            refresh: RefreshPhase::Idle,
             git_identity_refresh_requested: false,
             lost_refresh_check_at: now,
             worker: shepr_git::GitStatusWorker::new(move |outcome| {
@@ -45,18 +60,22 @@ impl GitRefreshScheduler {
         }
     }
 
+    fn is_in_flight(&self) -> bool {
+        self.refresh != RefreshPhase::Idle
+    }
+
     fn deadline(&self, has_workspaces: bool) -> Option<Instant> {
         if !has_workspaces {
             return None;
         }
-        if self.git_refresh_in_flight {
+        if self.is_in_flight() {
             return Some(self.lost_refresh_check_at);
         }
         Some(self.next_git_remote_status_refresh)
     }
 
     pub(crate) fn refresh_due_at(&self) -> Option<Instant> {
-        (!self.git_refresh_in_flight).then_some(self.next_git_remote_status_refresh)
+        (!self.is_in_flight()).then_some(self.next_git_remote_status_refresh)
     }
 
     /// Settles an in-flight refresh the worker lost, or one that stalled and
@@ -73,27 +92,27 @@ impl GitRefreshScheduler {
             );
             self.finish(now);
         }
-        if self.git_refresh_in_flight && self.worker.abandon_stalled(now) {
+        if self.is_in_flight() && self.worker.abandon_stalled(now) {
             self.finish(now);
         }
-        if self.git_refresh_in_flight && now >= self.lost_refresh_check_at {
+        if self.is_in_flight() && now >= self.lost_refresh_check_at {
             self.lost_refresh_check_at = refresh_deadline_after(now);
         }
     }
 
     fn mark_due(&mut self, now: Instant) {
         self.worker.invalidate();
-        if self.git_refresh_in_flight {
-            self.git_refresh_due_after_in_flight = true;
+        if self.is_in_flight() {
+            self.refresh = RefreshPhase::InFlightThenDue;
             return;
         }
         self.next_git_remote_status_refresh = now;
-        self.git_refresh_due_after_in_flight = false;
     }
 
     pub(crate) fn finish(&mut self, now: Instant) {
-        self.git_refresh_in_flight = false;
-        if self.git_refresh_due_after_in_flight {
+        let due_again = self.refresh == RefreshPhase::InFlightThenDue;
+        self.refresh = RefreshPhase::Idle;
+        if due_again {
             self.mark_due(now);
         } else {
             self.next_git_remote_status_refresh = refresh_deadline_after(now);
@@ -138,7 +157,7 @@ impl App {
         if refresh_repo_discovery {
             self.git_refresh.last_git_repo_discovery_refresh = now;
         }
-        // `git_refresh_in_flight` is cleared by `GitStatusRefreshed`, which
+        // The in-flight phase ends with `GitStatusRefreshed`, which
         // the worker publishes once for every refresh it accepts, a
         // panicking one included, or by `observe_worker` when the worker
         // thread stopped before publishing or was abandoned stalled. A worker that cannot be started
@@ -147,7 +166,7 @@ impl App {
         // updates for the rest of the process.
         match self.git_refresh.worker.refresh(targets) {
             Ok(()) => {
-                self.git_refresh.git_refresh_in_flight = true;
+                self.git_refresh.refresh = RefreshPhase::InFlight;
                 self.git_refresh.lost_refresh_check_at = refresh_deadline_after(now);
             }
             Err(err) => {
@@ -184,21 +203,32 @@ impl App {
         self.state
             .workspaces
             .iter()
-            .filter_map(|ws| {
-                let cwd =
-                    ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)?;
+            .map(|ws| {
+                let cwd = ws.resolved_identity_cwd(&self.terminal_runtimes);
                 let known_key = if refresh_repo_discovery {
                     None
                 } else {
                     ws.git_status_key_for_cwd(&cwd).cloned()
                 };
-                Some(shepr_git::RefreshTarget {
-                    owner: ws.id,
+                shepr_git::RefreshTarget {
+                    owner: ws.id(),
                     cwd,
                     known_key,
-                })
+                }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+impl App {
+    /// Pretends a refresh is running, for tests of the events that end one.
+    pub(crate) fn test_mark_git_refresh_in_flight(&mut self) {
+        self.git_refresh.refresh = RefreshPhase::InFlight;
+    }
+
+    pub(crate) fn git_refresh_in_flight(&self) -> bool {
+        self.git_refresh.is_in_flight()
     }
 }
 
@@ -234,8 +264,7 @@ mod tests {
         let mut app = test_app(&shepr_config::ServerConfig::default());
         let scratch = crate::test_support::ScratchDir::new("uncached-cwd");
         let cwd = scratch.join("cwd");
-        let mut ws = Workspace::test_new("test");
-        ws.identity_cwd = cwd.clone();
+        let ws = Workspace::test_at(Some("test"), &cwd);
         app.state.test_push_workspace(ws);
 
         let targets = app.workspace_git_refresh_targets(false);
@@ -250,8 +279,7 @@ mod tests {
         let mut app = test_app(&shepr_config::ServerConfig::default());
         let cwd = PathBuf::from("/repo/deep/nested");
         let cache_key = PathBuf::from("/repo");
-        let mut ws = Workspace::test_new("test");
-        ws.identity_cwd = cwd.clone();
+        let mut ws = Workspace::test_at(Some("test"), &cwd);
         admit_cached_identity(&mut ws, &cwd, cache_key.clone());
         app.state.test_push_workspace(ws);
 
@@ -268,8 +296,7 @@ mod tests {
     fn periodic_repo_discovery_ignores_cached_key_hints() {
         let mut app = test_app(&shepr_config::ServerConfig::default());
         let cwd = PathBuf::from("/repo/deep/nested");
-        let mut ws = Workspace::test_new("test");
-        ws.identity_cwd = cwd.clone();
+        let mut ws = Workspace::test_at(Some("test"), &cwd);
         admit_cached_identity(&mut ws, &cwd, PathBuf::from("/repo"));
         app.state.test_push_workspace(ws);
 
@@ -284,9 +311,8 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let config = shepr_config::ServerConfig::default();
         let mut app = test_app(&config);
-        let mut workspace = Workspace::test_new("test");
         let scratch = crate::test_support::ScratchDir::new("git-refresh-identity");
-        workspace.identity_cwd = scratch.join("cwd");
+        let workspace = Workspace::test_at(Some("test"), &scratch.join("cwd"));
         app.state.test_push_workspace(workspace);
         let now = Instant::now();
 
@@ -294,7 +320,7 @@ mod tests {
 
         assert!(app.git_refresh_deadline().is_some());
         app.start_git_status_refresh_if_due(now);
-        assert!(app.git_refresh.git_refresh_in_flight);
+        assert!(app.git_refresh.is_in_flight());
         assert!(!app.git_refresh.git_identity_refresh_requested);
         wait_for_git_refresh(&mut app);
     }
@@ -340,16 +366,15 @@ mod tests {
         ]);
         let config = shepr_config::ServerConfig::default();
         let mut app = test_app(&config);
-        let mut ws = Workspace::test_new("test");
-        ws.identity_cwd = scratch.path().to_path_buf();
-        let cwd = ws.identity_cwd.clone();
+        let cwd = scratch.path().to_path_buf();
+        let mut ws = Workspace::test_at(Some("test"), &cwd);
         admit_cached_identity(&mut ws, &cwd, cwd.clone());
         app.state.test_push_workspace(ws);
         let now = Instant::now();
         app.mark_git_status_refresh_due(now);
         app.start_git_status_refresh_if_due(now);
-        assert!(app.git_refresh.git_refresh_in_flight);
-        let outcome = refreshed(app.event_rx.blocking_recv().expect("refresh"));
+        assert!(app.git_refresh.is_in_flight());
+        let outcome = refreshed(app.blocking_next_event());
         assert_eq!(outcome.statuses.len(), 1);
         let status = &outcome.statuses[0].status;
         assert_eq!(status.branch.as_deref(), Some("main"));
@@ -363,18 +388,16 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let config = shepr_config::ServerConfig::default();
         let mut app = test_app(&config);
-        let mut ws = Workspace::test_new("test");
-        ws.custom_name = None;
         // The shell `cd`ed without reporting OSC 7: only the resolved cwd moved.
         let scratch = crate::test_support::ScratchDir::new("moved-cwd");
-        ws.identity_cwd = scratch.join("moved");
+        let ws = Workspace::test_at(None, &scratch.join("moved"));
         app.state.test_push_workspace(ws);
         let now = Instant::now();
         app.mark_git_status_refresh_due(now);
 
         app.start_git_status_refresh_if_due(now);
 
-        assert!(app.git_refresh.git_refresh_in_flight);
+        assert!(app.git_refresh.is_in_flight());
         wait_for_git_refresh(&mut app);
     }
 
@@ -383,10 +406,9 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let config = shepr_config::ServerConfig::default();
         let mut app = test_app(&config);
-        let mut ws = Workspace::test_new("test");
+        // A new workspace is undiscovered until the first refresh admits it.
         let scratch = crate::test_support::ScratchDir::new("undiscovered-workspace");
-        ws.identity_cwd = scratch.join("cwd");
-        ws.mark_identity_undiscovered();
+        let ws = Workspace::test_at(Some("test"), &scratch.join("cwd"));
         app.state.test_push_workspace(ws);
 
         let targets = app.workspace_git_refresh_targets(false);
@@ -396,7 +418,7 @@ mod tests {
         let now = Instant::now();
         app.mark_git_status_refresh_due(now);
         app.start_git_status_refresh_if_due(now);
-        assert!(app.git_refresh.git_refresh_in_flight);
+        assert!(app.git_refresh.is_in_flight());
         wait_for_git_refresh(&mut app);
     }
 
@@ -405,62 +427,51 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let config = shepr_config::ServerConfig::default();
         let mut app = test_app(&config);
-        let mut ws = Workspace::test_new("test");
-        ws.custom_name = None;
         let scratch = crate::test_support::ScratchDir::new("refreshed-label");
-        ws.identity_cwd = scratch.join("labelled");
-        std::fs::create_dir_all(&ws.identity_cwd).expect("create cwd");
+        let cwd = scratch.join("labelled");
+        std::fs::create_dir_all(&cwd).expect("create cwd");
+        let ws = Workspace::test_at(None, &cwd);
         app.state.test_push_workspace(ws);
         let now = Instant::now();
         app.request_git_identity_refresh(now);
         app.start_git_status_refresh_if_due(now);
 
-        let event = app
-            .event_rx
-            .blocking_recv()
-            .expect("git refresh worker should report completion");
+        let event = app.blocking_next_event();
         app.handle_internal_event(event);
 
-        assert!(!app.git_refresh.git_refresh_in_flight);
-        assert_eq!(app.state.workspaces[0].display_name(), "labelled");
+        assert!(!app.git_refresh.is_in_flight());
+        assert_eq!(app.state.ws(0).display_name(), "labelled");
         assert_eq!(
-            app.state.workspaces[0].branch_state(),
+            app.state.ws(0).branch_state(),
             Some(&GitBranch::OutsideRepository)
         );
     }
 
     #[test]
-    fn headless_deadline_can_suppress_git_refresh_timer() {
+    fn app_deadline_omits_git_unless_asked() {
         let mut app = test_app(&shepr_config::ServerConfig::default());
         app.state.test_push_workspace(Workspace::test_new("test"));
         let now = Instant::now();
         app.mark_git_status_refresh_due(now);
 
-        assert_eq!(
-            app.next_headless_loop_deadline_with_git_refresh(now, false, false),
-            None
-        );
-        assert_eq!(
-            app.next_headless_loop_deadline_with_git_refresh(now, false, true),
-            Some(now)
-        );
+        assert_eq!(app.next_deadline(false), None);
+        assert_eq!(app.next_deadline(true), Some(now));
     }
 
     #[test]
     fn git_refresh_due_request_survives_in_flight_refresh() {
         let mut app = test_app(&shepr_config::ServerConfig::default());
         let now = Instant::now();
-        app.git_refresh.git_refresh_in_flight = true;
+        app.git_refresh.refresh = RefreshPhase::InFlight;
 
         app.mark_git_status_refresh_due(now);
-        assert!(app.git_refresh.git_refresh_due_after_in_flight);
+        assert_eq!(app.git_refresh.refresh, RefreshPhase::InFlightThenDue);
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
             outcome: shepr_git::RefreshOutcome::empty(),
         });
 
-        assert!(!app.git_refresh.git_refresh_in_flight);
-        assert!(!app.git_refresh.git_refresh_due_after_in_flight);
+        assert_eq!(app.git_refresh.refresh, RefreshPhase::Idle);
         assert_eq!(app.git_refresh_deadline(), None);
 
         app.state.test_push_workspace(Workspace::test_new("test"));
@@ -474,7 +485,7 @@ mod tests {
     fn empty_refresh_after_a_panic_unwedges_the_refresh_deadline() {
         let mut app = test_app(&shepr_config::ServerConfig::default());
         app.state.test_push_workspace(Workspace::test_new("test"));
-        app.git_refresh.git_refresh_in_flight = true;
+        app.git_refresh.refresh = RefreshPhase::InFlight;
         assert_eq!(app.git_refresh.refresh_due_at(), None);
 
         // A panicking refresh is published as an empty outcome.
@@ -482,7 +493,7 @@ mod tests {
             outcome: shepr_git::RefreshOutcome::empty(),
         });
 
-        assert!(!app.git_refresh.git_refresh_in_flight);
+        assert!(!app.git_refresh.is_in_flight());
         assert!(app.git_refresh.refresh_due_at().is_some());
     }
 
@@ -490,9 +501,8 @@ mod tests {
     fn lost_refresh_clears_in_flight_and_schedules_the_next_refresh() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let mut app = test_app(&shepr_config::ServerConfig::default());
-        let mut ws = Workspace::test_new("test");
         let scratch = crate::test_support::ScratchDir::new("git-refresh-lost");
-        ws.identity_cwd = scratch.join("cwd");
+        let ws = Workspace::test_at(Some("test"), &scratch.join("cwd"));
         app.state.test_push_workspace(ws);
         let (sender, outcomes) = std::sync::mpsc::channel();
         let panicked = std::sync::atomic::AtomicBool::new(false);
@@ -505,13 +515,13 @@ mod tests {
         let start = Instant::now();
         app.mark_git_status_refresh_due(start);
         app.start_git_status_refresh_if_due(start);
-        assert!(app.git_refresh.git_refresh_in_flight);
+        assert!(app.git_refresh.is_in_flight());
 
         let give_up = start + std::time::Duration::from_secs(30);
         let lost_at = loop {
             let now = Instant::now();
             app.start_git_status_refresh_if_due(now);
-            if !app.git_refresh.git_refresh_in_flight {
+            if !app.git_refresh.is_in_flight() {
                 break now;
             }
             assert!(now < give_up, "lost refresh was not observed");
@@ -526,7 +536,7 @@ mod tests {
         assert_eq!(app.git_refresh_deadline(), Some(next));
 
         app.start_git_status_refresh_if_due(next);
-        assert!(app.git_refresh.git_refresh_in_flight);
+        assert!(app.git_refresh.is_in_flight());
         let outcome: shepr_git::RefreshOutcome<WorkspaceId> = outcomes
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("refresh on a new worker publishes");
@@ -544,12 +554,11 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("git-refresh-stalled");
         let stuck_cwd = scratch.join("stuck");
         for cwd in [stuck_cwd.clone(), scratch.join("live")] {
-            let mut ws = Workspace::test_new("test");
-            ws.identity_cwd = cwd;
+            let ws = Workspace::test_at(Some("test"), &cwd);
             app.state.test_push_workspace(ws);
         }
-        let stuck_id = app.state.workspaces[0].id;
-        let live_id = app.state.workspaces[1].id;
+        let stuck_id = app.state.ws(0).id();
+        let live_id = app.state.ws(1).id();
 
         // The first refresh blocks in a step on the stuck workspace's cwd, as
         // a filesystem call on a hung mount would, until released. Each
@@ -558,7 +567,7 @@ mod tests {
         let released = Arc::new(AtomicBool::new(false));
         let double_released = Arc::clone(&released);
         let calls = AtomicUsize::new(0);
-        let event_tx = app.event_tx.clone();
+        let event_tx = app.event_sender();
         let double_stuck_cwd = stuck_cwd.clone();
         app.git_refresh.worker = shepr_git::GitStatusWorker::with_refresh(
             move |outcome| {
@@ -566,7 +575,7 @@ mod tests {
                     .blocking_send(AppEvent::GitStatusRefreshed { outcome })
                     .ok();
             },
-            move |_, targets: Vec<shepr_git::RefreshTarget<WorkspaceId>>, progress| {
+            move |targets: Vec<shepr_git::RefreshTarget<WorkspaceId>>, progress| {
                 let call = calls.fetch_add(1, Ordering::SeqCst);
                 if call == 0
                     && let Some(stuck) = targets.iter().find(|t| t.cwd == double_stuck_cwd)
@@ -607,17 +616,17 @@ mod tests {
         let start = Instant::now();
         app.mark_git_status_refresh_due(start);
         app.start_git_status_refresh_if_due(start);
-        assert!(app.git_refresh.git_refresh_in_flight);
+        assert!(app.git_refresh.is_in_flight());
         entered_rx.recv_timeout(WAIT).expect("the refresh stalls");
 
         // Within the worker's stall bound the refresh is only slow.
         app.start_git_status_refresh_if_due(Instant::now());
-        assert!(app.git_refresh.git_refresh_in_flight);
+        assert!(app.git_refresh.is_in_flight());
 
         // Past it, the refresh is abandoned and the next one is scheduled.
         let stalled_at = Instant::now() + Duration::from_secs(3600);
         app.start_git_status_refresh_if_due(stalled_at);
-        assert!(!app.git_refresh.git_refresh_in_flight);
+        assert!(!app.git_refresh.is_in_flight());
         let next = app
             .git_refresh
             .refresh_due_at()
@@ -626,12 +635,12 @@ mod tests {
 
         // It runs on a new worker, without the stuck workspace.
         app.start_git_status_refresh_if_due(next);
-        assert!(app.git_refresh.git_refresh_in_flight);
-        let outcome = refreshed(app.event_rx.blocking_recv().expect("refresh"));
+        assert!(app.git_refresh.is_in_flight());
+        let outcome = refreshed(app.blocking_next_event());
         assert_eq!(owners(&outcome), [live_id]);
         assert_eq!(outcome.statuses[0].status.label, "call-1");
         app.handle_internal_event(AppEvent::GitStatusRefreshed { outcome });
-        assert!(!app.git_refresh.git_refresh_in_flight);
+        assert!(!app.git_refresh.is_in_flight());
 
         // Once the stalled thread returns, its workspace is refreshed again,
         // and its own late outcome is never delivered.
@@ -641,8 +650,8 @@ mod tests {
         loop {
             now += Duration::from_secs(60);
             app.start_git_status_refresh_if_due(now);
-            assert!(app.git_refresh.git_refresh_in_flight);
-            let outcome = refreshed(app.event_rx.blocking_recv().expect("refresh"));
+            assert!(app.git_refresh.is_in_flight());
+            let outcome = refreshed(app.blocking_next_event());
             assert!(
                 outcome
                     .statuses
@@ -663,18 +672,101 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert!(app.event_rx.try_recv().is_err());
+        assert!(app.no_queued_events());
     }
 
-    fn test_app(config: &shepr_config::ServerConfig) -> super::super::App {
-        super::super::App::new(config, crate::app::AppPolicy::Suspended)
+    fn test_app(config: &shepr_config::ServerConfig) -> super::super::TestApp {
+        super::super::App::new(config)
     }
 
-    fn wait_for_git_refresh(app: &mut super::super::App) {
-        let event = app
-            .event_rx
-            .blocking_recv()
-            .expect("git refresh worker should report completion");
+    fn wait_for_git_refresh(app: &mut super::super::TestApp) {
+        let event = app.blocking_next_event();
         assert!(matches!(event, AppEvent::GitStatusRefreshed { .. }));
+    }
+
+    /// Git status events handled by the app, run on the app fixture `app::tests`
+    /// shares.
+    mod git_status_events {
+        use crate::app::git_refresh::RefreshPhase;
+        use crate::app::tests::test_app;
+        use crate::app::*;
+        use crate::test_support::*;
+        use shepr_mux::workspace::Workspace;
+
+        #[test]
+        fn git_refresh_is_not_due_while_in_flight() {
+            let mut app = test_app();
+            app.state.test_push_workspace(Workspace::test_new("one"));
+            app.git_refresh.refresh = RefreshPhase::InFlight;
+            let now = Instant::now();
+            app.start_git_status_refresh_if_due(now);
+
+            assert_eq!(app.git_refresh.refresh_due_at(), None);
+            // The loop still wakes to check the worker, at a time past `now`.
+            let deadline = app.git_refresh_deadline().expect("lost-refresh check");
+            assert!(deadline > now);
+            assert!(app.git_refresh.is_in_flight());
+        }
+
+        #[test]
+        fn unchanged_git_status_event_has_no_render_impact() {
+            let mut app = test_app();
+            app.git_refresh.refresh = RefreshPhase::InFlight;
+
+            let changed =
+                app.handle_internal_event_with_view_change(AppEvent::GitStatusRefreshed {
+                    outcome: shepr_git::RefreshOutcome::empty(),
+                });
+
+            assert!(!changed);
+            assert!(!app.git_refresh.is_in_flight());
+        }
+
+        #[test]
+        fn git_status_event_clears_in_flight_refresh() {
+            let mut app = test_app();
+            app.git_refresh.refresh = RefreshPhase::InFlight;
+            let previous_refresh = Instant::now() - Duration::from_secs(10);
+            app.git_refresh.next_git_remote_status_refresh = previous_refresh;
+
+            app.handle_internal_event(AppEvent::GitStatusRefreshed {
+                outcome: shepr_git::RefreshOutcome::empty(),
+            });
+
+            assert!(!app.git_refresh.is_in_flight());
+            assert!(app.git_refresh.next_git_remote_status_refresh > previous_refresh);
+        }
+
+        #[test]
+        fn a_changed_git_status_reports_a_view_change() {
+            let mut app = test_app();
+            app.state.test_push_workspace(Workspace::test_new("one"));
+            let revision = app.state.shell_projection_revision;
+            let workspace_id = app.state.ws(0).id();
+            let resolved_identity_cwd = app.state.ws(0).identity_cwd().to_path_buf();
+
+            let changed =
+                app.handle_internal_event_with_view_change(AppEvent::GitStatusRefreshed {
+                    outcome: shepr_git::RefreshOutcome {
+                        statuses: vec![shepr_mux::git::WorkspaceGitStatus {
+                            owner: workspace_id,
+                            status: shepr_git::GitStatus {
+                                cwd: resolved_identity_cwd.clone(),
+                                key: shepr_git::GitStatusKey::Checkout(resolved_identity_cwd),
+                                label: "one".into(),
+                                branch: shepr_git::GitBranch::Named("render-dirty-test".into()),
+                                ahead_behind: Some(shepr_git::AheadBehind {
+                                    ahead: 1,
+                                    behind: 0,
+                                }),
+                            },
+                        }],
+                        new_read_errors: Vec::new(),
+                    },
+                });
+
+            assert!(changed);
+            assert_ne!(app.state.shell_projection_revision, revision);
+        }
     }
 }

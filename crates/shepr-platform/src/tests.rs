@@ -1,5 +1,4 @@
 use super::*;
-use shepr_core::socket_path::fits_unix_socket_path;
 use shepr_test_support::fixture::{self, Held, Step};
 use std::{
     io::Read,
@@ -13,20 +12,16 @@ use std::{
 // ---------------------------------------------------------------------------
 
 #[test]
-fn child_exit_classification_only_checkpoints_interruptions() {
+fn child_exit_classification_separates_codes_from_signals() {
     use std::os::unix::process::ExitStatusExt;
 
     for code in [0, 1, 130, 255] {
         // Raw wait status: exit code in bits 8..16, no terminating signal.
-        let reason = classify_child_exit(&std::process::ExitStatus::from_raw(code << 8));
-        assert_eq!(reason, ChildExitReason::Exited, "exit code {code:#x}");
-        assert!(!reason.requires_session_checkpoint());
+        let kind = classify_child_exit(&std::process::ExitStatus::from_raw(code << 8));
+        assert_eq!(kind, ChildExitKind::Exited, "exit code {code:#x}");
     }
     let status = std::process::ExitStatus::from_raw(libc::SIGTERM);
-    assert_eq!(classify_child_exit(&status), ChildExitReason::Interrupted);
-    assert!(classify_child_exit(&status).requires_session_checkpoint());
-    assert!(!ChildExitReason::WaitFailed.requires_session_checkpoint());
-    assert!(!ChildExitReason::ReaderPanicked.requires_session_checkpoint());
+    assert_eq!(classify_child_exit(&status), ChildExitKind::Signalled);
 }
 
 #[test]
@@ -110,37 +105,6 @@ fn proc_stat_yields_session_and_controlling_tty() {
 }
 
 #[test]
-fn bridge_socket_names_carry_a_random_token_before_the_extension() {
-    assert_eq!(
-        with_name_token("shepr-r-42-dev.sock", 0xab),
-        "shepr-r-42-dev.00000000000000ab.sock"
-    );
-    assert_eq!(with_name_token("bridge", 1), "bridge.0000000000000001");
-    assert_eq!(with_name_token(".sock", 1), ".sock.0000000000000001");
-
-    let runtime_dir = shepr_test_support::ScratchDir::new("bridge-endpoints");
-    let first =
-        remote_bridge_endpoint_path(runtime_dir.path(), "shepr-t-1-a.sock", "shepr-t-1.sock")
-            .expect("test precondition");
-    let second =
-        remote_bridge_endpoint_path(runtime_dir.path(), "shepr-t-1-a.sock", "shepr-t-1.sock")
-            .expect("test precondition");
-    assert_ne!(
-        first, second,
-        "concurrent bridges must receive distinct socket paths"
-    );
-    for path in [&first, &second] {
-        assert!(fits_unix_socket_path(path), "{}", path.display());
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        assert!(name.starts_with("shepr-t-1"), "{name}");
-        assert!(name.ends_with(".sock"), "{name}");
-    }
-}
-
-#[test]
 fn launch_executable_follows_a_replaced_binary_to_its_new_install() {
     let installed = |path: &Path| Ok(path == Path::new("/usr/bin/shepr"));
     // A running binary that an install replaced.
@@ -175,16 +139,19 @@ fn launch_executable_follows_a_replaced_binary_to_its_new_install() {
 }
 
 // ---------------------------------------------------------------------------
-// SSH paths
+// Owned runtime directories
 // ---------------------------------------------------------------------------
 
+/// A regular-file family, standing in for a caller's own.
+const TEST_FILES: DirectoryKind = DirectoryKind::regular_file("shepr-test-", "config");
+
 #[test]
-fn remote_ssh_config_dir_is_private_and_under_the_runtime_directory() {
+fn owned_directory_is_private_and_under_the_parent() {
     use std::os::unix::fs::PermissionsExt;
 
-    let runtime_dir = shepr_test_support::ScratchDir::new("ssh-config-runtime");
-    let first = create_remote_ssh_config_dir(runtime_dir.path()).expect("test precondition");
-    let second = create_remote_ssh_config_dir(runtime_dir.path()).expect("test precondition");
+    let runtime_dir = shepr_test_support::ScratchDir::new("owned-directory-runtime");
+    let first = create_owned_directory(runtime_dir.path(), TEST_FILES).expect("test precondition");
+    let second = create_owned_directory(runtime_dir.path(), TEST_FILES).expect("test precondition");
     assert!(first.starts_with(runtime_dir.path()));
     assert_ne!(first, second);
     assert_eq!(
@@ -195,6 +162,25 @@ fn remote_ssh_config_dir_is_private_and_under_the_runtime_directory() {
             & crate::limits::PERMISSION_BITS,
         crate::limits::PRIVATE_DIRECTORY_MODE
     );
+}
+
+#[test]
+fn private_directory_requirement_rejects_symlinks_and_public_modes() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let runtime_dir = shepr_test_support::ScratchDir::new("private-directory-validation");
+    let dir = create_owned_directory(runtime_dir.path(), TEST_FILES).expect("test precondition");
+    let link = dir.join("link");
+    symlink(&dir, &link).expect("test precondition");
+    assert!(matches!(
+        require_private_directory(&link),
+        Err(PrivateDirError::Policy)
+    ));
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
+        .expect("test precondition");
+    assert!(matches!(
+        require_private_directory(&dir),
+        Err(PrivateDirError::Policy)
+    ));
 }
 
 #[test]
@@ -213,8 +199,8 @@ fn startup_sweeps_only_owned_paths_with_a_proven_dead_process() {
         .expect("current process identity")
         .tag();
 
-    let ssh_config_kind = crate::owned_runtime::DirectoryKind::SshConfig;
-    let staging_kind = crate::owned_runtime::DirectoryKind::Staging;
+    let ssh_config_kind = TEST_FILES;
+    let staging_kind = crate::owned_runtime::DirectoryKind::STAGING;
     let stale_config = runtime.join(ssh_config_kind.directory_name(1));
     std::fs::create_dir(&stale_config).expect("test precondition");
     std::fs::set_permissions(
@@ -253,7 +239,7 @@ fn startup_sweeps_only_owned_paths_with_a_proven_dead_process() {
         marker.write_all(tag.as_bytes()).expect("test precondition");
     }
 
-    let _created = create_remote_ssh_config_dir(runtime.path()).expect("create config dir");
+    let _created = create_owned_directory(runtime.path(), TEST_FILES).expect("create config dir");
     assert!(
         !present(&stale_config),
         "dead owner's config directory is swept"
@@ -289,135 +275,6 @@ fn dead_process_tag() -> String {
     let tag = current.tag();
     let (_, rest) = tag.split_once('-').expect("serialized process identity");
     format!("{:08x}-{rest}", i32::MAX)
-}
-
-#[test]
-fn shared_ssh_control_path_is_stable_scoped_and_bounded() {
-    // The control socket's name and OpenSSH's staging suffix leave room only
-    // for a runtime directory as short as a real one, which no scratch
-    // directory under the build tree is; the naming and length arithmetic are
-    // exercised over the real directory's spelling, and the directory checks
-    // that `shared_ssh_control_path` adds are covered below.
-    let runtime_dir = Path::new("/run/user/4294967294");
-    let path = ssh_control_path_under(
-        runtime_dir,
-        Path::new("/config/one"),
-        SshControlKey::from_identity_bytes(b"user@host"),
-    )
-    .expect("test precondition");
-    assert_eq!(path.parent(), Some(runtime_dir));
-    assert_eq!(
-        path,
-        ssh_control_path_under(
-            runtime_dir,
-            Path::new("/config/one"),
-            SshControlKey::from_identity_bytes(b"user@host")
-        )
-        .expect("test precondition")
-    );
-    assert_ne!(
-        path,
-        ssh_control_path_under(
-            runtime_dir,
-            Path::new("/config/two"),
-            SshControlKey::from_identity_bytes(b"user@host")
-        )
-        .expect("test precondition")
-    );
-    assert_ne!(
-        path,
-        ssh_control_path_under(
-            runtime_dir,
-            Path::new("/config/one"),
-            SshControlKey::from_identity_bytes(b"other@host")
-        )
-        .expect("test precondition")
-    );
-    let expanded = path.to_string_lossy().replace("%C", &"f".repeat(40));
-    assert!(fits_unix_socket_path(&PathBuf::from(&expanded)));
-    // OpenSSH binds this temporary socket before renaming it to ControlPath.
-    assert!(fits_unix_socket_path(&PathBuf::from(format!(
-        "{expanded}.QuuYe7ZFE2HYeAE4"
-    ))));
-}
-
-#[test]
-fn shared_ssh_control_path_validates_the_runtime_directory_first() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let scratch = shepr_test_support::ScratchDir::new("ssh-control-unsafe-runtime");
-    let runtime_dir = scratch.join("runtime");
-    std::fs::create_dir(&runtime_dir).expect("test precondition");
-    std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o755))
-        .expect("test precondition");
-    let error = shared_ssh_control_path(
-        &runtime_dir,
-        Path::new("/config/one"),
-        SshControlKey::from_identity_bytes(b"user@host"),
-    )
-    .expect_err("a runtime directory others can reach is refused");
-    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-    assert!(
-        error
-            .to_string()
-            .contains(&runtime_dir.display().to_string())
-    );
-    assert!(matches!(error, SshRuntimeError::UnsafeDirectory(_)));
-    let relative = shared_ssh_control_path(
-        Path::new("relative/runtime"),
-        Path::new("/config/one"),
-        SshControlKey::from_identity_bytes(b"user@host"),
-    )
-    .expect_err("a relative runtime directory is refused");
-    assert_eq!(relative.kind(), std::io::ErrorKind::InvalidInput);
-}
-
-#[test]
-fn shared_ssh_control_path_rejects_a_runtime_dir_that_cannot_fit_open_ssh_staging() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let scratch = shepr_test_support::ScratchDir::new("ssh-control-long-runtime");
-    let runtime_dir = scratch.path().join("x".repeat(90));
-    std::fs::create_dir(&runtime_dir).expect("test precondition");
-    std::fs::set_permissions(
-        &runtime_dir,
-        std::fs::Permissions::from_mode(crate::limits::PRIVATE_DIRECTORY_MODE),
-    )
-    .expect("test precondition");
-    let error = shared_ssh_control_path(
-        &runtime_dir,
-        Path::new("/config/one"),
-        SshControlKey::from_identity_bytes(b"user@host"),
-    )
-    .expect_err("the OpenSSH staging path must fit");
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-}
-
-#[test]
-fn shared_ssh_directory_rejects_symlinks_and_public_modes() {
-    use std::os::unix::fs::{PermissionsExt, symlink};
-    let runtime_dir = shepr_test_support::ScratchDir::new("ssh-directory-validation");
-    let dir = create_remote_ssh_config_dir(runtime_dir.path()).expect("test precondition");
-    let link = dir.join("link");
-    symlink(&dir, &link).expect("test precondition");
-    assert_eq!(
-        validate_shared_ssh_dir(&link)
-            .expect_err("test precondition")
-            .kind(),
-        std::io::ErrorKind::PermissionDenied
-    );
-    assert!(matches!(
-        validate_shared_ssh_dir(&link).expect_err("test precondition"),
-        SshRuntimeError::UnsafeDirectory(_)
-    ));
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
-        .expect("test precondition");
-    assert_eq!(
-        validate_shared_ssh_dir(&dir)
-            .expect_err("test precondition")
-            .kind(),
-        std::io::ErrorKind::PermissionDenied
-    );
 }
 
 // ---------------------------------------------------------------------------

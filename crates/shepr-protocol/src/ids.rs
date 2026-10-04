@@ -1,17 +1,14 @@
 use std::fmt;
-use std::num::{NonZeroU64, NonZeroUsize};
+use std::num::NonZeroUsize;
 use std::str::FromStr;
-use std::time::Duration;
 
 const PUBLIC_ID_ALPHABET: &[u8; 32] = b"123456789ABCDEFGHJKMNPQRSTVWXYZ0";
 
-// The mux contract test calls these helpers directly to verify the public-number
-// alphabet. Keep the exports until it asserts through the public ID text types.
 /// Encodes a public number in bijective base 32 (digits 1..=32, no zero
 /// digit), so `"0"` is the digit for 32, not zero. Public numbers start at 1;
 /// zero has no digits and encodes to the empty string, which is what
 /// `decode_public_number` maps back to zero.
-pub fn encode_public_number(mut value: usize) -> String {
+fn encode_public_number(mut value: usize) -> String {
     let mut encoded = Vec::new();
     while value > 0 {
         let digit = (value - 1) % PUBLIC_ID_ALPHABET.len();
@@ -21,7 +18,7 @@ pub fn encode_public_number(mut value: usize) -> String {
     encoded.iter().rev().collect()
 }
 
-pub fn decode_public_number(value: &str) -> Option<usize> {
+fn decode_public_number(value: &str) -> Option<usize> {
     let mut decoded = 0usize;
     for ch in value.chars() {
         let digit = PUBLIC_ID_ALPHABET
@@ -45,13 +42,17 @@ pub fn decode_public_number(value: &str) -> Option<usize> {
 pub struct WorkspaceId(NonZeroUsize);
 
 impl WorkspaceId {
+    /// The first ID an allocator issues: public numbers are one-based, and
+    /// zero spells no workspace ID.
+    pub const FIRST: Self = Self(NonZeroUsize::MIN);
+
     /// The ID of allocator number `number`; zero has none.
     pub fn from_number(number: usize) -> Option<Self> {
         NonZeroUsize::new(number).map(Self)
     }
 
     /// The allocator's stable number, independent of the workspace list order.
-    pub fn number(&self) -> usize {
+    pub const fn number(&self) -> usize {
         self.0.get()
     }
 }
@@ -240,96 +241,6 @@ impl<'de> serde::Deserialize<'de> for PublicPaneId {
 // Neither ID implements `tracing::Value` (tracing-core seals it); log them
 // with `%id`, which writes the canonical text through Display.
 
-/// Opaque identity for a server-owned terminal.
-///
-/// A pane refers to its terminal by this identity, but callers must not derive
-/// it from a pane id or layout position. A value comes from
-/// [`TerminalId::from_clock_and_counter`], which the layer that creates
-/// terminals calls with its own stamp and counter, or from parsing text in the
-/// exact form that writes (`term_<stamp>_<counter>`), and deserialization goes
-/// through the same parse.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "String")]
-pub struct TerminalId(String);
-
-impl TerminalId {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    /// The terminal ID with `stamp` `since_epoch` (`Err` for a clock before
-    /// the epoch, holding how far before) and `counter`, which is nonzero
-    /// because parsing refuses a zero one.
-    pub fn from_clock_and_counter(
-        since_epoch: Result<Duration, Duration>,
-        counter: NonZeroU64,
-    ) -> Self {
-        let micros = match since_epoch {
-            Ok(duration) => duration.as_micros().to_string(),
-            Err(duration) => {
-                let micros = duration.as_micros();
-                format!("before_{micros}")
-            }
-        };
-        Self(format!("term_{micros}_{counter:x}"))
-    }
-}
-
-/// Text that is not a terminal ID in the form
-/// [`TerminalId::from_clock_and_counter`] writes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TerminalIdParseError;
-
-impl fmt::Display for TerminalIdParseError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("invalid terminal id")
-    }
-}
-
-impl std::error::Error for TerminalIdParseError {}
-
-impl FromStr for TerminalId {
-    type Err = TerminalIdParseError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let rest = value.strip_prefix("term_").ok_or(TerminalIdParseError)?;
-        let (before_epoch, rest) = match rest.strip_prefix("before_") {
-            Some(rest) => (true, rest),
-            None => (false, rest),
-        };
-        let (micros, counter) = rest.split_once('_').ok_or(TerminalIdParseError)?;
-        let micros = Duration::from_micros(micros.parse().map_err(|_| TerminalIdParseError)?);
-        let counter = u64::from_str_radix(counter, 16)
-            .ok()
-            .and_then(NonZeroU64::new)
-            .ok_or(TerminalIdParseError)?;
-        let stamp = if before_epoch {
-            Err(micros)
-        } else {
-            Ok(micros)
-        };
-        // The number parsers accept signs, leading zeros and upper-case hex;
-        // re-encoding and comparing refuses every other spelling.
-        Some(Self::from_clock_and_counter(stamp, counter))
-            .filter(|id| id.0 == value)
-            .ok_or(TerminalIdParseError)
-    }
-}
-
-impl TryFrom<String> for TerminalId {
-    type Error = TerminalIdParseError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        value.parse()
-    }
-}
-
-impl fmt::Display for TerminalId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
 /// This crate's own tests spell workspace IDs as literals; the text must be
 /// canonical. Other crates build them with `from_number` or parse them.
 #[cfg(test)]
@@ -432,102 +343,6 @@ mod public_pane_id_tests {
         }
         let wire = crate::codec::to_vec("wOLD:p1").expect("string encoding");
         assert!(crate::codec::from_slice_exact::<PublicPaneId>(&wire).is_err());
-    }
-}
-
-#[cfg(test)]
-mod terminal_id_tests {
-    use std::num::NonZeroU64;
-    use std::time::Duration;
-
-    use super::TerminalId;
-
-    fn counter(value: u64) -> NonZeroU64 {
-        NonZeroU64::new(value).expect("nonzero test counter")
-    }
-
-    #[test]
-    fn terminal_id_clock_encoding_distinguishes_before_epoch_from_epoch() {
-        let before_epoch =
-            TerminalId::from_clock_and_counter(Err(Duration::from_micros(7)), counter(1));
-        let at_epoch = TerminalId::from_clock_and_counter(Ok(Duration::ZERO), counter(2));
-
-        assert_eq!(before_epoch.as_str(), "term_before_7_1");
-        assert_eq!(at_epoch.as_str(), "term_0_2");
-        assert_ne!(before_epoch, at_epoch);
-    }
-
-    #[test]
-    fn terminal_id_clock_and_counter_fields_have_unambiguous_boundaries() {
-        let first = TerminalId::from_clock_and_counter(Ok(Duration::from_micros(1)), counter(0x11));
-        let second =
-            TerminalId::from_clock_and_counter(Ok(Duration::from_micros(0x11)), counter(1));
-
-        assert_eq!(first.as_str(), "term_1_11");
-        assert_eq!(second.as_str(), "term_17_1");
-        assert_ne!(first, second);
-    }
-
-    #[test]
-    fn terminal_ids_parse_back_and_keep_their_wire_encoding() {
-        let first = TerminalId::from_clock_and_counter(Ok(Duration::from_micros(40)), counter(1));
-        let second = TerminalId::from_clock_and_counter(Ok(Duration::from_micros(40)), counter(2));
-
-        assert_ne!(first, second);
-        assert_eq!(first.as_str().parse::<TerminalId>(), Ok(first.clone()));
-        let wire = crate::codec::to_vec(&second).expect("terminal id encoding");
-        assert_eq!(
-            wire,
-            crate::codec::to_vec(second.as_str()).expect("terminal id string encoding")
-        );
-        assert_eq!(
-            crate::codec::from_slice_exact::<TerminalId>(&wire).expect("terminal id decoding"),
-            second
-        );
-    }
-
-    #[test]
-    fn constructed_terminal_ids_round_trip_through_parsing() {
-        let stamps = [
-            Ok(Duration::ZERO),
-            Ok(Duration::from_micros(1_700_000_000_000_000)),
-            Err(Duration::from_micros(7)),
-        ];
-        for stamp in stamps {
-            for value in [1, 0xff, u64::MAX] {
-                let id = TerminalId::from_clock_and_counter(stamp, counter(value));
-                assert_eq!(id.as_str().parse::<TerminalId>(), Ok(id.clone()), "{id}");
-            }
-        }
-    }
-
-    #[test]
-    fn terminal_ids_refuse_every_noncanonical_spelling() {
-        for canonical in ["term_0_1", "term_before_7_1", "term_17_ff"] {
-            assert!(canonical.parse::<TerminalId>().is_ok(), "{canonical}");
-        }
-        for invalid in [
-            "",
-            "t1",
-            "terminal-a",
-            "7",
-            "term_",
-            "term_1",
-            "term_1_",
-            "term__1",
-            "term_1_0",
-            "term_01_1",
-            "term_1_01",
-            "term_1_FF",
-            "term_+1_1",
-            "term_1_+1",
-            "term_before__1",
-            "term_1_1_1",
-        ] {
-            assert!(invalid.parse::<TerminalId>().is_err(), "{invalid:?}");
-        }
-        let wire = crate::codec::to_vec("terminal-a").expect("string encoding");
-        assert!(crate::codec::from_slice_exact::<TerminalId>(&wire).is_err());
     }
 }
 

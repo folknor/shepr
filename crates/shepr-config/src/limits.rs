@@ -24,6 +24,11 @@ pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 /// attached client's real geometry is available.
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
 
+/// Default pause between agent resumes when a restored session starts several
+/// agents, so their startups do not contend for the machine at once.
+pub(crate) const DEFAULT_STARTUP_PER_AGENT_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
 /// Maximum length in bytes of an SSH target.
 ///
 /// Bounds a value that ends up on an ssh command line.

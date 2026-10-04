@@ -181,7 +181,7 @@ pub(super) fn publish_reported_cwd(
         Err(err) => {
             drop(last_reported);
             warn!(
-                pane = pane_id.raw(),
+                pane = %pane_id,
                 error = %err,
                 "failed to send terminal cwd report"
             );

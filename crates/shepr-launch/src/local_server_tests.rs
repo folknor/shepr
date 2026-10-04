@@ -486,7 +486,11 @@ fn a_hung_sibling_version_is_cut_off_at_the_deadline() {
 fn the_launch_lock_wait_is_bounded_and_its_file_persists() {
     let dir = ScratchDir::new("launch-lock");
     let lock_path = dir.join("runtime/launch.lock");
-    let held = shepr_platform::ipc::acquire_flock_lock(&lock_path, false).expect("first holder");
+    let held = shepr_platform::ipc::acquire_flock_lock(
+        &lock_path,
+        shepr_platform::ipc::LockWait::FailIfHeld,
+    )
+    .expect("first holder");
     let inode = std::fs::metadata(&lock_path)
         .expect("lock file exists")
         .ino();
@@ -1110,7 +1114,7 @@ fn server_daemon_command_marks_the_client_spawn_and_nothing_else() {
         &paths,
     );
     let args: Vec<_> = command.get_args().collect();
-    assert_eq!(args, [OsStr::new(CLIENT_SPAWNED_FLAG)]);
+    assert_eq!(args, [OsStr::new(crate::invocation::CLIENT_SPAWNED_FLAG)]);
 }
 
 #[test]

@@ -1,28 +1,54 @@
 // installed by shepr
 // managed by shepr; reinstalling or updating the integration overwrites this file.
+// add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=opencode-tui
 // SHEPR_INTEGRATION_VERSION=3
 
 import net from "node:net";
 
-// Both lifecycle entries below seed their seq from microseconds since the
-// epoch plus one per report, while the shell and Python hooks send
-// nanoseconds. The units never meet: shepr orders seqs per source string, and
-// the only other reporter under this source, the server plugin, uses the same
-// unit (and stands down whenever a TUI owns the lifecycle). Nanoseconds are
-// not an option here: they exceed 2^53, where a JS number stops being exact,
-// so `++` would round away. The wall-clock seed puts a restarted process above
-// its predecessor's last seq; after a backwards clock step, shepr accepts any
-// seq from a source that has been silent for a few seconds. Selection reports
-// carry no seq at all.
 const SOURCE = "shepr:opencode";
 const AGENT = "opencode";
-const ROUTE_POLL_INTERVAL_MS = 100;
-const SELECTION_RETRY_DELAYS_MS = [100, 400, 1_000];
+const METHOD_SESSION = "pane.report_agent_session";
+const METHOD_STATE = "pane.report_agent";
+const SOCKET_WAIT_MS = 500;
+const STATE = { working: "working", blocked: "blocked", idle: "idle" };
+// The start source of the report that selects the pane's session.
+const SELECTION_START_SOURCE = "select";
 
+// Only a release pane of a shepr server has anything to report to.
+function reportingEnabled() {
+  return (
+    process.env.SHEPR_BUILD_PROFILE === "release" &&
+    process.env.SHEPR_ENV === "1" &&
+    !!process.env.SHEPR_SOCKET_PATH &&
+    !!process.env.SHEPR_PANE_ID
+  );
+}
+
+function paneEndpoint() {
+  return {
+    paneId: process.env.SHEPR_PANE_ID,
+    socketPath: process.env.SHEPR_SOCKET_PATH,
+  };
+}
+
+// Seqs are microseconds since the epoch plus one per report, while the shell
+// and Python hooks send nanoseconds. The units never meet: shepr orders seqs
+// per source string, and every JavaScript reporter under one source uses this
+// unit. Nanoseconds are not an option here: they exceed 2^53, where a JS
+// number stops being exact, so `+= 1` would round away. The wall-clock seed
+// puts a restarted process above its predecessor's last seq; after a backwards
+// clock step, shepr accepts any seq from a source that has been silent for a
+// few seconds.
+function seedSeq() {
+  return Date.now() * 1000;
+}
+
+// Delivers one report: a state report, or with no `state` the selection of
+// `sessionID` as the pane's session. Settles true once the server answers and
+// false when it did not, so the caller can retry.
 function requestOnce(sessionID, state, seq, isCurrent = () => true) {
-  const paneId = process.env.SHEPR_PANE_ID;
-  const socketPath = process.env.SHEPR_SOCKET_PATH;
+  const { paneId, socketPath } = paneEndpoint();
   if (!paneId || !socketPath) {
     return Promise.resolve(true);
   }
@@ -30,14 +56,14 @@ function requestOnce(sessionID, state, seq, isCurrent = () => true) {
   // A selection report has no seq; its id takes a clock reading in the seq's
   // unit instead, so the id keeps the `<source>:<seq>` shape of every hook.
   const request = {
-    id: `${SOURCE}:${state === undefined ? Date.now() * 1000 : seq}`,
-    method: state === undefined ? "pane.report_agent_session" : "pane.report_agent",
+    id: `${SOURCE}:${state === undefined ? seedSeq() : seq}`,
+    method: state === undefined ? METHOD_SESSION : METHOD_STATE,
     params: {
       pane_id: paneId,
       source: SOURCE,
       agent: AGENT,
       agent_session_id: sessionID,
-      ...(state === undefined ? { session_start_source: "select" } : { state, seq }),
+      ...(state === undefined ? { session_start_source: SELECTION_START_SOURCE } : { state, seq }),
     },
   };
 
@@ -61,7 +87,7 @@ function requestOnce(sessionID, state, seq, isCurrent = () => true) {
 
     // A plain timer, not socket.setTimeout, so a connection that never finishes
     // connecting still settles and cannot block later reports behind the queue.
-    timer = setTimeout(() => settle(false), 500);
+    timer = setTimeout(() => settle(false), SOCKET_WAIT_MS);
     timer.unref?.();
     client.on("data", () => settle(true));
     client.on("error", () => settle(false));
@@ -69,6 +95,13 @@ function requestOnce(sessionID, state, seq, isCurrent = () => true) {
     client.on("close", () => settle(false));
   });
 }
+
+// Both lifecycle entries below seed their seq with `seedSeq` and add one per
+// report. The server plugin, the only other reporter under this source, uses
+// the same unit and stands down whenever a TUI owns the lifecycle. Selection
+// reports carry no seq at all.
+const ROUTE_POLL_INTERVAL_MS = 100;
+const SELECTION_RETRY_DELAYS_MS = [100, 400, 1_000];
 
 export default {
   id: "shepr.opencode.session-selection",
@@ -79,11 +112,11 @@ export default {
 };
 
 async function tui(api) {
-  if (process.env.SHEPR_BUILD_PROFILE !== "release" || process.env.SHEPR_ENV !== "1" || !process.env.SHEPR_SOCKET_PATH || !process.env.SHEPR_PANE_ID) return;
+  if (!reportingEnabled()) return;
 
   let disposed = false;
   let context;
-  let sequence = Date.now() * 1000;
+  let sequence = seedSeq();
   let chain = Promise.resolve();
 
   function routeID() {
@@ -147,15 +180,15 @@ async function tui(api) {
   }
 
   function state(ctx) {
-    if (ctx.settled) return "idle";
+    if (ctx.settled) return STATE.idle;
     for (const request of ctx.blockers.values()) {
-      if (root(ctx, request.sessionID) === ctx.selected) return "blocked";
+      if (root(ctx, request.sessionID) === ctx.selected) return STATE.blocked;
     }
-    if (ctx.errors.has(ctx.selected)) return "blocked";
+    if (ctx.errors.has(ctx.selected)) return STATE.blocked;
     for (const id of ctx.statuses.keys()) {
-      if (root(ctx, id) === ctx.selected) return "working";
+      if (root(ctx, id) === ctx.selected) return STATE.working;
     }
-    if (ctx.hydrated && [...owners(ctx)].every((id) => root(ctx, id) !== undefined)) return "idle";
+    if (ctx.hydrated && [...owners(ctx)].every((id) => root(ctx, id) !== undefined)) return STATE.idle;
   }
 
   function publish(ctx, selection = false) {
@@ -412,16 +445,16 @@ async function tui(api) {
 }
 
 function setup(api) {
-  if (process.env.SHEPR_BUILD_PROFILE !== "release" || process.env.SHEPR_ENV !== "1" || !process.env.SHEPR_SOCKET_PATH || !process.env.SHEPR_PANE_ID) return;
+  if (!reportingEnabled()) return;
 
   let disposed = false;
   let selected;
   let generation = 0;
-  let sequence = Date.now() * 1000;
+  let sequence = seedSeq();
   let chain = Promise.resolve();
   let retryIndex = 0;
   let nextSelectionAt = 0;
-  let state = "idle";
+  let state = STATE.idle;
   let retryTimer;
   const sessions = new Map();
   let blockers = new Map();
@@ -471,7 +504,7 @@ function setup(api) {
   }
 
   function publish() {
-    enqueue(blockers.size ? "blocked" : state);
+    enqueue(blockers.size ? STATE.blocked : state);
   }
 
   function changeBlocker(id, kind, requestID, present) {
@@ -525,7 +558,7 @@ function setup(api) {
       blockers.clear();
       blockerChanges.clear();
       if (id) {
-        state = api.data.session.status(id) === "running" ? "working" : "idle";
+        state = api.data.session.status(id) === "running" ? STATE.working : STATE.idle;
       }
     }
     if (!id) return;
@@ -579,16 +612,16 @@ function setup(api) {
         break;
       case "session.execution.started":
         if (id !== selected) return;
-        state = "working";
+        state = STATE.working;
         break;
       case "session.execution.succeeded":
       case "session.execution.interrupted":
         if (id !== selected) return;
-        state = "idle";
+        state = STATE.idle;
         break;
       case "session.execution.failed":
         if (id !== selected) return;
-        state = "blocked";
+        state = STATE.blocked;
         break;
       default:
         return;

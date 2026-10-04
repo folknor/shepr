@@ -1730,7 +1730,7 @@ fn omp_socket_requests_are_serialized() {
         .find("function sendRequest(request: unknown): Promise<void>")
         .expect("omp extension should wrap socket sends in an ordered queue");
     let queued_send = OMP_EXTENSION_ASSET[queue + send_request..]
-        .find("requestQueue = requestQueue.then(")
+        .find("requestQueue.then(")
         .expect("omp extension should serialize socket requests through the queue");
     let raw_send = OMP_EXTENSION_ASSET[queue + send_request..]
         .find("sendRequestNow(request)")
@@ -3134,7 +3134,7 @@ fn install_messages_keep_target_specific_lines() {
 /// removed from the list.
 const ASSET_INTERNAL_SHEPR_NAMES: &[&str] = shepr_core::env::SHEPR_ASSET_INTERNAL_NAMES;
 
-fn collect_asset_files(dir: &Path, files: &mut Vec<PathBuf>) {
+pub(crate) fn collect_asset_files(dir: &Path, files: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).expect("read an asset directory") {
         let path = entry.expect("read an asset directory entry").path();
         if path.stat_is_dir() {
@@ -3204,84 +3204,6 @@ fn every_shepr_name_in_the_shipped_assets_is_owned_or_asset_internal() {
     ] {
         assert!(seen.contains(contract), "no asset reads {contract}");
     }
-}
-
-/// Every hook asset that reports to the API socket builds the one envelope
-/// shape: the request id is `<source>:<seq>`, never a random token, and every
-/// socket attempt waits 500 ms for the reply. The TypeScript tests beside the
-/// assets are not assets and are skipped.
-#[test]
-fn hook_assets_share_one_envelope() {
-    let assets = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/assets");
-    let mut files = Vec::new();
-    collect_asset_files(&assets, &mut files);
-
-    let id = regex::Regex::new(
-        r#"(?:"id": |\bid: )(?:f"(?:\{source\}|\{SOURCE\}|(shepr:[a-z]+)):\{(?:report_seq|seq)\}"|`\$\{(?:source|SOURCE)\}:\$\{[^`]+\}`|request_id)"#,
-    )
-    .expect("test precondition");
-    let request_id = regex::Regex::new(r#"request_id = f"\{(?:source|SOURCE)\}:\{report_seq\}""#)
-        .expect("test precondition");
-    let python_timeout = regex::Regex::new(r"settimeout\(([^)]*)\)").expect("test precondition");
-    let js_timeout = regex::Regex::new(
-        r"(?:client\.setTimeout\(|setTimeout\(settle, |settle\(false\), |sendRequestAttempt\(request, )(\d[\d_]*)",
-    )
-    .expect("test precondition");
-
-    let mut reporters = 0;
-    for file in &files {
-        if file.to_string_lossy().ends_with(".test.ts") {
-            continue;
-        }
-        let text = fs::read_to_string(file).expect("read an asset");
-        if !text.contains("pane.report_agent") {
-            continue;
-        }
-        reporters += 1;
-        let name = file.display();
-
-        assert!(
-            !text.contains("import random") && !text.contains("Math.random"),
-            "{name} draws a random request id"
-        );
-        let ids: Vec<_> = id.captures_iter(&text).collect();
-        assert!(
-            !ids.is_empty(),
-            "{name} builds no `<source>:<seq>` request id"
-        );
-        for literal_source in ids.iter().filter_map(|capture| capture.get(1)) {
-            let source = literal_source.as_str();
-            assert!(
-                text.contains(&format!("\"source\": \"{source}\"")),
-                "{name} spells the id prefix {source}, which is not its report source"
-            );
-        }
-        if text.contains("\"id\": request_id") {
-            assert!(
-                request_id.is_match(&text),
-                "{name} builds request_id from something other than its source and seq"
-            );
-        }
-
-        let mut timeouts = python_timeout
-            .captures_iter(&text)
-            .map(|capture| (capture[1].to_owned(), "0.5"))
-            .chain(
-                js_timeout
-                    .captures_iter(&text)
-                    .map(|capture| (capture[1].to_owned(), "500")),
-            )
-            .peekable();
-        assert!(timeouts.peek().is_some(), "{name} sets no socket timeout");
-        for (found, expected) in timeouts {
-            assert_eq!(found, expected, "{name} waits {found}, not {expected}");
-        }
-    }
-    assert!(
-        reporters > 0,
-        "no reporting assets under {}",
-        assets.display()
-    );
 }
 
 #[test]

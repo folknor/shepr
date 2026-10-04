@@ -8,73 +8,34 @@ import net from "node:net";
 
 const SOURCE = "shepr:kilo";
 const AGENT = "kilo";
+const METHOD_SESSION = "pane.report_agent_session";
+const METHOD_STATE = "pane.report_agent";
+const SOCKET_WAIT_MS = 500;
+const STATE = { working: "working", blocked: "blocked", idle: "idle" };
 // Seqs are microseconds since the epoch plus one per report, while the shell
 // and Python hooks send nanoseconds. The units never meet: shepr orders seqs
-// per source string, and nothing else reports under this source. Nanoseconds
-// are not an option here: they exceed 2^53, where a JS number stops being
-// exact, so `+= 1` would round away. The wall-clock seed puts a restarted
-// process above its predecessor's last seq; after a backwards clock step,
-// shepr accepts any seq from a source that has been silent for a few seconds.
+// per source string, and every JavaScript reporter under one source uses this
+// unit. Nanoseconds are not an option here: they exceed 2^53, where a JS
+// number stops being exact, so `+= 1` would round away. The wall-clock seed
+// puts a restarted process above its predecessor's last seq; after a backwards
+// clock step, shepr accepts any seq from a source that has been silent for a
+// few seconds.
 let reportSeq = Date.now() * 1000;
 let requestChain = Promise.resolve();
 
-// Kilo is a full-lifecycle authority for its pane, so subagent (child)
-// sessions must not speak for the pane: their created/updated reports would
-// replace the resumable root session, and their idle would mark the pane idle
-// while the root is still working. Only a child's prompts for the user
-// (blocked) and the replies to them (working) are forwarded, attributed to
-// the root session.
-const childSessions = new Map();
-const CHILD_EVENT_STATES = new Map([
-  ["permission.asked", "blocked"],
-  ["question.asked", "blocked"],
-  ["permission.replied", "working"],
-  ["question.replied", "working"],
-  ["question.rejected", "working"],
-]);
+// Only a release pane of a shepr server has anything to report to.
+function reportingEnabled() {
+  return (
+    process.env.SHEPR_BUILD_PROFILE === "release" &&
+    process.env.SHEPR_ENV === "1" &&
+    !!process.env.SHEPR_SOCKET_PATH &&
+    !!process.env.SHEPR_PANE_ID
+  );
+}
 
 function nextReportSeq() {
   reportSeq += 1;
   return reportSeq;
-}
-
-function sessionIDFromProperties(properties) {
-  if (typeof properties?.sessionID === "string" && properties.sessionID) {
-    return properties.sessionID;
-  }
-  return typeof properties?.info?.id === "string" && properties.info.id
-    ? properties.info.id
-    : undefined;
-}
-
-function rootSessionOf(sessionID) {
-  let rootSessionID = sessionID;
-  const seen = new Set();
-  while (childSessions.has(rootSessionID) && !seen.has(rootSessionID)) {
-    seen.add(rootSessionID);
-    rootSessionID = childSessions.get(rootSessionID);
-  }
-  return rootSessionID;
-}
-
-const SESSION_STATE_BY_STATUS = new Map([
-  ["idle", "idle"],
-  ["active", "working"],
-  ["busy", "working"],
-  ["pending", "working"],
-  ["retry", "working"],
-  ["running", "working"],
-  ["streaming", "working"],
-  ["working", "working"],
-]);
-
-// Status arrives either as a bare string or as an object such as
-// `{ type: "busy" }` / `{ type: "retry", ... }`.
-function stateFromSessionStatus(status) {
-  const kind = typeof status === "string" ? status : status?.type;
-  return typeof kind === "string"
-    ? SESSION_STATE_BY_STATUS.get(kind.toLowerCase())
-    : undefined;
 }
 
 // Reports go out one at a time so they reach shepr in sequence order.
@@ -118,8 +79,8 @@ function requestOnce(method, params) {
     };
 
     // A plain timer, not socket.setTimeout (an idle timeout), so a connection
-    // that never finishes connecting still settles within 500 ms.
-    timer = setTimeout(settle, 500);
+    // that never finishes connecting still settles within the wait.
+    timer = setTimeout(settle, SOCKET_WAIT_MS);
     timer.unref?.();
     client.on("data", settle);
     client.on("error", settle);
@@ -128,21 +89,86 @@ function requestOnce(method, params) {
   });
 }
 
-function reportSession(sessionID) {
+function reportSession(sessionID, sessionStartSource) {
   if (!sessionID) {
     return Promise.resolve();
   }
-  // Kilo's session events carry no start source, so "startup" is the only
-  // selection marker available for both new and resumed sessions. The mux
-  // allows it to replace the pane identity when this process owns the local
-  // lifecycle. Event payloads expose the ID directly or through `info.id`,
-  // and `updated` also fires for new sessions.
-  return request("pane.report_agent_session", {
-    agent_session_id: sessionID,
-    session_start_source: "startup",
-  });
+  const params = { agent_session_id: sessionID };
+  if (sessionStartSource) {
+    params.session_start_source = sessionStartSource;
+  }
+  return request(METHOD_SESSION, params);
 }
 
+function reportState(state, sessionID) {
+  if (!sessionID) {
+    return Promise.resolve();
+  }
+  return request(METHOD_STATE, { state, agent_session_id: sessionID });
+}
+
+// Subagent (child) sessions must not speak for the pane: their created or
+// updated reports would replace the resumable root session, and their idle
+// would mark the pane idle while the root is still working. Only a child's
+// prompts for the user (blocked) and the replies to them (working) are
+// forwarded, attributed to the root session.
+const childSessions = new Map();
+const CHILD_EVENT_STATES = new Map([
+  ["permission.asked", STATE.blocked],
+  ["question.asked", STATE.blocked],
+  ["permission.replied", STATE.working],
+  ["question.replied", STATE.working],
+  ["question.rejected", STATE.working],
+]);
+
+function sessionIDFromProperties(properties) {
+  if (typeof properties?.sessionID === "string" && properties.sessionID) {
+    return properties.sessionID;
+  }
+  return typeof properties?.info?.id === "string" && properties.info.id
+    ? properties.info.id
+    : undefined;
+}
+
+// A session payload names its parent when it is a subagent's.
+function trackChildSession(info) {
+  if (typeof info?.id === "string" && info.id && typeof info.parentID === "string" && info.parentID) {
+    childSessions.set(info.id, info.parentID);
+  }
+}
+
+function rootSessionOf(sessionID) {
+  let rootSessionID = sessionID;
+  const seen = new Set();
+  while (childSessions.has(rootSessionID) && !seen.has(rootSessionID)) {
+    seen.add(rootSessionID);
+    rootSessionID = childSessions.get(rootSessionID);
+  }
+  return rootSessionID;
+}
+
+const SESSION_STATE_BY_STATUS = new Map([
+  ["idle", STATE.idle],
+  ["active", STATE.working],
+  ["busy", STATE.working],
+  ["pending", STATE.working],
+  ["retry", STATE.working],
+  ["running", STATE.working],
+  ["streaming", STATE.working],
+  ["working", STATE.working],
+]);
+
+// Status arrives either as a bare string or as an object such as
+// `{ type: "busy" }` / `{ type: "retry", ... }`.
+function stateFromSessionStatus(status) {
+  const kind = typeof status === "string" ? status : status?.type;
+  return typeof kind === "string"
+    ? SESSION_STATE_BY_STATUS.get(kind.toLowerCase())
+    : undefined;
+}
+
+// Kilo is a full-lifecycle authority for its pane, so subagent sessions follow
+// the child-session rules above.
 function ownsLocalLifecycle() {
   const args = process.argv.slice(2);
   const separator = args.indexOf("--");
@@ -160,24 +186,15 @@ function ownsLocalLifecycle() {
   return !["acp", "attach", "console", "daemon", "serve", "web"].includes(args[0]);
 }
 
-function reportState(state, sessionID) {
-  if (!sessionID) {
-    return Promise.resolve();
-  }
-
-  const params = { state };
-  params.agent_session_id = sessionID;
-  return request("pane.report_agent", params);
-}
+// Kilo's session events carry no start source, so "startup" is the only
+// selection marker available for both new and resumed sessions. The mux
+// allows it to replace the pane identity when this process owns the local
+// lifecycle. Event payloads expose the ID directly or through `info.id`,
+// and `updated` also fires for new sessions.
+const SESSION_START_SOURCE = "startup";
 
 export const SheprAgentStatePlugin = async () => {
-  if (
-    !ownsLocalLifecycle() ||
-    process.env.SHEPR_BUILD_PROFILE !== "release" ||
-    process.env.SHEPR_ENV !== "1" ||
-    !process.env.SHEPR_SOCKET_PATH ||
-    !process.env.SHEPR_PANE_ID
-  ) {
+  if (!ownsLocalLifecycle() || !reportingEnabled()) {
     return {};
   }
 
@@ -186,17 +203,14 @@ export const SheprAgentStatePlugin = async () => {
       if (sessionID && childSessions.has(sessionID)) {
         return;
       }
-      await reportState("working", sessionID);
+      await reportState(STATE.working, sessionID);
     },
     event: async ({ event }) => {
       const type = event?.type;
       const properties = event?.properties ?? {};
       const sessionID = sessionIDFromProperties(properties);
 
-      const info = properties.info;
-      if (typeof info?.id === "string" && info.id && typeof info.parentID === "string" && info.parentID) {
-        childSessions.set(info.id, info.parentID);
-      }
+      trackChildSession(properties.info);
       if (sessionID && childSessions.has(sessionID)) {
         const state = CHILD_EVENT_STATES.get(type);
         if (state) {
@@ -208,14 +222,14 @@ export const SheprAgentStatePlugin = async () => {
       switch (type) {
         case "session.created":
         case "session.updated":
-          await reportSession(sessionID);
+          await reportSession(sessionID, SESSION_START_SOURCE);
           break;
         case "session.status": {
           const state = stateFromSessionStatus(properties.status);
           if (state) {
             await reportState(state, sessionID);
           } else {
-            await reportSession(sessionID);
+            await reportSession(sessionID, SESSION_START_SOURCE);
           }
           break;
         }
@@ -225,20 +239,20 @@ export const SheprAgentStatePlugin = async () => {
         case "question.replied":
         case "question.rejected":
         case "session.compacted":
-          await reportState("working", sessionID);
+          await reportState(STATE.working, sessionID);
           break;
         case "permission.asked":
         case "question.asked":
-          await reportState("blocked", sessionID);
+          await reportState(STATE.blocked, sessionID);
           break;
         case "session.error":
           // Escape aborts a request without leaving the session blocked.
           if (properties.error?.name !== "MessageAbortedError") {
-            await reportState("blocked", sessionID);
+            await reportState(STATE.blocked, sessionID);
           }
           break;
         case "session.idle":
-          await reportState("idle", sessionID);
+          await reportState(STATE.idle, sessionID);
           break;
         case "session.deleted":
           break;

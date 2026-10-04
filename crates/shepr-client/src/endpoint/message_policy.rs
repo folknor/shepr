@@ -10,12 +10,6 @@ pub(crate) enum PresentationDecision {
     ApplyAndBuffer,
 }
 
-impl PresentationDecision {
-    pub(crate) fn buffers(self) -> bool {
-        matches!(self, Self::Buffer | Self::ApplyAndBuffer)
-    }
-}
-
 /// Classifies every inbound message by its sender's role. Keep the match exhaustive so a new
 /// wire message must receive an explicit presentation disposition here.
 pub(crate) struct PresentationGate {
@@ -89,7 +83,7 @@ mod tests {
     fn response() -> DecodedClientServerMessage {
         wire(ServerMessage::ClientShellEndpointResponse {
             boot_id: crate::tests::test_boot_id("boot"),
-            request_id: "request".into(),
+            request_id: shepr_protocol::RequestId::allocate(),
             result: Ok(shepr_protocol::command::EndpointReply::Done),
         })
     }
@@ -97,8 +91,7 @@ mod tests {
     fn target_effects_are_dropped_and_shown_effects_apply() {
         for effect in [
             ServerMessage::MouseCapture {
-                enabled: true,
-                sgr_pixels: false,
+                mode: shepr_term::mouse::HostMouseCapture::Cells,
             },
             ServerMessage::ClientShellKeyboardReportAll { enabled: true },
             ServerMessage::WindowTitle {
@@ -118,23 +111,17 @@ mod tests {
     fn a_target_surface_is_buffered_and_an_other_surface_is_dropped() {
         let surface = shepr_protocol::PaneSurfaceFrame {
             boot_id: crate::tests::test_boot_id("boot"),
-            projection_revision: 1.into(),
-            surface_revision: 1.into(),
-            frame: shepr_protocol::FrameData {
-                cells: vec![],
-                width: 0,
-                height: 0,
-                cursor: None,
-                hyperlinks: vec![],
-            },
+            projection_revision: shepr_protocol::ProjectionRevision::FIRST,
+            surface_revision: shepr_protocol::SurfaceRevision::FIRST,
+            frame: shepr_protocol::FrameData::blank(1, 1).expect("test frame size is valid"),
             panes: vec![],
             splits: vec![],
         };
         let patch = shepr_protocol::PaneSurfacePatch {
             boot_id: surface.boot_id.clone(),
-            projection_revision: 1.into(),
-            base_surface_revision: 1.into(),
-            surface_revision: 2.into(),
+            projection_revision: shepr_protocol::ProjectionRevision::FIRST,
+            base_surface_revision: shepr_protocol::SurfaceRevision::FIRST,
+            surface_revision: shepr_test_fixtures::counter_at(2),
             rows: vec![],
             panes: vec![],
             cursor: None,
@@ -169,7 +156,7 @@ mod tests {
     fn an_other_restore_snapshot_applies() {
         let snapshot = shepr_protocol::ClientShellSnapshot {
             boot_id: crate::tests::test_boot_id("restored"),
-            revision: 1.into(),
+            revision: shepr_protocol::ProjectionRevision::FIRST,
             restore_notice: Some(shepr_protocol::SessionRestoreNotice {
                 loss: shepr_protocol::SessionRestoreLoss::Panes,
                 backup_dir: "/state/session-backups".into(),

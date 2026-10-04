@@ -29,7 +29,11 @@ pub(super) fn lock_config_for_update(
     let lock_path = config_update_lock_path(&target, paths)?;
     // No lock means no edit: a lock directory that cannot be created or a
     // lock that cannot be taken fails the change instead of editing unlocked.
-    let lock = shepr_platform::ipc::acquire_flock_lock(&lock_path, true).map_err(|error| {
+    let lock = shepr_platform::ipc::acquire_flock_lock(
+        &lock_path,
+        shepr_platform::ipc::LockWait::UntilFree,
+    )
+    .map_err(|error| {
         io::Error::new(
             error.kind(),
             format!(
@@ -220,7 +224,6 @@ impl Replacement {
         };
         let inner = AtomicReplace::prepare_with_policy(
             &target,
-            ".shepr-config",
             PermissionPolicy::UserConfig { existing },
             contents,
         )?;

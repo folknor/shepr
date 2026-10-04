@@ -7,7 +7,7 @@ pub mod resume;
 mod state;
 
 pub use report::{HookAuthorityClass, ReportOrigin, ReportOriginError};
-pub use state::{AgentState, PresentedAgentState};
+pub use state::{AgentState, PresentedAgentState, StateChangeSeq};
 
 use std::collections::HashMap;
 use std::fmt;
@@ -92,6 +92,12 @@ impl ResumeSupport {
 
 const CONVERSATION_FLAG: &str = "--conversation";
 
+/// The action word an installed hook passes to the shepr report command. It is
+/// not an `AgentState`: `Session` reports only a session id and carries no
+/// state, and `Working`, `Blocked` and `Idle` are names of the hook-report
+/// vocabulary that the server interprets (and may park or reject by arbitration),
+/// not a presented or detected state. The overlap in spelling is deliberate and
+/// there is no conversion to `AgentState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegrationHookAction {
     Session,

@@ -7,43 +7,55 @@
 
 set -eu
 
+# Every exit path of the hook ends here, so the agent always sees a clean exit.
+finish() {
+  exit 0
+}
+
 # Stamp the report the moment the hook starts. Every event runs this script in
 # a fresh process, and shepr drops a report whose seq is older than the last
 # one it accepted, so taking the timestamp after python3 has started would let
 # interpreter startup jitter reorder near-simultaneous events (a PreToolUse
 # followed at once by a PermissionRequest).
 hook_seq="$(date +%s%N 2>/dev/null || true)"
-
 action="${1:-}"
 hook_input_file="$(mktemp "${TMPDIR:-/tmp}/shepr-mastracode-hook.XXXXXX")" || {
   cat >/dev/null 2>/dev/null || true
-  exit 0
+  finish
 }
 trap 'rm -f "$hook_input_file"' 0
 trap 'exit 0' HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in
-  session|working|idle|blocked) ;;
-  *) exit 0 ;;
+  session|working|blocked|idle) ;;
+  *) finish ;;
 esac
-
 # Shared agent configs contain release hooks only. Dev panes use detection.
-[ "${SHEPR_BUILD_PROFILE:-}" = "release" ] || exit 0
-[ "${SHEPR_ENV:-}" = "1" ] || exit 0
-[ -n "${SHEPR_SOCKET_PATH:-}" ] || exit 0
-[ -n "${SHEPR_PANE_ID:-}" ] || exit 0
-command -v python3 >/dev/null 2>&1 || exit 0
+[ "${SHEPR_BUILD_PROFILE:-}" = "release" ] || finish
+[ "${SHEPR_ENV:-}" = "1" ] || finish
+[ -n "${SHEPR_SOCKET_PATH:-}" ] || finish
+[ -n "${SHEPR_PANE_ID:-}" ] || finish
+command -v python3 >/dev/null 2>&1 || finish
 
 # A python failure must not fail the hook: under `set -eu` it would exit
 # non-zero with a traceback on stderr, which the agent may show to the user.
-SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" SHEPR_HOOK_SEQ="$hook_seq" python3 - 2>/dev/null <<'PY' || true
+SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" SHEPR_HOOK_SEQ="${hook_seq:-}" python3 - 2>/dev/null <<'PY' || true
 import json
 import os
 import socket
 import time
 
-source = "shepr:mastracode"
+SOURCE = "shepr:mastracode"
+AGENT = "mastracode"
+METHOD_SESSION = "pane.report_agent_session"
+METHOD_STATE = "pane.report_agent"
+ACTION_SESSION = "session"
+SOCKET_WAIT_SECONDS = 0.5
+# The hook events this integration is registered for, per action and in all.
+EVENTS_BY_ACTION = {"session": ("SessionStart",), "working": ("UserPromptSubmit", "AgentStart", "PreToolUse", "PermissionResult", "SubagentStart", "SubagentEnd"), "blocked": ("PermissionRequest",), "idle": ("Interrupt", "AgentEnd", "Stop")}
+EVENTS = ("SessionStart", "UserPromptSubmit", "AgentStart", "PreToolUse", "PermissionRequest", "PermissionResult", "SubagentStart", "SubagentEnd", "Interrupt", "AgentEnd", "Stop")
+
 action = os.environ.get("SHEPR_ACTION", "")
 pane_id = os.environ.get("SHEPR_PANE_ID")
 socket_path = os.environ.get("SHEPR_SOCKET_PATH")
@@ -52,77 +64,88 @@ hook_input_file = os.environ.get("SHEPR_HOOK_INPUT_FILE")
 if not pane_id or not socket_path:
     raise SystemExit(0)
 
-hook_input = {}
-if hook_input_file:
+# Some hooks are stamped by the shell the moment they start, so interpreter
+# startup jitter cannot reorder near-simultaneous events. `date` without %N
+# support prints a literal N; fall back to our own clock then, and for every
+# hook the shell does not stamp.
+raw_seq = os.environ.get("SHEPR_HOOK_SEQ", "")
+report_seq = int(raw_seq) if raw_seq.isdigit() else time.time_ns()
+
+
+def read_hook_input():
+    if not hook_input_file:
+        return {}
     try:
         with open(hook_input_file, encoding="utf-8") as handle:
             content = handle.read()
-        if content.strip():
-            hook_input = json.loads(content)
+        if not content.strip():
+            return {}
+        parsed = json.loads(content)
     except Exception:
-        hook_input = {}
-# A valid JSON body that is not an object (a list, a string, null) carries no
-# fields we can read; treat it as empty so state reports still go through.
-if not isinstance(hook_input, dict):
-    hook_input = {}
+        return {}
+    # A valid JSON body that is not an object (a list, a string, null) carries
+    # no fields we can read; treat it as empty.
+    return parsed if isinstance(parsed, dict) else {}
 
-raw_seq = os.environ.get("SHEPR_HOOK_SEQ", "")
-# `date` without %N support prints a literal N; fall back to our own clock.
-report_seq = int(raw_seq) if raw_seq.isdigit() else time.time_ns()
-request_id = f"{source}:{report_seq}"
-session_id = hook_input.get("session_id")
-if isinstance(session_id, str) and session_id:
-    agent_session_id = session_id
-else:
-    agent_session_id = None
-if action == "session":
-    if not agent_session_id:
-        raise SystemExit(0)
-    # Preserve MastraCode's source for server validation. A bare SessionStart
-    # still identifies the start of a fresh root session, so use its known source.
-    session_start_source = hook_input.get("source")
-    if not isinstance(session_start_source, str) or not session_start_source:
-        session_start_source = "startup"
+
+hook_input = read_hook_input()
+
+
+def first_text(*keys):
+    for key in keys:
+        value = hook_input.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def send(method, params):
     request = {
-        "id": request_id,
-        "method": "pane.report_agent_session",
+        "id": f"{SOURCE}:{report_seq}",
+        "method": method,
         "params": {
             "pane_id": pane_id,
-            "source": source,
-            "agent": "mastracode",
-            "agent_session_id": agent_session_id,
-            "session_start_source": session_start_source,
+            "source": SOURCE,
+            "agent": AGENT,
             "seq": report_seq,
+            **params,
         },
     }
-else:
-    # A state event without its session identity cannot safely claim pane state.
-    if not agent_session_id:
-        raise SystemExit(0)
-    request = {
-        "id": request_id,
-        "method": "pane.report_agent",
-        "params": {
-            "pane_id": pane_id,
-            "source": source,
-            "agent": "mastracode",
-            "state": action,
-            "seq": report_seq,
-        },
-    }
-    if agent_session_id:
-        request["params"]["agent_session_id"] = agent_session_id
-
-try:
-    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    client.settimeout(0.5)
-    client.connect(socket_path)
-    client.sendall((json.dumps(request) + "\n").encode())
     try:
-        client.recv(4096)
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(SOCKET_WAIT_SECONDS)
+        client.connect(socket_path)
+        client.sendall((json.dumps(request) + "\n").encode())
+        try:
+            client.recv(4096)
+        except Exception:
+            pass
+        client.close()
     except Exception:
         pass
-    client.close()
-except Exception:
-    pass
+
+
+def report_session(session_id, session_start_source=None):
+    params = {"agent_session_id": session_id}
+    if session_start_source:
+        params["session_start_source"] = session_start_source
+    send(METHOD_SESSION, params)
+
+
+def report_state(state, session_id):
+    send(METHOD_STATE, {"state": state, "agent_session_id": session_id})
+
+
+session_id = first_text("session_id")
+# A state event without its session identity cannot safely claim pane state.
+if not session_id:
+    raise SystemExit(0)
+if action == ACTION_SESSION:
+    # Preserve MastraCode's source for server validation. A bare SessionStart
+    # still identifies the start of a fresh root session, so use its known source.
+    report_session(session_id, first_text("source") or "startup")
+else:
+    report_state(action, session_id)
 PY
+
+finish

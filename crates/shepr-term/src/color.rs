@@ -55,7 +55,7 @@ impl RgbColor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ColorScheme {
     Light,
     Dark,
@@ -139,7 +139,7 @@ pub enum ColorQueryTarget {
 }
 
 /// The default colours a child can override with OSC 10/11.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DefaultColor {
     Foreground,
     Background,

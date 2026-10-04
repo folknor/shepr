@@ -100,8 +100,13 @@ impl ValidatedServerConfigFixture for ValidatedServerConfig {
         // fixtures; callers testing a relative shell must isolate their env.
         // Do not acquire `IsolatedEnv` here: callers may already hold its
         // non-reentrant process-environment lock while building a fixture.
-        if config.terminal.default_shell.trim().is_empty() {
-            config.terminal.default_shell = FIXTURE_SHELL.to_owned();
+        if config
+            .terminal
+            .default_shell
+            .as_deref()
+            .is_none_or(|shell| shell.trim().is_empty())
+        {
+            config.terminal.default_shell = Some(FIXTURE_SHELL.to_owned());
         }
         Self::validate(&config, paths).expect("test config is valid")
     }

@@ -170,13 +170,23 @@ pub fn copy_mode_help_keys(group: CopyModeHelpGroup) -> String {
     help_keys(bindings, group, separator)
 }
 
-pub fn copy_mode_page_lines(height: u16, half_page: bool) -> usize {
+/// How far one copy mode page command moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyPage {
+    /// The viewport less two lines of overlap.
+    Full,
+    /// Half the viewport.
+    Half,
+}
+
+pub fn copy_mode_page_lines(height: u16, page: CopyPage) -> usize {
     if height <= 2 {
         1
-    } else if half_page {
-        usize::from(height / 2)
     } else {
-        usize::from(height - 2)
+        match page {
+            CopyPage::Half => usize::from(height / 2),
+            CopyPage::Full => usize::from(height - 2),
+        }
     }
 }
 

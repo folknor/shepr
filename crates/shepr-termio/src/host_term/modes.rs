@@ -31,20 +31,18 @@ pub fn enable_host_sgr_pixel_mouse_reporting<W: Write>(writer: &mut W) -> io::Re
     writer.flush()
 }
 
-pub fn restore_host_keyboard_protocol<W: Write>(
-    writer: &mut W,
-    modify_other_keys_active: bool,
-    kitty_entry_active: bool,
-) -> io::Result<()> {
-    // Every step runs even after a failure; the first error wins.
-    let mut result = Ok(());
-    if modify_other_keys_active {
-        result = result.and(writer.write_all(HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE));
-    }
-    if kitty_entry_active {
-        result = result.and(writer.write_all(HOST_KITTY_KEYBOARD_POP_SEQUENCE));
-    }
-    result.and(writer.flush())
+/// Resets the host's modifyOtherKeys mode.
+pub fn restore_host_modify_other_keys<W: Write>(writer: &mut W) -> io::Result<()> {
+    writer
+        .write_all(HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE)
+        .and_then(|()| writer.flush())
+}
+
+/// Pops the kitty keyboard entry the client pushed onto the host's stack.
+pub fn restore_host_kitty_keyboard_entry<W: Write>(writer: &mut W) -> io::Result<()> {
+    writer
+        .write_all(HOST_KITTY_KEYBOARD_POP_SEQUENCE)
+        .and_then(|()| writer.flush())
 }
 
 /// Selects the client's keyboard enhancement entry for shell input.
@@ -286,7 +284,10 @@ mod tests {
     #[test]
     fn keyboard_restore_flushes_what_it_writes() {
         let mut output = io::BufWriter::new(Vec::new());
-        restore_host_keyboard_protocol(&mut output, true, true).expect("test precondition");
+        restore_host_modify_other_keys(&mut output).expect("test precondition");
+        assert_eq!(output.buffer(), b"", "nothing is left in the buffer");
+        assert_eq!(output.get_ref().as_slice(), b"\x1b[>4;0m");
+        restore_host_kitty_keyboard_entry(&mut output).expect("test precondition");
         assert_eq!(output.buffer(), b"", "nothing is left in the buffer");
         assert_eq!(output.get_ref().as_slice(), b"\x1b[>4;0m\x1b[<1u");
     }

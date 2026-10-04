@@ -1,11 +1,14 @@
+pub mod absolute_path;
 pub mod agent_session;
 pub mod agent_state;
+pub mod chrome;
 pub mod env;
 pub mod geometry;
 pub mod layout;
 pub mod limits;
 pub mod locks;
 pub mod pathutil;
+pub mod scrollback;
 pub mod shell;
 pub mod shell_quote;
 pub mod socket_path;

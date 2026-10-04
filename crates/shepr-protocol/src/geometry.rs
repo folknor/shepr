@@ -1,72 +1,60 @@
 //! Cell geometry at the client protocol boundary.
 
 use serde::{Deserialize, Serialize};
-use shepr_core::geometry::{BoundedGridSize, BoundedGridSizeError, CellPx, GridSize};
+use shepr_core::geometry::{
+    BoundedGridSize, BoundedGridSizeError, CellReport, GridSize, HostCell, HostGeometry,
+};
+
+/// A client's host cell as sent; reports stay raw so the server can refuse
+/// an oversized one by name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReportedCell {
+    Unknown,
+    Estimated(CellReport),
+    Exact(CellReport),
+}
+
+impl ReportedCell {
+    fn from_host(cell: HostCell) -> Self {
+        match cell {
+            HostCell::Unknown => Self::Unknown,
+            HostCell::Estimated(cell) => Self::Estimated(cell.into()),
+            HostCell::Exact(cell) => Self::Exact(cell.into()),
+        }
+    }
+
+    /// The validated host cell, or the refusal naming an oversized axis.
+    fn host_cell(self) -> Result<HostCell, super::SurfaceRefusal> {
+        let (report, exact) = match self {
+            Self::Unknown => return Ok(HostCell::Unknown),
+            Self::Estimated(report) => (report, false),
+            Self::Exact(report) => (report, true),
+        };
+        match report.cell() {
+            Some(cell) if exact => Ok(HostCell::Exact(cell)),
+            Some(cell) => Ok(HostCell::Estimated(cell)),
+            None => Err(super::SurfaceRefusal::CellTooLarge),
+        }
+    }
+}
 
 /// Coherent geometry carried by a client.
+///
+/// Decoding keeps representable raw dimensions intact. The server checks
+/// them during the handshake (`host_geometry`) so it can distinguish an
+/// oversized axis from an excessive cell count in its refusal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(
-    try_from = "ReceivedTerminalGeometry",
-    into = "ReceivedTerminalGeometry"
-)]
 pub struct TerminalGeometry {
     grid: GridSize,
-    cell: Option<CellPx>,
-    pixel_mouse: bool,
-}
-
-/// The single positional wire shape used for both directions.
-#[derive(Serialize, Deserialize)]
-struct ReceivedTerminalGeometry {
-    grid: GridSize,
-    cell: Option<CellPx>,
-    pixel_mouse: bool,
-}
-
-impl From<TerminalGeometry> for ReceivedTerminalGeometry {
-    fn from(geometry: TerminalGeometry) -> Self {
-        Self {
-            grid: geometry.grid,
-            cell: geometry.cell,
-            pixel_mouse: geometry.pixel_mouse,
-        }
-    }
-}
-
-impl TryFrom<ReceivedTerminalGeometry> for TerminalGeometry {
-    type Error = &'static str;
-
-    fn try_from(received: ReceivedTerminalGeometry) -> Result<Self, Self::Error> {
-        if received.pixel_mouse && received.cell.is_none() {
-            return Err("pixel mouse requires known cell geometry");
-        }
-        // Keep representable raw dimensions intact here. The server checks
-        // them during the handshake so it can distinguish an oversized axis
-        // from an excessive cell count in its refusal.
-        Ok(Self {
-            grid: received.grid,
-            cell: received.cell,
-            pixel_mouse: received.pixel_mouse,
-        })
-    }
+    cell: ReportedCell,
 }
 
 impl TerminalGeometry {
-    pub fn new(cols: u16, rows: u16, width: u32, height: u32, pixel_mouse: bool) -> Self {
-        let cell = CellPx::new(width, height);
-        Self {
-            grid: GridSize::clamped(cols, rows),
-            cell,
-            pixel_mouse: pixel_mouse && cell.is_some(),
-        }
-    }
-
-    /// Construct a report from already coherent host cell geometry.
-    pub fn with_cell(grid: GridSize, cell: ProtocolCellSize) -> Self {
+    /// Report a host's geometry as it was observed.
+    pub fn from_host(grid: GridSize, cell: HostCell) -> Self {
         Self {
             grid,
-            cell: cell.cell(),
-            pixel_mouse: cell.exact(),
+            cell: ReportedCell::from_host(cell),
         }
     }
 
@@ -74,38 +62,10 @@ impl TerminalGeometry {
         self.grid
     }
 
-    pub fn cell(self) -> Option<CellPx> {
-        self.cell
-    }
-
-    pub fn pixel_mouse(self) -> bool {
-        self.pixel_mouse
-    }
-
-    pub fn cell_geometry(self) -> ProtocolCellSize {
-        ProtocolCellSize::from_wire(self.width(), self.height(), self.pixel_mouse)
-    }
-
-    pub fn cols(self) -> u16 {
-        self.grid.cols.get()
-    }
-
-    pub fn rows(self) -> u16 {
-        self.grid.rows.get()
-    }
-
-    pub fn width(self) -> u32 {
-        self.cell.map_or(0, |cell| cell.width.get())
-    }
-
-    pub fn height(self) -> u32 {
-        self.cell.map_or(0, |cell| cell.height.get())
-    }
-
     pub fn surface_size(self) -> super::ClientSurfaceSize {
         super::ClientSurfaceSize {
-            cols: self.cols(),
-            rows: self.rows(),
+            cols: self.grid.cols(),
+            rows: self.grid.rows(),
         }
     }
 
@@ -116,77 +76,86 @@ impl TerminalGeometry {
     pub fn bounded_grid(self) -> Result<BoundedGridSize, BoundedGridSizeError> {
         self.grid.try_into()
     }
-}
 
-/// The shared host-cell policy, including the pixel bound and exactness.
-pub type ProtocolCellSize = shepr_core::geometry::HostCellGeometry;
+    /// The server's acceptance of a client geometry: the surface bounds
+    /// (`DimensionTooLarge`, `TooManyCells`) and the cell bound
+    /// (`CellTooLarge`), then the validated host geometry.
+    pub fn host_geometry(self) -> Result<HostGeometry, super::SurfaceRefusal> {
+        self.bounded_grid().map_err(|error| match error {
+            BoundedGridSizeError::DimensionTooLarge => super::SurfaceRefusal::DimensionTooLarge,
+            // A `GridSize` is nonzero by type, so a zero axis cannot arrive;
+            // the budget it would break is the cell count.
+            BoundedGridSizeError::ZeroDimension | BoundedGridSizeError::TooManyCells => {
+                super::SurfaceRefusal::TooManyCells
+            }
+        })?;
+        Ok(HostGeometry::new(self.grid, self.cell.host_cell()?))
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde::Serialize;
+    use shepr_core::geometry::CellPx;
 
-    #[derive(Serialize)]
-    struct WireGridSize {
-        cols: u16,
-        rows: u16,
-    }
-
-    #[derive(Serialize)]
-    struct WireReceivedGeometry {
-        grid: WireGridSize,
-        cell: Option<CellPx>,
-        pixel_mouse: bool,
-    }
-
-    fn decode_received_geometry(
-        cols: u16,
-        rows: u16,
-        cell: Option<CellPx>,
-        pixel_mouse: bool,
-    ) -> Result<TerminalGeometry, crate::codec::CodecError> {
-        let bytes = crate::codec::to_vec(&WireReceivedGeometry {
-            grid: WireGridSize { cols, rows },
-            cell,
-            pixel_mouse,
-        })?;
-        crate::codec::from_slice_exact(&bytes)
+    fn report(width: u32, height: u32) -> CellReport {
+        CellReport::new(width, height).expect("nonzero test cell")
     }
 
     #[test]
-    fn clamp_clears_exactness_and_preserves_unknown() {
-        assert_eq!(ProtocolCellSize::from_host(8, 0, true).cell(), None);
-        assert!(!ProtocolCellSize::from_host(8, 0, true).exact());
-        let size = ProtocolCellSize::from_host(super::super::MAX_CELL_SIZE_PX + 1, 16, true);
-        assert_eq!(size.width(), super::super::MAX_CELL_SIZE_PX);
-        assert!(!size.exact());
-        let invalid_wire = ProtocolCellSize::from_wire(u32::MAX, 16, true);
-        assert_eq!((invalid_wire.width(), invalid_wire.height()), (0, 0));
-        assert!(!invalid_wire.exact());
-    }
-
-    #[test]
-    fn received_geometry_rejects_pixel_mouse_without_cells() {
-        assert!(decode_received_geometry(80, 24, None, true).is_err());
-        assert!(decode_received_geometry(0, 24, None, false).is_err());
+    fn host_cells_survive_the_wire_shape_with_their_exactness() {
+        let cell = CellPx::new(8, 16).expect("valid");
+        for host in [
+            HostCell::Unknown,
+            HostCell::Estimated(cell),
+            HostCell::Exact(cell),
+        ] {
+            let geometry = TerminalGeometry::from_host(GridSize::clamped(80, 24), host);
+            let bytes = crate::codec::to_vec(&geometry).expect("geometry encodes");
+            let decoded: TerminalGeometry =
+                crate::codec::from_slice_exact(&bytes).expect("geometry decodes");
+            assert_eq!(decoded, geometry);
+            assert_eq!(decoded.host_geometry().expect("accepted").cell(), host);
+        }
     }
 
     #[test]
     fn received_oversized_cells_remain_raw_for_server_refusal() {
-        let cell = CellPx::new(CellPx::MAX_DIMENSION + 1, 16);
-        let geometry = decode_received_geometry(1, 1, cell, true).expect("raw report decodes");
-        assert_eq!(geometry.cell(), cell);
-        assert_eq!(geometry.grid(), GridSize::clamped(1, 1));
-        assert_eq!(geometry.cell_geometry().cell(), None);
-        assert!(!geometry.cell_geometry().exact());
+        let oversized = report(CellPx::MAX_DIMENSION + 1, 16);
+        let geometry = TerminalGeometry {
+            grid: GridSize::clamped(1, 1),
+            cell: ReportedCell::Exact(oversized),
+        };
+        let bytes = crate::codec::to_vec(&geometry).expect("raw report encodes");
+        let decoded: TerminalGeometry =
+            crate::codec::from_slice_exact(&bytes).expect("raw report decodes");
+        assert_eq!(decoded.cell, ReportedCell::Exact(oversized));
+        assert_eq!(
+            decoded.host_geometry(),
+            Err(super::super::SurfaceRefusal::CellTooLarge)
+        );
     }
 
     #[test]
-    fn terminal_geometry_uses_its_shared_positional_wire_shape() {
-        let geometry = TerminalGeometry::new(80, 24, 8, 16, true);
-        let fields = (geometry.grid, geometry.cell, geometry.pixel_mouse);
-        let geometry_bytes = crate::codec::to_vec(&geometry).expect("geometry should encode");
-        let field_bytes = crate::codec::to_vec(&fields).expect("geometry fields should encode");
-        assert_eq!(geometry_bytes, field_bytes);
+    fn oversized_surfaces_are_refused_by_reason() {
+        let dimension = TerminalGeometry::from_host(
+            GridSize::clamped(super::super::MAX_SURFACE_DIMENSION + 1, 1),
+            HostCell::Unknown,
+        );
+        assert_eq!(
+            dimension.host_geometry(),
+            Err(super::super::SurfaceRefusal::DimensionTooLarge)
+        );
+        let cells = TerminalGeometry::from_host(
+            GridSize::clamped(
+                super::super::MAX_SURFACE_DIMENSION,
+                super::super::MAX_SURFACE_DIMENSION,
+            ),
+            HostCell::Unknown,
+        );
+        assert_eq!(
+            cells.host_geometry(),
+            Err(super::super::SurfaceRefusal::TooManyCells)
+        );
     }
 }

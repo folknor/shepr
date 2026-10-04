@@ -374,7 +374,7 @@ fn wait_for_process_exits_with_clock(
         if pending.is_empty() {
             return true;
         }
-        let Some(wait_ms) = poll_timeout_until(deadline, now()) else {
+        let Some(remaining) = remaining_until(deadline, now()) else {
             return false;
         };
         let mut descriptors: Vec<libc::pollfd> = pending
@@ -388,7 +388,13 @@ fn wait_for_process_exits_with_clock(
         let count = libc::nfds_t::try_from(descriptors.len()).unwrap_or(libc::nfds_t::MAX);
         // SAFETY: `descriptors` holds `count` initialised pollfds and outlives
         // the call; the fds are kept open by `handles`.
-        let ready = unsafe { libc::poll(descriptors.as_mut_ptr(), count, wait_ms) };
+        let ready = unsafe {
+            libc::poll(
+                descriptors.as_mut_ptr(),
+                count,
+                Wait::from(remaining).poll_millis(),
+            )
+        };
         if ready < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
             tracing::error!(error = %std::io::Error::last_os_error(), "could not poll process pidfds");
             return false;

@@ -41,8 +41,10 @@ impl HeadlessServer {
                 AppOrCheckoutRoot::CheckoutRoot(params)
             }
             Err(EndpointLoopCommand::ClientShellSurfaceSet(params)) => {
-                let Some((changed, projection_revision)) =
-                    self.set_client_shell_surface_active(client_id, params.active)
+                let Some(surface_interest::SurfaceActivation {
+                    changed,
+                    projection_revision,
+                }) = self.set_client_shell_surface_active(client_id, params.active)
                 else {
                     return;
                 };
@@ -132,6 +134,7 @@ impl HeadlessServer {
         let traits = command.traits();
 
         let mut changed = self.drain_all_internal_events_with_forwarding();
+        changed |= self.sync_pending_terminal_titles();
 
         // Command handlers read each workspace's recorded geometry for
         // directional focus, resize steps and spawn sizes; the geometry paths

@@ -30,11 +30,11 @@ use std::time::SystemTime;
 
 use tokio::sync::Notify;
 
+use super::capture::PendingCwds;
 use super::error::{SaveError, SaveRefusal};
+use super::history::{HistoryCarry, PendingHistory, ResolvedHistory};
 use super::lock::DataDirLease;
-use super::snapshot::{
-    HistoryCarry, PendingCwds, PendingHistory, ResolvedHistory, SessionSnapshot,
-};
+use super::schema::SessionSnapshot;
 use super::writer::SessionWriter;
 
 /// What one save puts on disk: the layout and the pane history captured with
@@ -292,7 +292,7 @@ impl SessionPersister {
     /// submitted job ends, once its result can be read.
     pub fn spawn(
         lease: DataDirLease,
-        backup_policy: super::writer::SessionBackupPolicy,
+        backup_policy: super::recovery::SessionBackupPolicy,
         history: HistoryCarry,
         finished: Arc<Notify>,
     ) -> Self {
@@ -406,7 +406,7 @@ mod tests {
     /// thread, and `finished` fires before `submit` returns.
     fn inline(
         lease: DataDirLease,
-        backup_policy: super::super::writer::SessionBackupPolicy,
+        backup_policy: super::super::recovery::SessionBackupPolicy,
         history: HistoryCarry,
         finished: Arc<Notify>,
     ) -> SessionPersister {
@@ -421,23 +421,22 @@ mod tests {
 
     fn snapshot() -> SessionSnapshot {
         serde_json::from_value(serde_json::json!({
-            "version": super::super::snapshot::SNAPSHOT_VERSION,
-            "host_theme": super::super::snapshot::SavedHostTheme::default(),
+            "version": super::super::schema::SNAPSHOT_VERSION,
+            "host_theme": super::super::schema::SavedHostTheme::default(),
             "workspaces": [{
                 "id": "w1",
                 "custom_name": null,
                 "next_public_pane_number": 2,
-                "layout": { "Pane": 0 },
-                "panes": {
-                    "0": {
+                "layout": {
+                    "Pane": {
                         "cwd": "/shepr-persister-test",
                         "public_number": 1,
                         "label": null
                     }
                 },
                 "zoomed": false,
-                "focused": 0,
-                "root_pane": 0
+                "focused": 1,
+                "root_pane": 1
             }],
             "active": 0
         }))
@@ -451,7 +450,7 @@ mod tests {
         let lease = DataDirLease::acquire(&directory).expect("lease");
         let mut persister = SessionPersister::spawn(
             lease,
-            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
+            super::super::recovery::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             signal(),
         );
@@ -469,7 +468,7 @@ mod tests {
         cleared.wait().expect("clear");
         assert!(
             !directory
-                .join(super::super::io::SESSION_FILE_NAME)
+                .join(super::super::files::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("test stat"),
             "the clear ran after the save"
@@ -502,7 +501,7 @@ mod tests {
         ));
         assert!(
             directory
-                .join(super::super::io::SESSION_FILE_NAME)
+                .join(super::super::files::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("test stat"),
             "a retired persister writes nothing"
@@ -515,7 +514,7 @@ mod tests {
         let directory = scratch.join("data");
         let persister = SessionPersister::spawn(
             DataDirLease::acquire(&directory).expect("lease"),
-            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
+            super::super::recovery::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             signal(),
         );
@@ -529,7 +528,7 @@ mod tests {
         let directory = scratch.join("data");
         let mut persister = inline(
             DataDirLease::acquire(&directory).expect("lease"),
-            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
+            super::super::recovery::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             signal(),
         );
@@ -577,7 +576,7 @@ mod tests {
         );
         assert!(
             !directory
-                .join(super::super::io::SESSION_FILE_NAME)
+                .join(super::super::files::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("test stat"),
             "nothing was written"
@@ -623,7 +622,7 @@ mod tests {
         );
         assert!(
             !directory
-                .join(super::super::io::SESSION_FILE_NAME)
+                .join(super::super::files::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("test stat"),
             "the job after the panic did not run"
@@ -643,7 +642,7 @@ mod tests {
         let directory = scratch.join("data");
         let persister = SessionPersister::spawn(
             DataDirLease::acquire(&directory).expect("lease"),
-            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
+            super::super::recovery::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             signal(),
         );
@@ -657,7 +656,7 @@ mod tests {
         let directory = scratch.join("data");
         let persister = inline(
             DataDirLease::acquire(&directory).expect("lease"),
-            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
+            super::super::recovery::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             signal(),
         );
@@ -683,7 +682,7 @@ mod tests {
         let finished = signal();
         let mut persister = SessionPersister::spawn(
             DataDirLease::acquire(&directory).expect("lease"),
-            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
+            super::super::recovery::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             Arc::clone(&finished),
         );
@@ -710,7 +709,7 @@ mod tests {
         let finished = signal();
         let mut persister = inline(
             DataDirLease::acquire(&directory).expect("lease"),
-            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
+            super::super::recovery::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             Arc::clone(&finished),
         );

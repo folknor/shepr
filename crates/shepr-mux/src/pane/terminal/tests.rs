@@ -1,20 +1,33 @@
 use super::*;
 use ratatui::layout::Rect;
+use shepr_vt::ViewportRow;
 
 /// A full render of the pane into a blank frame of its own size.
+/// The epoch of an idle synchronized-output state, `None` while an update is
+/// open or the core is poisoned.
+fn idle_epoch(state: SyncState) -> Option<u64> {
+    match state {
+        SyncState::Idle(epoch) => Some(epoch.get()),
+        SyncState::Active | SyncState::Poisoned => None,
+    }
+}
+
 fn render_frame(pane: &PaneTerminal, width: u16, height: u16) -> FrameData {
-    let mut frame = FrameData::blank(width, height);
+    let mut frame = FrameData::blank(width, height).expect("test frame size is valid");
     pane.render_into(&mut frame, Rect::new(0, 0, width, height));
     frame
 }
 
 fn frame_cell(frame: &FrameData, x: u16, y: u16) -> &CellData {
-    &frame.cells[usize::from(y) * usize::from(frame.width) + usize::from(x)]
+    frame.cell(x, y).expect("cell inside the test frame")
 }
 
 #[test]
 fn plain_page_keys_host_scroll_for_shell_like_decckm_with_bracketed_paste() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?1h\x1b[?2004h");
     let terminal = PaneTerminal::new(terminal);
 
@@ -34,7 +47,10 @@ fn rgb(r: u8, g: u8, b: u8) -> shepr_vt::RgbColor {
 
 #[test]
 fn dirty_full_collects_bounded_viewport_patch() {
-    let mut terminal = shepr_vt::Terminal::new(4, 3, 200);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(4, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(200),
+    );
     terminal.write(b"one\r\ntwo\r\nthree");
     let pane = PaneTerminal::new(terminal);
 
@@ -497,7 +513,10 @@ fn retained_text_big_word_motions_cross_rows_and_blank_lines() {
 
 #[test]
 fn live_terminal_word_motion_expands_across_long_blank_history() {
-    let mut terminal = shepr_vt::Terminal::new(10, 3, 200);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(200),
+    );
     terminal.write(b"origin\r\n");
     for _ in 0..80 {
         terminal.write(b"\r\n");
@@ -523,7 +542,10 @@ fn live_terminal_word_motion_expands_across_long_blank_history() {
 
 #[test]
 fn live_terminal_word_end_expands_through_a_long_soft_wrap() {
-    let mut terminal = shepr_vt::Terminal::new(2, 3, 200);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(2, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(200),
+    );
     let word = "a".repeat(132);
     terminal.write(word.as_bytes());
     let pane = PaneTerminal::new(terminal);
@@ -550,7 +572,10 @@ fn live_terminal_word_end_expands_through_a_long_soft_wrap() {
 #[test]
 fn live_terminal_word_end_expands_through_a_long_wide_soft_wrap() {
     // Four columns, the pane minimum: two wide glyphs per row, 66 rows.
-    let mut terminal = shepr_vt::Terminal::new(4, 3, 200);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(4, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(200),
+    );
     let word = "界".repeat(132);
     terminal.write(word.as_bytes());
     let pane = PaneTerminal::new(terminal);
@@ -599,7 +624,10 @@ fn expected_osc_rgb_response(command: &str, color: shepr_vt::RgbColor) -> Bytes 
 
 #[test]
 fn process_pty_bytes_reports_latest_working_directory_report() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 100);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -631,21 +659,39 @@ fn process_pty_bytes_matches_working_directory_host_against_the_pane_local_host(
 
     let pane = PaneTerminal::new_with_pane_id(
         pane_id,
-        shepr_vt::Terminal::new(80, 24, 100),
-        Some("buildbox".into()),
+        shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+            shepr_core::scrollback::ScrollbackBudget::new(100),
+        ),
+        shepr_platform::HostNames::from_node_name("buildbox.lan").map(std::sync::Arc::new),
     );
     assert_eq!(
         pane.process_pty_bytes(pane_id, report).reported_cwd,
         Some(std::path::PathBuf::from("/tmp/here"))
     );
+    let qualified = b"\x1b]7;file://buildbox.lan/tmp/there\x07";
+    assert_eq!(
+        pane.process_pty_bytes(pane_id, qualified).reported_cwd,
+        Some(std::path::PathBuf::from("/tmp/there"))
+    );
 
-    let pane = PaneTerminal::new_with_pane_id(pane_id, shepr_vt::Terminal::new(80, 24, 100), None);
+    let pane = PaneTerminal::new_with_pane_id(
+        pane_id,
+        shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+            shepr_core::scrollback::ScrollbackBudget::new(100),
+        ),
+        None,
+    );
     assert_eq!(pane.process_pty_bytes(pane_id, report).reported_cwd, None);
 }
 
 #[test]
 fn process_pty_bytes_flags_only_an_actual_screen_flip() {
-    let pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 100));
+    let pane = PaneTerminal::new(shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    ));
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.process_pty_bytes(pane_id, b"plain output\r\n");
@@ -673,7 +719,10 @@ fn process_pty_bytes_flags_only_an_actual_screen_flip() {
 
 #[test]
 fn process_pty_bytes_reports_only_completed_title_changes() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 100);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -699,7 +748,10 @@ fn process_pty_bytes_reports_only_completed_title_changes() {
 
 #[test]
 fn process_pty_bytes_surfaces_clipboard_writes_without_other_results() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 100);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     let pane = PaneTerminal::new(terminal);
 
     let result = pane.process_pty_bytes(
@@ -715,7 +767,10 @@ fn process_pty_bytes_surfaces_clipboard_writes_without_other_results() {
 
 #[test]
 fn seeded_history_clipboard_write_does_not_leak_into_live_output() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 100);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     let pane = PaneTerminal::new(terminal);
     pane.seed_history_ansi("\x1b]52;c;c3RhbGU=\x07");
 
@@ -726,7 +781,10 @@ fn seeded_history_clipboard_write_does_not_leak_into_live_output() {
 
 #[test]
 fn seeded_history_pwd_does_not_leak_into_live_output() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 100);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     let pane = PaneTerminal::new(terminal);
     pane.seed_history_ansi("\x1b]7;file:///tmp/restored\x07");
 
@@ -787,7 +845,10 @@ fn decscusr_cursor_shape_preserves_blinking_variants() {
 
 #[test]
 fn cursor_state_uses_terminal_default_until_child_sets_shape() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -806,7 +867,10 @@ fn cursor_state_uses_terminal_default_until_child_sets_shape() {
 
 #[test]
 fn cursor_state_returns_terminal_default_after_decscusr_reset() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -826,7 +890,10 @@ fn cursor_state_returns_terminal_default_after_decscusr_reset() {
 
 #[test]
 fn cursor_shape_tracker_handles_split_decscusr_sequences() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -842,7 +909,10 @@ fn cursor_shape_tracker_handles_split_decscusr_sequences() {
 
 #[test]
 fn cursor_state_reports_the_live_position() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -859,7 +929,10 @@ fn cursor_state_reports_the_live_position() {
 
 #[test]
 fn cursor_state_returns_terminal_default_after_ris() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -880,7 +953,10 @@ fn cursor_state_returns_terminal_default_after_ris() {
 /// the child's parser: a CSI the child is halfway through must survive.
 #[test]
 fn host_theme_change_does_not_split_a_partial_child_sequence() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -903,7 +979,10 @@ fn host_theme_change_does_not_split_a_partial_child_sequence() {
 /// the runtime tick flushes it and returns every queued effect.
 #[test]
 fn expired_synchronized_update_is_flushed_only_by_tick() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let start = Instant::now();
@@ -924,9 +1003,12 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
         .expect("test precondition");
     assert_eq!(deadline, start + Duration::from_millis(150));
     assert!(pane.synchronized_output_active());
-    assert_eq!(pane.synchronized_output_state(), Some((true, 1)));
+    assert_eq!(pane.synchronized_output_state(), SyncState::Active);
     // A synchronized update in flight is not drawn.
-    assert_eq!(render_frame(&pane, 20, 5), FrameData::blank(20, 5));
+    assert_eq!(
+        render_frame(&pane, 20, 5),
+        FrameData::blank(20, 5).expect("test frame size is valid")
+    );
     assert_eq!(
         pane.collect_dirty_patch(20, 5),
         TerminalDirtyPatchOutcome::Fallback
@@ -948,10 +1030,10 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
     assert_eq!(flushed.clipboard_writes, vec![b"hi".to_vec()]);
     assert!(flushed.terminal_title_changed);
     assert_eq!(pane.terminal_title().as_deref(), Some("framed"));
-    assert_eq!(pane.synchronized_output_state(), Some((false, 2)));
+    assert_eq!(idle_epoch(pane.synchronized_output_state()), Some(2));
 
     assert!(
-        pane.resize(shepr_core::geometry::PaneGeometry::new(20, 5, 0, 0))
+        pane.resize(shepr_core::geometry::PaneGeometry::cells_only(20, 5))
             .is_empty()
     );
 
@@ -962,7 +1044,10 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
 
 #[test]
 fn tick_ends_an_expired_synchronized_update() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -987,11 +1072,58 @@ fn tick_ends_an_expired_synchronized_update() {
         flushed.terminal_responses,
         vec![Bytes::from_static(b"\x1b[0n")]
     );
+    assert!(idle_epoch(pane.synchronized_output_state()).is_some());
+}
+
+/// Reads the mirror while holding the core lock: a locking read would
+/// deadlock, so this also proves the read is lock free.
+fn mirror_while_core_held(pane: &PaneTerminal) -> bool {
+    let _core = pane.core.lock().expect("test precondition");
+    pane.synchronized_output_active()
+}
+
+#[test]
+fn synchronized_output_mirror_follows_every_core_mutation() {
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+    let pane = PaneTerminal::new(terminal);
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
+    assert!(!mirror_while_core_held(&pane));
+    assert!(!pane.surface_held());
+
+    pane.process_pty_bytes(pane_id, b"\x1b[?2026h");
     assert!(
-        !pane
-            .synchronized_output_state()
-            .expect("terminal core is healthy")
-            .0
+        mirror_while_core_held(&pane),
+        "CSI ? 2026 h sets the mirror"
+    );
+    assert!(pane.surface_held());
+    pane.process_pty_bytes(pane_id, b"\x1b[?2026l");
+    assert!(!mirror_while_core_held(&pane), "CSI ? 2026 l clears it");
+
+    let start = Instant::now();
+    pane.process_pty_bytes_at(pane_id, b"\x1b[?2026hframe", start);
+    assert!(mirror_while_core_held(&pane));
+    let deadline = pane
+        .core
+        .lock()
+        .expect("test precondition")
+        .terminal
+        .synchronized_output_deadline()
+        .expect("test precondition");
+    pane.tick(deadline + Duration::from_millis(1))
+        .expect("terminal core is healthy");
+    assert!(
+        !mirror_while_core_held(&pane),
+        "a timed-out update's flush through tick clears it"
+    );
+
+    pane.process_pty_bytes(pane_id, b"\x1b[?2026h");
+    pane.resize(shepr_core::geometry::PaneGeometry::cells_only(30, 6));
+    assert!(
+        mirror_while_core_held(&pane),
+        "a resize during an update keeps it"
     );
 }
 
@@ -1000,7 +1132,10 @@ fn tick_ends_an_expired_synchronized_update() {
 /// reply to the new bytes, and nothing needs a separate flush call.
 #[test]
 fn late_output_flushes_the_expired_update_first_and_keeps_reply_order() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -1028,21 +1163,27 @@ fn late_output_flushes_the_expired_update_first_and_keeps_reply_order() {
         ]
     );
     assert_eq!(late.render_request, RenderRequest::Now);
-    assert_eq!(pane.synchronized_output_state(), Some((false, 2)));
+    assert_eq!(idle_epoch(pane.synchronized_output_state()), Some(2));
 }
 
 #[test]
 fn host_terminal_theme_restore_probe_skips_when_no_transient_override() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let core = pane.core.lock().expect("test precondition");
 
-    assert!(!should_probe_host_terminal_theme_restore(&core));
+    assert_eq!(core.theme_restore_owner(), None);
 }
 
 #[test]
 fn host_terminal_theme_restore_probe_skips_when_host_theme_unknown() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = pane.core.lock().expect("test precondition");
@@ -1051,12 +1192,15 @@ fn host_terminal_theme_restore_probe_skips_when_host_theme_unknown() {
     }
     let core = pane.core.lock().expect("test precondition");
 
-    assert!(!should_probe_host_terminal_theme_restore(&core));
+    assert_eq!(core.theme_restore_owner(), None);
 }
 
 #[test]
 fn host_terminal_theme_restore_probe_skips_on_alternate_screen() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?1049h");
     let pane = PaneTerminal::new(terminal);
     {
@@ -1079,12 +1223,15 @@ fn host_terminal_theme_restore_probe_skips_on_alternate_screen() {
     }
     let core = pane.core.lock().expect("test precondition");
 
-    assert!(!should_probe_host_terminal_theme_restore(&core));
+    assert_eq!(core.theme_restore_owner(), None);
 }
 
 #[test]
 fn host_terminal_theme_restore_probe_runs_when_restore_is_pending() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = pane.core.lock().expect("test precondition");
@@ -1106,12 +1253,18 @@ fn host_terminal_theme_restore_probe_runs_when_restore_is_pending() {
     }
     let core = pane.core.lock().expect("test precondition");
 
-    assert!(should_probe_host_terminal_theme_restore(&core));
+    assert_eq!(
+        core.theme_restore_owner(),
+        Some(shepr_platform::Pgid::new(42).expect("test group"))
+    );
 }
 
 #[test]
 fn terminal_keyboard_protocol_tracks_live_terminal_flags() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[>3u");
     let pane = PaneTerminal::new(terminal);
 
@@ -1125,7 +1278,10 @@ fn terminal_keyboard_protocol_tracks_live_terminal_flags() {
 
 #[test]
 fn terminal_plain_text_chars_still_encode_as_text() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
 
     let encoded = pane.encode_terminal_key(
@@ -1143,7 +1299,10 @@ fn terminal_plain_text_chars_still_encode_as_text() {
 fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
     let host_shift_tab =
         shepr_termio::input::parse_terminal_key_sequence("\x1b[9;2u").expect("test precondition");
-    let legacy_pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
+    let legacy_pane = PaneTerminal::new(shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    ));
     assert_eq!(
         legacy_pane
             .encode_terminal_key(host_shift_tab, shepr_term::key::KeyboardProtocol::legacy(),),
@@ -1154,7 +1313,10 @@ fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
         (None, b"\x1b[Z".as_slice()),
         (Some(1), b"\x1b[9;2u".as_slice()),
     ] {
-        let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+        let mut terminal = shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        );
         if let Some(flags) = kitty_flags {
             terminal.write(format!("\x1b[>{flags}u").as_bytes());
         }
@@ -1183,7 +1345,10 @@ fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
         }
     }
 
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let encoded = pane.encode_terminal_key(
         shepr_term::key::TerminalKey::new(
@@ -1197,7 +1362,10 @@ fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
 
 #[test]
 fn terminal_ctrl_tab_matches_the_pane_keyboard_protocol() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let legacy = PaneTerminal::new(terminal);
     let key = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Tab,
@@ -1209,7 +1377,10 @@ fn terminal_ctrl_tab_matches_the_pane_keyboard_protocol() {
         b"\t"
     );
 
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[>3u");
     let kitty = PaneTerminal::new(terminal);
     // Flags 3 include REPORT_EVENT_TYPES; shepr's encoder always spells out
@@ -1229,7 +1400,10 @@ fn terminal_ctrl_tab_matches_the_pane_keyboard_protocol() {
 fn terminal_legacy_modified_enter_is_shell_compatible() {
     use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let protocol = shepr_term::key::KeyboardProtocol::legacy();
 
@@ -1283,7 +1457,10 @@ fn terminal_legacy_modified_enter_is_shell_compatible() {
 fn terminal_modified_enter_tracks_live_protocol_negotiation() {
     use crossterm::event::{KeyCode, KeyModifiers};
 
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     // Legacy encoding has no Super bit, so Super alone is spelled as CSI u.
@@ -1337,7 +1514,10 @@ fn terminal_modified_enter_tracks_live_protocol_negotiation() {
 
 #[test]
 fn terminal_modified_enter_respects_existing_terminal_mode() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[>4;2m");
     let pane = PaneTerminal::new(terminal);
     let key = shepr_term::key::TerminalKey::new(
@@ -1353,7 +1533,10 @@ fn terminal_modified_enter_respects_existing_terminal_mode() {
 
 #[test]
 fn terminal_enter_backspace_release_in_legacy_pane_emits_nothing() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
 
     for code in [
@@ -1380,7 +1563,10 @@ fn terminal_enter_backspace_release_in_legacy_pane_emits_nothing() {
 #[test]
 fn terminal_report_event_pane_keeps_basic_compatibility_keys_legacy() {
     // Push kitty flags including `REPORT_EVENT_TYPES` (0b10) + `DISAMBIGUATE` (0b1).
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[>3u");
     let pane = PaneTerminal::new(terminal);
 
@@ -1413,7 +1599,10 @@ fn terminal_report_event_pane_keeps_basic_compatibility_keys_legacy() {
 
 #[test]
 fn terminal_char_keys_still_use_shepr_encoding() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[>1u");
     let pane = PaneTerminal::new(terminal);
 
@@ -1430,7 +1619,10 @@ fn terminal_char_keys_still_use_shepr_encoding() {
 
 #[test]
 fn terminal_key_encoding_honors_application_cursor_mode() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?1h");
     let pane = PaneTerminal::new(terminal);
 
@@ -1447,7 +1639,10 @@ fn terminal_key_encoding_honors_application_cursor_mode() {
 
 #[test]
 fn grouped_key_repeats_expand_at_the_destination() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let key = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Char('x'),
@@ -1476,7 +1671,10 @@ fn grouped_key_repeats_expand_at_the_destination() {
     // (REPORT_ASSOCIATED_TEXT), carries no committed text: the repeat
     // still has to expand to three identical CSI u sequences rather than
     // three literal slashes.
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[>15u");
     let pane = PaneTerminal::new(terminal);
     let kitty_protocol = shepr_term::key::KeyboardProtocol::from_flags(
@@ -1501,7 +1699,10 @@ fn grouped_key_repeats_expand_at_the_destination() {
 
 #[test]
 fn grouped_release_is_encoded_once() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[>11u");
     let pane = PaneTerminal::new(terminal);
     let protocol = pane
@@ -1525,7 +1726,10 @@ fn grouped_release_is_encoded_once() {
 
 #[test]
 fn terminal_key_encoder_updates_after_terminal_mode_changes() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -1552,7 +1756,10 @@ fn terminal_key_encoder_updates_after_terminal_mode_changes() {
 
 #[test]
 fn terminal_key_encoder_updates_after_kitty_flag_changes() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let key = shepr_term::key::TerminalKey::new(
@@ -1570,7 +1777,10 @@ fn terminal_key_encoder_updates_after_kitty_flag_changes() {
 
 #[test]
 fn terminal_kitty_pane_encodes_shift_enter_as_csi_u() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"\x1b[>5u");
@@ -1591,7 +1801,10 @@ fn terminal_kitty_pane_encodes_shift_enter_as_csi_u() {
 
 #[test]
 fn terminal_modify_other_keys_mode_one_preserves_shift_enter() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let key =
         shepr_termio::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
@@ -1609,7 +1822,10 @@ fn terminal_modify_other_keys_mode_one_preserves_shift_enter() {
 
 #[test]
 fn terminal_kitty_pane_encodes_parsed_legacy_alt_backspace_as_csi_u() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"\x1b[>1u");
@@ -1624,7 +1840,10 @@ fn terminal_kitty_pane_encodes_parsed_legacy_alt_backspace_as_csi_u() {
 
 #[test]
 fn terminal_kitty_pane_preserves_legacy_ctrl_alt_letter() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"\x1b[>5u");
@@ -1644,7 +1863,10 @@ fn terminal_kitty_pane_preserves_legacy_ctrl_alt_letter() {
 
 #[test]
 fn terminal_pane_characterizes_ctrl_backspace_encoding() {
-    let legacy = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
+    let legacy = PaneTerminal::new(shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    ));
 
     let ctrl_backspace = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Backspace,
@@ -1667,7 +1889,10 @@ fn terminal_pane_characterizes_ctrl_backspace_encoding() {
         b"\x7f"
     );
 
-    let kitty = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
+    let kitty = PaneTerminal::new(shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    ));
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     kitty.process_pty_bytes(pane_id, b"\x1b[>1u");
 
@@ -1679,8 +1904,14 @@ fn terminal_pane_characterizes_ctrl_backspace_encoding() {
 
 #[test]
 fn terminal_key_encoders_are_isolated_per_pane() {
-    let first = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
-    let second = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
+    let first = PaneTerminal::new(shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    ));
+    let second = PaneTerminal::new(shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    ));
 
     first.process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), b"\x1b[?1h");
 
@@ -1705,7 +1936,10 @@ fn terminal_key_encoders_are_isolated_per_pane() {
 
 #[test]
 fn terminal_mouse_button_encoding_uses_live_terminal_state() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?1000h\x1b[?1006h");
     let pane = PaneTerminal::new(terminal);
 
@@ -1720,7 +1954,10 @@ fn terminal_mouse_button_encoding_uses_live_terminal_state() {
 
 #[test]
 fn terminal_mouse_drag_encoding_uses_motion_reporting_state() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?1002h\x1b[?1006h");
     let pane = PaneTerminal::new(terminal);
 
@@ -1735,7 +1972,10 @@ fn terminal_mouse_drag_encoding_uses_motion_reporting_state() {
 
 #[test]
 fn terminal_mouse_drag_without_motion_reporting_is_not_forwarded() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?1000h\x1b[?1006h");
     let pane = PaneTerminal::new(terminal);
 
@@ -1750,7 +1990,10 @@ fn terminal_mouse_drag_without_motion_reporting_is_not_forwarded() {
 
 #[test]
 fn terminal_mouse_moved_encoding_uses_any_motion_state() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?1003h\x1b[?1006h");
     let pane = PaneTerminal::new(terminal);
 
@@ -1765,7 +2008,10 @@ fn terminal_mouse_moved_encoding_uses_any_motion_state() {
 
 #[test]
 fn terminal_mouse_encoding_uses_the_captured_input_modes() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?1003h\x1b[?1006h");
     let pane = PaneTerminal::new(terminal);
     let modes = pane.input_modes().expect("test precondition");
@@ -1790,14 +2036,26 @@ fn terminal_mouse_encoding_uses_the_captured_input_modes() {
 
 #[test]
 fn terminal_mouse_sgr_pixels_preserves_exact_and_maps_cell_input_to_pixels() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 10, 20));
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+    terminal.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        24,
+        shepr_core::geometry::CellPx::new(10, 20),
+    ));
     terminal.write(b"\x1b[?1003h\x1b[?1006h\x1b[?1016h");
     let pane = PaneTerminal::new(terminal);
 
     let exact = pane.encode_mouse_motion(
         crossterm::event::MouseEventKind::Moved,
-        shepr_term::mouse::Position::Pixels { x: 48, y: 139 },
+        shepr_term::mouse::Position::Pixels {
+            column: 4,
+            row: 6,
+            x: 48,
+            y: 139,
+        },
         crossterm::event::KeyModifiers::empty(),
     );
     let from_cell = pane.encode_mouse_motion(
@@ -1813,8 +2071,11 @@ fn terminal_mouse_sgr_pixels_preserves_exact_and_maps_cell_input_to_pixels() {
 
 #[test]
 fn terminal_mouse_sgr_pixels_without_pixel_geometry_sends_cells() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
-    terminal.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0));
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+    terminal.resize(shepr_core::geometry::PaneGeometry::cells_only(80, 24));
     terminal.write(b"\x1b[?1003h\x1b[?1006h\x1b[?1016h");
     let pane = PaneTerminal::new(terminal);
 
@@ -1909,7 +2170,10 @@ fn multi_codepoint_emoji_render_without_losing_text() {
         "\u{1F468}\u{200d}\u{1F469}\u{200d}\u{1F467}",
         "\u{26A0}\u{fe0f}",
     ] {
-        let mut terminal = shepr_vt::Terminal::new(40, 1, 0);
+        let mut terminal = shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(40, 1),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        );
         terminal.write(text.as_bytes());
 
         let cells = render_cells_to_symbols(&mut terminal);
@@ -1921,7 +2185,10 @@ fn multi_codepoint_emoji_render_without_losing_text() {
 
 #[test]
 fn pane_frame_carries_narrow_vs16_grid_width_followed_by_a_space() {
-    let mut terminal = shepr_vt::Terminal::new(3, 1, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(3, 1),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write("\u{26a0}\u{fe0f} Z".as_bytes());
     let pane = PaneTerminal::new(terminal);
 
@@ -1937,7 +2204,10 @@ fn pane_frame_carries_narrow_vs16_grid_width_followed_by_a_space() {
 
 #[test]
 fn pane_frame_carries_narrow_vs16_grid_width_at_the_row_edge() {
-    let mut terminal = shepr_vt::Terminal::new(1, 1, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(1, 1),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write("\u{26a0}\u{fe0f}".as_bytes());
     let pane = PaneTerminal::new(terminal);
 
@@ -1949,7 +2219,10 @@ fn pane_frame_carries_narrow_vs16_grid_width_at_the_row_edge() {
 
 #[test]
 fn halfwidth_katakana_voiced_marks_render() {
-    let mut terminal = shepr_vt::Terminal::new(40, 1, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(40, 1),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write("ｱｲｳｴｵ ｶﾞｷﾞｸﾞｹﾞｺﾞ ﾊﾟﾋﾟﾌﾟﾍﾟﾎﾟ".as_bytes());
 
     let cells = render_cells_to_symbols(&mut terminal);
@@ -1963,7 +2236,10 @@ fn halfwidth_katakana_voiced_marks_render() {
 
 #[test]
 fn render_keeps_halfwidth_katakana_and_voiced_mark_in_their_own_cells() {
-    let mut terminal = shepr_vt::Terminal::new(20, 1, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 1),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write("ｶﾞZ".as_bytes());
     let pane = PaneTerminal::new(terminal);
 
@@ -1977,7 +2253,10 @@ fn render_keeps_halfwidth_katakana_and_voiced_mark_in_their_own_cells() {
 
 #[test]
 fn pane_scrollback_controls_round_trip_and_clamp_without_ui_interference() {
-    let mut terminal = shepr_vt::Terminal::new(80, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     write_numbered_lines(&mut terminal, 1000);
     let pane = PaneTerminal::new(terminal);
 
@@ -2005,12 +2284,15 @@ fn pane_scrollback_controls_round_trip_and_clamp_without_ui_interference() {
 #[test]
 fn empty_or_short_resize_keeps_following_bottom_when_output_creates_scrollback() {
     for initial in [b"".as_slice(), b"seed\r\n".as_slice()] {
-        let mut terminal = shepr_vt::Terminal::new(10, 3, 100);
+        let mut terminal = shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+            shepr_core::scrollback::ScrollbackBudget::new(100),
+        );
         terminal.write(initial);
         let pane = PaneTerminal::new(terminal);
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
-        pane.resize(shepr_core::geometry::PaneGeometry::new(10, 3, 0, 0));
+        pane.resize(shepr_core::geometry::PaneGeometry::cells_only(10, 3));
         pane.process_pty_bytes(pane_id, b"000000\r\n000001\r\n000002\r\n000003\r\n000004");
 
         let metrics = pane.scroll_metrics().expect("scroll metrics after output");
@@ -2021,13 +2303,16 @@ fn empty_or_short_resize_keeps_following_bottom_when_output_creates_scrollback()
 
 #[test]
 fn resize_that_removes_scrollback_restores_live_follow() {
-    let mut terminal = shepr_vt::Terminal::new(10, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write(b"000000\r\n000001\r\n000002\r\n000003\r\n000004");
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.set_scroll_offset_from_bottom(1);
-    pane.resize(shepr_core::geometry::PaneGeometry::new(10, 5, 0, 0));
+    pane.resize(shepr_core::geometry::PaneGeometry::cells_only(10, 5));
     let resized = pane.scroll_metrics().expect("scroll metrics after resize");
     assert_eq!(resized.max_offset_from_bottom, 0);
 
@@ -2040,7 +2325,10 @@ fn resize_that_removes_scrollback_restores_live_follow() {
 
 #[test]
 fn detection_text_stays_at_bottom_when_viewport_is_scrolled() {
-    let mut terminal = shepr_vt::Terminal::new(80, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     write_numbered_lines(&mut terminal, 10);
     let pane = PaneTerminal::new(terminal);
 
@@ -2057,7 +2345,10 @@ fn detection_text_stays_at_bottom_when_viewport_is_scrolled() {
 
 #[test]
 fn extract_selection_uses_stable_rows_after_viewport_moves() {
-    let mut terminal = shepr_vt::Terminal::new(8, 3, 1024);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1024),
+    );
     write_numbered_lines(&mut terminal, 8);
     let pane = PaneTerminal::new(terminal);
 
@@ -2084,8 +2375,10 @@ fn extract_selection_uses_stable_rows_after_viewport_moves() {
 
 #[test]
 fn recent_reads_include_viewport_before_scrollback_exists() {
-    let mut terminal =
-        shepr_vt::Terminal::new(20, 20, shepr_config::DEFAULT_SCROLLBACK_LIMIT_BYTES);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 20),
+        shepr_core::scrollback::ScrollbackBudget::new(shepr_config::DEFAULT_SCROLLBACK_LIMIT_BYTES),
+    );
     terminal.write(b"hello123");
     let pane = PaneTerminal::new(terminal);
 
@@ -2095,7 +2388,10 @@ fn recent_reads_include_viewport_before_scrollback_exists() {
 
 #[test]
 fn alternate_screen_recent_reads_keep_physical_row_ranges() {
-    let mut terminal = shepr_vt::Terminal::new(20, 20, 100);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 20),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write(b"\x1b[?1049hhello123");
     let pane = PaneTerminal::new(terminal);
 
@@ -2105,7 +2401,10 @@ fn alternate_screen_recent_reads_keep_physical_row_ranges() {
 
 #[test]
 fn recent_unwrapped_text_ignores_soft_wraps() {
-    let mut terminal = shepr_vt::Terminal::new(5, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(5, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write(b"ABCDEFGHIJ");
     let pane = PaneTerminal::new(terminal);
 
@@ -2115,7 +2414,10 @@ fn recent_unwrapped_text_ignores_soft_wraps() {
 
 #[test]
 fn recent_reads_limit_rendered_rows() {
-    let mut terminal = shepr_vt::Terminal::new(20, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write(b"one\r\ntwo\r\nthree\r\nfour");
     let pane = PaneTerminal::new(terminal);
 
@@ -2127,7 +2429,10 @@ fn recent_reads_limit_rendered_rows() {
 
 #[test]
 fn recent_reads_trim_trailing_blank_rows() {
-    let mut terminal = shepr_vt::Terminal::new(20, 10, 100);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 10),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write(b"one\r\ntwo");
     let pane = PaneTerminal::new(terminal);
 
@@ -2138,7 +2443,10 @@ fn recent_reads_trim_trailing_blank_rows() {
 
 #[test]
 fn detection_text_ignores_the_frame_a_clear_pushed_into_history() {
-    let mut terminal = shepr_vt::Terminal::new(20, 4, 100);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 4),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write(b"a\r\nb\r\nc\r\nproceed? [y/n]");
     terminal.write(b"\x1b[H\x1b[2Jfresh");
     let pane = PaneTerminal::new(terminal);
@@ -2150,7 +2458,10 @@ fn detection_text_ignores_the_frame_a_clear_pushed_into_history() {
 
 #[test]
 fn seeded_history_leaves_the_cursor_on_a_fresh_line() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 100);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     let pane = PaneTerminal::new(terminal);
     // Saved history is trimmed and ends mid-line on the old prompt.
     pane.seed_history_ansi("output\r\nuser@host $ ");
@@ -2163,7 +2474,10 @@ fn seeded_history_leaves_the_cursor_on_a_fresh_line() {
 
 #[test]
 fn seeded_history_ending_in_a_line_break_gets_no_extra_blank_line() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 100);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     let pane = PaneTerminal::new(terminal);
     pane.seed_history_ansi("restored\r\n");
     let cursor = pane.cursor_state().expect("test precondition");
@@ -2172,7 +2486,10 @@ fn seeded_history_ending_in_a_line_break_gets_no_extra_blank_line() {
 
 #[test]
 fn plain_text_reads_skip_wide_character_spacer_cells() {
-    let mut terminal = shepr_vt::Terminal::new(40, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(40, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write("日本語テスト ABC 123".as_bytes());
     let pane = PaneTerminal::new(terminal);
 
@@ -2184,7 +2501,10 @@ fn plain_text_reads_skip_wide_character_spacer_cells() {
 
 #[test]
 fn recent_rows_preserve_combining_text_and_hide_image_placeholders() {
-    let mut terminal = shepr_vt::Terminal::new(40, 3, 1024 * 1024);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(40, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1024 * 1024),
+    );
     terminal.write("old\r\n".repeat(100).as_bytes());
     terminal.write("界 e\u{301} \u{10eeee} tail  ".as_bytes());
     let pane = PaneTerminal::new(terminal);
@@ -2197,7 +2517,10 @@ fn recent_rows_preserve_combining_text_and_hide_image_placeholders() {
 
 #[test]
 fn visible_ansi_preserves_cell_style_sequences() {
-    let mut terminal = shepr_vt::Terminal::new(20, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write(b"\x1b[31;1mred\x1b[0m plain");
     let pane = PaneTerminal::new(terminal);
 
@@ -2209,7 +2532,10 @@ fn visible_ansi_preserves_cell_style_sequences() {
 
 #[test]
 fn recent_ansi_can_read_styled_scrollback() {
-    let mut terminal = shepr_vt::Terminal::new(20, 3, 100);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     terminal.write(b"\x1b[34mblue\x1b[0m\r\nline2\r\nline3\r\nline4");
     let pane = PaneTerminal::new(terminal);
 
@@ -2221,11 +2547,18 @@ fn recent_ansi_can_read_styled_scrollback() {
 
 #[test]
 fn resize_shrinks_both_axes_with_cursor_at_old_bottom() {
-    let mut terminal = shepr_vt::Terminal::new(8, 4, 10_000);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 4),
+        shepr_core::scrollback::ScrollbackBudget::new(10_000),
+    );
     terminal.write(b"alpha\r\nbeta\r\ngamma\r\ndelta");
     let pane = PaneTerminal::new(terminal);
 
-    pane.resize(shepr_core::geometry::PaneGeometry::new(7, 3, 8, 16));
+    pane.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        7,
+        3,
+        shepr_core::geometry::CellPx::new(8, 16),
+    ));
 
     assert_eq!(pane.visible_text(), "beta\ngamma\ndelta\n");
     assert_eq!(pane.detection_text(), "beta\ngamma\ndelta\n");
@@ -2237,7 +2570,10 @@ fn resize_shrinks_both_axes_with_cursor_at_old_bottom() {
 
 #[test]
 fn resize_reflow_keeps_scrolled_viewport_and_bottom_detection_sane() {
-    let mut terminal = shepr_vt::Terminal::new(12, 4, 10_000);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(12, 4),
+        shepr_core::scrollback::ScrollbackBudget::new(10_000),
+    );
     write_wrapped_contract_lines(&mut terminal, 40);
     let pane = PaneTerminal::new(terminal);
 
@@ -2251,7 +2587,7 @@ fn resize_reflow_keeps_scrolled_viewport_and_bottom_detection_sane() {
 
     for (rows, cols) in [(4, 10), (4, 7), (6, 18), (3, 9), (5, 12)] {
         let before_resize = pane.scroll_metrics().expect("scroll metrics before resize");
-        pane.resize(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0));
+        pane.resize(shepr_core::geometry::PaneGeometry::cells_only(cols, rows));
 
         let metrics = pane.scroll_metrics().expect("scroll metrics after resize");
         assert_eq!(metrics.viewport_rows, rows as usize);
@@ -2282,14 +2618,17 @@ fn resize_reflow_keeps_scrolled_viewport_and_bottom_detection_sane() {
 
 #[test]
 fn resize_recovery_does_not_replay_history_when_visible_screen_was_blank() {
-    let mut terminal = shepr_vt::Terminal::new(20, 3, 10_000);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(10_000),
+    );
     terminal.write(b"old history\r\n\x1b[2J\x1b[H");
     let pane = PaneTerminal::new(terminal);
 
     assert!(pane.visible_text().trim().is_empty());
     assert!(pane.detection_text().trim().is_empty());
 
-    pane.resize(shepr_core::geometry::PaneGeometry::new(20, 3, 0, 0));
+    pane.resize(shepr_core::geometry::PaneGeometry::cells_only(20, 3));
 
     assert!(pane.visible_text().trim().is_empty());
     assert!(pane.detection_text().trim().is_empty());
@@ -2298,7 +2637,10 @@ fn resize_recovery_does_not_replay_history_when_visible_screen_was_blank() {
 
 #[test]
 fn resize_recovery_does_not_replay_scrolled_history_over_blank_bottom() {
-    let mut terminal = shepr_vt::Terminal::new(20, 3, 10_000);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(10_000),
+    );
     write_numbered_lines(&mut terminal, 20);
     terminal.write(b"\x1b[2J\x1b[H");
     let pane = PaneTerminal::new(terminal);
@@ -2308,7 +2650,7 @@ fn resize_recovery_does_not_replay_scrolled_history_over_blank_bottom() {
     pane.set_scroll_offset_from_bottom(metrics.max_offset_from_bottom);
     assert!(!pane.visible_text().trim().is_empty());
 
-    pane.resize(shepr_core::geometry::PaneGeometry::new(20, 3, 0, 0));
+    pane.resize(shepr_core::geometry::PaneGeometry::cells_only(20, 3));
 
     assert!(pane.detection_text().trim().is_empty());
     assert!(pane.recent_text(3).trim().is_empty());
@@ -2316,10 +2658,17 @@ fn resize_recovery_does_not_replay_scrolled_history_over_blank_bottom() {
 
 #[test]
 fn process_pty_bytes_answers_xtwinops_size_queries() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
+    pane.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        24,
+        shepr_core::geometry::CellPx::new(9, 18),
+    ));
 
     let result = pane.process_pty_bytes(pane_id, b"\x1b[14t\x1b[16t\x1b[18t");
 
@@ -2335,11 +2684,22 @@ fn process_pty_bytes_answers_xtwinops_size_queries() {
 
 #[test]
 fn xtwinops_size_queries_follow_successful_resize() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.resize(shepr_core::geometry::PaneGeometry::new(80, 24, 9, 18));
-    pane.resize(shepr_core::geometry::PaneGeometry::new(100, 30, 10, 20));
+    pane.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        80,
+        24,
+        shepr_core::geometry::CellPx::new(9, 18),
+    ));
+    pane.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        100,
+        30,
+        shepr_core::geometry::CellPx::new(10, 20),
+    ));
 
     let result = pane.process_pty_bytes(pane_id, b"\x1b[14t\x1b[16t\x1b[18t");
 
@@ -2355,15 +2715,17 @@ fn xtwinops_size_queries_follow_successful_resize() {
 
 #[test]
 fn xtwinops_size_queries_stay_silent_without_pixel_geometry() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     for (cell_width_px, cell_height_px) in [(0, 0), (0, 18), (9, 0)] {
-        pane.resize(shepr_core::geometry::PaneGeometry::new(
+        pane.resize(shepr_core::geometry::PaneGeometry::with_cell(
             80,
             24,
-            cell_width_px,
-            cell_height_px,
+            shepr_core::geometry::CellPx::new(cell_width_px, cell_height_px),
         ));
         let result = pane.process_pty_bytes(pane_id, b"\x1b[14t\x1b[16t\x1b[18t");
         // CSI 14 t (pixel geometry) and CSI 16 t (cell size in pixels) stay
@@ -2378,13 +2740,20 @@ fn xtwinops_size_queries_stay_silent_without_pixel_geometry() {
 
 #[test]
 fn enabling_in_band_size_reports_after_alt_screen_resize_reports_current_size() {
-    let terminal = shepr_vt::Terminal::new(91, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(91, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"\x1b[?1049h");
     assert!(
-        pane.resize(shepr_core::geometry::PaneGeometry::new(92, 24, 9, 18))
-            .is_empty()
+        pane.resize(shepr_core::geometry::PaneGeometry::with_cell(
+            92,
+            24,
+            shepr_core::geometry::CellPx::new(9, 18)
+        ))
+        .is_empty()
     );
 
     let result = pane.process_pty_bytes(pane_id, b"\x1b[?2048h");
@@ -2397,11 +2766,18 @@ fn enabling_in_band_size_reports_after_alt_screen_resize_reports_current_size() 
 
 #[test]
 fn resize_returns_in_band_size_report_response() {
-    let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"\x1b[?2048h");
     let pane = PaneTerminal::new(terminal);
 
-    let responses = pane.resize(shepr_core::geometry::PaneGeometry::new(100, 40, 1_000, 20));
+    let responses = pane.resize(shepr_core::geometry::PaneGeometry::with_cell(
+        100,
+        40,
+        shepr_core::geometry::CellPx::new(1_000, 20),
+    ));
 
     assert_eq!(
         responses,
@@ -2411,30 +2787,45 @@ fn resize_returns_in_band_size_report_response() {
 
 #[test]
 fn synchronized_output_suppresses_intermediate_render_requests_until_batch_ends() {
-    let terminal = shepr_vt::Terminal::new(80, 24, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane_terminal = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
-    assert_eq!(pane_terminal.synchronized_output_state(), Some((false, 0)));
+    assert_eq!(
+        idle_epoch(pane_terminal.synchronized_output_state()),
+        Some(0)
+    );
     pane_terminal.process_pty_bytes(pane_id, b"ordinary output");
-    assert_eq!(pane_terminal.synchronized_output_state(), Some((false, 0)));
+    assert_eq!(
+        idle_epoch(pane_terminal.synchronized_output_state()),
+        Some(0)
+    );
 
     let begin = pane_terminal.process_pty_bytes(pane_id, b"\x1b[?2026h");
     assert!(matches!(begin.render_request, RenderRequest::After(_)));
-    assert_eq!(pane_terminal.synchronized_output_state(), Some((true, 1)));
+    assert_eq!(pane_terminal.synchronized_output_state(), SyncState::Active);
 
     let body = pane_terminal.process_pty_bytes(pane_id, b"hello");
     assert!(matches!(body.render_request, RenderRequest::After(_)));
-    assert_eq!(pane_terminal.synchronized_output_state(), Some((true, 1)));
+    assert_eq!(pane_terminal.synchronized_output_state(), SyncState::Active);
 
     let end = pane_terminal.process_pty_bytes(pane_id, b"\x1b[?2026l");
     assert_eq!(end.render_request, RenderRequest::Now);
-    assert_eq!(pane_terminal.synchronized_output_state(), Some((false, 2)));
+    assert_eq!(
+        idle_epoch(pane_terminal.synchronized_output_state()),
+        Some(2)
+    );
 }
 
 #[test]
 fn seeded_history_is_rendered_on_next_draw() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 100);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     let pane = PaneTerminal::new(terminal);
     pane.seed_history_ansi("restored history");
 
@@ -2447,7 +2838,10 @@ fn seeded_history_is_rendered_on_next_draw() {
 
 #[test]
 fn render_leaves_unknown_host_default_background_transparent() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = pane.core.lock().expect("test precondition");
@@ -2465,7 +2859,10 @@ fn render_leaves_unknown_host_default_background_transparent() {
 
 #[test]
 fn render_blanks_kitty_unicode_placeholders() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = pane.core.lock().expect("test precondition");
@@ -2483,7 +2880,10 @@ fn render_blanks_kitty_unicode_placeholders() {
 
 #[test]
 fn render_keeps_explicit_cell_foreground_when_host_is_unknown() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = pane.core.lock().expect("test precondition");
@@ -2500,7 +2900,10 @@ fn render_keeps_explicit_cell_foreground_when_host_is_unknown() {
 
 #[test]
 fn render_keeps_explicit_cell_background_when_host_is_unknown() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = pane.core.lock().expect("test precondition");
@@ -2517,7 +2920,10 @@ fn render_keeps_explicit_cell_background_when_host_is_unknown() {
 
 #[test]
 fn render_preserves_palette_colors_instead_of_flattening_to_rgb() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = pane.core.lock().expect("test precondition");
@@ -2539,7 +2945,10 @@ fn render_preserves_palette_colors_instead_of_flattening_to_rgb() {
 
 #[test]
 fn render_preserves_palette_background_fill_cells() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = pane.core.lock().expect("test precondition");
@@ -2555,7 +2964,10 @@ fn render_preserves_palette_background_fill_cells() {
 
 #[test]
 fn render_preserves_rgb_background_fill_cells() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = pane.core.lock().expect("test precondition");
@@ -2571,7 +2983,10 @@ fn render_preserves_rgb_background_fill_cells() {
 
 #[test]
 fn process_pty_bytes_does_not_advertise_unsupported_glyph_protocol() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2582,7 +2997,10 @@ fn process_pty_bytes_does_not_advertise_unsupported_glyph_protocol() {
 
 #[test]
 fn process_pty_bytes_returns_core_query_responses_without_queuing_input() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2594,7 +3012,10 @@ fn process_pty_bytes_returns_core_query_responses_without_queuing_input() {
 
 #[test]
 fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2635,7 +3056,10 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
 
 #[test]
 fn unchanged_host_appearance_does_not_advance_render_revision() {
-    let pane = PaneTerminal::new(shepr_vt::Terminal::new(20, 5, 0));
+    let pane = PaneTerminal::new(shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    ));
     let initial_revision = pane.core.lock().expect("terminal core").content_revision;
     pane.apply_host_terminal_appearance(None);
     assert_eq!(
@@ -2647,7 +3071,10 @@ fn unchanged_host_appearance_does_not_advance_render_revision() {
 
     pane.apply_host_terminal_appearance(appearance);
     let changed_revision = pane.core.lock().expect("terminal core").content_revision;
-    assert_eq!(changed_revision, initial_revision.wrapping_add(2));
+    assert!(changed_revision.changed_since(initial_revision));
+    let mut one_mutation = initial_revision;
+    one_mutation.advance();
+    assert_eq!(changed_revision, one_mutation);
 
     pane.apply_host_terminal_appearance(appearance);
     let repeated_revision = pane.core.lock().expect("terminal core").content_revision;
@@ -2656,7 +3083,10 @@ fn unchanged_host_appearance_does_not_advance_render_revision() {
 
 #[test]
 fn process_pty_bytes_returns_xtgettcap_truecolor_query_responses_without_queuing_input() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2687,7 +3117,10 @@ fn process_pty_bytes_returns_fragmented_c1_xtgettcap_once_in_order() {
         (b"\x90+q5463;524742\x1b\\".as_slice(), false),
     ] {
         for fragmented in [false, true] {
-            let terminal = shepr_vt::Terminal::new(20, 5, 0);
+            let terminal = shepr_vt::Terminal::new(
+                shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+                shepr_core::scrollback::ScrollbackBudget::new(0),
+            );
             let pane = PaneTerminal::new(terminal);
             let pane_id = shepr_test_fixtures::fixed_pane_id(1);
             pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -2733,7 +3166,10 @@ fn process_pty_bytes_returns_fragmented_c1_xtgettcap_once_in_order() {
 
 #[test]
 fn process_pty_bytes_returns_split_xtgettcap_query_response() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2758,7 +3194,10 @@ fn process_pty_bytes_returns_split_xtgettcap_query_response() {
 
 #[test]
 fn process_pty_bytes_orders_device_attribute_reply_before_following_xtgettcap_reply() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2774,7 +3213,10 @@ fn process_pty_bytes_orders_device_attribute_reply_before_following_xtgettcap_re
 
 #[test]
 fn process_pty_bytes_orders_xtgettcap_reply_before_following_device_attribute_reply() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2790,7 +3232,10 @@ fn process_pty_bytes_orders_xtgettcap_reply_before_following_device_attribute_re
 
 #[test]
 fn process_pty_bytes_orders_xtgettcap_reply_before_following_default_color_reply() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -2816,7 +3261,10 @@ fn process_pty_bytes_orders_xtgettcap_reply_before_following_default_color_reply
 
 #[test]
 fn host_theme_update_preserves_child_default_color_override() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2842,7 +3290,10 @@ fn host_theme_update_preserves_child_default_color_override() {
 
 #[test]
 fn child_default_color_reset_restores_cached_host_color() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2868,7 +3319,10 @@ fn child_default_color_reset_restores_cached_host_color() {
 
 #[test]
 fn process_pty_bytes_recovers_xtgettcap_after_osc_bel_terminator() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2882,7 +3336,10 @@ fn process_pty_bytes_recovers_xtgettcap_after_osc_bel_terminator() {
 
 #[test]
 fn process_pty_bytes_orders_default_color_reset_reply_before_xtgettcap() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -2911,7 +3368,10 @@ fn process_pty_bytes_orders_default_color_reset_reply_before_xtgettcap() {
 
 #[test]
 fn process_pty_bytes_ignores_unknown_and_unsupported_xtgettcap_queries() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2922,7 +3382,10 @@ fn process_pty_bytes_ignores_unknown_and_unsupported_xtgettcap_queries() {
 
 #[test]
 fn process_pty_bytes_returns_underline_color_xtgettcap_query_responses() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -2952,22 +3415,28 @@ fn full_frame_preserves_every_underline_shape() {
         ("\x1b[4:5mU", UnderlineStyle::Dashed),
         ("\x1b[4:3m\x1b[24mU", UnderlineStyle::None),
     ] {
-        let mut terminal = shepr_vt::Terminal::new(20, 5, 0);
+        let mut terminal = shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        );
         terminal.write(sequence.as_bytes());
         let pane = PaneTerminal::new(terminal);
 
         let frame = render_frame(&pane, 20, 5);
 
-        assert_eq!(frame.cells[0].symbol, "U");
-        assert_eq!(frame.cells[0].style.underline, shape, "{sequence:?}");
+        assert_eq!(frame.cells()[0].symbol, "U");
+        assert_eq!(frame.cells()[0].style.underline, shape, "{sequence:?}");
         // The next cell is not underlined by the shape of the one before.
-        assert_eq!(frame.cells[1].style.underline, UnderlineStyle::None);
+        assert_eq!(frame.cells()[1].style.underline, UnderlineStyle::None);
     }
 }
 
 #[test]
 fn full_frame_links_cells_by_uri_in_one_table() {
-    let mut terminal = shepr_vt::Terminal::new(20, 3, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(
         b"\x1b]8;;https://a.example\x1b\\ab\x1b]8;;\x1b\\-\x1b]8;;https://b.example\x1b\\c\x1b]8;;\x1b\\\r\n\x1b]8;;https://a.example\x1b\\d\x1b]8;;\x1b\\",
     );
@@ -2976,8 +3445,8 @@ fn full_frame_links_cells_by_uri_in_one_table() {
     let frame = render_frame(&pane, 20, 3);
 
     assert_eq!(
-        frame.hyperlinks,
-        vec![
+        frame.hyperlinks(),
+        [
             "https://a.example".to_owned(),
             "https://b.example".to_owned()
         ]
@@ -3002,20 +3471,25 @@ fn full_frame_indexes_distinct_hyperlinks_and_existing_entries() {
         )
         .expect("test input string accepts formatting");
     }
-    let mut terminal = shepr_vt::Terminal::new(16, 1, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(16, 1),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(input.as_bytes());
     let pane = PaneTerminal::new(terminal);
-    let mut frame = FrameData::blank(16, 1);
-    frame.hyperlinks = vec![
-        "https://link-0.example".to_owned(),
-        "https://existing.example".to_owned(),
-    ];
+    let mut frame = FrameData::blank(16, 1).expect("test frame size is valid");
+    frame
+        .set_hyperlinks(vec![
+            "https://link-0.example".to_owned(),
+            "https://existing.example".to_owned(),
+        ])
+        .expect("no cell links yet");
 
     pane.render_into(&mut frame, Rect::new(0, 0, 16, 1));
 
-    assert_eq!(frame.hyperlinks.len(), 17);
-    assert_eq!(frame.hyperlinks[0], "https://link-0.example");
-    assert_eq!(frame.hyperlinks[1], "https://existing.example");
+    assert_eq!(frame.hyperlinks().len(), 17);
+    assert_eq!(frame.hyperlinks()[0], "https://link-0.example");
+    assert_eq!(frame.hyperlinks()[1], "https://existing.example");
     assert_eq!(frame_cell(&frame, 0, 0).hyperlink, Some(0));
     for x in 1..16 {
         assert_eq!(frame_cell(&frame, x, 0).hyperlink, Some(u32::from(x) + 1));
@@ -3024,11 +3498,14 @@ fn full_frame_indexes_distinct_hyperlinks_and_existing_entries() {
 
 #[test]
 fn render_into_a_sub_rect_touches_only_that_rect_and_clips_to_the_frame() {
-    let mut terminal = shepr_vt::Terminal::new(6, 3, 0);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(6, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     terminal.write(b"abcdef\r\nghijkl");
     let pane = PaneTerminal::new(terminal);
-    let mut frame = FrameData::blank(8, 4);
-    for cell in &mut frame.cells {
+    let mut frame = FrameData::blank(8, 4).expect("test frame size is valid");
+    for cell in frame.cells_mut() {
         cell.symbol = "#".to_owned();
     }
 
@@ -3045,14 +3522,17 @@ fn render_into_a_sub_rect_touches_only_that_rect_and_clips_to_the_frame() {
     assert_eq!(row(3), "#      #");
 
     // Larger than the frame: the overhang is dropped, not a panic.
-    let mut small = FrameData::blank(4, 2);
+    let mut small = FrameData::blank(4, 2).expect("test frame size is valid");
     pane.render_into(&mut small, Rect::new(0, 0, 6, 3));
     assert_eq!(frame_cell(&small, 3, 1).symbol, "j");
 }
 
 #[test]
 fn process_pty_bytes_orders_default_color_reply_before_following_device_attribute_reply() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -3077,7 +3557,10 @@ fn process_pty_bytes_orders_default_color_reply_before_following_device_attribut
 
 #[test]
 fn process_pty_bytes_returns_host_palette_color_without_queuing_input() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(
@@ -3103,7 +3586,10 @@ fn process_pty_bytes_returns_host_palette_color_without_queuing_input() {
 fn opentui_256_palette_query_burst_uses_host_snapshot() {
     use std::fmt::Write as _;
 
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let mut theme = shepr_term::host::TerminalTheme::default();
@@ -3136,7 +3622,10 @@ fn opentui_256_palette_query_burst_uses_host_snapshot() {
 
 #[test]
 fn child_palette_override_survives_host_refresh_until_reset() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(
@@ -3177,7 +3666,10 @@ fn child_palette_override_survives_host_refresh_until_reset() {
 
 #[test]
 fn process_pty_bytes_returns_split_palette_color_query_response() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let color = current_palette_color(&pane, 255);
@@ -3197,7 +3689,10 @@ fn process_pty_bytes_returns_split_palette_color_query_response() {
 
 #[test]
 fn process_pty_bytes_ignores_malformed_and_preserves_multi_palette_queries() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -3214,7 +3709,10 @@ fn process_pty_bytes_ignores_malformed_and_preserves_multi_palette_queries() {
 
 #[test]
 fn process_pty_bytes_orders_palette_reply_before_following_terminal_replies() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let color = current_palette_color(&pane, 0);
@@ -3244,7 +3742,10 @@ fn process_pty_bytes_orders_palette_reply_before_following_terminal_replies() {
 
 #[test]
 fn process_pty_bytes_returns_default_color_query_responses_without_queuing_input() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -3267,7 +3768,10 @@ fn process_pty_bytes_returns_default_color_query_responses_without_queuing_input
 
 #[test]
 fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -3316,7 +3820,10 @@ fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
 
 #[test]
 fn process_pty_bytes_preserves_earlier_aggregate_palette_reply() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -3330,7 +3837,10 @@ fn process_pty_bytes_preserves_earlier_aggregate_palette_reply() {
 
 #[test]
 fn process_pty_bytes_preserves_core_reply_for_child_color_override() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -3343,7 +3853,10 @@ fn process_pty_bytes_preserves_core_reply_for_child_color_override() {
 
 #[test]
 fn process_pty_bytes_tracks_later_multi_value_color_set() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
@@ -3364,7 +3877,10 @@ fn process_pty_bytes_tracks_later_multi_value_color_set() {
 
 #[test]
 fn process_pty_bytes_returns_cursor_color_query_response_from_foreground_fallback() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -3387,7 +3903,10 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_foreground_fallbac
 
 #[test]
 fn process_pty_bytes_returns_cursor_color_query_response_from_child_foreground() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -3411,7 +3930,10 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_child_foreground()
 
 #[test]
 fn process_pty_bytes_returns_explicit_cursor_color_query_response() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -3435,7 +3957,10 @@ fn process_pty_bytes_returns_explicit_cursor_color_query_response() {
 
 #[test]
 fn process_pty_bytes_returns_default_color_query_responses_in_order() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -3466,7 +3991,10 @@ fn process_pty_bytes_returns_default_color_query_responses_in_order() {
 
 #[test]
 fn process_pty_bytes_returns_split_default_color_query_response() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -3493,7 +4021,10 @@ fn process_pty_bytes_returns_split_default_color_query_response() {
 
 #[test]
 fn process_pty_bytes_returns_split_cursor_color_query_response() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -3520,7 +4051,10 @@ fn process_pty_bytes_returns_split_cursor_color_query_response() {
 
 #[test]
 fn process_pty_bytes_tracks_default_color_set_and_reset_before_replying() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
@@ -3548,7 +4082,10 @@ fn process_pty_bytes_tracks_default_color_set_and_reset_before_replying() {
 
 #[test]
 fn render_leaves_host_default_background_transparent() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let host_theme = shepr_term::host::TerminalTheme {
         foreground: Some(shepr_term::host::RgbColor {
@@ -3580,7 +4117,10 @@ fn render_leaves_host_default_background_transparent() {
 
 #[test]
 fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let host_theme = shepr_term::host::TerminalTheme {
         foreground: Some(shepr_term::host::RgbColor {
@@ -3611,7 +4151,10 @@ fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
 
 #[test]
 fn render_keeps_explicit_default_background_when_it_differs_from_host() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let host_theme = shepr_term::host::TerminalTheme {
         foreground: Some(shepr_term::host::RgbColor {
@@ -3642,7 +4185,10 @@ fn render_keeps_explicit_default_background_when_it_differs_from_host() {
 
 #[test]
 fn render_inverse_text_swaps_fg_and_resolved_bg_when_bg_is_transparent() {
-    let terminal = shepr_vt::Terminal::new(20, 5, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let host_theme = shepr_term::host::TerminalTheme {
         foreground: Some(shepr_term::host::RgbColor {
@@ -3685,7 +4231,10 @@ fn trim_trailing_blank_rows_drops_empty_viewport_tail() {
 #[test]
 fn absolute_rows_survive_eviction() {
     // One byte of budget buys the minimum history.
-    let mut terminal = shepr_vt::Terminal::new(10, 3, 1);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1),
+    );
     write_numbered_lines(&mut terminal, 1_100);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
@@ -3780,7 +4329,10 @@ fn absolute_rows_survive_eviction() {
 
 #[test]
 fn paragraph_motion_finds_blank_rows_by_absolute_row() {
-    let mut terminal = shepr_vt::Terminal::new(10, 3, 1);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1),
+    );
     write_numbered_lines(&mut terminal, 1_100);
     terminal.write(b"\r\npara\r\ngraph");
     let pane = PaneTerminal::new(terminal);
@@ -3812,7 +4364,10 @@ fn paragraph_motion_finds_blank_rows_by_absolute_row() {
 /// including a match whose soft-wrapped rows straddle a chunk boundary.
 #[test]
 fn chunked_search_matches_a_whole_buffer_search() {
-    let mut terminal = shepr_vt::Terminal::new(10, 3, 1_000_000);
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(1_000_000),
+    );
     write_numbered_lines(&mut terminal, 2_046);
     terminal.write(b"abcdefghijklmnopqrstuvwxyz0123\r\n");
     for i in 3_000..3_100 {
@@ -3964,7 +4519,10 @@ fn match_window_agrees_with_the_complete_match_list() {
 /// the next patch still has to send.
 #[test]
 fn full_render_leaves_dirty_rows_for_the_next_patch() {
-    let terminal = shepr_vt::Terminal::new(8, 4, 100);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 4),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.collect_dirty_patch(8, 4);
@@ -3982,7 +4540,10 @@ fn full_render_leaves_dirty_rows_for_the_next_patch() {
 /// a taller patch later still sends them.
 #[test]
 fn rows_below_a_patch_area_are_sent_by_a_later_taller_patch() {
-    let terminal = shepr_vt::Terminal::new(8, 6, 100);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(8, 6),
+        shepr_core::scrollback::ScrollbackBudget::new(100),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.collect_dirty_patch(8, 6);
@@ -4011,15 +4572,17 @@ fn rows_below_a_patch_area_are_sent_by_a_later_taller_patch() {
 
 #[test]
 fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
-    let terminal = shepr_vt::Terminal::new(20, 3, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = PaneTerminal::new(terminal);
     let mut core = pane.core.lock().expect("test precondition");
     core.terminal.write(b"\x1b]11;rgb:10/20/30\x07");
     let first_set = core.terminal.take_effects().default_color_set;
-    assert_eq!(
-        note_default_color_change(&mut core, first_set),
-        Some(DefaultColorGeneration(1))
-    );
+    let generation = note_default_color_change(&mut core, first_set).expect("an override was set");
+    assert_ne!(generation, DefaultColorGeneration::default());
+    assert_eq!(core.default_color_generation, generation);
     // Nothing new since.
     let no_new_set = core.terminal.take_effects().default_color_set;
     assert_eq!(note_default_color_change(&mut core, no_new_set), None);
@@ -4034,7 +4597,10 @@ fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
 
 #[test]
 fn primary_history_is_unavailable_on_the_alternate_screen() {
-    let terminal = shepr_vt::Terminal::new(20, 3, 100_000);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100_000),
+    );
     let pane = std::sync::Arc::new(PaneTerminal::new(terminal));
     let source = PaneHistorySource::new(std::sync::Arc::clone(&pane));
     let mut cache = PaneHistoryCache::default();
@@ -4059,7 +4625,10 @@ fn primary_history_is_unavailable_on_the_alternate_screen() {
 
 #[test]
 fn live_text_reads_the_active_screen() {
-    let terminal = shepr_vt::Terminal::new(20, 3, 100_000);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(100_000),
+    );
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
@@ -4075,7 +4644,10 @@ fn live_text_reads_the_active_screen() {
 
 #[test]
 fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
-    let terminal = shepr_vt::Terminal::new(20, 3, 0);
+    let terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
     let pane = std::sync::Arc::new(PaneTerminal::new(terminal));
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     assert!(
@@ -4099,5 +4671,5 @@ fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
         pane.try_process_pty_bytes_at(pane_id, b"after", Instant::now())
             .is_err()
     );
-    assert_eq!(pane.synchronized_output_state(), None);
+    assert_eq!(pane.synchronized_output_state(), SyncState::Poisoned);
 }

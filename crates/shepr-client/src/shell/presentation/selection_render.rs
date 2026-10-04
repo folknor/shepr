@@ -19,7 +19,7 @@ fn panel_background(p: &Palette) -> Color {
 /// it (the client composes pane surfaces produced for another layout), so the sink must
 /// ignore positions it does not have. The style is meant to be applied like
 /// `Cell::set_style`.
-pub(super) fn render_selection_highlight<P: PartialEq>(
+pub(in crate::shell) fn render_selection_highlight<P: PartialEq>(
     selection: Option<&shepr_term::selection::Selection<P>>,
     pane_id: &P,
     inner: Rect,

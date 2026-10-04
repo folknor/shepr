@@ -37,8 +37,23 @@ impl ErrorBody {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetectionCapture {
     pub screen: String,
+    /// The last OSC title; empty when there was none.
     pub osc_title: String,
+    /// The last OSC 9;4 progress report as `4;state[;percent]`; empty when
+    /// there was none.
     pub osc_progress: String,
+}
+
+impl DetectionCapture {
+    /// The OSC title evidence, `None` when the capture holds none.
+    pub fn osc_title_evidence(&self) -> Option<&str> {
+        (!self.osc_title.is_empty()).then_some(self.osc_title.as_str())
+    }
+
+    /// The OSC progress evidence, `None` when the capture holds none.
+    pub fn osc_progress_evidence(&self) -> Option<&str> {
+        (!self.osc_progress.is_empty()).then_some(self.osc_progress.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

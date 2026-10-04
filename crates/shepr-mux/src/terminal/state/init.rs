@@ -5,9 +5,8 @@ impl TerminalState {
     /// saved absolute path. It is recorded as given: a saved directory that has
     /// disappeared is kept so a later restore can retry it, and the live cwd
     /// reported by the pane supersedes it through `set_cwd`.
-    pub fn new(id: TerminalId, cwd: PathBuf) -> Self {
+    pub fn new(cwd: PathBuf) -> Self {
         Self {
-            id,
             cwd,
             terminal_title: None,
             manual_label: None,

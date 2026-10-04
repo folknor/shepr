@@ -9,7 +9,9 @@ use std::time::Instant;
 use shepr_agent::Agent;
 use shepr_core::layout::PaneId;
 
-/// An event from a background task to the main loop.
+/// A message from a background task to the main loop. This is transport only:
+/// the server admits it (a runtime's generation is checked) into its own
+/// reducer input before anything is applied, and no pane event travels bare.
 #[derive(Debug)]
 pub enum AppEvent {
     /// Runtime events are admitted only while their producing runtime is registered.
@@ -17,43 +19,6 @@ pub enum AppEvent {
         pane_id: PaneId,
         generation: RuntimeGeneration,
         event: Box<RuntimeEvent>,
-    },
-    /// A pane's launch settled: its shell's exec committed, it reported why
-    /// it could not start, or it ended without a report. Always queued before
-    /// the same runtime's `PaneDied`.
-    PaneLaunchSettled {
-        pane_id: PaneId,
-        settlement: crate::pane::LaunchSettlement,
-    },
-    /// A pane's child process exited. `ended_at` is when the ending was
-    /// observed, which can be well before the event is handled.
-    PaneDied {
-        pane_id: PaneId,
-        exit_reason: shepr_platform::ChildExitReason,
-        ended_at: Instant,
-    },
-    /// Process detection identified an agent before its screen state was confirmed.
-    AgentProcessDetected {
-        pane_id: PaneId,
-        agent: Agent,
-        observed_at: Instant,
-    },
-    /// Fallback detector state changed in a pane.
-    StateChanged {
-        pane_id: PaneId,
-        agent: Option<Agent>,
-        detection: shepr_detect::Detection,
-        process_exited: bool,
-        observed_at: Instant,
-    },
-    /// A pane child emitted a valid OSC 52 clipboard write. The main loop
-    /// re-emits it to the clients viewing `pane_id`.
-    ClipboardWrite { pane_id: PaneId, content: Vec<u8> },
-    /// A pane child reported its shell current directory through terminal
-    /// metadata such as OSC 7.
-    TerminalCwdReported {
-        pane_id: PaneId,
-        cwd: crate::UsableCwd,
     },
     /// The Git status worker answered one refresh: a status per workspace it
     /// was asked about (none if the refresh panicked) and the read errors it
@@ -72,10 +37,10 @@ pub enum RuntimeEvent {
     PaneLaunchSettled {
         settlement: crate::pane::LaunchSettlement,
     },
-    /// A pane's child process exited. `ended_at` is when the ending was
-    /// observed, which can be well before the event is handled.
+    /// A pane ended. `ended_at` is when the ending was observed, which can be
+    /// well before the event is handled.
     PaneDied {
-        exit_reason: shepr_platform::ChildExitReason,
+        ending: crate::pane::PaneEnding,
         ended_at: Instant,
     },
     /// Process detection identified an agent before its screen state was confirmed.
@@ -96,77 +61,13 @@ pub enum RuntimeEvent {
 }
 
 impl RuntimeEvent {
-    pub fn into_app_event(self, pane_id: PaneId) -> AppEvent {
-        match self {
-            Self::PaneLaunchSettled { settlement } => AppEvent::PaneLaunchSettled {
-                pane_id,
-                settlement,
-            },
-            Self::PaneDied {
-                exit_reason,
-                ended_at,
-            } => AppEvent::PaneDied {
-                pane_id,
-                exit_reason,
-                ended_at,
-            },
-            Self::AgentProcessDetected { agent, observed_at } => AppEvent::AgentProcessDetected {
-                pane_id,
-                agent,
-                observed_at,
-            },
-            Self::StateChanged {
-                agent,
-                detection,
-                process_exited,
-                observed_at,
-            } => AppEvent::StateChanged {
-                pane_id,
-                agent,
-                detection,
-                process_exited,
-                observed_at,
-            },
-            Self::ClipboardWrite { content } => AppEvent::ClipboardWrite { pane_id, content },
-            Self::TerminalCwdReported { cwd } => AppEvent::TerminalCwdReported { pane_id, cwd },
-        }
-    }
-}
-
-impl TryFrom<AppEvent> for RuntimeEvent {
-    type Error = AppEvent;
-
-    fn try_from(event: AppEvent) -> Result<Self, Self::Error> {
-        match event {
-            AppEvent::PaneLaunchSettled { settlement, .. } => {
-                Ok(Self::PaneLaunchSettled { settlement })
-            }
-            AppEvent::PaneDied {
-                exit_reason,
-                ended_at,
-                ..
-            } => Ok(Self::PaneDied {
-                exit_reason,
-                ended_at,
-            }),
-            AppEvent::AgentProcessDetected {
-                agent, observed_at, ..
-            } => Ok(Self::AgentProcessDetected { agent, observed_at }),
-            AppEvent::StateChanged {
-                agent,
-                detection,
-                process_exited,
-                observed_at,
-                ..
-            } => Ok(Self::StateChanged {
-                agent,
-                detection,
-                process_exited,
-                observed_at,
-            }),
-            AppEvent::ClipboardWrite { content, .. } => Ok(Self::ClipboardWrite { content }),
-            AppEvent::TerminalCwdReported { cwd, .. } => Ok(Self::TerminalCwdReported { cwd }),
-            other => Err(other),
+    /// This payload in the envelope that names its producing runtime, which is
+    /// the only way a runtime event reaches the main loop.
+    pub fn enveloped(self, pane_id: PaneId, generation: RuntimeGeneration) -> AppEvent {
+        AppEvent::Runtime {
+            pane_id,
+            generation,
+            event: Box::new(self),
         }
     }
 }
@@ -208,11 +109,7 @@ impl EventSender {
 
     fn tag(&self, event: RuntimeEvent) -> AppEvent {
         let (pane_id, generation) = self.origin;
-        AppEvent::Runtime {
-            pane_id,
-            generation,
-            event: Box::new(event),
-        }
+        event.enveloped(pane_id, generation)
     }
 
     pub(crate) async fn send(

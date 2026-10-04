@@ -5,8 +5,12 @@ use shepr_protocol::command::{EndpointError, EndpointReply};
 use shepr_protocol::{BootId, ClientMessage, ConnectionGeneration, RequestId};
 
 use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
-use crate::limits::ENDPOINT_COMMAND_TIMEOUT;
 use crate::shell::{ClientShellEndpointError, ClientShellEndpointRequest};
+
+/// Timeout for a client request sent to an endpoint.
+///
+/// The deadline allows slow remote reads while preventing a request from waiting forever.
+pub(crate) const ENDPOINT_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 struct QueuedCommand {
     generation: ConnectionGeneration,
@@ -31,7 +35,7 @@ pub(crate) struct EndpointCommandResult {
     /// The connection generation the command was sent on. A timed-out command is answered
     /// with its timeout only while that connection is still current; otherwise it is
     /// dropped as interrupted.
-    pub(crate) generation: u64,
+    pub(crate) generation: ConnectionGeneration,
     pub(crate) boot_id: BootId,
     pub(crate) request_id: RequestId,
     pub(crate) result: Result<EndpointReply, ClientShellEndpointError>,
@@ -61,7 +65,7 @@ impl EndpointCommands {
     pub(crate) fn enqueue(
         &mut self,
         endpoint_id: ClientEndpointId,
-        generation: u64,
+        generation: ConnectionGeneration,
         boot_id: BootId,
         request: Box<ClientShellEndpointRequest>,
     ) {
@@ -70,7 +74,7 @@ impl EndpointCommands {
             .or_default()
             .queued
             .push_back(QueuedCommand {
-                generation: generation.into(),
+                generation,
                 boot_id,
                 request,
             });
@@ -89,7 +93,7 @@ impl EndpointCommands {
         }
         while let Some(queued) = lane.queued.pop_front() {
             let ClientShellEndpointRequest { id, command } = *queued.request;
-            if !endpoints.accepts(endpoint_id, queued.generation.get()) {
+            if !endpoints.accepts(endpoint_id, queued.generation) {
                 cancelled.unsent.push(id);
                 continue;
             }
@@ -156,7 +160,7 @@ impl EndpointCommands {
                 let command = lane.in_flight.take()?;
                 Some(EndpointCommandResult {
                     endpoint_id: endpoint_id.clone(),
-                    generation: command.key.generation.get(),
+                    generation: command.key.generation,
                     boot_id: command.key.boot_id,
                     request_id: command.key.request_id,
                     result: Err(ClientShellEndpointError::Timeout),
@@ -170,14 +174,14 @@ impl EndpointCommands {
     pub(crate) fn receive_response(
         &mut self,
         endpoint_id: &ClientEndpointId,
-        response_generation: u64,
+        response_generation: ConnectionGeneration,
         response_boot_id: &BootId,
         response_request_id: &RequestId,
         result: Result<EndpointReply, EndpointError>,
     ) -> Option<EndpointCommandResult> {
         let lane = self.lanes.get_mut(endpoint_id)?;
         let key = RequestKey {
-            generation: response_generation.into(),
+            generation: response_generation,
             boot_id: response_boot_id.clone(),
             request_id: response_request_id.clone(),
         };
@@ -187,7 +191,7 @@ impl EndpointCommands {
         let in_flight = lane.in_flight.take()?;
         Some(EndpointCommandResult {
             endpoint_id: endpoint_id.clone(),
-            generation: in_flight.key.generation.get(),
+            generation: in_flight.key.generation,
             boot_id: in_flight.key.boot_id,
             request_id: in_flight.key.request_id,
             result: result.map_err(ClientShellEndpointError::from),
@@ -221,6 +225,7 @@ impl EndpointCommands {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tests::test_generation as generation;
     use std::time::Duration;
 
     fn endpoint() -> ClientEndpointId {
@@ -236,7 +241,13 @@ mod tests {
     }
 
     fn request_a() -> RequestId {
-        "request-a".into()
+        static ID: std::sync::OnceLock<RequestId> = std::sync::OnceLock::new();
+        ID.get_or_init(RequestId::allocate).clone()
+    }
+
+    fn request_b() -> RequestId {
+        static ID: std::sync::OnceLock<RequestId> = std::sync::OnceLock::new();
+        ID.get_or_init(RequestId::allocate).clone()
     }
 
     fn commands_with_in_flight() -> EndpointCommands {
@@ -246,9 +257,9 @@ mod tests {
                 EndpointCommandLane {
                     in_flight: Some(InFlightCommand {
                         key: RequestKey {
-                            generation: ConnectionGeneration::new(1),
+                            generation: generation(1),
                             boot_id: boot_a(),
-                            request_id: "request-a".into(),
+                            request_id: request_a(),
                         },
                         sent_at: Instant::now(),
                     }),
@@ -265,12 +276,12 @@ mod tests {
             .is_some_and(|lane| lane.in_flight.is_some())
     }
 
-    fn queued(request_id: &str, generation: u64, boot_id: BootId) -> QueuedCommand {
+    fn queued(request_id: RequestId, position: u64, boot_id: BootId) -> QueuedCommand {
         QueuedCommand {
-            generation: ConnectionGeneration::new(generation),
+            generation: generation(position),
             boot_id,
             request: Box::new(ClientShellEndpointRequest {
-                id: request_id.into(),
+                id: request_id,
                 command: shepr_protocol::command::EndpointCommand::PaneClear(
                     shepr_protocol::command::PaneTarget {
                         pane_id: shepr_test_fixtures::id("w1:p1"),
@@ -283,14 +294,14 @@ mod tests {
     #[test]
     fn a_response_matches_only_the_in_flight_request() {
         let mut commands = commands_with_in_flight();
-        for (generation, boot, id) in [
-            (2, boot_a(), request_a()),
-            (1, boot_b(), request_a()),
-            (1, boot_a(), "other".into()),
+        for (at, boot, id) in [
+            (generation(2), boot_a(), request_a()),
+            (generation(1), boot_b(), request_a()),
+            (generation(1), boot_a(), RequestId::allocate()),
         ] {
             assert!(
                 commands
-                    .receive_response(&endpoint(), generation, &boot, &id, Ok(EndpointReply::Done))
+                    .receive_response(&endpoint(), at, &boot, &id, Ok(EndpointReply::Done))
                     .is_none()
             );
         }
@@ -298,7 +309,7 @@ mod tests {
             commands
                 .receive_response(
                     &endpoint(),
-                    1,
+                    generation(1),
                     &boot_a(),
                     &request_a(),
                     Ok(EndpointReply::Done)
@@ -313,7 +324,7 @@ mod tests {
         let completed = commands
             .receive_response(
                 &endpoint(),
-                1,
+                generation(1),
                 &boot_a(),
                 &request_a(),
                 Ok(EndpointReply::PaneSelection {
@@ -324,9 +335,9 @@ mod tests {
             .expect("test precondition");
 
         assert_eq!(completed.endpoint_id, endpoint());
-        assert_eq!(completed.generation, 1);
+        assert_eq!(completed.generation, generation(1));
         assert_eq!(completed.boot_id, boot_a());
-        assert_eq!(completed.request_id, "request-a");
+        assert_eq!(completed.request_id, request_a());
         assert!(matches!(
             completed.result,
             Ok(EndpointReply::PaneSelection { text, .. }) if text == "selected"
@@ -340,7 +351,7 @@ mod tests {
         let completed = commands
             .receive_response(
                 &endpoint(),
-                1,
+                generation(1),
                 &boot_a(),
                 &request_a(),
                 Err(EndpointError::LimitExceeded(
@@ -391,7 +402,7 @@ mod tests {
 
         assert_eq!(expired.endpoint_id, endpoint());
         assert_eq!(expired.boot_id, boot_a());
-        assert_eq!(expired.request_id, "request-a");
+        assert_eq!(expired.request_id, request_a());
         assert!(matches!(
             expired.result,
             Err(ClientShellEndpointError::Timeout)
@@ -403,7 +414,7 @@ mod tests {
             commands
                 .receive_response(
                     &endpoint(),
-                    1,
+                    generation(1),
                     &boot_a(),
                     &request_a(),
                     Ok(EndpointReply::Done)
@@ -424,9 +435,9 @@ mod tests {
             EndpointCommandLane {
                 in_flight: Some(InFlightCommand {
                     key: RequestKey {
-                        generation: ConnectionGeneration::new(2),
+                        generation: generation(2),
                         boot_id: boot_b(),
-                        request_id: "request-b".into(),
+                        request_id: request_b(),
                     },
                     sent_at: Instant::now(),
                 }),
@@ -437,9 +448,9 @@ mod tests {
         let completed = commands
             .receive_response(
                 &remote,
-                2,
+                generation(2),
                 &boot_b(),
-                &"request-b".into(),
+                &request_b(),
                 Ok(EndpointReply::Done),
             )
             .expect("remote response");
@@ -460,16 +471,17 @@ mod tests {
             crate::endpoint::MachineLabel::parse("build").expect("test precondition"),
         );
         let mut commands = commands_with_in_flight();
+        let source = RequestId::allocate();
         commands
             .lanes
             .get_mut(&endpoint())
             .expect("test precondition")
             .queued
-            .push_back(queued("queued-source", 1, boot_a()));
+            .push_back(queued(source.clone(), 1, boot_a()));
         commands.lanes.insert(
             remote.clone(),
             EndpointCommandLane {
-                queued: VecDeque::from([queued("request-b", 2, boot_b())]),
+                queued: VecDeque::from([queued(request_b(), 2, boot_b())]),
                 ..EndpointCommandLane::default()
             },
         );
@@ -477,8 +489,8 @@ mod tests {
         assert_eq!(
             commands.retire_lane(&endpoint()),
             EndpointCommandCancellation {
-                unsent: vec!["queued-source".into()],
-                possibly_sent: vec!["request-a".into()],
+                unsent: vec![source],
+                possibly_sent: vec![request_a()],
             }
         );
         assert!(!has_in_flight(&commands));
@@ -499,7 +511,7 @@ mod tests {
             commands
                 .receive_response(
                     &endpoint(),
-                    1,
+                    generation(1),
                     &boot_a(),
                     &request_a(),
                     Ok(EndpointReply::Done)
@@ -511,17 +523,18 @@ mod tests {
     #[test]
     fn disconnect_returns_every_request_that_must_be_discarded() {
         let mut commands = commands_with_in_flight();
+        let queued_a = RequestId::allocate();
         commands
             .lanes
             .get_mut(&endpoint())
             .expect("test precondition")
             .queued
-            .push_back(queued("queued-a", 1, boot_a()));
+            .push_back(queued(queued_a.clone(), 1, boot_a()));
         assert_eq!(
             commands.disconnect(&endpoint()),
             EndpointCommandCancellation {
-                unsent: vec!["queued-a".into()],
-                possibly_sent: vec!["request-a".into()],
+                unsent: vec![queued_a],
+                possibly_sent: vec![request_a()],
             }
         );
         assert!(!commands.lanes.contains_key(&endpoint()));
@@ -538,7 +551,7 @@ mod tests {
             commands
                 .receive_response(
                     &endpoint(),
-                    2,
+                    generation(2),
                     &boot_a(),
                     &request_a(),
                     Ok(EndpointReply::Done)
@@ -549,7 +562,7 @@ mod tests {
             commands
                 .receive_response(
                     &endpoint(),
-                    1,
+                    generation(1),
                     &boot_b(),
                     &request_a(),
                     Ok(EndpointReply::Done)
@@ -560,7 +573,7 @@ mod tests {
             commands
                 .receive_response(
                     &unknown,
-                    1,
+                    generation(1),
                     &boot_a(),
                     &request_a(),
                     Ok(EndpointReply::Done)

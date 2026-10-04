@@ -83,14 +83,16 @@ impl ExplainedAgent {
 }
 
 /// Input to the detection engine, carrying the screen snapshot plus any
-/// OSC-derived strings captured from the terminal title / progress sequences.
-/// Pass empty strings for `osc_title` and `osc_progress` when the data is not
-/// available; rules targeting those OSC regions then see empty text.
+/// OSC-derived evidence captured from the terminal title / progress sequences.
+/// `osc_title` and `osc_progress` are `None` when there is no such evidence;
+/// a region reading from one then has empty text. `osc_progress` is the
+/// canonical `4;state[;percent]` spelling of the last ConEmu progress report
+/// (for example `4;3` or `4;0;0`).
 #[derive(Debug, Clone, Copy)]
 pub struct DetectionInput<'a> {
     pub screen: &'a str,
-    pub osc_title: &'a str,
-    pub osc_progress: &'a str,
+    pub osc_title: Option<&'a str>,
+    pub osc_progress: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,7 +170,7 @@ pub(crate) struct AgentManifest {
 struct ManifestRule {
     id: String,
     #[serde(default = "default_state")]
-    state: ManifestState,
+    state: AgentState,
     #[serde(default)]
     priority: i32,
     #[serde(default = "default_region")]
@@ -411,7 +413,8 @@ pub enum RegionSpec {
     AfterLastHorizontalRule,
     /// `osc_title`: the last OSC window title, not the screen.
     OscTitle,
-    /// `osc_progress`: the last OSC 9;4 progress string, not the screen.
+    /// `osc_progress`: the last OSC 9;4 progress report as `4;state[;percent]`,
+    /// not the screen.
     OscProgress,
     /// `bottom_non_empty_lines(N)` and `top_non_empty_lines(N)`: bounded by
     /// `MIN_REGION_LINE_COUNT..=MAX_REGION_LINE_COUNT`, written without a leading zero.
@@ -471,8 +474,8 @@ impl RegionSpec {
     /// Extract this region without building a line index for a detection tick.
     fn extract<'a>(self, input: DetectionInput<'a>) -> &'a str {
         match self {
-            Self::OscTitle => input.osc_title,
-            Self::OscProgress => input.osc_progress,
+            Self::OscTitle => input.osc_title.unwrap_or(""),
+            Self::OscProgress => input.osc_progress.unwrap_or(""),
             Self::WholeRecent => input.screen,
             Self::AfterLastHorizontalRule => after_last_horizontal_rule(input.screen),
             Self::CodexAfterLastPromptMarker => codex_after_last_prompt_marker(input.screen),
@@ -497,15 +500,6 @@ impl RegionSpec {
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ManifestState {
-    Idle,
-    Working,
-    Blocked,
-    Unknown,
-}
-
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 enum ManifestFallback {
     Idle,
     Unknown,
@@ -520,17 +514,6 @@ impl From<ManifestFallback> for AgentState {
     }
 }
 
-impl From<ManifestState> for AgentState {
-    fn from(value: ManifestState) -> Self {
-        match value {
-            ManifestState::Idle => AgentState::Idle,
-            ManifestState::Working => AgentState::Working,
-            ManifestState::Blocked => AgentState::Blocked,
-            ManifestState::Unknown => AgentState::Unknown,
-        }
-    }
-}
-
 fn default_region() -> String {
     "whole_recent".to_string()
 }
@@ -539,8 +522,8 @@ fn default_fallback() -> ManifestFallback {
     ManifestFallback::Idle
 }
 
-fn default_state() -> ManifestState {
-    ManifestState::Unknown
+fn default_state() -> AgentState {
+    AgentState::Unknown
 }
 
 /// The bundled screen-detection rules for `agent`, or `None` for an agent
@@ -645,8 +628,8 @@ pub fn explain(agent: Agent, screen_content: &str) -> DetectionExplain {
         agent,
         DetectionInput {
             screen: screen_content,
-            osc_title: "",
-            osc_progress: "",
+            osc_title: None,
+            osc_progress: None,
         },
     )
 }
@@ -819,7 +802,7 @@ fn compile_manifest(manifest: AgentManifest) -> Result<CompiledManifest, String>
     let mut regions = RegionTable::default();
     let mut rules = Vec::with_capacity(manifest.rules.len());
     for rule in manifest.rules {
-        unknown_is_stable |= rule.state == ManifestState::Unknown;
+        unknown_is_stable |= rule.state == AgentState::Unknown;
         rules.push(compile_rule(rule, &mut regions, &mut complexity)?);
     }
 
@@ -850,26 +833,26 @@ fn compile_rule(
     if rule.id.trim().is_empty() {
         return Err("manifest rule id must not be empty".to_string());
     }
-    if rule.visible_idle && rule.state != ManifestState::Idle {
+    if rule.visible_idle && rule.state != AgentState::Idle {
         return Err(format!(
             "rule {} uses visible_idle without state = \"idle\"",
             rule.id
         ));
     }
-    if rule.visible_blocker && rule.state != ManifestState::Blocked {
+    if rule.visible_blocker && rule.state != AgentState::Blocked {
         return Err(format!(
             "rule {} uses visible_blocker without state = \"blocked\"",
             rule.id
         ));
     }
-    if rule.visible_working && rule.state != ManifestState::Working {
+    if rule.visible_working && rule.state != AgentState::Working {
         return Err(format!(
             "rule {} uses visible_working without state = \"working\"",
             rule.id
         ));
     }
     if rule.skip_state_update {
-        if rule.state != ManifestState::Unknown {
+        if rule.state != AgentState::Unknown {
             return Err(format!(
                 "rule {} uses skip_state_update without state = \"unknown\"",
                 rule.id
@@ -903,7 +886,7 @@ fn compile_rule(
             AgentDetection::Skip
         } else {
             AgentDetection::State(Detection::new(
-                rule.state.into(),
+                rule.state,
                 rule.visible_idle || rule.visible_blocker || rule.visible_working,
             ))
         },
@@ -1462,8 +1445,8 @@ pub fn detect(agent: Agent, screen_content: &str) -> AgentDetection {
         agent,
         DetectionInput {
             screen: screen_content,
-            osc_title: "",
-            osc_progress: "",
+            osc_title: None,
+            osc_progress: None,
         },
     )
 }

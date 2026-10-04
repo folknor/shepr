@@ -81,8 +81,8 @@ impl PaneRead<'_> {
         self.terminal.mouse_reporting_enabled()
     }
 
-    pub fn sgr_pixel_mouse_enabled(&self) -> bool {
-        self.terminal.sgr_pixel_mouse_enabled()
+    pub fn pixel_mouse(&self) -> shepr_term::mouse::PanePixelMouse {
+        self.terminal.pixel_mouse()
     }
 
     pub fn plain_page_keys_use_host_scrollback(&self) -> Option<bool> {
@@ -100,27 +100,42 @@ impl PaneRead<'_> {
     }
 
     /// Clip to the pane content area before translating into surface coordinates.
-    pub fn cursor_state(&self, area: Rect) -> Option<TerminalCursorState> {
-        let cursor = self.terminal.cursor_state()?;
-        if cursor.x >= area.width || cursor.y >= area.height {
-            return None;
+    /// The synchronized-output gate is decided in the same terminal-core hold
+    /// as the cursor ([`CursorRead::Deferred`]).
+    pub fn cursor(&self, area: Rect) -> crate::pane::CursorRead {
+        use crate::pane::CursorRead;
+
+        match self.terminal.cursor_read() {
+            CursorRead::Shown(cursor) if cursor.x >= area.width || cursor.y >= area.height => {
+                CursorRead::Unavailable
+            }
+            CursorRead::Shown(cursor) => CursorRead::Shown(TerminalCursorState {
+                x: area.x + cursor.x,
+                y: area.y + cursor.y,
+                visible: cursor.visible,
+                shape: cursor.shape,
+            }),
+            other => other,
         }
-        Some(TerminalCursorState {
-            x: area.x + cursor.x,
-            y: area.y + cursor.y,
-            visible: cursor.visible,
-            shape: cursor.shape,
-        })
     }
 
+    /// Whether a synchronized update is open, read without the core lock.
     pub fn synchronized_output_active(&self) -> bool {
         self.terminal.synchronized_output_active()
     }
 
-    /// Returns the synchronized-output flag and generation together. `None`
-    /// means the terminal core is poisoned, so render callers must defer the
-    /// frame instead of treating an invented state as a successful read.
-    pub fn synchronized_output_state(&self) -> Option<(bool, u64)> {
+    /// Whether the pane's surface is held back: its core is poisoned or a
+    /// synchronized update is open. Lock-free, so a caller planning a render
+    /// never waits on a PTY reader; drawing still decides under the lock
+    /// ([`Self::synchronized_output_state`]).
+    pub fn surface_held(&self) -> bool {
+        self.terminal.surface_held()
+    }
+
+    /// The synchronized-output flag and epoch together. A poisoned core reads
+    /// as [`SyncState::Poisoned`], so render callers defer the frame instead of
+    /// treating an invented state as a successful read.
+    pub fn synchronized_output_state(&self) -> super::SyncState {
         self.terminal.synchronized_output_state()
     }
 
@@ -154,9 +169,14 @@ impl PaneRead<'_> {
     }
 
     /// Draws the visible screen into `area` of a wire frame; see
-    /// [`PaneTerminal::render_into`].
-    pub fn render_into(&self, frame: &mut shepr_protocol::FrameData, area: Rect) {
-        self.terminal.render_into(frame, area);
+    /// [`PaneTerminal::render_into`]. The result says whether it drew and, if
+    /// it did, the state it drew from.
+    pub fn render_into(
+        &self,
+        frame: &mut shepr_protocol::FrameData,
+        area: Rect,
+    ) -> crate::pane::PaneDraw {
+        self.terminal.render_into(frame, area)
     }
 
     pub fn collect_dirty_patch_snapshot(
@@ -169,11 +189,9 @@ impl PaneRead<'_> {
             .collect_dirty_patch_snapshot(area_width, area_height)
     }
 
-    /// Odd means unavailable or torn; it must never certify a stable surface.
-    pub fn content_seq(&self) -> u64 {
-        self.terminal
-            .core
-            .lock()
-            .map_or(1, |core| core.content_revision)
+    /// The render revision; `None` when the core is poisoned, which must
+    /// never certify a stable surface ([`ContentRevision::certify`]).
+    pub fn content_revision(&self) -> Option<super::ContentRevision> {
+        self.terminal.content_revision()
     }
 }

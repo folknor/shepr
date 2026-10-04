@@ -1,14 +1,15 @@
 use super::*;
-use crate::limits::{MAX_QUERY_BYTES, MAX_RETURNED_MATCHES};
 use shepr_protocol::command::EndpointError;
+
+/// Refuse oversized copy-mode queries to bound search work per request.
+const MAX_QUERY_BYTES: usize = 4096;
+/// Limit copy-mode matches to bound each response.
+const MAX_RETURNED_MATCHES: usize = 1024;
 
 impl App {
     pub(crate) fn handle_pane_clear(&mut self, target: &PaneTarget) -> HandlerResult {
-        let (ws_idx, pane_id) = self.endpoint_pane(&target.pane_id)?;
-        let Some(runtime) =
-            self.state
-                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-        else {
+        let (_, pane_id) = self.endpoint_pane(&target.pane_id)?;
+        let Some(runtime) = self.lookup_runtime(pane_id) else {
             return Err(pane_missing(&target.pane_id).into());
         };
         match runtime.clear_screen() {
@@ -27,17 +28,14 @@ impl App {
     }
 
     pub(crate) fn handle_pane_scroll(&mut self, params: &PaneScrollParams) -> HandlerResult {
-        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
-        let Some(runtime) =
-            self.state
-                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-        else {
+        let (_, pane_id) = self.endpoint_pane(&params.pane_id)?;
+        let Some(runtime) = self.lookup_runtime(pane_id) else {
             return Err(pane_missing(&params.pane_id).into());
         };
         let scroll_changed = runtime
             .set_scroll_offset_from_bottom(params.offset_from_bottom)
             .is_changed();
-        let Some(pane) = self.pane_info(ws_idx, pane_id) else {
+        let Some(pane) = self.pane_info(pane_id) else {
             return Err(HandlerError {
                 error: pane_missing(&params.pane_id),
                 effects: EndpointEffects::pane_viewers(pane_id, scroll_changed),
@@ -55,11 +53,8 @@ impl App {
         &self,
         params: &PaneSelectionReadParams,
     ) -> Result<String, EndpointError> {
-        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
-        let Some(runtime) =
-            self.state
-                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-        else {
+        let (_, pane_id) = self.endpoint_pane(&params.pane_id)?;
+        let Some(runtime) = self.lookup_runtime(pane_id) else {
             return Err(pane_missing(&params.pane_id));
         };
         let selection =
@@ -87,30 +82,11 @@ impl App {
         &mut self,
         params: PaneCopyMotionParams,
     ) -> HandlerResult {
-        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
-        let Some(runtime) =
-            self.state
-                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-        else {
+        let (_, pane_id) = self.endpoint_pane(&params.pane_id)?;
+        let Some(runtime) = self.lookup_runtime(pane_id) else {
             return Err(pane_missing(&params.pane_id).into());
         };
-        use shepr_mux::pane::{TerminalCopyMotion, TerminalLineMotion, TerminalParagraphMotion};
-        let motion = match params.motion {
-            PaneCopyMotion::Line(PaneLineMotion::End) => {
-                TerminalCopyMotion::Line(TerminalLineMotion::End)
-            }
-            PaneCopyMotion::Line(PaneLineMotion::FirstNonBlank) => {
-                TerminalCopyMotion::Line(TerminalLineMotion::FirstNonBlank)
-            }
-            PaneCopyMotion::Word(motion) => TerminalCopyMotion::Word(terminal_word_motion(motion)),
-            PaneCopyMotion::Paragraph(PaneParagraphMotion::Previous) => {
-                TerminalCopyMotion::Paragraph(TerminalParagraphMotion::Previous)
-            }
-            PaneCopyMotion::Paragraph(PaneParagraphMotion::Next) => {
-                TerminalCopyMotion::Paragraph(TerminalParagraphMotion::Next)
-            }
-        };
-        let target = match runtime.read().copy_motion(params.cursor, motion) {
+        let target = match runtime.read().copy_motion(params.cursor, params.motion) {
             Ok(target) => target,
             Err(shepr_mux::pane::TerminalCopyMotionError::RowUnavailable) => {
                 return Err(
@@ -128,11 +104,8 @@ impl App {
         &mut self,
         params: &PaneCopySearchParams,
     ) -> HandlerResult {
-        let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
-        let Some(runtime) =
-            self.state
-                .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-        else {
+        let (_, pane_id) = self.endpoint_pane(&params.pane_id)?;
+        let Some(runtime) = self.lookup_runtime(pane_id) else {
             return Err(pane_missing(&params.pane_id).into());
         };
         if params.query.len() > MAX_QUERY_BYTES {
@@ -146,10 +119,7 @@ impl App {
                 start: previous.start,
                 end: previous.end,
             });
-        let direction = match params.direction {
-            PaneCopySearchDirection::Forward => shepr_mux::pane::TerminalSearchDirection::Forward,
-            PaneCopySearchDirection::Backward => shepr_mux::pane::TerminalSearchDirection::Backward,
-        };
+        let direction = params.direction;
         let result = runtime
             .read()
             .search_text_window(shepr_mux::pane::TerminalTextSearch {

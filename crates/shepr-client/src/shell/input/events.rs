@@ -114,7 +114,6 @@ mod tests {
         ClientPaneInputEvent::Mouse {
             kind: shepr_protocol::ClientMouseKind::ScrollUp,
             position: shepr_protocol::ClientMousePosition::Cell { column: 0, row: 0 },
-            geometry: None,
             modifiers: shepr_protocol::WireModifiers::NONE,
             lines,
         }
