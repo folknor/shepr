@@ -45,6 +45,9 @@ struct Launched {
     machines: Vec<shepr_config::MachineConfig>,
     local_failure_policy: endpoint::LocalFailurePolicy,
     initial_host_geometry: HostGeometrySnapshot,
+    /// `initial_host_geometry`'s geometry, bounded once
+    /// (`terminal_geometry::bounded_cell_geometry`) for the first attach and the client state.
+    initial_geometry: terminal_geometry::TerminalGeometry,
     event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
     event_rx: tokio::sync::mpsc::Receiver<ClientLoopEvent>,
     settings: ClientSettings,
@@ -83,17 +86,16 @@ impl Launched {
 
         // Get the terminal geometry before handshake (before raw mode).
         let initial_host_geometry = initial_terminal_geometry()?;
-        let geometry = initial_host_geometry.geometry;
-        let (cols, rows) = (geometry.cols(), geometry.rows());
-
-        let host_size = terminal_geometry::ClientHostSize::new(cols, rows);
-        let shell_surface_size = shell_config.initial_surface_size(host_size.cols, host_size.rows);
+        let initial_geometry =
+            terminal_geometry::bounded_cell_geometry(initial_host_geometry.geometry);
+        let shell_surface_size =
+            shell_config.initial_surface_size(initial_geometry.cols(), initial_geometry.rows());
         // Healthy Local attaches directly; only an actual failure enters background recovery.
         let local_generation = endpoint::EndpointSupervisors::initial_local_generation();
         let initial_attach = attach_local_endpoint(
             &socket_path,
             shepr_protocol::endpoint::EndpointClientHello {
-                geometry: view_geometry(geometry, shell_surface_size),
+                geometry: view_geometry(initial_geometry, shell_surface_size),
                 mouse_capture: settings.mouse_capture_active(),
                 // Local is the first shown endpoint; it can render as soon as the handshake completes.
                 surface_active: true,
@@ -148,6 +150,7 @@ impl Launched {
             machines,
             local_failure_policy,
             initial_host_geometry,
+            initial_geometry,
             event_tx,
             event_rx,
             settings,
@@ -282,6 +285,7 @@ impl Launched {
             machines,
             local_failure_policy,
             initial_host_geometry,
+            initial_geometry,
             event_tx,
             event_rx,
             settings,
@@ -303,10 +307,7 @@ impl Launched {
                 failure.map_or(LocalLaunchState::Unreached, LocalLaunchState::Failed),
             ),
         };
-        let initial_geometry = initial_host_geometry.geometry;
         let host_geometry = SharedHostGeometry::new(initial_host_geometry);
-        let (cols, rows) = (initial_geometry.cols(), initial_geometry.rows());
-        let initial_geometry = terminal_geometry::bounded_cell_geometry(initial_geometry);
         let draw_host_cursor = should_draw_host_cursor(settings.host_cursor());
 
         let host_modes = terminal_guard.host_modes();
@@ -326,6 +327,7 @@ impl Launched {
             title_write_failure: HostWriteFailure::default(),
             mode_write_failure: HostWriteFailure::default(),
             retry_host_modes: false,
+            refused_output_retry: state::RefusedOutputRetry::default(),
         };
         state.shell.endpoints.choice = match &local_launch_state {
             LocalLaunchState::Attached => {
@@ -335,7 +337,6 @@ impl Launched {
                 endpoint::EndpointChoice::waiting_for(endpoint::ClientEndpointId::Local)
             }
         };
-        state.set_host_size(cols, rows);
         state.shell.set_host_cell(initial_geometry.cell());
         state.shell.set_machines(&machines);
         if let LocalLaunchState::Failed(failure) = &local_launch_state {

@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use super::PaneSurface;
-use super::chrome::{overlay_buffer, put_run};
+use super::chrome::{overlay_buffer, put_run_with};
 use super::scrollbar::render_pane_scrollbar;
 use super::text::truncate_end;
 use crate::app::AppState;
@@ -208,34 +208,42 @@ fn render_pane_borders(
         mark_focused_pane_cells(&mut cells, info, app.settings().pane_gaps);
     }
 
-    let width = usize::from(frame.width());
-    if width > 0 {
-        for (index, line) in cells.cells.iter().copied().enumerate() {
-            if !line.has_any(LineCell::PRESENT) {
+    // Each row's border strokes are written as runs of adjacent cells, each
+    // stroke written straight into its frame cell. The glyph repair scans the
+    // whole row once per run, so a cell-at-a-time write would rescan it for
+    // every cell of a horizontal border. Strokes are one column wide, so a run
+    // repairs exactly what writing its cells one by one would.
+    let accent = WireColor::from_ratatui(app.settings().palette.accent);
+    let overlay0 = WireColor::from_ratatui(app.settings().palette.overlay0);
+    let blank = CellData::blank();
+    for y in 0..cells.height {
+        let row_start = usize::from(y) * usize::from(cells.width);
+        let row = &cells.cells[row_start..row_start + usize::from(cells.width)];
+        let stroke = |column: u16| {
+            let line = row[usize::from(column)];
+            line.has_any(LineCell::PRESENT) && !line_cell_symbol(line).is_empty()
+        };
+        let mut x = 0;
+        while x < cells.width {
+            if !stroke(x) {
+                x += 1;
                 continue;
             }
-            let (Ok(x), Ok(y)) = (u16::try_from(index % width), u16::try_from(index / width))
-            else {
-                continue;
-            };
-            if y >= frame.height() {
-                continue;
+            let start = x;
+            while x < cells.width && stroke(x) {
+                x += 1;
             }
-            let symbol = line_cell_symbol(line);
-            if symbol.is_empty() {
-                continue;
-            }
-            let color = if line.has_any(LineCell::FOCUSED) {
-                app.settings().palette.accent
-            } else {
-                app.settings().palette.overlay0
-            };
-            let cell = CellData {
-                symbol: symbol.to_owned(),
-                fg: WireColor::from_ratatui(color),
-                ..CellData::blank()
-            };
-            put_run(frame, x, y, &[cell]);
+            put_run_with(frame, start, y, usize::from(x - start), |index, slot| {
+                let line = row[usize::from(start) + index];
+                slot.clone_from(&blank);
+                slot.symbol.clear();
+                slot.symbol.push_str(line_cell_symbol(line));
+                slot.fg = if line.has_any(LineCell::FOCUSED) {
+                    accent
+                } else {
+                    overlay0
+                };
+            });
         }
     }
 

@@ -372,11 +372,7 @@ async fn a_frozen_persisting_server_runs_the_final_save_and_writes_nothing() {
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
     assert!(server.app.session_persists());
 
-    let session_file = server
-        .app
-        .test_paths()
-        .data_dir()
-        .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME);
+    let session_file = shepr_mux::persist::session_path(server.app.test_paths().data_dir());
     let written_by_the_warning = std::fs::read(&session_file).expect("the warning's checkpoint");
 
     server.app.test_state_mut().mark_session_dirty();

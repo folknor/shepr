@@ -56,7 +56,7 @@ impl App {
         let now = self.clock.now;
         let last_unapplied_hook_report = terminal
             .ownership()
-            .last_unapplied_hook_report()
+            .last_unapplied_hook_report(now)
             .map(|report| UnappliedHookReport::from_ownership(report, now));
         let owner = terminal.ownership().state_owner();
         if let Some(authority) = terminal.ownership().hook_authority().filter(|_| {

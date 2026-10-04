@@ -157,11 +157,13 @@ impl App {
             pane_scrollback,
             hostname.clone(),
         );
-        // The session's one workspace ID allocator. Restore moves it past
-        // every saved ID before it issues any, and the workspace set then owns
-        // it.
-        let mut workspace_ids = shepr_mux::workspace::WorkspaceIdAllocator::new();
-        let opened = shepr_mux::persist::open_session(
+        let shepr_mux::persist::OpenedSession {
+            workspaces,
+            terminal_runtimes: restored_terminal_runtimes,
+            host_theme,
+            persister,
+            restore_notice,
+        } = shepr_mux::persist::open_session(
             lease,
             &shepr_mux::persist::SessionOpenOptions {
                 policy: persistence,
@@ -172,42 +174,14 @@ impl App {
                 now: clock.now,
             },
             std::sync::Arc::clone(&save_finished),
-            &mut workspace_ids,
         );
-        let shepr_mux::persist::OpenedSession {
-            policy: session_policy,
-            restored,
-            restored_host_theme,
-            persister,
-            restore_notice,
-            restore_summary,
-        } = opened;
-        if let Some(summary) = restore_summary {
-            crate::logging::session_restored(
-                &paths
-                    .data_dir()
-                    .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
-                summary,
-            );
-        }
-        let restored_host_theme = restored_host_theme.unwrap_or_default();
-        let (workspaces, active, restored_terminal_runtimes) = match restored {
-            Some(restored) => (
-                restored.workspaces,
-                restored.active,
-                restored.terminal_runtimes,
-            ),
-            None => (Vec::new(), None, std::collections::HashMap::new()),
-        };
 
         info!(
             pane_scrollback_limit_bytes = pane_scrollback.bytes(),
             "using pane scrollback configuration"
         );
 
-        let workspaces =
-            shepr_mux::workspace::WorkspaceSet::restored(workspace_ids, workspaces, active);
-        let state = AppState::new(settings, workspaces, restored_host_theme);
+        let state = AppState::new(settings, workspaces, host_theme);
         // Restored workspaces get their Git identity (label and status)
         // from the first background Git refresh, not from a synchronous walk
         // here. The scheduler starts due immediately and discovers every
@@ -225,7 +199,7 @@ impl App {
             ),
             session_saver: session::SessionSaver::new(
                 persister,
-                session_policy,
+                persistence,
                 config.experimental().pane_history,
             ),
             hostname,

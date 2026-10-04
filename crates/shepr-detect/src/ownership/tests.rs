@@ -3673,7 +3673,7 @@ fn a_rejected_report_is_kept_until_a_later_one_from_its_source_applies() {
         HookOutcome::Rejected(HookRejection::MissingSession)
     );
     assert_eq!(
-        terminal.last_unapplied_hook_report(),
+        terminal.last_unapplied_hook_report(t0),
         Some(&UnappliedHookReport {
             origin: codex_origin(),
             kind: HookReportKind::State(AgentState::Working),
@@ -3693,7 +3693,10 @@ fn a_rejected_report_is_kept_until_a_later_one_from_its_source_applies() {
         HookClockSample::from(t0 + Duration::from_millis(1)),
     );
     assert!(matches!(applied, HookOutcome::Applied(_)), "{applied:?}");
-    assert_eq!(terminal.last_unapplied_hook_report(), None);
+    assert_eq!(
+        terminal.last_unapplied_hook_report(t0 + Duration::from_millis(1)),
+        None
+    );
 
     // A straggler behind the applied sequence is recorded with what it was.
     let straggler_sample = HookClockSample::from(t0 + Duration::from_millis(2));
@@ -3706,7 +3709,7 @@ fn a_rejected_report_is_kept_until_a_later_one_from_its_source_applies() {
     );
     assert_eq!(straggler, HookOutcome::Rejected(HookRejection::OutOfOrder));
     let last = terminal
-        .last_unapplied_hook_report()
+        .last_unapplied_hook_report(straggler_sample.monotonic)
         .expect("the straggler is recorded");
     assert_eq!(last.kind, HookReportKind::State(AgentState::Idle));
     assert_eq!(last.seq, Some(4));
@@ -3742,7 +3745,7 @@ fn an_applied_report_from_another_source_keeps_the_rejection() {
     assert!(matches!(outcome, HookOutcome::Applied(_)), "{outcome:?}");
     assert_eq!(
         terminal
-            .last_unapplied_hook_report()
+            .last_unapplied_hook_report(t0 + Duration::from_millis(1))
             .map(|last| last.disposition),
         Some(UnappliedHookDisposition::Rejected(
             HookRejection::MissingSession
@@ -3766,7 +3769,7 @@ fn a_parked_start_is_recorded_until_process_evidence_promotes_it() {
     );
     assert_eq!(outcome, HookOutcome::Parked);
     let parked = terminal
-        .last_unapplied_hook_report()
+        .last_unapplied_hook_report(t0)
         .expect("the parked start is recorded");
     assert_eq!(parked.kind, HookReportKind::SessionStart(start));
     assert_eq!(parked.disposition, UnappliedHookDisposition::Parked);
@@ -3783,7 +3786,10 @@ fn a_parked_start_is_recorded_until_process_evidence_promotes_it() {
         terminal.persisted_agent_session().is_some(),
         "process evidence promotes the parked start"
     );
-    assert_eq!(terminal.last_unapplied_hook_report(), None);
+    assert_eq!(
+        terminal.last_unapplied_hook_report(t0 + Duration::from_millis(1)),
+        None
+    );
 }
 
 #[test]
@@ -3801,18 +3807,114 @@ fn an_expired_parked_start_is_no_longer_recorded_as_parked() {
         t0,
     );
     assert_eq!(outcome, HookOutcome::Parked);
-    assert!(terminal.last_unapplied_hook_report().is_some());
+    let deadline = t0 + crate::limits::PARKED_START_LIFETIME;
+    let expired = deadline + Duration::from_nanos(1);
+    assert!(terminal.last_unapplied_hook_report(deadline).is_some());
+    // No process observation has applied the expiry yet; the read alone
+    // judges it.
+    assert_eq!(terminal.last_unapplied_hook_report(expired), None);
 
     terminal.set_detected_state_with_screen_signals_at(
         Some(Agent::Kimi),
         AgentState::Idle,
         false,
         false,
-        t0 + crate::limits::PARKED_START_LIFETIME + Duration::from_nanos(1),
+        expired,
     );
     assert!(
         terminal.persisted_agent_session().is_none(),
         "an expired start is not promoted"
     );
-    assert_eq!(terminal.last_unapplied_hook_report(), None);
+    // The observation forgot the start's instant, so the record itself must
+    // be gone, not merely filtered.
+    assert_eq!(terminal.last_unapplied_hook_report(expired), None);
+    assert_eq!(terminal.last_unapplied_hook_report(t0), None);
+}
+
+/// A full-lifecycle hook governs only while the detector reports its agent
+/// with no exit recorded, so the detector observations it overrides never
+/// change the detected agent, and a start for that agent finds its process
+/// present and is settled when it is admitted, not left for an observation.
+#[test]
+fn a_governing_hook_overrides_observations_without_moving_the_detected_agent() {
+    let mut terminal = test_terminal();
+    let first =
+        shepr_agent::resume::AgentSessionRef::path(test_session_path("governed-first.jsonl"));
+    let second =
+        shepr_agent::resume::AgentSessionRef::path(test_session_path("governed-second.jsonl"));
+    anchor_full_lifecycle_session(
+        &mut terminal,
+        Agent::Pi,
+        "shepr:pi",
+        "pi",
+        first.clone().expect("test precondition"),
+    );
+    let now = Instant::now();
+    assert!(
+        terminal
+            .set_hook_authority_at(
+                "shepr:pi",
+                "pi",
+                AgentState::Working,
+                first,
+                Some(1_000),
+                now
+            )
+            .is_some()
+    );
+    assert!(terminal.full_lifecycle_hook_authority_active());
+
+    for (offset, observed) in [(1, None), (2, Some(Agent::Pi))] {
+        terminal.set_detected_state_with_screen_signals_at(
+            observed,
+            AgentState::Idle,
+            false,
+            false,
+            now + Duration::from_millis(offset),
+        );
+        assert_eq!(terminal.detected_agent, Some(Agent::Pi));
+        assert!(terminal.full_lifecycle_hook_authority_active());
+    }
+
+    let second = second.expect("test precondition");
+    let started = terminal.report_session_start_outcome_at(
+        &ReportOrigin::parse("shepr:pi", "pi").expect("test origin"),
+        Some(second.clone()),
+        Some(2_000),
+        ReportedSessionStart::Known(AgentSessionStartSource::New),
+        now + Duration::from_millis(3),
+    );
+    assert!(matches!(started, HookOutcome::Applied(_)), "{started:?}");
+    assert_eq!(
+        terminal
+            .current_session_identity_for_persistence()
+            .map(|session| session.session_ref().clone()),
+        Some(second),
+        "the start is settled at admission"
+    );
+    assert_eq!(
+        terminal.last_unapplied_hook_report(now + Duration::from_millis(3)),
+        None,
+        "nothing is left parked"
+    );
+}
+
+#[test]
+fn a_rejection_is_not_aged_out_by_a_parked_start_lifetime() {
+    let mut terminal = test_terminal();
+    let t0 = Instant::now();
+    terminal.report_hook_outcome_at(
+        codex_origin(),
+        AgentState::Working,
+        None,
+        Some(1),
+        HookClockSample::from(t0),
+    );
+    assert!(
+        terminal
+            .last_unapplied_hook_report(
+                t0 + crate::limits::PARKED_START_LIFETIME + Duration::from_secs(1)
+            )
+            .is_some()
+    );
 }

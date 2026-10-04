@@ -96,7 +96,7 @@ fn ensure_terminal_geometry() -> io::Result<()> {
 
 /// What the operator is told when Local fails to start or is refused while
 /// configured machines keep the client running.
-fn local_startup_notice(error: &dyn std::fmt::Display) -> String {
+fn local_startup_notice(error: &shepr_launch::local_server::LaunchError) -> String {
     format!("shepr: Local is unavailable; configured machines stay available.\n{error}")
 }
 
@@ -108,10 +108,24 @@ mod tests {
     /// a log line nothing receives.
     #[test]
     fn the_local_startup_notice_carries_the_whole_refusal() {
-        let error = io::Error::other(format!(
-            "the running shepr server is a different build.\n\n{}",
-            "To use this build here instead, stop the running server. Run the profile-specific `server stop` command, then run this build again."
-        ));
+        let address = shepr_paths::ServerAddress::for_runtime_dir(
+            std::path::Path::new("/run/user/1/shepr"),
+            None,
+        )
+        .expect("valid test socket path");
+        let status = shepr_launch::status::RuntimeStatus {
+            version: "0.0.0-test".into(),
+            build_id: "ffffffffffffffff".parse().expect("build identity"),
+            boot_id: "17-23".parse().expect("boot identity"),
+            lifecycle: shepr_launch::status::RuntimeLifecycle::Running,
+        };
+        let error = shepr_launch::local_server::LaunchError::DifferentBuild {
+            status,
+            message: format!(
+                "the running shepr server is a different build; restart it before attaching.\n\n{}",
+                shepr_launch::guidance::build_mismatch_guidance(&address)
+            ),
+        };
         let notice = local_startup_notice(&error);
         assert!(
             notice.contains("configured machines stay available"),

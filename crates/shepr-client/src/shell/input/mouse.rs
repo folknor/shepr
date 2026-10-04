@@ -1343,7 +1343,7 @@ impl ClientShellState {
                     self.presentation.shown().agent_sort_toggle(),
                     point,
                 ) {
-                    let sort = match self.config.agent_panel_sort {
+                    let sort = match self.agent_panel_sort_chrome.value() {
                         shepr_config::AgentPanelSortConfig::Spaces => {
                             shepr_config::AgentPanelSortConfig::Priority
                         }
@@ -1351,9 +1351,7 @@ impl ClientShellState {
                             shepr_config::AgentPanelSortConfig::Spaces
                         }
                     };
-                    self.config.agent_panel_sort = sort;
-                    self.agent_panel_sort_chrome.set_manual(sort);
-                    self.rebuild_agent_panel_model();
+                    self.set_agent_panel_sort(sort);
                     self.sidebar_scroll.reset_agents();
                     self.persist_chrome_preferences(outcome);
                     outcome.repaint = true;

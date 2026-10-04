@@ -115,6 +115,8 @@ pub(in crate::shell) struct SidebarInputs<'a> {
     pub(in crate::shell) collapsed: &'a HashSet<ClientEndpointId>,
     pub(in crate::shell) model: &'a AgentPanelModel,
     pub(in crate::shell) config: &'a ClientShellConfig,
+    /// The live agent panel sort, which the header labels.
+    pub(in crate::shell) agent_panel_sort: shepr_config::AgentPanelSortConfig,
     pub(in crate::shell) machine_diagnostics: &'a MachineDiagnostics,
     pub(in crate::shell) active_snapshot: Option<&'a ClientShellSnapshot>,
     pub(in crate::shell) selected: Option<&'a PinnedLocation>,
@@ -146,8 +148,8 @@ enum Row {
     Workspace { endpoint: usize, entry: usize },
 }
 
-pub(in crate::shell) fn agent_sort_label(config: &ClientShellConfig) -> &'static str {
-    match config.agent_panel_sort {
+pub(in crate::shell) fn agent_sort_label(sort: shepr_config::AgentPanelSortConfig) -> &'static str {
+    match sort {
         shepr_config::AgentPanelSortConfig::Spaces => "grouped",
         shepr_config::AgentPanelSortConfig::Priority => "priority",
     }
@@ -656,7 +658,7 @@ fn resolve_agent_panel(
         );
     }
     let config = inputs.config;
-    let sort_label = agent_sort_label(config);
+    let sort_label = agent_sort_label(inputs.agent_panel_sort);
     let sort_width = display_width(sort_label).min(area.width);
     let sort_toggle = Rect::new(
         area.right().saturating_sub(sort_width),
@@ -784,6 +786,7 @@ mod tests {
             collapsed: &state.endpoints.collapsed,
             model: &state.endpoints.agent_panel_model,
             config: &state.config,
+            agent_panel_sort: state.agent_panel_sort_chrome.value(),
             machine_diagnostics: &state.machine_diagnostics,
             active_snapshot: state.endpoints.active.snapshot(),
             selected,

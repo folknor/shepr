@@ -14,7 +14,7 @@ use super::history::HistoryCarry;
 use super::schema::{
     PaneAgentSessionSnapshot, PaneHistorySnapshot, PaneSnapshot, WorkspaceHistorySnapshot,
 };
-use super::{SessionHistorySnapshot, SessionSnapshot, WorkspaceSnapshot};
+use super::schema::{SessionHistorySnapshot, SessionSnapshot, WorkspaceSnapshot};
 
 struct AgentRestoreState<'a> {
     enabled: bool,
@@ -35,7 +35,7 @@ struct RestorePlanContext {
 
 /// Validated state plus child launch descriptions. Building this plan requires
 /// no runtime, PTY, channels, or filesystem probes.
-pub struct SessionRestorePlan {
+pub(super) struct SessionRestorePlan {
     workspaces: Vec<Workspace>,
     active: Option<usize>,
     history_carry: HistoryCarry,
@@ -86,7 +86,7 @@ struct RestoredLaunch {
 }
 
 impl SessionRestorePlan {
-    pub fn launch(mut self, launcher: &crate::pane::PaneLauncher) -> RestoredSession {
+    pub(super) fn launch(mut self, launcher: &crate::pane::PaneLauncher) -> RestoredSession {
         let mut terminal_runtimes = HashMap::new();
         for launch in self.launches {
             let result = launcher.launch(crate::pane::PaneLaunchRequest {
@@ -150,25 +150,25 @@ impl SessionRestorePlan {
 /// layout, or no pane survived), so saved indices into that list no longer
 /// name the same item; `active` is already remapped onto `workspaces` and
 /// must be used as it is, not re-derived from the snapshot by clamping.
-pub struct RestoredSession {
-    pub workspaces: Vec<Workspace>,
-    pub terminal_runtimes: HashMap<PaneId, PaneRuntime>,
+pub(super) struct RestoredSession {
+    pub(super) workspaces: Vec<Workspace>,
+    pub(super) terminal_runtimes: HashMap<PaneId, PaneRuntime>,
     /// The saved bookmarked workspace as an index into `workspaces`; if it was
     /// dropped, its nearest surviving neighbour. `None` if nothing was
     /// bookmarked or nothing survived.
-    pub active: Option<usize>,
+    pub(super) active: Option<usize>,
     /// Saved history of the panes that came back without a runtime. The
     /// session's persister takes it; every later history capture of this
     /// session is resolved against it.
-    pub history_carry: HistoryCarry,
+    pub(super) history_carry: HistoryCarry,
     /// What saved data restore discarded, if anything. The caller preserves
     /// the source session file whenever this value is present.
-    pub restore_loss: Option<RestoreLoss>,
+    pub(super) restore_loss: Option<RestoreLoss>,
 }
 
 /// Saved workspace and pane data discarded while restoring a parsed session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RestoreLoss {
+pub(super) enum RestoreLoss {
     /// Saved workspaces were dropped; some surviving workspaces may also have lost panes.
     Workspaces {
         dropped: std::num::NonZeroUsize,
@@ -189,21 +189,21 @@ impl RestoreLoss {
         }
     }
 
-    pub fn dropped_workspaces(self) -> usize {
+    pub(super) fn dropped_workspaces(self) -> usize {
         match self {
             Self::Workspaces { dropped, .. } => dropped.get(),
             Self::Panes => 0,
         }
     }
 
-    pub fn panes_pruned(self) -> bool {
+    pub(super) fn panes_pruned(self) -> bool {
         match self {
             Self::Workspaces { panes_pruned, .. } => panes_pruned,
             Self::Panes => true,
         }
     }
 
-    pub fn into_notice_loss(self) -> shepr_protocol::SessionRestoreLoss {
+    pub(super) fn into_notice_loss(self) -> shepr_protocol::SessionRestoreLoss {
         match self {
             Self::Workspaces {
                 dropped,
@@ -247,7 +247,7 @@ struct WorkspaceRestorePlan<'a> {
 /// `workspace_ids` is the allocator of the workspace set the restored
 /// workspaces join (`WorkspaceSet::restored` takes it over): it is moved past every saved ID first, and a repeated saved ID takes
 /// a fresh one from it.
-pub fn plan_restore(
+pub(super) fn plan_restore(
     snapshot: &SessionSnapshot,
     history: Option<&SessionHistorySnapshot>,
     chrome: WorkspaceChrome,
@@ -2091,7 +2091,7 @@ mod tests {
                 runtimes
                     .get(&pane_id)
                     .expect("restored runtime")
-                    .current_size()
+                    .grid_size()
             };
             let focused = workspace.tree().focused();
             let other = workspace.tree().root();

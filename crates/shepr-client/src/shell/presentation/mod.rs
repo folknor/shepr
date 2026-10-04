@@ -20,7 +20,8 @@ pub(in crate::shell) struct LastComposition {
 
 /// What the client shows of the active endpoint's panes: the received surfaces, the view of
 /// the last frame drawn from them, and the effects that frame had on pane output. Only
-/// `ClientShellState::compose` replaces the view, so input aims at the frame on screen.
+/// `ClientShellState::commit_frame`, run once the host took a composed frame, replaces the
+/// view, so input aims at the frame on screen.
 #[derive(Default)]
 pub(in crate::shell) struct Presentation {
     pub(in crate::shell) surfaces: PaneSurfaces,
@@ -82,7 +83,9 @@ impl Presentation {
     }
 
     /// Replaces the hit of the pane `updated` describes after a patch changed it in place.
-    /// Returns whether the frame on screen has that pane.
+    /// Returns whether the frame on screen has that pane. It runs when the patch is
+    /// received, before its rows are written; the caller in `surface_patch` says why
+    /// that is sound.
     pub(in crate::shell) fn patch_pane_hit(
         &mut self,
         updated: &shepr_protocol::PaneSurfacePane,

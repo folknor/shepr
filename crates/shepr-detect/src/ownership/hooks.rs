@@ -83,9 +83,23 @@ impl AgentOwnership {
     }
 
     /// The last parked or rejected report, while no later report from its
-    /// source has applied.
-    pub fn last_unapplied_hook_report(&self) -> Option<&UnappliedHookReport> {
-        self.last_unapplied_hook_report.as_ref()
+    /// source has applied, as it stands at `now` on the server's monotonic
+    /// clock.
+    ///
+    /// Expiry of a parked start is only applied when process evidence for its
+    /// agent arrives, and that is also when the parked record is cleared. A
+    /// pane whose detector sees nothing further would otherwise keep showing
+    /// a start that can no longer be promoted as parked, so a parked record
+    /// whose source's parked start has outlived its lifetime at `now` reads as
+    /// gone here, exactly as the next observation would leave it.
+    pub fn last_unapplied_hook_report(&self, now: Instant) -> Option<&UnappliedHookReport> {
+        self.last_unapplied_hook_report.as_ref().filter(|last| {
+            last.disposition != UnappliedHookDisposition::Parked
+                || self
+                    .hook_sources
+                    .get(last.origin.source())
+                    .is_none_or(|record| !record.parked_start_expired(now))
+        })
     }
 
     /// An unapplied outcome replaces the record; an applied one clears a

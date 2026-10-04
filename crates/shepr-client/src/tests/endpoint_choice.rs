@@ -148,8 +148,8 @@ impl Fixture {
             label: shepr_config::MachineLabel::parse("build").expect("machine"),
             ssh: shepr_config::SshTarget::parse("host").expect("SSH"),
         }];
+        // `test_new` reports a 100x30 host, the size `surface_size` is asked for below.
         let mut state = ClientState::test_new();
-        state.set_host_size(100, 30);
         state.shell.set_machines(&machines);
         let output = Output::default();
         state.output_writer = Box::new(output.clone());
@@ -661,8 +661,13 @@ fn local_selection_waits_for_metadata_while_the_shown_endpoint_stays_live() {
             .pending_start()
             .is_some()
     );
-    let frame = f.client.state_mut().shell.compose(100, 30).expect("chrome");
-    f.client.state_mut().present_chrome(frame);
+    let frame = f
+        .client
+        .state()
+        .shell
+        .compose_frame(100, 30)
+        .expect("chrome");
+    f.client.state_mut().present_frame(frame);
     assert!(f.output().contains(
         "Local is waiting for its workspace snapshot; selection will resume when it is ready"
     ));
@@ -696,8 +701,13 @@ fn a_remote_pick_without_metadata_waits_with_a_notice() {
             .pending_start()
             .is_some()
     );
-    let frame = f.client.state_mut().shell.compose(100, 30).expect("chrome");
-    f.client.state_mut().present_chrome(frame);
+    let frame = f
+        .client
+        .state()
+        .shell
+        .compose_frame(100, 30)
+        .expect("chrome");
+    f.client.state_mut().present_frame(frame);
     assert!(
         f.output()
             .contains("build is waiting for its workspace snapshot")
@@ -715,8 +725,13 @@ fn a_remote_pick_without_a_connection_is_abandoned_with_one_notice() {
         )],
         f.now,
     );
-    let frame = f.client.state_mut().shell.compose(100, 30).expect("chrome");
-    f.client.state_mut().present_chrome(frame);
+    let frame = f
+        .client
+        .state()
+        .shell
+        .compose_frame(100, 30)
+        .expect("chrome");
+    f.client.state_mut().present_frame(frame);
     assert!(
         !f.output().contains("selection will resume"),
         "a pick the reconcile abandons must not promise to resume"

@@ -114,24 +114,10 @@ fn unpack_cell_size(packed: u64) -> Option<CellReport> {
 
 pub(super) type TerminalGeometry = shepr_core::geometry::HostGeometry;
 
-/// Host grid size as reported by the client. The client-owned shell must keep
-/// its full grid within one surface frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ClientHostSize {
-    pub(super) cols: u16,
-    pub(super) rows: u16,
-}
-
-impl ClientHostSize {
-    pub(super) fn new(cols: u16, rows: u16) -> Self {
-        let size = shepr_protocol::ClientSurfaceSize { cols, rows }.clamped();
-        Self {
-            cols: size.cols,
-            rows: size.rows,
-        }
-    }
-}
-
+/// Bounds an observed host geometry's grid to the shared grid budgets, the same
+/// `BoundedGridSize` rule `ClientSurfaceSize::clamped` applies, so the
+/// client-owned shell keeps its full grid within one surface frame. Every host
+/// size the client keeps or lays out against passes through here.
 pub(super) fn bounded_cell_geometry(geometry: TerminalGeometry) -> TerminalGeometry {
     // HostGeometry already owns the pixel bound. This boundary only bounds
     // the retained shell grid, preserving its coherent cell observation.

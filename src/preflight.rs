@@ -105,15 +105,25 @@ pub(crate) fn run(
 /// start its replacement. A socket override names an existing server but is
 /// not an address this client can launch for, so it gets no restart offer. A
 /// server that cannot be read is also left for the launch that follows to
-/// report.
+/// report: it probes the same socket and prints the full refusal, guidance
+/// included, so the log line here only names the failure.
 fn local_server_status(paths: &shepr_paths::AppPaths) -> Option<RuntimeStatus> {
+    use shepr_launch::local_server::LaunchError;
+
     if !paths.server_address().is_runtime_address() {
         return None;
     }
     match shepr_launch::local_server::running_server_status(paths) {
         Ok(status) => status,
+        Err(LaunchError::Unresponsive { .. }) => {
+            tracing::warn!(
+                "no restart offer: the local server is listening but not answering status requests"
+            );
+            None
+        }
+        // The probe's own socket error: short, and carrying no guidance.
         Err(error) => {
-            tracing::warn!(%error, "cannot read the local server for a restart offer");
+            tracing::warn!(error_kind = ?error.kind(), %error, "no restart offer: cannot read the local server");
             None
         }
     }

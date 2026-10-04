@@ -135,11 +135,16 @@ fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
 }
 
 #[test]
-fn client_host_size_clamps_the_grid_to_one_surface() {
-    let shell = terminal_geometry::ClientHostSize::new(0, u16::MAX);
-    assert_eq!(shell.cols, 1);
-    assert!((1..=shepr_protocol::MAX_SURFACE_DIMENSION).contains(&shell.rows));
-    assert!(usize::from(shell.cols) * usize::from(shell.rows) <= shepr_protocol::MAX_SURFACE_CELLS);
+fn bounded_host_geometry_fits_the_grid_into_one_surface() {
+    let shell = terminal_geometry::bounded_cell_geometry(shepr_core::geometry::HostGeometry::new(
+        shepr_core::geometry::GridSize::clamped(1, u16::MAX),
+        shepr_core::geometry::HostCell::Unknown,
+    ));
+    assert_eq!(shell.cols(), 1);
+    assert!((1..=shepr_protocol::MAX_SURFACE_DIMENSION).contains(&shell.rows()));
+    assert!(
+        usize::from(shell.cols()) * usize::from(shell.rows()) <= shepr_protocol::MAX_SURFACE_CELLS
+    );
 }
 
 #[test]

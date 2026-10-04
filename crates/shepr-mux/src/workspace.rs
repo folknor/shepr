@@ -160,7 +160,10 @@ impl Workspace {
     /// public. The test fixture crate cannot own it: mux's own tests depend on
     /// that crate, so it cannot depend on mux. The caller supplies the ID, so
     /// the fixture keeps its IDs unique the way it chooses. The pane is the
-    /// workspace's first: public number `FIRST`.
+    /// workspace's first: public number `FIRST`. The caller hands over a
+    /// terminal, not a `PaneRecord`, so there is no caller-chosen number to
+    /// keep or overwrite: the one-pane tree numbers its pane as a new
+    /// workspace's first pane is numbered.
     pub fn test_from_pane(
         id: WorkspaceId,
         label: Option<String>,
@@ -333,7 +336,8 @@ impl Workspace {
 
     /// Resolves the workspace identity from a root pane cwd already observed
     /// by the App. This stays as data-only path selection so state reducers can
-    /// compare cwd snapshots without probing a pane runtime.
+    /// compare cwd snapshots without probing a pane runtime. It always has an
+    /// answer, the construction cwd being the fallback.
     pub fn resolved_identity_cwd_from_root_pane(
         &self,
         root_pane_cwd: Option<AbsolutePath>,

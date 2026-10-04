@@ -31,6 +31,7 @@ impl AgentPanelModel {
     pub(in crate::shell) fn build(
         endpoints: &[ClientShellEndpoint],
         config: &ClientShellConfig,
+        sort: shepr_config::AgentPanelSortConfig,
     ) -> Self {
         let mut rows = Vec::new();
         for (endpoint_order, endpoint) in endpoints.iter().enumerate() {
@@ -55,7 +56,7 @@ impl AgentPanelModel {
                     }),
             );
         }
-        if config.agent_panel_sort == shepr_config::AgentPanelSortConfig::Priority {
+        if sort == shepr_config::AgentPanelSortConfig::Priority {
             rows.sort_by_key(|row| {
                 (
                     row.stale,

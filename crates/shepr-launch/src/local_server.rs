@@ -178,14 +178,6 @@ impl From<io::Error> for LaunchError {
     }
 }
 
-// IO-only presentation boundaries retain the OS kind and full diagnostic;
-// launch policy must inspect LaunchError before converting it.
-impl From<LaunchError> for io::Error {
-    fn from(error: LaunchError) -> Self {
-        io::Error::new(error.kind(), error.to_string())
-    }
-}
-
 /// A direct client checks the build before attaching. An SSH bridge accepts a
 /// running server of another build and answers the client with that build's
 /// preamble itself, so the client still reports a typed mismatch.
@@ -262,14 +254,17 @@ pub fn ensure_running(
 /// server is present or the server is starting or stopping. The pre-TUI
 /// restart offer reads a different-build server through this. A live
 /// listener that does not answer, or a socket that cannot be judged, is an
-/// error, as it is for a launch.
-pub fn running_server_status(paths: &shepr_paths::AppPaths) -> io::Result<Option<RuntimeStatus>> {
+/// error, as it is for a launch, and the same [`LaunchError`] a launch would
+/// report: `Unresponsive` for the silent listener, `Io` for the socket.
+pub fn running_server_status(
+    paths: &shepr_paths::AppPaths,
+) -> Result<Option<RuntimeStatus>, LaunchError> {
     match probe_server(paths)? {
         Probed::Running(status) => Ok(Some(status)),
         // There is no stable server status to offer; the launch that follows
         // resolves the transition under the profile lock.
         Probed::NoServer | Probed::Starting | Probed::Stopping => Ok(None),
-        Probed::Unresponsive => Err(io::Error::other(unresponsive_error(paths).to_string())),
+        Probed::Unresponsive => Err(unresponsive_error(paths)),
     }
 }
 

@@ -39,8 +39,9 @@ impl Endpoints {
     pub(in crate::shell) fn new(
         entries: Vec<ClientShellEndpoint>,
         config: &ClientShellConfig,
+        agent_panel_sort: shepr_config::AgentPanelSortConfig,
     ) -> Self {
-        let agent_panel_model = AgentPanelModel::build(&entries, config);
+        let agent_panel_model = AgentPanelModel::build(&entries, config, agent_panel_sort);
         let navigator_index = NavigatorIndex::build(&entries);
         Self {
             choice: crate::endpoint::EndpointChoice::showing(ClientEndpointId::Local),
@@ -408,6 +409,16 @@ impl ClientShellState {
         }
     }
 
+    // These two accessors have no caller in this crate, which reaches
+    // `endpoints.choice` directly. They are public as a test seam: shepr-server's
+    // endpoint choice test (a dev-dependency on this crate) drives a real
+    // machine move step by step against two in-process headless servers,
+    // feeding the choice's preparation the servers' responses, snapshots and
+    // surfaces, and only that crate's tests can reach the server internals it
+    // asserts on. `cfg(test)` does not reach across crates and no production
+    // crate has a test feature, so the seam stays public. Narrowing it means
+    // moving that test's choice-driving half into this crate first.
+
     /// The endpoint selection, for a caller that drives a move end to end.
     pub fn endpoint_choice(&self) -> &crate::endpoint::EndpointChoice {
         &self.endpoints.choice
@@ -638,8 +649,22 @@ impl ClientShellState {
     }
 
     pub(in crate::shell) fn rebuild_agent_panel_model(&mut self) {
-        let model = AgentPanelModel::build(&self.endpoints, &self.config);
+        let model = AgentPanelModel::build(
+            &self.endpoints,
+            &self.config,
+            self.agent_panel_sort_chrome.value(),
+        );
         self.endpoints.agent_panel_model = model;
+    }
+
+    /// Applies a sort chosen at runtime (the sidebar toggle) for this session and
+    /// rebuilds the agent panel in that order.
+    pub(in crate::shell) fn set_agent_panel_sort(
+        &mut self,
+        sort: shepr_config::AgentPanelSortConfig,
+    ) {
+        self.agent_panel_sort_chrome.set_manual(sort);
+        self.rebuild_agent_panel_model();
     }
 
     fn rebuild_endpoint_models(&mut self) {

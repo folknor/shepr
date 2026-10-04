@@ -1,6 +1,6 @@
 use crate::errors::LoopExit;
 use crate::loop_config::ClientSettings;
-use crate::{endpoint, shell, terminal_geometry, terminal_setup};
+use crate::{endpoint, shell, terminal_setup};
 use shepr_termio::blit as render_ansi;
 use std::io;
 use std::io::Write as _;
@@ -43,6 +43,9 @@ pub(super) struct ClientState {
     /// observation receives the same client-owned baseline.
     pub(super) host_theme_updates: Vec<shepr_protocol::ClientHostThemeUpdate>,
     pub(super) settings: ClientSettings,
+    /// The host geometry as last observed, already bounded by
+    /// `terminal_geometry::bounded_cell_geometry` (at launch and on each resize),
+    /// which also fits the grid into one surface frame.
     pub(super) reported_geometry: shepr_core::geometry::HostGeometry,
     /// The client-rendered shell.
     pub(super) shell: Box<shell::ClientShellState>,
@@ -57,9 +60,80 @@ pub(super) struct ClientState {
     /// A transient mode write is retried after the next client event.
     pub(super) mode_write_failure: HostWriteFailure,
     pub(super) retry_host_modes: bool,
+    /// When the client next repaints after the host refused a frame or patch.
+    pub(super) refused_output_retry: RefusedOutputRetry,
+}
+
+/// The first wait before repainting after the host refused a frame or patch.
+const REFUSED_OUTPUT_RETRY_MIN: std::time::Duration = std::time::Duration::from_millis(50);
+/// The longest wait between repaints while the host keeps refusing them.
+const REFUSED_OUTPUT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The repaint a refused frame or patch owes. A refused write leaves the
+/// presentation clean (its change was taken and not shown), so without a
+/// deadline of its own nothing would draw it until an unrelated event
+/// arrived. The wait doubles while the host keeps refusing, so a host that
+/// stays broken is not rewritten on every loop turn, and resets once a
+/// frame reaches it.
+#[derive(Debug)]
+pub(super) struct RefusedOutputRetry {
+    due: Option<std::time::Instant>,
+    delay: std::time::Duration,
+}
+
+impl Default for RefusedOutputRetry {
+    fn default() -> Self {
+        Self {
+            due: None,
+            delay: REFUSED_OUTPUT_RETRY_MIN,
+        }
+    }
+}
+
+impl RefusedOutputRetry {
+    fn arm(&mut self, now: std::time::Instant) {
+        self.due = Some(now + self.delay);
+        self.delay = (self.delay * 2).min(REFUSED_OUTPUT_RETRY_MAX);
+    }
+
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Takes the retry if it is due at `now`, keeping the grown delay.
+    fn take_due(&mut self, now: std::time::Instant) -> bool {
+        if self.due.is_some_and(|due| due <= now) {
+            self.due = None;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 impl ClientState {
+    /// When the repaint a refused frame or patch owes is due, if one is.
+    pub(super) fn refused_output_retry_deadline(&self) -> Option<std::time::Instant> {
+        self.refused_output_retry.due
+    }
+
+    /// Repaints in full if the retry a refused frame or patch armed is due:
+    /// nothing of the refused output was committed, so the next composition
+    /// draws the whole current state.
+    pub(super) fn retry_refused_output(&mut self, now: std::time::Instant) {
+        if self.refused_output_retry.take_due(now) {
+            self.request_repaint();
+            self.mark_pane_dirty();
+        }
+    }
+
+    /// Records that the host refused a frame or patch: the next frame repaints
+    /// in full, and the loop wakes for it on its own.
+    fn note_refused_output(&mut self) {
+        self.request_repaint();
+        self.refused_output_retry.arm(self.shell.now);
+    }
+
     pub(super) fn request_repaint(&mut self) {
         self.repaint_pending = true;
     }
@@ -97,15 +171,6 @@ impl ClientState {
 
     pub(super) fn take_presentation_dirty(&mut self) -> PresentationDirty {
         std::mem::replace(&mut self.presentation_dirty, PresentationDirty::Clean)
-    }
-
-    pub(super) fn set_host_size(&mut self, cols: u16, rows: u16) {
-        let size = terminal_geometry::ClientHostSize::new(cols, rows);
-        self.reported_geometry =
-            self.reported_geometry
-                .with_grid(shepr_core::geometry::GridSize::clamped(
-                    size.cols, size.rows,
-                ));
     }
 
     pub(super) fn record_host_mode_write(
@@ -178,15 +243,6 @@ impl ClientState {
         self.host_theme_updates.push(update.clone());
     }
 
-    /// Presents a frame whose change is client chrome only: machine statuses and diagnostics,
-    /// the machine list, overlays, notices and modes. It always writes. That is sound because
-    /// the pane cells in it are always coherent: only the shown endpoint's snapshots project
-    /// and only its surfaces apply, so while nothing is shown the last coherent cells stay,
-    /// and a move installs the target's pair only at its commit.
-    pub(super) fn present_chrome(&mut self, frame_data: shepr_protocol::FrameData) {
-        self.write_frame(frame_data);
-    }
-
     pub(super) fn present_surface_patch(
         &mut self,
         patch: shell::ClientComposedSurfacePatch,
@@ -229,9 +285,26 @@ impl ClientState {
         self.output_writer.flush()
     }
 
-    /// Presents a frame from the shown endpoint or a committed endpoint move.
-    pub(super) fn present_frame(&mut self, frame_data: shepr_protocol::FrameData) {
-        self.write_frame(frame_data);
+    /// Presents a composed frame, whether its change is client chrome only (machine statuses
+    /// and diagnostics, the machine list, overlays, notices and modes), a pane change from the
+    /// shown endpoint, or a committed endpoint move. It always writes. That is sound for a
+    /// chrome-only change too because the pane cells in every frame are coherent: only the
+    /// shown endpoint's snapshots project and only its surfaces apply, so while nothing is
+    /// shown the last coherent cells stay, and a move installs the target's pair only at its
+    /// commit.
+    ///
+    /// What composing the frame decided is committed to the shell only once the host took
+    /// the frame, so nothing starts for a frame that never reached the screen.
+    pub(super) fn present_frame(&mut self, composed: shell::ComposedFrame) {
+        let shell::ComposedFrame { frame, commit } = composed;
+        if self.write_frame(frame) {
+            self.shell.commit_frame(commit);
+        }
+    }
+
+    fn compose(&self) -> Option<shell::ComposedFrame> {
+        self.shell
+            .compose_frame(self.reported_geometry.cols(), self.reported_geometry.rows())
     }
 
     /// Presents the accumulated change once after a client turn. Pane work dominates chrome,
@@ -240,20 +313,14 @@ impl ClientState {
         match self.take_presentation_dirty() {
             PresentationDirty::Clean => {}
             PresentationDirty::Chrome => {
-                if let Some(frame) = self
-                    .shell
-                    .compose(self.reported_geometry.cols(), self.reported_geometry.rows())
-                {
-                    self.present_chrome(frame);
+                if let Some(composed) = self.compose() {
+                    self.present_frame(composed);
                 }
             }
             PresentationDirty::Pane => match self.pending_surface_patch.take() {
                 None => {
-                    if let Some(frame) = self
-                        .shell
-                        .compose(self.reported_geometry.cols(), self.reported_geometry.rows())
-                    {
-                        self.present_frame(frame);
+                    if let Some(composed) = self.compose() {
+                        self.present_frame(composed);
                     }
                 }
                 Some(patch) => {
@@ -261,11 +328,8 @@ impl ClientState {
                     match self.present_surface_patch(patch) {
                         Ok(SurfacePatchPresentation::Presented) => {}
                         Ok(SurfacePatchPresentation::FullFrameRequired) => {
-                            if let Some(frame) = self.shell.compose(
-                                self.reported_geometry.cols(),
-                                self.reported_geometry.rows(),
-                            ) {
-                                self.present_frame(frame);
+                            if let Some(composed) = self.compose() {
+                                self.present_frame(composed);
                             }
                         }
                         Err(error) => {
@@ -275,7 +339,7 @@ impl ClientState {
                                 &Err(error),
                                 Some(&context),
                             );
-                            self.request_repaint();
+                            self.note_refused_output();
                         }
                     }
                 }
@@ -285,10 +349,12 @@ impl ClientState {
 
     /// Writes and commits a frame only after all terminal output has been written successfully.
     /// A failed write is handled here rather than by callers: the frame is not committed, the
-    /// next frame repaints in full (`repaint_pending`), and the failure is logged once per cause
-    /// through `frame_write_failure` rather than once per frame.
-    /// Callers have no separate recovery action, so the write result stays owned by this state.
-    fn write_frame(&mut self, frame_data: shepr_protocol::FrameData) {
+    /// next frame repaints in full (`repaint_pending`) and is scheduled on the loop's timer
+    /// (`refused_output_retry`), and the failure is logged once per cause through
+    /// `frame_write_failure` rather than once per frame.
+    /// Callers have no separate recovery action, so the write result stays owned by this state;
+    /// the returned flag only says whether the host took the frame.
+    fn write_frame(&mut self, frame_data: shepr_protocol::FrameData) -> bool {
         let frame_data = if self.draw_host_cursor {
             render_ansi::frame_with_drawn_cursor(frame_data)
         } else {
@@ -312,11 +378,13 @@ impl ClientState {
             context.as_ref(),
         ) != HostWriteAction::Succeeded
         {
-            self.repaint_pending = true;
-            return;
+            self.note_refused_output();
+            return false;
         }
         self.blit_encoder.commit(frame_data, &encoded);
         self.repaint_pending = false;
+        self.refused_output_retry.clear();
+        true
     }
 }
 
@@ -457,6 +525,7 @@ impl ClientState {
             title_write_failure: HostWriteFailure::default(),
             mode_write_failure: HostWriteFailure::default(),
             retry_host_modes: false,
+            refused_output_retry: RefusedOutputRetry::default(),
         }
     }
 
@@ -507,6 +576,47 @@ mod tests {
         }
     }
 
+    /// A host terminal that refuses every write.
+    struct BrokenHost;
+
+    impl io::Write for BrokenHost {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_frame_the_host_refused_starts_no_notice_lifetime() {
+        let mut state = ClientState::test_new_with_writer(BrokenHost);
+        state.present_notice(&shell::EndpointNotice::new(
+            endpoint::ClientEndpointId::Local,
+            shell::EndpointNoticeKind::NotReady,
+        ));
+        state.present_pending();
+        assert!(
+            state.repaint_pending,
+            "the refused frame asks for a repaint"
+        );
+        assert_eq!(
+            state.shell.next_timer_deadline(),
+            None,
+            "the notice was never on screen, so its lifetime has not started"
+        );
+
+        state.output_writer = Box::new(io::sink());
+        state.mark_chrome_dirty();
+        state.present_pending();
+        assert!(!state.repaint_pending);
+        assert!(
+            state.shell.next_timer_deadline().is_some(),
+            "the frame that reached the host starts the notice's lifetime"
+        );
+    }
+
     fn cell(symbol: &str) -> CellData {
         CellData {
             symbol: symbol.into(),
@@ -529,7 +639,7 @@ mod tests {
         )
         .expect("test buffer is a valid frame");
 
-        state.present_frame(frame);
+        assert!(state.write_frame(frame));
         let frame_bytes = output.lock().expect("test output lock");
         assert!(frame_bytes.contains(&b'a'));
         drop(frame_bytes);

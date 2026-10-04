@@ -4,6 +4,7 @@ use crate::server::clients::ClientPaneIdentity;
 use crate::server::committed_baseline::CommittedPane;
 use crate::server::pane_surface::PaneSurfaceMetadata;
 use shepr_mux::pane::PatchRow;
+use shepr_surface::ratatui_conversion::CellDataExt as _;
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -48,20 +49,6 @@ fn patch_intersects_hyperlinks(
                     .iter()
                     .any(|cell| cell.hyperlink.is_some())
         })
-}
-
-fn patch_row_changed(frame: &FrameData, row: &shepr_protocol::PaneSurfacePatchRow) -> Option<bool> {
-    if row.y >= frame.height()
-        || row.x.saturating_add(u16::try_from(row.cells.len()).ok()?) > frame.width()
-    {
-        return None;
-    }
-    let start = usize::from(row.y) * usize::from(frame.width()) + usize::from(row.x);
-    let end = start + row.cells.len();
-    if end > frame.cells().len() {
-        return None;
-    }
-    Some(frame.cells()[start..end] != row.cells)
 }
 
 fn changed_rows(
@@ -142,21 +129,36 @@ fn retained_scrollbar_patch(
     pane.scrollbar_rect = look
         .scrollbar_rect
         .map(shepr_surface::ratatui_conversion::surface_rect);
-    let Some((rect, cells)) = paint else {
+    let Some((rect, track)) = paint else {
         return Some(Vec::new());
     };
+    // Each track cell is compared with the baseline in its ratatui form; only
+    // a changed one is converted into a patch row. This runs per scrolled pane
+    // per recipient on every retained pass, and a settled track changes no
+    // row, so the steady state allocates nothing here.
     let mut rows = Vec::new();
-    for (offset, cell) in cells.into_iter().enumerate() {
-        let row = shepr_protocol::PaneSurfacePatchRow {
-            x: rect.x,
-            y: rect.y.checked_add(u16::try_from(offset).ok()?)?,
-            cells: vec![cell],
-        };
-        if patch_row_changed(frame, &row)? {
-            rows.push(row);
+    for (offset, source) in track.content.iter().enumerate() {
+        let y = rect.y.checked_add(u16::try_from(offset).ok()?)?;
+        let existing = frame_cell(frame, rect.x, y)?;
+        if !existing.matches_ratatui_cell(source) {
+            rows.push(shepr_protocol::PaneSurfacePatchRow {
+                x: rect.x,
+                y,
+                cells: vec![shepr_protocol::CellData::from_ratatui_cell(source)],
+            });
         }
     }
     Some(rows)
+}
+
+/// The frame cell at `(x, y)`, or `None` when the frame does not reach it.
+fn frame_cell(frame: &FrameData, x: u16, y: u16) -> Option<&shepr_protocol::CellData> {
+    if y >= frame.height() || x >= frame.width() {
+        return None;
+    }
+    frame
+        .cells()
+        .get(usize::from(y) * usize::from(frame.width()) + usize::from(x))
 }
 
 fn retained_cursor(
@@ -639,6 +641,78 @@ mod tests {
 
         assert!(rows.is_empty());
         assert_eq!(pane.scrollbar_rect, None);
+    }
+
+    #[test]
+    fn an_unchanged_scrollbar_track_produces_no_patch_rows() {
+        let mut app = app::App::new(&shepr_config::ServerConfig::default());
+        app.test_state_mut().settings_mut().pane_borders = shepr_config::PaneBordersConfig::Always;
+        app.test_state_mut().settings_mut().pane_scrollbars = true;
+        app.test_state_mut().settings_mut().pane_outer_borders = true;
+        let workspace = shepr_mux::workspace::Workspace::test_new("settled-scrollbar");
+        let workspace_id = workspace.id();
+        let pane_id = workspace.tree().root();
+        app.test_state_mut().test_push_workspace(workspace);
+        let area = shepr_core::geometry::Rect::new(0, 0, 12, 5);
+        let layout = app.state().chrome_in(area).visible_panes(
+            app.state().ws(0).tree().layout(),
+            app.state().ws(0).tree().zoomed(),
+        );
+        let pane_layout = layout.first().expect("test workspace has one pane");
+        let content = shepr_core::chrome::content_rect(pane_layout.inner_rect(), true, false);
+        let mut pane = shepr_protocol::PaneSurfacePane {
+            pane_id: shepr_test_fixtures::id("w1:p1"),
+            content_revision: shepr_protocol::ContentRevision::default(),
+            rect: pane_layout.rect,
+            inner_rect: content,
+            scrollbar_rect: None,
+            scroll: None,
+            focused: true,
+            mouse_reporting: false,
+            pixel_mouse: shepr_term::mouse::PanePixelMouse::OFF,
+            alternate_screen_active: false,
+        };
+        let surface = shepr_protocol::PaneSurfaceFrame {
+            boot_id: shepr_test_fixtures::fixed_boot_id(1),
+            projection_revision: shepr_protocol::ProjectionRevision::FIRST,
+            surface_revision: shepr_protocol::SurfaceRevision::FIRST,
+            frame: FrameData::blank(12, 5).expect("test frame"),
+            panes: vec![pane.clone()],
+            splits: Vec::new(),
+        };
+        let identities = vec![ClientPaneIdentity {
+            workspace_id,
+            pane_id,
+        }];
+        let baseline = CommittedBaseline::new(surface.clone(), identities);
+        let mut layouts = crate::ui::PaneLayoutCache::default();
+        let resolved = baseline
+            .panes(app.state(), &mut layouts)
+            .expect("the committed pane geometry matches its layout");
+        assert!(
+            resolved[0].look.scrollbar_gutter.is_some(),
+            "test precondition: the pane reserves a gutter"
+        );
+        let metrics = shepr_mux::pane::ScrollMetrics::new(1, 4, 3, shepr_vt::AbsRow(1));
+        let look = &resolved[0].look;
+
+        // The first pass draws the track over the blank baseline.
+        let mut frame = surface.frame;
+        let drawn = retained_scrollbar_patch(&app, &frame, &mut pane, look, Some(metrics))
+            .expect("a valid scrollbar patch");
+        assert!(!drawn.is_empty(), "test precondition: the track draws");
+        let track = pane.scrollbar_rect;
+        assert!(track.is_some());
+        for row in &drawn {
+            let start = usize::from(row.y) * usize::from(frame.width()) + usize::from(row.x);
+            frame.cells_mut()[start..start + row.cells.len()].clone_from_slice(&row.cells);
+        }
+
+        // With the track committed, the same scroll position changes no row.
+        let settled = retained_scrollbar_patch(&app, &frame, &mut pane, look, Some(metrics))
+            .expect("a valid scrollbar patch");
+        assert!(settled.is_empty());
+        assert_eq!(pane.scrollbar_rect, track);
     }
 
     #[test]

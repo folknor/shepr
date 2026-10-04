@@ -16,7 +16,6 @@
 //! save deadline is reported, since nothing can start before the save ends,
 //! and its end wakes the loop to reconsider them.
 
-use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use super::App;
@@ -26,9 +25,10 @@ mod autosave;
 mod exit_checkpoint;
 mod host_checkpoint;
 use autosave::Autosave;
-use exit_checkpoint::{PaneExitCheckpoint, PreservedLayout};
+use exit_checkpoint::PaneExitCheckpoint;
 pub(crate) use host_checkpoint::HostCheckpointOutcome;
 use host_checkpoint::HostShutdownCheckpoint;
+use shepr_mux::persist::CapturedLayout;
 
 /// Coalesce ordinary session writes to avoid saving on every event.
 pub(in crate::app) const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
@@ -88,7 +88,7 @@ struct ExitTicket {
     generation: CheckpointGeneration,
     /// The captured layout; `None` when it could not be paired with terminal
     /// identities, or a session mutation was observed after the capture.
-    layout: Option<Box<PreservedLayout>>,
+    layout: Option<Box<CapturedLayout>>,
 }
 
 /// The save `start_background_session_save` should start now.
@@ -418,9 +418,9 @@ impl App {
             .preserved()
             .filter(|_| !self.state.session_dirty())
         else {
-            return Some(self.capture_session_save_job().0);
+            return Some(self.capture_session_save().into_job());
         };
-        let job = self.capture_save_job_from_preserved_layout(layout);
+        let job = layout.recapture(&self.terminal_runtimes, self.session_saver.pane_history());
         if job.is_none() {
             tracing::warn!(
                 "could not pair fresh pane history with the saved pane-exit layout; keeping the durable checkpoint"
@@ -540,12 +540,7 @@ impl App {
     /// each shell's cwd. No terminal lock is taken and no /proc file is read;
     /// turning history into its saved form and reading the cwds are the
     /// persister's work.
-    fn capture_session_save_job(
-        &self,
-    ) -> (
-        shepr_mux::persist::PersistJob,
-        HashMap<shepr_mux::persist::SavedPaneRef, shepr_core::layout::PaneId>,
-    ) {
+    fn capture_session_save(&self) -> shepr_mux::persist::SessionCapture {
         shepr_mux::persist::capture_job(
             &self.state.workspaces,
             &self.terminal_runtimes,
@@ -553,49 +548,6 @@ impl App {
             self.state.host_terminal_theme(),
             self.session_saver.pane_history(),
         )
-    }
-
-    /// The layout a pane-exit checkpoint preserves from its capture, or
-    /// `None` unless `job` is a save. Every pane the capture saved is in
-    /// `pane_ids`, since a saved pane is a record in a workspace's tree.
-    fn capture_preserved_layout(
-        job: &shepr_mux::persist::PersistJob,
-        pane_ids: HashMap<shepr_mux::persist::SavedPaneRef, shepr_core::layout::PaneId>,
-    ) -> Option<PreservedLayout> {
-        let shepr_mux::persist::PersistJob::Save(bundle) = job else {
-            return None;
-        };
-        Some(PreservedLayout {
-            snapshot: bundle.snapshot.clone(),
-            pane_ids,
-        })
-    }
-
-    fn capture_save_job_from_preserved_layout(
-        &self,
-        layout: &PreservedLayout,
-    ) -> Option<shepr_mux::persist::PersistJob> {
-        let cwds = shepr_mux::persist::capture_pending_cwds_for_snapshot(
-            &layout.snapshot,
-            &layout.pane_ids,
-            &self.terminal_runtimes,
-        )?;
-        let history = if self.session_saver.pane_history() {
-            Some(shepr_mux::persist::capture_pending_history_for_snapshot(
-                &layout.snapshot,
-                &layout.pane_ids,
-                &self.terminal_runtimes,
-            )?)
-        } else {
-            None
-        };
-        Some(shepr_mux::persist::PersistJob::Save(
-            shepr_mux::persist::SessionBundle {
-                snapshot: layout.snapshot.clone(),
-                cwds,
-                history,
-            },
-        ))
     }
 
     pub(crate) fn start_background_session_save(&mut self) {
@@ -614,19 +566,25 @@ impl App {
                     self.session_saver.note_mutation(self.clock.now);
                 }
                 self.session_saver.autosave.clear();
-                let (job, pane_ids) = self.capture_session_save_job();
-                let ticket = CheckpointTicket {
-                    exit: exit_generation.map(|generation| ExitTicket {
-                        generation,
-                        layout: Self::capture_preserved_layout(&job, pane_ids).map(Box::new),
-                    }),
-                    host,
+                let capture = self.capture_session_save();
+                // Only a held pane exit keeps the layout it saves.
+                let (job, exit) = match exit_generation {
+                    Some(generation) => {
+                        let (job, layout) = capture.into_job_with_layout();
+                        let exit = ExitTicket {
+                            generation,
+                            layout: layout.map(Box::new),
+                        };
+                        (job, Some(exit))
+                    }
+                    None => (capture.into_job(), None),
                 };
+                let ticket = CheckpointTicket { exit, host };
                 self.spawn_session_save(job, SaveKind::Checkpoint(ticket));
             }
             Some(NextSave::Autosave) => {
                 self.session_saver.autosave.clear();
-                let (job, _) = self.capture_session_save_job();
+                let job = self.capture_session_save().into_job();
                 self.spawn_session_save(job, SaveKind::Autosave);
             }
         }
@@ -853,8 +811,8 @@ impl SessionSaver {
         completion
     }
 
-    /// Private: `PreservedLayout` is only visible inside `session`.
-    fn preserved_layout_mut(&mut self) -> Option<&mut PreservedLayout> {
+    /// The layout a pane-exit checkpoint preserved, for tests that alter it.
+    fn preserved_layout_mut(&mut self) -> Option<&mut CapturedLayout> {
         self.exit.preserved_mut()
     }
 }
@@ -999,12 +957,8 @@ mod tests {
     }
 
     fn saved_pane_counts(app: &App) -> Vec<usize> {
-        let saved = std::fs::read_to_string(
-            app.paths
-                .data_dir()
-                .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
-        )
-        .expect("read the session file");
+        let saved = std::fs::read_to_string(shepr_mux::persist::session_path(app.paths.data_dir()))
+            .expect("read the session file");
         shepr_mux::persist::schema::parse_session_file(&saved)
             .expect("parse the session file")
             .snapshot
@@ -1086,13 +1040,9 @@ mod tests {
         server.handle_test_runtime_exit_and_replay(interrupted_exit(&server.app, exiting));
         assert_eq!(server.app.state.ws(0).tree().len(), 1);
         // A final save that skipped would leave no session file behind.
-        std::fs::remove_file(
-            server
-                .app
-                .paths
-                .data_dir()
-                .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
-        )
+        std::fs::remove_file(shepr_mux::persist::session_path(
+            server.app.paths.data_dir(),
+        ))
         .expect("remove the checkpoint");
 
         server.app.save_session_before_teardown_async().await;
@@ -1111,13 +1061,12 @@ mod tests {
         let mut server = crate::server::headless::tests::test_headless_server();
         server.install_test_app(app);
         server.handle_test_runtime_exit_and_replay(interrupted_exit(&server.app, exiting));
-        server
+        let layout = server
             .app
             .session_saver
             .preserved_layout_mut()
-            .expect("saved checkpoint")
-            .pane_ids
-            .clear();
+            .expect("saved checkpoint");
+        *layout = CapturedLayout::new(layout.snapshot().clone(), std::collections::HashMap::new());
 
         server.app.save_session_before_teardown_async().await;
 
@@ -1305,15 +1254,15 @@ mod tests {
     fn a_mutation_after_the_capture_voids_the_in_flight_layout() {
         let mut app = saving_test_app();
         let generation = app.session_saver.exit.request(false).expect("held");
-        let layout = Box::new(PreservedLayout {
-            snapshot: shepr_mux::persist::SessionSnapshot {
+        let layout = Box::new(CapturedLayout::new(
+            shepr_mux::persist::schema::SessionSnapshot {
                 version: shepr_mux::persist::schema::SNAPSHOT_VERSION,
                 host_theme: Default::default(),
                 workspaces: vec![],
                 active: None,
             },
-            pane_ids: HashMap::new(),
-        });
+            std::collections::HashMap::new(),
+        ));
         let completion = app
             .session_saver
             .hold_test_kind(SaveKind::Checkpoint(CheckpointTicket {
@@ -1531,11 +1480,12 @@ mod tests {
             .collect()
     }
 
-    /// A restore that drops a saved workspace leaves that workspace only in the
-    /// session file, so the first save copies the file to `session-backups` before
-    /// replacing it. The copy is made once, not on every save.
+    /// `App::open` builds the app from the session `open_session` opened: its
+    /// restored workspaces, its restore notice and the persister that saves
+    /// it. The open sequence's own decisions (what is restored, what is
+    /// reported, what is backed up) are tested with it in shepr-mux.
     #[tokio::test]
-    async fn a_restore_that_drops_a_workspace_backs_up_the_saved_session_before_the_first_save() {
+    async fn the_app_opens_on_the_restored_session_and_saves_through_its_persister() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::schema::{
             DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionFile, SessionSnapshot,
@@ -1602,9 +1552,8 @@ mod tests {
             history_digest: None,
         })
         .expect("encode the saved session");
-        // The session file name the persist layer reads and writes.
-        let session_file = data_dir.join("session.json");
-        std::fs::write(&session_file, &original).expect("test precondition");
+        std::fs::write(shepr_mux::persist::session_path(&data_dir), &original)
+            .expect("test precondition");
 
         let (mut app, _outputs) = App::open(
             &config,
@@ -1623,7 +1572,7 @@ mod tests {
             "the saved session loaded and only the invalid workspace was dropped"
         );
         let backups = data_dir.join("session-backups");
-        // Every client of this boot is told, naming where the original goes.
+        // The notice every client of this boot is sent.
         assert_eq!(
             app.restore_notice,
             Some(shepr_protocol::SessionRestoreNotice {
@@ -1635,110 +1584,19 @@ mod tests {
             })
         );
 
-        assert!(app.save_session_now(), "first save");
-        assert_eq!(directory_files(&backups), vec![original.clone()]);
-        let saved = shepr_mux::persist::schema::parse_session_file(
-            &std::fs::read_to_string(&session_file).expect("read the new session"),
-        )
-        .expect("parse the new session")
-        .snapshot;
-        assert_eq!(
-            saved
-                .workspaces
-                .iter()
-                .map(|workspace| workspace.custom_name.clone())
-                .collect::<Vec<_>>(),
-            vec![Some("healthy".to_owned())]
-        );
-
-        assert!(app.save_session_now(), "second save");
-        assert_eq!(
-            directory_files(&backups),
-            vec![original],
-            "a later save makes no second backup"
-        );
-    }
-
-    /// A session file that does not parse restores nothing, like a missing
-    /// one, but unlike a missing one it is a whole saved session: clients are
-    /// told, and the first save backs the file up before replacing it.
-    #[test]
-    fn an_unusable_session_file_is_reported_and_backed_up() {
-        use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
-
-        let scratch = crate::test_support::ScratchDir::new("unusable-session-notice");
-        let paths = shepr_paths::AppPaths::test_at(&scratch);
-        let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
-            shepr_config::ServerConfig::default(),
-            paths.clone(),
-        );
-        let data_dir = paths.data_dir().to_path_buf();
-        let lease =
-            shepr_mux::persist::DataDirLease::acquire(&data_dir).expect("test session lease");
-        let original = b"{ this is not a session".to_vec();
-        std::fs::write(data_dir.join("session.json"), &original).expect("test precondition");
-
-        let (mut app, _outputs) = App::open(
-            &config,
-            &paths,
-            lease,
-            shepr_mux::persist::SessionOpenPolicy::Persist,
-            super::super::tests::test_clock(),
-        );
-        let backups = data_dir.join("session-backups");
-        let Some(shepr_protocol::SessionRestoreNotice {
-            loss:
-                shepr_protocol::SessionRestoreLoss::Unusable {
-                    failure:
-                        shepr_protocol::SessionRestoreFailure::Unparseable { line, category, .. },
-                },
-            backup_dir,
-        }) = app.restore_notice.clone()
-        else {
-            panic!(
-                "an unusable session file is reported: {:?}",
-                app.restore_notice
-            );
-        };
-        assert_eq!(line, 1);
-        assert_eq!(category, shepr_protocol::SessionParseCategory::Syntax);
-        assert_eq!(backup_dir.as_path(), backups);
-
+        // The persister the app saves through took the backup decision.
         assert!(app.save_session_now(), "first save");
         assert_eq!(directory_files(&backups), vec![original]);
     }
 
-    #[test]
-    fn a_fresh_start_has_nothing_to_report() {
-        use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
-
-        let scratch = crate::test_support::ScratchDir::new("fresh-start-no-notice");
-        let paths = shepr_paths::AppPaths::test_at(&scratch);
-        let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
-            shepr_config::ServerConfig::default(),
-            paths.clone(),
-        );
-        let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
-            .expect("test session lease");
-        let (app, _outputs) = App::open(
-            &config,
-            &paths,
-            lease,
-            shepr_mux::persist::SessionOpenPolicy::Persist,
-            super::super::tests::test_clock(),
-        );
-        assert_eq!(app.restore_notice, None);
-    }
-
-    /// Autosave scheduling, checkpoints and the restore backup, run on the app
-    /// fixture `app::tests` shares (it sets the test shell).
+    /// Autosave scheduling and checkpoints, run on the app fixture
+    /// `app::tests` shares (it sets the test shell).
     mod autosave_and_checkpoints {
         use super::super::SESSION_SAVE_DEBOUNCE;
-        use crate::app::tests::{test_app, test_clock};
+        use crate::app::tests::test_app;
         use crate::app::*;
         use crate::test_support::*;
         use shepr_agent::{Agent, AgentState};
-        use shepr_config::ServerConfig;
         use shepr_mux::workspace::Workspace;
 
         /// The pane's exit as its current runtime reports it.
@@ -1772,85 +1630,6 @@ mod tests {
                 );
                 app.handle_internal_event(event);
             }
-        }
-
-        #[tokio::test]
-        async fn restore_with_damage_backs_up_the_saved_session_before_the_first_save() {
-            use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
-            use shepr_mux::persist::schema::{
-                LayoutSnapshot, PaneSnapshot, SessionFile, SessionSnapshot, WorkspaceSnapshot,
-            };
-
-            let scratch = crate::test_support::ScratchDir::new("damaged-restore-backup");
-            let paths = shepr_paths::AppPaths::test_at(&scratch);
-            let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
-                ServerConfig::default(),
-                paths.clone(),
-            );
-            let data_dir = paths.data_dir().to_path_buf();
-            let lease =
-                shepr_mux::persist::DataDirLease::acquire(&data_dir).expect("test session lease");
-
-            let number =
-                |value: usize| shepr_protocol::PanePublicNumber::new(value).expect("number");
-            let pane = |cwd: std::path::PathBuf, public_number: usize| PaneSnapshot {
-                cwd: shepr_core::absolute_path::AbsolutePath::new(cwd)
-                    .expect("test cwd is absolute"),
-                public_number: number(public_number),
-                label: None,
-                agent_session: None,
-            };
-            // Two saved workspaces claim one ID: the second is restored under a
-            // fresh ID and the restore reports damage, which is what makes the
-            // saved file worth keeping. (A relative cwd cannot be saved at all
-            // now: the file that held one fails to parse.)
-            let workspace = |name: &str, cwd: std::path::PathBuf| WorkspaceSnapshot {
-                id: "w1".parse().expect("id"),
-                custom_name: Some(name.into()),
-                next_public_pane_number: number(2),
-                layout: LayoutSnapshot::Pane(pane(cwd, 1)),
-                zoomed: false,
-                focused: number(1),
-                root_pane: number(1),
-            };
-            let snapshot = SessionSnapshot {
-                version: shepr_mux::persist::schema::SNAPSHOT_VERSION,
-                host_theme: Default::default(),
-                workspaces: vec![
-                    workspace("first", scratch.join("missing-cwd")),
-                    workspace("repeat", scratch.join("another-missing-cwd")),
-                ],
-                active: Some(0),
-            };
-            let original = serde_json::to_vec(&SessionFile {
-                snapshot,
-                history_digest: None,
-            })
-            .expect("encode the saved session");
-            let session_file = data_dir.join("session.json");
-            std::fs::write(&session_file, &original).expect("write the saved session");
-
-            let (mut app, _outputs) = App::open(
-                &config,
-                &paths,
-                lease,
-                shepr_mux::persist::SessionOpenPolicy::Persist,
-                test_clock(),
-            );
-            assert_eq!(app.state.workspaces.len(), 2);
-            assert_eq!(app.state.workspaces.records().count(), 2);
-
-            assert!(app.save_session_now(), "first save");
-            let backups = data_dir.join("session-backups");
-            let backup_files = std::fs::read_dir(&backups)
-                .expect("backup directory")
-                .map(|entry| entry.expect("backup entry").path())
-                .collect::<Vec<_>>();
-            assert_eq!(backup_files.len(), 1);
-            assert_eq!(
-                std::fs::read(&backup_files[0]).expect("read backup"),
-                original
-            );
         }
 
         #[test]
@@ -1888,9 +1667,7 @@ mod tests {
             assert!(app.session_saver.autosave_deadline().is_none());
             app.save_session_now();
             assert!(
-                app.paths
-                    .data_dir()
-                    .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
+                shepr_mux::persist::session_path(app.paths.data_dir())
                     .try_exists()
                     .expect("stat session file")
             );
@@ -2202,13 +1979,9 @@ mod tests {
             );
             // The app still holds the data-dir lease, so the checkpoint is parsed
             // directly rather than through `persist::load`.
-            let checkpoint = std::fs::read_to_string(
-                server
-                    .app
-                    .paths
-                    .data_dir()
-                    .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
-            )
+            let checkpoint = std::fs::read_to_string(shepr_mux::persist::session_path(
+                server.app.paths.data_dir(),
+            ))
             .expect("the pane exit writes a checkpoint");
             assert!(shepr_mux::persist::schema::parse_session_file(&checkpoint).is_ok());
             assert!(
@@ -2228,11 +2001,7 @@ mod tests {
             server.app.retire_session_writer();
 
             assert!(
-                !server
-                    .app
-                    .paths
-                    .data_dir()
-                    .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
+                !shepr_mux::persist::session_path(server.app.paths.data_dir())
                     .try_exists()
                     .expect("test stat")
             );
@@ -2258,11 +2027,7 @@ mod tests {
 
             assert!(server.app.state.workspaces.is_empty());
             assert!(
-                !server
-                    .app
-                    .paths
-                    .data_dir()
-                    .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
+                !shepr_mux::persist::session_path(server.app.paths.data_dir())
                     .try_exists()
                     .expect("test stat")
             );

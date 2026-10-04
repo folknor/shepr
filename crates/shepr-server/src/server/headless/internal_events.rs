@@ -32,7 +32,10 @@ impl HeadlessServer {
     }
 
     /// Admits the event once; every path below takes the admitted value, so
-    /// no envelope is rebuilt between admissions.
+    /// no envelope is rebuilt between admissions. A death's generation is
+    /// looked up once more by `App::handle_prepared_pane_exit` before the
+    /// removal; nothing between the two can change the pane's runtime, and
+    /// neither check has an effect, so the event is still applied once.
     fn handle_internal_event_with_origin(&mut self, ev: AppEvent, origin: EventOrigin) -> bool {
         let Some(admitted) = self.app.admit_event(ev) else {
             return false;

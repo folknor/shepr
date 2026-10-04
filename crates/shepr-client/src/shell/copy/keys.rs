@@ -843,7 +843,7 @@ impl ClientShellState {
 
     /// Scrolls the copy pane so the cursor is on screen, keeping it off the row the mode bar
     /// covers. Motions and search results both go through here. On the very last line of
-    /// history no scroll can lift it; `compose` then moves the bar to the top row instead.
+    /// history no scroll can lift it; `compose_frame` then moves the bar to the top row instead.
     fn reveal_copy_cursor(&mut self, outcome: &mut ClientShellInput) {
         let reserve_mode_bar_row = self.mode_bar_covers_copy_pane();
         let request = self.copy.as_mut().and_then(|copy_mode| {

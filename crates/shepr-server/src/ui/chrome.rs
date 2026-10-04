@@ -4,14 +4,14 @@
 //! Pane cells are written straight into the `FrameData`; they never pass
 //! through a ratatui `Buffer`. The chrome the server still draws with ratatui
 //! widgets goes into a scratch buffer of its own and is laid over the frame
-//! with `overlay_buffer`, so the frame is only ever written through
-//! `put_run`. Both are `shepr_surface::glyph_repair`'s, whose one repair rule
-//! (the client compositor's) blanks the uncovered half of any glyph the
+//! with `overlay_buffer`; border strokes are written as runs with
+//! `put_run_with`. All are `shepr_surface::glyph_repair`'s, whose one repair
+//! rule (the client compositor's) blanks the uncovered half of any glyph the
 //! written region splits, and an orphaned empty tail right after it. Chrome cells only ever carry what ratatui can express
 //! (colours, flags, a single underline), which `CellData::from_ratatui_cell`
 //! converts without loss.
 
-pub(super) use shepr_surface::glyph_repair::{overlay_buffer, put_run};
+pub(super) use shepr_surface::glyph_repair::{overlay_buffer, put_run_with};
 
 #[cfg(test)]
 mod tests {
@@ -20,6 +20,7 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
     use shepr_protocol::{CellData, FrameData, GridCellWidth, WireColor, WireStyleFlags};
+    use shepr_surface::glyph_repair::put_run;
 
     fn cell(symbol: &str) -> CellData {
         CellData {
@@ -140,6 +141,29 @@ mod tests {
         put_run(&mut lead, 1, 0, &[cell("#")]);
         assert_eq!(text(&lead), "a# d");
         assert_eq!(lead.cells()[2].grid_width, GridCellWidth::Grapheme);
+    }
+
+    #[test]
+    fn a_run_of_narrow_cells_repairs_what_writing_them_one_by_one_does() {
+        // Border strokes are written as runs; the repair must not depend on
+        // how a row's strokes are split into runs.
+        for row in ["a漢~b漢 c~d", "漢~漢~漢~", "~漢 ~a~", "ab漢~~cd漢"] {
+            let width = u16::try_from(row.chars().count()).expect("test row fits");
+            for start in 0..width {
+                for len in 1..=width - start {
+                    let strokes = vec![cell("#"); usize::from(len)];
+                    let mut run = frame(row);
+                    put_run_with(&mut run, start, 0, strokes.len(), |index, slot| {
+                        slot.clone_from(&strokes[index]);
+                    });
+                    let mut single = frame(row);
+                    for offset in 0..len {
+                        put_run(&mut single, start + offset, 0, &[cell("#")]);
+                    }
+                    assert_eq!(run.cells(), single.cells(), "{row:?} at {start}+{len}");
+                }
+            }
+        }
     }
 
     #[test]

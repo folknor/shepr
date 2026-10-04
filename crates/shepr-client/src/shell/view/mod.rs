@@ -1,7 +1,8 @@
 //! The view model of the frame on screen. A composition has three phases:
 //! `resolve::resolve_frame` lays out every element and resolves every scroll position,
 //! `draw::draw_frame` draws only what the view says, and `commit_frame` is the one place a
-//! composition writes shell state. The first two read the shell by shared reference.
+//! composition writes shell state. The first two read the shell by shared reference; the
+//! commit runs only after the host terminal took the frame.
 
 pub(in crate::shell) mod draw;
 pub(in crate::shell) mod list;
@@ -426,12 +427,28 @@ pub(in crate::shell) struct WorkspaceHit {
     pub(in crate::shell) location: Location,
 }
 
+/// A frame composed but not yet on screen: the cells to write to the host, and what
+/// composing them decided, which the shell keeps only once the host took the cells.
+pub(crate) struct ComposedFrame {
+    pub(crate) frame: FrameData,
+    pub(crate) commit: FrameCommit,
+}
+
+/// What a composition decided (the view, scroll positions and drawing effects), held
+/// until the frame it belongs to reaches the host.
+pub(crate) struct FrameCommit {
+    resolved: ResolvedFrame,
+    effects: LastComposition,
+}
+
 impl ClientShellState {
-    /// Composes one frame: resolves the view, draws it, then commits the view and the
-    /// resolved scroll positions in one step. `None` when the presented surface is held
-    /// unpaired (the last frame stays on screen) or the canvas refuses (likewise); nothing
-    /// is committed then.
-    pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {
+    /// Composes one frame: resolves the view and draws it, both by shared reference.
+    /// Nothing is stored: the caller writes the frame to the host and then hands the
+    /// commit to `commit_frame`, so a frame the host refused leaves no trace (a notice's
+    /// lifetime does not start, a reveal stays pending, input keeps aiming at the frame
+    /// on screen). `None` when the presented surface is held unpaired (the last frame
+    /// stays on screen) or the canvas refuses (likewise).
+    pub(crate) fn compose_frame(&self, cols: u16, rows: u16) -> Option<ComposedFrame> {
         if !self
             .presentation
             .can_draw(self.endpoints.active.snapshot().is_some())
@@ -440,11 +457,19 @@ impl ClientShellState {
         }
         let resolved = resolve::resolve_frame(self, cols, rows);
         let drawn = draw::draw_frame(self, &resolved.view)?;
-        Some(self.commit_frame(resolved, drawn))
+        Some(ComposedFrame {
+            frame: drawn.frame,
+            commit: FrameCommit {
+                resolved,
+                effects: drawn.effects,
+            },
+        })
     }
 
-    /// The one place a composition writes shell state.
-    fn commit_frame(&mut self, resolved: ResolvedFrame, drawn: DrawnFrame) -> FrameData {
+    /// Keeps what a composition decided, once its frame is on screen. The one place a
+    /// composition writes shell state.
+    pub(crate) fn commit_frame(&mut self, commit: FrameCommit) {
+        let FrameCommit { resolved, effects } = commit;
         self.sidebar_scroll.commit(&resolved.sidebar);
         if resolved.carry_selected_reveal {
             self.sidebar_scroll.reveal_selected_workspace();
@@ -457,9 +482,7 @@ impl ClientShellState {
         // Both pane layers pass through the notice stage, so its lifetime starts here.
         self.notices.drawn(self.now);
         self.mouse_selection.frame_drawn();
-        self.presentation
-            .commit(resolved.view, drawn.effects, self.now);
-        drawn.frame
+        self.presentation.commit(resolved.view, effects, self.now);
     }
 
     /// The view of the frame on screen, `None` before the first frame is drawn.
@@ -470,6 +493,16 @@ impl ClientShellState {
     /// The panes of the frame on screen that input can aim at.
     pub(in crate::shell) fn pane_hits(&self) -> &[PaneHit] {
         self.presentation.pane_hits()
+    }
+}
+
+impl ClientShellState {
+    /// Composes a frame and commits it at once, as if the host took it.
+    #[cfg(test)]
+    pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {
+        let ComposedFrame { frame, commit } = self.compose_frame(cols, rows)?;
+        self.commit_frame(commit);
+        Some(frame)
     }
 }
 

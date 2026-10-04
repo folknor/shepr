@@ -1,5 +1,3 @@
-use std::path::Path;
-
 pub(crate) fn startup() {
     // The PID is event identity for correlating each process's lifecycle rows.
     tracing::info!(
@@ -62,16 +60,5 @@ pub(crate) fn workspace_renamed(workspace_id: &shepr_protocol::WorkspaceId) {
         outcome = "ok",
         %workspace_id,
         "workspace renamed"
-    );
-}
-
-pub(crate) fn session_restored(path: &Path, summary: shepr_mux::persist::SessionRestoreSummary) {
-    tracing::info!(
-        event = "persist.restore",
-        subsystem = "persist",
-        outcome = summary.outcome.as_log_value(),
-        path = %path.display(),
-        workspaces = summary.workspaces,
-        "session restore evaluated"
     );
 }

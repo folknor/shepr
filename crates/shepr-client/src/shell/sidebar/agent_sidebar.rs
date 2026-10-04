@@ -29,6 +29,7 @@ pub(in crate::shell) fn draw_agent_panel_header(
     buffer: &mut Buffer,
     panel: &AgentPanelView,
     config: &ClientShellConfig,
+    sort: shepr_config::AgentPanelSortConfig,
 ) {
     let area = panel.area;
     if area.height == 0 {
@@ -60,7 +61,7 @@ pub(in crate::shell) fn draw_agent_panel_header(
         sort_rect.x,
         sort_rect.y,
         sort_rect.width,
-        crate::shell::sidebar::layout::agent_sort_label(config),
+        crate::shell::sidebar::layout::agent_sort_label(sort),
         Style::default()
             .fg(config.palette.overlay0)
             .add_modifier(Modifier::BOLD),

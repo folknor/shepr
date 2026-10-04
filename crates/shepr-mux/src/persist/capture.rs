@@ -17,31 +17,115 @@ use super::schema::{
     LayoutSnapshot, PaneSnapshot, SNAPSHOT_VERSION, SessionSnapshot, WorkspaceSnapshot,
 };
 
-/// Captures the current session, clearing its saved state when no workspace
-/// remains and otherwise writing one structural snapshot with optional pane
-/// history. The returned pane index uses the same pane keys as the snapshot.
+/// Captures the current session for a save: the job clears the saved state
+/// when no workspace remains, and otherwise writes one structural snapshot
+/// with optional pane history.
 pub fn capture_job(
     workspaces: &WorkspaceSet,
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &Path,
     host_theme: shepr_term::host::TerminalTheme,
     persist_pane_history: bool,
-) -> (PersistJob, HashMap<SavedPaneRef, PaneId>) {
+) -> SessionCapture {
     if workspaces.is_empty() {
-        return (PersistJob::Clear, HashMap::new());
+        return SessionCapture {
+            job: PersistJob::Clear,
+            pane_ids: HashMap::new(),
+        };
     }
     let (snapshot, cwds, pane_ids) =
         capture_deferred(workspaces, terminal_runtimes, fallback_cwd, host_theme);
     let history =
         persist_pane_history.then(|| capture_pending_history(workspaces, terminal_runtimes));
-    (
-        PersistJob::Save(SessionBundle {
+    SessionCapture {
+        job: PersistJob::Save(SessionBundle {
             snapshot,
             cwds,
             history,
         }),
         pane_ids,
-    )
+    }
+}
+
+/// What [`capture_job`] captured: the persister's job, and the live pane each
+/// saved pane came from, keyed as the job's snapshot keys them.
+pub struct SessionCapture {
+    job: PersistJob,
+    pane_ids: HashMap<SavedPaneRef, PaneId>,
+}
+
+impl SessionCapture {
+    /// The job alone, for a save whose layout is not kept.
+    pub fn into_job(self) -> PersistJob {
+        self.job
+    }
+
+    /// The job and, when it writes a layout rather than clearing the saved
+    /// session, that layout with its pane identities, so the same layout can
+    /// be written again later ([`CapturedLayout::recapture`]).
+    pub fn into_job_with_layout(self) -> (PersistJob, Option<CapturedLayout>) {
+        let Self { job, pane_ids } = self;
+        let layout = match &job {
+            PersistJob::Save(bundle) => Some(CapturedLayout {
+                snapshot: bundle.snapshot.clone(),
+                pane_ids,
+            }),
+            PersistJob::Clear => None,
+        };
+        (job, layout)
+    }
+}
+
+/// A layout a save wrote, with the live pane each of its saved panes came
+/// from. Every saved pane is in the map: a saved pane is a record in a
+/// workspace's tree when the layout is captured.
+pub struct CapturedLayout {
+    snapshot: SessionSnapshot,
+    pane_ids: HashMap<SavedPaneRef, PaneId>,
+}
+
+impl CapturedLayout {
+    /// A layout from its parts. Captures build it through
+    /// [`SessionCapture::into_job_with_layout`]; this constructor is the seam
+    /// a dependent crate's tests build or alter one through, since this
+    /// crate's `cfg(test)` does not reach them. `pane_ids` must key the panes
+    /// of `snapshot`; a pane missing from it makes [`Self::recapture`] fail.
+    pub fn new(snapshot: SessionSnapshot, pane_ids: HashMap<SavedPaneRef, PaneId>) -> Self {
+        Self { snapshot, pane_ids }
+    }
+
+    /// The layout as it was saved.
+    pub fn snapshot(&self) -> &SessionSnapshot {
+        &self.snapshot
+    }
+
+    /// A save of this same layout with fresh cwd probes and, when
+    /// `persist_pane_history`, fresh history handles: a pane that still has
+    /// a runtime contributes its current state, and one removed since the
+    /// capture keeps what the persister carries for it. `None` when a saved
+    /// pane has no identity in the map.
+    pub fn recapture(
+        &self,
+        terminal_runtimes: &PaneRuntimeRegistry,
+        persist_pane_history: bool,
+    ) -> Option<PersistJob> {
+        let cwds =
+            capture_pending_cwds_for_snapshot(&self.snapshot, &self.pane_ids, terminal_runtimes)?;
+        let history = if persist_pane_history {
+            Some(capture_pending_history_for_snapshot(
+                &self.snapshot,
+                &self.pane_ids,
+                terminal_runtimes,
+            )?)
+        } else {
+            None
+        };
+        Some(PersistJob::Save(SessionBundle {
+            snapshot: self.snapshot.clone(),
+            cwds,
+            history,
+        }))
+    }
 }
 
 /// Where a pane sits in a snapshot: the workspace's index in the snapshot and
@@ -104,7 +188,7 @@ pub fn capture(
 /// Capture the current app state without reading any shell's /proc cwd: the
 /// snapshot holds each pane's best known cwd, [`PendingCwds`] refreshes it where
 /// the snapshot is written, and the map keys each saved pane to its live pane.
-pub fn capture_deferred(
+fn capture_deferred(
     workspaces: &WorkspaceSet,
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &std::path::Path,
@@ -255,7 +339,7 @@ fn pending_pane_history(
 /// Panes removed since that layout was saved use the persister's carried
 /// history, while panes that still have runtimes contribute their current
 /// history. The pane map must have been captured with `snapshot`.
-pub fn capture_pending_history_for_snapshot(
+fn capture_pending_history_for_snapshot(
     snapshot: &SessionSnapshot,
     pane_ids: &HashMap<SavedPaneRef, PaneId>,
     terminal_runtimes: &PaneRuntimeRegistry,
@@ -287,7 +371,7 @@ pub fn capture_pending_history_for_snapshot(
 /// Captures cwd probes for a previously captured session layout. A probe keeps
 /// the best known cwd if its child has exited, and live panes keep their
 /// checkpoint workspace and pane keys even if removals changed workspace indexes.
-pub fn capture_pending_cwds_for_snapshot(
+fn capture_pending_cwds_for_snapshot(
     snapshot: &SessionSnapshot,
     pane_ids: &HashMap<SavedPaneRef, PaneId>,
     terminal_runtimes: &PaneRuntimeRegistry,
@@ -334,6 +418,69 @@ mod tests {
             vec![workspace],
             None,
         )
+    }
+
+    fn json(snapshot: &SessionSnapshot) -> serde_json::Value {
+        serde_json::to_value(snapshot).expect("a snapshot serializes")
+    }
+
+    fn capture_of(workspaces: &WorkspaceSet, persist_pane_history: bool) -> SessionCapture {
+        capture_job(
+            workspaces,
+            &PaneRuntimeRegistry::new(),
+            std::path::Path::new("/"),
+            Default::default(),
+            persist_pane_history,
+        )
+    }
+
+    #[test]
+    fn a_session_without_workspaces_captures_a_clear_and_keeps_no_layout() {
+        let empty = WorkspaceSet::restored(
+            crate::workspace::WorkspaceIdAllocator::new(),
+            Vec::new(),
+            None,
+        );
+        let (job, layout) = capture_of(&empty, true).into_job_with_layout();
+        assert!(matches!(job, PersistJob::Clear));
+        assert!(layout.is_none());
+    }
+
+    #[test]
+    fn a_kept_layout_recaptures_the_snapshot_it_saved() {
+        let mut workspace = Workspace::test_new("kept");
+        workspace.test_split(shepr_core::layout::Direction::Horizontal);
+        let workspaces = set_of(workspace);
+        for persist_pane_history in [false, true] {
+            let (job, layout) =
+                capture_of(&workspaces, persist_pane_history).into_job_with_layout();
+            let PersistJob::Save(saved) = job else {
+                panic!("a session with a workspace is saved");
+            };
+            let layout = layout.expect("a save keeps its layout");
+            assert_eq!(json(layout.snapshot()), json(&saved.snapshot));
+
+            let Some(PersistJob::Save(again)) =
+                layout.recapture(&PaneRuntimeRegistry::new(), persist_pane_history)
+            else {
+                panic!("every saved pane has its identity");
+            };
+            assert_eq!(json(&again.snapshot), json(&saved.snapshot));
+            assert_eq!(again.history.is_some(), persist_pane_history);
+        }
+    }
+
+    #[test]
+    fn a_layout_missing_a_pane_identity_recaptures_nothing() {
+        let workspaces = set_of(Workspace::test_new("unpaired"));
+        let (_, layout) = capture_of(&workspaces, false).into_job_with_layout();
+        let layout = layout.expect("a save keeps its layout");
+        let unpaired = CapturedLayout::new(layout.snapshot().clone(), HashMap::new());
+        assert!(
+            unpaired
+                .recapture(&PaneRuntimeRegistry::new(), false)
+                .is_none()
+        );
     }
 
     #[test]

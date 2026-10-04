@@ -363,7 +363,9 @@ impl HeadlessServer {
     /// focus and every newly focused pane gains it. Level-based, so it is
     /// correct whatever changed the views (navigation, a client leaving, a
     /// pane dying, an outer focus report) and idempotent; the handlers call
-    /// it once their change is applied.
+    /// it once their change is applied. Every pane runtime records what it
+    /// is told whether or not its child has reporting on, and tells a child
+    /// that turns reporting on while its pane holds focus focus-in then.
     pub(super) fn sync_pane_focus(&mut self) {
         self.sync_pane_focus_after(&[]);
     }
@@ -373,8 +375,11 @@ impl HeadlessServer {
     pub(super) fn sync_pane_focus_after(&mut self, replaced: &[shepr_core::layout::PaneId]) {
         let focused = self.panes_holding_focus();
         // A pane whose runtime was replaced stays in the set, so the set diff
-        // never tells the new runtime; it gets the focus-in report here. A
-        // replaced pane that newly gains focus is told by the diff below.
+        // never tells the new runtime; it is told focus-in here. A replaced
+        // pane that newly gains focus is told by the diff below. The new
+        // runtime's shell has not run yet, so it has focus reporting off: the
+        // runtime records the focus and reports it once its child turns
+        // reporting on.
         for &pane_id in replaced {
             let Some(workspace_id) = self
                 .app
@@ -886,5 +891,124 @@ mod tests {
             workspace_geometry_source(&clients, &workspace_id),
             Some(GeometrySource::Headless)
         );
+    }
+
+    /// An agent resume gives a focused pane a fresh shell. When the launch
+    /// returns, that shell has not run yet, let alone turned on focus
+    /// reporting, so the focus-in it is owed has to reach it once it does.
+    /// The stand-in shell turns reporting on as its first act and then copies
+    /// everything it reads to a file.
+    #[tokio::test]
+    async fn a_resumed_runtime_in_a_focused_pane_is_told_focus_in() {
+        use crate::server::headless::tests::{
+            handle_server_event, shutdown_test_runtimes, test_headless_server,
+        };
+        use crate::test_support::WorkspaceFixture as _;
+        use shepr_test_support::fixture::Step;
+
+        let mut server = test_headless_server();
+        let scratch = crate::test_support::ScratchDir::new("resume-focus-in");
+        let input_log = scratch.join("input");
+        let shell = shepr_test_support::fixture::stand_in(
+            scratch.path(),
+            "shepr-focus-sh",
+            &[
+                Step::Print("\x1b[?1004h".into()),
+                Step::To(input_log.clone()),
+                Step::Cat,
+            ],
+        );
+        server.app.set_test_shell(&shell);
+        let workspace = shepr_mux::workspace::Workspace::test_new("resume-focus-in");
+        let workspace_id = workspace.id();
+        let pane_id = workspace.tree().root();
+        server
+            .app
+            .test_state_mut()
+            .test_set_workspaces(vec![workspace]);
+        server.app.test_state_mut().seed_bookmark_index(Some(0));
+        server
+            .app
+            .test_state_mut()
+            .terminal_mut(pane_id)
+            .plan_agent_resume(crate::test_support::test_codex_plan(
+                "shepr:codex\0codex\0Id\0codex-session",
+                vec![crate::app::exiting_test_command().into()],
+            ));
+
+        let client_id = ClientId::test_new(1);
+        let (outbox, _control, _render) = crate::server::outbox::ClientOutbox::test_pair();
+        handle_server_event(
+            &mut server,
+            ServerEvent::ShellConnected {
+                client_id,
+                geometry: shepr_core::geometry::HostGeometry::new(
+                    shepr_core::geometry::GridSize::clamped(80, 24),
+                    shepr_core::geometry::HostCell::Unknown,
+                ),
+                mouse_capture: false,
+                surface_active: true,
+                outbox,
+            },
+        );
+        handle_server_event(
+            &mut server,
+            ServerEvent::ShellFocus {
+                client_id,
+                focused: true,
+            },
+        );
+        assert!(
+            server.focused_panes.contains(&ShellFocusTarget {
+                workspace_id,
+                pane_id,
+            }),
+            "the pane holds focus before its resume launches"
+        );
+        assert!(
+            server.app.test_runtimes_mut().get(&pane_id).is_none(),
+            "the resume waits for a host theme, so it has not launched yet"
+        );
+
+        // The resume launches on the loop's schedule once the theme wait ends.
+        server.handle_scheduled_tasks_headless(server.app.clock().now);
+        if server.app.test_runtimes_mut().get(&pane_id).is_none() {
+            let deadline = server
+                .app
+                .pending_agent_resume_wakeup()
+                .expect("the pending resume has a wakeup");
+            server.handle_scheduled_tasks_headless(deadline);
+        }
+        assert!(
+            server.app.test_runtimes_mut().get(&pane_id).is_some(),
+            "the resume launched"
+        );
+
+        // The stand-in reads its terminal a line at a time, so each pass ends
+        // the line; what it read so far then reaches the file.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            server.drain_internal_events_with_forwarding();
+            let input = std::fs::read(&input_log).unwrap_or_default();
+            if input.windows(3).any(|window| window == b"\x1b[I") {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the resumed shell was never told focus-in; it read {:?}",
+                String::from_utf8_lossy(&input)
+            );
+            if let Some(runtime) = server.app.test_runtimes_mut().get(&pane_id) {
+                // A refused send is retried on the next pass; the deadline bounds the loop.
+                if runtime
+                    .try_send_bytes(bytes::Bytes::from_static(b"\n"))
+                    .is_err()
+                {
+                    tracing::debug!("newline to the stand-in shell was refused; retrying");
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        shutdown_test_runtimes(&mut server);
     }
 }

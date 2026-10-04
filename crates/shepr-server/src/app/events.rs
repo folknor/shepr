@@ -342,8 +342,13 @@ impl App {
     }
 
     /// Finishes a pane exit whose publication and checkpoint decision the App
-    /// already made, as that decision says. The death's producer is admitted
-    /// again, since a held exit can outlive its runtime.
+    /// already made, as that decision says. The death's runtime generation is
+    /// checked again here, next to the removal it guards. On the server's
+    /// path this repeats the admission the same pass just made (a held exit
+    /// waits as an envelope and is admitted afresh when replayed), so in
+    /// production it never refuses; it stays because a `PreparedPaneExit` is
+    /// a value a caller could keep past its runtime, and admission is a pure
+    /// lookup with no effect to apply twice.
     pub(crate) fn handle_prepared_pane_exit(&mut self, prepared: &PreparedPaneExit) -> bool {
         if prepared
             .held_generation()

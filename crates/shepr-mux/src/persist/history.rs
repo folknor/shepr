@@ -142,7 +142,7 @@ impl HistoryText {
 /// [`HistoryText`]. The write-side twin of [`SessionHistorySnapshot`], which
 /// is what reading the file gives; it serializes to the same JSON.
 #[derive(Clone)]
-pub struct SessionHistory {
+pub(super) struct SessionHistory {
     pub(super) version: SnapshotVersion,
     pub(super) workspaces: Vec<Vec<(PanePublicNumber, HistoryText)>>,
 }

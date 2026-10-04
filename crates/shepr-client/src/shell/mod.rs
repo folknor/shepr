@@ -27,6 +27,7 @@ pub(crate) use state::{
     ClientPresentationLogContext, ClientShellAction, ClientShellEndpointError, ClientShellInput,
     ClientShellRequest, Repaint,
 };
+pub(crate) use view::ComposedFrame;
 
 #[cfg(test)]
 mod tests;

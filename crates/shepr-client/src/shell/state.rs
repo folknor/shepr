@@ -233,7 +233,7 @@ impl ClientShellState {
         self.host_cell = cell;
     }
 
-    pub fn new_at(mut config: ClientShellConfig, now: std::time::Instant) -> Self {
+    pub fn new_at(config: ClientShellConfig, now: std::time::Instant) -> Self {
         let preferences = config.preferences.clone();
         let overlay = None;
         let chrome = crate::shell::sidebar::chrome::ChromeLayout::new(&config);
@@ -251,10 +251,9 @@ impl ClientShellState {
                 .agent_panel_sort
                 .unwrap_or(config.agent_panel_sort)
         };
-        config.agent_panel_sort = agent_panel_sort;
         let agent_panel_sort_chrome =
             crate::shell::sidebar::chrome::Chrome::new(agent_panel_sort, sort_origin);
-        let endpoints = Endpoints::new(vec![local_endpoint()], &config);
+        let endpoints = Endpoints::new(vec![local_endpoint()], &config, agent_panel_sort);
         Self {
             now,
             machine_diagnostics: Default::default(),
@@ -526,7 +525,7 @@ impl ClientShellState {
         Self::new_at(config, std::time::Instant::now())
     }
 
-    /// Drops the retained pane surface, leaving `compose` on its no-surface placeholder. Resize
+    /// Drops the retained pane surface, leaving `compose_frame` on its no-surface placeholder. Resize
     /// and sidebar changes no longer do this (the retained surface is drawn clipped until the
     /// resized one arrives); tests use it to reach the placeholder.
     pub(in crate::shell) fn invalidate_pane_surface(&mut self) {

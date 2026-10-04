@@ -50,6 +50,7 @@ impl PaneTerminal {
                 default_color_generation: DefaultColorGeneration::default(),
                 agent_osc_state: AgentOscStateTracker::default(),
                 local_host,
+                pane_focused: false,
             }),
             pane_id,
             screen_flipped: AtomicBool::new(false),
@@ -205,11 +206,15 @@ impl PaneTerminal {
         // content changed exactly as the timer tick does, whatever the read
         // carries.
         let screen_before = core.terminal.active_screen();
+        let focus_reporting_before = focus_reporting_on(&core);
         let flushed = core.terminal.tick(now);
         let synchronized_output_before = core.terminal.sync_update_buffering();
         core.terminal.write_at(bytes, now);
         self.note_screen_flip(screen_before, core.terminal.active_screen());
-        let effects = collect_core_effects(&mut core);
+        let mut effects = collect_core_effects(&mut core);
+        effects
+            .terminal_responses
+            .extend(focus_report_on_enable(&core, focus_reporting_before));
 
         let synchronized_output = core.terminal.sync_update_buffering();
         self.commit_mutation(
@@ -287,12 +292,16 @@ impl PaneTerminal {
             return Err(crate::pane::terminal::TerminalCorePoisoned);
         };
         let screen_before = core.terminal.active_screen();
+        let focus_reporting_before = focus_reporting_on(&core);
         let flushed = core.terminal.tick(now);
         if flushed {
             self.note_screen_flip(screen_before, core.terminal.active_screen());
             self.commit_mutation(&mut core, CoreMutation::SyncFlush);
         }
-        let effects = collect_core_effects(&mut core);
+        let mut effects = collect_core_effects(&mut core);
+        effects
+            .terminal_responses
+            .extend(focus_report_on_enable(&core, focus_reporting_before));
         drop(core);
         if let Some(pane_id) = self.pane_id {
             osc_debug::log(pane_id, &effects.osc_debug);
@@ -571,8 +580,21 @@ impl PaneTerminal {
         self.mode_enabled(shepr_vt::DecMode::BracketedPaste)
     }
 
-    pub(crate) fn focus_reporting_enabled(&self) -> bool {
-        self.mode_enabled(shepr_vt::DecMode::FocusEvents)
+    /// Records whether the pane holds terminal focus and answers whether the
+    /// child has focus reporting on, so the caller reports `event` now. One
+    /// core hold for both: a parse that turns reporting on runs either before
+    /// it (and this caller reports) or after it (and the parse reports, from
+    /// the recorded focus), so the child hears of the focus exactly once.
+    /// The caller holds the reply-order lock across this call and the queueing
+    /// of its report, as a read does across its parse and its replies, so the
+    /// reports also reach the child in the order the focus was recorded.
+    /// A poisoned core records nothing and reports nothing.
+    pub(crate) fn note_pane_focus(&self, event: shepr_vt::FocusEvent) -> bool {
+        let Ok(mut core) = self.core.lock() else {
+            return false;
+        };
+        core.pane_focused = matches!(event, shepr_vt::FocusEvent::Gained);
+        focus_reporting_on(&core)
     }
 
     pub(crate) fn mouse_reporting_enabled(&self) -> bool {

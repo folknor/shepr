@@ -340,6 +340,13 @@ pub(crate) struct PaneTerminalCore {
     /// could not be: OSC 7 `file://` reports naming either are this machine's.
     /// Shared by every pane, so construction clones only the `Arc`.
     pub(super) local_host: Option<std::sync::Arc<shepr_platform::HostNames>>,
+    /// Whether the server last told this pane it holds terminal focus,
+    /// recorded whether or not the child had focus reporting on. A child
+    /// that turns reporting on while the pane holds focus is told focus-in
+    /// at once (`focus_report_on_enable`): it cannot have heard of a focus
+    /// gained before it asked, and a fresh shell, such as the one an agent
+    /// resume launches, never has reporting on when it is told.
+    pub(super) pane_focused: bool,
 }
 
 /// Record the meaning of a mutation once, rather than choosing counters at

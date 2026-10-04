@@ -628,7 +628,7 @@ fn single_endpoint_agent_indices_follow_the_rendered_client_recency_order() {
     use shepr_termio::input::KeybindAction;
 
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.config.agent_panel_sort = shepr_config::AgentPanelSortConfig::Priority;
+    state.set_agent_panel_sort(shepr_config::AgentPanelSortConfig::Priority);
     state.chrome.set_collapsed(true);
 
     let mut first = snapshot_with_agent("old-boot", "w1:p1", AgentStatus::Idle, 10);
@@ -691,7 +691,7 @@ fn agent_indices_keep_stale_rows_and_skip_agents_the_sidebar_cannot_render() {
     let other_machine = machine_named("Other", "dev@other.example");
     let other_id = ClientEndpointId::Ssh(other_machine.label.clone());
     let (mut state, stale_id) = state_with_machines(&[remote_machine(), other_machine]);
-    state.config.agent_panel_sort = shepr_config::AgentPanelSortConfig::Spaces;
+    state.set_agent_panel_sort(shepr_config::AgentPanelSortConfig::Spaces);
     state.set_endpoint_snapshot(
         &ClientEndpointId::Local,
         Box::new(snapshot_with_agent(
@@ -1386,7 +1386,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
         modifiers: KeyModifiers::empty(),
     })]);
     assert_eq!(
-        state.config.agent_panel_sort,
+        state.agent_panel_sort_chrome.value(),
         shepr_config::AgentPanelSortConfig::Priority
     );
     assert!(click.actions.is_empty());

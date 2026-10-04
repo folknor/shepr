@@ -364,10 +364,6 @@ impl PaneRuntime {
         Arc::clone(&self.detect_reset_notify)
     }
 
-    pub fn current_size(&self) -> shepr_core::geometry::GridSize {
-        self.grid_size()
-    }
-
     pub fn visible_text(&self) -> String {
         self.terminal.visible_text()
     }
@@ -1627,7 +1623,7 @@ mod tests {
         runtime.resize(shepr_core::geometry::PaneGeometry::cells_only(80, 45));
 
         assert_eq!(
-            runtime.current_size(),
+            runtime.grid_size(),
             shepr_core::geometry::GridSize::clamped(80, 45)
         );
         assert_eq!(
@@ -1709,6 +1705,51 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    /// A child that turns focus reporting on while its pane holds focus is
+    /// told focus-in with that write's replies, once per turn-on; in an
+    /// unfocused pane it is told nothing.
+    #[tokio::test]
+    async fn turning_focus_reporting_on_in_a_focused_pane_reports_focus_in() {
+        let (runtime, mut rx) = PaneRuntime::test_with_channel(80, 24);
+        let pane_id = runtime.pane_id;
+        runtime.try_send_focus_event(shepr_vt::FocusEvent::Gained);
+        assert!(rx.try_recv().is_err(), "reporting is off: nothing is sent");
+
+        let enabled = runtime.terminal.process_pty_bytes(pane_id, b"\x1b[?1004h");
+        assert_eq!(enabled.terminal_responses, [Bytes::from_static(b"\x1b[I")]);
+        let repeated = runtime.terminal.process_pty_bytes(pane_id, b"\x1b[?1004h");
+        assert!(repeated.terminal_responses.is_empty(), "it was already on");
+
+        runtime.try_send_focus_event(shepr_vt::FocusEvent::Lost);
+        assert_eq!(
+            rx.try_recv().expect("focus-out while reporting is on"),
+            Bytes::from_static(b"\x1b[O")
+        );
+        let unfocused = runtime
+            .terminal
+            .process_pty_bytes(pane_id, b"\x1b[?1004l\x1b[?1004h");
+        assert!(unfocused.terminal_responses.is_empty());
+    }
+
+    /// A turn-on inside a synchronized update is reported once, whether the
+    /// emulator applies it as it is parsed or when the update ends.
+    #[tokio::test]
+    async fn focus_reporting_turned_on_inside_a_synchronized_update_reports_on_flush() {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let pane_id = runtime.pane_id;
+        runtime.try_send_focus_event(shepr_vt::FocusEvent::Gained);
+        let opened = runtime
+            .terminal
+            .process_pty_bytes(pane_id, b"\x1b[?2026h\x1b[?1004h");
+        let closed = runtime.terminal.process_pty_bytes(pane_id, b"\x1b[?2026l");
+        let replies: Vec<Bytes> = opened
+            .terminal_responses
+            .into_iter()
+            .chain(closed.terminal_responses)
+            .collect();
+        assert_eq!(replies, [Bytes::from_static(b"\x1b[I")]);
     }
 
     #[tokio::test]

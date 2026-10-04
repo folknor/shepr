@@ -40,6 +40,7 @@ pub(in crate::shell) fn sidebar_inputs<'a>(
         collapsed: &state.endpoints.collapsed,
         model: &state.endpoints.agent_panel_model,
         config: &state.config,
+        agent_panel_sort: state.agent_panel_sort_chrome.value(),
         machine_diagnostics: &state.machine_diagnostics,
         active_snapshot: state.endpoints.active.snapshot(),
         selected,

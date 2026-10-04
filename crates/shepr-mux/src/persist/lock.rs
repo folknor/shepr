@@ -28,8 +28,6 @@ impl DataDirLease {
     }
 }
 
-pub use shepr_platform::DataDirectoryLeaseHeld as DataDirLeaseHeld;
-
 #[cfg(test)]
 mod tests {
     use super::*;

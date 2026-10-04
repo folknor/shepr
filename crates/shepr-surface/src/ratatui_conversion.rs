@@ -117,6 +117,16 @@ pub trait CellDataExt: Sized {
     /// dropped here. Pane cells are never drawn through ratatui, so none reach
     /// this.
     fn from_ratatui_cell(cell: &ratatui::buffer::Cell) -> Self;
+
+    /// Makes `self` the cell [`Self::from_ratatui_cell`] would build, reusing
+    /// its symbol buffer, so a frame cell overwritten in place allocates only
+    /// when the new symbol outgrows the old one.
+    fn assign_ratatui_cell(&mut self, cell: &ratatui::buffer::Cell);
+
+    /// Whether `self` equals the cell [`Self::from_ratatui_cell`] would build,
+    /// decided without building it, so a diff against a frame allocates only
+    /// for the cells that differ.
+    fn matches_ratatui_cell(&self, cell: &ratatui::buffer::Cell) -> bool;
 }
 
 impl CellDataExt for CellData {
@@ -129,6 +139,38 @@ impl CellDataExt for CellData {
             style: WireStyle::from_ratatui_modifier(cell.modifier),
             hyperlink: None,
         }
+    }
+
+    fn assign_ratatui_cell(&mut self, cell: &ratatui::buffer::Cell) {
+        let mut symbol = std::mem::take(&mut self.symbol);
+        symbol.clear();
+        symbol.push_str(cell.symbol());
+        *self = Self {
+            symbol,
+            grid_width: GridCellWidth::Grapheme,
+            fg: WireColor::from_ratatui(cell.fg),
+            bg: WireColor::from_ratatui(cell.bg),
+            style: WireStyle::from_ratatui_modifier(cell.modifier),
+            hyperlink: None,
+        };
+    }
+
+    fn matches_ratatui_cell(&self, cell: &ratatui::buffer::Cell) -> bool {
+        // Destructured so a new wire field cannot be silently left out.
+        let Self {
+            symbol,
+            grid_width,
+            fg,
+            bg,
+            style,
+            hyperlink,
+        } = self;
+        symbol == cell.symbol()
+            && *grid_width == GridCellWidth::Grapheme
+            && *fg == WireColor::from_ratatui(cell.fg)
+            && *bg == WireColor::from_ratatui(cell.bg)
+            && *style == WireStyle::from_ratatui_modifier(cell.modifier)
+            && hyperlink.is_none()
     }
 }
 
@@ -208,6 +250,40 @@ pub fn surface_rect(rect: ratatui::layout::Rect) -> SurfaceRect {
 mod tests {
     use super::*;
     use ratatui::style::{Color, Modifier};
+
+    #[test]
+    fn in_place_conversion_and_comparison_agree_with_from_ratatui_cell() {
+        let mut source = ratatui::buffer::Cell::new("\u{2503}");
+        source.fg = Color::Rgb(1, 2, 3);
+        source.bg = Color::Indexed(4);
+        source.modifier = Modifier::BOLD | Modifier::UNDERLINED;
+        let built = CellData::from_ratatui_cell(&source);
+        assert!(built.matches_ratatui_cell(&source));
+
+        let mut assigned = CellData {
+            symbol: "longer previous symbol".to_owned(),
+            grid_width: GridCellWidth::WideLead,
+            fg: WireColor::Red,
+            hyperlink: Some(0),
+            ..CellData::blank()
+        };
+        assert!(!assigned.matches_ratatui_cell(&source));
+        assigned.assign_ratatui_cell(&source);
+        assert_eq!(assigned, built);
+
+        // Each field the wire cell carries decides the comparison.
+        let differs = |change: fn(&mut CellData)| {
+            let mut cell = built.clone();
+            change(&mut cell);
+            !cell.matches_ratatui_cell(&source)
+        };
+        assert!(differs(|cell| cell.symbol.push('x')));
+        assert!(differs(|cell| cell.grid_width = GridCellWidth::One));
+        assert!(differs(|cell| cell.fg = WireColor::Reset));
+        assert!(differs(|cell| cell.bg = WireColor::Reset));
+        assert!(differs(|cell| cell.style = WireStyle::default()));
+        assert!(differs(|cell| cell.hyperlink = Some(0)));
+    }
 
     #[test]
     fn frame_data_from_ratatui_buffer_keeps_cells_and_cursor() {

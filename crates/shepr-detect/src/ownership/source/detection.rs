@@ -70,6 +70,10 @@ impl AgentOwnership {
         let previous_session = self.current_session_identity_for_persistence();
         let agent_released = process_exited && previous_agent.is_some();
         if self.should_ignore_detected_state_under_full_lifecycle_hook(agent, process_exited) {
+            // The hook governs only while `detected_agent` is already its
+            // agent, so this rewrites the same value: an overridden
+            // observation never moves the detected agent (see
+            // `clear_full_lifecycle_hook_suppression_for_detected_agent`).
             if self
                 .hook_authority
                 .as_ref()

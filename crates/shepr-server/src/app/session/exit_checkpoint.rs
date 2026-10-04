@@ -1,15 +1,8 @@
-use std::collections::HashMap;
 use std::time::Instant;
 
-use super::{CHECKPOINT_MAX_FAILURES, CheckpointGeneration, checkpoint_retry_delay};
+use shepr_mux::persist::CapturedLayout;
 
-/// The layout a pane-exit checkpoint made durable, kept so the final save can
-/// rewrite it (with fresh history and cwds) instead of the layout after the
-/// exited panes left.
-pub(super) struct PreservedLayout {
-    pub(super) snapshot: shepr_mux::persist::SessionSnapshot,
-    pub(super) pane_ids: HashMap<shepr_mux::persist::SavedPaneRef, shepr_core::layout::PaneId>,
-}
+use super::{CHECKPOINT_MAX_FAILURES, CheckpointGeneration, checkpoint_retry_delay};
 
 /// Generations are issued 1, 2, 3, ... per held exit. `through` is the newest
 /// generation released: a held exit with generation <= `through` may be
@@ -35,7 +28,10 @@ pub(super) enum PaneExitCheckpoint {
     /// `generation` (the newest issued when it landed) are released.
     Saved {
         generation: CheckpointGeneration,
-        layout: Box<PreservedLayout>,
+        /// The layout the checkpoint made durable, kept so the final save can
+        /// rewrite it (with fresh history and cwds, `CapturedLayout::recapture`)
+        /// instead of the layout after the exited panes left.
+        layout: Box<CapturedLayout>,
     },
     /// Checkpoints failed `CHECKPOINT_MAX_FAILURES` times in a row, or the
     /// persister stopped accepting saves for this boot. Every generation ever
@@ -93,7 +89,7 @@ impl PaneExitCheckpoint {
         }
     }
 
-    pub(super) fn preserved(&self) -> Option<&PreservedLayout> {
+    pub(super) fn preserved(&self) -> Option<&CapturedLayout> {
         if let Self::Saved { layout, .. } = self {
             Some(layout)
         } else {
@@ -147,7 +143,7 @@ impl PaneExitCheckpoint {
     pub(super) fn saved(
         &mut self,
         saved_generation: CheckpointGeneration,
-        layout: Option<Box<PreservedLayout>>,
+        layout: Option<Box<CapturedLayout>>,
     ) {
         let Self::Requested {
             through,
@@ -254,7 +250,7 @@ impl PaneExitCheckpoint {
     }
 
     #[cfg(test)]
-    pub(super) fn preserved_mut(&mut self) -> Option<&mut PreservedLayout> {
+    pub(super) fn preserved_mut(&mut self) -> Option<&mut CapturedLayout> {
         if let Self::Saved { layout, .. } = self {
             Some(layout)
         } else {
@@ -268,16 +264,16 @@ mod tests {
     use super::super::SESSION_SAVE_RETRY_MIN;
     use super::*;
 
-    fn layout() -> Box<PreservedLayout> {
-        Box::new(PreservedLayout {
-            snapshot: shepr_mux::persist::SessionSnapshot {
+    fn layout() -> Box<CapturedLayout> {
+        Box::new(CapturedLayout::new(
+            shepr_mux::persist::schema::SessionSnapshot {
                 version: shepr_mux::persist::schema::SNAPSHOT_VERSION,
                 host_theme: Default::default(),
                 workspaces: vec![],
                 active: None,
             },
-            pane_ids: HashMap::new(),
-        })
+            std::collections::HashMap::new(),
+        ))
     }
     fn generation(value: u64) -> CheckpointGeneration {
         CheckpointGeneration(value)

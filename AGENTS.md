@@ -345,17 +345,22 @@ every agent integration reports through it.
   consume, and surface drawing takes shared references and only draws. What
   each client was last sent is its `CommittedBaseline` (surface and pane
   identities, committed together), owned by `ClientRenderState`.
-  The client shell composes the same way: `ClientShellState::compose` resolves
-  a `ShellView` (layout, scroll and hit rects) and draws it, both by shared
-  reference, then commits the view and the resolved scroll positions in one
-  step; drawing never writes shell state.
+  The client shell composes the same way: `ClientShellState::compose_frame`
+  resolves a `ShellView` (layout, scroll and hit rects) and draws it, both by
+  shared reference; `commit_frame` then stores the view and the resolved
+  scroll positions in one step, and only once the host terminal took the
+  frame, so a refused write leaves no trace in shell state. Drawing never
+  writes shell state.
 - **Presentation is per client.** Each connection on the server keeps its
   own surface size, outer focus, location and window title; nothing projects
   one client's view into `AppState`. What panes have one of is decided from
   all the views in one place each: PTY size by the PTY size rule
   (`workspace_geometry_source` in `crates/shepr-server/src/server/headless/client_views.rs`,
   which records each workspace's applied area in `AppState`), pane focus reports by
-  `sync_pane_focus`, and the host theme by the foreground client: the active
+  `sync_pane_focus` (each pane runtime records the focus it is told even while
+  its child has focus reporting, DEC mode 1004, off, and a child that turns
+  reporting on in a focused pane is told focus-in at once, ordered with the
+  pane's other terminal replies), and the host theme by the foreground client: the active
   shell with the most recent user activity. Connection or surface activation,
   outer focus gain, pane interaction, and endpoint commands count as activity;
   a surface resize only changes geometry. What each client is

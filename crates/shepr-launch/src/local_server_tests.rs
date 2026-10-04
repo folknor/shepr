@@ -557,6 +557,20 @@ fn the_running_server_status_never_starts_a_server() {
 }
 
 #[test]
+fn a_silent_listener_reads_as_the_launchs_unresponsive_error() {
+    let _env = IsolatedEnv::new();
+    let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
+    let _listener = UnixListener::bind(runtime_socket(&paths)).expect("test precondition");
+    let error = running_server_status(&paths).expect_err("a silent listener is no absence");
+    assert!(
+        matches!(error, LaunchError::Unresponsive { .. }),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("server stop"), "{error}");
+    assert_nothing_was_launched(&paths);
+}
+
+#[test]
 fn a_stopping_server_is_offered_no_restart() {
     let _env = IsolatedEnv::new();
     let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");

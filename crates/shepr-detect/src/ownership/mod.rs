@@ -114,7 +114,9 @@ pub enum UnappliedHookDisposition {
 /// detect explain can say why a report changed nothing. A later applied
 /// report from the same source clears it, as does process evidence promoting
 /// a parked report of that source and the expiry of that source's parked
-/// start; a later unapplied report replaces it.
+/// start; a later unapplied report replaces it. Expiry is judged at read time
+/// too (`AgentOwnership::last_unapplied_hook_report`), so it does not wait for
+/// the next process observation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnappliedHookReport {
     pub origin: ReportOrigin,

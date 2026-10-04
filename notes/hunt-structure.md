@@ -19,17 +19,6 @@ behaviour acting on it, and test layouts.
 
 ## Workspace and persistence
 
-## STR-028 - Session open and save sequencing still lives in the server
-
-The `persist/` split is done (`schema.rs`, `capture.rs`, `history/carry.rs`,
-`history/serialize.rs`, `files.rs`, `recovery.rs`, and a `writer.rs` holding
-only the save sequence), and the projection input is `ProjectionInput`. Still
-open: `App::open` sequences load, history gating, restore, loss and protection
-decisions, logging, the empty-workspace fallback and persister spawn, and
-`app/session.rs` builds the preserved-layout map and decides Clear versus Save.
-A small mux persistence API for that sequence was not attempted while the data
-model was moving. (mux-state, server-app)
-
 ## STR-029 - Constants beside their policy, against the limits lints (decision open)
 
 The constants of shepr-mux, shepr-server and shepr-client now sit beside the

@@ -95,7 +95,7 @@ impl HistoryIntent {
 }
 
 /// Shared by autosave, pane-exit checkpoints, and shutdown.
-pub struct SessionWriter {
+pub(super) struct SessionWriter {
     path: PathBuf,
     backup_policy: SessionBackupPolicy,
     _lease: super::lock::DataDirLease,
@@ -112,10 +112,10 @@ pub struct SessionWriter {
 }
 
 impl SessionWriter {
-    /// Canonical file name for the saved session layout.
-    pub const SESSION_FILE_NAME: &'static str = files::SESSION_FILE_NAME;
-
-    pub fn new(lease: super::lock::DataDirLease, backup_policy: SessionBackupPolicy) -> Self {
+    pub(super) fn new(
+        lease: super::lock::DataDirLease,
+        backup_policy: SessionBackupPolicy,
+    ) -> Self {
         let path = files::session_path(lease.directory());
         Self {
             path,
@@ -128,7 +128,7 @@ impl SessionWriter {
     }
 
     /// Consumes the writer and releases its data-directory lease.
-    pub fn retire(self) {
+    pub(super) fn retire(self) {
         drop(self);
     }
 
@@ -146,7 +146,7 @@ impl SessionWriter {
     /// `now` supplies the time used for recovery-copy naming and preservation.
     /// On success, returns the digest the published layout names its history
     /// by, `None` when it has none.
-    pub fn save(
+    pub(super) fn save(
         &mut self,
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistory>,
@@ -164,7 +164,7 @@ impl SessionWriter {
     /// history the caller would save is known to be the one `digest` names.
     ///
     /// [`history_is_current`]: Self::history_is_current
-    pub fn save_keeping_history(
+    pub(super) fn save_keeping_history(
         &mut self,
         snapshot: &SessionSnapshot,
         digest: &HistoryDigest,
@@ -190,7 +190,7 @@ impl SessionWriter {
     /// Whether the history file is still exactly what this writer last put on
     /// disk (one `stat`), so a caller that knows its history has not changed
     /// since may skip assembling it.
-    pub fn history_is_current(&self) -> bool {
+    pub(super) fn history_is_current(&self) -> bool {
         let Some(written) = &self.written_history else {
             return false;
         };
@@ -335,7 +335,7 @@ impl SessionWriter {
 
     /// Clears the layout and history, reporting either file's clear failure.
     /// `now` supplies the time used for recovery-copy naming and preservation.
-    pub fn clear(&mut self, now: SystemTime) -> Result<(), SaveError> {
+    pub(super) fn clear(&mut self, now: SystemTime) -> Result<(), SaveError> {
         self.written_history = None;
         let result = self.preserve_unloaded(now).and_then(|()| {
             recovery::preserve_snapshot_history(&self.path, now, &mut self.snapshot_fingerprints);

@@ -102,6 +102,7 @@ impl ClientLoop {
         earliest_client_timer_deadline([
             self.state.shell.next_timer_deadline(),
             self.hub.next_deadline(&self.state.shell, now),
+            self.state.refused_output_retry_deadline(),
         ])
     }
 
@@ -311,9 +312,8 @@ impl ClientLoop {
             .host_modes
             .apply_mouse(&mut state.output_writer, geometry.cell());
         state.record_host_mode_write("mouse mode resize", mouse)?;
-        state.set_host_size(geometry.cols(), geometry.rows());
         // Resizing invalidates the host-side blit baseline. The retained pane surface
-        // stays: until the resized one arrives, `compose` draws it clipped to the new
+        // stays: until the resized one arrives, `compose_frame` draws it clipped to the new
         // pane area (with pane hits clipped to match) instead of dropping to the
         // machine-list placeholder.
         state.request_repaint();
@@ -347,6 +347,8 @@ impl ClientLoop {
 
     fn handle_timer(&mut self, now: std::time::Instant) -> Result<ClientLoopAction, LoopExit> {
         let Self { state, hub, .. } = self;
+        // Presented after this event with everything else it dirtied.
+        state.retry_refused_output(now);
         hub.tick_health(now);
         let mut outcome = state.shell.tick_timers(now);
         outcome.merge(hub.settle_expired(&mut state.shell, now));
@@ -623,5 +625,135 @@ mod client_timer_tests {
             panic!("resize input did not wake the client loop");
         };
         assert!(matches!(event, ClientLoopEvent::Resize(_)));
+    }
+
+    /// A host terminal that refuses every write while `refusing` is set and
+    /// otherwise keeps what it is given.
+    #[derive(Clone, Default)]
+    struct FlakyHost {
+        refusing: Arc<AtomicBool>,
+        written: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl FlakyHost {
+        fn take_written(&self) -> Vec<u8> {
+            std::mem::take(&mut *self.written.lock().expect("test output lock"))
+        }
+    }
+
+    impl io::Write for FlakyHost {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.refusing.load(Ordering::Relaxed) {
+                return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+            }
+            self.written
+                .lock()
+                .map_err(|_| io::Error::other("test output lock poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Waits for the loop's next wake with nothing queued and handles it,
+    /// asserting the loop armed a timer of its own to wake on.
+    async fn wake_on_the_loops_own_timer(client_loop: &mut ClientLoop, now: Instant) {
+        let wake = tokio::time::timeout(
+            Duration::from_secs(60),
+            client_loop.wait_for_next_event(now),
+        )
+        .await
+        .expect("the loop arms a timer to repaint the refused output");
+        assert!(matches!(wake, ClientLoopWake::Deadline));
+        let fired_at = tokio::time::Instant::now().into_std();
+        client_loop
+            .handle_event(ClientLoopEvent::Timer, fired_at)
+            .expect("the timer is handled");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_frame_is_repainted_without_waiting_for_another_event() {
+        let now = tokio::time::Instant::now().into_std();
+        let (mut client_loop, _event_tx) = test_client_loop(endpoint::EndpointRegistry::empty());
+        let host = FlakyHost::default();
+        client_loop.state.output_writer = Box::new(host.clone());
+        host.refusing.store(true, Ordering::Relaxed);
+        client_loop.state.mark_chrome_dirty();
+        client_loop.state.present_pending();
+        assert!(client_loop.state.repaint_pending);
+
+        host.refusing.store(false, Ordering::Relaxed);
+        wake_on_the_loops_own_timer(&mut client_loop, now).await;
+        assert!(!client_loop.state.repaint_pending);
+        assert!(!host.take_written().is_empty(), "the frame was repainted");
+        assert_eq!(
+            client_loop.next_timer_deadline(tokio::time::Instant::now().into_std()),
+            None,
+            "a repaint that reached the host arms no further retry"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_surface_patch_is_repainted_without_waiting_for_another_event() {
+        let now = tokio::time::Instant::now().into_std();
+        let (mut client_loop, _event_tx) = test_client_loop(endpoint::EndpointRegistry::empty());
+        let host = FlakyHost::default();
+        client_loop.state.output_writer = Box::new(host.clone());
+        client_loop.state.mark_chrome_dirty();
+        client_loop.state.present_pending();
+        assert!(!client_loop.state.repaint_pending, "test precondition");
+        host.take_written();
+
+        host.refusing.store(true, Ordering::Relaxed);
+        client_loop
+            .state
+            .queue_surface_patch(crate::shell::ClientComposedSurfacePatch {
+                rows: vec![shepr_protocol::PaneSurfacePatchRow {
+                    x: 0,
+                    y: 0,
+                    cells: vec![shepr_protocol::CellData {
+                        symbol: "b".into(),
+                        ..shepr_protocol::CellData::blank()
+                    }],
+                }],
+                cursor: None,
+            });
+        client_loop.state.present_pending();
+        assert!(client_loop.state.repaint_pending);
+
+        host.refusing.store(false, Ordering::Relaxed);
+        wake_on_the_loops_own_timer(&mut client_loop, now).await;
+        assert!(!client_loop.state.repaint_pending);
+        assert!(!host.take_written().is_empty(), "the frame was repainted");
+    }
+
+    /// A host that keeps refusing is retried less and less often, not on
+    /// every turn of the loop.
+    #[tokio::test(start_paused = true)]
+    async fn a_host_that_keeps_refusing_is_retried_with_a_growing_delay() {
+        let (mut client_loop, _event_tx) = test_client_loop(endpoint::EndpointRegistry::empty());
+        let host = FlakyHost::default();
+        client_loop.state.output_writer = Box::new(host.clone());
+        host.refusing.store(true, Ordering::Relaxed);
+        client_loop.state.mark_chrome_dirty();
+        client_loop.state.present_pending();
+
+        let mut delays = Vec::new();
+        for _ in 0..4 {
+            let now = tokio::time::Instant::now().into_std();
+            let due = client_loop
+                .next_timer_deadline(now)
+                .expect("a refused frame arms a retry");
+            delays.push(due.saturating_duration_since(now));
+            wake_on_the_loops_own_timer(&mut client_loop, now).await;
+            assert!(client_loop.state.repaint_pending);
+        }
+        assert!(
+            delays.windows(2).all(|pair| pair[0] < pair[1]),
+            "{delays:?}"
+        );
     }
 }

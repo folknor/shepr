@@ -238,14 +238,14 @@ impl Canvas {
                 width,
                 move |x| underlying[x].symbol.as_str(),
                 move |x| underlying[x].grid_width,
-                &covered,
+                |x| covered[x],
                 false,
             );
             let scratch_remnants = split_glyph_cells(
                 width,
                 move |x| scratch_at(scratch, x, y).map_or(" ", ratatui::buffer::Cell::symbol),
                 |_| GridCellWidth::Grapheme,
-                &covered,
+                |x| covered[x],
                 true,
             );
             for x in underlying_remnants {
@@ -255,16 +255,16 @@ impl Canvas {
                 let Some(source) = scratch_at(scratch, x, y) else {
                     continue;
                 };
-                let mut cell = CellData::from_ratatui_cell(source);
+                let cell = &mut row[x];
+                cell.assign_ratatui_cell(source);
                 cell.style.underline = if source.modifier.contains(Modifier::UNDERLINED) {
                     shepr_term::UnderlineStyle::Single
                 } else {
                     shepr_term::UnderlineStyle::None
                 };
                 if scratch_remnants.contains(&x) {
-                    blank(&mut cell);
+                    blank(cell);
                 }
-                row[x] = cell;
             }
         }
     }
@@ -298,10 +298,8 @@ impl Canvas {
             .collect();
 
         if copy_width > 0 {
-            let mut target_covered = vec![false; target_width];
-            target_covered[usize::from(area.x)..usize::from(area.x + copy_width)].fill(true);
-            let mut source_covered = vec![false; source_width];
-            source_covered[..usize::from(copy_width)].fill(true);
+            let target_covered = usize::from(area.x)..usize::from(area.x + copy_width);
+            let source_covered = 0..usize::from(copy_width);
             let target_cells = target.cells_mut();
             for row in 0..copy_height {
                 let source_row = &source.cells()[usize::from(row) * source_width..][..source_width];
@@ -312,7 +310,7 @@ impl Canvas {
                     target_width,
                     move |x| target_view[x].symbol.as_str(),
                     move |x| target_view[x].grid_width,
-                    &target_covered,
+                    |x| target_covered.contains(&x),
                     false,
                 );
                 for x in target_remnants {
@@ -323,7 +321,7 @@ impl Canvas {
                         source_width,
                         move |x| source_row[x].symbol.as_str(),
                         move |x| source_row[x].grid_width,
-                        &source_covered,
+                        |x| source_covered.contains(&x),
                         true,
                     )
                 } else {

@@ -28,45 +28,4 @@ The narrowing pass covered `endpoints.rs`, `state.rs`, `ledger.rs`, `copy/`,
 stay shell-wide only because tests in `shell/tests/` read them (moving those
 tests into `copy/` lets them narrow). No dead-code sweep followed the pass.
 
-## CLN-032 - Leftovers from the bug round
-
-- `crates/shepr-launch/src/local_server.rs`: `From<LaunchError> for io::Error`
-  may have no production caller now that the remote bridge host classifies
-  launch errors itself; `running_server_status` still turns `Unresponsive`
-  into `io::Error::other`, dropping the typed error.
-
-## CLN-033 - Leftovers the specs did not reach
-
-Unverified after the spec landings: check each before acting.
-
-- `crates/shepr-mux/src/workspace.rs`: `Workspace::test_from_pane` may still
-  overwrite the record's public number with `FIRST`;
-  `resolved_identity_cwd_from_root_pane` returns a plain path now, check its
-  callers' leftover `?`.
-- `crates/shepr-mux/src/pane/runtime.rs`: `PaneRuntime::current_size()` and the
-  server test fixture's `current_size` may duplicate `grid_size()`.
-- `crates/shepr-client/src/shell/endpoints.rs`: `endpoint_choice_mut()` is
-  public only for the netside test.
-- Runtime events may be admitted twice on the server's pane-exit path.
-
-## CLN-034 - Shell leftovers outside the render spec
-
-Unverified after the render spec landed: check each before acting.
-
-- `ClientShellConfig::agent_panel_sort` is changed at runtime and duplicates
-  `agent_panel_sort_chrome`.
-- The composition commits before the host write, so a failed write can start a
-  notice's lifetime for a frame never shown.
-- `handle_resize` writes the size twice.
-
 ## Test-only twins and test seams in production
-
-## CLN-035 - A resumed runtime's focus-in has no test
-
-`sync_pane_focus_after` re-sends focus-in to panes whose runtime an agent
-resume replaced, but no test covers it: the resume launches a real PTY shell,
-which only accepts the focus report once it has turned on focus reporting, and
-nothing lets a test observe a launched runtime's input. A seam for that (or a
-way to pre-enable focus reporting) would let
-`a_resumed_runtime_in_a_focused_pane_is_told_focus_in` be written.
-(app-loop spec)

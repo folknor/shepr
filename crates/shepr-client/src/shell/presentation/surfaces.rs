@@ -69,7 +69,7 @@ impl PaneSurfaces {
             Self::Empty => None,
         }
     }
-    /// The exact snapshot pair, the only surface `compose` draws.
+    /// The exact snapshot pair, the only surface `compose_frame` draws.
     pub(in crate::shell) fn paired(&self) -> Option<&PaneSurfaceFrame> {
         if let Self::Paired { surface, .. } = self {
             Some(surface)

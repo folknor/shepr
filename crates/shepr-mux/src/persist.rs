@@ -17,14 +17,16 @@
 //! reads the live session into it, `history` carries pane history between
 //! saves and serializes it, `files` is path policy, publication and reading,
 //! `recovery` makes and prunes recovery copies, and `writer` is the save
-//! sequence over them.
+//! sequence over them. `open` is a boot's open sequence (load, restore, the
+//! loss and backup decisions, the persister that takes the lease), which the
+//! server calls once and builds its state from.
 
 mod actor;
 mod capture;
 mod error;
 mod files;
 mod history;
-pub mod lock;
+mod lock;
 mod open;
 mod recovery;
 mod restore;
@@ -33,26 +35,15 @@ mod writer;
 
 pub use self::actor::{PendingSave, PersistJob, SaveCompletion, SessionBundle, SessionPersister};
 pub use self::capture::{
-    PendingCwds, SavedPaneRef, capture, capture_deferred, capture_job,
-    capture_pending_cwds_for_snapshot, capture_pending_history,
-    capture_pending_history_for_snapshot,
+    CapturedLayout, PendingCwds, SavedPaneRef, SessionCapture, capture, capture_job,
+    capture_pending_history,
 };
 pub use self::error::{SaveError, SaveRefusal};
-pub use self::files::{
-    SessionLoad, check_session_target, load, load_history, session_backup_directory,
-};
-pub use self::history::{HistoryCarry, HistoryDigest, PendingHistory, SessionHistory};
-pub use self::lock::{DataDirLease, DataDirLeaseHeld};
-pub use self::open::{
-    OpenedRestore, OpenedSession, SessionOpenOptions, SessionOpenPolicy, SessionRestoreOutcome,
-    SessionRestoreSummary, open_session,
-};
+pub use self::files::{SessionLoad, check_session_target, load, session_path};
+pub use self::history::{HistoryCarry, HistoryDigest, PendingHistory};
+pub use self::lock::DataDirLease;
+pub use self::open::{OpenedSession, SessionOpenOptions, SessionOpenPolicy, open_session};
 pub use self::recovery::SessionBackupPolicy;
-pub use self::restore::{RestoreLoss, RestoredSession, SessionRestorePlan, plan_restore};
-pub use self::schema::{
-    DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot, WorkspaceSnapshot,
-};
-pub use self::writer::SessionWriter;
 
 #[cfg(test)]
 pub use self::capture::capture_history;

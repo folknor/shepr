@@ -73,10 +73,6 @@ impl PaneRead<'_> {
         self.terminal.input_modes()
     }
 
-    pub fn focus_reporting_enabled(&self) -> bool {
-        self.terminal.focus_reporting_enabled()
-    }
-
     pub fn mouse_reporting_enabled(&self) -> bool {
         self.terminal.mouse_reporting_enabled()
     }

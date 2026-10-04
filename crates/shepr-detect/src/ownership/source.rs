@@ -709,7 +709,7 @@ impl HookSourceState {
     }
 
     /// Whether a parked start has outlived `PARKED_START_LIFETIME` at `now`.
-    fn parked_start_expired(&self, now: Instant) -> bool {
+    pub(super) fn parked_start_expired(&self, now: Instant) -> bool {
         self.pending_start_at.is_some_and(|started_at| {
             now.saturating_duration_since(started_at) > PARKED_START_LIFETIME
         })
@@ -1063,6 +1063,48 @@ impl AgentOwnership {
         let Some(detected_agent) = detected_agent else {
             return;
         };
+        // Continued presence of the same agent is not new process evidence,
+        // and skipping it here also skips the parked start expiry below. That
+        // is safe because no parked start of this agent's source can exist at
+        // this point. A start admitted while the agent's process is present
+        // (detected, no newer exit) is promoted at admission:
+        // `transition_start` parks a recognized start and calls this with no
+        // previous agent, and it parks a selection only while the process is
+        // absent. A start parked while the process is absent is settled,
+        // promoted or expired, by the observation that brings the agent back,
+        // which arrives here either as a changed detected agent or, after a
+        // recorded exit, with no previous agent (`transition_detection`'s
+        // replacement case). An observation stamped at the recorded exit's
+        // own instant cannot be presence: a detector tick reports an exit or
+        // presence, never both.
+        //
+        // `transition_detection` skips this call for the observations a
+        // governing full-lifecycle hook overrides, but those never move the
+        // detected agent, so they cannot turn a later observation into
+        // continued presence. Such a hook governs (`effective_row`) only
+        // while the detected agent is its own agent with no exit recorded, so
+        // the overridden observation either leaves the detected agent alone
+        // (it reports no agent) or writes the value it already holds. And while that holds, a start of the hook's agent
+        // finds its process present and is settled at admission.
+        //
+        // Until that observation an expired start's `pending_start`,
+        // `pending_replacement_report` and `sequence` stay on the source
+        // record. No decision depends on them still being there:
+        // `observe_process` applies the expiry before promoting anything; a
+        // new start replaces the pending one and restarts its lifetime; the
+        // screen detection pause and the detector floor read the hook
+        // authority and the suppression's own instant, not the pending start.
+        // Only a pane ending can consume the stale start as an exit (the
+        // detector reports no exit without the presence that settles it), and
+        // it does exactly what it does to an unexpired start: it records that
+        // session on the suppression and retires the one before it, which
+        // touches neither the pane's saved identity nor its state. Every path
+        // that orders against the lingering sequence requires a seq (a parked
+        // report, a recognized start), and every integration seeds its seqs
+        // from the wall clock, so a later report already exceeds it, as it
+        // would with no sequence at all; a backwards clock step is handled by
+        // `HookSequence::supersedes`. The diagnostic record is judged against
+        // the clock where it is read (`last_unapplied_hook_report`).
         if previous_detected_agent == Some(detected_agent) {
             return;
         }
@@ -1082,7 +1124,11 @@ impl AgentOwnership {
             .map(|record| record.transition(HookSourceEvent::ProcessObserved(now)));
         if expired {
             // Expiry discards the parked start and report, so a record that
-            // still calls one parked would be stale.
+            // still calls one parked would be stale. Clearing it here is not
+            // redundant with the expiry check in `last_unapplied_hook_report`:
+            // the process observation transition above forgot the parked
+            // start's instant, after which that check can no longer see the
+            // expiry.
             self.resolve_parked_hook_report(origin.source());
         }
         if let Some(effect) = effect {

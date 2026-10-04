@@ -39,6 +39,8 @@ should.
 - The client launch's own check for a helper-thread panic (`fatal.is_latched()` in `run_client_loop`, after the host helpers start) has no test: reaching it needs a real terminal. The loop's own latch checks are tested.
 - The `keybinding_table!` consumer patterns are copied verbatim into several files across shepr-config, shepr-termio and the client's `shell/input/mod.rs`, so any column change to the table touches every copy.
 - `AbsolutePath` derefs to `Path` and compares equal with `Path`, `PathBuf` and `&Path`, the collapse-back-to-primitive shape typed identities otherwise avoid. Arguably right for a path type; decide deliberately.
+- A hook report parked while ownership awaits a process, with no start suppressed, never expires and process evidence alone does not promote it (`observe_process` returns early without a pending start), so detect explain shows it as parked with an ever-growing age until a start or an applied report arrives. Possibly intended (it waits for a start), but it misleads the same way an expired parked start did; decide whether it should age out or read differently.
+- shepr-server's `server/netside_tests.rs` drives the client's endpoint choice, which keeps test-only public surface in shepr-client: `pub mod endpoint`, `endpoint::view::{start_move, send_focus, commit_move, release_unwanted}`, the `EndpointChoice` preparing API and `ClientShellState::endpoint_choice`/`endpoint_choice_mut`. Moving the choice-driving half of that test into shepr-client would let them narrow.
 - While a pane is clipped (the client area smaller than the server surface, until the resized surface arrives), copy mode keeps the pane's full geometry, so its cursor can sit in the part of the pane that is not drawn.
 
 # Possible capabilities

@@ -28,7 +28,10 @@ const SESSION_HISTORY_FILE_NAME: &str = "session-history.json";
 pub(super) const SNAPSHOT_DIRECTORY_NAME: &str = "session-snapshots";
 pub(super) const BACKUP_DIRECTORY_NAME: &str = "session-backups";
 
-pub(super) fn session_path(data_dir: &Path) -> PathBuf {
+/// The session layout file in `data_dir`: the file restore reads and every
+/// save replaces.
+#[must_use]
+pub fn session_path(data_dir: &Path) -> PathBuf {
     data_dir.join(SESSION_FILE_NAME)
 }
 
@@ -543,7 +546,7 @@ pub fn check_session_target(lease: &DataDirLease) -> std::io::Result<()> {
 /// The directory a session file is backed up to before a save replaces one
 /// that restore could not fully use.
 #[must_use]
-pub fn session_backup_directory(data_dir: &Path) -> PathBuf {
+pub(super) fn session_backup_directory(data_dir: &Path) -> PathBuf {
     backup_directory(&session_path(data_dir))
 }
 
@@ -602,7 +605,7 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
 /// matching digest is no exemption from parsing and version checks. It binds
 /// the buffer, not the file: a rewrite in place during the read yields bytes
 /// that simply fail to match.
-pub fn load_history(
+pub(super) fn load_history(
     lease: &DataDirLease,
     expected_digest: Option<&HistoryDigest>,
 ) -> Option<SessionHistorySnapshot> {

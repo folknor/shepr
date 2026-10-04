@@ -52,7 +52,9 @@ pub(crate) trait PaneRuntimeFixture: Sized {
     /// Breaks the terminal core the way a parser panic does: another thread
     /// panics while it holds the core, poisoning it.
     fn test_break_terminal_core(&self);
-    /// `(rows, cols)`.
+    /// `grid_size()` as `(rows, cols)`, so geometry tests compare it with a
+    /// tuple literal. It reads `grid_size()` and keeps no size of its own;
+    /// note the order is the reverse of `GridSize::clamped(cols, rows)`.
     fn current_size(&self) -> (u16, u16);
 }
 

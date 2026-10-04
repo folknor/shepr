@@ -156,6 +156,20 @@ impl ClientShellState {
             if let Err(reason) = self.presentation.surfaces.apply_validated(patch) {
                 return ClientPaneSurfacePatchOutcome::Rejected(reason);
             }
+            // The hits change here, before the rows are written to the host, and stay
+            // changed if that write fails. That is deliberate, unlike a full frame's
+            // commit (which waits for the write). A patch cannot move, resize or refocus a
+            // pane (`validate` rejects a geometry change), so the only hit fields it
+            // changes are the pane's scrollbar gutter and scroll metrics and its mouse
+            // reporting and pixel mouse modes. Those describe the pane as the server now
+            // runs it (the server draws the scrollbar into the pane surface itself), not
+            // client chrome: input is delivered against the server's pane, so a click
+            // after a failed write must already follow the mode the child turned on, and
+            // a scroll must start from the server's offset. Notices, reveals and other
+            // shell state the full-frame commit guards do not change here. The surfaces
+            // the hits mirror were applied just above for the same reason (later patches
+            // build on them), and a failed write makes the next frame a full repaint,
+            // which draws exactly this state.
             for updated in &patch.panes {
                 if !self.presentation.patch_pane_hit(updated, area) {
                     continue;

@@ -68,7 +68,12 @@ pub(in crate::shell) fn draw_agent_panel(
     inputs: &SidebarInputs<'_>,
 ) {
     let config = inputs.config;
-    crate::shell::sidebar::agent_sidebar::draw_agent_panel_header(buffer, panel, config);
+    crate::shell::sidebar::agent_sidebar::draw_agent_panel_header(
+        buffer,
+        panel,
+        config,
+        inputs.agent_panel_sort,
+    );
     let Some(list) = &panel.list else {
         return;
     };

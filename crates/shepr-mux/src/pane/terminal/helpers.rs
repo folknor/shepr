@@ -47,6 +47,20 @@ pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
     }
 }
 
+/// Whether the child has focus reporting (DEC mode 1004) on.
+pub(super) fn focus_reporting_on(core: &PaneTerminalCore) -> bool {
+    core.terminal.mode_get(shepr_vt::DecMode::FocusEvents)
+}
+
+/// The focus-in a child is owed when a write or flush turned focus reporting
+/// on while the pane holds focus; `before` is whether reporting was on before
+/// it. Nothing when the pane is unfocused; that child hears of focus at the
+/// next focus change.
+pub(super) fn focus_report_on_enable(core: &PaneTerminalCore, before: bool) -> Option<Bytes> {
+    (!before && core.pane_focused && focus_reporting_on(core))
+        .then(|| Bytes::from_static(shepr_vt::encode_focus(shepr_vt::FocusEvent::Gained)))
+}
+
 /// Drops queued effects that must never reach the live child or the app
 /// (restored history).
 pub(super) fn discard_core_effects(terminal: &mut shepr_vt::Terminal) {
