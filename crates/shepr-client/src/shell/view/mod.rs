@@ -291,9 +291,11 @@ impl ShellView {
         }
     }
 
+    /// The sidebar's draggable right edge, expanded or collapsed.
     pub(in crate::shell) fn sidebar_divider(&self) -> Rect {
         match &self.sidebar {
             SidebarView::Expanded(view) if self.chrome_armed => view.divider,
+            SidebarView::Collapsed(view) if self.chrome_armed => view.divider,
             _ => Rect::default(),
         }
     }

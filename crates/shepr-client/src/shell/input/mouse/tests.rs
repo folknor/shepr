@@ -2151,6 +2151,51 @@ fn a_split_drag_does_not_resend_the_ratio_last_sent() {
 }
 
 #[test]
+fn dragging_the_collapsed_strip_edge_out_expands_the_sidebar() {
+    let mut state = crate::shell::tests::ready_shell();
+    state.chrome.set_collapsed(true);
+    state.compose(80, 24).expect("collapsed frame");
+    let edge = state.presentation.shown().sidebar_divider();
+    assert!(!edge.is_empty(), "the collapsed strip has a draggable edge");
+    let mouse = |kind, column| MouseEvent {
+        kind,
+        column,
+        row: edge.y + 1,
+        modifiers: KeyModifiers::empty(),
+    };
+    let now = Instant::now();
+    let mut outcome = ClientShellInput::default();
+    state.handle_mouse(
+        mouse(MouseEventKind::Down(MouseButton::Left), edge.x),
+        now,
+        &mut outcome,
+    );
+    assert!(state.chrome.collapsed(), "a press alone changes nothing");
+
+    state.handle_mouse(
+        mouse(MouseEventKind::Drag(MouseButton::Left), 29),
+        now,
+        &mut outcome,
+    );
+    assert!(
+        !state.chrome.collapsed(),
+        "past the minimum width the sidebar expands"
+    );
+    assert_eq!(state.chrome.width(), 30);
+
+    let mut released = ClientShellInput::default();
+    state.handle_mouse(
+        mouse(MouseEventKind::Up(MouseButton::Left), 29),
+        now,
+        &mut released,
+    );
+    assert!(
+        released.resize,
+        "the endpoint is owed the new width on release"
+    );
+}
+
+#[test]
 fn a_projection_reset_settles_an_owed_sidebar_width_resize() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     assert_eq!(state.next_timer_deadline(), None);

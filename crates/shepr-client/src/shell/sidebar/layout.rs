@@ -90,6 +90,9 @@ pub(in crate::shell) struct AgentSlot {
 
 pub(in crate::shell) struct CollapsedSidebarView {
     pub(in crate::shell) area: Rect,
+    /// The strip's right edge column. Dragging it out past the minimum width
+    /// expands the sidebar (`ChromeLayout::drag_edge_to`).
+    pub(in crate::shell) divider: Rect,
     /// No scrollbar, as the collapsed sidebar never draws one.
     pub(in crate::shell) workspaces: ListView<CollapsedSlot>,
     pub(super) divider_y: Option<u16>,
@@ -415,6 +418,12 @@ fn resolve_collapsed(
             1,
         )
     };
+    // The column right of the strip's content, as the expanded sidebar's edge.
+    let divider = if area.is_empty() {
+        Rect::default()
+    } else {
+        Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
+    };
     let resolution = SidebarScrollResolution {
         workspaces: list.start,
         agents: None,
@@ -424,6 +433,7 @@ fn resolve_collapsed(
     (
         CollapsedSidebarView {
             area,
+            divider,
             workspaces: ListView {
                 body: workspace_area,
                 scroll: list.scroll,
