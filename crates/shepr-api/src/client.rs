@@ -6,7 +6,10 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 
 use crate::limits::ORDINARY_RESPONSE_TIMEOUT;
-use crate::schema::{ErrorResponse, Method, PingParams, Request, ResponseResult, SuccessResponse};
+use crate::schema::{
+    ErrorResponse, Method, PingParams, Request, ResponseResult, ServerSummaryParams,
+    SuccessResponse,
+};
 use shepr_platform::ipc::{LocalStreamDeadlineReader, TrustedServerStream};
 
 /// A decoded `ping` answer: the identity the server reports and its readiness
@@ -22,6 +25,16 @@ pub struct Pong {
     pub stopping: bool,
     /// The server has bound its socket but not yet opened its client protocol.
     pub starting: bool,
+}
+
+/// A decoded `server.summary` answer: how many workspaces, panes and agents
+/// the server holds, and how many of those agents are blocked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerSummary {
+    pub workspaces: usize,
+    pub panes: usize,
+    pub agents: usize,
+    pub blocked_agents: usize,
 }
 
 /// Reusable client for Shepr's newline-delimited JSON API.
@@ -142,6 +155,35 @@ impl ApiClient {
     pub fn ping_until(&self, deadline: Instant) -> Result<Pong, ApiClientDeadlineError> {
         let response = self.request_until(&ping_request(), deadline)?;
         pong(response).map_err(ApiClientDeadlineError::Request)
+    }
+
+    /// Asks the app loop for the session's counts, bounded by one `deadline`.
+    /// Only a server of this build knows the method.
+    pub fn server_summary_until(
+        &self,
+        deadline: Instant,
+    ) -> Result<ServerSummary, ApiClientDeadlineError> {
+        let request = Request {
+            id: "api-client:summary".into(),
+            method: Method::ServerSummary(ServerSummaryParams::default()),
+        };
+        let response = self.request_until(&request, deadline)?;
+        match response.result {
+            ResponseResult::ServerSummary {
+                workspaces,
+                panes,
+                agents,
+                blocked_agents,
+            } => Ok(ServerSummary {
+                workspaces,
+                panes,
+                agents,
+                blocked_agents,
+            }),
+            result => Err(ApiClientDeadlineError::Request(
+                ApiClientError::UnexpectedResult(format!("{result:?}")),
+            )),
+        }
     }
 
     /// Every request (status, stop, detect) checks who serves the socket

@@ -201,6 +201,48 @@ fn detect_requests_take_a_pane_id_and_round_trip() {
 }
 
 #[test]
+fn server_summary_request_and_answer_round_trip() {
+    const REQUEST: &str = r#"{"id":"s","method":"server.summary","params":{}}"#;
+    const RESPONSE: &str = r#"{"id":"s","result":{"type":"server_summary","workspaces":3,"panes":7,"agents":4,"blocked_agents":1}}"#;
+
+    let request = Request {
+        id: "s".into(),
+        method: Method::ServerSummary(ServerSummaryParams::default()),
+    };
+    assert_eq!(
+        serde_json::to_string(&request).expect("test precondition"),
+        REQUEST
+    );
+    assert_eq!(
+        serde_json::from_str::<Request>(REQUEST).expect("test precondition"),
+        request
+    );
+    let stray = r#"{"id":"s","method":"server.summary","params":{"extra":1}}"#;
+    assert!(serde_json::from_str::<Request>(stray).is_err());
+
+    let response = SuccessResponse {
+        id: "s".into(),
+        result: ResponseResult::ServerSummary {
+            workspaces: 3,
+            panes: 7,
+            agents: 4,
+            blocked_agents: 1,
+        },
+    };
+    assert_eq!(
+        serde_json::to_string(&response).expect("test precondition"),
+        RESPONSE
+    );
+    assert_eq!(
+        serde_json::from_str::<SuccessResponse>(RESPONSE).expect("test precondition"),
+        response
+    );
+    let traits = request.method.traits();
+    assert_eq!(traits.name, "server.summary");
+    assert!(!traits.mutates_ui);
+}
+
+#[test]
 fn unknown_method_is_rejected() {
     let json = r#"{"id":"req_1","method":"nope","params":{}}"#;
     let err = serde_json::from_str::<Request>(json)

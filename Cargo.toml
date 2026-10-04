@@ -33,6 +33,11 @@ jsonc-parser = { version = "0.34.0", default-features = false, features = ["cst"
 # Also the PTY layer (crates/shepr-pty/src/backend.rs): openpty, session setup, pre-exec.
 libc = "0.2"
 memchr = "2"
+# `shepr man` renders the bundled docs to the terminal through the vendored
+# renderer in src/cli/man/render.rs. Neither needs a default feature:
+# pulldown-cmark's are its HTML writer and command-line binary.
+owo-colors = { version = "4", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false }
 # The client initializes Ratatui with Crossterm; other optional backends, the
 # calendar widget, layout cache, macros and underline-color support are unused.
 # `unstable-rendered-line-info` provides `Paragraph::line_count`, so the help
@@ -148,6 +153,8 @@ overflow-checks = true
 
 [dependencies]
 clap = { workspace = true }
+owo-colors = { workspace = true }
+pulldown-cmark = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

@@ -99,6 +99,7 @@ pub const COMMAND_STATUS: &str = "status";
 pub const COMMAND_SERVER: &str = "server";
 pub const COMMAND_CLIENT: &str = "client";
 pub const COMMAND_STOP: &str = "stop";
+pub const COMMAND_MAN: &str = "man";
 pub const COMMAND_REMOTE_CLIENT_BRIDGE: &str = "remote-client-bridge";
 
 #[cfg(test)]

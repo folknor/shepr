@@ -13,8 +13,8 @@
 use clap::{Arg, ArgAction, Command, ValueHint};
 
 use shepr_launch::invocation::{
-    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS,
-    COMMAND_STOP, FLAG_EXPECT_BOOT, FLAG_JSON, PROGRAM_NAME, option_name_from_flag,
+    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_MAN, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER,
+    COMMAND_STATUS, COMMAND_STOP, FLAG_EXPECT_BOOT, FLAG_JSON, PROGRAM_NAME, option_name_from_flag,
 };
 
 pub(super) fn command() -> Command {
@@ -34,6 +34,7 @@ pub(super) fn command() -> Command {
         .subcommand(status_command())
         .subcommand(stop_command())
         .subcommand(detect_command())
+        .subcommand(man_command())
         .subcommand(
             Command::new(COMMAND_CLIENT)
                 .hide(true)
@@ -84,7 +85,7 @@ fn group(name: &'static str) -> Command {
 
 fn status_command() -> Command {
     Command::new(COMMAND_STATUS)
-        .about("Show local client and running server status")
+        .about("Show this installation and the state of its server")
         .arg(flag(option_name_from_flag(FLAG_JSON)))
         .subcommand(
             Command::new(COMMAND_SERVER)
@@ -102,6 +103,12 @@ fn stop_command() -> Command {
     Command::new(COMMAND_STOP)
         .about("Stop the running server and every pane in it, whatever its build")
         .arg(expect_boot_option())
+}
+
+fn man_command() -> Command {
+    Command::new(COMMAND_MAN)
+        .about("Read a bundled manual, or list them")
+        .arg(super::man::topic_argument())
 }
 
 fn detect_command() -> Command {
@@ -476,7 +483,14 @@ mod tests {
         names.sort_unstable();
         assert_eq!(
             names,
-            ["client", "detect", "remote-client-bridge", "status", "stop",]
+            [
+                "client",
+                "detect",
+                "man",
+                "remote-client-bridge",
+                "status",
+                "stop",
+            ]
         );
     }
 

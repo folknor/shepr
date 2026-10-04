@@ -58,7 +58,10 @@ Nor are local detection manifest overrides and their reload: a detection
 change ships as a new build.
 
 The CLI is small on purpose. `shepr` with no subcommand attaches the TUI, and
-the subcommands are `status`, `stop` and `detect`. Detaching from the TUI
+the subcommands are `status`, `stop`, `detect` and `man`. `shepr man` lists
+the bundled user manuals (every end-user document in `docs/`, compiled into
+the binary) and `shepr man <topic>` renders one to the terminal, colour off
+when stdout is not a terminal or `NO_COLOR` is set. Detaching from the TUI
 leaves every server running and prints how to attach again (`shepr`) and how
 to stop the local server (`shepr stop`), spelt for this build and socket
 override like the restart guidance. Workspaces and panes are managed from the TUI only; there
@@ -66,6 +69,16 @@ is no CLI group for them, and no CLI attach to a single terminal. `shepr
 detect capture <pane>` prints the screen text and OSC title and progress the
 detector evaluates for a pane, as JSON that `detect explain --file` reads back,
 and `shepr detect explain <pane>` says which rule decided its state.
+`shepr status` prints this installation (version, build profile and build
+id, then the binary path, and a `shepr-server` line only when the sibling
+binary is missing or of another version or build), then one line for the
+server at the selected socket: not running, starting, running (with pid and
+uptime, read from its boot id, and its workspace, pane and agent counts from
+the `server.summary` API method), stopping, not answering, or running a
+different build, the last with stop and restart guidance spelt like the other
+operator guidance. `status --json`, `status server [--json]` and `status
+client [--json]` keep their machine-readable `key: value` and JSON forms, which
+the SSH discovery and conditional stop read.
 
 Configuration is two files in the XDG config directory: `client.toml`, read
 only by the TUI (and its internal `client` launch), and `server.toml`, read
@@ -321,7 +334,9 @@ every agent integration reports through it.
   (`version`, `build_id`, `boot_id`), its `stopping` and `starting` flags
   (each read as false when an older build omits it) and the
   `server.stop_if_boot` request; keep their literal JSON fixtures in the
-  `shepr-api` tests in sync with intentional wire changes.
+  `shepr-api` tests in sync with intentional wire changes. `server.summary`
+  (the workspace, pane and agent counts `shepr status` shows) is not part of
+  it: status asks it only of a running server of its own build.
 - Startup and shutdown follow one order, written in `start_server` (which
   `run_server` calls) and in `HeadlessServer::release_socket_after_save`. Startup takes the data-directory
   lease, binds the server socket, restores panes, then opens the client

@@ -349,6 +349,7 @@ exclude = [
     "crates/shepr-config/src/lib.rs",
     "crates/shepr-detect/src/manifest.rs",
     "crates/shepr-integration/src/lib.rs",
+    "src/cli/man.rs",
 ]
 region = "code"
 message = "a test reads its fixture from disk through CARGO_MANIFEST_DIR; include_str! is for content shepr ships"
@@ -1008,7 +1009,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-binary-layer"
 from = "shepr"
-allow = ["clap", "serde", "serde_json", "shepr-api", "shepr-client", "shepr-config", "shepr-core", "shepr-detect", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "tracing"]
+allow = ["clap", "owo-colors", "pulldown-cmark", "serde", "serde_json", "shepr-api", "shepr-client", "shepr-config", "shepr-core", "shepr-detect", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "tracing"]
 kinds = ["normal"]
 
 # The server executable links the server and not the client. Its argument

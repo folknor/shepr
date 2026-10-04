@@ -96,12 +96,33 @@ impl App {
         use shepr_api::schema::AppMethod;
 
         match request.method {
+            AppMethod::ServerSummary(_) => Ok(self.server_summary()),
             AppMethod::DetectCapture(target) => self.handle_detect_capture(&target),
             AppMethod::DetectExplain(target) => self.handle_detect_explain(&target),
             AppMethod::PaneReportAgent(params) => self.handle_pane_report_agent(params),
             AppMethod::PaneReportAgentSession(params) => {
                 self.handle_pane_report_agent_session(params)
             }
+        }
+    }
+
+    /// The session's counts for `shepr status`: workspaces, panes, and the
+    /// agents the sidebar lists, with how many of them are blocked.
+    fn server_summary(&self) -> shepr_api::schema::ResponseResult {
+        let agents = self.collect_agent_infos();
+        shepr_api::schema::ResponseResult::ServerSummary {
+            workspaces: self.state.workspaces.len(),
+            panes: self
+                .state
+                .workspaces
+                .iter()
+                .map(|workspace| workspace.tree().len())
+                .sum(),
+            agents: agents.len(),
+            blocked_agents: agents
+                .iter()
+                .filter(|agent| agent.agent_status == shepr_protocol::AgentStatus::Blocked)
+                .count(),
         }
     }
 
@@ -377,6 +398,51 @@ mod tests {
         assert_eq!(effects, EndpointEffects::default());
         assert!(!render);
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn server_summary_counts_workspaces_panes_and_blocked_agents() {
+        let mut app = App::new(&shepr_config::ServerConfig::default());
+        let mut first = shepr_mux::workspace::Workspace::test_new("summary-first");
+        let working = first.tree().root();
+        let blocked = first.test_split(shepr_core::layout::Direction::Horizontal);
+        let _shell = first.test_split(shepr_core::layout::Direction::Vertical);
+        app.state.test_set_workspaces(vec![
+            first,
+            shepr_mux::workspace::Workspace::test_new("summary-second"),
+        ]);
+        app.state
+            .terminal_mut(working)
+            .set_detected_state(Some(Agent::Codex), AgentState::Working);
+        app.state
+            .terminal_mut(blocked)
+            .ownership_mut()
+            .set_detected_state_with_screen_signals_at(
+                Some(Agent::Claude),
+                AgentState::Blocked,
+                true,
+                false,
+                std::time::Instant::now(),
+            );
+
+        let response: serde_json::Value =
+            serde_json::from_str(&app.handle_api_request(shepr_api::schema::AppRequest {
+                id: "summary".into(),
+                method: shepr_api::schema::AppMethod::ServerSummary(
+                    shepr_api::schema::ServerSummaryParams::default(),
+                ),
+            }))
+            .expect("summary JSON");
+        assert_eq!(
+            response["result"],
+            serde_json::json!({
+                "type": "server_summary",
+                "workspaces": 2,
+                "panes": 4,
+                "agents": 2,
+                "blocked_agents": 1,
+            })
+        );
     }
 
     #[test]

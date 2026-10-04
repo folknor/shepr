@@ -77,6 +77,16 @@ pub enum ResponseResult {
         #[serde(default)]
         starting: bool,
     },
+    /// The session's size as the app loop sees it. Asked only of a server of
+    /// this build, so it is not part of the cross-build control surface.
+    ServerSummary {
+        workspaces: usize,
+        panes: usize,
+        /// Panes the sidebar lists as agents.
+        agents: usize,
+        /// Of those, the agents presented as blocked.
+        blocked_agents: usize,
+    },
     /// The detector's input for one pane, including its OSC title and progress.
     DetectCapture {
         pane_id: PublicPaneId,

@@ -311,6 +311,10 @@ define_methods! {
         };
     }
     app {
+        ServerSummary(ServerSummaryParams) => "server.summary" {
+            mutates_ui: false,
+            routine: false,
+        };
         DetectCapture(PaneTarget) => "detect.capture" {
             mutates_ui: false,
             routine: false,

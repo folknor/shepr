@@ -28,6 +28,13 @@ pub fn build_mismatch_guidance(address: &ServerAddress) -> String {
     build_mismatch_guidance_with(address, &operator_entrypoint())
 }
 
+/// The one-line hint `shepr status` prints under a server of another build at
+/// `address`: stop it and start this build, or, at a socket override this
+/// client cannot start a server at, only how to stop it.
+pub fn status_build_mismatch_hint(address: &ServerAddress) -> String {
+    status_build_mismatch_hint_with(address, &operator_entrypoint())
+}
+
 /// What the TUI tells the operator on the restored terminal after they
 /// detached from the server at `address`: how to attach again and how to stop
 /// the server. `machines_configured` adds that the servers on configured
@@ -82,6 +89,17 @@ fn build_mismatch_guidance_with(address: &ServerAddress, entrypoint: &str) -> St
     )
 }
 
+fn status_build_mismatch_hint_with(address: &ServerAddress, entrypoint: &str) -> String {
+    let stop_command = stop_command_with(address, entrypoint);
+    if !address.is_runtime_address() {
+        return format!(
+            "this shepr cannot start a server at the socket override; run `{stop_command}` to stop it"
+        );
+    }
+    let attach_command = attach_command_with(address, entrypoint);
+    format!("run `{stop_command}`, then `{attach_command}`")
+}
+
 /// The command an operator runs to reach this build, for the attach and stop
 /// guidance above: `shepr` for a release build, which is the one installed on
 /// the path. A dev build is not, so its guidance names the running executable,
@@ -129,6 +147,26 @@ mod tests {
         assert_eq!(
             build_mismatch_guidance(&address),
             build_mismatch_guidance_with(&address, &entrypoint)
+        );
+        assert_eq!(
+            status_build_mismatch_hint(&address),
+            status_build_mismatch_hint_with(&address, &entrypoint)
+        );
+    }
+
+    #[test]
+    fn the_status_hint_restarts_a_runtime_address_and_only_stops_an_override() {
+        assert_eq!(
+            status_build_mismatch_hint_with(&runtime_address(), "shepr"),
+            "run `shepr stop`, then `shepr`"
+        );
+        assert_eq!(
+            status_build_mismatch_hint_with(&runtime_address(), "/src/shepr/target/debug/shepr"),
+            "run `/src/shepr/target/debug/shepr stop`, then `/src/shepr/target/debug/shepr`"
+        );
+        assert_eq!(
+            status_build_mismatch_hint_with(&overridden_address("/x/a.sock"), "shepr"),
+            "this shepr cannot start a server at the socket override; run `SHEPR_SOCKET_PATH=/x/a.sock shepr stop` to stop it"
         );
     }
 

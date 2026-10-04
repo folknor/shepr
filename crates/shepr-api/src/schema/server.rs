@@ -8,6 +8,11 @@ pub struct PingParams {}
 #[serde(deny_unknown_fields)]
 pub struct ServerStopParams {}
 
+/// Params of `server.summary`, the session counts `shepr status` shows.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ServerSummaryParams {}
+
 /// Params of `server.stop_if_boot`, the cross-build conditional stop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerStopIfBootParams {

@@ -201,6 +201,10 @@ env_vocabulary! {
         WaylandDisplay => "WAYLAND_DISPLAY", PaneEnvPolicy::Allowed,
         /// `DISPLAY`: its presence offers the X11 clipboard helpers.
         Display => "DISPLAY", PaneEnvPolicy::Allowed,
+        /// `NO_COLOR`: its presence turns colour off in `shepr man` output, as
+        /// the no-color.org convention asks. Left in panes, where it is the
+        /// user's preference for every program.
+        NoColor => "NO_COLOR", PaneEnvPolicy::Allowed,
         /// `PI_CODING_AGENT_DIR`: pi's config directory override.
         PiCodingAgentDir => "PI_CODING_AGENT_DIR", PaneEnvPolicy::Allowed,
         /// `PI_CONFIG_DIR`: omp's config directory name under `HOME`.
@@ -463,7 +467,8 @@ impl EnvVar {
             | Self::Tmux
             | Self::WeztermPane
             | Self::WaylandDisplay
-            | Self::Display => EnvKind::Presence,
+            | Self::Display
+            | Self::NoColor => EnvKind::Presence,
             Self::SheprStartupCwd => EnvKind::Handoff,
             Self::Shell
             | Self::Path
@@ -932,6 +937,7 @@ mod tests {
             (EnvVar::WeztermPane, "WEZTERM_PANE", Presence),
             (EnvVar::WaylandDisplay, "WAYLAND_DISPLAY", Presence),
             (EnvVar::Display, "DISPLAY", Presence),
+            (EnvVar::NoColor, "NO_COLOR", Presence),
             (EnvVar::PiCodingAgentDir, "PI_CODING_AGENT_DIR", Path),
             (EnvVar::PiConfigDir, "PI_CONFIG_DIR", Path),
             (EnvVar::ClaudeConfigDir, "CLAUDE_CONFIG_DIR", Path),

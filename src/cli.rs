@@ -3,7 +3,8 @@ use clap::ArgMatches;
 use shepr_api::client::{ApiClient, ApiClientError};
 use shepr_api::schema::{Request, ResponseResult};
 use shepr_launch::invocation::{
-    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_STATUS, COMMAND_STOP,
+    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_MAN, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_STATUS,
+    COMMAND_STOP,
 };
 
 /// Writes CLI output to stdout, as `std::print!` does (a failed write
@@ -36,6 +37,7 @@ macro_rules! println {
 
 mod detect;
 mod error;
+mod man;
 mod matches;
 mod spec;
 mod status;
@@ -60,6 +62,7 @@ pub(crate) enum CliCommand {
     ClientStatus { json: bool },
     Stop(stop::Command),
     Detect(detect::Command),
+    Man(man::Command),
 }
 
 impl CliCommand {
@@ -71,6 +74,7 @@ impl CliCommand {
             },
             COMMAND_STOP => Self::Stop(stop::parse(matches)?),
             COMMAND_DETECT => Self::Detect(detect::parse(matches)?),
+            COMMAND_MAN => Self::Man(man::parse(matches)?),
             _ => return None,
         })
     }
@@ -200,6 +204,7 @@ pub(crate) fn run(command: &CliCommand) -> CliResult<i32> {
         CliCommand::Detect(command) => {
             run_with_paths(|paths| detect::run_detect_command(command.clone(), paths))
         }
+        CliCommand::Man(command) => man::run(command),
     }
 }
 
@@ -379,10 +384,11 @@ mod tests {
 
     #[test]
     fn every_cli_spec_root_has_typed_parser() {
-        let samples: [(&str, &[&str]); 3] = [
+        let samples: [(&str, &[&str]); 4] = [
             ("status", &["status"]),
             ("stop", &["stop"]),
             ("detect", &["detect", "capture", "w1:p1"]),
+            ("man", &["man"]),
         ];
         let launch_only = ["client", "remote-client-bridge"];
         let spec = super::spec::command();

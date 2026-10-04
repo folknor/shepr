@@ -20,7 +20,8 @@
 # accent = "#89b4fa"
 
 # Override individual color tokens on top of the base theme.
-# Accepts: hex (#rrggbb), named colors, rgb(r,g,b), or panel_bg = "reset"
+# Accepts: hex (#rgb or #rrggbb), named colors, rgb(r,g,b), or "reset" (also
+# "default", "none", "transparent") for the terminal's own colour.
 # [theme.custom]
 # sidebar_bg = "#181825"
 # active_row_bg = "#1e1e2e"
@@ -44,7 +45,7 @@
 
 [terminal]
 # Executable used for new interactive panes.
-# Unset means $SHELL, or /bin/sh when SHELL is unset. A SHELL that is not
+# Unset means $SHELL, or /bin/sh when SHELL is unset or empty. A SHELL that is not
 # a usable shell shepr recognizes fails the launch, like a bad value here.
 # Surrounding whitespace, here or in the shell environment variable, fails the launch too.
 # default_shell = "/bin/sh"

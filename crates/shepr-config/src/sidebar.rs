@@ -474,7 +474,8 @@ pub struct SpacesSidebarConfig {
 impl Default for SpacesSidebarConfig {
     fn default() -> Self {
         Self {
-            // The second line is left blank until there is something worth showing there.
+            // No second line until there is something worth showing there: a row
+            // whose tokens all resolve to nothing takes no space.
             rows: vec![
                 vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
                 Vec::new(),
