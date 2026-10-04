@@ -93,19 +93,15 @@ pub(super) fn resolve_frame(state: &ClientShellState, cols: u16, rows: u16) -> R
         .cloned();
     let has_surface = state.endpoints.active.snapshot().is_some() && state.pane_surface().is_some();
     let layout = state.layout(cols, rows);
-    let mut chrome_layout = layout;
-    if !has_surface && layout.sidebar.width == 0 {
-        chrome_layout.sidebar = Rect::new(0, 1, cols, rows.saturating_sub(2));
-    }
-    let form = if chrome_layout.sidebar.width == 0 {
+    let form = if layout.sidebar.width == 0 {
         SidebarForm::Hidden
-    } else if layout.sidebar.width > 0 && state.chrome.collapsed() {
+    } else if state.chrome.collapsed() {
         SidebarForm::Collapsed
     } else {
         SidebarForm::Expanded
     };
     let (sidebar, resolution) = resolve_sidebar(
-        chrome_layout.sidebar,
+        layout.sidebar,
         form,
         &sidebar_inputs(state, selected.as_ref()),
         &state.sidebar_scroll,
@@ -119,7 +115,10 @@ pub(super) fn resolve_frame(state: &ClientShellState, cols: u16, rows: u16) -> R
         .find(|endpoint| endpoint.endpoint_id == *state.endpoints.presented())
         .filter(|endpoint| endpoint.state.stale())
         .map(|endpoint| {
-            let label = endpoint.endpoint_id.display_label().to_owned();
+            let label = endpoint
+                .endpoint_id
+                .display_label(&state.config.local_label)
+                .to_owned();
             let status = endpoint.state.status();
             let area = if !has_surface && layout.sidebar.width > 0 {
                 layout.pane_surface
@@ -229,12 +228,8 @@ pub(super) fn resolve_frame(state: &ClientShellState, cols: u16, rows: u16) -> R
 
     let notice_offset = if has_surface {
         u16::from(lifecycle.is_some())
-    } else if layout.sidebar.width == 0 {
-        // The fallback sidebar starts below the placeholder line when its normal column is
-        // hidden, so leave its header row clear as well.
-        2
     } else {
-        // An expanded sidebar has its header on row zero, even without a pane surface.
+        // The sidebar has its header on row zero, even without a pane surface.
         1
     };
     let notice = state.notices.visible().map(|notice| NoticeCard {

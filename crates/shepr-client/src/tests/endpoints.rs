@@ -79,7 +79,10 @@ pub(crate) fn snapshot(id: &ClientEndpointId, revision: u64) -> Box<ClientShellS
         workspaces: vec![shepr_protocol::ClientShellWorkspace {
             workspace_id: test_workspace_id("w1"),
             new_workspace_cwd: Some("/repo".into()),
-            label: id.display_label().into(),
+            label: match id {
+                ClientEndpointId::Local => "local".into(),
+                ClientEndpointId::Ssh(label) => label.as_str().into(),
+            },
             branch: None,
             git_ahead_behind: None,
             agent_status: shepr_protocol::AgentStatus::Idle,

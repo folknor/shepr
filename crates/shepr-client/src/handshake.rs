@@ -200,7 +200,7 @@ const HANDSHAKE_CONTEXT: &str = "handshake failed";
 /// check prints when no configured machines keep the client running.
 fn local_build_mismatch(running: &str, guidance: &str) -> String {
     format!(
-        "build mismatch: the Local server runs shepr build {running}; this client is build {}. {}",
+        "build mismatch: the local server runs shepr build {running}; this client is build {}. {}",
         shepr_protocol::BUILD_ID,
         guidance.replace('\n', " ")
     )

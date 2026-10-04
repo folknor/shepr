@@ -5,7 +5,7 @@ use shepr_config::Keybinds;
 use shepr_term::key::TerminalKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeybindDispatch {
+enum KeybindDispatch {
     Direct,
     Prefix,
 }
@@ -35,7 +35,7 @@ pub fn resolve_prefix_binding(keybinds: &Keybinds, key: &TerminalKey) -> Option<
     })
 }
 
-pub fn resolve_non_indexed_action(
+fn resolve_non_indexed_action(
     keybinds: &Keybinds,
     key: &TerminalKey,
     dispatch: KeybindDispatch,
@@ -54,7 +54,7 @@ pub fn resolve_non_indexed_action(
     None
 }
 
-pub fn resolve_indexed_action(
+fn resolve_indexed_action(
     keybinds: &Keybinds,
     key: &TerminalKey,
     dispatch: KeybindDispatch,

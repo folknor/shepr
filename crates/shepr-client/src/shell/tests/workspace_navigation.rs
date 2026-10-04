@@ -2,7 +2,6 @@ use crate::endpoint::EndpointFailureStatus;
 use crate::shell::config::ClientShellConfig;
 use crate::shell::ledger::DropReason;
 use crate::shell::navigation::location::{Location, LocationTarget};
-use crate::shell::overlays::Overlay;
 use crate::shell::state::{
     ClientShellAction, ClientShellEndpointError, ClientShellInput, ClientShellMode,
 };
@@ -20,7 +19,9 @@ use crate::endpoint::ClientEndpointId;
 use crossterm::event::MouseEvent;
 
 use crate::shell::tests::{agent, remote_machine, state_with_remote, state_with_remote_config};
-use crate::shell::tests::{cell_bg, enter_navigation, preview_key, snapshot, surface};
+use crate::shell::tests::{
+    cell_bg, enter_navigation, ignored_navigate_key, preview_key, snapshot, surface,
+};
 use ratatui::layout::Rect;
 
 use crate::tests::test_workspace_id;
@@ -303,80 +304,85 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
     }
 }
 
+/// Navigate mode takes only its own keys. Workspace and pane actions, the prefix and its
+/// bindings, and keys a pane would get all do nothing, whether the selection is on the
+/// presented machine's workspace, another machine's, or an agent.
 #[test]
-fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
-    for confirm in [false, true] {
+fn navigate_mode_ignores_every_key_but_its_own() {
+    let ignored: [&[u8]; 16] = [
+        b"W",
+        b"D",
+        b"N",
+        b"P",
+        b"\x1b[D",
+        b"\x1b[C",
+        b"\t",
+        b"\x1b[Z",
+        b"1",
+        b"c",
+        b"h",
+        b"x",
+        b"?",
+        b"q",
+        // The prefix, then a prefix binding (prefix+w enters navigate mode).
+        &[0x02],
+        b"w",
+    ];
+    for config in [ClientConfig::default(), {
         let mut config = ClientConfig::default();
-        config.ui.confirm_close = confirm;
+        config.ui.confirm_close = false;
         config.ui.prompt_new_workspace_name = false;
-        let (mut state, remote) = state_with_remote_config(&config);
+        config
+    }] {
+        let (mut state, remote) = navigation_state(with_agents(workspaces(2), &["w1"]), &config);
         state.compose(100, 28).expect("test precondition");
         enter_navigation(&mut state);
-        preview_key(&mut state, b"\x1b[B");
-        for key in [
-            b"W".as_slice(),
-            b"D",
-            b"\x1b[D",
-            b"\x1b[C",
-            b"\t",
-            b"1",
-            b"c",
-            b"N",
-        ] {
-            preview_key(&mut state, key);
-            assert!(state.overlay.is_none());
-            assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
+        // The presented machine's workspace, the other machine's, then an agent.
+        for steps in [0, 3, 1] {
+            for _ in 0..steps {
+                preview_key(&mut state, b"\x1b[B");
+            }
+            if steps == 3 {
+                assert_selected(&state, &remote, "w2");
+            }
+            for key in ignored {
+                ignored_navigate_key(&mut state, key);
+            }
+            assert!(state.notices.visible().is_none());
         }
-        assert_selected(&state, &remote, "w1");
-        let mut remote_snapshot = workspaces(2);
-        remote_snapshot.boot_id = crate::tests::test_boot_id("remote-boot");
-        // A later snapshot over the same connection.
-        state.set_endpoint_snapshot_for_generation(
-            &remote,
-            crate::tests::test_generation(1),
-            Box::new(remote_snapshot),
-        );
-        preview_key(&mut state, b"\x1b[B");
-        assert_selected(&state, &remote, "w2");
-        assert_eq!(
-            state.workspace_action_id().as_ref(),
-            Some(&crate::tests::test_workspace_id("w1"))
-        );
-        // Without the name prompt, creation follows the active workspace at once.
-        let mut create = ClientShellInput::default();
-        state.record_binding(
-            &shepr_termio::input::KeybindAction::NewWorkspace,
-            &mut create,
-        );
-        assert!(
-            matches!(create.actions.as_slice(), [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
-            if matches!(&request.command, EndpointCommand::WorkspaceCreate(params) if matches!(&params.source, shepr_protocol::command::WorkspaceCreateSource::Follow(id) if id == &test_workspace_id("w1"))))
-        );
+        let selection = state.mode.preview().expect("an agent is selected");
+        assert!(selection.location.pane_id().is_some());
+        // Its own keys still work.
         preview_key(&mut state, b"\x1b");
-        assert!(state.mode.preview().is_none());
-        assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
-        assert!(state.activate_endpoint_projection(&remote));
-        enter_navigation(&mut state);
-        preview_key(&mut state, b"W");
-        assert!(matches!(state.overlay, Some(Overlay::Rename(_))));
+        assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
     }
 }
 
+/// Workspace actions apply to the focused workspace, never a navigate selection: the
+/// new-workspace button, which the mouse can reach in navigate mode, follows the focused
+/// workspace.
 #[test]
-fn blocked_preview_notice_names_the_configured_open_key() {
-    let (mut state, _) = state_with_remote();
+fn workspace_actions_follow_the_focused_workspace_while_navigating() {
+    let mut config = ClientConfig::default();
+    config.ui.prompt_new_workspace_name = false;
+    let (mut state, remote) = state_with_remote_config(&config);
     state.compose(100, 28).expect("test precondition");
     enter_navigation(&mut state);
     preview_key(&mut state, b"\x1b[B");
-    preview_key(&mut state, b"W");
-    // The hint is the configured key's label, lowercase like every other
-    // key label, so a rebound navigate_open_workspace is named correctly.
-    let body = &state
-        .notices
-        .visible()
-        .expect("blocked preview notice")
-        .body;
-    assert!(body.contains("press enter before"), "{body}");
+    assert_selected(&state, &remote, "w1");
+    assert_eq!(
+        state.workspace_action_id().as_ref(),
+        Some(&crate::tests::test_workspace_id("w1"))
+    );
+    let mut create = ClientShellInput::default();
+    state.record_binding(
+        &shepr_termio::input::KeybindAction::NewWorkspace,
+        &mut create,
+    );
+    assert!(
+        matches!(create.actions.as_slice(), [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
+        if matches!(&request.command, EndpointCommand::WorkspaceCreate(params) if matches!(&params.source, shepr_protocol::command::WorkspaceCreateSource::Follow(id) if id == &test_workspace_id("w1"))))
+    );
 }
 
 #[test]
@@ -510,58 +516,50 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
 #[test]
 fn active_preview_is_not_retargeted_by_deletion_or_reboot() {
     for invalidation in ["deleted", "boot", "generation"] {
-        for confirm in [false, true] {
-            let mut config = ClientConfig::default();
-            config.ui.confirm_close = confirm;
-            let (mut state, _) = state_with_remote_config(&config);
-            let mut local = workspaces(2);
-            state.set_endpoint_snapshot_for_generation(
-                &ClientEndpointId::Local,
-                crate::tests::test_generation(7),
-                Box::new(local.clone()),
-            );
-            state.receive_pane_surface_from(
-                surface(),
-                state
-                    .endpoints
-                    .active
-                    .generation()
-                    .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-            );
-            state.compose(100, 28).expect("test precondition");
-            enter_navigation(&mut state);
-            preview_key(&mut state, b"\x1b[B");
-            assert_selected(&state, &ClientEndpointId::Local, "w2");
-            let selected = state.mode.preview().cloned();
-            match invalidation {
-                "boot" => local.boot_id = crate::tests::test_boot_id("new-local-boot"),
-                "deleted" => {
-                    local.revision = local.revision.checked_next().expect("test precondition");
-                    local.workspaces.pop();
-                }
-                _ => {}
+        let (mut state, _) = state_with_remote();
+        let mut local = workspaces(2);
+        state.set_endpoint_snapshot_for_generation(
+            &ClientEndpointId::Local,
+            crate::tests::test_generation(7),
+            Box::new(local.clone()),
+        );
+        state.receive_pane_surface_from(
+            surface(),
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
+        state.compose(100, 28).expect("test precondition");
+        enter_navigation(&mut state);
+        preview_key(&mut state, b"\x1b[B");
+        assert_selected(&state, &ClientEndpointId::Local, "w2");
+        let selected = state.mode.preview().cloned();
+        match invalidation {
+            "boot" => local.boot_id = crate::tests::test_boot_id("new-local-boot"),
+            "deleted" => {
+                local.revision = local.revision.checked_next().expect("test precondition");
+                local.workspaces.pop();
             }
-            let generation =
-                crate::tests::test_generation(if invalidation == "generation" { 8 } else { 7 });
-            state.set_endpoint_snapshot_for_generation(
-                &ClientEndpointId::Local,
-                generation,
-                Box::new(local),
-            );
-            assert_eq!(state.mode.preview().cloned(), selected);
-            preview_key(&mut state, b"\r");
-            assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
-            assert!(state.notices.visible().is_some());
-            for key in [b"W", b"D"] {
-                preview_key(&mut state, key);
-            }
-            assert!(state.overlay.is_none());
-            assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
-            assert_eq!(
-                state.workspace_action_id().as_ref(),
-                Some(&crate::tests::test_workspace_id("w1"))
-            );
+            _ => {}
         }
+        let generation =
+            crate::tests::test_generation(if invalidation == "generation" { 8 } else { 7 });
+        state.set_endpoint_snapshot_for_generation(
+            &ClientEndpointId::Local,
+            generation,
+            Box::new(local),
+        );
+        assert_eq!(state.mode.preview().cloned(), selected);
+        preview_key(&mut state, b"\r");
+        assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
+        assert!(state.notices.visible().is_some());
+        assert_eq!(state.mode.preview().cloned(), selected);
+        assert_eq!(
+            state.workspace_action_id().as_ref(),
+            Some(&crate::tests::test_workspace_id("w1"))
+        );
     }
 }
 

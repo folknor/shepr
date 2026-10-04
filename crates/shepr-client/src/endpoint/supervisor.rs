@@ -460,7 +460,7 @@ fn connect_once(
                         std::io::Error::new(
                             error.kind(),
                             shepr_launch::EndpointFailure::retry(
-                                "Local is unavailable; start its server to reconnect",
+                                "the local server is unavailable; start it to reconnect",
                             ),
                         )
                     } else {

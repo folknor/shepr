@@ -5,7 +5,7 @@ use crate::shell::state::{
 };
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
-use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
+use shepr_config::ClientConfig;
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
 use shepr_protocol::{ClientMessage, ClientMousePosition, ClientPaneInputEvent};
 use shepr_termio::input::raw_input::RawInputEvent;
@@ -23,8 +23,10 @@ use crate::shell::tests::{
 
 use crate::tests::{test_pane_id, test_workspace_id};
 
+/// Prefix tab cycles panes in snapshot order; in navigate mode tab is not one of
+/// its keys and does nothing.
 #[test]
-fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
+fn cycle_pane_uses_snapshot_order_in_prefix_mode_and_is_ignored_in_navigate_mode() {
     for mode in [ClientShellMode::Prefix, ClientShellMode::Navigate] {
         let mut state =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
@@ -58,6 +60,11 @@ fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
         assert_eq!(state.mode.kind(), mode);
 
         let outcome = state.handle_input_bytes(b"\t");
+        if mode == ClientShellMode::Navigate {
+            assert!(outcome.actions.is_empty() && outcome.requests.is_empty());
+            assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
+            continue;
+        }
         let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
             panic!("pane cycling should issue one focus request");
         };
@@ -626,9 +633,7 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
         })
         .collect();
     many.focused_workspace_id = Some(test_workspace_id("w30"));
-    let mut config = ClientConfig::default();
-    config.ui.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.chrome.set_collapsed(true);
     state.set_snapshot(Box::new(many));
     state.receive_pane_surface_from(

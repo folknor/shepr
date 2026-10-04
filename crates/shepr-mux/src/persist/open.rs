@@ -366,7 +366,7 @@ mod tests {
         let first = layout.panes()[0].public_number;
         WorkspaceSnapshot {
             id: id.parse().expect("workspace id"),
-            name: name.into(),
+            name: crate::terminal::Label::new(name).expect("test workspace name"),
             layout,
             next_public_pane_number: number(next),
             zoomed: false,

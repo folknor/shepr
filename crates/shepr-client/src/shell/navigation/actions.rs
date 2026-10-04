@@ -3,6 +3,7 @@ use shepr_protocol::command::PaneSwapParams;
 use shepr_protocol::command::SplitDirection;
 
 use crate::endpoint::ClientEndpointId;
+use crate::shell::EndpointNotice;
 use crate::shell::ledger::{Submitted, Work};
 use crate::shell::navigation::location::{Location, LocationTarget};
 use crate::shell::notices::{BootNoticeCode, ClientEndpointNoticeKind, NoticeCode};
@@ -10,7 +11,6 @@ use crate::shell::overlays::Overlay;
 use crate::shell::overlays::help::HelpOverlay;
 use crate::shell::state::ClientShellMode;
 use crate::shell::state::{ClientShellAction, ClientShellInput, ClientShellState};
-use crate::shell::{EndpointNotice, EndpointNoticeKind};
 
 use shepr_protocol::command::EndpointCommand;
 
@@ -46,22 +46,6 @@ impl ClientShellState {
             }
             action => {
                 let action = *action;
-                if self.workspace_preview_action_blocked()
-                    && matches!(
-                        action,
-                        shepr_termio::input::KeybindAction::RenameWorkspace
-                            | shepr_termio::input::KeybindAction::CloseWorkspace
-                    )
-                {
-                    let open_workspace = self.open_workspace_hint();
-                    let endpoint = self.endpoints.presented().clone();
-                    self.receive_endpoint_unavailable(&EndpointNotice::new(
-                        endpoint,
-                        EndpointNoticeKind::WorkspaceActionBlocked { open_workspace },
-                    ));
-                    outcome.repaint = true;
-                    return;
-                }
                 if action == shepr_termio::input::KeybindAction::OpenNavigator {
                     self.open_navigator_overlay();
                     outcome.repaint = true;
@@ -298,8 +282,9 @@ impl ClientShellState {
         title: &str,
         body: String,
     ) -> bool {
+        let label = endpoint_id.display_label(&self.config.local_label);
         self.notices
-            .queue_boot(endpoint_id, boot_id, code, title, body)
+            .queue_boot(endpoint_id, label, boot_id, code, title, body)
     }
 
     /// Shows a notice an endpoint's server sent.
@@ -333,7 +318,7 @@ impl ClientShellState {
             ClientEndpointNoticeKind::Unavailable,
             NoticeCode::EndpointUnavailable,
             "Endpoint unavailable",
-            notice.body(),
+            notice.body(&self.config.local_label),
         )
     }
 

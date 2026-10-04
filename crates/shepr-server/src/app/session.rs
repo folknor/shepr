@@ -1505,7 +1505,7 @@ mod tests {
             let first = layout.panes()[0].public_number;
             WorkspaceSnapshot {
                 id: id.parse().expect("workspace id"),
-                name: name.into(),
+                name: shepr_mux::terminal::Label::new(name).expect("test workspace name"),
                 layout,
                 next_public_pane_number: number(next),
                 zoomed: false,
@@ -2085,7 +2085,7 @@ mod tests {
                     .into_snapshot()
                     .expect("newer session should be saved");
                 assert_eq!(snapshot.workspaces.len(), 1);
-                assert_eq!(snapshot.workspaces[0].name, "newer");
+                assert_eq!(snapshot.workspaces[0].name.as_str(), "newer");
             }
         }
     }

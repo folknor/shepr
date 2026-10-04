@@ -619,7 +619,7 @@ fn configured_machines_start_connecting_without_a_snapshot() {
     let machine = remote_machine();
     let remote = ClientEndpointId::Ssh(machine.label.clone());
     state.set_machines(&[machine]);
-    assert_eq!(remote.display_label(), "Build");
+    assert_eq!(remote.display_label(&state.config.local_label), "Build");
     assert_eq!(
         state.endpoint_status(&remote),
         Some(ClientEndpointStatus::Connecting)
@@ -1212,15 +1212,14 @@ fn focus_agent_index_uses_the_rendered_aggregate_rows() {
     state.edit_endpoint_snapshot(&endpoint_id, |snapshot| {
         snapshot.agents = vec![agent(AgentStatus::Working, 2)];
     });
-    let focus_agent = |index| shepr_termio::input::KeybindAction::FocusAgent(index);
+    let agent_numbers =
+        |state: &ClientShellState| state.endpoints.agent_panel_model.targets().len();
 
-    assert!(state.indexed_navigation_target_exists(&focus_agent(0)));
-    assert!(!state.indexed_navigation_target_exists(&focus_agent(1)));
+    assert_eq!(agent_numbers(&state), 1);
 
     // A stale machine's rows stay in the sidebar, so they keep their numbers;
     // picking one reports the machine as not ready instead of shifting the
     // numbers of every row after it.
     state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Reconnecting);
-    assert!(state.indexed_navigation_target_exists(&focus_agent(0)));
-    assert!(!state.indexed_navigation_target_exists(&focus_agent(1)));
+    assert_eq!(agent_numbers(&state), 1);
 }

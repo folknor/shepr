@@ -165,6 +165,7 @@ mod tests {
         let config = shepr_config::ClientConfig {
             local: shepr_config::LocalConfig {
                 palette: Some(HostHue::Blue),
+                ..Default::default()
             },
             machines: vec![
                 machine("build", Some(HostHue::Green)),
@@ -216,6 +217,7 @@ mod tests {
         let config = shepr_config::ClientConfig {
             local: shepr_config::LocalConfig {
                 palette: Some(HostHue::Green),
+                ..Default::default()
             },
             ..Default::default()
         };

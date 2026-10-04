@@ -41,7 +41,7 @@ async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
         .app
         .test_state_mut()
         .ws_mut(0)
-        .set_name("renamed workspace".into());
+        .set_name(shepr_mux::terminal::Label::new("renamed workspace").expect("test name"));
     server.app.test_state_mut().mark_shell_projection_dirty();
     write_shared_test_pane(
         &mut server,

@@ -109,13 +109,13 @@ impl Launched {
             Err(failure) if reconnect_local => {
                 match &failure {
                     LocalAttachFailure::Connection(error) => {
-                        warn!(%error, "Local is unavailable; keeping configured machines available");
+                        warn!(%error, "the local server is unavailable; keeping configured machines available");
                     }
                     LocalAttachFailure::Handshake(error) => {
-                        warn!(%error, "Local handshake failed; keeping configured machines available");
+                        warn!(%error, "the local server handshake failed; keeping configured machines available");
                     }
                     LocalAttachFailure::Setup(error) => {
-                        warn!(%error, "Local transport setup failed; keeping configured machines available");
+                        warn!(%error, "the local server transport setup failed; keeping configured machines available");
                     }
                 }
                 // The Local endpoint's first status comes from this real

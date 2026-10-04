@@ -227,7 +227,9 @@ pub struct WorkspaceHistorySnapshot {
 pub struct WorkspaceSnapshot {
     /// Canonical identity; restore assigns a fresh identity to duplicates.
     pub id: shepr_protocol::WorkspaceId,
-    pub name: String,
+    /// A `Label`, as a workspace's live name is: a blank or padded name is a
+    /// damaged file, refused whole.
+    pub name: Label,
     /// Restore checks it against the panes' numbers.
     pub next_public_pane_number: PanePublicNumber,
     pub layout: LayoutSnapshot,
@@ -478,7 +480,7 @@ mod tests {
             host_theme: super::SavedHostTheme::default(),
             workspaces: vec![super::WorkspaceSnapshot {
                 id: "w1".parse().expect("id"),
-                name: "w".into(),
+                name: super::Label::new("w").expect("test name"),
                 next_public_pane_number: shepr_protocol::PanePublicNumber::new(2)
                     .expect("nonzero literal"),
                 layout: super::LayoutSnapshot::Split {
@@ -549,6 +551,15 @@ mod tests {
             ),
             ("/snapshot/workspaces/0/focused", serde_json::json!(0)),
             ("/snapshot/workspaces/0/root_pane", serde_json::json!(0)),
+            // A workspace name follows the rename rule: never blank or padded.
+            ("/snapshot/workspaces/0/name", serde_json::json!("")),
+            ("/snapshot/workspaces/0/name", serde_json::json!("   ")),
+            ("/snapshot/workspaces/0/name", serde_json::json!(" w")),
+            ("/snapshot/workspaces/0/name", serde_json::json!(null)),
+            (
+                "/snapshot/workspaces/0/layout/Split/first/Pane/label",
+                serde_json::json!(" "),
+            ),
             (
                 "/snapshot/workspaces/0/layout/Split/ratio",
                 serde_json::json!(0.0),
@@ -674,6 +685,42 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// A blank workspace name is a damaged file: the whole file fails to parse,
+    /// as for any other invalid saved value, rather than one workspace taking a
+    /// fallback name.
+    #[test]
+    fn a_blank_workspace_name_fails_the_whole_file() {
+        let file = |name: &str| {
+            serde_json::json!({
+                "snapshot": {
+                    "version": 1,
+                    "host_theme": super::SavedHostTheme::default(),
+                    "workspaces": [{
+                        "id": "w1",
+                        "name": name,
+                        "next_public_pane_number": 2,
+                        "layout": {"Pane": {"cwd": "/", "public_number": 1, "label": null}},
+                        "zoomed": false,
+                        "focused": 1,
+                        "root_pane": 1,
+                    }],
+                    "active": 0,
+                },
+                "history_digest": null,
+            })
+            .to_string()
+        };
+
+        let parsed = super::parse_session_file(&file("named")).expect("a named workspace parses");
+        assert_eq!(parsed.snapshot.workspaces[0].name.as_str(), "named");
+        for blank in ["", " ", "\t\n"] {
+            assert!(
+                super::parse_session_file(&file(blank)).is_err(),
+                "{blank:?} must be refused"
+            );
+        }
     }
 
     #[test]

@@ -55,11 +55,12 @@ impl ClientEndpointId {
         self.policy().is_local()
     }
 
-    /// The name the client shows for this endpoint: "Local", or the machine's configured label.
-    /// Machine labels refuse the local name, so the two never read alike.
-    pub(crate) fn display_label(&self) -> &str {
+    /// The name the client shows for this endpoint: `local`, the local server's label (its
+    /// `[local]` label or this host's name), or the machine's configured label. The launch
+    /// refuses a machine label that names the local server, so the two never read alike.
+    pub(crate) fn display_label<'a>(&'a self, local: &'a MachineLabel) -> &'a str {
         match self {
-            Self::Local => shepr_config::LOCAL_ENDPOINT_LABEL,
+            Self::Local => local.as_str(),
             Self::Ssh(label) => label.as_str(),
         }
     }
@@ -160,7 +161,8 @@ mod tests {
     #[test]
     fn endpoint_display_labels_name_local_and_each_machine() {
         let label = MachineLabel::parse("build").expect("test precondition");
-        assert_eq!(ClientEndpointId::Local.display_label(), "Local");
-        assert_eq!(ClientEndpointId::Ssh(label).display_label(), "build");
+        let local = MachineLabel::parse("desk").expect("test precondition");
+        assert_eq!(ClientEndpointId::Local.display_label(&local), "desk");
+        assert_eq!(ClientEndpointId::Ssh(label).display_label(&local), "build");
     }
 }

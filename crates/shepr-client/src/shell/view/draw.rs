@@ -414,6 +414,7 @@ fn render_mode_bar(
                 ]);
             }
             ClientShellMode::Navigate => {
+                // Navigate mode takes only these keys, so the bar lists all of them.
                 let navigate = &keybinds.keybinds.navigate;
                 segments.extend([
                     (" NAVIGATE ".to_owned(), mode_style),
@@ -422,21 +423,10 @@ fn render_mode_bar(
                         key,
                     ),
                     ("back  ".to_owned(), base),
-                    (
-                        configured_key_labels(&[&navigate.workspace_up, &navigate.workspace_down]),
-                        key,
-                    ),
+                    (configured_key_labels(&[&navigate.up, &navigate.down]), key),
                     (" workspace/agent  ".to_owned(), base),
-                    (
-                        configured_key_labels(&[
-                            &navigate.cycle_pane_next,
-                            &navigate.cycle_pane_previous,
-                        ]),
-                        key,
-                    ),
-                    (" pane  ".to_owned(), base),
-                    (prefix_rhs(&keybinds.keybinds.help), key),
-                    (" keybinds".to_owned(), base),
+                    (configured_key_labels(&[&navigate.open]), key),
+                    (" open".to_owned(), base),
                 ]);
             }
             ClientShellMode::Resize => {
@@ -759,10 +749,9 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let mut config = shepr_config::ClientConfig::default();
         config.keys.navigate_back = shepr_config::BindingConfig::one("q");
-        config.keys.navigate_workspace_up = shepr_config::BindingConfig::one("u");
-        config.keys.navigate_workspace_down = shepr_config::BindingConfig::one("d");
-        config.keys.navigate_cycle_pane_next = shepr_config::BindingConfig::one("n");
-        config.keys.navigate_cycle_pane_previous = shepr_config::BindingConfig::one("p");
+        config.keys.navigate_up = shepr_config::BindingConfig::one("u");
+        config.keys.navigate_down = shepr_config::BindingConfig::one("d");
+        config.keys.navigate_open = shepr_config::BindingConfig::one("o");
         let validated = shepr_config::ValidatedClientConfig::test_from_config(config, None);
         let area = Rect::new(0, 0, 120, 2);
         let mut buffer = Buffer::empty(area);
@@ -783,9 +772,11 @@ mod tests {
             .concat();
         assert!(row.contains("q back"), "{row}");
         assert!(row.contains("u / d workspace/agent"), "{row}");
-        assert!(row.contains("n / p pane"), "{row}");
+        assert!(row.contains("o open"), "{row}");
         assert!(!row.contains("esc back"), "{row}");
-        assert!(!row.contains("↑/↓"), "{row}");
-        assert!(!row.contains("tab pane"), "{row}");
+        assert!(!row.contains("enter open"), "{row}");
+        // Navigate mode takes no other key, so the bar names none.
+        assert!(!row.contains("pane"), "{row}");
+        assert!(!row.contains("keybinds"), "{row}");
     }
 }

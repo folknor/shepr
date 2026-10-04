@@ -257,21 +257,6 @@ impl IndexedKeybind {
         }
     }
 
-    /// Match an indexed key, preferring bindings with exactly reported modifiers.
-    pub fn matched_range_index(bindings: &[Self], key: &TerminalKey) -> Option<usize> {
-        for exact_modifiers in [true, false] {
-            for binding in bindings {
-                if binding.is_direct()
-                    && binding.modifiers_match_exactly(key) == exact_modifiers
-                    && let Some(index) = binding.matched_index(key)
-                {
-                    return Some(index);
-                }
-            }
-        }
-        None
-    }
-
     pub fn matched_index(&self, key: &TerminalKey) -> Option<usize> {
         match self {
             Self::Range(range) => range.matched_index(key),
@@ -292,50 +277,15 @@ impl IndexedKeybind {
     }
 }
 
-macro_rules! define_navigate_aliases {
-    ($($variant:ident => $key_code:ident),+ $(,)?) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        enum NavigateAlias {
-            $($variant,)+
-        }
-
-        impl NavigateAlias {
-            fn from_table_name(name: &str) -> Option<Self> {
-                match name {
-                    $(stringify!($variant) => Some(Self::$variant),)+
-                    _ => None,
-                }
-            }
-
-            fn chord(self) -> KeyChord {
-                match self {
-                    $(Self::$variant => KeyChord::new(KeyCode::$key_code, KeyModifiers::empty()),)+
-                }
-            }
-
-            fn label(self) -> String {
-                format_key_chord(self.chord())
-            }
-        }
-    };
-}
-
-define_navigate_aliases! {
-    Left => Left,
-    Right => Right,
-}
-
 crate::keybinding_rows! {
     $ define_resolved_keybinds;
     actions(field = $action_field)
     indexed(field = $indexed_field)
     navigate(field = $navigate_field)
-    navigate_indexed(field = $navigate_indexed_field)
     => {
         #[derive(Debug, Clone, Default)]
         pub struct NavigateKeybinds {
             $(pub $navigate_field: ActionKeybinds,)*
-            $(pub $navigate_indexed_field: Vec<IndexedKeybind>,)*
         }
 
         /// Parsed keybinds for Shepr actions.
@@ -345,20 +295,6 @@ crate::keybinding_rows! {
             $(pub $action_field: ActionKeybinds,)*
             $(pub $indexed_field: Vec<IndexedKeybind>,)*
         }
-    }
-}
-
-impl Keybinds {
-    /// Resolve the key chord for one alias identifier from the central table.
-    #[doc(hidden)]
-    pub fn navigate_alias_chord_from_table(alias: &str) -> Option<KeyChord> {
-        NavigateAlias::from_table_name(alias).map(NavigateAlias::chord)
-    }
-
-    /// Resolve the help label for one alias identifier from the central table.
-    #[doc(hidden)]
-    pub fn navigate_alias_label_from_table(alias: &str) -> Option<String> {
-        NavigateAlias::from_table_name(alias).map(NavigateAlias::label)
     }
 }
 
@@ -477,7 +413,6 @@ impl ClientConfig {
         if let Some(prefix) = prefix {
             navigate_registry.reserve_direct(prefix, "keys.prefix", prefix_source);
         }
-        reserve_navigate_runtime_keys(&mut navigate_registry);
         let mut keybinds = Keybinds::default();
 
         macro_rules! field_source {
@@ -528,34 +463,16 @@ impl ClientConfig {
                 }
             };
         }
-        macro_rules! apply_navigate_indexed {
-            ($target:expr, $field:ident, $source:expr) => {
-                if field_source!($field) == $source {
-                    $target = parse_navigate_indexed_bindings(
-                        concat!("keys.", stringify!($field)),
-                        &self.keys.$field,
-                        &mut navigate_registry,
-                        &mut diagnostics,
-                        $source,
-                    );
-                }
-            };
-        }
         crate::keybinding_rows! {
             $ apply_keybinding_table;
             actions(field = $action_field)
             indexed(field = $indexed_field)
             navigate(config_field = $navigate_config_field, field = $navigate_field)
-            navigate_indexed(
-                config_field = $navigate_indexed_config_field,
-                field = $navigate_indexed_field
-            )
             => {
                 for source in [BindingSource::User, BindingSource::Default] {
                     $(apply_action!(keybinds.$action_field, $action_field, source);)*
                     $(apply_indexed!(keybinds.$indexed_field, $indexed_field, source);)*
                     $(apply_navigate!(keybinds.navigate.$navigate_field, $navigate_config_field, source);)*
-                    $(apply_navigate_indexed!(keybinds.navigate.$navigate_indexed_field, $navigate_indexed_config_field, source);)*
                 }
             }
         }
@@ -565,34 +482,6 @@ impl ClientConfig {
             _ => None,
         };
         KeybindValidation { diagnostics, live }
-    }
-}
-
-fn reserve_navigate_runtime_keys(registry: &mut BindingRegistry) {
-    crate::keybinding_rows! {
-        $ reserve_aliases;
-        navigate(alias = $navigate_alias)
-        navigate_indexed(alias = $navigate_indexed_alias)
-        => {
-            $(
-                if let Some(chord) = crate::navigate_alias!($navigate_alias) {
-                    registry.reserve_direct(
-                        chord,
-                        "navigate pane arrow aliases",
-                        BindingSource::Default,
-                    );
-                }
-            )*
-            $(
-                if let Some(chord) = crate::navigate_alias!($navigate_indexed_alias) {
-                    registry.reserve_direct(
-                        chord,
-                        "navigate pane arrow aliases",
-                        BindingSource::Default,
-                    );
-                }
-            )*
-        }
     }
 }
 
@@ -734,48 +623,6 @@ fn parse_indexed_bindings(
     bindings
 }
 
-fn parse_navigate_indexed_bindings(
-    field: &'static str,
-    config: &BindingConfig,
-    registry: &mut BindingRegistry,
-    diagnostics: &mut Vec<ConfigDiagnostic>,
-    source: BindingSource,
-) -> Vec<IndexedKeybind> {
-    let mut bindings = Vec::new();
-    for raw in config.values() {
-        let raw = raw.trim();
-        if raw.is_empty() {
-            continue;
-        }
-        match parse_binding_string(raw) {
-            Some(ParsedBinding::Single(binding)) => {
-                if accept_navigate_indexed_binding(field, &binding, registry, diagnostics, source) {
-                    bindings.push(IndexedKeybind::Key(binding.trigger));
-                }
-            }
-            Some(ParsedBinding::Range(range)) => {
-                let mut all_accepted = true;
-                for binding in range.expand() {
-                    all_accepted &= accept_navigate_indexed_binding(
-                        field,
-                        &binding,
-                        registry,
-                        diagnostics,
-                        source,
-                    );
-                }
-                if all_accepted {
-                    bindings.push(IndexedKeybind::Range(range));
-                }
-            }
-            None => {
-                diagnostics.push(invalid_keybinding_diagnostic(field, raw));
-            }
-        }
-    }
-    bindings
-}
-
 /// Validates one key of an indexed binding and registers it; false when it
 /// was rejected (the diagnostic is recorded).
 fn accept_indexed_binding(
@@ -798,32 +645,6 @@ fn accept_indexed_binding(
         return false;
     }
     if reject_binding(field, binding, registry, diagnostics, source) {
-        return false;
-    }
-    registry.register(binding, field, source);
-    true
-}
-
-/// As `accept_indexed_binding`, for the navigate keymap.
-fn accept_navigate_indexed_binding(
-    field: &str,
-    binding: &ResolvedBinding,
-    registry: &mut BindingRegistry,
-    diagnostics: &mut Vec<ConfigDiagnostic>,
-    source: BindingSource,
-) -> bool {
-    if !IndexedRange::contains_key(binding.trigger.chord().code) {
-        diagnostics.push(ConfigDiagnostic::validation(
-            ConfigKeyPath::from_dotted(field),
-            format!(
-                "indexed keybinding must use {}: {:?}",
-                IndexedRange::syntax(),
-                binding.trigger.to_string()
-            ),
-        ));
-        return false;
-    }
-    if reject_navigate_binding(field, binding, registry, diagnostics, source) {
         return false;
     }
     registry.register(binding, field, source);
@@ -1667,9 +1488,8 @@ help = "prefix+ctrl+b"
         let config: ClientConfig = toml::from_str(
             r#"
 [keys]
-navigate_workspace_up = "j"
-navigate_workspace_down = "j"
-navigate_pane_down = "ctrl+j"
+navigate_up = "j"
+navigate_down = "j"
 "#,
         )
         .expect("test precondition");
@@ -1679,34 +1499,9 @@ navigate_pane_down = "ctrl+j"
         assert!(keybinds.is_none());
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("keybinding conflict")
-                && diag.contains("keys.navigate_workspace_up")
-                && diag.contains("keys.navigate_workspace_down")
+                && diag.contains("keys.navigate_up")
+                && diag.contains("keys.navigate_down")
         }));
-    }
-
-    #[test]
-    fn navigate_bindings_reject_fixed_arrow_aliases() {
-        let config: ClientConfig = toml::from_str(
-            r#"
-[keys]
-navigate_workspace_up = ["left", "right"]
-"#,
-        )
-        .expect("test precondition");
-        let keybinds = parse_keybinds(&config, &[]);
-        let diagnostics = config.collect_diagnostics();
-
-        assert!(keybinds.is_none());
-        assert_eq!(
-            diagnostics
-                .iter()
-                .filter(|diag| {
-                    diag.contains("navigate pane arrow aliases")
-                        && diag.contains("keys.navigate_workspace_up")
-                })
-                .count(),
-            2
-        );
     }
 
     #[test]
@@ -1714,7 +1509,7 @@ navigate_workspace_up = ["left", "right"]
         let config: ClientConfig = toml::from_str(
             r#"
 [keys]
-navigate_workspace_down = ["n", "f"]
+navigate_down = ["n", "f"]
 "#,
         )
         .expect("test precondition");
@@ -1727,7 +1522,7 @@ navigate_workspace_down = ["n", "f"]
                 .as_ref()
                 .expect("valid keybindings")
                 .navigate
-                .workspace_down
+                .down
                 .matches_direct_key(&TerminalKey::new(KeyCode::Char('n'), KeyModifiers::empty()))
         );
         assert!(
@@ -1735,7 +1530,7 @@ navigate_workspace_down = ["n", "f"]
                 .as_ref()
                 .expect("valid keybindings")
                 .navigate
-                .workspace_down
+                .down
                 .matches_direct_key(&TerminalKey::new(KeyCode::Char('f'), KeyModifiers::empty()))
         );
         assert!(
@@ -1750,7 +1545,7 @@ navigate_workspace_down = ["n", "f"]
         let config: ClientConfig = toml::from_str(
             r#"
 [keys]
-navigate_pane_down = "j"
+navigate_down = "j"
 "#,
         )
         .expect("test precondition");
@@ -1759,7 +1554,7 @@ navigate_pane_down = "j"
         assert!(
             keybinds
                 .navigate
-                .pane_down
+                .down
                 .matches_direct_key(&TerminalKey::new(KeyCode::Char('j'), KeyModifiers::empty()))
         );
     }
@@ -1770,8 +1565,8 @@ navigate_pane_down = "j"
             r#"
 [keys]
 prefix = "ctrl+a"
-navigate_workspace_up = "prefix+j"
-navigate_workspace_down = "ctrl+a"
+navigate_up = "prefix+j"
+navigate_down = "ctrl+a"
 "#,
         )
         .expect("test precondition");
@@ -1781,12 +1576,12 @@ navigate_workspace_down = "ctrl+a"
         assert!(keybinds.is_none());
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("navigate keybinding must not include prefix")
-                && diag.contains("keys.navigate_workspace_up")
+                && diag.contains("keys.navigate_up")
         }));
         assert!(diagnostics.iter().any(|diag| {
             diag.contains("keybinding conflict")
                 && diag.contains("keys.prefix")
-                && diag.contains("keys.navigate_workspace_down")
+                && diag.contains("keys.navigate_down")
         }));
     }
 
@@ -1844,21 +1639,19 @@ focus_agent = ["prefix+alt+1..9", "ctrl+alt+2"]
             r#"
 [keys]
 switch_workspace = "prefix+alt+1..9"
-navigate_switch_workspace = "shift+1..9"
+focus_agent = "alt+1..9"
 "#,
         )
         .expect("test precondition");
-        let kb = parse_keybinds(&config, &["switch_workspace", "navigate_switch_workspace"])
+        let kb = parse_keybinds(&config, &["switch_workspace", "focus_agent"])
             .expect("valid keybindings");
 
         assert_eq!(kb.switch_workspace[0].to_string(), "prefix+alt+1..9");
-        assert_eq!(kb.navigate.switch_workspace[0].to_string(), "shift+1..9");
+        assert_eq!(kb.focus_agent[0].to_string(), "alt+1..9");
         assert_eq!(
-            IndexedKeybind::matched_range_index(
-                &kb.navigate.switch_workspace,
-                &TerminalKey::new(KeyCode::Char('!'), KeyModifiers::empty()),
-            ),
-            Some(0)
+            kb.focus_agent[0]
+                .matched_index(&TerminalKey::new(KeyCode::Char('3'), KeyModifiers::ALT)),
+            Some(2)
         );
     }
 
@@ -2008,7 +1801,7 @@ new_workspace = "prefix+z"
     #[test]
     fn user_prefix_conflicting_with_a_default_binding_is_reported() {
         for (prefix, field, diagnostic) in [
-            ("h", "keys.navigate_pane_left", "keybinding conflict"),
+            ("enter", "keys.navigate_open", "keybinding conflict"),
             ("n", "keys.next_workspace", "reserved keybinding"),
         ] {
             let config: ClientConfig = toml::from_str(&format!("[keys]\nprefix = {prefix:?}\n"))

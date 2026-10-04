@@ -322,6 +322,20 @@ pub(in crate::shell) fn preview_key(state: &mut ClientShellState, bytes: &[u8]) 
     assert!(outcome.repaint, "{bytes:?}");
 }
 
+/// Feeds `bytes` in navigate mode as a key that is not one of its own: nothing
+/// happens, not even a repaint, and navigate mode keeps its selection.
+pub(in crate::shell) fn ignored_navigate_key(state: &mut ClientShellState, bytes: &[u8]) {
+    let selection = state.mode.preview().cloned();
+    let outcome = state.handle_input_bytes(bytes);
+    assert!(outcome.actions.is_empty(), "{bytes:?}");
+    assert!(outcome.requests.is_empty(), "{bytes:?}");
+    assert!(!outcome.repaint, "{bytes:?}");
+    assert!(!outcome.detach, "{bytes:?}");
+    assert!(state.overlay.is_none(), "{bytes:?}");
+    assert_eq!(state.mode.kind(), ClientShellMode::Navigate, "{bytes:?}");
+    assert_eq!(state.mode.preview().cloned(), selection, "{bytes:?}");
+}
+
 /// Enters navigate mode with the default prefix and `w`.
 pub(in crate::shell) fn enter_navigation(state: &mut ClientShellState) {
     preview_key(state, &[0x02]);

@@ -19,8 +19,7 @@ pub use self::limits::{
     DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 pub use self::machine::{
-    LOCAL_ENDPOINT_LABEL, LocalConfig, MachineConfig, MachineLabel, MachineLabelError, SshTarget,
-    SshTargetError,
+    LocalConfig, MachineConfig, MachineLabel, MachineLabelError, SshTarget, SshTargetError,
 };
 /// Role-specific raw values. Runtime code receives a [`ValidatedClientConfig`]
 /// or [`ValidatedServerConfig`], constructed through validation at launch or
@@ -37,8 +36,7 @@ pub use self::{
     },
     model::{
         AgentPanelSortConfig, HostCursorModeConfig, NewTerminalCwdConfig, PaneBordersConfig,
-        RightClickPassthroughModifierConfig, SidebarBounds, SidebarCollapsedModeConfig,
-        SidebarWidth, StatusIndicatorStyle,
+        RightClickPassthroughModifierConfig, SidebarBounds, SidebarWidth, StatusIndicatorStyle,
     },
     sidebar::{
         AgentSidebarToken, AgentSidebarTokenKind, AgentsSidebarConfig, SidebarConfig,
@@ -380,7 +378,6 @@ mod tests {
         actions(field = $action_field)
         indexed(field = $indexed_field)
         navigate(config_field = $navigate_config_field)
-        navigate_indexed(config_field = $navigate_indexed_config_field)
         => {
             fn record_key_config_fields(fields: &mut BTreeSet<String>, keys: KeysConfig) {
                 let KeysConfig {
@@ -388,13 +385,11 @@ mod tests {
                     $($action_field: _,)*
                     $($indexed_field: _,)*
                     $($navigate_config_field: _,)*
-                    $($navigate_indexed_config_field: _,)*
                 } = keys;
                 fields.insert("keys.prefix".to_owned());
                 $(fields.insert(format!("keys.{}", stringify!($action_field)));)*
                 $(fields.insert(format!("keys.{}", stringify!($indexed_field)));)*
                 $(fields.insert(format!("keys.{}", stringify!($navigate_config_field)));)*
-                $(fields.insert(format!("keys.{}", stringify!($navigate_indexed_config_field)));)*
             }
         }
     }
@@ -409,6 +404,7 @@ mod tests {
             machines => machines,
         });
         record_config_fields!(fields, local, "local", LocalConfig {
+            label => _,
             palette => _,
         });
         record_config_fields!(fields, theme, "theme", ThemeConfig {
@@ -445,7 +441,6 @@ mod tests {
             sidebar_min_width => _,
             sidebar_max_width => _,
             sidebar_start_collapsed => _,
-            sidebar_collapsed_mode => _,
             mouse_capture => _,
             copy_on_select => _,
             host_cursor => _,
@@ -667,16 +662,9 @@ mod tests {
             (&keys.resize_pane_right, ""),
             (&keys.toggle_sidebar, "prefix+b"),
             (&keys.navigate_back, "esc"),
-            (&keys.navigate_workspace_up, "up"),
-            (&keys.navigate_workspace_down, "down"),
-            (&keys.navigate_pane_left, "h"),
-            (&keys.navigate_pane_down, "j"),
-            (&keys.navigate_pane_up, "k"),
-            (&keys.navigate_pane_right, "l"),
-            (&keys.navigate_cycle_pane_next, "tab"),
-            (&keys.navigate_cycle_pane_previous, "shift+tab"),
-            (&keys.navigate_open_workspace, "enter"),
-            (&keys.navigate_switch_workspace, "1..9"),
+            (&keys.navigate_up, "up"),
+            (&keys.navigate_down, "down"),
+            (&keys.navigate_open, "enter"),
         ] {
             assert_eq!(binding, &BindingConfig::one(expected));
         }

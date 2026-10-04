@@ -20,7 +20,6 @@ use ratatui::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum EndpointNoticeKind {
     NotReady,
-    WorkspaceActionBlocked { open_workspace: String },
     WorkspaceNoLongerAvailable,
     AgentNoLongerAvailable,
     WaitingForSelection(Option<ClientEndpointStatus>),
@@ -42,13 +41,12 @@ impl EndpointNotice {
         Self { endpoint, kind }
     }
 
-    pub(crate) fn body(&self) -> String {
-        let label = self.endpoint.display_label();
+    /// The notice's sentence. `local` is the local server's label, which names the
+    /// local endpoint.
+    pub(crate) fn body(&self, local: &shepr_config::MachineLabel) -> String {
+        let label = self.endpoint.display_label(local);
         match &self.kind {
             EndpointNoticeKind::NotReady => format!("{label} is not ready"),
-            EndpointNoticeKind::WorkspaceActionBlocked { open_workspace } => format!(
-                "Select an available workspace and {open_workspace} before renaming or closing it"
-            ),
             EndpointNoticeKind::WorkspaceNoLongerAvailable => {
                 "Workspace is no longer available; select a connected workspace".to_owned()
             }

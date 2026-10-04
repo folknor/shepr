@@ -94,10 +94,10 @@ fn ensure_terminal_geometry() -> io::Result<()> {
         })
 }
 
-/// What the operator is told when Local fails to start or is refused while
-/// configured machines keep the client running.
+/// What the operator is told when the local server fails to start or is
+/// refused while configured machines keep the client running.
 fn local_startup_notice(error: &shepr_launch::local_server::LaunchError) -> String {
-    format!("shepr: Local is unavailable; configured machines stay available.\n{error}")
+    format!("shepr: the local server is unavailable; configured machines stay available.\n{error}")
 }
 
 #[cfg(test)]

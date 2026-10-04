@@ -85,7 +85,7 @@ and interprets: keys, the sidebar, agent panel order, status indicators,
 prompts, mouse and copy behaviour and their colours, the same whichever
 machine is being presented, and the per-host sidebar colours derived from each
 machine's `palette` and the host terminal's theme. `client.toml` holds those
-`[ui]` settings, `[keys]`, `[local]` (the local server's own `palette`) and
+`[ui]` settings, `[keys]`, `[local]` (the local server's own `label` and `palette`) and
 `[[machines]]`. Each server applies its own config to what it
 runs and to what it renders into pane cells: shell and working directory,
 session, pane borders, gaps and scrollbars, the colours of that pane chrome,
@@ -102,7 +102,10 @@ Agent states are Working, Blocked and Idle. Unknown presents as Idle.
 
 Machines are configured in `client.toml` as `[[machines]]` entries (a `label`, an
 `ssh` target and an optional `palette`), read once at launch like the rest of the config; there are no
-commands to add, remove or list them. The TUI connects to them without
+commands to add, remove or list them. The client names the local server by
+the `[local]` table's `label`, or this host's short hostname when it is unset,
+never as "Local"; a machine label equal to it in any ASCII case fails the
+launch as a duplicate, and no name is reserved. The TUI connects to them without
 prompting (BatchMode), so at startup, before it takes the terminal, `shepr`
 checks every machine and runs interactive ssh for each one that needs
 authentication, one at a time, on shepr's own control socket, then checks those

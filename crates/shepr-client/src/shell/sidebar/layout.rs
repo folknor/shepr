@@ -29,12 +29,14 @@ use crate::shell::view::{AgentHit, MachineHit, WorkspaceHit};
 /// Which sidebar the caller decided to lay out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::shell) enum SidebarForm {
+    /// No sidebar: the terminal leaves it no column (see `ClientShellConfig::layout`).
     Hidden,
     Collapsed,
     Expanded,
 }
 
 pub(in crate::shell) enum SidebarView {
+    /// No sidebar on screen, from `SidebarForm::Hidden` or a view with nothing drawn yet.
     Hidden,
     Collapsed(CollapsedSidebarView),
     Expanded(ExpandedSidebarView),
@@ -137,12 +139,12 @@ impl SidebarInputs<'_> {
 
     /// The presented endpoint's label, for the footer.
     fn presented_label(&self) -> &str {
-        self.endpoints
-            .iter()
-            .find(|endpoint| &endpoint.endpoint_id == self.presented)
-            .map_or(self.presented.display_label(), |endpoint| {
-                endpoint.endpoint_id.display_label()
-            })
+        self.presented.display_label(&self.config.local_label)
+    }
+
+    /// The name shown for `endpoint_id`.
+    pub(super) fn endpoint_label<'b>(&'b self, endpoint_id: &'b ClientEndpointId) -> &'b str {
+        endpoint_id.display_label(&self.config.local_label)
     }
 }
 

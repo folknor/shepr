@@ -96,21 +96,15 @@
 # resize_pane_right = ""  # optional, e.g. "ctrl+shift+alt+right"
 # toggle_sidebar = "prefix+b"
 
-# Navigate-mode movement. These local shortcuts win while navigate mode is open.
-# These are independent from focus_pane_* and do not include prefix+.
-# Up and down move one selection through the workspaces and then the agents
-# below them; enter opens a workspace or focuses an agent's pane.
+# Navigate mode (entered with workspace_picker). These are its only keys: every
+# other key, the prefix included, does nothing while it is open. They do not
+# include prefix+. Up and down move one selection through the workspaces and
+# then the agents below them; enter opens a workspace or focuses an agent's
+# pane; back leaves navigate mode.
 # navigate_back = "esc"
-# navigate_workspace_up = "up"
-# navigate_workspace_down = "down"
-# navigate_pane_left = "h"      # left arrow always focuses the pane to the left
-# navigate_pane_down = "j"
-# navigate_pane_up = "k"
-# navigate_pane_right = "l"     # right arrow always focuses the pane to the right
-# navigate_cycle_pane_next = "tab"
-# navigate_cycle_pane_previous = "shift+tab"
-# navigate_open_workspace = "enter"
-# navigate_switch_workspace = "1..9"
+# navigate_up = "up"
+# navigate_down = "down"
+# navigate_open = "enter"
 
 [ui]
 # Expanded sidebar width in columns. It must be between sidebar_min_width and
@@ -130,9 +124,6 @@
 # sidebar_start_collapsed = false
 # While unset, mouse or key changes to the collapsed state are remembered by the client.
 # Once set, this value wins at every launch.
-
-# Collapsed sidebar presentation: "compact" keeps the narrow status rail, "hidden" uses zero width.
-# sidebar_collapsed_mode = "compact"
 
 # Capture mouse input for Shepr's mouse UI.
 # Set false to let the terminal handle normal clicks, such as clicking URLs.
@@ -202,11 +193,10 @@
 
 # Machines whose shepr servers this client shows next to the local one. Each
 # entry needs a unique label (how shepr names the machine: nonblank, no control
-# characters, no leading or trailing whitespace, and not "Local" in any case,
-# which names the local server) and an ssh target (a host alias, user@host or
-# ssh:// URL, never with a password).
-# Read once at launch; a duplicate or reserved label or a malformed target fails
-# the launch.
+# characters, no leading or trailing whitespace, and not the local server's
+# label in any case) and an ssh target (a host alias, user@host or ssh:// URL,
+# never with a password).
+# Read once at launch; a duplicate label or a malformed target fails the launch.
 # Shepr runs ssh for a machine through a generated config that includes your
 # ~/.ssh/config first and adds ServerAliveInterval/ServerAliveCountMax as
 # fallbacks (values you set yourself win), and reuses the first authenticated
@@ -232,6 +222,11 @@
 # palette = "green"
 
 # Settings for the local server, which has no [[machines]] entry.
+# label is the name shepr shows for the local server, under the rules for a
+# machine label above. Unset, it is this host's short hostname (the part before
+# the first dot); a hostname that cannot be read fails the launch until a label
+# is set.
 # palette is the local server's hue, as for a machine above.
 # [local]
+# label = "desk"
 # palette = "blue"

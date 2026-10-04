@@ -1054,11 +1054,11 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
             .iter()
             .map(|row| row.label.as_str())
             .collect::<Vec<_>>(),
-        vec!["Local", "Build"]
+        vec![shepr_test_fixtures::FIXTURE_LOCAL_LABEL, "Build"]
     );
     assert!(rows.iter().all(|row| {
         matches!(row.target.target, LocationTarget::Machine)
-            || (!row.label.contains("Local ·") && !row.label.contains("Build ·"))
+            || (!row.label.contains("Desk ·") && !row.label.contains("Build ·"))
     }));
     assert!(rows.iter().all(|row| match row.target.target {
         LocationTarget::Machine => row.depth == 0 && row.status.is_none(),

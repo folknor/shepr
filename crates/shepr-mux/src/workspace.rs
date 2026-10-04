@@ -104,8 +104,10 @@ impl GitIdentity {
 pub struct Workspace {
     /// Stable public workspace identity, independent of display order.
     id: WorkspaceId,
-    /// The name, set at creation and changed only by a rename.
-    name: String,
+    /// The name, set at creation and changed only by a rename. A `Label`, so it
+    /// is never blank or padded, and a save always writes a name a restore
+    /// accepts.
+    name: crate::terminal::Label,
     /// Fallback workspace identity source for a missing runtime, fixed at
     /// construction.
     identity_cwd: AbsolutePath,
@@ -122,20 +124,19 @@ pub struct Workspace {
 
 impl Workspace {
     /// A workspace around a pane tree, named `name` or, without one, after
-    /// `identity_cwd` (`default_workspace_name`). The Git status is left
+    /// `identity_cwd` (`Label::for_directory`). The Git status is left
     /// undiscovered: finding it walks the filesystem up to `/` and can spawn
     /// `git`, which must not run on the server's main loop. The background Git
     /// refresh discovers it, because an undiscovered identity never matches the
     /// workspace's resolved cwd.
     pub(crate) fn from_tree(
         id: WorkspaceId,
-        name: Option<String>,
+        name: Option<crate::terminal::Label>,
         identity_cwd: AbsolutePath,
         tree: pane_tree::PaneTree,
     ) -> Self {
-        let name = name.unwrap_or_else(|| {
-            shepr_core::workspace_label::default_workspace_name(identity_cwd.as_path())
-        });
+        let name =
+            name.unwrap_or_else(|| crate::terminal::Label::for_directory(identity_cwd.as_path()));
         Self {
             id,
             name,
@@ -156,7 +157,8 @@ impl Workspace {
     /// workspace's first: public number `FIRST`. The caller hands over a
     /// terminal, not a `PaneRecord`, so there is no caller-chosen number to
     /// keep or overwrite: the one-pane tree numbers its pane as a new
-    /// workspace's first pane is numbered.
+    /// workspace's first pane is numbered. A `name` that is blank once trimmed
+    /// names the workspace after `identity_cwd`, as a blank rename does.
     pub fn test_from_pane(
         id: WorkspaceId,
         name: Option<String>,
@@ -166,7 +168,7 @@ impl Workspace {
     ) -> Self {
         Self::from_tree(
             id,
-            name,
+            name.and_then(crate::terminal::Label::new),
             identity_cwd.clone(),
             pane_tree::PaneTree::single(pane, terminal),
         )
@@ -180,11 +182,16 @@ impl Workspace {
     /// The workspace name every consumer (API workspace info, sidebar, window
     /// title) reads.
     pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    /// The name as the label a save writes.
+    pub fn name_label(&self) -> &crate::terminal::Label {
         &self.name
     }
 
     /// Renames the workspace. True when the name changed.
-    pub fn set_name(&mut self, name: String) -> bool {
+    pub fn set_name(&mut self, name: crate::terminal::Label) -> bool {
         let changed = self.name != name;
         self.name = name;
         changed
@@ -375,7 +382,7 @@ impl Workspace {
         let terminal = crate::terminal::TerminalState::new(identity_cwd.clone());
         Self::from_tree(
             test_workspace_id(),
-            Some(name.to_string()),
+            crate::terminal::Label::new(name),
             identity_cwd,
             pane_tree::PaneTree::single(PaneId::alloc(), terminal),
         )
@@ -609,10 +616,18 @@ mod tests {
     #[test]
     fn renaming_reports_whether_the_name_changed() {
         let mut ws = Workspace::test_new("first");
+        let label = |name| crate::terminal::Label::new(name).expect("test label");
 
-        assert!(!ws.set_name("first".into()));
-        assert!(ws.set_name("second".into()));
+        assert!(!ws.set_name(label("first")));
+        assert!(ws.set_name(label("second")));
         assert_eq!(ws.name(), "second");
+    }
+
+    #[test]
+    fn a_directory_named_only_with_spaces_names_its_workspace_by_path() {
+        let ws = workspace_at(Path::new("/srv/  "), "/srv/  ");
+        assert_eq!(ws.name(), "/srv/");
+        assert_eq!(workspace_at(Path::new("/"), "/").name(), "/");
     }
 
     #[test]

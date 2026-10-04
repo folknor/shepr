@@ -307,9 +307,10 @@ fn local_selection_waits_for_metadata_while_the_shown_endpoint_stays_live() {
         .compose_frame(100, 30)
         .expect("chrome");
     f.client.state_mut().present_frame(frame);
-    assert!(f.output().contains(
-        "Local is waiting for its workspace snapshot; selection will resume when it is ready"
-    ));
+    assert!(f.output().contains(&format!(
+        "{} is waiting for its workspace snapshot; selection will resume when it is ready",
+        shepr_test_fixtures::FIXTURE_LOCAL_LABEL
+    )));
 }
 #[test]
 fn a_remote_pick_without_metadata_waits_with_a_notice() {

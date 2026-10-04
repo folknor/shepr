@@ -523,30 +523,13 @@ impl ClientShellState {
         self.overlay = Some(Overlay::Navigator(navigator));
     }
 
-    /// The workspace a workspace action applies to: the Navigate selection's (an
-    /// agent's own workspace when the selection is on an agent) while it is valid on
-    /// the presented endpoint, else the focused one.
+    /// The workspace a workspace action applies to: the focused one. Navigate
+    /// mode's selection never is, since navigate mode runs no workspace actions.
     pub(in crate::shell) fn workspace_action_id(&self) -> Option<shepr_protocol::WorkspaceId> {
-        self.mode
-            .preview()
-            .filter(|target| {
-                target.location.endpoint == *self.endpoints.presented()
-                    && self.navigation_target_valid(target)
-            })
-            .and_then(|target| {
-                target.location.workspace_id().or_else(|| {
-                    target
-                        .location
-                        .pane_id()
-                        .map(|pane_id| *pane_id.workspace_id())
-                })
-            })
-            .or_else(|| {
-                self.endpoints
-                    .active
-                    .snapshot()
-                    .and_then(|snapshot| snapshot.focused_workspace_id)
-            })
+        self.endpoints
+            .active
+            .snapshot()
+            .and_then(|snapshot| snapshot.focused_workspace_id)
     }
 
     /// Opens the new-workspace name prompt, prefilled with the name of the

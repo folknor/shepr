@@ -32,14 +32,6 @@ pub enum HostCursorModeConfig {
     Drawn,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SidebarCollapsedModeConfig {
-    #[default]
-    Compact,
-    Hidden,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RightClickPassthroughModifierConfig(Option<KeyModifiers>);
 
@@ -268,11 +260,6 @@ crate::keybinding_rows! {
     actions(field = $action_field, default = $action_default, doc = $action_doc)
     indexed(field = $indexed_field, default = $indexed_default, doc = $indexed_doc)
     navigate(config_field = $navigate_config_field, default = $navigate_default, doc = $navigate_doc)
-    navigate_indexed(
-        config_field = $navigate_indexed_config_field,
-        default = $navigate_indexed_default,
-        doc = $navigate_indexed_doc
-    )
     => {
         #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
         #[serde(default)]
@@ -282,7 +269,6 @@ crate::keybinding_rows! {
             $(#[doc = $action_doc] pub $action_field: BindingConfig,)*
             $(#[doc = $indexed_doc] pub $indexed_field: BindingConfig,)*
             $(#[doc = $navigate_doc] pub $navigate_config_field: BindingConfig,)*
-            $(#[doc = $navigate_indexed_doc] pub $navigate_indexed_config_field: BindingConfig,)*
         }
 
         impl Default for KeysConfig {
@@ -292,7 +278,6 @@ crate::keybinding_rows! {
                     $($action_field: BindingConfig::one($action_default),)*
                     $($indexed_field: BindingConfig::one($indexed_default),)*
                     $($navigate_config_field: BindingConfig::one($navigate_default),)*
-                    $($navigate_indexed_config_field: BindingConfig::one($navigate_indexed_default),)*
                 }
             }
         }
@@ -318,8 +303,6 @@ pub struct ClientUiConfig {
     /// client shell remembers the last collapse toggle; once set, it wins at
     /// every launch.
     pub sidebar_start_collapsed: Option<bool>,
-    /// Collapsed sidebar presentation. Default: compact.
-    pub sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     /// Capture mouse input for Shepr's mouse UI. Default: true.
     pub mouse_capture: bool,
     /// Copy text selected with the mouse. Default: true.
@@ -490,7 +473,6 @@ impl Default for ClientUiConfig {
             sidebar_min_width: 18,
             sidebar_max_width: 36,
             sidebar_start_collapsed: None,
-            sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
             mouse_capture: true,
             copy_on_select: true,
             host_cursor: HostCursorModeConfig::Native,
@@ -805,25 +787,6 @@ sidebar_start_collapsed = true
 "#;
         let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert_eq!(config.ui.sidebar_start_collapsed, Some(true));
-    }
-
-    #[test]
-    fn sidebar_collapsed_mode_defaults_compact_and_parses_hidden() {
-        let default_config = ClientConfig::default();
-        assert_eq!(
-            default_config.ui.sidebar_collapsed_mode,
-            SidebarCollapsedModeConfig::Compact
-        );
-
-        let toml = r#"
-[ui]
-sidebar_collapsed_mode = "hidden"
-"#;
-        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
-        assert_eq!(
-            config.ui.sidebar_collapsed_mode,
-            SidebarCollapsedModeConfig::Hidden
-        );
     }
 
     #[test]

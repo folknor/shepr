@@ -324,17 +324,20 @@ fn draw_machine_slot(buffer: &mut Buffer, rect: Rect, endpoint: usize, inputs: &
         rect,
         marker,
         endpoint,
+        inputs.endpoint_label(&endpoint.endpoint_id),
         collapsed && &endpoint.endpoint_id == inputs.presented,
         inputs.machine_diagnostics,
         &inputs.config.palette,
     );
 }
 
+/// `label` is the name shown for `endpoint`.
 fn draw_endpoint_row(
     buffer: &mut Buffer,
     rect: Rect,
     marker: &str,
     endpoint: &ClientShellEndpoint,
+    label: &str,
     highlighted: bool,
     diagnostics: &MachineDiagnostics,
     palette: &Palette,
@@ -349,7 +352,7 @@ fn draw_endpoint_row(
         rect.x,
         rect.y,
         rect.width.saturating_sub(signal_width.saturating_add(1)),
-        &format!(" {marker} {}", endpoint.endpoint_id.display_label()),
+        &format!(" {marker} {label}"),
         Style::default()
             .fg(palette.text)
             .add_modifier(Modifier::BOLD),

@@ -608,10 +608,13 @@ fn restore_workspace(
             launch.sized(crate::workspace::spawn_geometry(grid, None))
         })
         .collect();
-    // A saved name that is blank once trimmed (only a hand-edited file holds
-    // one) falls back to the directory name, as a blank rename does.
-    let name = crate::terminal::Label::new(&snapshot.name).map(crate::terminal::Label::into_string);
-    let workspace = Workspace::from_tree(workspace_id, name, identity_cwd, tree);
+    // The schema already refused a blank or padded name, with the whole file.
+    let workspace = Workspace::from_tree(
+        workspace_id,
+        Some(snapshot.name.clone()),
+        identity_cwd,
+        tree,
+    );
     Some((workspace, launches))
 }
 
@@ -861,7 +864,7 @@ mod tests {
         let highest = numbers.iter().map(|number| number.get()).max().unwrap_or(1);
         WorkspaceSnapshot {
             id: id.parse().expect("canonical workspace ID"),
-            name: name.into(),
+            name: crate::terminal::Label::new(name).expect("test workspace name"),
             next_public_pane_number: number(highest + 1),
             layout,
             zoomed: false,
@@ -917,27 +920,6 @@ mod tests {
             .filter_map(|pane| workspace.tree().pane(pane))
             .map(|record| record.number().get())
             .collect()
-    }
-
-    #[test]
-    fn a_blank_saved_name_falls_back_to_the_directory_name() {
-        let snapshot = session(
-            vec![
-                one_pane_workspace("w1", "  ", 1),
-                one_pane_workspace("w2", " padded ", 1),
-            ],
-            Some(0),
-        );
-        let plan = plan_restore(
-            &snapshot,
-            None,
-            test_geometry(12, 40),
-            false,
-            test_restore_now(),
-            &mut crate::workspace::WorkspaceIdAllocator::new(),
-        );
-        let names: Vec<_> = plan.workspaces.iter().map(Workspace::name).collect();
-        assert_eq!(names, ["__shepr_missing_restore_directory__", "padded"]);
     }
 
     #[test]

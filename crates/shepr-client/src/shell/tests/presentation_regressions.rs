@@ -5,7 +5,7 @@ use crate::shell::notices::ClientEndpointNoticeKind;
 use crate::shell::overlays::Overlay;
 use crate::shell::state::{ClientShellAction, ClientShellInput, ClientShellState};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
+use shepr_config::ClientConfig;
 use shepr_termio::input::raw_input::RawInputEvent;
 
 use crate::shell::tests::{
@@ -51,9 +51,7 @@ fn client_presentation_regression_server_notice_titles_follow_the_notice_kind() 
 
 #[test]
 fn unavailable_view_respects_a_collapsed_single_endpoint_sidebar() {
-    let mut config = ClientConfig::default();
-    config.ui.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.chrome.set_collapsed(true);
     state.set_snapshot(Box::new(snapshot()));
 
@@ -61,7 +59,7 @@ fn unavailable_view_respects_a_collapsed_single_endpoint_sidebar() {
     let rows = frame_rows(&frame);
     let text = rows.join("\n");
 
-    assert!(text.contains("Local: online."));
+    assert!(text.contains("Desk: online."));
     assert!(!text.contains("Select a connected machine."));
     assert!(
         state

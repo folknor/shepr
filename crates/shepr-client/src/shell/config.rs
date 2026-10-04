@@ -1,6 +1,5 @@
 use ratatui::layout::Rect;
 use shepr_config::LiveKeybindConfig;
-use shepr_config::SidebarCollapsedModeConfig;
 use shepr_config::SpacesSidebarConfig;
 use shepr_config::theme::Palette;
 
@@ -13,7 +12,6 @@ pub(crate) struct ClientShellConfig {
     pub(in crate::shell) sidebar_width: shepr_config::SidebarWidth,
     pub(in crate::shell) sidebar_bounds: shepr_config::SidebarBounds,
     pub(in crate::shell) sidebar_start_collapsed: bool,
-    sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     pub(in crate::shell) spaces: SpacesSidebarConfig,
     pub(in crate::shell) agents: shepr_config::AgentsSidebarConfig,
     /// The `ui.agent_panel_sort` setting (or its default) as launched. It only
@@ -24,6 +22,8 @@ pub(crate) struct ClientShellConfig {
     pub(in crate::shell) status_indicators: shepr_config::StatusIndicatorStyle,
     pub(in crate::shell) copy_on_select: bool,
     pub(in crate::shell) palette: Palette,
+    /// The name shown for the local server (`ClientEndpointId::display_label`).
+    pub(in crate::shell) local_label: shepr_config::MachineLabel,
     /// The hue each endpoint's sidebar entries are drawn in, if any.
     pub(in crate::shell) host_hues: HostHues,
     pub(in crate::shell) keybinds: LiveKeybindConfig,
@@ -49,6 +49,7 @@ impl ClientShellConfig {
             config.ui(),
             preferences::ConfiguredChrome::from_validated_config(config),
             config.palette().clone(),
+            config.local_label().clone(),
             HostHues::from_validated_config(config),
             config.live_keybinds().clone(),
         )
@@ -58,6 +59,7 @@ impl ClientShellConfig {
         config: &shepr_config::ValidatedClientUiConfig,
         configured: preferences::ConfiguredChrome,
         palette: shepr_config::theme::Palette,
+        local_label: shepr_config::MachineLabel,
         host_hues: HostHues,
         keybinds: LiveKeybindConfig,
     ) -> Self {
@@ -65,13 +67,13 @@ impl ClientShellConfig {
             sidebar_width: config.sidebar_width(),
             sidebar_bounds: config.sidebar_bounds(),
             sidebar_start_collapsed: *config.sidebar_start_collapsed.value(),
-            sidebar_collapsed_mode: config.sidebar_collapsed_mode,
             spaces: config.sidebar.spaces.clone(),
             agents: config.sidebar.agents.clone(),
             agent_panel_sort: *config.agent_panel_sort.value(),
             status_indicators: config.status_indicators,
             copy_on_select: config.copy_on_select,
             palette,
+            local_label,
             host_hues,
             // One validation pass; the launch already rejected invalid bindings.
             keybinds,
@@ -114,16 +116,10 @@ impl ClientShellConfig {
         sidebar_width: u16,
     ) -> ClientShellLayout {
         // Expanded widths come from `ChromeLayout`, which clamps remembered
-        // and dragged widths on entry.
-        let sidebar_width = if sidebar_collapsed {
-            match self.sidebar_collapsed_mode {
-                SidebarCollapsedModeConfig::Compact => 4,
-                SidebarCollapsedModeConfig::Hidden => 0,
-            }
-        } else {
-            sidebar_width
-        }
-        .min(cols.saturating_sub(1));
+        // and dragged widths on entry. The sidebar always leaves the pane area
+        // a column, so a terminal one column wide or less has no sidebar.
+        let sidebar_width =
+            if sidebar_collapsed { 4 } else { sidebar_width }.min(cols.saturating_sub(1));
         let main = Rect::new(sidebar_width, 0, cols.saturating_sub(sidebar_width), rows);
 
         ClientShellLayout {
@@ -162,6 +158,7 @@ impl ClientShellConfig {
             validated.ui(),
             preferences::ConfiguredChrome::from_validated_config(&validated),
             validated.palette().clone(),
+            validated.local_label().clone(),
             HostHues::from_validated_config(&validated),
             validated.live_keybinds().clone(),
         )

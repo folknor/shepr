@@ -20,7 +20,6 @@ pub(in crate::shell) enum ClientEndpointNoticeKind {
 pub(in crate::shell) enum NoticeCode {
     SelectionEmpty,
     PasteRejected,
-    NavigateEndpointInactive,
     Server,
     Cancelled,
     Command(CommandKind),
@@ -179,9 +178,12 @@ impl Notices {
         });
         true
     }
+    /// Queues `endpoint_id`'s boot card, titled after `label`, the name the
+    /// client shows for that endpoint.
     pub(in crate::shell) fn queue_boot(
         &mut self,
         endpoint_id: &ClientEndpointId,
+        label: &str,
         boot_id: &shepr_protocol::BootId,
         code: BootNoticeCode,
         title: &str,
@@ -196,7 +198,6 @@ impl Notices {
         if !self.boot_seen.insert(key.clone()) {
             return false;
         }
-        let label = endpoint_id.display_label();
         self.boot_queue.push_back(ClientVisibleEndpointNotice {
             key,
             title: format!("{label}: {title}"),
@@ -294,6 +295,7 @@ mod tests {
     fn queue_restore(notices: &mut Notices, boot_id: &str, title: &str) -> bool {
         notices.queue_boot(
             &ClientEndpointId::Local,
+            "Desk",
             &boot(boot_id),
             BootNoticeCode::SessionRestoreIncomplete,
             title,
@@ -368,7 +370,7 @@ mod tests {
         notices.advance();
         assert!(queue_restore(&mut notices, "boot", "Restore incomplete"));
         notices.reset_endpoint();
-        assert_eq!(visible_title(&notices), Some("Local: Restore incomplete"));
+        assert_eq!(visible_title(&notices), Some("Desk: Restore incomplete"));
     }
 
     #[test]
@@ -376,15 +378,15 @@ mod tests {
         let mut notices = Notices::default();
         assert!(queue_restore(&mut notices, "boot-1", "First"));
         // With nothing on screen the first card shows at once, named for its endpoint.
-        assert_eq!(visible_title(&notices), Some("Local: First"));
+        assert_eq!(visible_title(&notices), Some("Desk: First"));
         assert_eq!(notices.queued(), 0);
         assert!(queue_restore(&mut notices, "boot-2", "Second"));
-        assert_eq!(visible_title(&notices), Some("Local: First"));
+        assert_eq!(visible_title(&notices), Some("Desk: First"));
         assert_eq!(notices.queued(), 1);
         // The same boot's card is never queued twice, even after it was seen.
         assert!(!queue_restore(&mut notices, "boot-1", "First"));
         notices.advance();
-        assert_eq!(visible_title(&notices), Some("Local: Second"));
+        assert_eq!(visible_title(&notices), Some("Desk: Second"));
         notices.advance();
         assert!(notices.visible().is_none());
         assert!(!queue_restore(&mut notices, "boot-1", "First"));
@@ -400,9 +402,9 @@ mod tests {
         assert_eq!(visible_title(&notices), Some("Rejected"));
         assert_eq!(notices.queued(), 2);
         notices.advance();
-        assert_eq!(visible_title(&notices), Some("Local: First"));
+        assert_eq!(visible_title(&notices), Some("Desk: First"));
         notices.advance();
-        assert_eq!(visible_title(&notices), Some("Local: Second"));
+        assert_eq!(visible_title(&notices), Some("Desk: Second"));
     }
 
     #[test]
@@ -443,7 +445,7 @@ mod tests {
         assert!(queue_restore(&mut notices, "boot-2", "Second"));
         notices.drawn(start);
         assert!(notices.tick(start + ENDPOINT_NOTICE_TIMEOUT));
-        assert_eq!(visible_title(&notices), Some("Local: Second"));
+        assert_eq!(visible_title(&notices), Some("Desk: Second"));
         assert!(notices.deadline().is_none());
     }
 }

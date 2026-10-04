@@ -18,6 +18,10 @@ const UNWRITABLE_ROOT: &str = "/nonexistent/shepr-test-config";
 /// config runs it.
 const FIXTURE_SHELL: &str = "/bin/sh";
 
+/// The local server's name in fixture client configs that leave
+/// `local.label` unset. No fixture machine uses it.
+pub const FIXTURE_LOCAL_LABEL: &str = "Desk";
+
 pub trait AppPathsFixture: Sized {
     /// Paths under [`UNWRITABLE_ROOT`], which is also the home directory.
     fn test_default() -> Self;
@@ -65,10 +69,19 @@ impl ValidatedClientConfigFixture for ValidatedClientConfig {
     }
 
     fn test_from_config_with_paths(
-        config: ClientConfig,
+        mut config: ClientConfig,
         source: Option<&str>,
         paths: AppPaths,
     ) -> Self {
+        // Unset, the local server is named after this host, whose name varies
+        // and can be long enough to change how a test's sidebar truncates. A
+        // fixed name keeps fixture configs alike on every host.
+        if config.local.label.is_none() {
+            config.local.label = Some(
+                shepr_config::MachineLabel::parse(FIXTURE_LOCAL_LABEL)
+                    .expect("the fixture local label is valid"),
+            );
+        }
         Self::validate(&config, source, paths).expect("test config is valid")
     }
 }

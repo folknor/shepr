@@ -527,7 +527,10 @@ mod tests {
             Some(second)
         );
         assert_eq!(
-            state.rename_workspace(&first, "renamed".to_string()),
+            state.rename_workspace(
+                &first,
+                shepr_mux::terminal::Label::new("renamed").expect("test name")
+            ),
             Some(crate::app::actions::ViewMutation::Metadata)
         );
         assert_eq!(
@@ -568,7 +571,14 @@ mod tests {
 
         assert!(state.workspace(&only).is_none());
         assert!(state.close_workspace(&only).is_none());
-        assert!(state.rename_workspace(&only, "gone".into()).is_none());
+        assert!(
+            state
+                .rename_workspace(
+                    &only,
+                    shepr_mux::terminal::Label::new("gone").expect("test name")
+                )
+                .is_none()
+        );
     }
 
     #[test]

@@ -518,6 +518,37 @@ ssh = "ssh://gpu.example"
         assert_eq!(none.local().palette, None);
     }
 
+    /// The local server is named by `local.label`, or by this host's short
+    /// hostname, which a machine label may not repeat in any case. "Local" is
+    /// an ordinary name.
+    #[test]
+    fn the_local_server_is_named_by_its_label_or_the_hostname() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let labelled = client_from_str("[local]\nlabel = \"desk\"\n").expect("a local label loads");
+        assert_eq!(labelled.local_label().as_str(), "desk");
+
+        let hostname = shepr_platform::host_names().expect("the test host has a name");
+        let unset = client_from_str("").expect("the hostname names the local server");
+        assert_eq!(unset.local_label().as_str(), hostname.short());
+
+        let errors = client_from_str(&format!(
+            "[[machines]]\nlabel = \"{}\"\nssh = \"h\"\n",
+            hostname.short().to_ascii_uppercase()
+        ))
+        .expect_err("a machine named like this host must not launch");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("this host's name")),
+            "{errors:?}"
+        );
+
+        client_from_str(
+            "[local]\nlabel = \"desk\"\n[[machines]]\nlabel = \"Local\"\nssh = \"h\"\n",
+        )
+        .expect("Local is not reserved");
+    }
+
     #[test]
     fn machines_and_the_local_server_take_an_optional_palette() {
         use shepr_term::host_tint::HostHue;
@@ -565,8 +596,8 @@ ssh = "gpu"
             ("[local]\npalette = \"Green\"\n", "Green"),
             ("[local]\npalette = 3\n", "invalid type"),
             (
-                "[local]\nlabel = \"desk\"\n",
-                "unknown config key local.label",
+                "[local]\nname = \"desk\"\n",
+                "unknown config key local.name",
             ),
         ] {
             let errors = client_from_str(content).expect_err("invalid palette must not launch");
@@ -602,8 +633,12 @@ ssh = "gpu"
                 "machine label must not be blank",
             ),
             (
-                "[[machines]]\nlabel = \"local\"\nssh = \"h\"\n",
-                "it is the name of the local server",
+                "[local]\nlabel = \"Desk\"\n[[machines]]\nlabel = \"desk\"\nssh = \"h\"\n",
+                "duplicates the local server's label (related: local.label)",
+            ),
+            (
+                "[local]\nlabel = \" desk\"\n",
+                "machine label must not start or end with whitespace",
             ),
             (
                 "[[machines]]\nlabel = \"a\"\nssh = \"-oProxyCommand=x\"\n",

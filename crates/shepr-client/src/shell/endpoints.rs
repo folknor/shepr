@@ -42,7 +42,7 @@ impl Endpoints {
         agent_panel_sort: shepr_config::AgentPanelSortConfig,
     ) -> Self {
         let agent_panel_model = AgentPanelModel::build(&entries, config, agent_panel_sort);
-        let navigator_index = NavigatorIndex::build(&entries);
+        let navigator_index = NavigatorIndex::build(&entries, &config.local_label);
         Self {
             choice: crate::endpoint::EndpointChoice::showing(ClientEndpointId::Local),
             entries,
@@ -518,7 +518,9 @@ impl ClientShellState {
     }
 
     pub(in crate::shell) fn active_endpoint_label(&self) -> &str {
-        self.endpoints.presented().display_label()
+        self.endpoints
+            .presented()
+            .display_label(&self.config.local_label)
     }
 
     pub(crate) fn endpoint_is_active(&self, endpoint_id: &ClientEndpointId) -> bool {
@@ -651,7 +653,7 @@ impl ClientShellState {
 
     fn rebuild_endpoint_models(&mut self) {
         self.rebuild_agent_panel_model();
-        let index = NavigatorIndex::build(&self.endpoints);
+        let index = NavigatorIndex::build(&self.endpoints, &self.config.local_label);
         self.endpoints.navigator_index = index;
     }
 }

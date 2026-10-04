@@ -8,7 +8,7 @@ impl AppState {
     pub(crate) fn rename_workspace(
         &mut self,
         id: &shepr_protocol::WorkspaceId,
-        name: String,
+        name: shepr_mux::terminal::Label,
     ) -> Option<ViewMutation> {
         let workspace = self.workspaces.get_mut(id)?;
         if !workspace.set_name(name) {

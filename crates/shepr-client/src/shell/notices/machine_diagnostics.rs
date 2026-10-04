@@ -158,9 +158,12 @@ impl ClientShellState {
             // in-TUI prompt would need the terminal suspended and resumed
             // around a foreground ssh for no gain.
             title: if diagnostic.requires_authentication {
-                format!("{}: restart shepr to authenticate", id.display_label())
+                format!(
+                    "{}: restart shepr to authenticate",
+                    id.display_label(&self.config.local_label)
+                )
             } else {
-                id.display_label().to_owned()
+                id.display_label(&self.config.local_label).to_owned()
             },
             body: diagnostic.message.clone(),
         });

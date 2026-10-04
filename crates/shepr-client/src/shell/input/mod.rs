@@ -1,7 +1,3 @@
-use shepr_termio::input::KeybindAction;
-use shepr_termio::input::KeybindDispatch;
-
-use crate::shell::notices::{ClientEndpointNoticeKind, NoticeCode};
 use crate::shell::overlays::Overlay;
 use crossterm::event::KeyEventKind;
 pub(in crate::shell) mod events;
@@ -180,31 +176,15 @@ fn read_clipboard_text_bounded_with(
     }
 }
 
-fn navigate_alias_matches(
-    combo: shepr_term::key::KeyChord,
-    key: &shepr_term::key::TerminalKey,
-) -> bool {
-    combo.matches(key)
-}
-
 shepr_config::keybinding_rows! {
     $ define_navigate_actions;
     navigate(variant = $navigate_variant)
-    navigate_indexed(variant = $navigate_indexed_variant)
     => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum NavigateAction {
             $($navigate_variant,)*
-            $($navigate_indexed_variant(usize),)*
         }
     }
-}
-
-fn navigate_indexed_binding_index(
-    bindings: &[shepr_config::IndexedKeybind],
-    key: &shepr_term::key::TerminalKey,
-) -> Option<usize> {
-    shepr_config::IndexedKeybind::matched_range_index(bindings, key)
 }
 
 fn resolve_navigate_binding(
@@ -213,23 +193,11 @@ fn resolve_navigate_binding(
 ) -> Option<NavigateAction> {
     shepr_config::keybinding_rows! {
         $ resolve_navigate;
-        navigate(field = $navigate_field, variant = $navigate_variant, alias = $navigate_alias)
-        navigate_indexed(field = $navigate_indexed_field, variant = $navigate_indexed_variant)
+        navigate(field = $navigate_field, variant = $navigate_variant)
         => {
             $(
-                if keybinds.navigate.$navigate_field.matches_direct_key(key)
-                    || shepr_config::navigate_alias!($navigate_alias)
-                        .is_some_and(|combo| navigate_alias_matches(combo, key))
-                {
+                if keybinds.navigate.$navigate_field.matches_direct_key(key) {
                     return Some(NavigateAction::$navigate_variant);
-                }
-            )*
-            $(
-                if let Some(index) = navigate_indexed_binding_index(
-                    &keybinds.navigate.$navigate_indexed_field,
-                    key,
-                ) {
-                    return Some(NavigateAction::$navigate_indexed_variant(index));
                 }
             )*
         }
@@ -440,9 +408,8 @@ impl ClientShellState {
     }
 
     fn prepare_committed_text(&mut self, text: &str, outcome: &mut ClientShellInput) -> bool {
-        if !(self.mode.is(ClientShellMode::Navigate) && self.workspace_preview_action_blocked())
-            && self.insert_copy_search_text(text)
-        {
+        // Copy search owns text only in Copy mode, so Navigate never reaches it.
+        if self.insert_copy_search_text(text) {
             outcome.repaint = true;
             return true;
         }
@@ -580,12 +547,6 @@ impl ClientShellState {
     }
 
     fn modal_paste_target_active(&self) -> bool {
-        if self.overlay.is_none()
-            && self.mode.is(ClientShellMode::Navigate)
-            && self.workspace_preview_action_blocked()
-        {
-            return false;
-        }
         if self.copy_mode_owns_input()
             && self
                 .copy
@@ -631,6 +592,12 @@ impl ClientShellState {
             return None;
         }
         if matches!(key.code, KeyCode::Modifier(_)) {
+            return None;
+        }
+        // Navigate mode takes only its own keys; every other key, the prefix
+        // included, does nothing, not even clear or copy a mouse selection.
+        if self.mode.is(ClientShellMode::Navigate) {
+            self.route_navigate_key(key, outcome);
             return None;
         }
         self.mouse_selection.word_gesture = None;
@@ -699,10 +666,8 @@ impl ClientShellState {
                 outcome.repaint = true;
                 None
             }
-            ClientShellMode::Navigate => {
-                self.route_navigate_key(key, outcome);
-                None
-            }
+            // Routed above, before any mode-independent key handling.
+            ClientShellMode::Navigate => None,
             ClientShellMode::Resize => {
                 self.route_resize_key(key, outcome);
                 None
@@ -739,193 +704,31 @@ impl ClientShellState {
         }
     }
 
-    /// How the user confirms the selected workspace, for notices: the
-    /// configured `navigate_open_workspace` key, or a plain instruction when
-    /// it is unbound.
-    pub(in crate::shell) fn open_workspace_hint(&self) -> String {
-        self.config
-            .keybinds
-            .keybinds
-            .navigate
-            .open_workspace
-            .label()
-            .map_or_else(|| "open it".to_owned(), |key| format!("press {key}"))
-    }
-
+    /// A key in navigate mode. Only the navigate bindings act: move the
+    /// selection, open it, or leave. Every other key does nothing.
     fn route_navigate_key(
         &mut self,
         key: &shepr_term::key::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
-        self.pending_workspace_highlight = None;
-        if self.config.keybinds.prefix.matches(key) {
-            self.mode.set(self.copy_or_terminal_mode());
-            outcome.repaint = true;
+        let Some(action) = resolve_navigate_binding(&self.config.keybinds.keybinds, key) else {
             return;
-        }
-
-        let navigate_binding = resolve_navigate_binding(&self.config.keybinds.keybinds, key);
-        match navigate_binding.as_ref() {
-            Some(NavigateAction::Back) => {
+        };
+        self.pending_workspace_highlight = None;
+        match action {
+            NavigateAction::Back => {
                 self.mode.set(self.copy_or_terminal_mode());
                 outcome.repaint = true;
-                return;
             }
-            Some(NavigateAction::WorkspaceUp) => {
+            NavigateAction::Up => {
                 self.move_navigate_selection(-1);
                 outcome.repaint = true;
-                return;
             }
-            Some(NavigateAction::WorkspaceDown) => {
+            NavigateAction::Down => {
                 self.move_navigate_selection(1);
                 outcome.repaint = true;
-                return;
             }
-            Some(NavigateAction::OpenWorkspace) => {
-                self.accept_navigate_selection(outcome);
-                return;
-            }
-            _ => {}
-        }
-        if self.workspace_preview_action_blocked() {
-            let open_workspace = self.open_workspace_hint();
-            self.push_endpoint_notice(
-                ClientEndpointNoticeKind::Rejected,
-                NoticeCode::NavigateEndpointInactive,
-                "Confirm workspace first",
-                format!(
-                    "Select an available workspace and {open_workspace} before using workspace or pane actions"
-                ),
-            );
-            outcome.repaint = true;
-            return;
-        }
-
-        if let Some(navigate_binding) = navigate_binding {
-            match navigate_binding {
-                NavigateAction::SwitchWorkspace(index) => {
-                    let valid = self
-                        .endpoints
-                        .active
-                        .snapshot()
-                        .is_some_and(|snapshot| snapshot.workspaces.get(index).is_some());
-                    if valid {
-                        self.mode.set(ClientShellMode::Terminal);
-                        self.record_binding(&KeybindAction::SwitchWorkspace(index), outcome);
-                        outcome.repaint = true;
-                    }
-                }
-                NavigateAction::CyclePaneNext => {
-                    self.record_navigate_binding(&KeybindAction::CyclePaneNext, false, outcome);
-                }
-                NavigateAction::CyclePanePrevious => {
-                    self.record_navigate_binding(&KeybindAction::CyclePanePrevious, false, outcome);
-                }
-                NavigateAction::PaneLeft => {
-                    self.record_navigate_binding(&KeybindAction::FocusPaneLeft, true, outcome);
-                }
-                NavigateAction::PaneDown => {
-                    self.record_navigate_binding(&KeybindAction::FocusPaneDown, true, outcome);
-                }
-                NavigateAction::PaneUp => {
-                    self.record_navigate_binding(&KeybindAction::FocusPaneUp, true, outcome);
-                }
-                NavigateAction::PaneRight => {
-                    self.record_navigate_binding(&KeybindAction::FocusPaneRight, true, outcome);
-                }
-                NavigateAction::Back
-                | NavigateAction::WorkspaceUp
-                | NavigateAction::WorkspaceDown
-                | NavigateAction::OpenWorkspace => {}
-            }
-            return;
-        }
-
-        let binding = shepr_termio::input::resolve_non_indexed_action(
-            &self.config.keybinds.keybinds,
-            key,
-            KeybindDispatch::Prefix,
-        )
-        .filter(|action| {
-            !matches!(
-                action,
-                KeybindAction::FocusPaneLeft
-                    | KeybindAction::FocusPaneDown
-                    | KeybindAction::FocusPaneUp
-                    | KeybindAction::FocusPaneRight
-            )
-        })
-        .or_else(|| {
-            shepr_termio::input::resolve_indexed_action(
-                &self.config.keybinds.keybinds,
-                key,
-                KeybindDispatch::Prefix,
-            )
-        });
-        if let Some(binding) = binding {
-            self.record_navigate_binding(&binding, false, outcome);
-        }
-    }
-
-    fn record_navigate_binding(
-        &mut self,
-        binding: &shepr_termio::input::KeybindAction,
-        preserve_navigate: bool,
-        outcome: &mut ClientShellInput,
-    ) {
-        if !self.indexed_navigation_target_exists(binding) {
-            return;
-        }
-        if let KeybindAction::CyclePaneNext = binding {
-            self.cycle_pane(false, outcome);
-        } else if let KeybindAction::CyclePanePrevious = binding {
-            self.cycle_pane(true, outcome);
-        } else {
-            if !preserve_navigate {
-                self.mode.set(self.copy_or_terminal_mode());
-            }
-            self.record_binding(binding, outcome);
-            // Navigate mode was left just above, but a close dialog opened from
-            // it should still cancel back into it.
-            if let Some(Overlay::ConfirmClose(confirm)) = self.overlay.as_mut() {
-                confirm.return_to_navigate = true;
-            }
-        }
-        if !preserve_navigate && self.mode.is(ClientShellMode::Navigate) {
-            self.mode.set(self.copy_or_terminal_mode());
-        }
-        outcome.repaint = true;
-    }
-
-    pub(in crate::shell) fn indexed_navigation_target_exists(
-        &self,
-        binding: &shepr_termio::input::KeybindAction,
-    ) -> bool {
-        match binding {
-            KeybindAction::SwitchWorkspace(index) => self
-                .endpoints
-                .active
-                .snapshot()
-                .is_some_and(|snapshot| snapshot.workspaces.get(*index).is_some()),
-            KeybindAction::FocusAgent(index) => self
-                .endpoints
-                .agent_panel_model
-                .targets()
-                .get(*index)
-                .is_some(),
-            _ => true,
-        }
-    }
-
-    fn cycle_pane(&mut self, reverse: bool, outcome: &mut ClientShellInput) {
-        let action = if reverse {
-            shepr_termio::input::KeybindAction::CyclePanePrevious
-        } else {
-            shepr_termio::input::KeybindAction::CyclePaneNext
-        };
-        // Cycling never carries a sidebar reveal.
-        if let Some(action_command) = self.endpoint_command_for_action(action) {
-            self.push_endpoint_command(action_command.command, outcome);
+            NavigateAction::Open => self.accept_navigate_selection(outcome),
         }
     }
 
@@ -1102,10 +905,7 @@ mod tests {
     use shepr_config::ClientConfig;
     use shepr_protocol::ClientPaneInputEvent;
 
-    use super::{
-        is_modal_paste_shortcut, navigate_alias_matches, navigate_indexed_binding_index,
-        read_clipboard_text_bounded_with,
-    };
+    use super::{is_modal_paste_shortcut, read_clipboard_text_bounded_with};
     use crate::shell::overlays::Overlay;
     use crate::shell::state::{
         ClientShellInput, ClientShellMode, ClientShellRequest, ClientShellState,
@@ -1125,30 +925,6 @@ mod tests {
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(crate::shell::tests::snapshot()));
         state
-    }
-
-    #[test]
-    fn navigate_indexed_helper_uses_the_configured_range_matcher() {
-        let state = shell();
-        let bindings = &state.config.keybinds.keybinds.navigate.switch_workspace;
-        let key = shepr_term::key::TerminalKey::new(KeyCode::Char('3'), KeyModifiers::empty());
-
-        assert_eq!(navigate_indexed_binding_index(bindings, &key), Some(2));
-    }
-
-    #[test]
-    fn navigate_arrow_aliases_use_the_configured_alias_matcher() {
-        let left = shepr_term::key::TerminalKey::new(KeyCode::Left, KeyModifiers::empty());
-        let right = shepr_term::key::TerminalKey::new(KeyCode::Right, KeyModifiers::empty());
-        let modified_left = shepr_term::key::TerminalKey::new(KeyCode::Left, KeyModifiers::SHIFT);
-        let left_alias =
-            shepr_config::navigate_alias!(Left).expect("the navigate table defines its left alias");
-        let right_alias = shepr_config::navigate_alias!(Right)
-            .expect("the navigate table defines its right alias");
-
-        assert!(navigate_alias_matches(left_alias, &left));
-        assert!(navigate_alias_matches(right_alias, &right));
-        assert!(!navigate_alias_matches(left_alias, &modified_left));
     }
 
     #[test]

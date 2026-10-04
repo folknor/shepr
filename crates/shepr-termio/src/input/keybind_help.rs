@@ -48,11 +48,6 @@ pub fn keybind_help_groups(
     group_rows(&mut groups, HelpGroup::Global)
         .push(row(shepr_config::format_key_chord(prefix), "prefix mode"));
 
-    // Navigate aliases follow the configured keys of the help row they belong
-    // to: (group, row index in the group, alias label). They are applied after
-    // every row exists, so they list last. No indexed row is inserted into the
-    // navigation group, so the recorded indexes stay valid.
-    let mut navigate_aliases: Vec<(HelpGroup, usize, String)> = Vec::new();
     shepr_config::keybinding_rows! {
         $ build_keybind_help;
         actions(field = $action_field, group = $action_group, label = $action_label)
@@ -62,18 +57,7 @@ pub fn keybind_help_groups(
             label = $indexed_label,
             help_after = $indexed_help_after
         )
-        navigate(
-            field = $navigate_field,
-            group = $navigate_group,
-            label = $navigate_label,
-            alias = $navigate_alias
-        )
-        navigate_indexed(
-            field = $navigate_indexed_field,
-            group = $navigate_indexed_group,
-            label = $navigate_indexed_label,
-            alias = $navigate_indexed_alias
-        )
+        navigate(field = $navigate_field, group = $navigate_group, label = $navigate_label)
         => {
             $(group_rows(&mut groups, HelpGroup::$action_group)
                 .push(row(binding_label(&keybinds.$action_field), $action_label));)*
@@ -82,32 +66,11 @@ pub fn keybind_help_groups(
                 $indexed_help_after,
                 row(indexed_label(&keybinds.$indexed_field), $indexed_label),
             );)*
-            $(
-                let index = merge_help_row(
-                    group_rows(&mut groups, HelpGroup::$navigate_group),
-                    binding_label(&keybinds.navigate.$navigate_field),
-                    $navigate_label,
-                );
-                if let Some(label) = shepr_config::navigate_alias_label!($navigate_alias) {
-                    navigate_aliases.push((HelpGroup::$navigate_group, index, label));
-                }
-            )*
-            $(
-                let index = merge_help_row(
-                    group_rows(&mut groups, HelpGroup::$navigate_indexed_group),
-                    indexed_label(&keybinds.navigate.$navigate_indexed_field),
-                    $navigate_indexed_label,
-                );
-                if let Some(label) = shepr_config::navigate_alias_label!($navigate_indexed_alias) {
-                    navigate_aliases.push((HelpGroup::$navigate_indexed_group, index, label));
-                }
-            )*
-        }
-    }
-    for (group, index, alias) in navigate_aliases {
-        if let Some(existing) = group_rows(&mut groups, group).get_mut(index) {
-            existing.keys.push_str(" / ");
-            existing.keys.push_str(&alias);
+            $(merge_help_row(
+                group_rows(&mut groups, HelpGroup::$navigate_group),
+                binding_label(&keybinds.navigate.$navigate_field),
+                $navigate_label,
+            );)*
         }
     }
     groups
@@ -140,18 +103,14 @@ fn insert_help_row_after(rows: &mut Vec<HelpRow>, after: &str, help_row: HelpRow
 }
 
 /// Navigate rows that share a help label share one row, keys joined in table
-/// order. Returns the row's index in the group.
-fn merge_help_row(rows: &mut Vec<HelpRow>, keys: String, label: &'static str) -> usize {
-    match rows.iter().position(|existing| existing.label == label) {
-        Some(index) => {
-            rows[index].keys.push_str(" / ");
-            rows[index].keys.push_str(&keys);
-            index
+/// order.
+fn merge_help_row(rows: &mut Vec<HelpRow>, keys: String, label: &'static str) {
+    match rows.iter_mut().find(|existing| existing.label == label) {
+        Some(existing) => {
+            existing.keys.push_str(" / ");
+            existing.keys.push_str(&keys);
         }
-        None => {
-            rows.push(row(keys, label));
-            rows.len() - 1
-        }
+        None => rows.push(row(keys, label)),
     }
 }
 
@@ -260,10 +219,7 @@ mod tests {
                 vec![
                     ("esc", "back"),
                     ("up / down", "workspaces and agents"),
-                    ("h / j / k / l / left / right", "move focus"),
-                    ("tab / shift+tab", "cycle pane"),
                     ("enter", "open selection"),
-                    ("1..9", "switch workspace"),
                 ],
             ),
             (
@@ -329,7 +285,7 @@ mod tests {
     #[test]
     fn help_shows_configured_navigate_keys() {
         let actual = default_screen_rows(
-            "[keys]\nnavigate_back = \"q\"\nnavigate_cycle_pane_previous = \"\"\nnavigate_switch_workspace = \"alt+1..9\"\n",
+            "[keys]\nnavigate_back = \"q\"\nnavigate_down = \"\"\nnavigate_open = \"o\"\n",
         );
         let navigation = &actual
             .iter()
@@ -340,9 +296,14 @@ mod tests {
             .iter()
             .map(|(keys, label)| (keys.as_str(), *label))
             .collect();
-        assert!(rows.contains(&("q", "back")), "{rows:?}");
-        assert!(rows.contains(&("tab / unset", "cycle pane")), "{rows:?}");
-        assert!(rows.contains(&("alt+1..9", "switch workspace")), "{rows:?}");
+        assert_eq!(
+            rows,
+            [
+                ("q", "back"),
+                ("up / unset", "workspaces and agents"),
+                ("o", "open selection"),
+            ]
+        );
     }
 
     /// A range and single keys configured together read as written, and a

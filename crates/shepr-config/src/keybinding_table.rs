@@ -34,23 +34,6 @@ impl std::fmt::Display for HelpGroup {
     }
 }
 
-/// The key chord of a navigate row's fixed arrow alias, by the alias column's
-/// identifier in the keybinding table (`None` for a row without one).
-#[macro_export]
-macro_rules! navigate_alias {
-    ($alias:ident) => {
-        $crate::Keybinds::navigate_alias_chord_from_table(stringify!($alias))
-    };
-}
-
-/// The help label of a navigate row's fixed arrow alias, as `navigate_alias!`.
-#[macro_export]
-macro_rules! navigate_alias_label {
-    ($alias:ident) => {
-        $crate::Keybinds::navigate_alias_label_from_table(stringify!($alias))
-    };
-}
-
 /// Generates code from every row of the keybinding table: the `[keys]` config
 /// fields and defaults, the resolved keybinds, the apply step, the action
 /// enums, dispatch and the help screen are each one invocation.
@@ -90,10 +73,8 @@ macro_rules! navigate_alias_label {
 ///   `actions` row the entry follows in its group (a test in `shepr-termio`
 ///   checks the label names a row)
 /// - `navigate`: `config_field`, `field` (resolved field), `variant`,
-///   `default`, `group`, `label`, `doc`, `alias` (fixed arrow alias, `None`
-///   for none). Rows sharing a help label share one help row, their keys
-///   joined and any aliases listed last.
-/// - `navigate_indexed`: as `navigate`.
+///   `default`, `group`, `label`, `doc`. Rows sharing a help label share one
+///   help row, their keys joined.
 #[macro_export]
 macro_rules! keybinding_rows {
     (
@@ -101,7 +82,6 @@ macro_rules! keybinding_rows {
         $(actions($($actions:tt)*))?
         $(indexed($($indexed:tt)*))?
         $(navigate($($navigate:tt)*))?
-        $(navigate_indexed($($navigate_indexed:tt)*))?
         => { $($body:tt)* }
     ) => {
         // Each column is (name, the metavariable an unbound column gets,
@@ -133,17 +113,6 @@ macro_rules! keybinding_rows {
                 (group navigate_group ident)
                 (label navigate_label literal)
                 (doc navigate_doc literal)
-                (alias navigate_alias ident)
-            ]
-            navigate_indexed [$($($navigate_indexed)*)?] [
-                (config_field navigate_indexed_config_field ident)
-                (field navigate_indexed_field ident)
-                (variant navigate_indexed_variant ident)
-                (default navigate_indexed_default literal)
-                (group navigate_indexed_group ident)
-                (label navigate_indexed_label literal)
-                (doc navigate_indexed_doc literal)
-                (alias navigate_indexed_alias ident)
             ]
         }
     };
@@ -233,7 +202,6 @@ macro_rules! __keybinding_column_is {
     (label label { $($yes:tt)* } $no:tt) => { $($yes)* };
     (doc doc { $($yes:tt)* } $no:tt) => { $($yes)* };
     (help_after help_after { $($yes:tt)* } $no:tt) => { $($yes)* };
-    (alias alias { $($yes:tt)* } $no:tt) => { $($yes)* };
     ($column:ident $binding:ident $yes:tt { $($no:tt)* }) => { $($no)* };
 }
 
@@ -286,19 +254,10 @@ macro_rules! keybinding_table {
                 (focus_agent, FocusAgent, "", Workspaces, "focus agent 1-9", "Focus a sidebar agent by index.", "next agent"),
             }
             navigate {
-                (navigate_back, back, Back, "esc", Navigation, "back", "Leave navigate mode.", None),
-                (navigate_workspace_up, workspace_up, WorkspaceUp, "up", Navigation, "workspaces and agents", "Move the selection up through the agent list, then the workspace list above it.", None),
-                (navigate_workspace_down, workspace_down, WorkspaceDown, "down", Navigation, "workspaces and agents", "Move the selection down the workspace list, then the agent list below it.", None),
-                (navigate_pane_left, pane_left, PaneLeft, "h", Navigation, "move focus", "Focus the pane to the left in navigate mode. The left arrow always does too.", Left),
-                (navigate_pane_down, pane_down, PaneDown, "j", Navigation, "move focus", "Focus the pane below in navigate mode.", None),
-                (navigate_pane_up, pane_up, PaneUp, "k", Navigation, "move focus", "Focus the pane above in navigate mode.", None),
-                (navigate_pane_right, pane_right, PaneRight, "l", Navigation, "move focus", "Focus the pane to the right in navigate mode. The right arrow always does too.", Right),
-                (navigate_cycle_pane_next, cycle_pane_next, CyclePaneNext, "tab", Navigation, "cycle pane", "Focus the next pane while navigate mode is open.", None),
-                (navigate_cycle_pane_previous, cycle_pane_previous, CyclePanePrevious, "shift+tab", Navigation, "cycle pane", "Focus the previous pane while navigate mode is open.", None),
-                (navigate_open_workspace, open_workspace, OpenWorkspace, "enter", Navigation, "open selection", "Open the selected workspace, or focus the selected agent's pane.", None),
-            }
-            navigate_indexed {
-                (navigate_switch_workspace, switch_workspace, SwitchWorkspace, "1..9", Navigation, "switch workspace", "Switch to a workspace by index while navigate mode is open.", None),
+                (navigate_back, back, Back, "esc", Navigation, "back", "Leave navigate mode."),
+                (navigate_up, up, Up, "up", Navigation, "workspaces and agents", "Move the selection up through the agent list, then the workspace list above it."),
+                (navigate_down, down, Down, "down", Navigation, "workspaces and agents", "Move the selection down the workspace list, then the agent list below it."),
+                (navigate_open, open, Open, "enter", Navigation, "open selection", "Open the selected workspace, or focus the selected agent's pane."),
             }
         }
     };

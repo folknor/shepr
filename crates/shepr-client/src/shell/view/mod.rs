@@ -197,8 +197,9 @@ impl ShellView {
     /// How many leading agent panel rows navigate mode can select with this sidebar, or
     /// `None` for all of them. The expanded panel scrolls to any row, unless it is
     /// folded away or too short to show one, which leaves none. The collapsed column
-    /// does not scroll, so only the rows it has room for. A hidden sidebar shows no list,
-    /// and its agents stay selectable like its workspaces.
+    /// does not scroll, so only the rows it has room for. With no sidebar on screen (a
+    /// terminal too narrow for one) no list is shown, and the agents stay selectable like
+    /// the workspaces.
     pub(in crate::shell) fn agent_navigation_limit(&self) -> Option<usize> {
         match &self.sidebar {
             SidebarView::Hidden => None,
@@ -649,13 +650,10 @@ impl ShellView {
 
 #[cfg(test)]
 mod tests {
-    use crate::endpoint::ClientEndpointId;
-    use crate::endpoint::EndpointFailureStatus;
     use crate::shell::config::ClientShellConfig;
     use crate::shell::notices::ClientEndpointNoticeKind;
     use crate::shell::state::ClientShellState;
     use shepr_config::ClientConfig;
-    use shepr_config::SidebarCollapsedModeConfig;
     use shepr_protocol::FrameData;
 
     fn frame_row_text(frame: &FrameData, y: u16) -> String {
@@ -667,29 +665,32 @@ mod tests {
     }
 
     #[test]
-    fn placeholder_lifecycle_and_notice_leave_the_hidden_sidebar_header_clear() {
-        let mut config = ClientConfig::default();
-        config.ui.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    fn a_collapsed_sidebar_is_always_the_compact_strip() {
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.chrome.set_collapsed(true);
-        state.set_endpoint_status(
-            &ClientEndpointId::Local,
-            EndpointFailureStatus::Reconnecting,
-        );
-        assert!(state.push_endpoint_notice(
-            ClientEndpointNoticeKind::Unavailable,
-            crate::shell::notices::NoticeCode::EndpointUnavailable,
-            "Server unavailable",
-            "Waiting for the server",
-        ));
+        state.set_snapshot(Box::new(crate::shell::tests::snapshot()));
 
-        let frame = state.compose(34, 12).expect("placeholder frame");
+        state.compose(80, 12).expect("collapsed frame");
 
-        let lifecycle_row = frame_row_text(&frame, 0);
-        assert!(lifecycle_row.contains("reconnecting"));
-        assert!(!lifecycle_row.contains("Local:"));
-        assert!(frame_row_text(&frame, 1).contains("workspaces"));
-        assert!(state.drawn().notification_toast().y >= 2);
+        assert_eq!(state.drawn().layout.sidebar.width, 4);
+        assert_eq!(state.drawn().layout.pane_surface.x, 4);
+    }
+
+    #[test]
+    fn a_terminal_too_narrow_for_a_sidebar_composes_without_one() {
+        for collapsed in [false, true] {
+            let mut state =
+                ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+            state.chrome.set_collapsed(collapsed);
+
+            state.compose(1, 12).expect("one-column frame");
+
+            let drawn = state.drawn();
+            assert_eq!(drawn.layout.sidebar.width, 0, "collapsed {collapsed}");
+            assert_eq!(drawn.layout.pane_surface.width, 1, "collapsed {collapsed}");
+            assert_eq!(drawn.workspace_body(), ratatui::layout::Rect::default());
+        }
     }
 
     #[test]

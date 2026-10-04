@@ -552,7 +552,7 @@ mod tests {
                 buildbox,
                 shell::EndpointNoticeKind::MoveInterrupted("connection was lost; reconnecting"),
             )
-            .body(),
+            .body(&shepr_config::MachineLabel::parse("desk").expect("local label")),
             "machine switch interrupted: buildbox connection was lost; reconnecting"
         );
     }

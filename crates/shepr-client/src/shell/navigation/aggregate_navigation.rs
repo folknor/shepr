@@ -38,7 +38,8 @@ impl AgentPanelModel {
             let Some(snapshot) = endpoint.snapshot() else {
                 continue;
             };
-            let machine = (endpoints.len() > 1).then(|| endpoint.endpoint_id.display_label());
+            let label = endpoint.endpoint_id.display_label(&config.local_label);
+            let machine = (endpoints.len() > 1).then_some(label);
             rows.extend(
                 crate::shell::sidebar::agent_sidebar::agent_rows(snapshot, config, machine)
                     .into_iter()
@@ -50,7 +51,7 @@ impl AgentPanelModel {
                             .unwrap_or_default(),
                         endpoint_order,
                         endpoint_id: endpoint.endpoint_id.clone(),
-                        machine_label: endpoint.endpoint_id.display_label().to_owned(),
+                        machine_label: label.to_owned(),
                         stale: endpoint.state.stale(),
                         agent,
                     }),
@@ -152,14 +153,19 @@ struct NavigatorPane {
 
 impl NavigatorIndex {
     // Snapshot text is normalized here so key and wheel events only normalize the query.
-    pub(in crate::shell) fn build(endpoints: &[ClientShellEndpoint]) -> Self {
+    /// `local_label` names the local endpoint (`ClientEndpointId::display_label`).
+    pub(in crate::shell) fn build(
+        endpoints: &[ClientShellEndpoint],
+        local_label: &shepr_config::MachineLabel,
+    ) -> Self {
         let federated = endpoints.len() > 1;
         let mut indexed_endpoints = Vec::with_capacity(endpoints.len());
         for endpoint in endpoints {
+            let label = endpoint.endpoint_id.display_label(local_label);
             let mut indexed = NavigatorEndpoint {
                 endpoint_id: endpoint.endpoint_id.clone(),
-                label: endpoint.endpoint_id.display_label().to_owned(),
-                search_label: endpoint.endpoint_id.display_label().to_lowercase(),
+                label: label.to_owned(),
+                search_label: label.to_lowercase(),
                 state: endpoint.state.clone(),
                 focused_pane_id: None,
                 workspaces: Vec::new(),
@@ -387,11 +393,14 @@ pub(in crate::shell) fn selected_navigator_target(
     navigator_selected_index(rows, navigator).map(|index| rows[index].target.clone())
 }
 
+/// The navigator's rows, the local endpoint named as a fixture config names it.
 #[cfg(test)]
 pub(in crate::shell) fn navigator_rows(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     navigator: &NavigatorOverlay,
 ) -> Vec<ClientNavigatorRow> {
-    NavigatorIndex::build(endpoints).rows(active_endpoint_id, navigator)
+    let local_label = shepr_config::MachineLabel::parse(shepr_test_fixtures::FIXTURE_LOCAL_LABEL)
+        .expect("the fixture local label is valid");
+    NavigatorIndex::build(endpoints, &local_label).rows(active_endpoint_id, navigator)
 }

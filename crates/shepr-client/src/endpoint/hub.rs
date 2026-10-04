@@ -1041,19 +1041,21 @@ mod tests {
     #[test]
     fn waiting_notice_names_the_endpoint_and_its_current_status() {
         let local = ClientEndpointId::Local;
+        let local_label = shepr_config::MachineLabel::parse("desk").expect("local label");
         let build = ClientEndpointId::Ssh(
             shepr_config::MachineLabel::parse("build").expect("machine label"),
         );
         assert_eq!(
-            waiting_notice(local, Some(ClientEndpointStatus::Attention)).body(),
-            "Local needs attention"
+            waiting_notice(local, Some(ClientEndpointStatus::Attention)).body(&local_label),
+            "desk needs attention"
         );
         assert_eq!(
-            waiting_notice(build.clone(), Some(ClientEndpointStatus::Reconnecting)).body(),
+            waiting_notice(build.clone(), Some(ClientEndpointStatus::Reconnecting))
+                .body(&local_label),
             "build is reconnecting; selection will resume when it is ready"
         );
         assert_eq!(
-            waiting_notice(build, Some(ClientEndpointStatus::Online)).body(),
+            waiting_notice(build, Some(ClientEndpointStatus::Online)).body(&local_label),
             "build is waiting for its workspace snapshot; selection will resume when it is ready"
         );
     }

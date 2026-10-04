@@ -128,7 +128,9 @@ mod tests {
             "herd"
         );
 
-        state.ws_mut(0).set_name("build".into());
+        state
+            .ws_mut(0)
+            .set_name(shepr_mux::terminal::Label::new("build").expect("test name"));
         assert_eq!(
             render_window_title(&settings, &state, Some(&state.ws(0).id())),
             "build"

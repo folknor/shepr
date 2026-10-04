@@ -4,7 +4,8 @@ use shepr_protocol::command::{
     WorkspaceCreateSource, WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceTarget,
 };
 
-use super::super::api_helpers::normalized_user_label;
+use shepr_mux::terminal::Label;
+
 use super::endpoint::{
     EndpointEffects, Handled, HandlerError, HandlerResult, internal_with_effects, workspace_missing,
 };
@@ -41,7 +42,7 @@ impl App {
         let workspace_id = outcome.workspace_id;
         // A workspace created without a name, or with a blank one, keeps the
         // name of its directory that it was given at creation.
-        if let Some(label) = normalized_user_label(params.label)
+        if let Some(label) = params.label.and_then(Label::new)
             && let Some(workspace) = self.state.workspaces.get_mut(&workspace_id)
         {
             workspace.set_name(label);
@@ -72,14 +73,14 @@ impl App {
     ) -> HandlerResult {
         let id = self.endpoint_workspace(&params.workspace_id)?;
         // A blank name names the workspace after its current directory.
-        let name = match normalized_user_label(params.label) {
+        let name = match params.label.and_then(Label::new) {
             Some(name) => name,
             None => {
                 let workspace = self
                     .state
                     .workspace(&id)
                     .ok_or_else(|| workspace_missing(&params.workspace_id))?;
-                shepr_core::workspace_label::default_workspace_name(
+                Label::for_directory(
                     workspace
                         .resolved_identity_cwd(&self.terminal_runtimes)
                         .as_path(),

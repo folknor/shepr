@@ -14,9 +14,7 @@ use crate::shell::tests::{
 use crate::tests::test_workspace_id;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use shepr_config::{
-    AgentSidebarToken, ClientConfig, SidebarCollapsedModeConfig, StatusIndicatorStyle,
-};
+use shepr_config::{AgentSidebarToken, ClientConfig, StatusIndicatorStyle};
 use shepr_protocol::{ClientShellSnapshot, ClientShellWorkspace};
 use shepr_surface::ratatui_conversion::WireColorExt as _;
 use shepr_termio::input::raw_input::RawInputEvent;
@@ -62,7 +60,7 @@ fn multi_machine_sidebar_draws_the_workspace_drop_marker() {
         .map(|cell| cell.symbol.as_str())
         .collect::<String>();
     assert!(
-        drawn.contains(remote_id.display_label()),
+        drawn.contains(remote_id.display_label(&state.config.local_label)),
         "the machine name stays readable: {drawn:?}"
     );
 }
@@ -124,7 +122,7 @@ fn multi_machine_drop_marker_above_a_first_workspace_keeps_the_machine_name() {
         .map(|x| frame_cell(&frame, (x, row)).symbol.as_str())
         .collect::<String>();
     assert!(
-        drawn.contains(ClientEndpointId::Local.display_label()),
+        drawn.contains(ClientEndpointId::Local.display_label(&state.config.local_label)),
         "the machine name stays readable: {drawn:?}"
     );
     assert!(drawn.contains('─'), "the drop marker is drawn: {drawn:?}");
@@ -132,9 +130,7 @@ fn multi_machine_drop_marker_above_a_first_workspace_keeps_the_machine_name() {
 
 #[test]
 fn collapsed_sidebar_workspace_rows_accept_drag_targets() {
-    let mut config = ClientConfig::default();
-    config.ui.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
-    let (mut state, _) = state_with_remote_config(&config);
+    let (mut state, _) = state_with_remote_config(&ClientConfig::default());
     let mut local = state
         .endpoints
         .active
@@ -360,7 +356,9 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("Local"));
+    // The local server is shown by its label, never as "Local".
+    assert!(text.contains(shepr_test_fixtures::FIXTURE_LOCAL_LABEL));
+    assert!(!text.contains("Local"));
     assert!(text.contains("Build"));
     // The server's workspace number takes the leading column, so the name is
     // clipped at this sidebar width.
@@ -715,7 +713,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(text.contains("○ Local · pi"), "frame: {text}");
+    assert!(text.contains("○ Desk · pi"), "frame: {text}");
     assert!(text.contains("× Build · pi"), "frame: {text}");
     assert!(text.contains("grouped"), "frame: {text}");
     let toggle = state.drawn().agent_sort_toggle();
@@ -788,7 +786,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     };
     let text = frame_text(&mut state);
     assert!(
-        text.find("Local · pi").expect("local agent")
+        text.find("Desk · pi").expect("local agent")
             < text.find("Build · pi").expect("remote agent")
     );
 
@@ -797,7 +795,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     let text = frame_text(&mut state);
     assert!(
         text.find("Build · pi").expect("remote agent")
-            < text.find("Local · pi").expect("local agent")
+            < text.find("Desk · pi").expect("local agent")
     );
 
     remote.agents = vec![agent(AgentStatus::Idle, 3)];
@@ -805,7 +803,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     let text = frame_text(&mut state);
     assert!(
         text.find("Build · pi").expect("remote agent")
-            < text.find("Local · pi").expect("local agent")
+            < text.find("Desk · pi").expect("local agent")
     );
     let mut outcome = ClientShellInput::default();
     assert!(state.handle_endpoint_navigation(

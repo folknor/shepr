@@ -323,7 +323,7 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
         .app
         .test_state_mut()
         .ws_mut(0)
-        .set_name("silent".into());
+        .set_name(shepr_mux::terminal::Label::new("silent").expect("test name"));
     server.render_now();
     assert!(control.try_recv().is_err(), "no event reported the change");
     age_cache(&mut server);

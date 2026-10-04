@@ -36,7 +36,10 @@ mod config;
 mod termio;
 
 pub use child_io::ChannelChildIo;
-pub use config::{AppPathsFixture, ValidatedClientConfigFixture, ValidatedServerConfigFixture};
+pub use config::{
+    AppPathsFixture, FIXTURE_LOCAL_LABEL, ValidatedClientConfigFixture,
+    ValidatedServerConfigFixture,
+};
 pub use termio::{parse_raw_input_bytes_sync, parse_sgr_mouse_report};
 
 /// A fixed pane id for tests that key state by pane without a layout.
