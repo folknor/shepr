@@ -446,8 +446,7 @@ mod tests {
             let notice = &notices[0];
             assert!(notice.contains("ffffffffffffffff"), "{notice}");
             assert!(
-                notice
-                    .contains("`ssh build.example /usr/bin/shepr server stop --expect-boot 17-23`"),
+                notice.contains("`ssh build.example /usr/bin/shepr stop --expect-boot 17-23`"),
                 "{notice}"
             );
             assert!(notice.contains("pane processes"), "{notice}");

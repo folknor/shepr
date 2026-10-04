@@ -32,7 +32,7 @@ pub(super) fn command() -> Command {
                 .help("Print version and exit"),
         )
         .subcommand(status_command())
-        .subcommand(server_command())
+        .subcommand(stop_command())
         .subcommand(detect_command())
         .subcommand(
             Command::new(COMMAND_CLIENT)
@@ -98,14 +98,10 @@ fn status_command() -> Command {
         )
 }
 
-fn server_command() -> Command {
-    group(COMMAND_SERVER)
-        .about("Control the running server")
-        .subcommand(
-            Command::new(COMMAND_STOP)
-                .about("Stop the running server, whatever its build")
-                .arg(expect_boot_option()),
-        )
+fn stop_command() -> Command {
+    Command::new(COMMAND_STOP)
+        .about("Stop the running server and every pane in it, whatever its build")
+        .arg(expect_boot_option())
 }
 
 fn detect_command() -> Command {
@@ -379,7 +375,7 @@ mod tests {
     fn generated_remote_cli_arguments_parse_with_the_cli_spec() {
         use shepr_remote::RemoteCliCommand;
 
-        use crate::cli::{CliCommand, Launch, parse_launch, server, status};
+        use crate::cli::{CliCommand, Launch, parse_launch, status, stop};
 
         // Parses what the producer emits and checks what the parser made of it,
         // so a spelling that parses into the wrong command fails too.
@@ -415,7 +411,7 @@ mod tests {
             Launch::Cli(command)
                 if matches!(
                     &**command,
-                    CliCommand::Server(server::Command::Stop { expected_boot: Some(boot) })
+                    CliCommand::Stop(stop::Command { expected_boot: Some(boot) })
                         if boot == "4242-1700000000"
                 )
         ));
@@ -480,13 +476,7 @@ mod tests {
         names.sort_unstable();
         assert_eq!(
             names,
-            [
-                "client",
-                "detect",
-                "remote-client-bridge",
-                "server",
-                "status",
-            ]
+            ["client", "detect", "remote-client-bridge", "status", "stop",]
         );
     }
 

@@ -27,7 +27,12 @@ pub(crate) fn launch(
         shepr_client::run_client_with_connectors,
     )
     .map_err(CliError::Launch)?;
-    cli::finish_client(client).map(ProcessExit::from_cli_code)
+    cli::finish_client(
+        client,
+        paths.server_address(),
+        !loaded_config.machines().is_empty(),
+    )
+    .map(ProcessExit::from_cli_code)
 }
 
 /// Checks the local server, starts it when needed, then runs the client. The
@@ -131,7 +136,8 @@ mod tests {
             notice.contains("configured machines stay available"),
             "{notice}"
         );
-        assert!(notice.contains("server stop"), "{notice}");
+        let stop_command = format!("{} stop", shepr_launch::guidance::operator_entrypoint());
+        assert!(notice.contains(&stop_command), "{notice}");
         assert!(!notice.contains("--force"), "{notice}");
     }
 }

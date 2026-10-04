@@ -130,8 +130,8 @@ pub(crate) fn remote_display_value(value: Option<&str>) -> RemoteText {
 }
 
 /// Stops the remote server instance that reported `server.boot_id`, and no
-/// other, by running the discovered remote `shepr server stop --expect-boot` over
-/// a BatchMode connection. The remote command waits for the server's
+/// other, by running the discovered remote `shepr stop --expect-boot` over a
+/// BatchMode connection. The remote command waits for the server's
 /// named boot to stop answering. It exits with
 /// `ServerStopExit::BootMismatch` when another boot answers the stop request or
 /// appears while the named boot shuts down, or `ServerStopExit::NoServer` when

@@ -566,7 +566,8 @@ fn a_silent_listener_reads_as_the_launchs_unresponsive_error() {
         matches!(error, LaunchError::Unresponsive { .. }),
         "{error:?}"
     );
-    assert!(error.to_string().contains("server stop"), "{error}");
+    let stop_command = format!("`{} stop`", crate::guidance::operator_entrypoint());
+    assert!(error.to_string().contains(&stop_command), "{error}");
     assert_nothing_was_launched(&paths);
 }
 

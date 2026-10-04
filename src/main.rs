@@ -154,8 +154,12 @@ fn launch_client(mode: ClientLaunch) -> CliResult<ProcessExit> {
     match mode {
         ClientLaunch::Direct => {
             init_client_logging(paths)?;
-            cli::finish_client(shepr_client::run_client(&loaded_config, paths))
-                .map(ProcessExit::from_cli_code)
+            cli::finish_client(
+                shepr_client::run_client(&loaded_config, paths),
+                paths.server_address(),
+                !loaded_config.machines().is_empty(),
+            )
+            .map(ProcessExit::from_cli_code)
         }
         ClientLaunch::Tui => tui::launch(&loaded_config, paths),
     }
@@ -254,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn server_stop_does_not_load_a_broken_config() {
+    fn stop_does_not_load_a_broken_config() {
         let env = crate::test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("broken-launch-config");
         env.set(EnvVar::XdgConfigHome, scratch.path());
@@ -264,12 +268,12 @@ mod tests {
         std::fs::write(&config, "this = [not valid TOML").expect("write broken config");
         std::fs::write(paths.server_config_file(), "this = [not valid TOML")
             .expect("write broken server config");
-        let args = ["shepr", "server", "stop"].map(str::to_owned);
+        let args = ["shepr", "stop"].map(str::to_owned);
 
         let result = launch_with_args(&args);
         assert!(
             matches!(&result, Err(CliError::ServerStop(_))),
-            "server stop should reach its local server check without parsing config: {result:?}"
+            "stop should reach its local server check without parsing config: {result:?}"
         );
     }
 

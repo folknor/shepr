@@ -10,7 +10,7 @@ use std::path::Path;
 
 use shepr_paths::{BuildProfile, ServerAddress};
 
-use crate::invocation::{COMMAND_SERVER, COMMAND_STOP, PROGRAM_NAME};
+use crate::invocation::{COMMAND_STOP, PROGRAM_NAME};
 
 /// The command that attaches to the server at `address`:
 /// [`operator_entrypoint`], prefixed with the socket override that selected
@@ -28,6 +28,14 @@ pub fn build_mismatch_guidance(address: &ServerAddress) -> String {
     build_mismatch_guidance_with(address, &operator_entrypoint())
 }
 
+/// What the TUI tells the operator on the restored terminal after they
+/// detached from the server at `address`: how to attach again and how to stop
+/// the server. `machines_configured` adds that the servers on configured
+/// machines were left running too.
+pub fn detach_guidance(address: &ServerAddress, machines_configured: bool) -> String {
+    detach_guidance_with(address, &operator_entrypoint(), machines_configured)
+}
+
 /// What to tell an operator whose command found no server listening at
 /// `socket_path`, with the command that starts or attaches to it.
 pub fn server_not_running(socket_path: &Path, attach_command: &str) -> String {
@@ -42,7 +50,23 @@ fn attach_command_with(address: &ServerAddress, entrypoint: &str) -> String {
 }
 
 fn stop_command_with(address: &ServerAddress, entrypoint: &str) -> String {
-    address.command(&format!("{entrypoint} {COMMAND_SERVER} {COMMAND_STOP}"))
+    address.command(&format!("{entrypoint} {COMMAND_STOP}"))
+}
+
+fn detach_guidance_with(
+    address: &ServerAddress,
+    entrypoint: &str,
+    machines_configured: bool,
+) -> String {
+    let attach_command = attach_command_with(address, entrypoint);
+    let stop_command = stop_command_with(address, entrypoint);
+    let mut guidance = format!(
+        "Detached. Run `{attach_command}` to re-attach, or `{stop_command}` to stop the local server and everything running in it."
+    );
+    if machines_configured {
+        guidance.push_str(" Servers on configured machines keep running.");
+    }
+    guidance
 }
 
 fn build_mismatch_guidance_with(address: &ServerAddress, entrypoint: &str) -> String {
@@ -90,7 +114,7 @@ mod tests {
     fn runtime_address_guidance_is_plain() {
         let address = runtime_address();
         assert_eq!(attach_command_with(&address, "shepr"), "shepr");
-        assert_eq!(stop_command_with(&address, "shepr"), "shepr server stop");
+        assert_eq!(stop_command_with(&address, "shepr"), "shepr stop");
     }
 
     #[test]
@@ -98,6 +122,10 @@ mod tests {
         let address = runtime_address();
         let entrypoint = operator_entrypoint();
         assert_eq!(attach_command(&address), entrypoint);
+        assert_eq!(
+            detach_guidance(&address, false),
+            detach_guidance_with(&address, &entrypoint, false)
+        );
         assert_eq!(
             build_mismatch_guidance(&address),
             build_mismatch_guidance_with(&address, &entrypoint)
@@ -109,7 +137,7 @@ mod tests {
         let guidance = build_mismatch_guidance_with(&runtime_address(), "shepr");
         assert_eq!(
             guidance,
-            "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes. Run `shepr server stop`, then run `shepr` again."
+            "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes. Run `shepr stop`, then run `shepr` again."
         );
         for banned in ["--session", "SHEPR_SESSION", "--force"] {
             assert!(!guidance.contains(banned), "{guidance}");
@@ -121,7 +149,7 @@ mod tests {
         let guidance = build_mismatch_guidance_with(&overridden_address("/x/a.sock"), "shepr");
         assert_eq!(
             guidance,
-            "To keep the running server and its panes, keep using the shepr build that started it.\nThis shepr cannot start a server at the selected socket override, so it cannot restart this address. To stop the running server anyway, run `SHEPR_SOCKET_PATH=/x/a.sock shepr server stop`."
+            "To keep the running server and its panes, keep using the shepr build that started it.\nThis shepr cannot start a server at the selected socket override, so it cannot restart this address. To stop the running server anyway, run `SHEPR_SOCKET_PATH=/x/a.sock shepr stop`."
         );
     }
 
@@ -130,11 +158,35 @@ mod tests {
         let address = overridden_address("/x/a b.sock");
         assert_eq!(
             stop_command_with(&address, "shepr"),
-            "SHEPR_SOCKET_PATH='/x/a b.sock' shepr server stop"
+            "SHEPR_SOCKET_PATH='/x/a b.sock' shepr stop"
         );
         assert_eq!(
             attach_command_with(&address, "shepr"),
             "SHEPR_SOCKET_PATH='/x/a b.sock' shepr"
+        );
+    }
+
+    #[test]
+    fn detach_guidance_names_the_attach_and_stop_commands() {
+        assert_eq!(
+            detach_guidance_with(&runtime_address(), "shepr", false),
+            "Detached. Run `shepr` to re-attach, or `shepr stop` to stop the local server and everything running in it."
+        );
+        assert_eq!(
+            detach_guidance_with(&runtime_address(), "shepr", true),
+            "Detached. Run `shepr` to re-attach, or `shepr stop` to stop the local server and everything running in it. Servers on configured machines keep running."
+        );
+    }
+
+    #[test]
+    fn detach_guidance_follows_the_entry_point_and_the_socket_override() {
+        assert_eq!(
+            detach_guidance_with(
+                &overridden_address("/x/a.sock"),
+                "/src/shepr/target/debug/shepr",
+                false
+            ),
+            "Detached. Run `SHEPR_SOCKET_PATH=/x/a.sock /src/shepr/target/debug/shepr` to re-attach, or `SHEPR_SOCKET_PATH=/x/a.sock /src/shepr/target/debug/shepr stop` to stop the local server and everything running in it."
         );
     }
 

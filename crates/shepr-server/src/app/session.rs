@@ -725,7 +725,7 @@ impl App {
     /// Ends persistence for this server: the save still in flight finishes
     /// (its failure is logged like any other save's; the retry it schedules
     /// is moot, the deadline is cleared below), then the persister releases
-    /// the data directory lease. A `server stop` waits for that release.
+    /// the data directory lease. A `shepr stop` waits for that release.
     pub(crate) fn retire_session_writer(&mut self) {
         if let Some(save) = self.session_saver.in_flight.take() {
             let result = save.pending.wait();

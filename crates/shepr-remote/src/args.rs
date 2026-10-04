@@ -33,12 +33,7 @@ impl<'a> RemoteCliCommand<'a> {
             }
             Self::ClientBridge => args.push(COMMAND_REMOTE_CLIENT_BRIDGE),
             Self::ServerStop { expected_boot } => {
-                args.extend([
-                    COMMAND_SERVER,
-                    COMMAND_STOP,
-                    FLAG_EXPECT_BOOT,
-                    expected_boot,
-                ]);
+                args.extend([COMMAND_STOP, FLAG_EXPECT_BOOT, expected_boot]);
             }
         }
         args

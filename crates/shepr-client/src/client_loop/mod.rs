@@ -1,7 +1,7 @@
 mod dispatch;
 
 use crate::endpoint::{HostBaseline, HubEffect};
-use crate::errors::LoopExit;
+use crate::errors::{LoopEnd, LoopExit};
 use crate::events::{ClientLoopEvent, ParsedHostInput};
 use crate::shell::ClientShellState;
 use crate::shell_runtime::{
@@ -21,7 +21,10 @@ use tracing::{info, warn};
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientLoopAction {
     NextEvent,
+    /// End the loop: a quit request or a host terminal that went away.
     Exit,
+    /// End the loop on the user's Detach action.
+    Detach,
 }
 
 pub(crate) enum ClientLoopWake {
@@ -126,10 +129,10 @@ impl ClientLoop {
         }
     }
 
-    pub(crate) async fn run(&mut self) -> Result<(), LoopExit> {
+    pub(crate) async fn run(&mut self) -> Result<LoopEnd, LoopExit> {
         let result = self.run_until_exit().await;
-        // Detach and terminal loss return through the same event path as Quit;
-        // flush regardless of which condition ended the loop.
+        // A detach, a quit and terminal loss all end the loop here; flush
+        // regardless of which condition ended it.
         self.state.output_writer.flush().ok();
         // Every way out, an error included, reports a latched panic instead.
         if self.signals.fatal.is_latched() {
@@ -138,7 +141,7 @@ impl ClientLoop {
         result
     }
 
-    async fn run_until_exit(&mut self) -> Result<(), LoopExit> {
+    async fn run_until_exit(&mut self) -> Result<LoopEnd, LoopExit> {
         while !self.signals.should_quit.load(Ordering::Acquire) {
             if self.signals.fatal.is_latched() {
                 return Err(LoopExit::Panicked);
@@ -171,15 +174,17 @@ impl ClientLoop {
                 ClientLoopWake::Event(event) => event,
                 ClientLoopWake::Deadline => ClientLoopEvent::Timer,
                 ClientLoopWake::FatalPanic => return Err(LoopExit::Panicked),
-                ClientLoopWake::QueueClosed => return Ok(()),
+                ClientLoopWake::QueueClosed => return Ok(LoopEnd::Quit),
             };
             // client-clock-sample-ok: sample after waiting for the event to arrive.
             let now = std::time::Instant::now();
-            if self.handle_event(event, now)? == ClientLoopAction::Exit {
-                break;
+            match self.handle_event(event, now)? {
+                ClientLoopAction::NextEvent => {}
+                ClientLoopAction::Exit => break,
+                ClientLoopAction::Detach => return Ok(LoopEnd::Detached),
             }
         }
-        Ok(())
+        Ok(LoopEnd::Quit)
     }
 
     pub(crate) fn handle_event(
@@ -287,7 +292,7 @@ impl ClientLoop {
         let shell = &mut state.shell;
         let outcome = shell.handle_host_input(inputs, host_reports_all_keys, now);
         if finish_client_shell_input(state, outcome, hub, now)? == ShellInputDisposition::Detach {
-            return Ok(ClientLoopAction::Exit);
+            return Ok(ClientLoopAction::Detach);
         }
         Ok(ClientLoopAction::NextEvent)
     }
@@ -353,7 +358,7 @@ impl ClientLoop {
         let mut outcome = state.shell.tick_timers(now);
         outcome.merge(hub.settle_expired(&mut state.shell, now));
         if finish_client_shell_input(state, outcome, hub, now)? == ShellInputDisposition::Detach {
-            return Ok(ClientLoopAction::Exit);
+            return Ok(ClientLoopAction::Detach);
         }
         Ok(ClientLoopAction::NextEvent)
     }
@@ -470,6 +475,17 @@ mod client_timer_tests {
             client_loop.events.rx.try_recv().is_ok(),
             "the queued event was never handled"
         );
+    }
+
+    /// A quit request ends the run as a quit, never as a detach, so the binary
+    /// prints no detach guidance for a signal.
+    #[tokio::test(start_paused = true)]
+    async fn a_quit_ends_the_run_as_a_quit() {
+        let (mut client_loop, event_tx) = test_client_loop(endpoint::EndpointRegistry::empty());
+        event_tx
+            .try_send(ClientLoopEvent::Quit)
+            .expect("test precondition");
+        assert!(matches!(client_loop.run().await, Ok(LoopEnd::Quit)));
     }
 
     #[tokio::test(start_paused = true)]

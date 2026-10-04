@@ -2,7 +2,7 @@ use crate::client_loop::{ClientLoop, EventQueue, HostCellReport, LoopSignals};
 use crate::endpoint::connection_io::{
     EndpointConnectionIo, LocalAttachFailure, attach_local_endpoint,
 };
-use crate::errors::{ClientExit, ClientRunError, LoopExit, endpoint_setup_launch_error};
+use crate::errors::{ClientExit, ClientRunError, LoopEnd, LoopExit, endpoint_setup_launch_error};
 use crate::events::ClientLoopEvent;
 use crate::limits::{
     CLIENT_EVENT_QUEUE_CAPACITY, CLIENT_RUNTIME_SHUTDOWN_TIMEOUT, SSH_RESOURCE_RELEASE_TIMEOUT,
@@ -170,7 +170,7 @@ pub(crate) fn run_launched_client(
     let should_quit = Arc::new(AtomicBool::new(false));
     let mut terminal_slot: Option<TerminalGuard> = None;
     let mut runtime_slot: Option<tokio::runtime::Runtime> = None;
-    let launched = fatal.guard(|| -> Result<Result<(), LoopExit>, ClientRunError> {
+    let launched = fatal.guard(|| -> Result<Result<LoopEnd, LoopExit>, ClientRunError> {
         let launched = Launched::prepare(config, paths, connectors)?;
         // A runtime that cannot be built fails the launch before the terminal is taken.
         let runtime = runtime_slot.insert(
@@ -514,7 +514,7 @@ impl HostHelpers {
 /// launch returned, a loop exit or a launch failure included, and a launch that unwound
 /// (`None`) is always one.
 fn launch_outcome(
-    launched: Option<Result<Result<(), LoopExit>, ClientRunError>>,
+    launched: Option<Result<Result<LoopEnd, LoopExit>, ClientRunError>>,
     fatal: &fatal_panic::FatalPanic,
 ) -> Result<ClientExit, ClientRunError> {
     let result = match launched {
@@ -528,8 +528,9 @@ fn launch_outcome(
             return Err(ClientRunError::Session(ClientExit::panicked(message)));
         }
     };
-    let Err(err) = result else {
-        return Ok(ClientExit::default());
+    let err = match result {
+        Ok(end) => return Ok(ClientExit::from_loop_end(end)),
+        Err(err) => err,
     };
     let graceful_shutdown = matches!(&err, LoopExit::ServerShutdown { .. });
     let exit = ClientExit::from_loop(err);
@@ -675,7 +676,11 @@ mod tests {
 
         assert_eq!(session_lines(launch_outcome(None, &fatal)), panicked);
         assert_eq!(
-            session_lines(launch_outcome(Some(Ok(Ok(()))), &fatal)),
+            session_lines(launch_outcome(Some(Ok(Ok(LoopEnd::Quit))), &fatal)),
+            panicked
+        );
+        assert_eq!(
+            session_lines(launch_outcome(Some(Ok(Ok(LoopEnd::Detached))), &fatal)),
             panicked
         );
         for exit in every_loop_exit() {
@@ -695,8 +700,14 @@ mod tests {
     fn an_unlatched_launch_reports_what_it_returned() {
         let fatal = fatal_panic::FatalPanic::default();
 
-        let clean = launch_outcome(Some(Ok(Ok(()))), &fatal).expect("a clean end succeeds");
+        let clean =
+            launch_outcome(Some(Ok(Ok(LoopEnd::Quit))), &fatal).expect("a clean end succeeds");
         assert_eq!(clean.lines().count(), 0);
+        assert!(!clean.detached());
+        let detached =
+            launch_outcome(Some(Ok(Ok(LoopEnd::Detached))), &fatal).expect("a detach succeeds");
+        assert_eq!(detached.lines().count(), 0);
+        assert!(detached.detached());
 
         let launch_error = ClientRunError::Launch(io::Error::other("launch failed"));
         let outcome = launch_outcome(Some(Err(launch_error)), &fatal);
@@ -719,6 +730,7 @@ mod tests {
             if graceful {
                 let exit = outcome.expect("a server shutdown is a successful exit");
                 assert_eq!(exit.lines().collect::<Vec<_>>(), [expected.as_str()]);
+                assert!(!exit.detached(), "a server shutdown is not a detach");
             } else {
                 assert_eq!(session_lines(outcome), [expected]);
             }

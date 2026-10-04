@@ -113,7 +113,7 @@ mod tests {
         let address = ServerAddress::resolve_paths(runtime, Some(&socket));
         assert!(address.is_runtime_address());
         assert_eq!(address.socket(), socket);
-        assert_eq!(address.command("shepr server stop"), "shepr server stop");
+        assert_eq!(address.command("shepr stop"), "shepr stop");
         let mut command = shepr_test_support::command_in_scratch("shepr", "address-env");
         address.apply_to_child_command(&mut command);
         assert!(

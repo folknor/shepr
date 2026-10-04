@@ -74,7 +74,7 @@ type OwnedConnector = Box<shepr_remote::MachineSshConnector>;
 // attempt.
 enum ConnectTarget {
     /// The Local server socket, and the guidance a build mismatch on
-    /// it names: the plain `shepr` and `shepr server stop` commands, plus the
+    /// it names: the plain `shepr` and `shepr stop` commands, plus the
     /// socket override in effect. Resolved once from the client's paths, so the diagnostic every retry shows is the one the launch check
     /// would have printed.
     Local {
@@ -1036,7 +1036,7 @@ mod tests {
             "handshake failed".to_owned(),
             "00000000deadbeef".to_owned(),
             shepr_protocol::BUILD_ID.to_owned(),
-            format!("`{entrypoint} server stop`"),
+            format!("`{entrypoint} stop`"),
             format!("`{entrypoint}`"),
         ] {
             assert!(message.contains(&expected), "{expected}: {message}");

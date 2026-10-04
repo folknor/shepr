@@ -2,6 +2,7 @@
 //! viewed at each turn, and how a move ends when a step fails.
 
 use super::Fixture;
+use crate::client_loop::ClientLoopAction;
 use crate::endpoint::{self, ClientEndpointId};
 use crate::events::{ClientLoopEvent, ParsedHostInput};
 use crate::shell;
@@ -616,6 +617,34 @@ fn an_interactive_detach_goes_to_the_shown_endpoint() {
     assert_eq!(detached, ShellInputDisposition::Detach);
     assert!(matches!(f.local.take().as_slice(), [ClientMessage::Detach]));
     assert!(f.target.take().is_empty());
+}
+/// The Detach key (prefix, then q) ends the loop as a detach, which the run
+/// reports so the binary can say how to get back; a quit event ends it as a
+/// plain exit.
+#[test]
+fn the_detach_key_ends_the_loop_as_a_detach() {
+    let mut f = Fixture::new();
+    let inputs = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x02q")
+        .into_iter()
+        .map(|event| ParsedHostInput {
+            event,
+            pixel_mouse: None,
+        })
+        .collect();
+    let action = f
+        .client
+        .handle_event(ClientLoopEvent::StdinInput(inputs), f.now)
+        .expect("detach key");
+    assert!(matches!(action, ClientLoopAction::Detach));
+    assert!(matches!(
+        f.local.take().as_slice(),
+        [.., ClientMessage::Detach]
+    ));
+    let quit = f
+        .client
+        .handle_event(ClientLoopEvent::Quit, f.now)
+        .expect("quit");
+    assert!(matches!(quit, ClientLoopAction::Exit));
 }
 #[test]
 fn the_shell_projects_the_shown_endpoint() {

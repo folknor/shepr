@@ -3,7 +3,7 @@ use clap::ArgMatches;
 use shepr_api::client::{ApiClient, ApiClientError};
 use shepr_api::schema::{Request, ResponseResult};
 use shepr_launch::invocation::{
-    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS,
+    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_STATUS, COMMAND_STOP,
 };
 
 /// Writes CLI output to stdout, as `std::print!` does (a failed write
@@ -37,9 +37,9 @@ macro_rules! println {
 mod detect;
 mod error;
 mod matches;
-mod server;
 mod spec;
 mod status;
+mod stop;
 
 pub(crate) use error::{CliError, finish_client, print_notice};
 pub(crate) type CliResult<T> = Result<T, CliError>;
@@ -58,7 +58,7 @@ pub(crate) enum Launch {
 pub(crate) enum CliCommand {
     Status(status::Command),
     ClientStatus { json: bool },
-    Server(server::Command),
+    Stop(stop::Command),
     Detect(detect::Command),
 }
 
@@ -69,7 +69,7 @@ impl CliCommand {
                 status::ParsedCommand::Local(command) => Self::Status(command),
                 status::ParsedCommand::Client { json } => Self::ClientStatus { json },
             },
-            COMMAND_SERVER => Self::Server(server::parse(matches)?),
+            COMMAND_STOP => Self::Stop(stop::parse(matches)?),
             COMMAND_DETECT => Self::Detect(detect::parse(matches)?),
             _ => return None,
         })
@@ -196,9 +196,7 @@ pub(crate) fn run(command: &CliCommand) -> CliResult<i32> {
         CliCommand::Status(command) => {
             run_with_paths(|paths| status::run_status_command(*command, paths))
         }
-        CliCommand::Server(command) => {
-            run_with_paths(|paths| server::run_server_command(command.clone(), paths))
-        }
+        CliCommand::Stop(command) => run_with_paths(|paths| stop::run_stop_command(command, paths)),
         CliCommand::Detect(command) => {
             run_with_paths(|paths| detect::run_detect_command(command.clone(), paths))
         }
@@ -383,7 +381,7 @@ mod tests {
     fn every_cli_spec_root_has_typed_parser() {
         let samples: [(&str, &[&str]); 3] = [
             ("status", &["status"]),
-            ("server", &["server", "stop"]),
+            ("stop", &["stop"]),
             ("detect", &["detect", "capture", "w1:p1"]),
         ];
         let launch_only = ["client", "remote-client-bridge"];
@@ -429,17 +427,14 @@ mod tests {
         command.clone()
     }
 
-    /// A bare `server stop` is unconditional; the hidden `--expect-boot` makes it
+    /// A bare `stop` is unconditional; the hidden `--expect-boot` makes it
     /// conditional on the named boot.
     #[test]
-    fn server_stop_parses_the_expected_boot() {
+    fn stop_parses_the_expected_boot() {
         let expect_boot = shepr_launch::invocation::FLAG_EXPECT_BOOT;
         for (args, expected) in [
-            (
-                &["server", "stop", expect_boot, "4242-17"][..],
-                Some("4242-17"),
-            ),
-            (&["server", "stop"][..], None),
+            (&["stop", expect_boot, "4242-17"][..], Some("4242-17")),
+            (&["stop"][..], None),
         ] {
             let launch = parse(args);
             let Launch::Cli(command) = launch else {
@@ -448,7 +443,7 @@ mod tests {
             assert!(
                 matches!(
                     &*command,
-                    CliCommand::Server(super::server::Command::Stop { expected_boot })
+                    CliCommand::Stop(super::stop::Command { expected_boot })
                         if expected_boot.as_deref() == expected
                 ),
                 "{args:?}"
@@ -505,10 +500,12 @@ mod tests {
             &["frobnicate"][..],
             &["--bogus"],
             &["server"],
+            &["server", "stop"],
+            &["stop", "now"],
             &["--session", "work"],
-            &["--session=work", "server", "stop"],
-            &["server", "stop", "--session=api"],
-            &["server", "stop", "--force"],
+            &["--session=work", "stop"],
+            &["stop", "--session=api"],
+            &["stop", "--force"],
             &["session", "list"],
             &["session", "stop", "work"],
             &["session", "attach", "work"],
@@ -536,7 +533,7 @@ mod tests {
             &["--remote-keybindings", "server"],
             &["--default-config"],
             &["--machine", "mac", "status"],
-            &["--machine=mac", "server", "stop"],
+            &["--machine=mac", "stop"],
             &["status", "--machine", "mac"],
             &["remote-api-bridge"],
             &["remote-api-bridge", "--check"],

@@ -20,16 +20,16 @@ use crate::limits::{
     STOP_LEASE_WAIT_TIMEOUT, STOP_STATUS_PROBE_TIMEOUT, STOP_WAIT_POLL, STOP_WAIT_TIMEOUT,
 };
 
-/// The exit status `shepr server stop` ends with when no server is running at
+/// The exit status `shepr stop` ends with when no server is running at
 /// the address, so a caller that ran it over SSH can tell "the server already
 /// exited" from any other failure without parsing stderr.
-// limits-exempt: process exit status shared by the server stop command and its SSH caller.
+// limits-exempt: process exit status shared by the stop command and its SSH caller.
 const NO_SERVER_EXIT_CODE: i32 = 4;
 
-/// The exit status `shepr server stop --expect-boot` ends with when a different
+/// The exit status `shepr stop --expect-boot` ends with when a different
 /// boot is found, either at the stop request or while the named boot shuts
 /// down, so an SSH caller can identify a changed occupant without parsing stderr.
-// limits-exempt: process exit status shared by the server stop command and its SSH caller.
+// limits-exempt: process exit status shared by the stop command and its SSH caller.
 const BOOT_MISMATCH_EXIT_CODE: i32 = 3;
 
 /// A server-stop outcome that a caller can distinguish by process exit code.
@@ -47,7 +47,7 @@ impl ServerStopExit {
         self as i32
     }
 
-    /// Decodes a process exit status emitted by `shepr server stop`.
+    /// Decodes a process exit status emitted by `shepr stop`.
     pub const fn from_code(code: i32) -> Option<Self> {
         match code {
             NO_SERVER_EXIT_CODE => Some(Self::NoServer),
@@ -229,7 +229,7 @@ impl From<io::Error> for ServerStopError {
 /// reports another boot that answers during shutdown as
 /// [`ServerStopError::OccupantChanged`]. Nothing here reads the status before
 /// sending the stop, because a separate read could not close that race. The
-/// stop is the same for a remote server: the remote `shepr server stop
+/// stop is the same for a remote server: the remote `shepr stop
 /// --expect-boot <id>` runs this function on its own host.
 ///
 /// # Errors
@@ -274,7 +274,7 @@ fn stop_socket_with_timeout(
     // clock-io-ok: one deadline bounds the real stop request's socket reads
     // and the server process's exit, so it must share their real clock.
     let deadline = Instant::now() + timeout;
-    let request = server_stop_request("cli:server:stop", expected_boot_id);
+    let request = server_stop_request("cli:stop", expected_boot_id);
     send_stop_request(socket_path, &request, deadline, label, expected_boot_id)?;
     let stopped = if let Some(expected_boot_id) = expected_boot_id {
         match wait_until_boot_stops(socket_path, expected_boot_id, deadline, label)? {
@@ -769,10 +769,8 @@ mod tests {
                 .expect("stop request line");
             request
         });
-        let request = server_stop_request(
-            "cli:server:stop",
-            Some(&"17-23".parse().expect("boot identity")),
-        );
+        let request =
+            server_stop_request("cli:stop", Some(&"17-23".parse().expect("boot identity")));
 
         send_stop_request(
             &socket_path,
@@ -787,10 +785,7 @@ mod tests {
             serde_json::from_str(&received).expect("stop request is valid API JSON");
         assert_eq!(
             received,
-            server_stop_request(
-                "cli:server:stop",
-                Some(&"17-23".parse().expect("boot identity"))
-            )
+            server_stop_request("cli:stop", Some(&"17-23".parse().expect("boot identity")))
         );
         assert_eq!(received.method.traits().name, "server.stop_if_boot");
     }
@@ -891,7 +886,7 @@ mod tests {
         let socket_path = paths.server_address().socket().to_path_buf();
         let (keep_running, handle) = serve_reply(
             &socket_path,
-            "{\"id\":\"cli:server:stop\",\"error\":{\"code\":\"server_boot_mismatch\",\"message\":\"this server is boot 9-9\"}}\n",
+            "{\"id\":\"cli:stop\",\"error\":{\"code\":\"server_boot_mismatch\",\"message\":\"this server is boot 9-9\"}}\n",
         );
 
         let error = stop_active_server(&paths, Some(&"1-1".parse().expect("boot identity")))
@@ -937,7 +932,7 @@ mod tests {
                             continue;
                         }
                         let response = if request.contains("server.stop") {
-                            "{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n".to_owned()
+                            "{\"id\":\"cli:stop\",\"result\":{\"type\":\"ok\"}}\n".to_owned()
                         } else {
                             status_requests += 1;
                             let boot_id = if status_requests == 1 {
@@ -990,7 +985,7 @@ mod tests {
         let socket_path = paths.server_address().socket().to_path_buf();
         let (keep_running, handle) = serve_reply(
             &socket_path,
-            "{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n",
+            "{\"id\":\"cli:stop\",\"result\":{\"type\":\"ok\"}}\n",
         );
 
         // The fake keeps its socket up, so the stop times out: what is under
@@ -1011,12 +1006,12 @@ mod tests {
         let scratch = ScratchDir::new("stop-wrong-result");
         let socket_path = scratch.join("api.sock");
         let reply = concat!(
-            r#"{"id":"cli:server:stop","result":{"type":"pong","version":"0.1.0","#,
+            r#"{"id":"cli:stop","result":{"type":"pong","version":"0.1.0","#,
             r#""build_id":"0123456789abcdef","boot_id":"17-23"}}"#,
             "\n"
         );
         let (keep_running, handle) = serve_reply(&socket_path, reply);
-        let request = server_stop_request("cli:server:stop", None);
+        let request = server_stop_request("cli:stop", None);
 
         let error = send_stop_request(
             &socket_path,
@@ -1083,9 +1078,10 @@ mod tests {
                         // A client may close before reading this reply; the test
                         // asserts on the stop call's timeout, not on the reply. A
                         // Unix stream has nothing to flush.
-                        drop(stream.write_all(
-                            b"{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n",
-                        ));
+                        drop(
+                            stream
+                                .write_all(b"{\"id\":\"cli:stop\",\"result\":{\"type\":\"ok\"}}\n"),
+                        );
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));
@@ -1141,7 +1137,7 @@ mod tests {
                 .expect("request");
             assert!(request.contains("server.stop_if_boot"));
             stream
-                .write_all(b"{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n")
+                .write_all(b"{\"id\":\"cli:stop\",\"result\":{\"type\":\"ok\"}}\n")
                 .expect("answer");
             held_tx.send(listener).expect("retain listener");
         });
@@ -1190,7 +1186,7 @@ mod tests {
                 .read_line(&mut request)
                 .expect("request");
             stream
-                .write_all(b"{\"id\":\"cli:server:stop\",\"result\":{\"type\":\"ok\"}}\n")
+                .write_all(b"{\"id\":\"cli:stop\",\"result\":{\"type\":\"ok\"}}\n")
                 .expect("answer");
             held_tx.send(listener).expect("retain listener");
         });

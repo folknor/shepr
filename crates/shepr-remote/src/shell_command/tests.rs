@@ -80,7 +80,7 @@ fn remote_server_commands_name_no_session() {
             RemoteCliCommand::ServerStop {
                 expected_boot: "4242-1700000000",
             },
-            "server stop --expect-boot 4242-1700000000",
+            "stop --expect-boot 4242-1700000000",
         ),
         (RemoteCliCommand::ClientBridge, "remote-client-bridge"),
     ] {

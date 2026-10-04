@@ -115,7 +115,7 @@ impl ClientLoop {
                 if finish_client_shell_input(state, outcome, hub, now)?
                     == ShellInputDisposition::Detach
                 {
-                    return Ok(ClientLoopAction::Exit);
+                    return Ok(ClientLoopAction::Detach);
                 }
             }
             DecodedWireServerMessage::Clipboard { data } => {

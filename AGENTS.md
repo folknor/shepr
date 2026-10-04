@@ -44,7 +44,7 @@ Kept:
   the server socket (`shepr_protocol::command::EndpointCommand`), none of
   which is an API method. The CLI is local-only: every
   subcommand acts on this host's server or state, and none can be aimed at a
-  configured machine. `status`, `server stop`, `detect capture` and `detect explain
+  configured machine. `status`, `stop`, `detect capture` and `detect explain
   <PANE>` talk to the local server over its socket; `detect explain --file`
   runs in the CLI process
 
@@ -58,7 +58,10 @@ Nor are local detection manifest overrides and their reload: a detection
 change ships as a new build.
 
 The CLI is small on purpose. `shepr` with no subcommand attaches the TUI, and
-the subcommands are `status`, `server` and `detect`. Workspaces and panes are managed from the TUI only; there
+the subcommands are `status`, `stop` and `detect`. Detaching from the TUI
+leaves every server running and prints how to attach again (`shepr`) and how
+to stop the local server (`shepr stop`), spelt for this build and socket
+override like the restart guidance. Workspaces and panes are managed from the TUI only; there
 is no CLI group for them, and no CLI attach to a single terminal. `shepr
 detect capture <pane>` prints the screen text and OSC title and progress the
 detector evaluates for a pane, as JSON that `detect explain --file` reads back,
@@ -306,7 +309,7 @@ every agent integration reports through it.
   matching marker, still wins over the runtime directory.
 - A marker that is neither `release` nor `dev` fails the launch.
 - The saved layout is not affected by the override, only the socket is.
-- `server stop` stops whatever server answers, whatever its build, with every
+- `shepr stop` stops whatever server answers, whatever its build, with every
   pane in it. Its hidden `--expect-boot <boot id>` makes the stop conditional:
   the client sends `server.stop_if_boot` with the id from `status server`, and
   the server compares it with its own boot. The distinct method name means an

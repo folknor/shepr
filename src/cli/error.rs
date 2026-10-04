@@ -8,7 +8,7 @@ use crate::ProcessExit;
 #[derive(Debug)]
 pub(crate) enum CliError {
     Response(ErrorResponse),
-    /// `server stop` could not stop the server.
+    /// `shepr stop` could not stop the server.
     ServerStop(shepr_launch::stop::ServerStopError),
     Usage(String),
     Io(std::io::Error),
@@ -113,17 +113,38 @@ impl CliError {
 
 /// Turns a finished client run into the command's result. The client has
 /// restored the host terminal before returning, so its optional session
-/// message lands on the restored screen as `shepr: {message}`.
+/// message lands on the restored screen as `shepr: {message}`, and after a
+/// user detach, the guidance on getting back to the server at `address`.
+/// `machines_configured` says whether configured machines' servers were left
+/// running too.
 pub(crate) fn finish_client(
     outcome: Result<shepr_client::ClientExit, shepr_client::ClientRunError>,
+    address: &shepr_paths::ServerAddress,
+    machines_configured: bool,
 ) -> Result<i32, CliError> {
     match outcome {
         Ok(exit) => {
             print_client_lines(&exit);
+            if let Some(guidance) = detach_notice(&exit, address, machines_configured) {
+                print_stderr_line(&guidance);
+            }
             Ok(0)
         }
         Err(error) => Err(CliError::Client(error)),
     }
+}
+
+/// The guidance a finished client run prints after the user detached: how to
+/// attach again and how to stop the server. A run that ended any other way (a
+/// server shutdown, a signal, a lost terminal) prints none; a failed run never
+/// reaches here.
+fn detach_notice(
+    exit: &shepr_client::ClientExit,
+    address: &shepr_paths::ServerAddress,
+    machines_configured: bool,
+) -> Option<String> {
+    exit.detached()
+        .then(|| shepr_launch::guidance::detach_guidance(address, machines_configured))
 }
 
 /// Fallible writes: a client's last lines can be a panic diagnostic, printed
@@ -137,6 +158,12 @@ fn print_client_lines(exit: &shepr_client::ClientExit) {
             return;
         }
     }
+}
+
+/// One fallible stderr line, for the same reason as [`print_client_lines`].
+fn print_stderr_line(line: &str) {
+    use std::io::Write as _;
+    writeln!(std::io::stderr().lock(), "{line}").ok();
 }
 
 /// An operator notice on stderr: progress or status, never a failure, so it
@@ -237,6 +264,41 @@ mod tests {
         let failed =
             CliError::ServerStop(shepr_launch::stop::ServerStopError::Protocol("bad".into()));
         assert_eq!(failed.exit_status().code(), 1);
+    }
+
+    /// A user detach prints how to get back and how to stop the server, in
+    /// this build's spelling; a run that ended any other way (here a clean
+    /// quit) prints nothing. Which runs count as a detach is the client's
+    /// `ClientExit::detached`.
+    #[test]
+    fn only_a_detach_prints_detach_guidance() {
+        let address = shepr_paths::ServerAddress::for_runtime_dir(
+            std::path::Path::new("/run/user/1/shepr"),
+            None,
+        )
+        .expect("valid test socket path");
+        let entrypoint = shepr_launch::guidance::operator_entrypoint();
+        let detached = shepr_client::ClientExit::user_detach();
+        assert_eq!(
+            detach_notice(&detached, &address, false).as_deref(),
+            Some(
+                format!(
+                    "Detached. Run `{entrypoint}` to re-attach, or `{entrypoint} stop` to stop the local server and everything running in it."
+                )
+                .as_str()
+            )
+        );
+        let with_machines =
+            detach_notice(&detached, &address, true).expect("a detach prints guidance");
+        assert!(
+            with_machines.ends_with(" Servers on configured machines keep running."),
+            "{with_machines}"
+        );
+
+        let quit = shepr_client::ClientExit::default();
+        assert!(!quit.detached());
+        assert_eq!(detach_notice(&quit, &address, false), None);
+        assert_eq!(detach_notice(&quit, &address, true), None);
     }
 
     #[test]

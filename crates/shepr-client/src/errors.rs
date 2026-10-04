@@ -11,9 +11,30 @@ use std::io;
 pub struct ClientExit {
     ending: Option<SessionEnding>,
     message: Option<String>,
+    /// The user ended the session with the Detach action, leaving every server
+    /// running.
+    detached: bool,
 }
 
 impl ClientExit {
+    /// A loop that ended without failure: a user detach, or a quit (a
+    /// termination signal, a lost host terminal) that says nothing.
+    pub(crate) fn from_loop_end(end: LoopEnd) -> Self {
+        match end {
+            LoopEnd::Detached => Self::user_detach(),
+            LoopEnd::Quit => Self::default(),
+        }
+    }
+
+    /// The exit of a session the user ended with the Detach action. Public so
+    /// the binary can check what it prints for one.
+    pub fn user_detach() -> Self {
+        Self {
+            detached: true,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn from_loop(ending: LoopExit) -> Self {
         Self::with_ending(SessionEnding::Loop(ending))
     }
@@ -26,12 +47,20 @@ impl ClientExit {
         Self {
             message: Some(ending.to_string()),
             ending: Some(ending),
+            detached: false,
         }
     }
 
     /// The message that ended the session, if any.
     pub fn lines(&self) -> impl Iterator<Item = &str> {
         self.message.as_deref().into_iter()
+    }
+
+    /// Whether the user detached, as opposed to the session ending on its own
+    /// (a server shutdown, a signal, a lost terminal). Only a detach leaves the
+    /// operator wondering how to get back, so only a detach earns guidance.
+    pub fn detached(&self) -> bool {
+        self.detached
     }
 }
 
@@ -224,6 +253,16 @@ impl From<shepr_protocol::FramingError> for HandshakeError {
     }
 }
 
+/// How an established client loop ended without failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LoopEnd {
+    /// The user's Detach action.
+    Detached,
+    /// A quit request (a termination signal), a host terminal that went away,
+    /// or an event queue that closed.
+    Quit,
+}
+
 /// An established client loop's reason for ending.
 #[derive(Debug)]
 pub(crate) enum LoopExit {
@@ -289,6 +328,22 @@ mod tests {
     fn a_clean_exit_prints_nothing() {
         let exit = ClientExit::default();
         assert_eq!(exit.lines().count(), 0);
+        assert!(!exit.detached());
+    }
+
+    /// Only the user's detach is marked as one; a quit and every loop exit are
+    /// not, so the binary's detach guidance follows nothing else.
+    #[test]
+    fn only_a_user_detach_is_marked_detached() {
+        let detached = ClientExit::from_loop_end(LoopEnd::Detached);
+        assert!(detached.detached());
+        assert_eq!(detached.lines().count(), 0);
+        assert!(!ClientExit::from_loop_end(LoopEnd::Quit).detached());
+        let shutdown = ClientExit::from_loop(LoopExit::ServerShutdown {
+            reason: shepr_protocol::ShutdownReason::Stopping,
+        });
+        assert!(!shutdown.detached());
+        assert!(!ClientExit::panicked("boom".to_owned()).detached());
     }
 
     #[test]

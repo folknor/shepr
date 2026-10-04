@@ -84,7 +84,7 @@ pub const REMOTE_INSTALL_NAME: &str = "shepr";
 
 pub const FLAG_JSON: &str = "--json";
 
-/// The hidden `server stop` option that makes the stop conditional: the named
+/// The hidden `stop` option that makes the stop conditional: the named
 /// server boot (from that server's status) is stopped, any other refused. It is
 /// for shepr's own use over SSH, not an operator command.
 pub const FLAG_EXPECT_BOOT: &str = "--expect-boot";

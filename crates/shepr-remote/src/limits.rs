@@ -13,7 +13,7 @@ pub(crate) const MAX_REMOTE_EXECUTABLE_BYTES: usize = 4096;
 pub(crate) const MAX_METADATA_BYTES: u64 = 16 * 1024;
 
 /// Time allowed for the SSH command that stops a remote server. The remote
-/// `server stop` itself waits up to its own stop deadline for the server to
+/// `shepr stop` itself waits up to its own stop deadline for the server to
 /// close its socket; this covers that plus the connection.
 pub(crate) const REMOTE_STOP_SSH_TIMEOUT: Duration = Duration::from_secs(45);
 
