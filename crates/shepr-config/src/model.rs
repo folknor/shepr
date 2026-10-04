@@ -346,9 +346,6 @@ pub struct ServerUiConfig {
     pub pane_gaps: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
-    /// Format for the outer terminal window title. Empty leaves the title alone.
-    /// Default: "shepr: {hostname}".
-    pub window_title: String,
 }
 
 pub(crate) fn deserialize_theme_accent<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -496,7 +493,6 @@ impl Default for ServerUiConfig {
             pane_scrollbars: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
-            window_title: super::window_title::default_window_title(),
         }
     }
 }

@@ -8,10 +8,9 @@ pub(in crate::shell::sidebar) use super::token_definitions::{
     AgentTokenContext, ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
     agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows,
 };
-use unicode_segmentation::UnicodeSegmentation;
 
 use crate::limits::MIN_EXPANDED_SIDEBAR_SECTION_ROWS;
-use crate::shell::presentation::text::rendered_text_width;
+use crate::shell::presentation::text::{rendered_text_width, truncate_end};
 use shepr_config::theme::Palette;
 
 /// Workspace share of the expanded sidebar, constrained before rendering.
@@ -35,30 +34,6 @@ impl SectionSplit {
 /// `sidebar_section_heights` needs: below it the clamp's bounds would cross.
 fn sidebar_sections_can_split(height: u16) -> bool {
     height >= MIN_EXPANDED_SIDEBAR_SECTION_ROWS * 2
-}
-
-fn truncate_end(text: &str, max_width: usize) -> String {
-    if rendered_text_width(text) <= max_width {
-        return text.to_string();
-    }
-    if max_width == 0 {
-        return String::new();
-    }
-    if max_width == 1 {
-        return "…".to_string();
-    }
-
-    let mut prefix = String::new();
-    let mut width = 0usize;
-    for grapheme in text.graphemes(true) {
-        let grapheme_width = rendered_text_width(grapheme);
-        if width.saturating_add(grapheme_width) > max_width.saturating_sub(1) {
-            break;
-        }
-        prefix.push_str(grapheme);
-        width = width.saturating_add(grapheme_width);
-    }
-    format!("{prefix}…")
 }
 
 fn sidebar_section_heights(total_height: u16, split_ratio: SectionSplit) -> (u16, u16) {

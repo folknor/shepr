@@ -59,16 +59,11 @@ impl ClientShellState {
             return false;
         };
         let endpoint_id = hit.location.endpoint.clone();
-        let collapse_toggle = crate::shell::input::hit_test::contains(hit.collapse_toggle, point);
-        if collapse_toggle {
-            if !self.endpoints.collapsed.remove(&endpoint_id) {
-                self.endpoints.collapsed.insert(endpoint_id.clone());
-            }
-            outcome.repaint = true;
-        } else if endpoint_id == *self.endpoints.presented() {
-            if !self.endpoints.collapsed.remove(&endpoint_id) {
-                self.endpoints.collapsed.insert(endpoint_id.clone());
-            }
+        // A machine that offers Connect or Restart: its row acts as its entry.
+        if self.activate_machine_entry(&endpoint_id, outcome) {
+            return true;
+        }
+        if endpoint_id == *self.endpoints.presented() {
             // Selecting the shown endpoint cancels a move in progress.
             self.activate_endpoint(endpoint_id, outcome);
             outcome.repaint = true;
@@ -84,6 +79,28 @@ impl ClientShellState {
                 EndpointNoticeKind::NotReady,
             ));
             outcome.repaint = true;
+        }
+        true
+    }
+
+    /// A click on a configured machine's state entry: Connect or Restart when it offers
+    /// one; an entry that offers neither takes the click and does nothing.
+    pub(in crate::shell) fn handle_machine_entry_click(
+        &mut self,
+        point: (u16, u16),
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        let Some(hit) = self
+            .presentation
+            .shown()
+            .machine_entries()
+            .find(|hit| crate::shell::input::hit_test::contains(hit.rect, point))
+        else {
+            return false;
+        };
+        if hit.actionable {
+            let endpoint_id = hit.location.endpoint.clone();
+            self.activate_machine_entry(&endpoint_id, outcome);
         }
         true
     }
@@ -259,12 +276,11 @@ mod tests {
             .set_view(ShellView::with_machine_hit(MachineHit {
                 rect: Rect::new(0, 0, 10, 1),
                 status_badge: Rect::default(),
-                collapse_toggle: Rect::new(0, 0, 1, 1),
                 location: Location::machine(ClientEndpointId::Local),
             }));
         let mut outcome = ClientShellInput::default();
 
-        assert!(state.handle_endpoint_machine_click((5, 0), &mut outcome));
+        assert!(state.handle_endpoint_machine_click((0, 0), &mut outcome));
         assert!(matches!(
             outcome.actions.as_slice(),
             [ClientShellAction::ActivateEndpoint(Location {
@@ -272,6 +288,45 @@ mod tests {
                 target: LocationTarget::Machine,
             })]
         ));
-        assert!(state.endpoints.collapsed.contains(&ClientEndpointId::Local));
+    }
+
+    fn not_running_machine() -> (ClientShellState, ClientEndpointId) {
+        let machine = shepr_config::MachineConfig {
+            label: shepr_config::MachineLabel::parse("build").expect("test label"),
+            ssh: shepr_config::SshTarget::parse("build.example").expect("test target"),
+            palette: None,
+        };
+        let id = ClientEndpointId::Ssh(machine.label.clone());
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(
+            &shepr_config::ClientConfig::default(),
+        ));
+        state.set_machines(&[machine]);
+        state.set_machine_state(&id, crate::shell::MachineState::NotRunning);
+        (state, id)
+    }
+
+    /// The machine row of a machine that offers Connect acts as its entry, in the
+    /// collapsed strip as in the expanded sidebar.
+    #[test]
+    fn a_machine_row_that_offers_connect_connects() {
+        let (mut state, id) = not_running_machine();
+        state
+            .presentation
+            .set_view(ShellView::with_machine_hit(MachineHit {
+                rect: Rect::new(0, 0, 10, 1),
+                status_badge: Rect::default(),
+                location: Location::machine(id.clone()),
+            }));
+        let mut outcome = ClientShellInput::default();
+
+        assert!(state.handle_endpoint_machine_click((3, 0), &mut outcome));
+        assert!(matches!(
+            outcome.actions.as_slice(),
+            [ClientShellAction::ConnectMachine(connected)] if connected == &id
+        ));
+        assert_eq!(
+            state.machine_state(&id),
+            Some(crate::shell::MachineState::Starting)
+        );
     }
 }

@@ -1,22 +1,28 @@
 use std::io;
 use std::path::PathBuf;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use shepr_launch::{EndpointFailure, FailureCause};
 
-use crate::bridge::SshStdioBridge;
+use crate::bridge::{SshStdioBridge, ssh_bridge_exit_error};
 use crate::discovery::{
     DiscoveryProgress, resume_installed_remote_shepr_discovery, verify_remote_shepr,
 };
 use crate::failure::{
     attempt_deadline_passed, failure_evidence, local_setup_error, ssh_runtime_error,
 };
-use crate::limits::BRIDGE_NAME_LABEL_CHARS;
-use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
-use crate::server_lifecycle::{
-    DifferentBuildServer, MachineSshCheck, judge_remote_server, remote_server_status,
-    stop_remote_server_with_ssh,
+use crate::host::BridgeMode;
+use crate::limits::{
+    BRIDGE_NAME_LABEL_CHARS, PIPE_DRAIN_GRACE, SERVER_WATCH_POLL_INTERVAL, SSH_STDERR_CAPTURE_LIMIT,
 };
-use crate::ssh::{RemoteSsh, ensure_ssh_runtime_dir};
+use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
+use crate::process::{PipeCapture, kill_and_reap};
+use crate::server_lifecycle::{remote_server_status, stop_server_of_another_build};
+use crate::ssh::{
+    RemoteSsh, apply_batch_ssh_options, apply_managed_ssh_options, ensure_ssh_runtime_dir,
+    ssh_command,
+};
 use crate::ssh_paths::{
     SshControlKey, remote_bridge_endpoint_path, shared_ssh_control_path,
     validate_remote_bridge_endpoint_path,
@@ -63,48 +69,37 @@ enum ProbeExecutable {
 }
 
 impl MachineProbe {
+    /// The startup check: resolves the remote executable and reads the
+    /// server's status through it, without starting or judging anything. It
+    /// exists to find out, before the client takes the terminal, whether the
+    /// machine needs an authentication prompt.
     pub(crate) fn check(
         &mut self,
         paths: &shepr_paths::AppPaths,
         target: &SshTarget,
         deadline: std::time::Instant,
-    ) -> io::Result<MachineSshCheck> {
+    ) -> io::Result<()> {
         ensure_managed_ssh(&mut self.ssh, target, paths)?;
         let Some(mut ssh) = self.ssh.take() else {
             return Err(io::Error::other("machine SSH transport is unavailable"));
         };
         ssh.set_attempt_deadline(Some(deadline));
         let cache = SshMetadataCache::new(paths, target);
-        let result = self.advance(&ssh, &cache).map(|(_, check)| check);
+        let result = self.advance(&ssh, &cache).map(|_| ());
         self.ssh = Some(ssh);
         result
-    }
-
-    pub(crate) fn stop_server(
-        &mut self,
-        paths: &shepr_paths::AppPaths,
-        target: &SshTarget,
-        server: &DifferentBuildServer,
-    ) -> io::Result<shepr_launch::restart::StopOutcome> {
-        ensure_managed_ssh(&mut self.ssh, target, paths)?;
-        let Some(ssh) = self.ssh.as_ref() else {
-            return Err(io::Error::other("machine SSH transport is unavailable"));
-        };
-        stop_remote_server_with_ssh(ssh, server)
     }
 
     fn advance(
         &mut self,
         ssh: &RemoteSsh,
         cache: &SshMetadataCache,
-    ) -> io::Result<(RemoteExecutable, MachineSshCheck)> {
+    ) -> io::Result<RemoteExecutable> {
         self.advance_with(
             cache,
             |candidate| verify_remote_shepr(ssh, candidate),
             |progress| resume_installed_remote_shepr_discovery(ssh, progress),
-            |remote| {
-                remote_server_status(ssh, remote).map(|status| judge_remote_server(remote, &status))
-            },
+            |remote| remote_server_status(ssh, remote).map(|_| ()),
         )
     }
 
@@ -127,14 +122,14 @@ impl MachineProbe {
         cache: &SshMetadataCache,
         verify: impl FnMut(&RemoteExecutable) -> io::Result<bool>,
         discover: impl FnOnce(&mut DiscoveryProgress) -> io::Result<RemoteExecutable>,
-        judge: impl FnOnce(&RemoteExecutable) -> io::Result<MachineSshCheck>,
-    ) -> io::Result<(RemoteExecutable, MachineSshCheck)> {
+        read_status: impl FnOnce(&RemoteExecutable) -> io::Result<()>,
+    ) -> io::Result<RemoteExecutable> {
         let remote = self.resolve(cache, verify, discover)?;
-        let result = judge(&remote);
+        let result = read_status(&remote);
         if let Err(error) = &result {
             self.observe_failure(cache, error);
         }
-        result.map(|check| (remote, check))
+        result.map(|()| remote)
     }
 
     fn resolve(
@@ -229,16 +224,50 @@ pub struct MachineSshStream {
     pub bridge: MachineSshBridge,
 }
 
+/// What one connection attempt to a configured machine may do to its server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectMode {
+    /// Attach to a server that is running. Every connection the client makes
+    /// by itself is one: it never starts a server, and a host with none
+    /// fails the attempt with a no-server failure.
+    Attach,
+    /// The operator's Connect: start the server when none runs, then attach.
+    Start,
+    /// The operator's Restart: stop the running server of another build (only
+    /// the boot that was observed), then start this build's and attach.
+    Restart,
+}
+
+impl ConnectMode {
+    fn bridge_mode(self) -> BridgeMode {
+        match self {
+            Self::Attach => BridgeMode::Attach,
+            Self::Start | Self::Restart => BridgeMode::Start,
+        }
+    }
+}
+
+/// How a wait for a machine's server ended without failing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ServerWatchEnd {
+    /// The remote wait exited: a server answers there now, or the wait ran
+    /// its longest life. Either way the next step is an attaching attempt.
+    Ended,
+    /// The client cancelled the wait.
+    Cancelled,
+}
+
 /// Connects one configured SSH machine repeatedly. The machine set is fixed at
 /// launch, so a connector lives as long as its client.
 ///
 /// It keeps the managed SSH config and its own `MachineProbe` for executable
-/// resolution. Startup preflight uses the same resolution and then judges the
-/// running server; a background connection starts the bridge directly and lets
-/// the handshake reject a server of another build. A verified executable is
-/// reused on reconnect, so an ordinary reconnect needs one SSH bridge round trip.
-/// Partial discovery survives transient network failures and authentication waits
-/// so a slow host can be resolved over several bounded attempts.
+/// resolution. Startup preflight uses the same resolution and reads the
+/// server's status; a background connection starts the bridge directly and lets
+/// the bridge and the handshake report a missing server or one of another
+/// build. A verified executable is reused on reconnect, so an ordinary
+/// reconnect needs one SSH bridge round trip. Partial discovery survives
+/// transient network failures and authentication waits so a slow host can be
+/// resolved over several bounded attempts.
 pub struct MachineSshConnector {
     paths: shepr_paths::AppPaths,
     label: MachineLabel,
@@ -372,23 +401,14 @@ impl MachineSshConnector {
         result.map_err(|error| local_setup_error("could not prepare local SSH paths", error))
     }
 
-    /// Starts a bridge and hands its stream to `establish`, which runs the endpoint
-    /// handshake. Exclusive access keeps all mutable connection state owned by the
-    /// one supervisor attempt using this connector. The handshake result is returned
-    /// as-is unless the remote command failed to execute the remembered path.
-    ///
-    /// Discovery commands use the smaller of their command timeout and the time left,
-    /// and refuse to start once `deadline` has passed. The stdio bridge does not receive
-    /// this deadline. Callers must bound `establish` separately; bridge teardown follows
-    /// its stream and stop signals. Without the discovery limit, multiple round trips could
-    /// add up to minutes against a host that hangs, and the next attempt waits for this one.
-    pub fn connect<T>(
+    /// The machine's transport, set up when it is missing or its config file
+    /// went away, with `deadline` bounding the bounded commands it runs next,
+    /// and the probe that resolves its executable. A launch-fatal setup error
+    /// is returned every time.
+    fn transport(
         &mut self,
         deadline: std::time::Instant,
-        mut establish: impl FnMut(MachineSshStream) -> io::Result<T>,
-    ) -> io::Result<T> {
-        let target = &self.target;
-        let metadata_cache = SshMetadataCache::new(&self.paths, target);
+    ) -> io::Result<(&RemoteSsh, &mut MachineProbe)> {
         let state = &mut self.state;
         if let Some(error) = &state.launch_fatal_setup_error {
             return Err(error.to_io_error());
@@ -406,15 +426,48 @@ impl MachineSshConnector {
             return Err(io::Error::other("machine SSH transport is unavailable"));
         };
         ssh.set_attempt_deadline(Some(deadline));
-        let ssh = &*ssh;
+        Ok((&*ssh, probe))
+    }
+
+    /// Starts a bridge in the mode `mode` allows and hands its stream to
+    /// `establish`, which runs the endpoint handshake. Exclusive access keeps all
+    /// mutable connection state owned by the one supervisor attempt using this
+    /// connector. The handshake result is returned as-is unless the remote
+    /// command failed to execute the remembered path. A [`ConnectMode::Restart`]
+    /// first stops a running server of another build, by the boot identity
+    /// its status reports.
+    ///
+    /// Discovery commands use the smaller of their command timeout and the time left,
+    /// and refuse to start once `deadline` has passed. The stdio bridge does not receive
+    /// this deadline. Callers must bound `establish` separately; bridge teardown follows
+    /// its stream and stop signals. Without the discovery limit, multiple round trips could
+    /// add up to minutes against a host that hangs, and the next attempt waits for this one.
+    pub fn connect<T>(
+        &mut self,
+        deadline: std::time::Instant,
+        mode: ConnectMode,
+        mut establish: impl FnMut(MachineSshStream) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let metadata_cache = SshMetadataCache::new(&self.paths, &self.target);
+        let paths = self.paths.clone();
+        let label = self.label.clone();
+        let target = self.target.clone();
+        let (ssh, probe) = self.transport(deadline)?;
 
         let remote = probe.resolve_remote(ssh, &metadata_cache)?;
+        if mode == ConnectMode::Restart {
+            stop_server_of_another_build(ssh, &remote).inspect_err(|error| {
+                probe.observe_failure(&metadata_cache, error);
+            })?;
+        }
+        let bridge_mode = mode.bridge_mode();
         match Self::attempt(
-            &self.paths,
-            &self.label,
+            &paths,
+            &label,
             ssh,
-            target,
+            &target,
             &remote,
+            bridge_mode,
             deadline,
             &mut establish,
         ) {
@@ -424,11 +477,12 @@ impl MachineSshConnector {
                 // once more within the same deadline, through the same state machine.
                 let remote = probe.resolve_remote(ssh, &metadata_cache)?;
                 Self::attempt(
-                    &self.paths,
-                    &self.label,
+                    &paths,
+                    &label,
                     ssh,
-                    target,
+                    &target,
                     &remote,
+                    bridge_mode,
                     deadline,
                     &mut establish,
                 )
@@ -440,12 +494,75 @@ impl MachineSshConnector {
         }
     }
 
+    /// Runs the remote wait for a server over the machine's shared control
+    /// connection and blocks until it exits or `cancel` is set. It starts
+    /// nothing on the machine. `deadline` bounds only resolving the remote
+    /// executable; the wait itself runs as long as no server appears. The
+    /// wait's ssh is kept on an open stdin, whose close is how the remote side
+    /// learns this client went away.
+    pub fn wait_for_server(
+        &mut self,
+        deadline: std::time::Instant,
+        cancel: &AtomicBool,
+    ) -> io::Result<ServerWatchEnd> {
+        let metadata_cache = SshMetadataCache::new(&self.paths, &self.target);
+        let target = self.target.clone();
+        let (ssh, probe) = self.transport(deadline)?;
+        let remote = probe.resolve_remote(ssh, &metadata_cache)?;
+        let mut command = ssh_command();
+        apply_managed_ssh_options(&mut command, Some(ssh.options()));
+        apply_batch_ssh_options(&mut command);
+        command.arg("-T");
+        target.append_to(&mut command);
+        command
+            .arg(remote.wait_for_server_command().as_str())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let mut child = command
+            .spawn()
+            .map_err(|error| local_setup_error("could not start local ssh", error))?;
+        // Held open for the life of the wait; dropped with the child at the end.
+        let _stdin = child.stdin.take();
+        let stderr = child
+            .stderr
+            .take()
+            .map(|stderr| PipeCapture::spawn(stderr, SSH_STDERR_CAPTURE_LIMIT));
+        let status = loop {
+            if cancel.load(Ordering::Acquire) {
+                kill_and_reap(&mut child, "ssh server wait");
+                return Ok(ServerWatchEnd::Cancelled);
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => std::thread::sleep(SERVER_WATCH_POLL_INTERVAL),
+                Err(error) => {
+                    kill_and_reap(&mut child, "ssh server wait");
+                    return Err(error);
+                }
+            }
+        };
+        if status.success() {
+            return Ok(ServerWatchEnd::Ended);
+        }
+        // Bounded: a ControlPersist master forked by this ssh can hold its
+        // stderr open long after the wait itself exited.
+        let stderr = match stderr {
+            Some(capture) => capture.finish(PIPE_DRAIN_GRACE)?,
+            None => Vec::new(),
+        };
+        let error = ssh_bridge_exit_error(status, &stderr);
+        probe.observe_failure(&metadata_cache, &error);
+        Err(error)
+    }
+
     fn attempt<T>(
         paths: &shepr_paths::AppPaths,
         label: &MachineLabel,
         ssh: &RemoteSsh,
         target: &SshTarget,
         remote_shepr: &RemoteExecutable,
+        mode: BridgeMode,
         deadline: std::time::Instant,
         establish: &mut impl FnMut(MachineSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
@@ -458,6 +575,7 @@ impl MachineSshConnector {
         let bridge = SshStdioBridge::start(
             target.clone(),
             remote_shepr,
+            mode,
             path.clone(),
             Some(ssh.options()),
         )
@@ -555,7 +673,6 @@ mod tests {
         SSH_OWN_FAILURE_EXIT_CODE, SshFailureDiagnostic, remote_candidate_mismatch_error,
         remote_compatibility_error,
     };
-    use crate::server_lifecycle::RemoteServerStatus;
     use crate::shell_command::AccountShellCommand;
 
     fn remote_executable_must_be_rediscovered(error: &io::Error) -> bool {
@@ -791,16 +908,15 @@ mod tests {
             .expect_err("server status timed out");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         assert_eq!(cache.load(), Some(executable("/found/shepr")));
-        let (remote, check) = probe
+        let remote = probe
             .advance_with(
                 &cache,
                 |_| panic!("already verified"),
                 |_| panic!("already discovered"),
-                |_| Ok(MachineSshCheck::Ready),
+                |_| Ok(()),
             )
             .expect("next preflight check only probes server presence");
         assert_eq!(remote, executable("/found/shepr"));
-        assert_eq!(check, MachineSshCheck::Ready);
     }
 
     #[test]
@@ -913,32 +1029,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn preflight_server_mismatch_does_not_invalidate_the_install() {
-        let scratch = shepr_test_support::ScratchDir::new("machine-probe-server-build");
-        let cache = cache_in(&scratch);
-        let mut probe = MachineProbe::default();
-        let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
-            "0000000000000000"
-        } else {
-            "ffffffffffffffff"
-        };
-        let status = RemoteServerStatus::Running {
-            build_id: other_build.parse().expect("canonical build fingerprint"),
-            boot_id: "17-23".parse().expect("canonical boot identity"),
-        };
-        let (_, check) = probe
-            .advance_with(
-                &cache,
-                |_| panic!("empty cache"),
-                |_| Ok(executable("/found/shepr")),
-                |remote| Ok(judge_remote_server(remote, &status)),
-            )
-            .expect("startup can offer a restart");
-        assert!(matches!(check, MachineSshCheck::DifferentBuild(_)));
-        assert_eq!(cache.load(), Some(executable("/found/shepr")));
-    }
-
     struct InterruptedDiscovery {
         account_calls: usize,
         interruption: Option<io::Error>,
@@ -1025,6 +1115,15 @@ mod tests {
             assert_eq!(discovery.account_calls, expected_account_calls);
             assert!(!probe.discovery.has_progress());
         }
+    }
+
+    /// Only the operator's Connect and Restart run a bridge that may start the
+    /// machine's server; every automatic attempt attaches.
+    #[test]
+    fn only_the_operator_modes_start_a_server() {
+        assert_eq!(ConnectMode::Attach.bridge_mode(), BridgeMode::Attach);
+        assert_eq!(ConnectMode::Start.bridge_mode(), BridgeMode::Start);
+        assert_eq!(ConnectMode::Restart.bridge_mode(), BridgeMode::Start);
     }
 
     #[test]

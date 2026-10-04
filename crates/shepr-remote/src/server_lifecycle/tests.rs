@@ -65,14 +65,6 @@ fn running(build_id: &str, boot_id: &str) -> RemoteServerStatus {
     }
 }
 
-fn executable() -> RemoteExecutable {
-    RemoteExecutable::parse("/home/u/.cargo/bin/shepr").expect("test precondition")
-}
-
-fn judge(status: &RemoteServerStatus) -> MachineSshCheck {
-    judge_remote_server(&executable(), status)
-}
-
 fn other_build() -> &'static str {
     if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
         "0000000000000000"
@@ -81,27 +73,35 @@ fn other_build() -> &'static str {
     }
 }
 
+/// A Restart stops only a server of another build, and only the boot its
+/// status named.
 #[test]
-fn a_stopped_or_same_build_server_is_ready() {
-    let this_build = running(shepr_protocol::BUILD_ID, "17-23");
-    assert_eq!(judge(&this_build), MachineSshCheck::Ready);
-    assert_eq!(
-        judge(&RemoteServerStatus::NotRunning),
-        MachineSshCheck::Ready
-    );
-}
+fn a_restart_stops_the_observed_boot_of_another_build_only() {
+    for status in [
+        RemoteServerStatus::NotRunning,
+        running(shepr_protocol::BUILD_ID, "17-23"),
+    ] {
+        stop_for_restart(status, |_| panic!("nothing to stop")).expect("no stop needed");
+    }
 
-#[test]
-fn a_server_of_another_build_with_a_boot_identity_can_be_restarted() {
-    let stale = running(other_build(), "17-23");
-    assert_eq!(
-        judge(&stale),
-        MachineSshCheck::DifferentBuild(DifferentBuildServer {
-            executable: executable(),
-            build_id: other_build().parse().expect("build identity"),
-            boot_id: "17-23".parse().expect("boot identity"),
-        })
-    );
+    let mut stopped = Vec::new();
+    stop_for_restart(running(other_build(), "17-23"), |boot| {
+        stopped.push(boot.to_string());
+        Ok(StopOutcome::Stopped)
+    })
+    .expect("the observed server stopped");
+    assert_eq!(stopped, ["17-23"]);
+
+    stop_for_restart(running(other_build(), "17-23"), |_| {
+        Ok(StopOutcome::NoServer)
+    })
+    .expect("a server already gone needs no stop");
+
+    let error = stop_for_restart(running(other_build(), "17-23"), |_| {
+        Ok(StopOutcome::BootChanged)
+    })
+    .expect_err("a replaced server is left running");
+    assert!(error.to_string().contains("left running"), "{error}");
 }
 
 #[test]

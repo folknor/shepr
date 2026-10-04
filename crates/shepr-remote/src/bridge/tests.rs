@@ -292,6 +292,7 @@ fn bridge_socket_is_user_only() {
     let bridge = SshStdioBridge::start(
         SshTarget::parse("example").expect("test precondition"),
         &remote_shepr,
+        BridgeMode::Attach,
         socket.clone(),
         None,
     )
@@ -325,6 +326,7 @@ fn bridge_on_a_held_socket_names_the_path() {
         SshStdioBridge::start(
             SshTarget::parse("example").expect("test precondition"),
             &remote_shepr,
+            BridgeMode::Attach,
             socket.clone(),
             None,
         )
@@ -394,6 +396,7 @@ fn bridge_drop_while_waiting_for_client_is_bounded() {
     let bridge = SshStdioBridge::start(
         SshTarget::parse("example").expect("test precondition"),
         &remote_shepr,
+        BridgeMode::Attach,
         socket.clone(),
         None,
     )
@@ -462,7 +465,9 @@ fn remote_bridge_failures_need_attention_only_when_the_host_must_be_fixed() {
     for class in RemoteFailureClass::ALL {
         let disposition = match class {
             RemoteFailureClass::Repair => FailureDisposition::Repair,
-            RemoteFailureClass::Retry => FailureDisposition::Retry,
+            RemoteFailureClass::Retry
+            | RemoteFailureClass::NoServer
+            | RemoteFailureClass::Stopping => FailureDisposition::Retry,
         };
         // The record as the remote binary prints it: its error line, after a
         // notice the bridge may have printed before failing.

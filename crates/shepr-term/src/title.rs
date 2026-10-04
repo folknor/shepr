@@ -6,9 +6,8 @@
 //!
 //! Length limits are not part of the rule. Each layer has its own reason for
 //! its bound and passes it in: a parser's byte bound is a resource limit
-//! (`shepr-vt`'s `MAX_TITLE_BYTES`, applied before any display text exists), a
-//! pane's retained title and the server's window title each cap characters
-//! for what they keep or show.
+//! (`shepr-vt`'s `MAX_TITLE_BYTES`, applied before any display text exists),
+//! and a pane's retained title caps characters for what it keeps.
 
 /// Whether `ch` may appear in a displayed title.
 pub fn is_displayable_title_char(ch: char) -> bool {

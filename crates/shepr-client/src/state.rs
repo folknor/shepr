@@ -58,8 +58,6 @@ pub(super) struct ClientState {
     pub(super) draw_host_cursor: bool,
     /// Frame and pane surface patch writes, which repeat on every presented frame.
     pub(super) frame_write_failure: HostWriteFailure,
-    /// Window title writes, which repeat on every title change.
-    pub(super) title_write_failure: HostWriteFailure,
     /// A transient mode write is retried after the next client event.
     pub(super) mode_write_failure: HostWriteFailure,
     pub(super) retry_host_modes: bool,
@@ -404,7 +402,6 @@ pub(super) struct HostWriteFailure {
 pub(super) enum HostWritePurpose {
     TerminalMode,
     Frame,
-    Title,
     Probe,
 }
 
@@ -418,8 +415,8 @@ pub(super) enum HostWriteAction {
 
 /// The client can retry stateful input modes because their desired state is retained. A
 /// permanent mode failure ends the session because the host may now interpret keys or mouse
-/// reports differently from the client. Frames retain a repaint request; title and probe
-/// writes have later updates or a fallback, so those failures leave the client running.
+/// reports differently from the client. Frames retain a repaint request; probe writes have
+/// a fallback, so those failures leave the client running.
 /// A failed clipboard copy is only logged at its call site and never reaches this policy.
 pub(super) fn host_write_failure_action(
     purpose: HostWritePurpose,
@@ -520,7 +517,6 @@ impl ClientState {
             pending_surface_patch: None,
             draw_host_cursor: false,
             frame_write_failure: HostWriteFailure::default(),
-            title_write_failure: HostWriteFailure::default(),
             mode_write_failure: HostWriteFailure::default(),
             retry_host_modes: false,
             refused_output_retry: RefusedOutputRetry::default(),

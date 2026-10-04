@@ -18,58 +18,9 @@ pub(crate) enum RemoteServerStatus {
     NotRunning,
 }
 
-/// What the startup check learned about a machine that can be served.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MachineSshCheck {
-    /// A matching shepr pair is installed, and any server running or starting
-    /// there is this build. A stopped or stopping server counts: the bridge
-    /// starts one on attach.
-    Ready,
-    /// A server of another build is running or starting there, and the
-    /// installed pair is this build, so a restart would bring up the right one.
-    DifferentBuild(DifferentBuildServer),
-}
-
-/// A running remote server of another build, as observed: enough to offer its
-/// restart and to stop exactly that instance.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DifferentBuildServer {
-    /// The remote `shepr` discovery verified as this build (with its sibling
-    /// server), through which the stop runs.
-    pub executable: RemoteExecutable,
-    /// The running server's build id, printable.
-    pub build_id: shepr_protocol::BuildIdentity,
-    /// The running server's boot identity, which the conditional stop names.
-    pub boot_id: shepr_protocol::BootId,
-}
-
-/// Judges a remote server's state against this build, before a bridge starts and
-/// fails its preamble on every retry. A stopped server passes: the bridge starts
-/// one from the discovered executable, whose build discovery already matched.
-///
-/// A running server of another build is a
-/// [`MachineSshCheck::DifferentBuild`], which can be restarted by its boot
-/// identity. The JSON schema requires both identities whenever a server is
-/// starting or running, so this intermediate state cannot represent a partial
-/// identity.
-pub(crate) fn judge_remote_server(
-    executable: &RemoteExecutable,
-    status: &RemoteServerStatus,
-) -> MachineSshCheck {
-    let RemoteServerStatus::Running { build_id, boot_id } = status else {
-        return MachineSshCheck::Ready;
-    };
-    if build_id.is_this_build() {
-        return MachineSshCheck::Ready;
-    }
-    MachineSshCheck::DifferentBuild(DifferentBuildServer {
-        executable: executable.clone(),
-        build_id: *build_id,
-        boot_id: boot_id.clone(),
-    })
-}
-
-/// Queries the remote server's state without judging its build.
+/// Queries the remote server's state without judging its build. The JSON
+/// schema requires both identities whenever a server is starting or running,
+/// so a partial identity cannot be represented.
 pub(crate) fn remote_server_status(
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
@@ -88,9 +39,9 @@ pub(crate) fn remote_server_status(
 /// Reads the remote `status server --json`. A starting server is judged like a
 /// running one: it already names its build and boot, and one of another build
 /// would refuse the bridge once it opens. A stopping server counts as none,
-/// since the bridge waits it out and starts a successor from the verified
-/// install. A server that listens but does not answer fails the check: the
-/// bridge could neither use nor replace it.
+/// since a starting bridge waits it out and starts a successor from the
+/// verified install. A server that listens but does not answer fails the
+/// check: a bridge could neither use nor replace it.
 pub(crate) fn parse_remote_server_status_json(status: &str) -> io::Result<RemoteServerStatus> {
     use shepr_api::schema::ServerStatus;
     let parsed: shepr_api::schema::ServerStatusJson =
@@ -129,26 +80,64 @@ pub(crate) fn remote_display_value(value: Option<&str>) -> RemoteText {
     RemoteText::from_untrusted(value)
 }
 
-/// Stops the remote server instance that reported `server.boot_id`, and no
-/// other, by running the discovered remote `shepr stop --expect-boot` over a
-/// BatchMode connection. The remote command waits for the server's
-/// named boot to stop answering. It exits with
-/// `ServerStopExit::BootMismatch` when another boot answers the stop request or
-/// appears while the named boot shuts down, or `ServerStopExit::NoServer` when
-/// the observed server was already gone by the time its stop request ran.
+/// Before an operator's Restart starts this build's server on a machine:
+/// stops the running server of another build there, naming the boot its
+/// status reported. No server, and a server of this build, need no stop.
+pub(crate) fn stop_server_of_another_build(
+    ssh: &RemoteSsh,
+    executable: &RemoteExecutable,
+) -> io::Result<()> {
+    stop_for_restart(remote_server_status(ssh, executable)?, |boot_id| {
+        stop_remote_server_with_ssh(ssh, executable, boot_id)
+    })
+}
+
+/// What a Restart does with the status it read: `stop` runs only for a
+/// server of another build, with that server's boot identity, so the stop
+/// cannot reach a server that replaced it. A stop that met another boot fails
+/// the Restart and leaves that server running; the client's next attempt
+/// reads whatever runs there now.
+fn stop_for_restart(
+    status: RemoteServerStatus,
+    stop: impl FnOnce(&shepr_protocol::BootId) -> io::Result<StopOutcome>,
+) -> io::Result<()> {
+    let RemoteServerStatus::Running { build_id, boot_id } = status else {
+        return Ok(());
+    };
+    if build_id.is_this_build() {
+        return Ok(());
+    }
+    match stop(&boot_id)? {
+        StopOutcome::Stopped | StopOutcome::NoServer => Ok(()),
+        StopOutcome::BootChanged => Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            EndpointFailure::retry(
+                "the server was replaced while it was being stopped; the new one was left running",
+            ),
+        )),
+    }
+}
+
+/// Stops the remote server instance that reported `boot_id`, and no other, by
+/// running the discovered remote `shepr stop --expect-boot` over a BatchMode
+/// connection. The remote command waits for the server's named boot to stop
+/// answering. It exits with `ServerStopExit::BootMismatch` when another boot
+/// answers the stop request or appears while the named boot shuts down, or
+/// `ServerStopExit::NoServer` when the observed server was already gone by the
+/// time its stop request ran.
 ///
-/// `ssh` is the machine's preflight transport; the stop's own timeout replaces
-/// any attempt deadline it carries.
+/// `ssh` is the machine's transport; the stop's own timeout replaces any
+/// attempt deadline it carries.
 pub(crate) fn stop_remote_server_with_ssh(
     ssh: &RemoteSsh,
-    server: &DifferentBuildServer,
+    executable: &RemoteExecutable,
+    boot_id: &shepr_protocol::BootId,
 ) -> io::Result<StopOutcome> {
     let args = RemoteCliCommand::ServerStop {
-        expected_boot: &server.boot_id,
+        expected_boot: boot_id,
     }
     .args();
-    let output =
-        ssh.sh_output_within(&server.executable.command(&args), REMOTE_STOP_SSH_TIMEOUT)?;
+    let output = ssh.sh_output_within(&executable.command(&args), REMOTE_STOP_SSH_TIMEOUT)?;
     if output.status.success() {
         return Ok(StopOutcome::Stopped);
     }

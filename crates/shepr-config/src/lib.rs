@@ -11,7 +11,6 @@ mod sidebar;
 pub mod theme;
 mod theme_config;
 mod validated;
-mod window_title;
 
 pub use self::agent::ConfigAgent;
 pub use self::limits::{
@@ -49,10 +48,7 @@ pub use self::{
         ValidatedExperimentalConfig, ValidatedServerConfig, ValidatedServerUiConfig,
         ValidatedSessionConfig, ValidatedTerminalConfig,
     },
-    window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
-
-pub use self::window_title::sanitize_window_title_text;
 
 pub const DEFAULT_CLIENT_CONFIG: &str = include_str!("default-client.toml");
 pub const DEFAULT_SERVER_CONFIG: &str = include_str!("default-server.toml");
@@ -534,7 +530,6 @@ mod tests {
             pane_scrollbars => _,
             pane_gaps => _,
             show_agent_labels_on_pane_borders => _,
-            window_title => _,
         });
         record_config_fields!(fields, advanced, "advanced", AdvancedConfig {
             scrollback_limit_bytes => _,

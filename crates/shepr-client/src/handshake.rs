@@ -113,12 +113,16 @@ impl HandshakeError {
                 (error.kind(), EndpointFailure::from_error(&error))
             }
             HandshakeError::HandshakeRejected {
-                error:
-                    error @ (shepr_protocol::HandshakeRefusal::ConnectionLimit(_)
-                    | shepr_protocol::HandshakeRefusal::ServerStarting),
+                error: error @ shepr_protocol::HandshakeRefusal::ConnectionLimit(_),
             } => (
                 std::io::ErrorKind::ConnectionAborted,
                 EndpointFailure::retry(error.to_string()),
+            ),
+            HandshakeError::HandshakeRejected {
+                error: error @ shepr_protocol::HandshakeRefusal::ServerStarting,
+            } => (
+                std::io::ErrorKind::ConnectionAborted,
+                EndpointFailure::server_starting(error.to_string()),
             ),
             HandshakeError::HandshakeRejected { error } => (
                 std::io::ErrorKind::Unsupported,
@@ -128,7 +132,7 @@ impl HandshakeError {
                 peer,
             )) if mismatch_guidance.is_some() => (
                 std::io::ErrorKind::Unsupported,
-                EndpointFailure::incompatible(local_build_mismatch(
+                EndpointFailure::different_build(local_build_mismatch(
                     &peer.build_id.to_string(),
                     mismatch_guidance.unwrap_or_default(),
                 )),
@@ -137,7 +141,7 @@ impl HandshakeError {
                 error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_),
             ) => (
                 std::io::ErrorKind::Unsupported,
-                EndpointFailure::incompatible(error.to_string()),
+                EndpointFailure::different_build(error.to_string()),
             ),
             HandshakeError::Preamble(shepr_protocol::preamble::PreambleError::UnexpectedEof)
             | HandshakeError::Protocol(FramingError::UnexpectedEof) => (

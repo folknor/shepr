@@ -5,7 +5,7 @@ shepr is configured with two TOML files, one for each of its two programs:
 | File | Read by | Holds |
 |---|---|---|
 | `client.toml` | the TUI (`shepr` with no subcommand) | keys, the sidebar, mouse and copy behaviour, prompts, the machines shown, the colours of everything the client draws |
-| `server.toml` | `shepr-server` | the pane shell and working directory, session restore, pane borders, gaps and scrollbars and their colours, the window title, scrollback |
+| `server.toml` | `shepr-server` | the pane shell and working directory, session restore, pane borders, gaps and scrollbars and their colours, scrollback |
 
 Every setting is optional. An empty or missing file means that program's
 defaults.
@@ -31,8 +31,9 @@ reload and no option to point at another file.
   stops the local server, ending every pane process in it; the next `shepr`
   starts a new server, which restores the saved layout with fresh shells and
   resumes agents (see `[session]`). For a machine reached over SSH, run
-  `shepr stop` on that machine; its server starts again the next time a
-  client connects to it.
+  `shepr stop` on that machine. It stays stopped: a client showing it lists
+  it with a Connect entry, which starts its server again when you choose it,
+  and so does running `shepr` on that machine.
 
 The CLI subcommands (`shepr status`, `shepr stop`, `shepr detect ...`) read
 neither file.
@@ -63,16 +64,22 @@ A setting belongs to whoever draws or interprets it.
 
 The client draws the sidebar, overlays, prompts and copy mode, and it
 interprets your keys and mouse. Those settings live in `client.toml` and
-apply the same way whichever machine you are looking at.
+apply the same way whichever machine you are looking at. The client also
+owns the title of the terminal it runs in (what window managers show in
+title, tab and group bars): it sets it to `shepr: <label>`, where the label is
+the local server's (`[local] label`, or this host's short hostname), and
+keeps it whichever machine you are looking at. On exit it restores the
+terminal's previous title where the terminal keeps a title stack, and leaves
+`shepr` elsewhere. There is no setting for it.
 
 Each server runs the panes and renders what goes inside the pane area: the
-pane contents, the borders and scrollbars around them, and the window title.
-Those settings live in `server.toml`.
+pane contents and the borders and scrollbars around them. Those settings live
+in `server.toml`.
 
 Config never crosses hosts. When the client shows a machine over SSH, that
 machine's server uses its own `server.toml`, on that machine, and nothing from
-your local files. So a remote machine's panes use the shell, borders, window
-title and pane chrome colours set on that machine. Nothing is sent from one
+your local files. So a remote machine's panes use the shell, borders and pane
+chrome colours set on that machine. Nothing is sent from one
 host's config to another. (The client does tell each server whether it
 captures the mouse, from its own `ui.mouse_capture`.)
 
@@ -95,7 +102,7 @@ captures the mouse, from its own `ui.mouse_capture`.)
 | `redraw_on_focus_gained` | boolean | `true` | Redraw the whole screen when your terminal regains focus. Set `false` to avoid a visible flash when switching back; rare terminal surface corruption may then persist until the next full redraw. |
 | `mouse_scroll_lines` | integer, 1 to 4096 | 3 | Scrollback lines moved per mouse wheel notch. |
 | `confirm_close` | boolean | `true` | Ask for confirmation before closing a workspace. |
-| `prompt_new_workspace_name` | boolean | `true` | Ask for a name when you create a workspace. The prompt starts with the name of the new workspace's directory, and a blank answer keeps that name. With `false`, workspaces are created at once and named after their directory. |
+| `prompt_new_workspace_name` | boolean | `true` | Ask for a name when you create a workspace. The prompt names the machine the workspace is created on (the one shown) and starts with the name of the new workspace's directory, and a blank answer keeps that name. With `false`, workspaces are created at once and named after their directory. |
 | `agent_panel_sort` | `"spaces"` or `"priority"` | `"spaces"` | Order of the agent panel: `spaces` groups agents by workspace, `priority` orders them as an attention queue. |
 | `status_indicators` | `"dots"` or `"symbols"` | `"dots"` | How agent states are marked: compact coloured dots, or a distinct glyph for each of Working, Blocked and Idle. |
 
@@ -334,8 +341,8 @@ keys and must not include `prefix+`.
 |---|---|---|
 | `navigate_back` | `esc` | leave navigate mode |
 | `navigate_up` | `up` | move the selection up through the agents, then the workspaces above them |
-| `navigate_down` | `down` | move the selection down the workspaces, then the agents below them |
-| `navigate_open` | `enter` | open the selected workspace, or focus the selected agent's pane |
+| `navigate_down` | `down` | move the selection down the workspaces, then the agents below them; a machine's Connect or Restart entry is a stop in place of its workspaces |
+| `navigate_open` | `enter` | open the selected workspace, focus the selected agent's pane, or choose the selected Connect or Restart entry |
 
 Navigate keys may reuse keys that actions use, but not each other's keys or
 the prefix.
@@ -391,6 +398,25 @@ need you to authenticate are prompted for at startup, one at a time, before
 the TUI takes the terminal; host keys are never accepted automatically. A
 machine that cannot be reached does not stop the client.
 
+The client never starts a server on a machine by itself: it attaches to a
+server that is running there, at startup and whenever the connection drops,
+and leaves a machine with no server as it is. While a machine is not
+connected, the sidebar shows an entry in place of its workspaces, and none of
+its workspaces or agents:
+
+| Entry | What it means |
+|---|---|
+| Connect | No server runs there. Choosing it starts the machine's server and attaches. Until then the client waits, over its SSH connection, for a server to appear (say, from `shepr` run on that machine) and attaches when one does. |
+| Starting... / Stopping... | The machine's server is starting or stopping. |
+| Restart (other build) | The machine's server is another shepr build. Choosing it asks first: restarting ends every pane process on that machine, and the saved layout is restored with fresh shells and agents resumed. |
+| Offline | The machine did not answer. The badge on the machine's row shows why; the client keeps trying. |
+| Needs SSH login | SSH refused the client. Run `shepr` again to be prompted, or ssh to the machine yourself. |
+| Unavailable | The machine answered but cannot be used until it is fixed there. The badge on its row shows why. |
+
+Choose an entry with a click, or in navigate mode (`prefix+w`) by moving onto
+it and pressing Enter. In the collapsed sidebar a glyph on the machine's row
+shows its state, and clicking the row acts as its entry does.
+
 The private control socket has to fit Linux's limit on Unix socket path
 length. If `XDG_RUNTIME_DIR` is so long that it leaves no room for shepr's
 runtime directory and OpenSSH's own suffix, that machine's setup fails.
@@ -399,7 +425,7 @@ runtime directory and OpenSSH's own suffix, that machine's setup fails.
 
 | Field | Default | What it is |
 |---|---|---|
-| `label` | this host's short hostname | the name shepr shows for the local server |
+| `label` | this host's short hostname | the name shepr shows for the local server, and in the terminal's title (`shepr: <label>`) |
 | `palette` | none | the local server's hue in the sidebar |
 
 The short hostname is the part of the hostname before the first dot. A
@@ -459,8 +485,8 @@ uses:
 
 Where your terminal reports its own colour of that name, its hue is used.
 If the terminal reports no background, there is no tint: the accent is the
-terminal's own ANSI colour and later lines are drawn dim. Entries of a machine
-that cannot be reached lose the colour. Token styles from
+terminal's own ANSI colour and later lines are drawn dim. The local server's
+entries lose the colour while it reconnects. Token styles from
 [`[ui.sidebar]`](#token-styles) still win over the palette.
 
 ## [theme] in client.toml
@@ -533,33 +559,6 @@ greater than zero, each at most 4096, and together at most 4194304 cells.
 | `pane_scrollbars` | boolean | `true` | Draw interactive scrollbars beside panes. Turn off to reclaim the column and keep it out of selections the terminal makes itself. |
 | `pane_gaps` | boolean | `true` | Keep split panes visually apart instead of sharing divider borders. |
 | `show_agent_labels_on_pane_borders` | boolean | `false` | Show the detected agent's name in a split pane's border when the pane has no name of its own. |
-| `window_title` | string | `"shepr: {hostname}"` | The title written to the terminal shepr runs in; see below. `""` leaves the terminal's title alone. |
-
-### Window title
-
-The window title is what window managers show in title, tab and group bars.
-The template is plain text with these tokens:
-
-| Token | Becomes |
-|---|---|
-| `{hostname}` | the short hostname of the server's host |
-| `{workspace}` | the name of the workspace the client is looking at |
-| `{pane}` | the name of the focused pane, if it has one |
-| `{terminal_title}` | the focused pane's own terminal title, with spinner frames removed |
-
-`{{` and `}}` write literal braces. A token with nothing to show becomes
-empty text. An unknown token, an unclosed `{` or a stray `}` fails the
-launch. Control characters are removed from the result, and it is cut to 200
-characters.
-
-The title is rendered by the server that owns the workspace you are looking
-at, from that server's `server.toml`. So while you look at a workspace on
-`build`, `{hostname}` is `build` even though your client runs elsewhere.
-
-```toml
-[ui]
-window_title = "{hostname}: {workspace} {{{pane}}}"
-```
 
 ## [experimental]
 

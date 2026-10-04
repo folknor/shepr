@@ -89,6 +89,13 @@ impl ClientShellConfig {
         }
     }
 
+    /// The outer terminal's window title, `shepr: <local label>`. The client
+    /// sets it once when it takes the terminal and keeps it whichever machine
+    /// is presented: the title names the client, not what it shows.
+    pub(crate) fn window_title(&self) -> String {
+        format!("shepr: {}", self.local_label)
+    }
+
     pub(crate) fn with_local_endpoint(
         self,
         state_dir: &std::path::Path,
@@ -272,6 +279,17 @@ mod tests {
         assert_eq!(stored.agent_panel_sort, None);
         assert_eq!(stored.sidebar_collapsed, Some(true));
         std::fs::remove_file(path).expect("remove endpoint chrome");
+    }
+
+    #[test]
+    fn window_title_names_the_local_label() {
+        let mut values = ClientConfig::default();
+        values.local.label = Some(shepr_config::MachineLabel::parse("my desk").expect("label"));
+        let config = shepr_config::ValidatedClientConfig::test_from_config(values, None);
+        assert_eq!(
+            ClientShellConfig::from_validated_config(&config).window_title(),
+            "shepr: my desk"
+        );
     }
 
     #[test]

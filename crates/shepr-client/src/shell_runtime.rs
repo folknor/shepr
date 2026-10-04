@@ -41,9 +41,10 @@ pub(super) fn sync_client_shell_keyboard_report_all(
 }
 
 /// Drops host terminal effects requested by a lost or retired endpoint. Every step runs even
-/// after one fails, so a failed mouse reset still clears report-all and the title. Each result
-/// passes through the shared policy: a transient failure queues a retry, while a permanent
-/// stateful-mode failure ends the client after all resets have been attempted.
+/// after one fails, so a failed mouse reset still clears report-all. Each result passes
+/// through the shared policy: a transient failure queues a retry, while a permanent
+/// stateful-mode failure ends the client after all resets have been attempted. The window
+/// title is the client's own, not an endpoint's, so it stays.
 pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(), LoopExit> {
     state.host_modes.clear_mouse_endpoint_request();
     let mouse = state
@@ -54,17 +55,8 @@ pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(),
     let report_all = state
         .host_modes
         .sync_shell_keyboard_report_all(&mut state.output_writer, shell_requests_report_all);
-    let title = state
-        .host_modes
-        .reset_window_title(&mut state.output_writer);
     let mouse = state.record_host_mode_write("mouse capture reset", mouse);
     let report_all = state.record_host_mode_write("keyboard report-all reset", report_all);
-    state.title_write_failure.observe(
-        crate::state::HostWritePurpose::Title,
-        "window title reset",
-        &title,
-        None,
-    );
     mouse.and(report_all)
 }
 

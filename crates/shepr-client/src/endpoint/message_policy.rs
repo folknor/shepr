@@ -53,7 +53,6 @@ impl PresentationGate {
                 },
                 DecodedWireServerMessage::ClientShellError { .. }
                 | DecodedWireServerMessage::Clipboard { .. }
-                | DecodedWireServerMessage::WindowTitle { .. }
                 | DecodedWireServerMessage::MouseCapture { .. }
                 | DecodedWireServerMessage::ClientShellKeyboardReportAll { .. } => {
                     match self.role {
@@ -94,9 +93,6 @@ mod tests {
                 mode: shepr_term::mouse::HostMouseCapture::Cells,
             },
             ServerMessage::ClientShellKeyboardReportAll { enabled: true },
-            ServerMessage::WindowTitle {
-                title: Some("remote".into()),
-            },
             ServerMessage::Clipboard {
                 data: b"text".to_vec(),
             },

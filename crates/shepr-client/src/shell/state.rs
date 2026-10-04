@@ -96,6 +96,12 @@ pub(crate) enum ClientShellAction {
     ClipboardWrite(Vec<u8>),
     /// Pick an endpoint, and the navigation inside it the pick names.
     ActivateEndpoint(Location),
+    /// The operator's Connect on a configured machine with no server: start
+    /// its server and attach.
+    ConnectMachine(ClientEndpointId),
+    /// The operator's confirmed Restart of a configured machine running
+    /// another build: stop that server, start this build's and attach.
+    RestartMachine(ClientEndpointId),
 }
 
 #[derive(Default)]
@@ -323,12 +329,11 @@ impl ClientShellState {
     }
 
     /// Asks the sidebar to reveal one of the presented endpoint's workspaces at its next
-    /// composition, uncollapsing the endpoint so the workspace has a row.
+    /// composition.
     pub(in crate::shell) fn request_workspace_reveal(
         &mut self,
         workspace_id: &shepr_protocol::WorkspaceId,
     ) {
-        self.endpoints.expand_presented();
         self.sidebar_scroll.reveal_workspace(Location::workspace(
             self.endpoints.presented().clone(),
             *workspace_id,

@@ -120,13 +120,16 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<ProcessExit> {
             println!("shepr {}", shepr_protocol::build_version());
             Ok(ProcessExit::Success)
         }
-        cli::Launch::ClientBridge => {
-            // A bridge that fails before its launch leads the error with a
-            // classification record, as a launch failure does, so the client
-            // shows a host that must be repaired instead of retrying it quietly.
-            let paths = resolve_bridge_paths().map_err(|error| bridge_setup_failure(&error))?;
-            init_client_logging(&paths).map_err(|error| bridge_setup_failure(&error))?;
-            finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?)
+        cli::Launch::ClientBridge => launch_bridge(shepr_remote::BridgeMode::Attach),
+        cli::Launch::StartingClientBridge => launch_bridge(shepr_remote::BridgeMode::Start),
+        cli::Launch::WaitForServer => {
+            let paths = resolve_bridge_paths()?;
+            init_client_logging(&paths)?;
+            // However the wait ended, the client that ran it checks the
+            // machine again next; only a failure to wait at all is an error.
+            let end = shepr_remote::wait_for_server(&paths)?;
+            tracing::info!(?end, "remote wait for a server ended");
+            Ok(ProcessExit::Success)
         }
         cli::Launch::Cli(command) => cli::run(&command).map(ProcessExit::from_cli_code),
         cli::Launch::Client => launch_client(ClientLaunch::Direct),
@@ -163,6 +166,16 @@ fn launch_client(mode: ClientLaunch) -> CliResult<ProcessExit> {
         }
         ClientLaunch::Tui => tui::launch(&loaded_config, paths),
     }
+}
+
+/// Runs the remote side of the SSH bridge in `mode`. A bridge that fails before
+/// its launch leads the error with a classification record, as a launch
+/// failure does, so the client shows a host that must be repaired instead of
+/// retrying it quietly.
+fn launch_bridge(mode: shepr_remote::BridgeMode) -> CliResult<ProcessExit> {
+    let paths = resolve_bridge_paths().map_err(|error| bridge_setup_failure(&error))?;
+    init_client_logging(&paths).map_err(|error| bridge_setup_failure(&error))?;
+    finish_bridge(shepr_remote::run_remote_client_bridge(&paths, mode)?)
 }
 
 /// A bridge that ended on its idle watchdog logs the measured idle duration

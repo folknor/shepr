@@ -279,7 +279,6 @@ mod tests {
             "[ui]\npane_scrollbars = true\n",
             "[ui]\npane_gaps = true\n",
             "[ui]\nshow_agent_labels_on_pane_borders = true\n",
-            "[ui]\nwindow_title = '{hostname}'\n",
         ] {
             assert!(server_from_str(source).is_ok(), "{source}");
             let errors = client_from_str(source).expect_err("server setting in client file");
@@ -313,6 +312,7 @@ mod tests {
         for source in [
             "[experimental]\nallow_nested = true\n",
             "[ui]\naccent = 'cyan'\n",
+            "[ui]\nwindow_title = 'shepr'\n",
         ] {
             assert!(client_from_str(source).is_err());
             assert!(server_from_str(source).is_err());
@@ -377,11 +377,11 @@ mod tests {
     #[test]
     fn server_launch_collects_chrome_grid_and_terminal_errors() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let errors = server_from_str("[server]\nheadless_cols = 0\n[ui]\nwindow_title = '{unknown}'\n[terminal]\ndefault_shell = '/missing/zsh'\nnew_cwd = 'missing'\n")
+        let errors = server_from_str("[server]\nheadless_cols = 0\n[theme]\naccent = 'not-a-color'\n[terminal]\ndefault_shell = '/missing/zsh'\nnew_cwd = 'missing'\n")
             .expect_err("invalid server settings");
         for setting in [
             "server.headless_cols",
-            "ui.window_title",
+            "theme.accent",
             "terminal.default_shell",
             "terminal.new_cwd",
         ] {
@@ -442,7 +442,10 @@ mod tests {
                 "theme.custom.red",
             ),
             ("[theme]\naccent = \"not-a-color\"\n", "theme.accent"),
-            ("[ui]\nwindow_title = \"{unknown}\"\n", "ui.window_title"),
+            (
+                "[ui]\nwindow_title = \"shepr\"\n",
+                "unknown config key ui.window_title",
+            ),
             (
                 "[ui]\nsidebar_min_width = 50\nsidebar_max_width = 30\n",
                 "sidebar_min_width",
@@ -466,7 +469,6 @@ mod tests {
                 "[keys]\nnext_tab = \"prefix+n\"\n",
                 "unknown config key keys.next_tab",
             ),
-            ("[ui]\nwindow_title = \"{tab}\"\n", "unknown token '{tab}'"),
             (
                 "[ui]\nmouse_captur = true\n",
                 "unknown config key ui.mouse_captur",

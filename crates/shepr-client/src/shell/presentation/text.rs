@@ -107,6 +107,32 @@ pub(in crate::shell) fn display_width(text: &str) -> u16 {
     u16::try_from(rendered_text_width(text)).unwrap_or(u16::MAX)
 }
 
+/// `text` cut to at most `max_width` rendered columns, ending in an ellipsis
+/// when anything was cut.
+pub(in crate::shell) fn truncate_end(text: &str, max_width: usize) -> String {
+    if rendered_text_width(text) <= max_width {
+        return text.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    if max_width == 1 {
+        return "…".to_string();
+    }
+
+    let mut prefix = String::new();
+    let mut width = 0usize;
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = rendered_text_width(grapheme);
+        if width.saturating_add(grapheme_width) > max_width.saturating_sub(1) {
+            break;
+        }
+        prefix.push_str(grapheme);
+        width = width.saturating_add(grapheme_width);
+    }
+    format!("{prefix}…")
+}
+
 pub(in crate::shell) fn put_spans(
     buffer: &mut Buffer,
     area: Rect,

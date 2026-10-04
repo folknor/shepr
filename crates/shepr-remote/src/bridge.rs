@@ -13,7 +13,7 @@ use crate::failure::{
     REMAPPED_REMOTE_255_EXIT_CODE, RemoteExit, SSH_OWN_FAILURE_EXIT_CODE, SshExit,
     SshFailureDiagnostic, local_setup_error,
 };
-use crate::host::BRIDGE_FAILURE_MARKER;
+use crate::host::{BRIDGE_FAILURE_MARKER, BridgeMode};
 use crate::limits::{
     BRIDGE_ACCEPT_POLL, BRIDGE_CONNECTION_SHUTDOWN_GRACE, BRIDGE_FAILURE_CHANNEL_CAPACITY,
     BRIDGE_FAILURE_REPORT_POLL_INTERVAL, BRIDGE_FAILURE_REPORT_TIMEOUT, BRIDGE_IO_BUFFER_BYTES,
@@ -46,6 +46,7 @@ impl SshStdioBridge {
     pub(crate) fn start(
         target: SshTarget,
         remote_shepr: &RemoteExecutable,
+        mode: BridgeMode,
         local_socket: PathBuf,
         ssh_options: Option<&ManagedSshOptions>,
     ) -> Result<Self, shepr_platform::ipc::BindError> {
@@ -53,13 +54,14 @@ impl SshStdioBridge {
         let executable_path = remote_shepr.as_str().to_owned();
         let bridge = Self::start_command(
             target,
-            remote_shepr.bridge_command(),
+            remote_shepr.bridge_command(mode),
             local_socket,
             ssh_options,
         )?;
         tracing::info!(
             target = %target_id,
             executable = %executable_path,
+            ?mode,
             socket = %bridge.local_socket.display(),
             "remote SSH stdio bridge listening"
         );
@@ -540,9 +542,11 @@ fn bridge_connection(
     }
 }
 
-/// Classify an SSH bridge exit. The raw remote stderr is handed to the
-/// diagnostic constructor, which stores it as terminal-safe `RemoteText`.
-fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io::Error {
+/// Classify an SSH bridge exit, or the exit of another long-running remote
+/// shepr command such as the wait for a server. The raw remote stderr is
+/// handed to the diagnostic constructor, which stores it as terminal-safe
+/// `RemoteText`.
+pub(crate) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io::Error {
     let stderr = String::from_utf8_lossy(stderr);
     let stderr = stderr.trim();
     if let Some(error) = classified_remote_bridge_failure(stderr) {

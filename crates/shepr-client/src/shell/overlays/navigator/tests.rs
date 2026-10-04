@@ -1408,10 +1408,14 @@ fn the_navigator_reads_the_cached_index_and_it_follows_every_endpoint_change() {
     let (.., current) = row(&rows, &local_pane).expect("the local pane");
     assert!(current);
 
-    // Losing the remote's connection marks its rows stale and leaves Local's live.
+    // Losing the remote's connection leaves only its machine row, marked stale, and
+    // leaves Local's rows live.
     state.endpoint_failed(&remote, EndpointFailureStatus::Reconnecting);
     let rows = cached_navigator_rows(&mut state);
     for (target, _, stale, _) in &rows {
         assert_eq!(*stale, target.endpoint == remote, "{target:?}");
+        if target.endpoint == remote {
+            assert_eq!(target.target, LocationTarget::Machine, "{target:?}");
+        }
     }
 }

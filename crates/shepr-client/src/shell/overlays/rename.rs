@@ -13,12 +13,16 @@ use super::widgets::{button, panel, panel_inner, popup, row};
 use super::{DialogView, OverlayCommand, OverlayEffect, OverlayPaint, text_editor};
 use crate::shell::input::hit_test::contains;
 use crate::shell::presentation::status::panel_contrast_fg;
-use crate::shell::presentation::text::put_text;
+use crate::shell::presentation::text::{put_text, rendered_text_width, truncate_end};
 
 #[derive(Clone, Debug)]
 pub(in crate::shell) enum RenameTarget {
     NewWorkspace {
         cwd: Option<shepr_protocol::RemotePath>,
+        /// The display label of the machine the workspace is created on, the
+        /// presented one, which the prompt names. The command itself goes to
+        /// that machine's connection, so it does not carry the label.
+        machine: String,
     },
     Workspace {
         workspace_id: shepr_protocol::WorkspaceId,
@@ -41,15 +45,17 @@ impl RenameTarget {
         };
 
         match self {
-            Self::NewWorkspace { cwd } => EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
-                // The prompt already resolved the directory the new workspace starts in; with
-                // none known the server picks.
-                source: match cwd {
-                    Some(cwd) => WorkspaceCreateSource::Cwd(cwd),
-                    None => WorkspaceCreateSource::Default,
-                },
-                label,
-            }),
+            Self::NewWorkspace { cwd, .. } => {
+                EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
+                    // The prompt already resolved the directory the new workspace starts in; with
+                    // none known the server picks.
+                    source: match cwd {
+                        Some(cwd) => WorkspaceCreateSource::Cwd(cwd),
+                        None => WorkspaceCreateSource::Default,
+                    },
+                    label,
+                })
+            }
             Self::Workspace { workspace_id } => {
                 EndpointCommand::WorkspaceRename(WorkspaceRenameParams {
                     workspace_id,
@@ -71,13 +77,18 @@ pub(in crate::shell) struct RenameOverlay {
 
 impl RenameOverlay {
     /// The new-workspace prompt, seeded with the directory-based suggestion.
+    /// `machine` is the display label of the machine the workspace is created on.
     pub(super) fn new_workspace(
         cwd: Option<shepr_protocol::RemotePath>,
         suggested_name: &str,
+        machine: &str,
     ) -> Self {
         Self {
             input: TextEditor::new(suggested_name, true),
-            target: RenameTarget::NewWorkspace { cwd },
+            target: RenameTarget::NewWorkspace {
+                cwd,
+                machine: machine.to_owned(),
+            },
         }
     }
 
@@ -97,12 +108,18 @@ impl RenameOverlay {
         }
     }
 
-    /// The prompt's heading, which always follows its target.
-    fn title(&self) -> &'static str {
-        match self.target {
-            RenameTarget::NewWorkspace { .. } => "new workspace",
-            RenameTarget::Workspace { .. } => "rename workspace",
-            RenameTarget::Pane { .. } => "rename pane",
+    /// The prompt's heading, which always follows its target, fitted to `width`
+    /// columns. The new-workspace heading names the machine; a label too long
+    /// for the prompt is cut with an ellipsis, keeping the words before it.
+    fn title(&self, width: u16) -> String {
+        match &self.target {
+            RenameTarget::NewWorkspace { machine, .. } => {
+                const LEAD: &str = "new workspace on ";
+                let room = usize::from(width).saturating_sub(rendered_text_width(LEAD));
+                format!("{LEAD}{}", truncate_end(machine, room))
+            }
+            RenameTarget::Workspace { .. } => "rename workspace".to_owned(),
+            RenameTarget::Pane { .. } => "rename pane".to_owned(),
         }
     }
 
@@ -132,7 +149,7 @@ impl RenameOverlay {
             i.x,
             i.y,
             i.width,
-            self.title(),
+            &self.title(i.width),
             Style::default()
                 .fg(p.text)
                 .bg(p.panel_bg)
@@ -259,19 +276,55 @@ impl RenameOverlay {
 #[cfg(test)]
 mod tests {
     use super::{RenameOverlay, RenameTarget};
+    use crate::shell::presentation::text::rendered_text_width;
     use crate::tests::{test_pane_id, test_workspace_id};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
 
     #[test]
     fn title_follows_the_target() {
-        let new = RenameOverlay::new_workspace(None, "workspace");
-        assert_eq!(new.title(), "new workspace");
+        let new = RenameOverlay::new_workspace(None, "workspace", "build");
+        assert_eq!(new.title(52), "new workspace on build");
         assert_eq!(new.input.as_str(), "workspace");
         let workspace = RenameOverlay::workspace(test_workspace_id("w1"), "client-shell");
-        assert_eq!(workspace.title(), "rename workspace");
+        assert_eq!(workspace.title(52), "rename workspace");
         assert_eq!(workspace.input.as_str(), "client-shell");
         let pane = RenameOverlay::pane(test_pane_id("w1:p1"), None);
-        assert_eq!(pane.title(), "rename pane");
+        assert_eq!(pane.title(52), "rename pane");
         assert_eq!(pane.input.as_str(), "");
         assert!(matches!(pane.target, RenameTarget::Pane { .. }));
+    }
+
+    #[test]
+    fn a_long_machine_label_is_cut_to_the_heading_width() {
+        let new = RenameOverlay::new_workspace(None, "", &"m".repeat(80));
+        let title = new.title(30);
+        assert!(title.starts_with("new workspace on m"), "{title}");
+        assert!(title.ends_with('…'), "{title}");
+        assert_eq!(rendered_text_width(&title), 30);
+        // A label that fits is not cut.
+        assert_eq!(
+            new.title(200),
+            format!("new workspace on {}", "m".repeat(80))
+        );
+    }
+
+    #[test]
+    fn the_drawn_heading_names_the_machine_inside_the_prompt() {
+        let palette = shepr_config::theme::Palette::default();
+        let screen = Rect::new(0, 0, 80, 24);
+        let view = RenameOverlay::layout(screen).expect("the prompt fits");
+        let new = RenameOverlay::new_workspace(None, "", &"long-machine-name-".repeat(6));
+        let mut buffer = Buffer::empty(screen);
+        new.draw(&mut buffer, &view, &palette);
+        let heading = (view.inner.x..view.inner.right())
+            .map(|x| buffer[(x, view.inner.y)].symbol())
+            .collect::<String>();
+        assert!(
+            heading.starts_with("new workspace on long-machine-name-"),
+            "{heading}"
+        );
+        // The cut label ends in the prompt's last column, so the ellipsis shows.
+        assert_eq!(buffer[(view.inner.right() - 1, view.inner.y)].symbol(), "…");
     }
 }

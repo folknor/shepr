@@ -9,8 +9,9 @@ use super::{ClientEndpointId, ClientEndpointStatus, EndpointFailureStatus};
 use crate::events::ClientLoopEvent;
 use crate::limits::{
     ATTEMPT_BUDGET, ATTENTION_RETRY_DELAY, INITIAL_RETRY_DELAY, MAX_RETRY_DELAY,
-    STABLE_CONNECTION_PERIOD,
+    RESTART_ATTEMPT_BUDGET, STABLE_CONNECTION_PERIOD,
 };
+use shepr_remote::{ConnectMode, ServerWatchEnd};
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {
@@ -22,7 +23,6 @@ pub(crate) enum EndpointSupervisorEvent {
     Status {
         endpoint_id: ClientEndpointId,
         generation: shepr_protocol::ConnectionGeneration,
-        status: EndpointFailureStatus,
         message: shepr_launch::EndpointFailure,
         connector: Option<OwnedConnector>,
     },
@@ -30,6 +30,14 @@ pub(crate) enum EndpointSupervisorEvent {
         endpoint_id: ClientEndpointId,
         generation: shepr_protocol::ConnectionGeneration,
         connection: crate::endpoint::connection_io::EndpointConnectionIo,
+        connector: Option<OwnedConnector>,
+    },
+    /// A machine's wait for its server ended: the server may be there now,
+    /// the client cancelled the wait, or the wait failed (the link dropped).
+    Watched {
+        endpoint_id: ClientEndpointId,
+        generation: shepr_protocol::ConnectionGeneration,
+        result: Result<ServerWatchEnd, shepr_launch::EndpointFailure>,
         connector: Option<OwnedConnector>,
     },
 }
@@ -40,13 +48,11 @@ impl EndpointSupervisorEvent {
             Self::Status {
                 endpoint_id,
                 generation,
-                status,
                 message,
                 ..
             } => Self::Status {
                 endpoint_id,
                 generation,
-                status,
                 message,
                 connector,
             },
@@ -59,6 +65,17 @@ impl EndpointSupervisorEvent {
                 endpoint_id,
                 generation,
                 connection,
+                connector,
+            },
+            Self::Watched {
+                endpoint_id,
+                generation,
+                result,
+                ..
+            } => Self::Watched {
+                endpoint_id,
+                generation,
+                result,
                 connector,
             },
         }
@@ -97,6 +114,7 @@ enum AttemptTarget {
     },
     Ssh {
         connector: OwnedConnector,
+        mode: ConnectMode,
     },
 }
 
@@ -109,6 +127,24 @@ impl AttemptTarget {
     }
 }
 
+/// What a supervisor runs for an endpoint once its next attempt comes due.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Scheduled {
+    /// A connection attempt that only attaches: nothing the client does by
+    /// itself starts a server on another host.
+    Attach,
+    /// A wait, on the machine, for a server to appear: for a machine that
+    /// answered but runs no server. Its end schedules an attaching attempt.
+    WatchForServer,
+}
+
+/// The operation a supervisor starts for an endpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Operation {
+    Connect(ConnectMode),
+    WatchForServer,
+}
+
 // These clocks schedule connection attempts, not presentation availability. A successful
 // handshake starts the stability clock before its first snapshot arrives; the shell's
 // endpoint state alone decides whether the presentation is usable and what status to draw.
@@ -116,7 +152,17 @@ struct ReconnectState {
     target: ConnectTarget,
     attempts: u32,
     next_attempt: Option<Instant>,
+    /// What runs when `next_attempt` comes due.
+    scheduled: Scheduled,
+    /// An operator's Connect or Restart and when it was asked for. It runs as soon as
+    /// nothing is in flight, ahead of anything scheduled.
+    requested: Option<(ConnectMode, Instant)>,
     in_flight: bool,
+    /// The operator's request in flight, so a stale automatic outcome does not
+    /// overwrite what the machine's entry says about it.
+    requested_in_flight: bool,
+    /// Cancels the wait for a server in flight; `None` when no wait runs.
+    watch_cancel: Option<Arc<AtomicBool>>,
     /// When the attempt in flight started; its failure schedules the retry from here.
     attempt_started: Option<Instant>,
     generation: Option<shepr_protocol::ConnectionGeneration>,
@@ -129,11 +175,33 @@ impl ReconnectState {
             target,
             attempts: 0,
             next_attempt: Some(now),
+            scheduled: Scheduled::Attach,
+            requested: None,
             in_flight: false,
+            requested_in_flight: false,
+            watch_cancel: None,
             attempt_started: None,
             generation: None,
             online_since: None,
         }
+    }
+
+    /// The operation to start now, if any: an operator's request first, then
+    /// whatever is scheduled once it is due. Taking a request consumes it.
+    fn due_operation(&mut self, now: Instant) -> Option<Operation> {
+        if self.in_flight {
+            return None;
+        }
+        if let Some((mode, _)) = self.requested.take() {
+            return Some(Operation::Connect(mode));
+        }
+        if self.next_attempt.is_none_or(|deadline| deadline > now) {
+            return None;
+        }
+        Some(match self.scheduled {
+            Scheduled::Attach => Operation::Connect(ConnectMode::Attach),
+            Scheduled::WatchForServer => Operation::WatchForServer,
+        })
     }
 }
 
@@ -227,9 +295,10 @@ impl EndpointSupervisors {
         // every loop pass would repeat that work for nothing.
         let mut options = None;
         for (endpoint_id, state) in &mut self.endpoints {
-            if state.in_flight || state.next_attempt.is_none_or(|deadline| deadline > now) {
+            let requested = state.requested.is_some();
+            let Some(operation) = state.due_operation(now) else {
                 continue;
-            }
+            };
             // Generations tell a live attempt's events from a stale one's, so
             // a generation is never reused. Running out is unreachable (one per
             // connection attempt); should it happen, the endpoint stops
@@ -242,23 +311,50 @@ impl EndpointSupervisors {
                 state.next_attempt = None;
                 continue;
             };
-            let target = match &mut state.target {
-                ConnectTarget::Local {
-                    path,
-                    mismatch_guidance,
-                } => AttemptTarget::Local {
+            let target = match (&mut state.target, operation) {
+                (
+                    ConnectTarget::Local {
+                        path,
+                        mismatch_guidance,
+                    },
+                    _,
+                ) => AttemptTarget::Local {
                     path: path.clone(),
                     mismatch_guidance: Arc::clone(mismatch_guidance),
                 },
-                ConnectTarget::Ssh { connector, .. } => {
+                (ConnectTarget::Ssh { connector, .. }, Operation::Connect(mode)) => {
                     let Some(connector) = connector.take() else {
                         continue;
                     };
-                    AttemptTarget::Ssh { connector }
+                    AttemptTarget::Ssh { connector, mode }
+                }
+                (ConnectTarget::Ssh { connector, .. }, Operation::WatchForServer) => {
+                    let Some(connector) = connector.take() else {
+                        continue;
+                    };
+                    let cancel = Arc::new(AtomicBool::new(false));
+                    state.watch_cancel = Some(Arc::clone(&cancel));
+                    state.in_flight = true;
+                    state.requested_in_flight = false;
+                    state.attempt_started = Some(now);
+                    state.next_attempt = None;
+                    state.generation = Some(generation);
+                    self.last_generation = generation;
+                    spawn_server_watch(
+                        endpoint_id.clone(),
+                        generation,
+                        connector,
+                        cancel,
+                        now + ATTEMPT_BUDGET,
+                        event_tx.clone(),
+                        Arc::clone(&self.shutdown),
+                    );
+                    continue;
                 }
             };
             let options = *options.get_or_insert_with(&make_options);
             state.in_flight = true;
+            state.requested_in_flight = requested;
             state.attempt_started = Some(now);
             state.next_attempt = None;
             state.generation = Some(generation);
@@ -266,7 +362,12 @@ impl EndpointSupervisors {
             let endpoint_id = endpoint_id.clone();
             let event_tx = event_tx.clone();
             let shutdown = Arc::clone(&self.shutdown);
-            let deadline = now + ATTEMPT_BUDGET;
+            let deadline = now
+                + if operation == Operation::Connect(ConnectMode::Restart) {
+                    RESTART_ATTEMPT_BUDGET
+                } else {
+                    ATTEMPT_BUDGET
+                };
             tokio::spawn(async move {
                 if shutdown.load(Ordering::Acquire) {
                     return;
@@ -292,28 +393,20 @@ impl EndpointSupervisors {
                 .await;
                 let event = match result {
                     Ok((connector, Ok(event))) => event.with_connector(connector),
-                    Ok((connector, Err(error))) => {
-                        let failure = shepr_launch::EndpointFailure::from_error(&error);
-                        EndpointSupervisorEvent::Status {
-                            endpoint_id: task_endpoint_id,
-                            generation,
-                            status: EndpointFailureStatus::after_failure(&failure),
-                            message: failure,
-                            connector,
-                        }
-                    }
-                    Err(error) => {
-                        let failure = shepr_launch::EndpointFailure::local_setup(format!(
+                    Ok((connector, Err(error))) => EndpointSupervisorEvent::Status {
+                        endpoint_id: task_endpoint_id,
+                        generation,
+                        message: shepr_launch::EndpointFailure::from_error(&error),
+                        connector,
+                    },
+                    Err(error) => EndpointSupervisorEvent::Status {
+                        endpoint_id: task_endpoint_id,
+                        generation,
+                        message: shepr_launch::EndpointFailure::local_setup(format!(
                             "endpoint connection task stopped unexpectedly: {error}"
-                        ));
-                        EndpointSupervisorEvent::Status {
-                            endpoint_id: task_endpoint_id,
-                            generation,
-                            status: EndpointFailureStatus::after_failure(&failure),
-                            message: failure,
-                            connector: None,
-                        }
-                    }
+                        )),
+                        connector: None,
+                    },
                 };
                 if !shutdown.load(Ordering::Acquire) {
                     // The send fails only once the client loop has exited and dropped its
@@ -330,6 +423,7 @@ impl EndpointSupervisors {
 
     /// When `spawn_due` next has an attempt to start. It skips the same states `spawn_due`
     /// skips, so a due attempt it cannot start never becomes a deadline the loop spins on.
+    /// An operator's request is due from when it was made.
     pub(crate) fn next_retry_deadline(&self) -> Option<Instant> {
         self.endpoints
             .values()
@@ -343,8 +437,104 @@ impl EndpointSupervisors {
                     }
                 )
             })
-            .filter_map(|state| state.next_attempt)
+            .filter_map(|state| {
+                state
+                    .requested
+                    .map(|(_, requested_at)| requested_at)
+                    .or(state.next_attempt)
+            })
             .min()
+    }
+
+    /// Asks for an operator's Connect or Restart of a configured machine: it runs as
+    /// soon as nothing is in flight for that machine, and a wait for its server in
+    /// flight is cancelled for it. Refused (false) for the Local endpoint and for a
+    /// machine that is connected.
+    pub(crate) fn request(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        mode: ConnectMode,
+        now: Instant,
+    ) -> bool {
+        let Some(state) = self.endpoints.get_mut(endpoint_id) else {
+            return false;
+        };
+        if !matches!(state.target, ConnectTarget::Ssh { .. }) || state.online_since.is_some() {
+            return false;
+        }
+        state.requested = Some((mode, now));
+        if let Some(cancel) = &state.watch_cancel {
+            cancel.store(true, Ordering::Release);
+        }
+        true
+    }
+
+    /// Whether an operator's Connect or Restart for this endpoint is waiting or in
+    /// flight. An automatic outcome that lands meanwhile must not replace what the
+    /// machine's entry says about the operator's request.
+    pub(crate) fn request_pending(&self, endpoint_id: &ClientEndpointId) -> bool {
+        self.endpoints
+            .get(endpoint_id)
+            .is_some_and(|state| state.requested.is_some() || state.requested_in_flight)
+    }
+
+    /// Records a failed attempt or a lost connection, schedules what follows it,
+    /// and returns the status it left, or `None` for a stale generation. A machine
+    /// that answered but runs no server is not retried: a wait for its server is
+    /// scheduled instead.
+    pub(crate) fn record_failure(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: shepr_protocol::ConnectionGeneration,
+        failure: &shepr_launch::EndpointFailure,
+        now: Instant,
+    ) -> Option<EndpointFailureStatus> {
+        let status = EndpointFailureStatus::after_failure(failure);
+        if !self.record_status(endpoint_id, generation, status.into(), now) {
+            return None;
+        }
+        if failure.cause() == shepr_launch::FailureCause::NoServer
+            && let Some(state) = self.endpoints.get_mut(endpoint_id)
+            && matches!(state.target, ConnectTarget::Ssh { .. })
+        {
+            // The backoff `record_status` scheduled stays: a wait that keeps ending at
+            // once cannot spin.
+            state.scheduled = Scheduled::WatchForServer;
+        }
+        Some(status)
+    }
+
+    /// A wait for a machine's server ended. A wait that ran to its end is followed
+    /// at once by an attaching attempt; a cancelled one leaves the operator's request
+    /// to run. False for a stale generation.
+    pub(crate) fn watch_ended(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: shepr_protocol::ConnectionGeneration,
+        end: ServerWatchEnd,
+        now: Instant,
+    ) -> bool {
+        let Some(state) = self.endpoints.get_mut(endpoint_id) else {
+            return false;
+        };
+        if state.generation != Some(generation) {
+            return false;
+        }
+        state.in_flight = false;
+        state.watch_cancel = None;
+        state.attempt_started = None;
+        state.scheduled = Scheduled::Attach;
+        match end {
+            ServerWatchEnd::Ended => state.next_attempt = Some(now),
+            // A cancelled wait was cancelled for an operator's request, which runs
+            // next; should none be waiting, attach as after any other wait.
+            ServerWatchEnd::Cancelled => {
+                if state.requested.is_none() {
+                    state.next_attempt = Some(now);
+                }
+            }
+        }
+        true
     }
 
     /// Hands a finished attempt's connector back to its endpoint. Only a
@@ -394,8 +584,13 @@ impl EndpointSupervisors {
             now
         };
         state.in_flight = false;
+        state.requested_in_flight = false;
+        state.watch_cancel = None;
+        state.scheduled = Scheduled::Attach;
         match status {
             ClientEndpointStatus::Online => {
+                // Connected: an operator's request still waiting has nothing to do.
+                state.requested = None;
                 // Local's attempts reset on every Online, unlike SSH's stable-period
                 // rule, so that reaching a Local server again after an outage
                 // retries quickly. A Local server that accepts and then dies
@@ -436,6 +631,13 @@ impl EndpointSupervisors {
 impl Drop for EndpointSupervisors {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
+        // A wait for a server blocks until cancelled; the runtime's shutdown
+        // must not wait on one.
+        for state in self.endpoints.values() {
+            if let Some(cancel) = &state.watch_cancel {
+                cancel.store(true, Ordering::Release);
+            }
+        }
     }
 }
 
@@ -479,7 +681,7 @@ fn connect_once(
                 event_tx,
             )
         }
-        AttemptTarget::Ssh { connector } => connector.connect(deadline, |connected| {
+        AttemptTarget::Ssh { connector, mode } => connector.connect(deadline, *mode, |connected| {
             establish(
                 connected.stream,
                 EndpointLink::Ssh(connected.bridge),
@@ -491,6 +693,58 @@ fn connect_once(
             )
         }),
     }
+}
+
+/// Runs a machine's wait for its server on a blocking task and reports how it
+/// ended, handing the connector back with the event. `deadline` bounds only the
+/// executable resolution before the wait; `cancel` ends the wait itself, and the
+/// supervisors set it when they are dropped, so a runtime shutting down never
+/// waits on it.
+fn spawn_server_watch(
+    endpoint_id: ClientEndpointId,
+    generation: shepr_protocol::ConnectionGeneration,
+    mut connector: OwnedConnector,
+    cancel: Arc<AtomicBool>,
+    deadline: Instant,
+    event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    shutdown: Arc<AtomicBool>,
+) {
+    tokio::spawn(async move {
+        if shutdown.load(Ordering::Acquire) {
+            return;
+        }
+        let task_endpoint_id = endpoint_id.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let result = connector
+                .wait_for_server(deadline, &cancel)
+                .map_err(|error| shepr_launch::EndpointFailure::from_error(&error));
+            (connector, result)
+        })
+        .await;
+        let event = match result {
+            Ok((connector, result)) => EndpointSupervisorEvent::Watched {
+                endpoint_id: task_endpoint_id,
+                generation,
+                result,
+                connector: Some(connector),
+            },
+            Err(error) => EndpointSupervisorEvent::Watched {
+                endpoint_id: task_endpoint_id,
+                generation,
+                result: Err(shepr_launch::EndpointFailure::local_setup(format!(
+                    "the wait for the machine's server stopped unexpectedly: {error}"
+                ))),
+                connector: None,
+            },
+        };
+        if !shutdown.load(Ordering::Acquire) {
+            // As for a connection attempt: a send fails only once the loop is gone.
+            event_tx
+                .send(ClientLoopEvent::EndpointSupervisor(event))
+                .await
+                .ok();
+        }
+    });
 }
 
 fn attempt_time_remaining(deadline: Instant) -> Result<Duration, std::io::Error> {
@@ -574,6 +828,46 @@ fn retry_delay(attempt: u32) -> Duration {
 impl EndpointSupervisors {
     fn supervises(&self, endpoint_id: &ClientEndpointId) -> bool {
         self.endpoints.contains_key(endpoint_id)
+    }
+
+    /// Puts an attempt of `generation` in flight, as `spawn_due` does when it starts
+    /// one, without running it.
+    pub(crate) fn mark_in_flight(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: shepr_protocol::ConnectionGeneration,
+        now: Instant,
+    ) {
+        if let Some(state) = self.endpoints.get_mut(endpoint_id) {
+            state.in_flight = true;
+            state.attempt_started = Some(now);
+            state.next_attempt = None;
+            state.generation = Some(generation);
+        }
+    }
+
+    /// The operator's request waiting to run for this endpoint.
+    pub(crate) fn pending_request(&self, endpoint_id: &ClientEndpointId) -> Option<ConnectMode> {
+        self.endpoints
+            .get(endpoint_id)
+            .and_then(|state| state.requested)
+            .map(|(mode, _)| mode)
+    }
+
+    /// Supervisors for `machines` whose connectors never reach a host: their
+    /// runtime directory does not exist, so nothing is created or bound.
+    pub(crate) fn unreachable_for_tests(
+        machines: &[shepr_config::MachineConfig],
+        now: Instant,
+    ) -> Self {
+        let paths = shepr_paths::AppPaths::rooted_at(
+            std::path::Path::new("/nonexistent/shepr-supervisor-tests"),
+            None,
+            None,
+        )
+        .expect("short test root");
+        Self::new(Self::fresh_connectors(&paths, machines), now)
+            .expect("test saved SSH setup is retryable")
     }
 
     pub(crate) fn disconnected(
@@ -1143,5 +1437,158 @@ mod tests {
             supervisors.endpoints[&endpoint_id].next_attempt,
             Some(now + Duration::from_secs(30))
         );
+    }
+
+    /// A machine whose attempt is in flight at `generation`, as `spawn_due` leaves it.
+    fn in_flight(
+        supervisors: &mut EndpointSupervisors,
+        id: &ClientEndpointId,
+        position: u64,
+        now: Instant,
+    ) {
+        let state = supervisors
+            .endpoints
+            .get_mut(id)
+            .expect("test precondition");
+        state.in_flight = true;
+        state.attempt_started = Some(now);
+        state.next_attempt = None;
+        state.generation = Some(generation(position));
+    }
+
+    fn due(
+        supervisors: &mut EndpointSupervisors,
+        id: &ClientEndpointId,
+        now: Instant,
+    ) -> Option<Operation> {
+        let state = supervisors.endpoints.get_mut(id);
+        assert!(state.is_some(), "test precondition: {id} is supervised");
+        state?.due_operation(now)
+    }
+
+    /// The client never starts a server by itself: a connection lost to a server that
+    /// stopped is followed by an attaching attempt, which finds the server still
+    /// running or finds none, and then only waits for one.
+    #[test]
+    fn a_dropped_connection_reattaches_and_never_starts_a_server() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let now = Instant::now();
+        let id = ClientEndpointId::Ssh(machine().label);
+        let mut supervisors = supervisors_for(&env, &[machine()], now);
+        assert_eq!(
+            due(&mut supervisors, &id, now),
+            Some(Operation::Connect(ConnectMode::Attach))
+        );
+
+        in_flight(&mut supervisors, &id, 2, now);
+        assert!(supervisors.record_status(&id, generation(2), ClientEndpointStatus::Online, now));
+        // The server announces its shutdown, and the connection drops.
+        let lost = now + Duration::from_secs(5);
+        let shutdown = shepr_launch::EndpointFailure::server_shutdown(
+            shepr_protocol::ShutdownReason::Stopping,
+        );
+        assert_eq!(
+            supervisors.record_failure(&id, generation(2), &shutdown, lost),
+            Some(EndpointFailureStatus::Reconnecting)
+        );
+        let retry_at = lost + MAX_RETRY_DELAY;
+        assert_eq!(
+            due(&mut supervisors, &id, retry_at),
+            Some(Operation::Connect(ConnectMode::Attach)),
+            "the reconnect only attaches"
+        );
+
+        // That attempt finds no server: the machine is watched, not retried.
+        in_flight(&mut supervisors, &id, 3, retry_at);
+        let none = shepr_launch::EndpointFailure::no_server("no shepr server is running");
+        assert!(
+            supervisors
+                .record_failure(&id, generation(3), &none, retry_at)
+                .is_some()
+        );
+        let watch_at = retry_at + MAX_RETRY_DELAY;
+        assert_eq!(
+            due(&mut supervisors, &id, watch_at),
+            Some(Operation::WatchForServer)
+        );
+
+        // The wait ends when a server appears, and an attaching attempt follows at once.
+        in_flight(&mut supervisors, &id, 4, watch_at);
+        assert!(supervisors.watch_ended(&id, generation(4), ServerWatchEnd::Ended, watch_at));
+        assert_eq!(
+            due(&mut supervisors, &id, watch_at),
+            Some(Operation::Connect(ConnectMode::Attach))
+        );
+    }
+
+    #[test]
+    fn connect_runs_a_starting_attempt_ahead_of_anything_scheduled() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let now = Instant::now();
+        let id = ClientEndpointId::Ssh(machine().label);
+        let mut supervisors = supervisors_for(&env, &[machine()], now);
+        // A wait for the server is in flight.
+        in_flight(&mut supervisors, &id, 2, now);
+        let cancel = Arc::new(AtomicBool::new(false));
+        supervisors
+            .endpoints
+            .get_mut(&id)
+            .expect("test precondition")
+            .watch_cancel = Some(Arc::clone(&cancel));
+
+        let asked = now + Duration::from_secs(1);
+        assert!(supervisors.request(&id, ConnectMode::Start, asked));
+        assert!(cancel.load(Ordering::Acquire), "the wait is cancelled");
+        assert!(supervisors.request_pending(&id));
+        assert_eq!(
+            due(&mut supervisors, &id, asked),
+            None,
+            "the wait still runs"
+        );
+
+        assert!(supervisors.watch_ended(&id, generation(2), ServerWatchEnd::Cancelled, asked));
+        assert_eq!(supervisors.next_retry_deadline(), Some(asked));
+        assert_eq!(
+            due(&mut supervisors, &id, asked),
+            Some(Operation::Connect(ConnectMode::Start))
+        );
+        assert_eq!(
+            due(&mut supervisors, &id, asked),
+            None,
+            "the request runs once"
+        );
+    }
+
+    #[test]
+    fn restart_is_its_own_attempt_mode() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let now = Instant::now();
+        let id = ClientEndpointId::Ssh(machine().label);
+        let mut supervisors = supervisors_for(&env, &[machine()], now);
+        assert!(supervisors.request(&id, ConnectMode::Restart, now));
+        assert_eq!(
+            due(&mut supervisors, &id, now),
+            Some(Operation::Connect(ConnectMode::Restart))
+        );
+    }
+
+    #[test]
+    fn requests_are_refused_for_local_and_for_a_connected_machine() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let now = Instant::now();
+        let id = ClientEndpointId::Ssh(machine().label);
+        let mut supervisors = supervisors_for(&env, &[machine()], now);
+        supervisors.add_local(
+            PathBuf::from("local.sock"),
+            Arc::from(""),
+            Some(generation(1)),
+            now,
+        );
+        assert!(!supervisors.request(&ClientEndpointId::Local, ConnectMode::Start, now));
+
+        in_flight(&mut supervisors, &id, 2, now);
+        assert!(supervisors.record_status(&id, generation(2), ClientEndpointStatus::Online, now));
+        assert!(!supervisors.request(&id, ConnectMode::Start, now));
+        assert_eq!(due(&mut supervisors, &id, now), None);
     }
 }

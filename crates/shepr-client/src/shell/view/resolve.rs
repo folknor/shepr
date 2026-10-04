@@ -37,7 +37,6 @@ pub(super) fn sidebar_inputs<'a>(
     SidebarInputs {
         endpoints: &state.endpoints,
         presented: state.endpoints.presented(),
-        collapsed: &state.endpoints.collapsed,
         model: &state.endpoints.agent_panel_model,
         config: &state.config,
         agent_panel_sort: state.agent_panel_sort_chrome.value(),
@@ -120,13 +119,11 @@ pub(super) fn resolve_frame(state: &ClientShellState, cols: u16, rows: u16) -> R
                 .display_label(&state.config.local_label)
                 .to_owned();
             let status = endpoint.state.status();
-            let area = if !has_surface && layout.sidebar.width > 0 {
-                layout.pane_surface
-            } else {
-                screen
-            };
+            // The banner, the notice card and the mode bar all keep to the pane area, which
+            // is the whole screen when there is no sidebar column, so none covers the
+            // sidebar.
             LifecycleBanner {
-                rect: cards::lifecycle_banner_rect(area, &label, status, palette),
+                rect: cards::lifecycle_banner_rect(layout.pane_surface, &label, status, palette),
                 label,
                 status,
             }
@@ -211,7 +208,7 @@ pub(super) fn resolve_frame(state: &ClientShellState, cols: u16, rows: u16) -> R
     // row (the last line of history, which scrolling cannot lift, or a pane too short to
     // reserve it) the bar moves to the top row so the cursor stays visible.
     let mode_bar_area = if !has_surface {
-        screen
+        layout.pane_surface
     } else {
         let bottom_row = layout.pane_surface.bottom().saturating_sub(1);
         if layout.pane_surface.height > 1 && copy_cursor.map(|(_, y)| y) == Some(bottom_row) {
@@ -229,11 +226,12 @@ pub(super) fn resolve_frame(state: &ClientShellState, cols: u16, rows: u16) -> R
     let notice_offset = if has_surface {
         u16::from(lifecycle.is_some())
     } else {
-        // The sidebar has its header on row zero, even without a pane surface.
+        // Without a surface the pane area's row 0 holds the placeholder line (or the
+        // lifecycle banner in its place), which the card stays below.
         1
     };
     let notice = state.notices.visible().map(|notice| NoticeCard {
-        rect: cards::notice_card_rect(screen, notice, notice_offset),
+        rect: cards::notice_card_rect(layout.pane_surface, notice, notice_offset),
     });
 
     // The overlay is laid out before anything is drawn. One that does not fit has no view,

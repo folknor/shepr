@@ -1,8 +1,9 @@
 use shepr_launch::invocation::{
-    COMMAND_CLIENT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS, COMMAND_STOP,
-    FLAG_EXPECT_BOOT, FLAG_JSON,
+    COMMAND_CLIENT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_REMOTE_WAIT_FOR_SERVER, COMMAND_SERVER,
+    COMMAND_STATUS, COMMAND_STOP, FLAG_EXPECT_BOOT, FLAG_JSON, FLAG_START,
 };
 
+use crate::host::BridgeMode;
 use crate::limits::REMOTE_COMMAND_ARGS_INITIAL_CAPACITY;
 
 /// A `shepr` command line that shepr builds for another `shepr` process, on a
@@ -12,7 +13,14 @@ use crate::limits::REMOTE_COMMAND_ARGS_INITIAL_CAPACITY;
 pub enum RemoteCliCommand<'a> {
     ClientStatus,
     ServerStatus,
+    /// The stdio bridge that only attaches to the host's running server.
     ClientBridge,
+    /// The stdio bridge that starts the host's server when none runs: only
+    /// for the operator's Connect or Restart.
+    StartingClientBridge,
+    /// Blocks until a server answers on the host, then exits. It starts
+    /// nothing.
+    WaitForServer,
     /// Stops only the server whose status reported this boot identity; a
     /// server of another boot refuses and keeps running, and the remote
     /// command then exits with `shepr_launch::stop::ServerStopExit::BootMismatch`.
@@ -23,6 +31,14 @@ pub enum RemoteCliCommand<'a> {
 }
 
 impl<'a> RemoteCliCommand<'a> {
+    /// The bridge command for `mode`.
+    pub fn client_bridge(mode: BridgeMode) -> Self {
+        match mode {
+            BridgeMode::Attach => Self::ClientBridge,
+            BridgeMode::Start => Self::StartingClientBridge,
+        }
+    }
+
     /// The argv words after the executable name.
     pub fn args(self) -> Vec<&'a str> {
         let mut args = Vec::with_capacity(REMOTE_COMMAND_ARGS_INITIAL_CAPACITY);
@@ -32,6 +48,10 @@ impl<'a> RemoteCliCommand<'a> {
                 args.extend([COMMAND_STATUS, COMMAND_SERVER, FLAG_JSON]);
             }
             Self::ClientBridge => args.push(COMMAND_REMOTE_CLIENT_BRIDGE),
+            Self::StartingClientBridge => {
+                args.extend([COMMAND_REMOTE_CLIENT_BRIDGE, FLAG_START]);
+            }
+            Self::WaitForServer => args.push(COMMAND_REMOTE_WAIT_FOR_SERVER),
             Self::ServerStop { expected_boot } => {
                 args.extend([COMMAND_STOP, FLAG_EXPECT_BOOT, expected_boot]);
             }

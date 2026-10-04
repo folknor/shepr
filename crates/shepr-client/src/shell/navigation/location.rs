@@ -67,11 +67,14 @@ struct SnapshotIdentity {
 }
 
 /// A location captured from one snapshot. It is valid only while both snapshot identity
-/// components still match the endpoint's current presentation.
+/// components still match the endpoint's current presentation. A configured machine's
+/// state entry (its Connect or Restart) is pinned to no snapshot: the machine shows it
+/// only while it has none to present, and it stays valid while the entry offers its
+/// action.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::shell) struct PinnedLocation {
     pub(in crate::shell) location: Location,
-    snapshot: SnapshotIdentity,
+    snapshot: Option<SnapshotIdentity>,
 }
 
 impl PinnedLocation {
@@ -82,22 +85,34 @@ impl PinnedLocation {
     ) -> Self {
         Self {
             location,
-            snapshot: SnapshotIdentity {
+            snapshot: Some(SnapshotIdentity {
                 boot_id,
                 generation,
-            },
+            }),
         }
+    }
+
+    /// The state entry of the configured machine `endpoint`.
+    pub(in crate::shell) fn machine_entry(endpoint: ClientEndpointId) -> Self {
+        Self {
+            location: Location::machine(endpoint),
+            snapshot: None,
+        }
+    }
+
+    pub(in crate::shell) fn is_machine_entry(&self) -> bool {
+        self.snapshot.is_none()
     }
 
     pub(super) fn matches(&self, endpoint: &ClientEndpointId, target: LocationTarget) -> bool {
         self.location.endpoint == *endpoint && self.location.target == target
     }
 
-    pub(super) fn boot_id(&self) -> &shepr_protocol::BootId {
-        &self.snapshot.boot_id
+    pub(super) fn boot_id(&self) -> Option<&shepr_protocol::BootId> {
+        self.snapshot.as_ref().map(|snapshot| &snapshot.boot_id)
     }
 
-    pub(super) fn generation(&self) -> shepr_protocol::ConnectionGeneration {
-        self.snapshot.generation
+    pub(super) fn generation(&self) -> Option<shepr_protocol::ConnectionGeneration> {
+        self.snapshot.as_ref().map(|snapshot| snapshot.generation)
     }
 }

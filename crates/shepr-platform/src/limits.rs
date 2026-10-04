@@ -49,6 +49,11 @@ pub(super) const CLIPBOARD_OWNER_STARTUP_WAIT: Duration = Duration::from_millis(
 /// tying memory to the cap.
 pub(super) const LIMITED_READ_BUFFER_BYTES: usize = 8 * 1024;
 
+/// Read chunk size for draining a directory watch's pending events. The
+/// events are only counted as one wake, so a small buffer read in a loop is
+/// enough.
+pub(super) const DIRECTORY_WATCH_READ_BYTES: usize = 4 * 1024;
+
 /// Bytes read past a bounded child-output buffer's cap. The smallest possible
 /// probe distinguishes exact-cap output from oversized output with minimal work.
 pub(super) const LIMITED_READ_OVERFLOW_PROBE_BYTES: usize = 1;

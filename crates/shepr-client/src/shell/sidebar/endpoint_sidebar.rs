@@ -2,7 +2,8 @@ use crate::shell::presentation::text::{display_width, put_right_text, put_text};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 
-use crate::shell::endpoints::{ClientShellEndpoint, endpoint_status_presentation};
+use crate::limits::MACHINE_ENTRY_INDENT;
+use crate::shell::endpoints::ClientShellEndpoint;
 use crate::shell::notices::machine_diagnostics::MachineDiagnostics;
 use crate::shell::presentation::status::status_glyph;
 use crate::shell::sidebar::host_colors::PillLook;
@@ -33,23 +34,30 @@ pub(in crate::shell) fn draw_collapsed(
             } => {
                 let endpoint = &inputs.endpoints[*endpoint];
                 let rect = hit.rect;
-                let active = &endpoint.endpoint_id == inputs.presented;
-                let collapsed = inputs.collapsed.contains(&endpoint.endpoint_id);
-                if active && collapsed {
-                    buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+                // The strip has no entry rows: navigate mode's selection of a
+                // machine's entry highlights the machine's row.
+                if inputs.selected.is_some_and(|selected| {
+                    selected.is_machine_entry()
+                        && selected.location.endpoint == endpoint.endpoint_id
+                }) {
+                    buffer.set_style(
+                        rect,
+                        Style::default().bg(crate::shell::sidebar::workspace_selection_background(
+                            palette,
+                        )),
+                    );
                 }
                 let label = if endpoint.endpoint_id.is_local() {
                     "L".to_owned()
                 } else {
                     machine_number.to_string()
                 };
-                let marker = if collapsed { "▸" } else { "▾" };
                 put_text(
                     buffer,
                     rect.x,
                     rect.y,
                     rect.width.saturating_sub(1),
-                    &format!("{marker}{label}"),
+                    &label,
                     Style::default().fg(if endpoint.state.usable() {
                         palette.text
                     } else {
@@ -57,8 +65,9 @@ pub(in crate::shell) fn draw_collapsed(
                     }),
                 );
                 if !endpoint.endpoint_id.is_local() {
-                    let (glyph, _, color) =
-                        endpoint_status_presentation(endpoint.state.status(), palette);
+                    // The strip has no room for a machine's entry: the glyph shows
+                    // its state, and the row acts as the entry does.
+                    let (glyph, color) = endpoint.row_glyph(palette);
                     put_right_text(
                         buffer,
                         rect,
@@ -78,7 +87,7 @@ pub(in crate::shell) fn draw_collapsed(
                 entry,
             } => {
                 let endpoint = &inputs.endpoints[*endpoint];
-                let Some(snapshot) = endpoint.snapshot() else {
+                let Some(snapshot) = endpoint.listed_snapshot() else {
                     continue;
                 };
                 let Some(workspace) = snapshot.workspaces.get(*entry) else {
@@ -198,6 +207,9 @@ pub(in crate::shell) fn draw_expanded(
             ExpandedSlot::Machine { hit, endpoint } => {
                 draw_machine_slot(buffer, hit.rect, *endpoint, inputs);
             }
+            ExpandedSlot::MachineEntry { hit, endpoint } => {
+                draw_machine_entry(buffer, hit.rect, *endpoint, inputs);
+            }
             ExpandedSlot::Workspace {
                 hit,
                 nested,
@@ -205,7 +217,7 @@ pub(in crate::shell) fn draw_expanded(
                 entry,
             } => {
                 let endpoint = &inputs.endpoints[*endpoint];
-                let Some(snapshot) = endpoint.snapshot() else {
+                let Some(snapshot) = endpoint.listed_snapshot() else {
                     continue;
                 };
                 let Some(workspace) = snapshot.workspaces.get(*entry) else {
@@ -317,42 +329,88 @@ pub(in crate::shell) fn draw_expanded(
 /// Draws the expanded sidebar's row for the machine at `endpoint` in `inputs.endpoints`.
 fn draw_machine_slot(buffer: &mut Buffer, rect: Rect, endpoint: usize, inputs: &SidebarInputs<'_>) {
     let endpoint = &inputs.endpoints[endpoint];
-    let collapsed = inputs.collapsed.contains(&endpoint.endpoint_id);
-    let marker = if collapsed { "▸" } else { "▾" };
     draw_endpoint_row(
         buffer,
         rect,
-        marker,
         endpoint,
         inputs.endpoint_label(&endpoint.endpoint_id),
-        collapsed && &endpoint.endpoint_id == inputs.presented,
         inputs.machine_diagnostics,
         &inputs.config.palette,
     );
+}
+
+/// Draws the state entry of the machine at `endpoint` in `inputs.endpoints`, nested
+/// under its machine row like a workspace. An entry that offers Connect or Restart
+/// is drawn as something to activate, and highlighted while navigate mode selects it.
+fn draw_machine_entry(
+    buffer: &mut Buffer,
+    rect: Rect,
+    endpoint: usize,
+    inputs: &SidebarInputs<'_>,
+) {
+    let endpoint = &inputs.endpoints[endpoint];
+    let Some(entry) = endpoint.machine_entry() else {
+        return;
+    };
+    let palette = &inputs.config.palette;
+    let selected = inputs.selected.is_some_and(|selected| {
+        selected.is_machine_entry() && selected.location.endpoint == endpoint.endpoint_id
+    });
+    if selected {
+        buffer.set_style(
+            rect,
+            Style::default().bg(crate::shell::sidebar::workspace_selection_background(
+                palette,
+            )),
+        );
+    }
+    let style = if entry.state.action().is_some() {
+        Style::default()
+            .fg(palette.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(palette.overlay0)
+    };
+    let indent = MACHINE_ENTRY_INDENT;
+    put_text(
+        buffer,
+        rect.x.saturating_add(indent),
+        rect.y,
+        rect.width.saturating_sub(indent),
+        entry.state.label(),
+        style,
+    );
+    if let Some(hint) = entry.hint.as_deref()
+        && rect.height > 1
+    {
+        put_text(
+            buffer,
+            rect.x.saturating_add(indent),
+            rect.y.saturating_add(1),
+            rect.width.saturating_sub(indent),
+            hint,
+            Style::default().fg(palette.overlay0),
+        );
+    }
 }
 
 /// `label` is the name shown for `endpoint`.
 fn draw_endpoint_row(
     buffer: &mut Buffer,
     rect: Rect,
-    marker: &str,
     endpoint: &ClientShellEndpoint,
     label: &str,
-    highlighted: bool,
     diagnostics: &MachineDiagnostics,
     palette: &Palette,
 ) {
-    if highlighted {
-        buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
-    }
-    let (signal, color) = endpoint_signal(endpoint, diagnostics, palette);
+    let (signal, color) = endpoint_signal(endpoint, palette);
     let signal_width = display_width(&signal).min(rect.width);
     put_text(
         buffer,
         rect.x,
         rect.y,
         rect.width.saturating_sub(signal_width.saturating_add(1)),
-        &format!(" {marker} {label}"),
+        &format!(" {label}"),
         Style::default()
             .fg(palette.text)
             .add_modifier(Modifier::BOLD),

@@ -181,7 +181,7 @@ pub(crate) fn run_launched_client(
         );
         // A shell with configured machines can show connection notices without a server snapshot.
         let (terminal_guard, output_writer) =
-            setup_terminal(launched.settings.mouse_capture_active(), launched.settings.modify_other_keys_mode()).map_err(
+            setup_terminal(launched.settings.mouse_capture_active(), launched.settings.modify_other_keys_mode(), &launched.shell_config.window_title()).map_err(
                 |err| io::Error::new(err.kind(), format!("failed to set up terminal: {err}")),
             )?;
         let terminal_guard = terminal_slot.insert(terminal_guard);
@@ -297,7 +297,6 @@ impl Launched {
             pending_surface_patch: None,
             draw_host_cursor,
             frame_write_failure: HostWriteFailure::default(),
-            title_write_failure: HostWriteFailure::default(),
             mode_write_failure: HostWriteFailure::default(),
             retry_host_modes: false,
             refused_output_retry: state::RefusedOutputRetry::default(),

@@ -75,7 +75,7 @@ impl HeadlessServer {
             // whenever a viewer is (re)activated so the post-commit replay can produce
             // mouse/keyboard modes and graphics even when runtime demand is unchanged.
             if active {
-                // Do not emit/cache a title while a target is being prepared.
+                // Do not cache a mode told while a target is being prepared.
                 // A committed client explicitly requests the bounded replay
                 // with ReplayHostEffects after its coherent frame is visible.
                 client.outbox.forget_presentation();

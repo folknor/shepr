@@ -30,7 +30,6 @@ mod server_stop;
 mod shutdown;
 mod surface_delta;
 mod surface_interest;
-mod window_title;
 
 /// The pane entries a surface update's metadata carries, whichever variant it is.
 fn meta_panes(meta: &Option<shepr_protocol::SurfaceMeta>) -> &[shepr_protocol::PaneSurfacePane] {
@@ -63,11 +62,6 @@ fn settle_pane_resizes(server: &mut HeadlessServer) -> bool {
     clock.now += crate::limits::PANE_RESIZE_SETTLE;
     server.app.set_clock(clock);
     server.apply_due_pane_resizes()
-}
-
-/// Turns window titles on for `server`, as `ui.window_title` does.
-pub(crate) fn enable_window_title(server: &mut HeadlessServer, template: &str) {
-    server.window_title = crate::ui::WindowTitleSettings::for_test(template);
 }
 
 pub(crate) fn outer_terminal_focus(
@@ -165,7 +159,6 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         None,
         stop_signal,
         shepr_test_fixtures::fixed_boot_id(1),
-        None,
         server_events,
     )
 }

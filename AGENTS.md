@@ -36,7 +36,9 @@ Kept:
 - Session restore (layout saved to disk, rebuilt with fresh shells) and agent
   resume on restore
 - Git status in the sidebar (branch, ahead/behind)
-- Mouse selection, copy mode, keybinding help, window title templating
+- Mouse selection, copy mode, keybinding help, and the outer terminal's
+  window title, which the client sets to `shepr: <local label>` when the TUI
+  starts and keeps whichever machine is presented (no setting, no server part)
 - The JSON API over the server socket. The TUI does not act on workspaces
   or panes through it: it sends typed commands on the TUI's connection to
   the server socket (`shepr_protocol::command::EndpointCommand`), none of
@@ -81,7 +83,7 @@ the SSH discovery and conditional stop read.
 Configuration is two files in the XDG config directory: `client.toml`, read
 only by the TUI (and its internal `client` launch), and `server.toml`, read
 only by `shepr-server`. CLI subcommands and the internal
-`remote-client-bridge` launch read neither. Each file is read and validated
+`remote-client-bridge` and `remote-wait-for-server` launches read neither. Each file is read and validated
 once at launch, and a missing file means that program's defaults. There is no
 reload and no config path override. Any config problem fails the launch; no
 fallbacks. An unknown key is a config problem, so a setting placed in the
@@ -103,7 +105,7 @@ machine's `palette` and the host terminal's theme. `client.toml` holds those
 `[[machines]]`. Each server applies its own config to what it
 runs and to what it renders into pane cells: shell and working directory,
 session, pane borders, gaps and scrollbars, the colours of that pane chrome,
-the window title and the cursor it reveals for CJK input methods.
+and the cursor it reveals for CJK input methods.
 `server.toml` holds those `[ui]` settings, `[terminal]`, `[session]`,
 `[server]`, `[advanced]` and `[experimental]`. `[theme]` is in both files, so
 a machine whose theme differs from the local one draws its pane chrome in its
@@ -130,22 +132,44 @@ budget without a result is treated as a possible interactive-authentication
 wait, including security-key presence, and gets the foreground attempt. A
 command shortened by the overall attempt budget remains an offline result.
 Host keys are never accepted automatically.
-A running server of a different build, the local one or a machine's, is then
-offered a restart (the local one only at the build profile's own runtime
-address: a socket override names a server this client cannot relaunch, so it
-gets stop guidance instead) in one pass after the last authentication prompt: the
-question says that the restart ends the server's pane processes and that the
-layout is restored with fresh shells and agents resumed. Consent is asked on
-the terminal and defaults to keeping the server; with no terminal, or on
-refusal, the server is left running and unavailable and shepr says how to stop
-it. Guidance uses `shepr` for a release build and the running executable path
-for a dev build (or `brokkr run --` if the path cannot be resolved), with the
-selected socket override. The stop names the boot identity that was observed,
-so a server that replaced it in the meantime is not stopped, and is offered
-again as a new occupant. Unreachable machines fail soft. With
-machines configured, losing the local server does not end the client either:
-it keeps serving the remote machines and reconnects once the local server is
-restarted.
+A running local server of a different build is then offered a restart (only at
+the build profile's own runtime address: a socket override names a server this
+client cannot relaunch, so it gets stop guidance instead) after the last
+authentication prompt: the question says that the restart ends the server's
+pane processes and that the layout is restored with fresh shells and agents
+resumed. Consent is asked on the terminal and defaults to keeping the server;
+with no terminal, or on refusal, the server is left running and unavailable and
+shepr says how to stop it. Guidance uses `shepr` for a release build and the
+running executable path for a dev build (or `brokkr run --` if the path cannot
+be resolved), with the selected socket override. The stop names the boot
+identity that was observed, so a server that replaced it in the meantime is not
+stopped, and is offered again as a new occupant.
+
+shepr never starts a server on another host by itself. Running `shepr` starts
+that host's own server; every connection the client makes to a machine by
+itself only attaches (the remote `remote-client-bridge` without `--start`), at
+startup and after a dropped connection alike, and a machine with no server
+running stays without one. `shepr stop` on a machine therefore leaves it
+stopped. The sidebar lists every machine expanded (machines cannot be folded),
+with its workspaces while it is connected and, while it is not, a state entry
+in their place and no workspaces or agents of its last snapshot: Connect (no
+server running; activating it starts the server through the bridge's start
+mode and attaches), Starting... or Stopping..., Restart (a server of another
+build; activating it asks first, with the same facts as the local restart
+question, then stops that server by the boot its status named and starts this
+build's), Offline (unreachable; the machine row's diagnostic badge carries the
+reason, and it is retried with the reconnect backoff), or a login entry for a
+machine whose SSH needs authentication (startup prompts for it; after startup
+the entry says to run `shepr` again or ssh to it). Navigate mode steps onto a
+Connect or Restart entry in its place among the workspaces and Enter opens it;
+a click on the entry, or on its machine row, does the same, and the collapsed
+sidebar strip shows each machine's state as the glyph on its machine row. A
+machine that answers with no server is not polled: the client keeps
+`shepr remote-wait-for-server` running there over the shared SSH control
+connection, which watches the runtime directory with inotify and exits once a
+server answers, and the client then attaches. With machines configured, losing
+the local server does not end the client either: it keeps serving the remote
+machines and reconnects once the local server is restarted.
 
 Panes run agents and shells. Key encoding to pane children covers what those
 use: legacy encoding, kitty disambiguate and the keys crossterm's `KeyCode`
@@ -221,7 +245,7 @@ orientation, and nothing checks them:
 - `shepr-launch`: the server lifecycle seen from outside the server: local
   server launch and probing (the launch lock, the sibling `shepr-server`, its
   boot log, the different-build policy), presence probing, conditional stop,
-  the restart offer, the invocation grammar and exit codes shepr processes
+  the local restart offer, the invocation grammar and exit codes shepr processes
   share (the server's arguments and `DaemonExit`, the CLI's command words),
   the operator text naming the commands that reach a server, the endpoint
   failure vocabulary with its one disposition table, for every endpoint, and
@@ -232,9 +256,12 @@ orientation, and nothing checks them:
   copy-mode keys, the one-line text editor prompts edit with, frame blitting
   and host terminal modes, title, clipboard and theme queries.
 - `shepr-remote`: configured machines and SSH connections, the SSH attempt
-  timing, startup preflight, and the remote-host side of the SSH bridge (its
-  stdio relay and idle watchdog), which ensures its local server through
-  `shepr-launch`. It owns the SSH path policy (OpenSSH `%C` expansion, control
+  timing, startup preflight, the remote-host side of the SSH bridge (its
+  stdio relay and idle watchdog), which only attaches to its host's server
+  unless started for the operator's Connect or Restart (then it starts that
+  server through `shepr-launch`), and the remote wait for a server
+  (`crates/shepr-remote/src/server_wait.rs`) with the client side that runs
+  it. It owns the SSH path policy (OpenSSH `%C` expansion, control
   path naming, bridge socket naming; `crates/shepr-remote/src/ssh_paths.rs`). It classifies OpenSSH output into launch's failure
   vocabulary at its boundary and keeps discovery evidence to itself.
 - `shepr-git`: Git status as one subsystem: checkout discovery, the Git
@@ -380,7 +407,7 @@ every agent integration reports through it.
   frame, so a refused write leaves no trace in shell state. Drawing never
   writes shell state.
 - **Presentation is per client.** Each connection on the server keeps its
-  own surface size, outer focus, location and window title; nothing projects
+  own surface size, outer focus and location; nothing projects
   one client's view into `AppState`. What panes have one of is decided from
   all the views in one place each: PTY size by the PTY size rule
   (`workspace_geometry_source` in `crates/shepr-server/src/server/headless/client_views.rs`,

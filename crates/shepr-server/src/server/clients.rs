@@ -236,9 +236,9 @@ pub(crate) struct ClientSurfaceChange {
 /// inspect a connection, while cross-connection decisions and ownership maps
 /// live here and can be tested without a PTY.
 ///
-/// Presentation (surface size, outer focus, location, window title, input
-/// modes) lives on each connection, and so does what the connection is owed
-/// (its render state's settle point and surface debt); nothing here or in the
+/// Presentation (surface size, outer focus, location, input modes) lives on
+/// each connection, and so does what the connection is owed (its render
+/// state's settle point and surface debt); nothing here or in the
 /// app mirrors one client's view as a session-wide one. The registry holds two
 /// arbitrations between clients: which one controls each workspace's PTY
 /// geometry, and which presenting shell most recently recorded user activity

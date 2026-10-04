@@ -1,26 +1,23 @@
-//! Startup authentication and restart offers for configured machines.
+//! Startup authentication for configured machines.
 //!
 //! The TUI reaches machines with `BatchMode=yes`, so password and
 //! keyboard-interactive prompts are disabled. A security-key agent can still
 //! wait for user presence; when a full bounded SSH command times out before a
 //! remote result, preflight offers foreground SSH for that candidate. This step
-//! runs once before the client takes over the terminal:
+//! runs once before the client takes over the terminal: [`preflight`] checks
+//! every machine concurrently and without prompting, walks the ones that need
+//! authentication one at a time and runs interactive ssh on shepr's own control
+//! socket for each, then checks those machines again, since the first check
+//! could not see past the prompt. `ControlPersist` keeps the authenticated
+//! master alive after that ssh exits, so the client's connectors reuse it.
 //!
-//! 1. [`preflight`] checks every machine concurrently and without prompting,
-//!    walks the ones that need authentication one at a time and runs interactive
-//!    ssh on shepr's own control socket for each, then checks those machines
-//!    again, since the first check could not see past the prompt.
-//!    `ControlPersist` keeps the authenticated master alive after that ssh
-//!    exits, so the client's connectors reuse it.
-//! 2. [`restart_different_builds`] offers, one machine at a time, to restart a
-//!    running server of another build on a machine that passed. It runs after
-//!    every authentication prompt so prompts never interleave with offers.
+//! The check starts nothing on a machine, and a machine's server of another
+//! build is not handled here: the client shows it with a Restart entry.
 //!
 //! The orchestration talks to ssh only through [`PreflightSsh`], so its
-//! parallelism, prompt serialization, classification and restart decisions are
-//! tested without a host. This crate does not print or read the terminal: the
-//! caller announces each prompt through the `before_authentication` callback,
-//! asks each restart question through the `decide` callback, and reports the
+//! parallelism, prompt serialization and classification are tested without a
+//! host. This crate does not print or read the terminal: the caller announces
+//! each prompt through the `before_authentication` callback and reports the
 //! returned outcomes.
 
 use std::collections::HashMap;
@@ -28,13 +25,10 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use shepr_launch::restart::{RestartDecision, RestartFailure, RestartResult, StopOutcome};
 use shepr_launch::{EndpointFailure, FailureCause, FailureDisposition, SshFailureClass};
 
-use crate::limits::MAX_RESTART_OFFERS;
 use crate::machine::{MachineConfig, MachineLabel};
 use crate::machine_ssh::{MachineProbe, MachineSshConnector};
-use crate::server_lifecycle::{DifferentBuildServer, MachineSshCheck};
 use crate::ssh::ssh_authentication_command;
 
 /// The SSH operations the preflight needs.
@@ -44,22 +38,13 @@ pub trait PreflightSsh: Sync {
     /// long after the first check did.
     fn start_round(&self) {}
 
-    /// Checks one machine without prompting. Called for all machines of a round
-    /// at once, from separate threads.
-    fn check(&self, machine: &MachineConfig) -> io::Result<MachineSshCheck>;
+    /// Checks one machine without prompting and without starting anything.
+    /// Called for all machines of a round at once, from separate threads.
+    fn check(&self, machine: &MachineConfig) -> io::Result<()>;
 
     /// Runs interactive authentication for one machine in this terminal. Called
     /// for one machine at a time, from the calling thread.
     fn authenticate(&self, machine: &MachineConfig) -> Result<(), AuthenticationError>;
-
-    /// Stops the server instance `server` describes, if it is still the one
-    /// running on the machine. Called for one machine at a time, from the
-    /// calling thread, only after the caller consented.
-    fn stop_server(
-        &self,
-        machine: &MachineConfig,
-        server: &DifferentBuildServer,
-    ) -> io::Result<StopOutcome>;
 }
 
 /// What the non-interactive check found out about one machine. A failed check
@@ -67,7 +52,7 @@ pub trait PreflightSsh: Sync {
 /// hints from its cause.
 #[derive(Clone, Debug)]
 pub enum MachineCheck {
-    /// SSH works and a compatible shepr can be served from the machine.
+    /// SSH works and a shepr of this build is installed there.
     Ready,
     /// Non-interactive SSH refused credentials or timed out before returning;
     /// foreground SSH may complete authentication or wait for key presence.
@@ -76,9 +61,6 @@ pub enum MachineCheck {
     Offline(EndpointFailure),
     /// The host key is unknown or changed. Never accepted automatically.
     HostKey(EndpointFailure),
-    /// The installed pair is this build and a server of another build is
-    /// running: a restart would fix it, with the operator's consent.
-    DifferentBuild(DifferentBuildServer),
     /// The machine answered but cannot be served: no shepr, another build, a
     /// shepr-server beside it that is missing or another build, or a running
     /// server whose build or boot identity is unknown.
@@ -94,10 +76,9 @@ impl MachineCheck {
 }
 
 /// Sorts a check result into the classes the preflight acts on.
-pub fn classify_check(result: io::Result<MachineSshCheck>) -> MachineCheck {
+pub fn classify_check(result: io::Result<()>) -> MachineCheck {
     let error = match result {
-        Ok(MachineSshCheck::Ready) => return MachineCheck::Ready,
-        Ok(MachineSshCheck::DifferentBuild(server)) => return MachineCheck::DifferentBuild(server),
+        Ok(()) => return MachineCheck::Ready,
         Err(error) => error,
     };
     let failure = EndpointFailure::from_error(&error);
@@ -143,10 +124,6 @@ impl std::error::Error for AuthenticationError {
     }
 }
 
-/// The operator's consent callback for one restart offer.
-pub type RestartDecider<'a> =
-    dyn FnMut(&MachineConfig, &DifferentBuildServer) -> RestartDecision + 'a;
-
 /// How one machine came out of the preflight.
 #[derive(Debug)]
 pub struct PreflightOutcome {
@@ -154,14 +131,11 @@ pub struct PreflightOutcome {
     /// it with a separate configuration slice by position.
     pub machine: MachineConfig,
     /// The latest non-interactive check: the one before any prompt, or the
-    /// check that followed a successful prompt, or the one that followed a
-    /// restart.
+    /// check that followed a successful prompt.
     pub check: MachineCheck,
     /// `None` when no prompt was run for this machine; otherwise whether the
     /// interactive ssh succeeded, with its process status or setup error.
     pub authentication: Option<Result<(), AuthenticationError>>,
-    /// `None` until a restart of this machine's server was considered.
-    pub restart: Option<RestartResult>,
 }
 
 /// Checks every machine concurrently, then authenticates the ones that need it
@@ -172,8 +146,7 @@ pub struct PreflightOutcome {
 ///
 /// Each outcome owns its machine configuration. A machine whose prompt
 /// succeeded carries the check that followed it; one whose prompt failed keeps
-/// the check that asked for it. Restarts are a separate step
-/// ([`restart_different_builds`]).
+/// the check that asked for it.
 pub fn preflight(
     machines: &[MachineConfig],
     ssh: &dyn PreflightSsh,
@@ -200,7 +173,6 @@ pub fn preflight(
                 machine: machine.clone(),
                 check,
                 authentication,
-                restart: None,
             }
         })
         .collect();
@@ -267,80 +239,10 @@ fn check_concurrently(ssh: &dyn PreflightSsh, machines: &[&MachineConfig]) -> Ve
     })
 }
 
-/// Offers, one machine at a time in outcome order, to restart the running server
-/// of another build on each machine whose check says so, and records what came
-/// of it in the outcome's `restart` (and `check`, when the machine changed).
-/// Each outcome carries its own machine configuration.
-///
-/// `decide` is the operator's consent. When it is absent, the server is left
-/// alone. Nothing is stopped without a [`RestartDecision::Restart`].
-///
-/// The stop names the boot identity that was observed, and the remote refuses
-/// to stop any other instance. If another boot answers during that refusal or
-/// while the named instance shuts down, the machine is checked again (back to
-/// discovery) and a still-different server is offered again, up to
-/// [`MAX_RESTART_OFFERS`] times. A stopped machine's check becomes
-/// [`MachineCheck::Ready`], since the bridge starts a server of this build on
-/// attach. If the observed server is already gone when its stop request runs,
-/// the check also becomes Ready without rediscovering or offering a new server.
-pub fn restart_different_builds(
-    outcomes: &mut [PreflightOutcome],
-    ssh: &dyn PreflightSsh,
-    mut decide: Option<&mut RestartDecider<'_>>,
-) {
-    for outcome in outcomes {
-        if !matches!(&outcome.check, MachineCheck::DifferentBuild(_)) {
-            continue;
-        }
-        let result = {
-            let mut first_observation = true;
-            let mut observe = || {
-                if first_observation {
-                    first_observation = false;
-                } else {
-                    outcome.check = check_concurrently(ssh, &[&outcome.machine])
-                        .pop()
-                        .unwrap_or(MachineCheck::Ready);
-                }
-                Some(outcome.check.clone())
-            };
-            let machine = &outcome.machine;
-            let can_decide = decide.is_some();
-            let mut decide_for_machine = |check: &MachineCheck| match check {
-                MachineCheck::DifferentBuild(server) => decide
-                    .as_deref_mut()
-                    .map_or(RestartDecision::Keep, |decide| decide(machine, server)),
-                _ => RestartDecision::Keep,
-            };
-            let prompt: Option<&mut dyn FnMut(&MachineCheck) -> RestartDecision> = if can_decide {
-                Some(&mut decide_for_machine)
-            } else {
-                None
-            };
-            RestartResult::offer(
-                MAX_RESTART_OFFERS,
-                prompt,
-                &mut observe,
-                |check| matches!(check, MachineCheck::DifferentBuild(_)),
-                |check| match check {
-                    MachineCheck::DifferentBuild(server) => ssh
-                        .stop_server(machine, server)
-                        .map_err(RestartFailure::Remote),
-                    _ => Ok(StopOutcome::NoServer),
-                },
-            )
-        };
-        if matches!(&result, RestartResult::Stopped | RestartResult::NoServer) {
-            outcome.check = MachineCheck::Ready;
-        }
-        outcome.restart = Some(result);
-    }
-}
-
 /// The real ssh behind [`PreflightSsh`]: one retained probe per configured machine,
-/// under one shared deadline per round, `ssh_authentication_command` on shepr's
-/// control socket, and a conditional remote stop over the probe's transport.
-/// [`Self::into_connectors`] hands each probe to the client's connector.
+/// under one shared deadline per round, and `ssh_authentication_command` on
+/// shepr's control socket. [`Self::into_connectors`] hands each probe to the
+/// client's connector.
 pub struct MachineSshPreflight<'a> {
     paths: &'a shepr_paths::AppPaths,
     deadline: Mutex<Instant>,
@@ -394,7 +296,7 @@ impl PreflightSsh for MachineSshPreflight<'_> {
         *deadline = round_deadline();
     }
 
-    fn check(&self, machine: &MachineConfig) -> io::Result<MachineSshCheck> {
+    fn check(&self, machine: &MachineConfig) -> io::Result<()> {
         let deadline = *self
             .deadline
             .lock()
@@ -425,24 +327,6 @@ impl PreflightSsh for MachineSshPreflight<'_> {
             Err(AuthenticationError::Exited(status))
         }
     }
-
-    fn stop_server(
-        &self,
-        machine: &MachineConfig,
-        server: &DifferentBuildServer,
-    ) -> io::Result<StopOutcome> {
-        let probe = Arc::clone(
-            self.probes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry(machine.label.clone())
-                .or_default(),
-        );
-        let mut probe = probe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        probe.stop_server(self.paths, &machine.ssh, server)
-    }
 }
 
 #[cfg(test)]
@@ -452,8 +336,8 @@ mod tests {
         SSH_OWN_FAILURE_EXIT_CODE, SshFailureDiagnostic, local_setup_error,
         remote_compatibility_error,
     };
-    use crate::machine::{MachineLabel, RemoteExecutable, SshTarget};
-    use std::collections::{HashMap, VecDeque};
+    use crate::machine::{MachineLabel, SshTarget};
+    use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
@@ -476,40 +360,12 @@ mod tests {
         ))
     }
 
-    fn server(boot_id: &str) -> DifferentBuildServer {
-        DifferentBuildServer {
-            executable: RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition"),
-            build_id: "ffffffffffffffff".parse().expect("build identity"),
-            boot_id: boot_id.parse().expect("boot identity"),
-        }
-    }
-
-    /// What a scripted stop does.
-    enum StopScript {
-        Stopped,
-        /// Another instance answered: it has this boot identity from now on.
-        ChangedTo(&'static str),
-        /// Another instance answered, and by the next check nothing needs a
-        /// restart.
-        ChangedToReady,
-        /// The observed instance was already gone when the stop ran.
-        NoServer,
-        Fails,
-    }
-
     /// A scripted ssh: each machine's check result is looked up by label, and
     /// every call is logged with how many like calls were in flight.
-    ///
-    /// The label `stale` is a machine running a server of another build with the
-    /// boot identity in `current_boot`; `authstale` is one that needs a prompt
-    /// and shows that server only once authenticated.
     struct FakeSsh {
         needs_authentication: Vec<&'static str>,
         failing_authentication: Vec<&'static str>,
         authenticated: Mutex<Vec<String>>,
-        current_boot: Mutex<String>,
-        ready_now: Mutex<bool>,
-        stops: Mutex<VecDeque<StopScript>>,
         check_counts: Mutex<HashMap<String, usize>>,
         rounds: AtomicUsize,
         checks_active: AtomicUsize,
@@ -525,9 +381,6 @@ mod tests {
                 needs_authentication: needs_authentication.to_vec(),
                 failing_authentication: Vec::new(),
                 authenticated: Mutex::new(Vec::new()),
-                current_boot: Mutex::new("17-1".into()),
-                ready_now: Mutex::new(false),
-                stops: Mutex::new(VecDeque::new()),
                 check_counts: Mutex::new(HashMap::new()),
                 rounds: AtomicUsize::new(0),
                 checks_active: AtomicUsize::new(0),
@@ -536,11 +389,6 @@ mod tests {
                 max_prompts_active: AtomicUsize::new(0),
                 log: Mutex::new(Vec::new()),
             }
-        }
-
-        fn with_stops(self, stops: impl IntoIterator<Item = StopScript>) -> Self {
-            *self.stops.lock().expect("test precondition") = stops.into_iter().collect();
-            self
         }
 
         fn log(&self, entry: String) {
@@ -571,7 +419,7 @@ mod tests {
             self.rounds.fetch_add(1, Ordering::SeqCst);
         }
 
-        fn check(&self, machine: &MachineConfig) -> io::Result<MachineSshCheck> {
+        fn check(&self, machine: &MachineConfig) -> io::Result<()> {
             enter(&self.checks_active, &self.max_checks_active);
             // Long enough for every concurrent check to be in flight together.
             std::thread::sleep(Duration::from_millis(100));
@@ -592,18 +440,7 @@ mod tests {
                 "offline" => Err(io::Error::from(io::ErrorKind::TimedOut)),
                 "hostkey" => Err(ssh_failure("Host key verification failed.")),
                 "old" => Err(remote_compatibility_error("the machine runs another build")),
-                // A remote client/server pair of two builds: discovery rejects it.
-                "pair" => Err(remote_compatibility_error(
-                    "the installed shepr-server is another build than shepr",
-                )),
-                "stale" | "authstale" => {
-                    if *locked(&self.ready_now) {
-                        return Ok(MachineSshCheck::Ready);
-                    }
-                    let boot = locked(&self.current_boot);
-                    Ok(MachineSshCheck::DifferentBuild(server(&boot)))
-                }
-                _ => Ok(MachineSshCheck::Ready),
+                _ => Ok(()),
             }
         }
 
@@ -622,30 +459,6 @@ mod tests {
             } else {
                 locked(&self.authenticated).push(machine.label.to_string());
                 Ok(())
-            }
-        }
-
-        fn stop_server(
-            &self,
-            machine: &MachineConfig,
-            server: &DifferentBuildServer,
-        ) -> io::Result<StopOutcome> {
-            self.log(format!("stop {} {}", machine.label, server.boot_id));
-            let script = locked(&self.stops)
-                .pop_front()
-                .ok_or_else(|| io::Error::other("no scripted stop"))?;
-            match script {
-                StopScript::Stopped => Ok(StopOutcome::Stopped),
-                StopScript::ChangedTo(boot) => {
-                    *locked(&self.current_boot) = boot.into();
-                    Ok(StopOutcome::BootChanged)
-                }
-                StopScript::ChangedToReady => {
-                    *locked(&self.ready_now) = true;
-                    Ok(StopOutcome::BootChanged)
-                }
-                StopScript::NoServer => Ok(StopOutcome::NoServer),
-                StopScript::Fails => Err(io::Error::other("remote server stop failed: timed out")),
             }
         }
     }
@@ -706,19 +519,17 @@ mod tests {
 
     #[test]
     fn a_machine_is_checked_again_after_its_prompt_succeeded() {
-        let machines = [machine("ok"), machine("a"), machine("authstale")];
-        let ssh = FakeSsh::new(&["a", "authstale"]);
+        let machines = [machine("ok"), machine("a"), machine("b")];
+        let ssh = FakeSsh::new(&["a", "b"]);
         let outcomes = preflight(&machines, &ssh, Some(&mut |_| {}));
         // Two rounds: every machine, then the two that were prompted.
         assert_eq!(ssh.rounds.load(Ordering::SeqCst), 2);
         assert_eq!(ssh.checks_of("ok"), 1);
         assert_eq!(ssh.checks_of("a"), 2);
-        assert_eq!(ssh.checks_of("authstale"), 2);
+        assert_eq!(ssh.checks_of("b"), 2);
+        // What the first check could not see past is found by the second.
         assert!(matches!(outcomes[1].check, MachineCheck::Ready));
-        // What the first check could not see is found by the second.
-        assert!(
-            matches!(&outcomes[2].check, MachineCheck::DifferentBuild(found) if found.boot_id == "17-1")
-        );
+        assert!(matches!(outcomes[2].check, MachineCheck::Ready));
     }
 
     #[test]
@@ -799,10 +610,7 @@ mod tests {
 
     #[test]
     fn checks_are_classified_by_what_went_wrong() {
-        assert!(matches!(
-            classify_check(Ok(MachineSshCheck::Ready)),
-            MachineCheck::Ready
-        ));
+        assert!(matches!(classify_check(Ok(())), MachineCheck::Ready));
         for (error, expected) in [
             (
                 ssh_failure("user@host: Permission denied (password)."),
@@ -832,7 +640,6 @@ mod tests {
                 MachineCheck::NeedsAuthentication(_) => "authentication",
                 MachineCheck::Offline(_) => "offline",
                 MachineCheck::HostKey(_) => "host key",
-                MachineCheck::DifferentBuild(_) => "different build",
                 MachineCheck::Incompatible(_) => "incompatible",
                 MachineCheck::Failed(_) => "failed",
             };
@@ -853,10 +660,6 @@ mod tests {
                 MachineCheck::Failed(_)
             ));
         }
-        assert!(matches!(
-            classify_check(Ok(MachineSshCheck::DifferentBuild(server("17-1")))),
-            MachineCheck::DifferentBuild(_)
-        ));
     }
 
     #[test]
@@ -881,201 +684,5 @@ mod tests {
             check_after_authentication(waiting),
             MachineCheck::Failed(_)
         ));
-    }
-
-    /// Runs the whole startup step for `machines` against `ssh`, answering every
-    /// offer with the next of `answers` and recording what was asked.
-    fn run_restarts(
-        machines: &[MachineConfig],
-        ssh: &FakeSsh,
-        can_prompt: bool,
-        answers: &[RestartDecision],
-    ) -> (Vec<PreflightOutcome>, Vec<String>) {
-        let mut announce = |_: &MachineConfig| {};
-        let authentication: Option<&mut dyn FnMut(&MachineConfig)> = if can_prompt {
-            Some(&mut announce)
-        } else {
-            None
-        };
-        let mut outcomes = preflight(machines, ssh, authentication);
-        let mut answers = answers.iter().copied();
-        let mut asked = Vec::new();
-        let mut decide = |machine: &MachineConfig, server: &DifferentBuildServer| {
-            asked.push(format!("{} {}", machine.label, server.boot_id));
-            answers.next().expect("an answer for every offer")
-        };
-        let prompt: Option<&mut RestartDecider<'_>> =
-            if can_prompt { Some(&mut decide) } else { None };
-        restart_different_builds(&mut outcomes, ssh, prompt);
-        (outcomes, asked)
-    }
-
-    #[test]
-    fn a_different_build_is_restarted_with_consent() {
-        let machines = [machine("ok"), machine("stale")];
-        let ssh = FakeSsh::new(&[]).with_stops([StopScript::Stopped]);
-        let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
-        // Only the machine running another build is asked, and the stop names
-        // the boot that was observed.
-        assert_eq!(asked, ["stale 17-1"]);
-        assert_eq!(ssh.entries(), ["stop stale 17-1"]);
-        assert!(outcomes[0].restart.is_none());
-        assert!(matches!(outcomes[1].restart, Some(RestartResult::Stopped)));
-        assert!(matches!(outcomes[1].check, MachineCheck::Ready));
-    }
-
-    #[test]
-    fn a_refused_offer_leaves_the_server_alone() {
-        let machines = [machine("stale")];
-        let ssh = FakeSsh::new(&[]);
-        let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Keep]);
-        assert_eq!(asked, ["stale 17-1"]);
-        assert!(ssh.entries().is_empty(), "nothing was stopped");
-        assert!(matches!(outcomes[0].restart, Some(RestartResult::Declined)));
-        assert!(matches!(outcomes[0].check, MachineCheck::DifferentBuild(_)));
-    }
-
-    #[test]
-    fn without_a_terminal_nothing_is_asked_or_stopped() {
-        let machines = [machine("stale")];
-        let ssh = FakeSsh::new(&[]);
-        let mut outcomes = preflight(&machines, &ssh, None);
-        restart_different_builds(&mut outcomes, &ssh, None);
-        assert!(ssh.entries().is_empty(), "nothing was stopped");
-        assert!(matches!(
-            outcomes[0].restart,
-            Some(RestartResult::NoTerminal)
-        ));
-        assert!(matches!(outcomes[0].check, MachineCheck::DifferentBuild(_)));
-    }
-
-    #[test]
-    fn a_changed_occupant_is_rediscovered_and_offered_again() {
-        let machines = [machine("stale")];
-        let ssh =
-            FakeSsh::new(&[]).with_stops([StopScript::ChangedTo("17-2"), StopScript::Stopped]);
-        let (outcomes, asked) = run_restarts(
-            &machines,
-            &ssh,
-            true,
-            &[RestartDecision::Restart, RestartDecision::Restart],
-        );
-        // The second offer is for the instance the fresh check found, and the
-        // second stop names that boot, not the first.
-        assert_eq!(asked, ["stale 17-1", "stale 17-2"]);
-        assert_eq!(ssh.entries(), ["stop stale 17-1", "stop stale 17-2"]);
-        assert!(matches!(outcomes[0].restart, Some(RestartResult::Stopped)));
-    }
-
-    #[test]
-    fn a_new_occupant_can_be_declined() {
-        let machines = [machine("stale")];
-        let ssh = FakeSsh::new(&[]).with_stops([StopScript::ChangedTo("17-2")]);
-        let (outcomes, asked) = run_restarts(
-            &machines,
-            &ssh,
-            true,
-            &[RestartDecision::Restart, RestartDecision::Keep],
-        );
-        assert_eq!(asked, ["stale 17-1", "stale 17-2"]);
-        assert_eq!(ssh.entries(), ["stop stale 17-1"]);
-        assert!(matches!(outcomes[0].restart, Some(RestartResult::Declined)));
-        assert!(
-            matches!(&outcomes[0].check, MachineCheck::DifferentBuild(now) if now.boot_id == "17-2")
-        );
-    }
-
-    #[test]
-    fn a_changed_occupant_that_needs_no_restart_ends_the_offer() {
-        let machines = [machine("stale")];
-        let ssh = FakeSsh::new(&[]).with_stops([StopScript::ChangedToReady]);
-        let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
-        assert_eq!(asked, ["stale 17-1"]);
-        assert!(matches!(
-            outcomes[0].restart,
-            Some(RestartResult::OccupantChanged)
-        ));
-        assert!(matches!(outcomes[0].check, MachineCheck::Ready));
-    }
-
-    #[test]
-    fn a_server_gone_before_its_stop_is_ready_without_another_offer() {
-        let machines = [machine("stale")];
-        let ssh = FakeSsh::new(&[]).with_stops([StopScript::NoServer]);
-        let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
-        assert_eq!(asked, ["stale 17-1"]);
-        assert_eq!(ssh.entries(), ["stop stale 17-1"]);
-        assert!(matches!(outcomes[0].restart, Some(RestartResult::NoServer)));
-        assert!(matches!(outcomes[0].check, MachineCheck::Ready));
-    }
-
-    #[test]
-    fn a_machine_that_keeps_changing_is_offered_only_a_bounded_number_of_times() {
-        let machines = [machine("stale")];
-        let ssh = FakeSsh::new(&[])
-            .with_stops([StopScript::ChangedTo("17-2"), StopScript::ChangedTo("17-3")]);
-        let (outcomes, asked) = run_restarts(
-            &machines,
-            &ssh,
-            true,
-            &[RestartDecision::Restart, RestartDecision::Restart],
-        );
-        assert_eq!(asked.len(), MAX_RESTART_OFFERS);
-        assert!(matches!(
-            outcomes[0].restart,
-            Some(RestartResult::OccupantChanged)
-        ));
-        assert!(
-            matches!(&outcomes[0].check, MachineCheck::DifferentBuild(now) if now.boot_id == "17-3")
-        );
-    }
-
-    #[test]
-    fn a_failed_stop_is_reported_and_the_check_still_says_different_build() {
-        let machines = [machine("stale"), machine("stale2")];
-        let ssh = FakeSsh::new(&[]).with_stops([StopScript::Fails]);
-        let (outcomes, _) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
-        assert!(
-            matches!(&outcomes[0].restart, Some(RestartResult::Failed(error)) if error.to_string().contains("timed out"))
-        );
-        assert!(matches!(outcomes[0].check, MachineCheck::DifferentBuild(_)));
-        // The other machine is a plain ready one and is left out.
-        assert!(outcomes[1].restart.is_none());
-    }
-
-    #[test]
-    fn an_authenticated_machine_running_another_build_is_offered_a_restart() {
-        let machines = [machine("authstale")];
-        let ssh = FakeSsh::new(&["authstale"]).with_stops([StopScript::Stopped]);
-        let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
-        assert_eq!(ssh.entries(), ["prompt authstale", "stop authstale 17-1"]);
-        assert_eq!(asked, ["authstale 17-1"]);
-        assert!(matches!(outcomes[0].restart, Some(RestartResult::Stopped)));
-    }
-
-    #[test]
-    fn offline_and_unusable_machines_are_never_offered_a_restart() {
-        let machines = [
-            machine("offline"),
-            machine("hostkey"),
-            machine("old"),
-            // A remote whose shepr and shepr-server are two builds.
-            machine("pair"),
-        ];
-        let ssh = FakeSsh::new(&[]);
-        let mut outcomes = preflight(&machines, &ssh, Some(&mut |_| {}));
-        restart_different_builds(
-            &mut outcomes,
-            &ssh,
-            Some(&mut |_, _| {
-                panic!("these machines cannot be restarted");
-            }),
-        );
-        assert!(ssh.entries().is_empty());
-        assert!(matches!(outcomes[0].check, MachineCheck::Offline(_)));
-        assert!(matches!(outcomes[1].check, MachineCheck::HostKey(_)));
-        assert!(matches!(outcomes[2].check, MachineCheck::Incompatible(_)));
-        assert!(matches!(outcomes[3].check, MachineCheck::Incompatible(_)));
-        assert!(outcomes.iter().all(|outcome| outcome.restart.is_none()));
     }
 }

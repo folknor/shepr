@@ -38,7 +38,7 @@ pub(crate) struct EndpointHub {
 pub(crate) enum HubEffect {
     /// Show this endpoint notice and present the chrome.
     Notice(shell::EndpointNotice),
-    /// Drop the host modes, title and report-all a lost or retired endpoint requested.
+    /// Drop the host modes and report-all a lost or retired endpoint requested.
     ClearHostEffects,
     ChromeDirty,
     /// A move committed: discard the blit baseline and compose the pane.
@@ -126,34 +126,31 @@ impl EndpointHub {
             EndpointSupervisorEvent::Status {
                 endpoint_id,
                 generation,
-                status,
                 message,
                 connector,
             } => {
                 self.supervisors
                     .return_connector(&endpoint_id, generation, connector);
-                if !self
-                    .supervisors
-                    .record_status(&endpoint_id, generation, status.into(), now)
-                {
-                    return Vec::new();
+                self.attempt_failed(shell, &endpoint_id, generation, &message, now)
+            }
+            EndpointSupervisorEvent::Watched {
+                endpoint_id,
+                generation,
+                result,
+                connector,
+            } => {
+                self.supervisors
+                    .return_connector(&endpoint_id, generation, connector);
+                match result {
+                    Ok(end) => {
+                        self.supervisors
+                            .watch_ended(&endpoint_id, generation, end, now);
+                        Vec::new()
+                    }
+                    Err(failure) => {
+                        self.attempt_failed(shell, &endpoint_id, generation, &failure, now)
+                    }
                 }
-                if status == EndpointFailureStatus::Attention {
-                    warn!(endpoint = %endpoint_id, %generation, error = %message, "endpoint needs attention");
-                }
-                shell.set_endpoint_status(&endpoint_id, status);
-                shell.set_machine_diagnostic(&endpoint_id, &message);
-                // Handshake diagnostics carry only the failing phase; the status line
-                // supplies the configured endpoint label once.
-                let unavailable = (status == EndpointFailureStatus::Attention
-                    && shell.endpoint_is_active(&endpoint_id))
-                .then(|| {
-                    shell::EndpointNotice::new(
-                        endpoint_id.clone(),
-                        shell::EndpointNoticeKind::StatusFailure(message.to_string()),
-                    )
-                });
-                vec![unavailable.map_or(HubEffect::ChromeDirty, HubEffect::Notice)]
             }
             EndpointSupervisorEvent::Connected {
                 endpoint_id,
@@ -184,6 +181,46 @@ impl EndpointHub {
                 vec![HubEffect::ChromeDirty]
             }
         }
+    }
+
+    /// Applies a failed attempt or wait for an endpoint with no live connection: the
+    /// supervisor schedules what follows, and the shell shows the status, the
+    /// diagnostic and, for a configured machine, the state its entry names. An
+    /// automatic outcome landing while an operator's Connect or Restart is pending
+    /// leaves the entry as the operator's request set it.
+    fn attempt_failed(
+        &mut self,
+        shell: &mut ClientShellState,
+        endpoint_id: &ClientEndpointId,
+        generation: ConnectionGeneration,
+        message: &shepr_launch::EndpointFailure,
+        now: Instant,
+    ) -> Vec<HubEffect> {
+        let Some(status) = self
+            .supervisors
+            .record_failure(endpoint_id, generation, message, now)
+        else {
+            return Vec::new();
+        };
+        if status == EndpointFailureStatus::Attention {
+            warn!(endpoint = %endpoint_id, %generation, error = %message, "endpoint needs attention");
+        }
+        shell.set_endpoint_status(endpoint_id, status);
+        shell.set_machine_diagnostic(endpoint_id, message);
+        if !self.supervisors.request_pending(endpoint_id) {
+            shell.set_machine_state(endpoint_id, shell::MachineState::after_failure(message));
+        }
+        // Handshake diagnostics carry only the failing phase; the status line
+        // supplies the configured endpoint label once.
+        let unavailable = (status == EndpointFailureStatus::Attention
+            && shell.endpoint_is_active(endpoint_id))
+        .then(|| {
+            shell::EndpointNotice::new(
+                endpoint_id.clone(),
+                shell::EndpointNoticeKind::StatusFailure(message.to_string()),
+            )
+        });
+        vec![unavailable.map_or(HubEffect::ChromeDirty, HubEffect::Notice)]
     }
 
     /// A reader reported its connection closed. A generation the registry no longer accepts
@@ -350,8 +387,9 @@ impl EndpointHub {
         let notice = failure.failure.disconnect_notice();
         let status = EndpointFailureStatus::after_failure(&failure.failure);
         self.supervisors
-            .record_status(id, failure.generation, status.into(), now);
+            .record_failure(id, failure.generation, &failure.failure, now);
         shell.set_machine_diagnostic(id, &failure.failure);
+        shell.set_machine_state(id, shell::MachineState::after_failure(&failure.failure));
         let (lost, cancellation_repaint) = self.requests_lost(shell, id, status);
         if cancellation_repaint.is_needed() {
             effects.push(HubEffect::ChromeDirty);
@@ -545,6 +583,14 @@ impl EndpointHub {
                     }
                 }
                 shell::ClientShellAction::ClipboardWrite(bytes) => clipboard.push(bytes),
+                shell::ClientShellAction::ConnectMachine(endpoint_id) => {
+                    self.supervisors
+                        .request(&endpoint_id, shepr_remote::ConnectMode::Start, now);
+                }
+                shell::ClientShellAction::RestartMachine(endpoint_id) => {
+                    self.supervisors
+                        .request(&endpoint_id, shepr_remote::ConnectMode::Restart, now);
+                }
                 shell::ClientShellAction::ActivateEndpoint(destination) => {
                     let endpoint_id = destination.endpoint.clone();
                     match shell.endpoints.choice.select(destination) {
@@ -1036,6 +1082,104 @@ mod tests {
                 }
             ));
         }
+    }
+
+    fn build_machine() -> shepr_config::MachineConfig {
+        shepr_config::MachineConfig {
+            label: shepr_config::MachineLabel::parse("build").expect("machine label"),
+            ssh: shepr_config::SshTarget::parse("build.example").expect("ssh target"),
+            palette: None,
+        }
+    }
+
+    /// Connect and Restart reach the machine's supervisor as the attempt modes that
+    /// may start a server; nothing else does.
+    #[test]
+    fn connect_and_restart_request_their_own_attempt_modes() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let machine = build_machine();
+        let id = ClientEndpointId::Ssh(machine.label.clone());
+        for (action, mode) in [
+            (
+                shell::ClientShellAction::ConnectMachine(id.clone()),
+                shepr_remote::ConnectMode::Start,
+            ),
+            (
+                shell::ClientShellAction::RestartMachine(id.clone()),
+                shepr_remote::ConnectMode::Restart,
+            ),
+        ] {
+            let now = Instant::now();
+            let supervisors =
+                EndpointSupervisors::unreachable_for_tests(std::slice::from_ref(&machine), now);
+            let mut hub = EndpointHub::new(
+                EndpointRegistry::new(RecordingTransport::default(), test_generation(1)),
+                supervisors,
+                LocalFailurePolicy::Reconnect,
+            );
+            let mut shell = shell_with(EndpointChoice::showing(ClientEndpointId::Local));
+            shell.set_machines(std::slice::from_ref(&machine));
+            assert_eq!(hub.supervisors.pending_request(&id), None);
+            hub.dispatch(&mut shell, vec![action], now);
+            assert_eq!(hub.supervisors.pending_request(&id), Some(mode));
+        }
+    }
+
+    /// A failed attempt sets the machine's entry from what the failure says, unless the
+    /// operator's request is pending, whose entry it leaves alone.
+    #[test]
+    fn a_failed_attempt_sets_the_machine_entry_unless_a_request_is_pending() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let machine = build_machine();
+        let id = ClientEndpointId::Ssh(machine.label.clone());
+        let now = Instant::now();
+        let mut hub = EndpointHub::new(
+            EndpointRegistry::new(RecordingTransport::default(), test_generation(1)),
+            EndpointSupervisors::unreachable_for_tests(std::slice::from_ref(&machine), now),
+            LocalFailurePolicy::Reconnect,
+        );
+        let mut shell = shell_with(EndpointChoice::showing(ClientEndpointId::Local));
+        shell.set_machines(std::slice::from_ref(&machine));
+        // The launch attempt is the supervisor's first generation after Local's.
+        let attempt = test_generation(2);
+        hub.supervisors.mark_in_flight(&id, attempt, now);
+        hub.supervisor_event(
+            &mut shell,
+            EndpointSupervisorEvent::Status {
+                endpoint_id: id.clone(),
+                generation: attempt,
+                message: shepr_launch::EndpointFailure::no_server("no server"),
+                connector: None,
+            },
+            now,
+        );
+        assert_eq!(
+            shell.machine_state(&id),
+            Some(shell::MachineState::NotRunning)
+        );
+
+        hub.dispatch(
+            &mut shell,
+            vec![shell::ClientShellAction::ConnectMachine(id.clone())],
+            now,
+        );
+        shell.set_machine_state(&id, shell::MachineState::Starting);
+        let attempt = test_generation(3);
+        hub.supervisors.mark_in_flight(&id, attempt, now);
+        hub.supervisor_event(
+            &mut shell,
+            EndpointSupervisorEvent::Status {
+                endpoint_id: id.clone(),
+                generation: attempt,
+                message: shepr_launch::EndpointFailure::no_server("no server"),
+                connector: None,
+            },
+            now,
+        );
+        assert_eq!(
+            shell.machine_state(&id),
+            Some(shell::MachineState::Starting)
+        );
     }
 
     #[test]

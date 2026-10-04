@@ -96,8 +96,9 @@ fn request_refuses_repeated_keys_inside_params() {
 
 #[test]
 fn cross_build_ping_and_conditional_stop_json_is_frozen() {
-    // Preflight can inspect and restart a server from another build. Keep the
-    // ping identity and guarded stop request bytes stable across those builds.
+    // A client can inspect and restart a server from another build (the local
+    // one at startup, a machine's from its Restart entry). Keep the ping
+    // identity and guarded stop request bytes stable across those builds.
     const PING_REQUEST: &str = r#"{"id":"cross-build:ping","method":"ping","params":{}}"#;
     const PONG_RESPONSE: &str = r#"{"id":"cross-build:ping","result":{"type":"pong","version":"0.1.2","build_id":"0123456789abcdef","boot_id":"17-23","stopping":false,"starting":false}}"#;
     // What a build from before the stopping flag answers.

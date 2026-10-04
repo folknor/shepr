@@ -2,6 +2,7 @@ use std::fmt;
 use std::path::Path;
 
 use crate::args::RemoteCliCommand;
+use crate::host::BridgeMode;
 use crate::limits::MAX_REMOTE_EXECUTABLE_BYTES;
 use crate::shell_command::{
     AccountShellCommand, PosixScript, posix_remote_output_command, posix_shell_command,
@@ -90,8 +91,18 @@ impl RemoteExecutable {
     }
 
     /// The bridge launch as the command sshd hands the account shell.
-    pub(crate) fn bridge_command(&self) -> AccountShellCommand {
-        let args = RemoteCliCommand::ClientBridge.args();
+    pub(crate) fn bridge_command(&self, mode: BridgeMode) -> AccountShellCommand {
+        self.account_shell_command(RemoteCliCommand::client_bridge(mode))
+    }
+
+    /// The remote wait for a server, as the command sshd hands the account
+    /// shell.
+    pub(crate) fn wait_for_server_command(&self) -> AccountShellCommand {
+        self.account_shell_command(RemoteCliCommand::WaitForServer)
+    }
+
+    fn account_shell_command(&self, command: RemoteCliCommand<'_>) -> AccountShellCommand {
+        let args = command.args();
         // sshd hands this string to the user's account shell, which need not be POSIX
         // (xonsh, fish, nushell). Run the script under /bin/sh (discovery feeds its
         // script to `/bin/sh -s` instead), so the account shell only has to launch one

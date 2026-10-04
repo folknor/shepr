@@ -63,12 +63,6 @@ pub(crate) const DEFAULT_SIDEBAR_WIDTH: u16 = 26;
 /// No blank rows keep the default sidebar compact; users can add spacing in config.
 pub(crate) const DEFAULT_SIDEBAR_ROW_GAP: u16 = 0;
 
-/// Maximum number of characters written to the outer terminal window title.
-///
-/// The title limit preserves long workspace and pane names while
-/// bounding the control string sent to the terminal.
-pub(crate) const MAX_WINDOW_TITLE_CHARS: usize = 200;
-
 /// Minimum accepted mouse-wheel scroll step.
 ///
 /// A zero-line step has no effect, so the setting requires a positive step.

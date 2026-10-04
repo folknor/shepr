@@ -439,9 +439,6 @@ pub enum DecodedWireServerMessage {
     Clipboard {
         data: Vec<u8>,
     },
-    WindowTitle {
-        title: Option<String>,
-    },
     MouseCapture {
         mode: shepr_term::mouse::HostMouseCapture,
     },
@@ -469,7 +466,6 @@ impl TryFrom<ServerMessage> for DecodedWireServerMessage {
         match message {
             ServerMessage::ServerShutdown { reason } => Ok(Self::ServerShutdown { reason }),
             ServerMessage::Clipboard { data } => Ok(Self::Clipboard { data }),
-            ServerMessage::WindowTitle { title } => Ok(Self::WindowTitle { title }),
             ServerMessage::MouseCapture { mode } => Ok(Self::MouseCapture { mode }),
             ServerMessage::PaneSurface(surface) => Ok(Self::PaneSurface(surface)),
             ServerMessage::ClientShellError { kind } => Ok(Self::ClientShellError { kind }),

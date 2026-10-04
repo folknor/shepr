@@ -1,9 +1,9 @@
 use crate::endpoint::ClientEndpointId;
 use crate::limits::WORKSPACE_HIGHLIGHT_TIMEOUT;
-use crate::shell::endpoints::ClientShellEndpoint;
+use crate::shell::endpoints::{ClientShellEndpoint, MachineAction, MachineState};
 use crate::shell::ledger::Ticket;
 use crate::shell::navigation::location::{Location, LocationTarget, PinnedLocation};
-use crate::shell::state::ClientShellMode;
+use crate::shell::state::{ClientShellAction, ClientShellMode};
 use crate::shell::state::{ClientShellInput, ClientShellState, Repaint};
 use crate::shell::{EndpointNotice, EndpointNoticeKind};
 
@@ -153,14 +153,21 @@ impl ClientShellState {
     }
 
     /// Whether `target` still names something navigate mode can act on: a workspace, or
-    /// an agent's pane, of the snapshot it was pinned from on a usable endpoint.
+    /// an agent's pane, of the snapshot it was pinned from on a usable endpoint, or a
+    /// configured machine's entry while it offers its Connect or Restart.
     pub(in crate::shell) fn navigation_target_valid(&self, target: &PinnedLocation) -> bool {
+        if target.is_machine_entry() {
+            return self
+                .machine_entry_action(&target.location.endpoint)
+                .is_some();
+        }
         self.endpoints.iter().any(|endpoint| {
             endpoint.endpoint_id == target.location.endpoint
                 && endpoint.state.usable()
-                && endpoint.snapshot_generation() == Some(target.generation())
+                && endpoint.snapshot_generation().is_some()
+                && endpoint.snapshot_generation() == target.generation()
                 && endpoint.snapshot().is_some_and(|snapshot| {
-                    snapshot.boot_id == *target.boot_id()
+                    Some(&snapshot.boot_id) == target.boot_id()
                         && match target.location.target {
                             LocationTarget::Workspace(workspace_id) => snapshot
                                 .workspaces
@@ -173,6 +180,81 @@ impl ClientShellState {
                         }
                 })
         })
+    }
+
+    /// What activating `endpoint_id`'s machine entry would do, while it shows one that
+    /// offers an action.
+    pub(in crate::shell) fn machine_entry_action(
+        &self,
+        endpoint_id: &ClientEndpointId,
+    ) -> Option<MachineAction> {
+        self.endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .and_then(ClientShellEndpoint::machine_entry)
+            .and_then(|entry| entry.state.action())
+    }
+
+    /// The workspaces and machine entries navigate mode steps through, in sidebar
+    /// order: each usable endpoint's workspaces, and in place of a configured
+    /// machine's workspaces its entry while that offers Connect or Restart.
+    fn navigate_list_targets(&self) -> Vec<PinnedLocation> {
+        self.endpoints
+            .iter()
+            .flat_map(|endpoint| {
+                if endpoint
+                    .machine_entry()
+                    .is_some_and(|entry| entry.state.action().is_some())
+                {
+                    vec![PinnedLocation::machine_entry(endpoint.endpoint_id.clone())]
+                } else {
+                    workspace_navigation_targets(std::slice::from_ref(endpoint))
+                }
+            })
+            .collect()
+    }
+
+    /// Keeps the navigate selection on a machine entry only while that entry offers
+    /// its action. One whose machine connected, or whose action went away, hands the
+    /// selection to the first entry navigate mode can step to.
+    pub(in crate::shell) fn reconcile_navigate_machine_entry(&mut self) {
+        let Some(selected) = self
+            .mode
+            .preview()
+            .filter(|selected| selected.is_machine_entry())
+        else {
+            return;
+        };
+        if self.navigation_target_valid(selected) {
+            return;
+        }
+        let next = self.navigate_list_targets().into_iter().next();
+        if let Some(next) = next.as_ref() {
+            self.reveal_navigate_selection(next);
+        }
+        self.mode.set_preview(next);
+    }
+
+    /// Activates a configured machine's entry, as Enter on it in navigate mode or a
+    /// click on it (or on its machine row) does: Connect starts the machine's server
+    /// and attaches; Restart asks first. False when the entry offers no action.
+    pub(in crate::shell) fn activate_machine_entry(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        outcome: &mut ClientShellInput,
+    ) -> bool {
+        match self.machine_entry_action(endpoint_id) {
+            Some(MachineAction::Connect) => {
+                self.set_machine_state(endpoint_id, MachineState::Starting);
+                outcome
+                    .actions
+                    .push(ClientShellAction::ConnectMachine(endpoint_id.clone()));
+            }
+            Some(MachineAction::Restart) => self.open_confirm_restart_overlay(endpoint_id),
+            None => return false,
+        }
+        outcome.repaint = true;
+        true
     }
 
     /// The agents navigate mode can select, after the workspaces, in the agent panel's
@@ -253,8 +335,6 @@ impl ClientShellState {
         match target.location.target {
             LocationTarget::Pane(_) => self.sidebar_scroll.reveal_agent(target.location.clone()),
             LocationTarget::Workspace(_) | LocationTarget::Machine => {
-                // A folded machine unfolds to show its selected workspace.
-                self.endpoints.collapsed.remove(&target.location.endpoint);
                 self.sidebar_scroll.reveal_selected_workspace();
             }
         }
@@ -268,10 +348,11 @@ impl ClientShellState {
     }
 
     /// Moves the Navigate selection `delta` steps through one list: every workspace in
-    /// sidebar order, then every selectable agent in the agent panel's order, wrapping at
+    /// sidebar order (a configured machine's Connect or Restart entry in place of its
+    /// workspaces), then every selectable agent in the agent panel's order, wrapping at
     /// both ends. Moving only highlights; Enter acts.
     pub(in crate::shell) fn move_navigate_selection(&mut self, delta: isize) {
-        let mut targets = workspace_navigation_targets(&self.endpoints);
+        let mut targets = self.navigate_list_targets();
         targets.extend(self.agent_navigation_targets());
         if targets.is_empty() {
             return;
@@ -293,14 +374,29 @@ impl ClientShellState {
     }
 
     /// Enter in navigate mode: switches to the selected workspace, or to the selected
-    /// agent's machine and workspace with its pane focused, the way a click on the entry
-    /// does, and leaves navigate mode.
+    /// agent's machine and workspace with its pane focused, or activates the selected
+    /// machine entry (Connect, or Restart after its question), the way a click on the
+    /// entry does, and leaves navigate mode.
     pub(in crate::shell) fn accept_navigate_selection(&mut self, outcome: &mut ClientShellInput) {
         let Some(target) = self.mode.preview().cloned() else {
             self.mode.set(self.copy_or_terminal_mode());
             outcome.repaint = true;
             return;
         };
+        if target.is_machine_entry() {
+            // Activated while still in navigate mode, so a Restart question that is
+            // cancelled returns to it.
+            let activated = self.activate_machine_entry(&target.location.endpoint, outcome);
+            self.mode.set(ClientShellMode::Terminal);
+            if !activated {
+                self.receive_endpoint_unavailable(&EndpointNotice::new(
+                    target.location.endpoint,
+                    EndpointNoticeKind::NotReady,
+                ));
+            }
+            outcome.repaint = true;
+            return;
+        }
         let agent = target.location.pane_id().is_some();
         if !self.navigation_target_valid(&target) {
             self.receive_endpoint_unavailable(&EndpointNotice::new(

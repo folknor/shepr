@@ -13,8 +13,9 @@
 use clap::{Arg, ArgAction, Command, ValueHint};
 
 use shepr_launch::invocation::{
-    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_MAN, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER,
-    COMMAND_STATUS, COMMAND_STOP, FLAG_EXPECT_BOOT, FLAG_JSON, PROGRAM_NAME, option_name_from_flag,
+    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_MAN, COMMAND_REMOTE_CLIENT_BRIDGE,
+    COMMAND_REMOTE_WAIT_FOR_SERVER, COMMAND_SERVER, COMMAND_STATUS, COMMAND_STOP, FLAG_EXPECT_BOOT,
+    FLAG_JSON, FLAG_START, PROGRAM_NAME, option_name_from_flag,
 };
 
 pub(super) fn command() -> Command {
@@ -43,7 +44,16 @@ pub(super) fn command() -> Command {
         .subcommand(
             Command::new(COMMAND_REMOTE_CLIENT_BRIDGE)
                 .hide(true)
-                .about("Relay a remote client connection over stdio"),
+                .about("Relay a remote client connection over stdio")
+                .arg(
+                    flag(option_name_from_flag(FLAG_START))
+                        .help("Start this host's server when none is running"),
+                ),
+        )
+        .subcommand(
+            Command::new(COMMAND_REMOTE_WAIT_FOR_SERVER)
+                .hide(true)
+                .about("Wait until this host's server is running, starting nothing"),
         );
     configure_help(command, 0)
 }
@@ -407,8 +417,18 @@ mod tests {
                 if matches!(**command, CliCommand::Status(status::Command::Server { json: true }))
         ));
 
-        let invocation = parse(RemoteCliCommand::ClientBridge);
+        let invocation = parse(RemoteCliCommand::client_bridge(
+            shepr_remote::BridgeMode::Attach,
+        ));
         assert!(matches!(invocation, Launch::ClientBridge));
+
+        let invocation = parse(RemoteCliCommand::client_bridge(
+            shepr_remote::BridgeMode::Start,
+        ));
+        assert!(matches!(invocation, Launch::StartingClientBridge));
+
+        let invocation = parse(RemoteCliCommand::WaitForServer);
+        assert!(matches!(invocation, Launch::WaitForServer));
 
         let invocation = parse(RemoteCliCommand::ServerStop {
             expected_boot: "4242-1700000000",
@@ -430,7 +450,7 @@ mod tests {
         let spec = super::command();
         let mut paths = Vec::new();
         collect_leaf_subcommand_paths(&spec, &mut Vec::new(), &mut paths);
-        let launch_only = ["client", "remote-client-bridge"];
+        let launch_only = ["client", "remote-client-bridge", "remote-wait-for-server"];
         let mut classified = 0;
 
         for path in paths {
@@ -488,6 +508,7 @@ mod tests {
                 "detect",
                 "man",
                 "remote-client-bridge",
+                "remote-wait-for-server",
                 "status",
                 "stop",
             ]

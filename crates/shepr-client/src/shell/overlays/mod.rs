@@ -15,6 +15,7 @@ use shepr_term::key::TerminalKey;
 use shepr_term::scroll::ListScroll;
 
 pub(in crate::shell) mod confirm_close;
+pub(in crate::shell) mod confirm_restart;
 pub(in crate::shell) mod context_menu;
 pub(in crate::shell) mod global_menu;
 pub(in crate::shell) mod help;
@@ -32,6 +33,7 @@ use crate::shell::state::{ClientShellInput, ClientShellMode, ClientShellState};
 use crate::shell::view::list::ListView;
 use crate::shell::view::resolve::overlay_context;
 use confirm_close::ConfirmCloseOverlay;
+use confirm_restart::ConfirmRestartOverlay;
 use context_menu::{ContextMenuAction, ContextMenuOverlay, ContextMenuTarget};
 use global_menu::{GlobalMenuAction, GlobalMenuOverlay};
 use help::HelpOverlay;
@@ -43,6 +45,7 @@ use widgets::panel;
 pub(in crate::shell) enum Overlay {
     Rename(RenameOverlay),
     ConfirmClose(ConfirmCloseOverlay),
+    ConfirmRestart(ConfirmRestartOverlay),
     Help(HelpOverlay),
     Navigator(NavigatorOverlay),
     ContextMenu(ContextMenuOverlay),
@@ -53,6 +56,7 @@ pub(in crate::shell) enum Overlay {
 pub(in crate::shell) enum OverlayKind {
     Rename,
     ConfirmClose,
+    ConfirmRestart,
     Help,
     Navigator,
     ContextMenu,
@@ -64,6 +68,7 @@ pub(in crate::shell) enum OverlayKind {
 pub(in crate::shell) enum OverlayView {
     Rename(DialogView),
     ConfirmClose(DialogView),
+    ConfirmRestart(DialogView),
     Help(HelpView),
     Navigator(NavigatorView),
     ContextMenu(MenuView),
@@ -126,7 +131,8 @@ pub(in crate::shell) enum OverlayScroll {
 pub(in crate::shell) struct OverlayPaint {
     /// Absolute rects the overlay painted opaquely: every scratch cell it drew is inside one.
     pub(in crate::shell) opaque: Vec<Rect>,
-    /// Whether the whole frame is dimmed behind the overlay (Help, Rename, ConfirmClose).
+    /// Whether the whole frame is dimmed behind the overlay (Help, Rename and the
+    /// confirmations).
     pub(in crate::shell) backdrop: bool,
     pub(in crate::shell) cursor: Option<shepr_protocol::CursorState>,
 }
@@ -162,10 +168,12 @@ pub(in crate::shell::overlays) enum OverlayCommand {
         label: Option<String>,
     },
     CloseWorkspace(shepr_protocol::WorkspaceId),
-    /// Esc on the close dialog; back to Navigate when it came from there.
+    /// Esc on a confirmation; back to Navigate when it came from there.
     CancelClose {
         return_to_navigate: bool,
     },
+    /// The Restart question was answered yes; the overlay closes.
+    RestartMachine(ClientEndpointId),
     GlobalMenu(GlobalMenuAction),
     ContextMenu {
         target: ContextMenuTarget,
@@ -180,6 +188,7 @@ impl Overlay {
         match self {
             Self::Rename(_) => OverlayKind::Rename,
             Self::ConfirmClose(_) => OverlayKind::ConfirmClose,
+            Self::ConfirmRestart(_) => OverlayKind::ConfirmRestart,
             Self::Help(_) => OverlayKind::Help,
             Self::Navigator(_) => OverlayKind::Navigator,
             Self::ContextMenu(_) => OverlayKind::ContextMenu,
@@ -199,6 +208,8 @@ impl Overlay {
             }
             Self::ConfirmClose(_) => ConfirmCloseOverlay::layout(screen)
                 .map(|view| (OverlayView::ConfirmClose(view), None)),
+            Self::ConfirmRestart(_) => ConfirmRestartOverlay::layout(screen)
+                .map(|view| (OverlayView::ConfirmRestart(view), None)),
             Self::Help(help) => help
                 .layout(screen, ctx)
                 .map(|(view, scroll)| (OverlayView::Help(view), Some(scroll))),
@@ -229,6 +240,9 @@ impl Overlay {
             (Self::ConfirmClose(confirm), OverlayView::ConfirmClose(view)) => {
                 confirm.draw(buffer, view, ctx.palette)
             }
+            (Self::ConfirmRestart(confirm), OverlayView::ConfirmRestart(view)) => {
+                confirm.draw(buffer, view, ctx.palette)
+            }
             (Self::Help(help), OverlayView::Help(view)) => help.draw(buffer, view, ctx),
             (Self::Navigator(navigator), OverlayView::Navigator(view)) => {
                 navigator.draw(buffer, view, ctx)
@@ -252,6 +266,7 @@ impl Overlay {
         match self {
             Self::Rename(rename) => rename.on_key(key),
             Self::ConfirmClose(confirm) => confirm.on_key(key),
+            Self::ConfirmRestart(confirm) => confirm.on_key(key),
             Self::Help(help) => help.on_key(
                 key,
                 match view {
@@ -285,6 +300,13 @@ impl Overlay {
                 mouse,
                 match view {
                     Some(OverlayView::ConfirmClose(view)) => Some(view),
+                    _ => None,
+                },
+            ),
+            Self::ConfirmRestart(confirm) => confirm.on_mouse(
+                mouse,
+                match view {
+                    Some(OverlayView::ConfirmRestart(view)) => Some(view),
                     _ => None,
                 },
             ),
@@ -327,7 +349,10 @@ impl Overlay {
             Self::Rename(rename) => rename.on_text(text),
             Self::Help(help) => help.on_text(text),
             Self::Navigator(navigator) => navigator.on_text(text),
-            Self::ConfirmClose(_) | Self::ContextMenu(_) | Self::GlobalMenu(_) => false,
+            Self::ConfirmClose(_)
+            | Self::ConfirmRestart(_)
+            | Self::ContextMenu(_)
+            | Self::GlobalMenu(_) => false,
         }
     }
 
@@ -337,7 +362,10 @@ impl Overlay {
             Self::Rename(_) => true,
             Self::Help(help) => help.accepts_modal_paste(),
             Self::Navigator(navigator) => navigator.accepts_modal_paste(),
-            Self::ConfirmClose(_) | Self::ContextMenu(_) | Self::GlobalMenu(_) => false,
+            Self::ConfirmClose(_)
+            | Self::ConfirmRestart(_)
+            | Self::ContextMenu(_)
+            | Self::GlobalMenu(_) => false,
         }
     }
 
@@ -451,6 +479,16 @@ impl ClientShellState {
     fn apply_overlay_command(&mut self, command: OverlayCommand, outcome: &mut ClientShellInput) {
         match command {
             OverlayCommand::OpenTarget(target) => {
+                if target.target == LocationTarget::Machine
+                    && self.machine_entry_action(&target.endpoint).is_some()
+                {
+                    // Opening a machine that offers Connect or Restart does what its
+                    // entry does; a Restart question replaces the navigator.
+                    self.overlay = None;
+                    self.activate_machine_entry(&target.endpoint, outcome);
+                    outcome.repaint = true;
+                    return;
+                }
                 let activated = match target.target {
                     LocationTarget::Machine => {
                         self.activate_endpoint(target.endpoint.clone(), outcome)
@@ -485,6 +523,25 @@ impl ClientShellState {
                     let preview = self.focused_navigation_target();
                     self.mode.enter_navigate(preview);
                     self.sidebar_scroll.reveal_selected_workspace();
+                }
+                outcome.repaint = true;
+            }
+            OverlayCommand::RestartMachine(endpoint_id) => {
+                self.overlay = None;
+                // The question was asked for this state; a machine that left it while
+                // the question was open restarts nothing.
+                if self.machine_entry_action(&endpoint_id)
+                    == Some(crate::shell::endpoints::MachineAction::Restart)
+                {
+                    self.set_machine_state(
+                        &endpoint_id,
+                        crate::shell::endpoints::MachineState::Restarting,
+                    );
+                    outcome
+                        .actions
+                        .push(crate::shell::state::ClientShellAction::RestartMachine(
+                            endpoint_id,
+                        ));
                 }
                 outcome.repaint = true;
             }
@@ -534,7 +591,8 @@ impl ClientShellState {
 
     /// Opens the new-workspace name prompt, prefilled with the name of the
     /// directory the workspace will start in. With no directory known it starts
-    /// empty, and the server names the workspace after the one it picks.
+    /// empty, and the server names the workspace after the one it picks. The
+    /// heading names the presented machine, which the workspace is created on.
     pub(in crate::shell) fn open_new_workspace_overlay(&mut self) {
         let source_workspace_id = self.workspace_action_id();
         let cwd = self.endpoints.active.snapshot().and_then(|snapshot| {
@@ -548,9 +606,14 @@ impl ClientShellState {
         let suggested_name = cwd.as_ref().map_or_else(String::new, |cwd| {
             shepr_core::workspace_label::default_workspace_name(cwd.as_path())
         });
+        let machine = self
+            .endpoints
+            .presented()
+            .display_label(&self.config.local_label);
         self.overlay = Some(Overlay::Rename(RenameOverlay::new_workspace(
             cwd,
             &suggested_name,
+            machine,
         )));
     }
 
@@ -588,6 +651,21 @@ impl ClientShellState {
             pane.pane_id,
             pane.label.as_deref(),
         )));
+    }
+
+    /// Opens the question a configured machine's Restart asks before anything is
+    /// stopped.
+    pub(in crate::shell) fn open_confirm_restart_overlay(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+    ) {
+        self.overlay = Some(Overlay::ConfirmRestart(ConfirmRestartOverlay {
+            endpoint_id: endpoint_id.clone(),
+            label: endpoint_id
+                .display_label(&self.config.local_label)
+                .to_owned(),
+            return_to_navigate: self.mode.is(ClientShellMode::Navigate),
+        }));
     }
 
     pub(in crate::shell) fn open_confirm_close_overlay(
@@ -654,6 +732,11 @@ mod tests {
                 Overlay::ConfirmClose(ConfirmCloseOverlay {
                     workspace_id: test_workspace_id("w1"),
                     detail: "detail".to_owned(),
+                    return_to_navigate: false,
+                }),
+                Overlay::ConfirmRestart(super::confirm_restart::ConfirmRestartOverlay {
+                    endpoint_id: crate::endpoint::ClientEndpointId::Local,
+                    label: "build".to_owned(),
                     return_to_navigate: false,
                 }),
                 Overlay::Help(HelpOverlay::default()),

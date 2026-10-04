@@ -3,8 +3,9 @@ use clap::ArgMatches;
 use shepr_api::client::{ApiClient, ApiClientError};
 use shepr_api::schema::{Request, ResponseResult};
 use shepr_launch::invocation::{
-    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_MAN, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_STATUS,
-    COMMAND_STOP,
+    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_MAN, COMMAND_REMOTE_CLIENT_BRIDGE,
+    COMMAND_REMOTE_WAIT_FOR_SERVER, COMMAND_STATUS, COMMAND_STOP, FLAG_START,
+    option_name_from_flag,
 };
 
 /// Writes CLI output to stdout, as `std::print!` does (a failed write
@@ -53,7 +54,11 @@ pub(crate) enum Launch {
     Version,
     Tui,
     Client,
+    /// The SSH bridge that only attaches to this host's running server.
     ClientBridge,
+    /// The SSH bridge that starts this host's server when none runs.
+    StartingClientBridge,
+    WaitForServer,
     Cli(Box<CliCommand>),
 }
 
@@ -92,7 +97,14 @@ pub(crate) fn parse_launch(args: &[String]) -> Result<Launch, i32> {
             let launch = match matches.subcommand() {
                 None => Launch::Tui,
                 Some((COMMAND_CLIENT, _)) => Launch::Client,
-                Some((COMMAND_REMOTE_CLIENT_BRIDGE, _)) => Launch::ClientBridge,
+                Some((COMMAND_REMOTE_CLIENT_BRIDGE, bridge)) => {
+                    if matches::flag(bridge, option_name_from_flag(FLAG_START)) {
+                        Launch::StartingClientBridge
+                    } else {
+                        Launch::ClientBridge
+                    }
+                }
+                Some((COMMAND_REMOTE_WAIT_FOR_SERVER, _)) => Launch::WaitForServer,
                 Some((name, matches)) => match CliCommand::from_matches(name, matches) {
                     Some(command) => Launch::Cli(Box::new(command)),
                     // The CLI spec and typed parsers are checked together in
@@ -390,7 +402,7 @@ mod tests {
             ("detect", &["detect", "capture", "w1:p1"]),
             ("man", &["man"]),
         ];
-        let launch_only = ["client", "remote-client-bridge"];
+        let launch_only = ["client", "remote-client-bridge", "remote-wait-for-server"];
         let spec = super::spec::command();
         let mut spec_groups = spec
             .get_subcommands()
@@ -480,6 +492,14 @@ mod tests {
         assert!(matches!(
             parse(&["remote-client-bridge"]),
             Launch::ClientBridge
+        ));
+        assert!(matches!(
+            parse(&["remote-client-bridge", "--start"]),
+            Launch::StartingClientBridge
+        ));
+        assert!(matches!(
+            parse(&["remote-wait-for-server"]),
+            Launch::WaitForServer
         ));
         assert!(matches!(parse(&["client"]), Launch::Client));
         assert!(matches!(parse(&[]), Launch::Tui));

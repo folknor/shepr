@@ -465,7 +465,7 @@ async fn unchanged_geometry_application_does_not_force_surface_recompute() {
 }
 
 #[tokio::test]
-async fn replay_host_effects_replays_modes_and_title() {
+async fn replay_host_effects_replays_modes() {
     let mut server = test_headless_server();
     let (writer, control_rx, _render_rx) = test_client_writer();
     let client_id = ClientId::test_new(63);
@@ -482,7 +482,6 @@ async fn replay_host_effects_replays_modes_and_title() {
         })
     );
     let _ = client_shell_snapshot(&control_rx);
-    server.window_title = crate::ui::WindowTitleSettings::for_test("target title");
     {
         let client = server
             .clients
@@ -525,7 +524,7 @@ async fn replay_host_effects_replays_modes_and_title() {
         server.clients[&client_id].outbox.told_keyboard_report_all(),
         Some(false)
     );
-    let messages = (0..3)
+    let messages = (0..2)
         .map(|_| read_server_message(control_rx.recv().expect("reassertion effect")))
         .collect::<Vec<_>>();
     assert!(messages.iter().any(|message| matches!(
@@ -538,10 +537,6 @@ async fn replay_host_effects_replays_modes_and_title() {
     assert!(messages.iter().any(|message| matches!(
         message,
         ServerMessage::ClientShellKeyboardReportAll { enabled: false }
-    )));
-    assert!(messages.iter().any(|message| matches!(
-        message,
-        ServerMessage::WindowTitle { title: Some(title) } if title == "target title"
     )));
     assert!(
         control_rx.try_recv().is_err(),

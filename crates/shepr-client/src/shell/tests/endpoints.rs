@@ -16,7 +16,6 @@ use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEven
 use shepr_config::{AgentSidebarToken, ClientConfig, StatusIndicatorStyle};
 use shepr_protocol::command::EndpointCommand;
 use shepr_protocol::{AgentStatus, ClientMessage, ClientShellAgent, ClientShellPane};
-use shepr_surface::ratatui_conversion::WireColorExt as _;
 use shepr_termio::input::raw_input::RawInputEvent;
 
 #[test]
@@ -366,7 +365,7 @@ fn single_endpoint_agent_indices_follow_the_rendered_client_recency_order() {
 }
 
 #[test]
-fn agent_indices_keep_stale_rows_and_skip_agents_the_sidebar_cannot_render() {
+fn agent_indices_skip_a_disconnected_machine_and_agents_the_sidebar_cannot_render() {
     use shepr_termio::input::KeybindAction;
 
     let other_machine = machine_named("Other", "dev@other.example");
@@ -428,16 +427,17 @@ fn agent_indices_keep_stale_rows_and_skip_agents_the_sidebar_cannot_render() {
     assert_eq!(indexed, rendered);
     assert_eq!(
         indexed.len(),
-        3,
-        "the agent with a missing workspace is omitted"
+        2,
+        "the agent with a missing workspace is omitted, and so is the disconnected machine"
     );
-    assert_eq!(
-        indexed[1].0, stale_id,
-        "the stale visible row keeps its index"
+    assert!(
+        indexed.iter().all(|(endpoint, _)| endpoint != &stale_id),
+        "a machine that is not connected contributes no agents"
     );
+    assert_eq!(indexed[1].0, other_id);
 
     let mut outcome = ClientShellInput::default();
-    assert!(state.handle_endpoint_navigation(KeybindAction::FocusAgent(2), &mut outcome));
+    assert!(state.handle_endpoint_navigation(KeybindAction::FocusAgent(1), &mut outcome));
     assert!(matches!(
         outcome.actions.as_slice(),
         [ClientShellAction::ActivateEndpoint(Location {
@@ -792,9 +792,9 @@ fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
                 })] if *target != LocationTarget::Machine
             ));
         } else {
-            // The machine row of the displayed endpoint toggles its collapse
-            // state and submits a targetless selection, which cancels the
-            // switch away while Local is still displayed.
+            // The machine row of the displayed endpoint submits a targetless
+            // selection, which cancels the switch away while Local is still
+            // displayed.
             assert!(matches!(
                 outcome.actions.as_slice(),
                 [ClientShellAction::ActivateEndpoint(Location {
@@ -802,7 +802,6 @@ fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
                     target: LocationTarget::Machine,
                 })]
             ));
-            assert!(state.endpoints.collapsed.contains(&ClientEndpointId::Local));
         }
     }
 }
@@ -1145,7 +1144,7 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
 }
 
 #[test]
-fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
+fn disconnected_active_endpoint_freezes_surface_and_lists_no_stale_rows() {
     use shepr_protocol::AgentStatus;
 
     let mut config = ClientConfig::default();
@@ -1188,20 +1187,15 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         state.endpoint_status(&endpoint_id),
         Some(ClientEndpointStatus::Reconnecting)
     );
-    assert!(text.contains("◐ reconnecting"), "frame: {text}");
-    assert!(text.contains("Build · pi"), "frame: {text}");
+    // The machine's entry stands in for its workspaces and agents.
+    assert!(text.contains("Connecting..."), "frame: {text}");
+    assert!(!text.contains("Build · pi"), "no stale agent row: {text}");
     assert!(
         text.contains("LIVE"),
         "frozen surface should remain: {text}"
     );
     assert!(state.pane_hits().is_empty());
     assert!(frame.cursor().is_none());
-    let stale_icon = frame
-        .cells()
-        .iter()
-        .find(|cell| cell.symbol == "×")
-        .expect("stale blocked icon");
-    assert_eq!(stale_icon.fg.to_ratatui(), state.config.palette.overlay0);
 }
 
 #[test]
@@ -1217,9 +1211,8 @@ fn focus_agent_index_uses_the_rendered_aggregate_rows() {
 
     assert_eq!(agent_numbers(&state), 1);
 
-    // A stale machine's rows stay in the sidebar, so they keep their numbers;
-    // picking one reports the machine as not ready instead of shifting the
-    // numbers of every row after it.
+    // A machine that is not connected lists no agents, so none of its rows are
+    // numbered.
     state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Reconnecting);
-    assert_eq!(agent_numbers(&state), 1);
+    assert_eq!(agent_numbers(&state), 0);
 }

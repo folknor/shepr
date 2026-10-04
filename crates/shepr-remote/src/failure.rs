@@ -99,7 +99,9 @@ impl SshFailureDiagnostic {
         let failure = EndpointFailure::from_error(error);
         let origin = match failure.cause() {
             FailureCause::Io(kind) => SshFailureOrigin::Io(kind),
-            FailureCause::Incompatible => SshFailureOrigin::RemoteCompatibility,
+            FailureCause::Incompatible | FailureCause::DifferentBuild => {
+                SshFailureOrigin::RemoteCompatibility
+            }
             FailureCause::LocalSetup | FailureCause::InvalidLocalSetup => {
                 SshFailureOrigin::LocalSetup
             }
@@ -111,7 +113,10 @@ impl SshFailureDiagnostic {
             | FailureCause::Backpressure
             | FailureCause::Retry
             | FailureCause::Unclassified
-            | FailureCause::Shutdown(_) => SshFailureOrigin::Message,
+            | FailureCause::Shutdown(_)
+            | FailureCause::NoServer
+            | FailureCause::ServerStopping
+            | FailureCause::ServerStarting => SshFailureOrigin::Message,
         };
         Self { failure, origin }
     }
@@ -570,7 +575,6 @@ mod tests {
                 MachineCheck::NeedsAuthentication(_) => "authentication",
                 MachineCheck::Offline(_) => "offline",
                 MachineCheck::HostKey(_) => "host key",
-                MachineCheck::DifferentBuild(_) => "different build",
                 MachineCheck::Incompatible(_) => "incompatible",
                 MachineCheck::Failed(_) => "failed",
             };

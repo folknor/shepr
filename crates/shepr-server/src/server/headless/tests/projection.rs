@@ -448,8 +448,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
         .pane_runtime(pane_id)
         .expect("pane runtime")
         .test_process_pty_bytes(b"\x1b]0;compiling\x07");
-    let title_sync = server.sync_terminal_title_sources(&HashSet::from([pane_id]));
-    assert!(title_sync.sidebar_changed);
+    assert!(server.sync_terminal_title_sources(&HashSet::from([pane_id])));
     let titled = next_projection(&mut server, &control, &mut previous);
     assert_eq!(
         titled.agents[0].terminal_title_stripped.as_deref(),

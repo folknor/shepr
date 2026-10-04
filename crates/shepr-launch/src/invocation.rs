@@ -89,6 +89,11 @@ pub const FLAG_JSON: &str = "--json";
 /// for shepr's own use over SSH, not an operator command.
 pub const FLAG_EXPECT_BOOT: &str = "--expect-boot";
 
+/// The hidden `remote-client-bridge` option that lets the bridge start the
+/// host's server when none runs. Without it the bridge only attaches. Only an
+/// explicit operator action in the client (Connect or Restart) passes it.
+pub const FLAG_START: &str = "--start";
+
 /// The clap argument name of a `--flag`: the flag without its dashes.
 pub fn option_name_from_flag(flag: &'static str) -> &'static str {
     flag.strip_prefix("--").unwrap_or(flag)
@@ -101,6 +106,7 @@ pub const COMMAND_CLIENT: &str = "client";
 pub const COMMAND_STOP: &str = "stop";
 pub const COMMAND_MAN: &str = "man";
 pub const COMMAND_REMOTE_CLIENT_BRIDGE: &str = "remote-client-bridge";
+pub const COMMAND_REMOTE_WAIT_FOR_SERVER: &str = "remote-wait-for-server";
 
 #[cfg(test)]
 mod tests {

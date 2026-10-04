@@ -7,8 +7,9 @@
 //! - [`status`] probes a server socket for presence and readiness, the
 //!   question that decides whether a launch is permitted.
 //! - [`stop`] stops a server, conditionally on the boot that was observed.
-//! - [`restart`] is the consent-driven restart offer for a server of another
-//!   build, local or remote.
+//! - [`restart`] is the consent-driven startup restart offer for a local
+//!   server of another build, and the stop outcomes every conditional stop
+//!   reports.
 //! - [`invocation`] and [`daemon_exit`] are the command lines and exit codes
 //!   shepr processes speak to each other: the server executable's arguments
 //!   and exit classes, and the CLI's command words.

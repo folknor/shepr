@@ -36,9 +36,11 @@ fn the_new_workspace_prompt_suggests_the_directory_and_sends_a_blank_name_as_non
     let mut state = shell(0);
     state.open_new_workspace_overlay();
     assert_eq!(editor(&state).as_str(), "repo");
+    // The prompt names the presented machine, here the local server by its label.
     assert!(matches!(
         rename_target(&state),
-        Some(RenameTarget::NewWorkspace { cwd: Some(_) })
+        Some(RenameTarget::NewWorkspace { cwd: Some(_), machine })
+            if machine == shepr_test_fixtures::FIXTURE_LOCAL_LABEL
     ));
 
     press(&mut state, KeyCode::Char('c'), KeyModifiers::CONTROL);

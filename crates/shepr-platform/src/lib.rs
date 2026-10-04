@@ -10,6 +10,7 @@ mod clipboard;
 mod config_file;
 mod daemon;
 mod data_directory_lease;
+mod dir_watch;
 mod executable;
 mod file_stamp;
 mod host;
@@ -40,6 +41,7 @@ pub use daemon::{
     read_boot_log_tail,
 };
 pub use data_directory_lease::{DataDirectoryLease, DataDirectoryLeaseHeld, LeaseAcquireError};
+pub use dir_watch::{DirectoryWake, DirectoryWatch};
 pub use executable::{
     ExecutableStatus, classify_executable, has_execute_access, is_pane_shell_process_name,
 };

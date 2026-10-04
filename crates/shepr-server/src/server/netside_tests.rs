@@ -165,7 +165,6 @@ fn assert_view_evidence(
 #[tokio::test]
 async fn two_headless_servers_answer_each_step_of_an_endpoint_move() {
     let mut source_server = headless_tests::test_headless_server();
-    headless_tests::enable_window_title(&mut source_server, "{workspace}");
     let _source_input =
         headless_tests::install_focused_test_runtime(&mut source_server, b"local source");
     let (source_writer, source_control, source_render) = headless_tests::test_client_writer();
@@ -186,7 +185,6 @@ async fn two_headless_servers_answer_each_step_of_an_endpoint_move() {
     let source_snapshot = headless_tests::client_shell_snapshot(&source_control);
 
     let mut target_server = headless_tests::test_headless_server();
-    headless_tests::enable_window_title(&mut target_server, "{workspace}");
     let _target_input =
         headless_tests::install_focused_test_runtime(&mut target_server, b"remote target");
     let (target_writer, target_control, target_render) = headless_tests::test_client_writer();
@@ -268,13 +266,11 @@ async fn two_headless_servers_answer_each_step_of_an_endpoint_move() {
         headless_tests::dispatch_lifecycle_messages(server, client, commit());
         let mut mouse = false;
         let mut keyboard = false;
-        let mut title = false;
         let deadline = Instant::now() + SERVER_RESPONSE_TIMEOUT;
-        while !mouse || !keyboard || !title {
+        while !mouse || !keyboard {
             match recv_server_message_until(control, deadline, "replayed host effects") {
                 ServerMessage::MouseCapture { .. } => mouse = true,
                 ServerMessage::ClientShellKeyboardReportAll { .. } => keyboard = true,
-                ServerMessage::WindowTitle { .. } => title = true,
                 _ => {}
             }
         }

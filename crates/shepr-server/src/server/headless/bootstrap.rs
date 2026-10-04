@@ -247,19 +247,7 @@ fn start_server(
         );
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
         on_step(StartupStep::PanesRestored);
-        let window_title = crate::ui::WindowTitleSettings::from_config(
-            config.ui().window_title.as_ref(),
-            app.host_names(),
-        );
-        let server = HeadlessServer::new(
-            app,
-            outputs,
-            api_rx,
-            api,
-            stop_signal,
-            boot_id,
-            window_title,
-        );
+        let server = HeadlessServer::new(app, outputs, api_rx, api, stop_signal, boot_id);
         server.open_client_protocol();
         on_step(StartupStep::ClientProtocolOpen);
         let ready = ServerReady {

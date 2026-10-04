@@ -121,8 +121,8 @@ fn check_against(received: &[u8; PREAMBLE_LEN], ours: &str) -> Result<(), Preamb
     }
     // The magic already identified a shepr peer, so identity bytes that are
     // not a canonical fingerprint still make it another build, one whose
-    // identity cannot be named: it gets the build-mismatch guidance and
-    // restart offer, never the not-a-shepr-endpoint refusal.
+    // identity cannot be named: it gets the build-mismatch guidance and a
+    // restart, never the not-a-shepr-endpoint refusal.
     let build_id = std::str::from_utf8(id)
         .ok()
         .and_then(|id| id.parse().ok())

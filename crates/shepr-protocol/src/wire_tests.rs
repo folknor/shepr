@@ -518,15 +518,6 @@ mod tests {
     }
 
     #[test]
-    fn server_window_title_roundtrip() -> TestResult {
-        for title in [Some("shepr api".to_owned()), None] {
-            let msg = ServerMessage::WindowTitle { title };
-            assert_eq!(roundtrip(&msg)?, msg);
-        }
-        Ok(())
-    }
-
-    #[test]
     fn server_mouse_capture_roundtrip() -> TestResult {
         for mode in [
             shepr_term::mouse::HostMouseCapture::Off,
@@ -1109,8 +1100,8 @@ mod tests {
 
     #[test]
     fn encode_frame_matches_write_message_and_enforces_the_cap() {
-        let msg = ServerMessage::WindowTitle {
-            title: Some("frame".into()),
+        let msg = ServerMessage::Clipboard {
+            data: b"frame".to_vec(),
         };
         let frame = encode_frame(&msg).expect("test precondition");
         let mut written = Vec::new();

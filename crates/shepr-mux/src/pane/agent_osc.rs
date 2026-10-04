@@ -79,12 +79,7 @@ impl AgentOscStateTracker {
 }
 
 fn sanitize_agent_osc_string(payload: &[u8], max_chars: usize) -> String {
-    let text = String::from_utf8_lossy(payload);
-    let mut out = String::new();
-    for ch in text.chars().filter(|ch| !ch.is_control()).take(max_chars) {
-        out.push(ch);
-    }
-    out
+    shepr_term::title::sanitize_title(&String::from_utf8_lossy(payload), max_chars)
 }
 
 #[cfg(test)]

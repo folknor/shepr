@@ -547,8 +547,8 @@ async fn replies_follow_the_snapshot_when_a_pass_renders_a_subset() {
     pair.server.app.test_state_mut().test_push_workspace(other);
     pair.server
         .navigate_shell_client(ClientId::test_new(8), &other_id);
-    let reply = ServerMessage::WindowTitle {
-        title: Some("reply sentinel".into()),
+    let reply = ServerMessage::Clipboard {
+        data: b"reply sentinel".to_vec(),
     };
     pair.server
         .queue_endpoint_reply(ClientId::test_new(8), &reply);

@@ -78,9 +78,6 @@ fn target_host_effects_are_dropped_until_commit_and_the_replay_applies_after() {
             mode: shepr_term::mouse::HostMouseCapture::Cells,
         },
         ServerMessage::ClientShellKeyboardReportAll { enabled: true },
-        ServerMessage::WindowTitle {
-            title: Some("TARGET-TITLE".into()),
-        },
         ServerMessage::Clipboard {
             data: b"text".to_vec(),
         },
@@ -88,19 +85,14 @@ fn target_host_effects_are_dropped_until_commit_and_the_replay_applies_after() {
         f.inbound(&remote(), message);
     }
     assert!(f.output().is_empty());
+    assert!(!f.client.state().host_modes.keyboard_report_all_active());
     f.commit();
     f.clear_output();
     f.inbound(
         &remote(),
-        ServerMessage::WindowTitle {
-            title: Some("TARGET-TITLE".into()),
-        },
-    );
-    f.inbound(
-        &remote(),
         ServerMessage::ClientShellKeyboardReportAll { enabled: true },
     );
-    assert!(f.output().contains("TARGET-TITLE"));
+    assert!(!f.output().is_empty());
     assert!(f.client.state().host_modes.keyboard_report_all_active());
 }
 #[test]
@@ -301,11 +293,13 @@ fn local_selection_waits_for_metadata_while_the_shown_endpoint_stays_live() {
             .pending_start()
             .is_some()
     );
+    // Wide enough that the notice, which wraps within the pane side, keeps its
+    // sentence on one line.
     let frame = f
         .client
         .state()
         .shell
-        .compose_frame(100, 30)
+        .compose_frame(200, 30)
         .expect("chrome");
     f.client.state_mut().present_frame(frame);
     assert!(f.output().contains(&format!(

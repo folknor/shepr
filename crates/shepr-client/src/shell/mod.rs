@@ -9,6 +9,7 @@ mod sidebar;
 mod view;
 
 mod endpoints;
+pub(crate) use endpoints::MachineState;
 pub(crate) use navigation::location::{Location, LocationTarget};
 mod ledger;
 pub(crate) use ledger::{ClientShellEndpointRequest, DropReason};

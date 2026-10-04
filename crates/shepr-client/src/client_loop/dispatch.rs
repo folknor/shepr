@@ -3,7 +3,7 @@ use crate::clipboard_forwarding::forward_clipboard;
 use crate::endpoint::{Admission, SnapshotDirty};
 use crate::errors::LoopExit;
 use crate::shell_runtime::{ShellInputDisposition, finish_client_shell_input};
-use crate::{endpoint, shell, state};
+use crate::{endpoint, shell};
 use shepr_surface::decode::{DecodedClientServerMessage, DecodedWireServerMessage};
 use std::io;
 use tracing::warn;
@@ -135,23 +135,6 @@ impl ClientLoop {
                         "clipboard copy from the server did not reach the host clipboard"
                     );
                 }
-            }
-            DecodedWireServerMessage::WindowTitle { title } => {
-                // `None` is deliberate from the server (an API title was
-                // cleared, or every template token resolved empty) and
-                // resets to Shepr's default. A disabled `ui.window_title`
-                // never reaches here: the server sends nothing at all.
-                // A lost title write is cosmetic and the next title change retries it;
-                // logged once per cause because titles can change with every agent state.
-                let written = state
-                    .host_modes
-                    .write_window_title(&mut state.output_writer, title.as_deref());
-                state.title_write_failure.observe(
-                    state::HostWritePurpose::Title,
-                    "window title",
-                    &written,
-                    None,
-                );
             }
             DecodedWireServerMessage::MouseCapture { mode } => {
                 state.host_modes.set_mouse_endpoint_request(mode);

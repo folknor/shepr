@@ -2,8 +2,6 @@
 //! endpoints, the stored scroll state and the area it is given. Drawing reads the
 //! resulting view and writes only to the buffer; nothing here mutates the shell.
 
-use std::collections::HashSet;
-
 use ratatui::layout::Rect;
 use shepr_config::theme::Palette;
 use shepr_protocol::ClientShellSnapshot;
@@ -24,7 +22,7 @@ use crate::shell::sidebar::sidebar_tokens::{
     SectionSplit, expanded_sidebar_sections, sidebar_section_divider_rect,
 };
 use crate::shell::view::list::{ListView, resolve_list};
-use crate::shell::view::{AgentHit, MachineHit, WorkspaceHit};
+use crate::shell::view::{AgentHit, MachineEntryHit, MachineHit, WorkspaceHit};
 
 /// Which sidebar the caller decided to lay out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +56,12 @@ pub(in crate::shell) struct ExpandedSidebarView {
 pub(in crate::shell) enum ExpandedSlot {
     Machine {
         hit: MachineHit,
+        endpoint: usize,
+    },
+    /// A configured machine's state entry, in place of its workspaces while it is
+    /// not connected.
+    MachineEntry {
+        hit: MachineEntryHit,
         endpoint: usize,
     },
     Workspace {
@@ -120,7 +124,6 @@ pub(in crate::shell) enum CollapsedSlot {
 pub(in crate::shell) struct SidebarInputs<'a> {
     pub(in crate::shell) endpoints: &'a [ClientShellEndpoint],
     pub(in crate::shell) presented: &'a ClientEndpointId,
-    pub(in crate::shell) collapsed: &'a HashSet<ClientEndpointId>,
     pub(in crate::shell) model: &'a AgentPanelModel,
     pub(in crate::shell) config: &'a ClientShellConfig,
     /// The live agent panel sort, which the header labels.
@@ -155,7 +158,12 @@ impl SidebarInputs<'_> {
 #[derive(Clone, Copy)]
 enum Row {
     Endpoint(usize),
-    Workspace { endpoint: usize, entry: usize },
+    /// A configured machine's state entry, in the expanded sidebar only.
+    MachineEntry(usize),
+    Workspace {
+        endpoint: usize,
+        entry: usize,
+    },
 }
 
 pub(super) fn agent_sort_label(sort: shepr_config::AgentPanelSortConfig) -> &'static str {
@@ -165,25 +173,22 @@ pub(super) fn agent_sort_label(sort: shepr_config::AgentPanelSortConfig) -> &'st
     }
 }
 
-/// The text and color of an expanded machine row's status signal.
+/// The text and color of an expanded machine row's status signal. A configured
+/// machine shows its glyph alone: its entry below the row says the rest.
 pub(super) fn endpoint_signal(
     endpoint: &ClientShellEndpoint,
-    diagnostics: &MachineDiagnostics,
     palette: &Palette,
 ) -> (String, ratatui::style::Color) {
+    if !endpoint.endpoint_id.is_local() {
+        let (glyph, color) = endpoint.row_glyph(palette);
+        return (glyph.to_owned(), color);
+    }
     let (glyph, state, color) = endpoint_status_presentation(endpoint.state.status(), palette);
-    let state = if endpoint.state.usable() { "" } else { state };
-    let signal = if diagnostics.required_for(endpoint) {
-        "! auth".to_owned()
-    } else if endpoint.state.status() == ClientEndpointStatus::Attention {
-        // The shared status presentation spells it, Local included.
+    let signal = if endpoint.state.status() == ClientEndpointStatus::Attention {
+        // The shared status presentation spells it.
         format!("{glyph} {state}")
-    } else if endpoint.endpoint_id.is_local() {
-        String::new()
-    } else if state.is_empty() {
-        glyph.to_owned()
     } else {
-        format!("{glyph} {state}")
+        String::new()
     };
     (signal, color)
 }
@@ -230,7 +235,7 @@ fn workspace_of<'a>(
     &'a shepr_protocol::ClientShellWorkspace,
 )> {
     let endpoint = inputs.endpoints.get(endpoint)?;
-    let workspace = endpoint.snapshot()?.workspaces.get(entry)?;
+    let workspace = endpoint.listed_snapshot()?.workspaces.get(entry)?;
     Some((&endpoint.endpoint_id, workspace))
 }
 
@@ -247,16 +252,38 @@ fn workspace_reveal_row(
             rows.iter().position(|row| match *row {
                 Row::Workspace { endpoint, entry } => workspace_of(inputs, endpoint, entry)
                     .is_some_and(|(endpoint_id, workspace)| matches(endpoint_id, workspace)),
-                Row::Endpoint(_) => false,
+                Row::Endpoint(_) | Row::MachineEntry(_) => false,
             })
         };
     if (reveal.selected_pending() || implied_selected_reveal)
         && let Some(selected) = inputs.selected
-        && let Some(row) = find(&|endpoint_id, workspace| {
-            selected.matches_workspace(endpoint_id, &workspace.workspace_id)
-        })
     {
-        return Some(row);
+        // A selected machine entry is revealed like a selected workspace; the collapsed
+        // strip, which has no entry rows, reveals the machine's row instead.
+        let row = if selected.is_machine_entry() {
+            let of_selected = |endpoint: usize| {
+                inputs
+                    .endpoints
+                    .get(endpoint)
+                    .is_some_and(|endpoint| endpoint.endpoint_id == selected.location.endpoint)
+            };
+            rows.iter()
+                .position(
+                    |row| matches!(*row, Row::MachineEntry(endpoint) if of_selected(endpoint)),
+                )
+                .or_else(|| {
+                    rows.iter().position(
+                        |row| matches!(*row, Row::Endpoint(endpoint) if of_selected(endpoint)),
+                    )
+                })
+        } else {
+            find(&|endpoint_id, workspace| {
+                selected.matches_workspace(endpoint_id, &workspace.workspace_id)
+            })
+        };
+        if row.is_some() {
+            return row;
+        }
     }
     if let Some(location) = reveal.explicit()
         && let Some(workspace_id) = location.workspace_id()
@@ -278,18 +305,31 @@ fn workspace_reveal_row(
     None
 }
 
-/// The flattened endpoint and workspace rows, in drawing order.
-fn flattened_rows(inputs: &SidebarInputs<'_>) -> Vec<Row> {
+/// Whether a list shows configured machines' state entries as rows of their own. The
+/// collapsed strip shows a machine's state as the glyph on its machine row instead.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EntryRows {
+    Shown,
+    Hidden,
+}
+
+/// The flattened endpoint, entry and workspace rows, in drawing order. Every machine
+/// is listed expanded: its row, then its workspaces while it is connected, or its
+/// state entry while it is not.
+fn flattened_rows(inputs: &SidebarInputs<'_>, entry_rows: EntryRows) -> Vec<Row> {
     let single_endpoint = inputs.single_endpoint();
     let mut rows = Vec::new();
     for (endpoint_index, endpoint) in inputs.endpoints.iter().enumerate() {
         if !single_endpoint {
             rows.push(Row::Endpoint(endpoint_index));
         }
-        if inputs.collapsed.contains(&endpoint.endpoint_id) {
+        if endpoint.machine_entry().is_some() {
+            if entry_rows == EntryRows::Shown {
+                rows.push(Row::MachineEntry(endpoint_index));
+            }
             continue;
         }
-        if let Some(snapshot) = endpoint.snapshot() {
+        if let Some(snapshot) = endpoint.listed_snapshot() {
             rows.extend((0..snapshot.workspaces.len()).map(|entry| Row::Workspace {
                 endpoint: endpoint_index,
                 entry,
@@ -308,7 +348,7 @@ fn resolve_collapsed(
     let palette = &inputs.config.palette;
     let (workspace_area, divider_y, detail_area) =
         crate::shell::sidebar::collapsed_sidebar_sections(area);
-    let rows = flattened_rows(inputs);
+    let rows = flattened_rows(inputs, EntryRows::Hidden);
     let heights = vec![1u16; rows.len()];
     let gaps = vec![0u16; rows.len()];
     let target = workspace_reveal_row(
@@ -342,8 +382,7 @@ fn resolve_collapsed(
                         .count();
                     let mut status_badge = Rect::default();
                     if !endpoint.endpoint_id.is_local() {
-                        let (glyph, _, _) =
-                            endpoint_status_presentation(endpoint.state.status(), palette);
+                        let (glyph, _) = endpoint.row_glyph(palette);
                         let width = display_width(glyph).min(rect.width);
                         status_badge =
                             Rect::new(rect.right().saturating_sub(width), rect.y, width, 1);
@@ -352,18 +391,14 @@ fn resolve_collapsed(
                         hit: MachineHit {
                             rect,
                             status_badge,
-                            collapse_toggle: Rect::new(
-                                rect.x,
-                                rect.y,
-                                u16::from(rect.width > 1),
-                                1,
-                            ),
                             location: Location::machine(endpoint.endpoint_id.clone()),
                         },
                         endpoint: endpoint_index,
                         machine_number,
                     });
                 }
+                // The strip shows a machine's state on its machine row.
+                Row::MachineEntry(_) => continue,
                 Row::Workspace { endpoint, entry } => {
                     let Some((endpoint_id, workspace)) = workspace_of(inputs, endpoint, entry)
                     else {
@@ -472,11 +507,14 @@ fn resolve_expanded(
             .height
             .saturating_sub(WORKSPACE_HEADER_ROWS + WORKSPACE_FOOTER_ROWS),
     );
-    let rows = flattened_rows(inputs);
+    let rows = flattened_rows(inputs, EntryRows::Shown);
     let heights = rows
         .iter()
         .map(|row| match *row {
             Row::Endpoint(_) => 1,
+            Row::MachineEntry(endpoint) => inputs.endpoints[endpoint]
+                .machine_entry()
+                .map_or(1, |entry| 1 + u16::from(entry.hint.is_some())),
             Row::Workspace { endpoint, entry } => {
                 workspace_of(inputs, endpoint, entry).map_or(1, |(_, workspace)| {
                     let len = crate::shell::sidebar::workspace_rows(
@@ -527,8 +565,7 @@ fn resolve_expanded(
                     }
                     let endpoint = &inputs.endpoints[endpoint_index];
                     let rect = Rect::new(body.x, y, content_width, 1);
-                    let (signal, _) =
-                        endpoint_signal(endpoint, inputs.machine_diagnostics, &config.palette);
+                    let (signal, _) = endpoint_signal(endpoint, &config.palette);
                     let signal_width = display_width(&signal).min(rect.width);
                     slots.push(ExpandedSlot::Machine {
                         hit: MachineHit {
@@ -539,17 +576,30 @@ fn resolve_expanded(
                                 signal_width,
                                 1,
                             ),
-                            collapse_toggle: Rect::new(
-                                rect.x.saturating_add(1),
-                                rect.y,
-                                u16::from(rect.width > 1),
-                                1,
-                            ),
                             location: Location::machine(endpoint.endpoint_id.clone()),
                         },
                         endpoint: endpoint_index,
                     });
                     y = y.saturating_add(1).saturating_add(gap);
+                }
+                Row::MachineEntry(endpoint_index) => {
+                    let height = heights[row_index].min(body.height);
+                    if y.saturating_add(height) > body.bottom() {
+                        break;
+                    }
+                    let endpoint = &inputs.endpoints[endpoint_index];
+                    let rect = Rect::new(body.x, y, content_width, height);
+                    slots.push(ExpandedSlot::MachineEntry {
+                        hit: MachineEntryHit {
+                            rect,
+                            location: Location::machine(endpoint.endpoint_id.clone()),
+                            actionable: endpoint
+                                .machine_entry()
+                                .is_some_and(|entry| entry.state.action().is_some()),
+                        },
+                        endpoint: endpoint_index,
+                    });
+                    y = y.saturating_add(height).saturating_add(gap);
                 }
                 Row::Workspace { endpoint, entry } => {
                     let Some((endpoint_id, workspace)) = workspace_of(inputs, endpoint, entry)
@@ -806,7 +856,6 @@ mod tests {
         SidebarInputs {
             endpoints: &state.endpoints,
             presented: state.endpoints.presented(),
-            collapsed: &state.endpoints.collapsed,
             model: &state.endpoints.agent_panel_model,
             config: &state.config,
             agent_panel_sort: state.agent_panel_sort_chrome.value(),
@@ -847,7 +896,7 @@ mod tests {
                 .iter()
                 .filter_map(|slot| match slot {
                     ExpandedSlot::Workspace { hit, .. } => Some(hit.location.clone()),
-                    ExpandedSlot::Machine { .. } => None,
+                    ExpandedSlot::Machine { .. } | ExpandedSlot::MachineEntry { .. } => None,
                 })
                 .collect(),
             SidebarView::Collapsed(view) => view

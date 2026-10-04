@@ -10,22 +10,25 @@ mod preflight;
 mod process;
 mod relay;
 mod server_lifecycle;
+mod server_wait;
 mod shell_command;
 mod ssh;
 mod ssh_paths;
 
 pub use args::RemoteCliCommand;
 pub use failure::SshFailureDiagnostic;
-pub use host::{classified_bridge_failure, run_remote_client_bridge};
-pub use limits::SSH_CONNECTION_ATTEMPT_BUDGET;
+pub use host::{BridgeMode, classified_bridge_failure, run_remote_client_bridge};
+pub use limits::{SSH_CONNECTION_ATTEMPT_BUDGET, SSH_RESTART_ATTEMPT_BUDGET};
 pub use machine::SshTarget;
-pub use machine_ssh::{MachineSshBridge, MachineSshConnector, MachineSshStream};
+pub use machine_ssh::{
+    ConnectMode, MachineSshBridge, MachineSshConnector, MachineSshStream, ServerWatchEnd,
+};
 pub use preflight::{
     AuthenticationError, MachineCheck, MachineSshPreflight, PreflightOutcome, PreflightSsh,
-    RestartDecider, classify_check, preflight, restart_different_builds,
+    classify_check, preflight,
 };
 pub use relay::RemoteBridgeOutcome;
-pub use server_lifecycle::{DifferentBuildServer, MachineSshCheck};
+pub use server_wait::{ServerWaitEnd, wait_for_server};
 pub use shell_command::shell_quote;
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command, ssh_check_command};
 pub use ssh_paths::validate_remote_bridge_endpoint_path;

@@ -257,7 +257,7 @@ macro_rules! keybinding_table {
                 (navigate_back, back, Back, "esc", Navigation, "back", "Leave navigate mode."),
                 (navigate_up, up, Up, "up", Navigation, "workspaces and agents", "Move the selection up through the agent list, then the workspace list above it."),
                 (navigate_down, down, Down, "down", Navigation, "workspaces and agents", "Move the selection down the workspace list, then the agent list below it."),
-                (navigate_open, open, Open, "enter", Navigation, "open selection", "Open the selected workspace, or focus the selected agent's pane."),
+                (navigate_open, open, Open, "enter", Navigation, "open selection", "Open the selected workspace, focus the selected agent's pane, or choose a machine's Connect or Restart."),
             }
         }
     };

@@ -6,11 +6,10 @@ use std::io::{self, Write};
 /// "shepr".
 ///
 /// The title is stripped by `shepr_term::title`, the one displayable-title
-/// rule, with no length cap: the host writes whatever the server already
-/// bounded. Every control character is dropped, not just the OSC terminators: titles
-/// carry cwd and branch text, and a C0 (CAN/SUB abort the OSC, CR/LF garble
-/// it), DEL or a UTF-8-encoded C1 (U+009B CSI, U+0090 DCS, U+009C ST) would
-/// otherwise reach the host terminal's parser.
+/// rule, with no length cap: the caller chooses the title. Every control
+/// character is dropped, not just the OSC terminators: a C0 (CAN/SUB abort the
+/// OSC, CR/LF garble it), DEL or a UTF-8-encoded C1 (U+009B CSI, U+0090 DCS,
+/// U+009C ST) would otherwise reach the host terminal's parser.
 pub fn write_window_title<W: Write>(writer: &mut W, title: Option<&str>) -> io::Result<()> {
     let title = title.unwrap_or("shepr");
     let safe_title = shepr_term::title::strip_non_displayable(title);

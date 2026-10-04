@@ -32,12 +32,6 @@ struct MachineDiagnostic {
 }
 
 impl MachineDiagnostics {
-    pub(in crate::shell) fn required_for(&self, endpoint: &ClientShellEndpoint) -> bool {
-        self.errors
-            .get(&endpoint.endpoint_id)
-            .is_some_and(|diagnostic| diagnostic.requires_authentication)
-    }
-
     pub(in crate::shell) fn badge_style(
         &self,
         endpoint: &ClientShellEndpoint,
@@ -169,5 +163,13 @@ impl ClientShellState {
         });
         outcome.repaint |= opened;
         true
+    }
+}
+
+#[cfg(test)]
+impl MachineDiagnostics {
+    /// Whether `id` has a diagnostic to show.
+    pub(in crate::shell) fn has(&self, id: &ClientEndpointId) -> bool {
+        self.errors.contains_key(id)
     }
 }

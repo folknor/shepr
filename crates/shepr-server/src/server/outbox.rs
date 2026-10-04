@@ -530,15 +530,13 @@ impl ClientOutbox {
     }
 }
 
-/// What the control lane last told the client, so that sending a mode or
-/// title and remembering it was sent are one operation. `None` is "not told
-/// since the presentation was last reset".
+/// What the control lane last told the client, so that sending a mode and
+/// remembering it was sent are one operation. `None` is "not told since the
+/// presentation was last reset".
 #[derive(Debug, Default)]
 struct Told {
     mouse_capture: Option<HostMouseCapture>,
     keyboard_report_all: Option<bool>,
-    /// `Some(None)` when the client was told to use its default title.
-    window_title: Option<Option<String>>,
 }
 
 impl ClientOutbox {
@@ -546,10 +544,6 @@ impl ClientOutbox {
     /// again (a surface activation or a host-effects replay requests them).
     pub(crate) fn forget_presentation(&mut self) {
         self.told = Told::default();
-    }
-
-    pub(crate) fn window_title_is_current(&self, title: &Option<String>) -> bool {
-        self.told.window_title.as_ref() == Some(title)
     }
 
     pub(crate) fn tell_mouse_capture(&mut self, mode: HostMouseCapture) {
@@ -569,28 +563,6 @@ impl ClientOutbox {
         let result = self.send(&ServerMessage::ClientShellKeyboardReportAll { enabled });
         if result == Delivery::Queued {
             self.told.keyboard_report_all = Some(enabled);
-        }
-    }
-
-    pub(crate) fn tell_window_title(&mut self, title: Option<String>) -> Delivery {
-        if self.window_title_is_current(&title) {
-            return self.liveness();
-        }
-        let result = self.send(&ServerMessage::WindowTitle {
-            title: title.clone(),
-        });
-        if result == Delivery::Queued {
-            self.told.window_title = Some(title);
-        }
-        result
-    }
-
-    /// `Queued` while the outbox can still take messages, `Closed` after.
-    fn liveness(&self) -> Delivery {
-        if self.queue.lock_state().writer_alive {
-            Delivery::Queued
-        } else {
-            Delivery::Closed
         }
     }
 }
@@ -623,10 +595,6 @@ impl ClientOutbox {
 
     pub(crate) fn told_keyboard_report_all(&self) -> Option<bool> {
         self.told.keyboard_report_all
-    }
-
-    pub(crate) fn told_window_title(&self) -> &Option<Option<String>> {
-        &self.told.window_title
     }
 }
 
@@ -804,12 +772,8 @@ mod tests {
     #[test]
     fn client_writer_queue_keeps_render_slot_bounded() {
         let (writer, _queue) = test_queue_writer();
-        let first = single_frame(&ServerMessage::WindowTitle {
-            title: Some("first".into()),
-        });
-        let second = single_frame(&ServerMessage::WindowTitle {
-            title: Some("second".into()),
-        });
+        let first = single_frame(&payload("first"));
+        let second = single_frame(&payload("second"));
 
         writer
             .queue_handle()
@@ -900,9 +864,11 @@ mod tests {
         ))
     }
 
-    fn title(value: &str) -> ServerMessage {
-        ServerMessage::WindowTitle {
-            title: Some(value.to_owned()),
+    /// A control message carrying `value`, for tests that need a distinct
+    /// payload of a chosen size.
+    fn payload(value: &str) -> ServerMessage {
+        ServerMessage::Clipboard {
+            data: value.as_bytes().to_vec(),
         }
     }
 
@@ -910,7 +876,7 @@ mod tests {
     async fn control_overflow_closes_the_outbox_and_wakes_the_loop() {
         let queue = test_queue(1, 1);
         let outbox = ClientOutbox::from_queue(Arc::clone(&queue));
-        assert_eq!(outbox.send(&title("too large")), Delivery::Closed);
+        assert_eq!(outbox.send(&payload("too large")), Delivery::Closed);
         assert!(outbox.is_closed());
         tokio::time::timeout(Duration::from_millis(100), queue.wake.notified())
             .await
@@ -922,7 +888,7 @@ mod tests {
         let outbox = queued_outbox();
         outbox.close();
         outbox.queue.wake.notified().await;
-        assert_eq!(outbox.send(&title("late")), Delivery::Closed);
+        assert_eq!(outbox.send(&payload("late")), Delivery::Closed);
         assert_eq!(outbox.offer_surface(vec![1]), SurfaceOffer::Closed);
         outbox.close();
         assert!(
@@ -936,15 +902,15 @@ mod tests {
     fn a_closed_fixture_outbox_refuses_sends_and_is_reaped() {
         let outbox = ClientOutbox::detached();
         assert!(outbox.is_closed());
-        assert_eq!(outbox.send(&title("late")), Delivery::Closed);
+        assert_eq!(outbox.send(&payload("late")), Delivery::Closed);
         assert_eq!(outbox.offer_surface(vec![1]), SurfaceOffer::Closed);
     }
 
     #[test]
     fn held_replies_leave_in_command_order() {
         let mut outbox = queued_outbox();
-        outbox.hold_reply(&title("first"));
-        outbox.hold_reply(&title("second"));
+        outbox.hold_reply(&payload("first"));
+        outbox.hold_reply(&payload("second"));
         assert_eq!(outbox.held_reply_count(), 2);
         assert!(outbox.queue.lock_state().control.is_empty());
         outbox.release_replies(ReleaseMode::WithinBudget);
@@ -955,9 +921,7 @@ mod tests {
             };
             let message: ServerMessage =
                 shepr_protocol::read_message(&mut data.as_slice()).expect("decode");
-            assert!(
-                matches!(message, ServerMessage::WindowTitle { title: Some(value) } if value == expected)
-            );
+            assert_eq!(message, payload(expected));
             outbox.queue.finish_control_item(data.len());
         }
     }
@@ -966,17 +930,17 @@ mod tests {
     fn held_reply_count_over_the_bound_closes_the_outbox() {
         let mut outbox = queued_outbox();
         for _ in 0..MAX_HELD_ENDPOINT_REPLIES {
-            outbox.hold_reply(&title("held"));
+            outbox.hold_reply(&payload("held"));
             assert!(!outbox.is_closed());
         }
-        outbox.hold_reply(&title("overflow"));
+        outbox.hold_reply(&payload("overflow"));
         assert!(outbox.is_closed());
     }
 
     #[test]
     fn held_reply_bytes_over_the_bound_closes_the_outbox() {
         let mut outbox = queued_outbox();
-        let message = title(&"x".repeat(MAX_HELD_ENDPOINT_REPLY_BYTES / 2));
+        let message = payload(&"x".repeat(MAX_HELD_ENDPOINT_REPLY_BYTES / 2));
         outbox.hold_reply(&message);
         assert!(!outbox.is_closed());
         outbox.hold_reply(&message);
@@ -985,11 +949,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_reply_that_fits_the_lane_waits_for_room_instead_of_closing() {
-        let bytes = shepr_protocol::encode_message(&title("reply")).expect("frame");
+        let bytes = shepr_protocol::encode_message(&payload("reply")).expect("frame");
         let queue = test_queue(2, bytes.len());
         let mut outbox = ClientOutbox::from_queue(Arc::clone(&queue));
         queue.send_control(vec![1]).expect("occupy part of budget");
-        outbox.hold_reply(&title("reply"));
+        outbox.hold_reply(&payload("reply"));
         outbox.release_replies(ReleaseMode::WithinBudget);
         assert_eq!(outbox.held_reply_count(), 1);
         assert!(!outbox.is_closed());
@@ -1005,9 +969,9 @@ mod tests {
 
     #[test]
     fn a_reply_past_the_whole_lane_closes_instead_of_waiting_forever() {
-        let bytes = shepr_protocol::encode_message(&title("reply")).expect("frame");
+        let bytes = shepr_protocol::encode_message(&payload("reply")).expect("frame");
         let mut outbox = ClientOutbox::from_queue(test_queue(2, bytes.len() - 1));
-        outbox.hold_reply(&title("reply"));
+        outbox.hold_reply(&payload("reply"));
         assert!(!outbox.is_closed());
         outbox.release_replies(ReleaseMode::WithinBudget);
         assert!(outbox.is_closed());
@@ -1018,16 +982,13 @@ mod tests {
         let mut outbox = queued_outbox();
         outbox.tell_mouse_capture(HostMouseCapture::Pixels);
         outbox.tell_keyboard_report_all(false);
-        outbox.tell_window_title(Some("title".into()));
         outbox.tell_mouse_capture(HostMouseCapture::Pixels);
         outbox.tell_keyboard_report_all(false);
-        outbox.tell_window_title(Some("title".into()));
-        assert_eq!(outbox.queue.lock_state().control_items, 3);
+        assert_eq!(outbox.queue.lock_state().control_items, 2);
         outbox.forget_presentation();
         outbox.tell_mouse_capture(HostMouseCapture::Pixels);
         outbox.tell_keyboard_report_all(false);
-        outbox.tell_window_title(Some("title".into()));
-        assert_eq!(outbox.queue.lock_state().control_items, 6);
+        assert_eq!(outbox.queue.lock_state().control_items, 4);
     }
 
     #[test]
@@ -1054,22 +1015,22 @@ mod tests {
         let outbox = queued_outbox();
         assert!(outbox.frame(&Unencodable).is_none());
         assert!(outbox.is_closed());
-        assert_eq!(outbox.send(&title("later")), Delivery::Closed);
+        assert_eq!(outbox.send(&payload("later")), Delivery::Closed);
     }
 
     #[test]
     fn shutdown_release_admits_replies_ahead_of_the_shutdown_notice() {
         let mut outbox = queued_outbox();
-        outbox.hold_reply(&title("reply"));
+        outbox.hold_reply(&payload("reply"));
         outbox.release_replies(ReleaseMode::Shutdown);
-        assert_eq!(outbox.send(&title("shutdown")), Delivery::Queued);
+        assert_eq!(outbox.send(&payload("shutdown")), Delivery::Queued);
         for expected in ["reply", "shutdown"] {
             let Some(ClientWriteItem::Control(bytes)) = outbox.queue.recv() else {
                 panic!("control item");
             };
             let actual: ServerMessage =
                 shepr_protocol::read_message(&mut bytes.as_slice()).expect("decode");
-            assert_eq!(actual, title(expected));
+            assert_eq!(actual, payload(expected));
             outbox.queue.finish_control_item(bytes.len());
         }
     }

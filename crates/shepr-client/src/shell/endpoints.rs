@@ -10,21 +10,141 @@ use shepr_protocol::{ClientShellSnapshot, ConnectionGeneration};
 use std::sync::Arc;
 
 use shepr_config::theme::Palette;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ClientShellEndpoint {
     pub(in crate::shell) endpoint_id: ClientEndpointId,
     pub(in crate::shell) state: EndpointState,
     pub(in crate::shell) agent_recency: HashMap<shepr_protocol::PublicPaneId, u64>,
+    /// What a configured machine's entry says while it is not connected. Unused
+    /// for the Local endpoint, which has no entry.
+    pub(in crate::shell) machine: MachineState,
+    /// The ssh command that reaches a configured machine by hand, for the entry
+    /// of a machine that needs a login; `None` for the Local endpoint.
+    pub(in crate::shell) ssh_check: Option<String>,
+}
+
+/// What a configured machine's sidebar entry says while the machine is not
+/// connected. A failed attempt sets it from what the failure says
+/// ([`MachineState::after_failure`]); the operator's Connect and Restart set the
+/// state their attempt is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MachineState {
+    /// Being reached: the first attempt, a retry after a transient failure, or
+    /// a connection waiting for its first snapshot.
+    Connecting,
+    /// Reachable, with no server running and none started: the entry offers
+    /// Connect.
+    NotRunning,
+    /// Its server is starting, or the operator's Connect is starting it.
+    Starting,
+    /// Its server is stopping.
+    Stopping,
+    /// Its server is another shepr build: the entry offers Restart.
+    DifferentBuild,
+    /// The operator's Restart is stopping that server and starting this
+    /// build's.
+    Restarting,
+    /// The machine did not answer (host down, network).
+    Offline,
+    /// SSH refused the client's credentials: someone has to log in.
+    NeedsLogin,
+    /// The machine answered and cannot be used until it is repaired there.
+    Unavailable,
+}
+
+/// What activating a machine's entry, or its machine row, does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::shell) enum MachineAction {
+    /// Start the machine's server and attach.
+    Connect,
+    /// Ask, then stop the server of another build and start this build's.
+    Restart,
+}
+
+impl MachineState {
+    /// The state a failed attempt, a failed wait or a lost connection leaves,
+    /// from the failure's typed cause and the operator action it needs.
+    pub(crate) fn after_failure(failure: &shepr_launch::EndpointFailure) -> Self {
+        use shepr_launch::{FailureCause, FailureDisposition};
+        match failure.cause() {
+            FailureCause::NoServer => Self::NotRunning,
+            FailureCause::ServerStarting => Self::Starting,
+            FailureCause::ServerStopping | FailureCause::Shutdown(_) => Self::Stopping,
+            FailureCause::DifferentBuild => Self::DifferentBuild,
+            _ => match failure.disposition() {
+                FailureDisposition::Authentication | FailureDisposition::PossibleAuthentication => {
+                    Self::NeedsLogin
+                }
+                FailureDisposition::Offline => Self::Offline,
+                FailureDisposition::Retry => Self::Connecting,
+                FailureDisposition::HostKey
+                | FailureDisposition::Incompatible
+                | FailureDisposition::Repair => Self::Unavailable,
+            },
+        }
+    }
+
+    pub(in crate::shell) fn action(self) -> Option<MachineAction> {
+        match self {
+            Self::NotRunning => Some(MachineAction::Connect),
+            Self::DifferentBuild => Some(MachineAction::Restart),
+            Self::Connecting
+            | Self::Starting
+            | Self::Stopping
+            | Self::Restarting
+            | Self::Offline
+            | Self::NeedsLogin
+            | Self::Unavailable => None,
+        }
+    }
+
+    /// The entry's text.
+    pub(in crate::shell) fn label(self) -> &'static str {
+        match self {
+            Self::Connecting => "Connecting...",
+            Self::NotRunning => "Connect",
+            Self::Starting => "Starting...",
+            Self::Stopping => "Stopping...",
+            Self::DifferentBuild => "Restart (other build)",
+            Self::Restarting => "Restarting...",
+            Self::Offline => "Offline",
+            Self::NeedsLogin => "Needs SSH login",
+            Self::Unavailable => "Unavailable",
+        }
+    }
+
+    /// The one-cell glyph the machine row shows for this state, and its colour.
+    pub(in crate::shell) fn glyph(
+        self,
+        palette: &Palette,
+    ) -> (&'static str, ratatui::style::Color) {
+        match self {
+            Self::Connecting | Self::Starting | Self::Stopping | Self::Restarting => {
+                ("◐", palette.yellow)
+            }
+            Self::NotRunning => ("○", palette.accent),
+            Self::DifferentBuild => ("↻", palette.accent),
+            Self::Offline => ("×", palette.overlay0),
+            Self::NeedsLogin | Self::Unavailable => ("!", palette.red),
+        }
+    }
+}
+
+/// The entry a configured machine shows in place of its workspaces while it is
+/// not connected.
+pub(in crate::shell) struct MachineEntry {
+    pub(in crate::shell) state: MachineState,
+    /// A second line, for the entry of a machine that needs a login: how to
+    /// give one.
+    pub(in crate::shell) hint: Option<String>,
 }
 
 /// Owns endpoint selection and the endpoint presentations read by the shell.
 pub(crate) struct Endpoints {
     pub(crate) choice: crate::endpoint::EndpointChoice,
     entries: Vec<ClientShellEndpoint>,
-    /// Endpoints whose workspaces the sidebar folds away.
-    pub(in crate::shell) collapsed: HashSet<ClientEndpointId>,
     pub(in crate::shell) agent_panel_model: AgentPanelModel,
     pub(in crate::shell) navigator_index: NavigatorIndex,
     /// The snapshot, connection generation and identity the shell presents.
@@ -46,16 +166,10 @@ impl Endpoints {
         Self {
             choice: crate::endpoint::EndpointChoice::showing(ClientEndpointId::Local),
             entries,
-            collapsed: HashSet::new(),
             agent_panel_model,
             navigator_index,
             active: ActiveProjection::default(),
         }
-    }
-
-    /// Unfolds the presented endpoint.
-    pub(in crate::shell) fn expand_presented(&mut self) {
-        self.collapsed.remove(self.choice.presented());
     }
 }
 
@@ -295,6 +409,50 @@ impl ClientShellEndpoint {
         self.state.last().map(|last| last.snapshot.as_ref())
     }
 
+    /// The snapshot whose workspaces and agents the sidebar and the navigator
+    /// list. A configured machine that is not connected lists none: its state
+    /// entry stands in for them, with no stale rows. Local keeps its last
+    /// snapshot listed, dimmed, while it reconnects.
+    pub(in crate::shell) fn listed_snapshot(&self) -> Option<&ClientShellSnapshot> {
+        if self.endpoint_id.is_local() || self.state.usable() {
+            self.snapshot()
+        } else {
+            None
+        }
+    }
+
+    /// The entry a configured machine shows in place of its workspaces, `None`
+    /// while it is connected and for the Local endpoint.
+    pub(in crate::shell) fn machine_entry(&self) -> Option<MachineEntry> {
+        if self.endpoint_id.is_local() || self.state.usable() {
+            return None;
+        }
+        let hint = self
+            .ssh_check
+            .as_ref()
+            .filter(|_| self.machine == MachineState::NeedsLogin)
+            .map(|ssh| format!("run shepr again, or {ssh}"));
+        Some(MachineEntry {
+            state: self.machine,
+            hint,
+        })
+    }
+
+    /// The glyph and colour the machine row shows: the connection status for
+    /// Local and for a connected machine, else the machine's state.
+    pub(in crate::shell) fn row_glyph(
+        &self,
+        palette: &Palette,
+    ) -> (&'static str, ratatui::style::Color) {
+        match self.machine_entry() {
+            Some(entry) => entry.state.glyph(palette),
+            None => {
+                let (glyph, _, color) = endpoint_status_presentation(self.state.status(), palette);
+                (glyph, color)
+            }
+        }
+    }
+
     fn shared_snapshot(&self) -> Option<Arc<ClientShellSnapshot>> {
         self.state.last().map(|last| Arc::clone(&last.snapshot))
     }
@@ -326,10 +484,34 @@ impl ClientShellState {
                     generation: None,
                 },
                 agent_recency: HashMap::new(),
+                machine: MachineState::Connecting,
+                ssh_check: Some(shepr_remote::ssh_check_command(&machine.ssh)),
             });
         }
         self.endpoints.entries = next;
         self.rebuild_endpoint_models();
+    }
+
+    /// Sets what a configured machine's entry says. The Local endpoint has no
+    /// entry and ignores it.
+    pub(crate) fn set_machine_state(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        state: MachineState,
+    ) {
+        if endpoint_id.is_local() {
+            return;
+        }
+        if let Some(endpoint) = self
+            .endpoints
+            .entries
+            .iter_mut()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        {
+            endpoint.machine = state;
+        }
+        // The navigate selection may sit on an entry whose action just went away.
+        self.reconcile_navigate_machine_entry();
     }
 
     /// A handshake starts a new presentation generation. Until its own snapshot arrives,
@@ -351,6 +533,7 @@ impl ClientShellState {
                 connected: true,
                 generation: Some(generation),
             };
+            endpoint.machine = MachineState::Connecting;
         }
         self.clear_machine_diagnostic(endpoint_id);
         self.rebuild_endpoint_models();
@@ -679,6 +862,8 @@ pub(in crate::shell) fn local_endpoint() -> ClientShellEndpoint {
             generation: None,
         },
         agent_recency: HashMap::new(),
+        machine: MachineState::Connecting,
+        ssh_check: None,
     }
 }
 
@@ -829,6 +1014,18 @@ impl ClientShellState {
 
     pub(in crate::shell) fn active_endpoint_id(&self) -> &ClientEndpointId {
         self.endpoints.presented()
+    }
+}
+
+#[cfg(test)]
+impl ClientShellState {
+    /// What a configured machine's entry says, `None` for an endpoint that is not
+    /// configured.
+    pub(crate) fn machine_state(&self, endpoint_id: &ClientEndpointId) -> Option<MachineState> {
+        self.endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .map(|endpoint| endpoint.machine)
     }
 }
 
@@ -995,6 +1192,130 @@ mod tests {
         assert!(state.stale());
         state.cache(snapshot(2));
         assert!(state.usable());
+    }
+
+    /// Each state a probe of a machine can find maps to its own entry: what it says, and
+    /// whether activating it connects or restarts.
+    #[test]
+    fn every_probed_machine_state_maps_to_its_sidebar_entry() {
+        use shepr_launch::{EndpointFailure, SshFailureClass};
+        for (failure, state, label, action) in [
+            (
+                EndpointFailure::no_server("no shepr server is running"),
+                MachineState::NotRunning,
+                "Connect",
+                Some(MachineAction::Connect),
+            ),
+            (
+                EndpointFailure::server_starting("the server is starting"),
+                MachineState::Starting,
+                "Starting...",
+                None,
+            ),
+            (
+                EndpointFailure::server_stopping("the server is stopping"),
+                MachineState::Stopping,
+                "Stopping...",
+                None,
+            ),
+            (
+                EndpointFailure::server_shutdown(shepr_protocol::ShutdownReason::Stopping),
+                MachineState::Stopping,
+                "Stopping...",
+                None,
+            ),
+            (
+                EndpointFailure::different_build("the server is another build"),
+                MachineState::DifferentBuild,
+                "Restart (other build)",
+                Some(MachineAction::Restart),
+            ),
+            (
+                EndpointFailure::ssh(SshFailureClass::Link, "Connection timed out"),
+                MachineState::Offline,
+                "Offline",
+                None,
+            ),
+            (
+                EndpointFailure::from_error(&std::io::Error::from(
+                    std::io::ErrorKind::HostUnreachable,
+                )),
+                MachineState::Offline,
+                "Offline",
+                None,
+            ),
+            (
+                EndpointFailure::ssh(
+                    SshFailureClass::Authentication,
+                    "Permission denied (publickey)",
+                ),
+                MachineState::NeedsLogin,
+                "Needs SSH login",
+                None,
+            ),
+            (
+                EndpointFailure::ssh(SshFailureClass::HostKey, "Host key verification failed"),
+                MachineState::Unavailable,
+                "Unavailable",
+                None,
+            ),
+            (
+                EndpointFailure::retry("connection closed"),
+                MachineState::Connecting,
+                "Connecting...",
+                None,
+            ),
+        ] {
+            let mapped = MachineState::after_failure(&failure);
+            assert_eq!(mapped, state, "{failure}");
+            assert_eq!(mapped.label(), label, "{failure}");
+            assert_eq!(mapped.action(), action, "{failure}");
+        }
+    }
+
+    #[test]
+    fn only_a_machine_that_is_not_connected_shows_an_entry() {
+        let machine = shepr_config::MachineConfig {
+            label: shepr_config::MachineLabel::parse("build").expect("test label"),
+            ssh: shepr_config::SshTarget::parse("build.example").expect("test target"),
+            palette: None,
+        };
+        let id = ClientEndpointId::Ssh(machine.label.clone());
+        let mut shell = ClientShellState::new(ClientShellConfig::from_config(
+            &shepr_config::ClientConfig::default(),
+        ));
+        shell.set_machines(&[machine]);
+        let entry = |shell: &ClientShellState| {
+            shell
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.endpoint_id == id)
+                .and_then(ClientShellEndpoint::machine_entry)
+                .map(|entry| entry.state)
+        };
+        assert_eq!(entry(&shell), Some(MachineState::Connecting));
+        shell.set_machine_state(&id, MachineState::NeedsLogin);
+        let login = shell
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.endpoint_id == id)
+            .and_then(ClientShellEndpoint::machine_entry)
+            .and_then(|entry| entry.hint)
+            .expect("a login hint");
+        assert!(login.contains("run shepr again"), "{login}");
+        assert!(login.contains("ssh build.example"), "{login}");
+
+        shell.connect_endpoint_with_snapshot(&id, 2, Box::new(crate::shell::tests::snapshot()));
+        assert_eq!(entry(&shell), None);
+        // Local never shows one.
+        assert!(
+            shell
+                .endpoints
+                .iter()
+                .find(|endpoint| endpoint.endpoint_id.is_local())
+                .and_then(ClientShellEndpoint::machine_entry)
+                .is_none()
+        );
     }
 
     #[test]

@@ -99,11 +99,6 @@ pub(crate) struct App {
     /// Workspaces whose panes wait for their geometry to settle before their
     /// PTYs are resized; see `pane_resize`.
     pending_pane_resizes: pane_resize::PendingPaneResizes,
-    /// Host names resolved once at startup, `None` when they could not be:
-    /// the one answer for the window title (short form, via `host_names`) and,
-    /// through the pane launcher, for matching OSC 7 cwd reports (full and
-    /// short form).
-    hostname: Option<Arc<shepr_platform::HostNames>>,
     /// This app's pane session teardowns, handed to every pane it spawns and
     /// waited on at exit.
     pane_teardowns: Arc<shepr_mux::pane::PaneTeardownTracker>,
@@ -140,6 +135,9 @@ impl App {
         let pane_teardowns = Arc::new(shepr_mux::pane::PaneTeardownTracker::default());
         let render_dirty = Arc::new(shepr_mux::render_signal::RenderSignal::new());
         let settings = state::AppSettings::from_config(config);
+        // Host names resolved once at startup, `None` when they could not be:
+        // the pane launcher matches OSC 7 cwd reports against them (full and
+        // short form).
         let hostname = shepr_platform::host_names().map(Arc::new);
 
         let paths = paths.clone();
@@ -160,7 +158,7 @@ impl App {
                 config.terminal().login_shell,
             ),
             pane_scrollback,
-            hostname.clone(),
+            hostname,
         );
         let shepr_mux::persist::OpenedSession {
             workspaces,
@@ -208,7 +206,6 @@ impl App {
                 config.experimental().pane_history,
             ),
             pending_pane_resizes: pane_resize::PendingPaneResizes::default(),
-            hostname,
             pane_teardowns,
             pane_launcher,
             paths,
@@ -227,12 +224,6 @@ impl App {
             event_tx,
         );
         (app, outputs)
-    }
-
-    /// The host names resolved once at startup; `run_server` gives the window
-    /// title the same answer the pane launcher matches OSC 7 reports with.
-    pub(crate) fn host_names(&self) -> Option<&shepr_platform::HostNames> {
-        self.hostname.as_deref()
     }
 
     /// The server supplies a fresh sample before dispatching an iteration.

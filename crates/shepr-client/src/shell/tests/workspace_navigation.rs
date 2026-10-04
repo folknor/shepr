@@ -571,7 +571,6 @@ fn aggregate_navigation_reveals_overflow_and_preserves_order() {
         remote.boot_id = crate::tests::test_boot_id("remote-boot");
         state.set_endpoint_snapshot(&remote_id, Box::new(remote));
         state.chrome.set_collapsed(compact);
-        state.endpoints.collapsed.insert(remote_id.clone());
         state.compose(100, 18).expect("test precondition");
         enter_navigation(&mut state);
         for number in 1..=15 {
@@ -581,7 +580,6 @@ fn aggregate_navigation_reveals_overflow_and_preserves_order() {
             state.compose(100, 18).expect("test precondition");
             workspace_rect(&state, &remote_id, &id);
         }
-        assert!(!state.endpoints.collapsed.contains(&remote_id));
         // Navigation wraps from the last remote workspace back to the first.
         preview_key(&mut state, b"\x1b[B");
         assert_selected(&state, &ClientEndpointId::Local, "w1");
@@ -1329,6 +1327,83 @@ fn agent_selection_follows_its_agent_through_list_changes() {
     state.edit_endpoint_snapshot(&ClientEndpointId::Local, |snapshot| snapshot.agents.clear());
     assert_selected(&state, &ClientEndpointId::Local, "w2");
     assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
+}
+
+/// Navigate mode steps onto a machine's Connect entry in its place among the workspaces,
+/// highlights it, and Enter on it connects that machine, as a click on the entry does.
+#[test]
+fn navigate_mode_selects_and_opens_a_connect_entry() {
+    let (mut state, remote) = state_with_remote();
+    state.set_endpoint_status(&remote, EndpointFailureStatus::Reconnecting);
+    state.set_machine_state(&remote, crate::shell::MachineState::NotRunning);
+    state.compose(100, 28).expect("test precondition");
+    enter_navigation(&mut state);
+    assert_selected(&state, &ClientEndpointId::Local, "w1");
+    preview_key(&mut state, b"\x1b[B");
+    let selected = state.mode.preview().cloned().expect("a selection");
+    assert!(selected.is_machine_entry());
+    assert_eq!(selected.location, Location::machine(remote.clone()));
+    assert!(state.navigation_target_valid(&selected));
+
+    let frame = state.compose(100, 28).expect("selected entry");
+    let palette = &state.config.palette;
+    let selection = if palette.selection_bg == ratatui::style::Color::Reset {
+        palette.active_row_bg
+    } else {
+        palette.selection_bg
+    };
+    let entry = state
+        .drawn()
+        .machine_entries()
+        .find(|hit| hit.location.endpoint == remote)
+        .expect("the remote's entry")
+        .rect;
+    assert_eq!(cell_bg(&frame, (entry.x, entry.y)), selection);
+
+    // Wrapping past the entry returns to the workspaces.
+    preview_key(&mut state, b"\x1b[B");
+    assert_selected(&state, &ClientEndpointId::Local, "w1");
+    preview_key(&mut state, b"\x1b[A");
+    assert!(
+        state
+            .mode
+            .preview()
+            .is_some_and(crate::shell::navigation::location::PinnedLocation::is_machine_entry)
+    );
+
+    let enter = state.handle_input_bytes(b"\r");
+    assert!(
+        matches!(enter.actions.as_slice(), [ClientShellAction::ConnectMachine(id)] if *id == remote)
+    );
+    assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
+    assert_eq!(
+        state.machine_state(&remote),
+        Some(crate::shell::MachineState::Starting)
+    );
+}
+
+/// An entry with nothing to activate (a machine still connecting) is not a stop on the
+/// way, and a selected entry whose machine connects hands the selection on.
+#[test]
+fn navigate_mode_skips_entries_without_an_action_and_leaves_a_connected_one() {
+    let (mut state, remote) = state_with_remote();
+    state.set_endpoint_status(&remote, EndpointFailureStatus::Reconnecting);
+    state.set_machine_state(&remote, crate::shell::MachineState::Offline);
+    state.compose(100, 28).expect("test precondition");
+    enter_navigation(&mut state);
+    preview_key(&mut state, b"\x1b[B");
+    assert_selected(&state, &ClientEndpointId::Local, "w1");
+
+    state.set_machine_state(&remote, crate::shell::MachineState::DifferentBuild);
+    preview_key(&mut state, b"\x1b[B");
+    assert!(
+        state
+            .mode
+            .preview()
+            .is_some_and(crate::shell::navigation::location::PinnedLocation::is_machine_entry)
+    );
+    state.set_machine_state(&remote, crate::shell::MachineState::Restarting);
+    assert_selected(&state, &ClientEndpointId::Local, "w1");
 }
 
 #[test]

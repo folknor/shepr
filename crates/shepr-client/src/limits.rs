@@ -250,6 +250,11 @@ pub(crate) const ATTEMPT_BUDGET: Duration = shepr_remote::SSH_CONNECTION_ATTEMPT
 // An attempt, and so the retry that follows it, must fit the retry bound.
 const _: () = assert!(ATTEMPT_BUDGET.as_millis() < MAX_RETRY_DELAY.as_millis());
 
+/// The longest an operator's Restart of a configured machine may run: the conditional
+/// stop of its server of another build, then an attempt that starts this build's
+/// server. Only the operator starts one, so it is outside the automatic retry bound.
+pub(crate) const RESTART_ATTEMPT_BUDGET: Duration = shepr_remote::SSH_RESTART_ATTEMPT_BUDGET;
+
 // Sidebar geometry.
 
 /// Rows the workspace section header occupies above the workspace entries: the title and a
@@ -299,6 +304,14 @@ pub(crate) const MIN_NAVIGATOR_OVERLAY_HEIGHT: u16 = 9;
 pub(crate) const MAX_HELP_OVERLAY_WIDTH: u16 = 76;
 /// Maximum height of the Help overlay; the bindings scroll inside it.
 pub(crate) const MAX_HELP_OVERLAY_HEIGHT: u16 = 22;
+/// Columns a configured machine's state entry is indented under its machine row, as far
+/// as the machine's workspaces are, so it reads as nested like them.
+pub(crate) const MACHINE_ENTRY_INDENT: u16 = 2;
+/// Width of a machine's Restart question: room for its longest line inside the border.
+pub(crate) const CONFIRM_RESTART_WIDTH: u16 = 72;
+/// Height of a machine's Restart question: its title, four lines, a blank row and the
+/// buttons, inside the border.
+pub(crate) const CONFIRM_RESTART_HEIGHT: u16 = 9;
 /// Below this width inside its border the Help overlay is not drawn at all; the 13-column
 /// close button sits at the right of the title row.
 pub(crate) const MIN_HELP_OVERLAY_INNER_WIDTH: u16 = 20;
@@ -314,6 +327,12 @@ pub(crate) const MAX_MACHINE_DIAGNOSTIC_CHARS: usize = 4096;
 /// Body rows an automatic notice card shows. A multi-line ssh error must not
 /// cover the UI unasked; the machine badge opens the full diagnostic.
 pub(crate) const MAX_AUTOMATIC_NOTICE_BODY_ROWS: usize = 3;
+/// Rows between the top of the pane area (below any banner or placeholder line there) and a
+/// notice card, so the card does not sit flush in the corner.
+pub(crate) const NOTICE_CARD_TOP_MARGIN: u16 = 1;
+/// Columns between a notice card and the right edge of the pane area, for the same reason.
+/// A card is at most the pane area's width less this margin.
+pub(crate) const NOTICE_CARD_RIGHT_MARGIN: u16 = 2;
 
 // Copy mode.
 

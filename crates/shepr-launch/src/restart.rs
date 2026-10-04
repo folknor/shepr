@@ -1,10 +1,9 @@
-//! The restart offer for a running server of another build, local or remote:
+//! The startup restart offer for a running local server of another build:
 //! observe it, ask for consent, stop exactly the instance observed, and offer
 //! again a bounded number of times when the stop meets a new occupant. The
-//! caller supplies the observation, the question and the stop, so the same
-//! engine serves the local server and every configured machine.
-
-use std::io;
+//! caller supplies the observation, the question and the stop. A configured
+//! machine's server of another build is offered no restart at startup; the
+//! client's Restart entry for it stops it by the same conditional stop.
 
 use crate::stop::ServerStopError;
 
@@ -23,14 +22,12 @@ pub enum StopOutcome {
 #[derive(Debug)]
 pub enum RestartFailure {
     Local(ServerStopError),
-    Remote(io::Error),
 }
 
 impl std::fmt::Display for RestartFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Local(error) => error.fmt(f),
-            Self::Remote(error) => error.fmt(f),
         }
     }
 }
@@ -39,7 +36,6 @@ impl std::error::Error for RestartFailure {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Local(error) => Some(error),
-            Self::Remote(error) => Some(error),
         }
     }
 }

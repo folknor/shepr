@@ -129,7 +129,7 @@ pub(crate) enum ServerEvent {
     /// A client-owned shell reported whether its outer terminal has focus.
     ShellFocus { client_id: ClientId, focused: bool },
     /// A shell that just committed to showing this connection asks for its current mouse
-    /// capture, keyboard mode and title, which it dropped while preparing the connection.
+    /// capture and keyboard mode, which it dropped while preparing the connection.
     ShellReplayHostEffects { client_id: ClientId },
     /// A client-owned shell invoked one endpoint operation through this connection.
     ShellEndpointRequest {
@@ -659,21 +659,24 @@ mod tests {
         shepr_protocol::encode_frame(message).expect("frame server message")
     }
 
+    /// A message the test can tell apart by `label` once it is read back.
+    fn labelled(label: &str) -> ServerMessage {
+        ServerMessage::Clipboard {
+            data: label.as_bytes().to_vec(),
+        }
+    }
+
     #[test]
     fn client_writer_prioritizes_control_before_render() {
         let (mut client_stream, server_stream, _path) = local_stream_pair("client-writer-priority");
         let (writer, queue) = test_queue_writer();
         writer
             .queue_handle()
-            .try_send_render(encode_test_frame(&ServerMessage::WindowTitle {
-                title: Some("render".into()),
-            }))
+            .try_send_render(encode_test_frame(&labelled("render")))
             .expect("queue render");
         writer
             .queue_handle()
-            .send_control(encode_test_frame(&ServerMessage::WindowTitle {
-                title: Some("control".into()),
-            }))
+            .send_control(encode_test_frame(&labelled("control")))
             .expect("queue control");
 
         let wake = Arc::new(tokio::sync::Notify::new());
@@ -682,14 +685,18 @@ mod tests {
             client_writer_loop(server_stream, ClientId::test_new(9), &queue, &writer_wake);
         });
 
-        match shepr_protocol::read_message(&mut client_stream).expect("read control") {
-            ServerMessage::WindowTitle { title } => assert_eq!(title.as_deref(), Some("control")),
-            other => panic!("expected control message first, got {other:?}"),
-        }
-        match shepr_protocol::read_message(&mut client_stream).expect("read render") {
-            ServerMessage::WindowTitle { title } => assert_eq!(title.as_deref(), Some("render")),
-            other => panic!("expected render message second, got {other:?}"),
-        }
+        assert_eq!(
+            shepr_protocol::read_message::<_, ServerMessage>(&mut client_stream)
+                .expect("read control"),
+            labelled("control"),
+            "control is written first"
+        );
+        assert_eq!(
+            shepr_protocol::read_message::<_, ServerMessage>(&mut client_stream)
+                .expect("read render"),
+            labelled("render"),
+            "render is written second"
+        );
         drop(writer);
         handle.join().expect("writer exits after senders drop");
     }
@@ -704,9 +711,7 @@ mod tests {
         let (writer, queue) = test_queue_writer();
         writer
             .queue_handle()
-            .try_send_render(encode_test_frame(&ServerMessage::WindowTitle {
-                title: Some("render".into()),
-            }))
+            .try_send_render(encode_test_frame(&labelled("render")))
             .expect("queue render");
 
         let wake = Arc::new(tokio::sync::Notify::new());
@@ -715,10 +720,11 @@ mod tests {
             client_writer_loop(server_stream, ClientId::test_new(10), &queue, &writer_wake);
         });
 
-        assert!(matches!(
-            shepr_protocol::read_message(&mut client_stream).expect("render is written"),
-            ServerMessage::WindowTitle { title: Some(title) } if title == "render"
-        ));
+        assert_eq!(
+            shepr_protocol::read_message::<_, ServerMessage>(&mut client_stream)
+                .expect("render is written"),
+            labelled("render")
+        );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -792,18 +798,15 @@ mod tests {
 
         drop(writer);
         assert_eq!(
-            cloned_writer.send(&ServerMessage::WindowTitle {
-                title: Some("cloned".into()),
-            }),
+            cloned_writer.send(&labelled("cloned")),
             Delivery::Queued,
             "cloned writer still sends after original drops"
         );
-        match shepr_protocol::read_message(&mut client_stream)
-            .expect("read control from cloned writer")
-        {
-            ServerMessage::WindowTitle { title } => assert_eq!(title.as_deref(), Some("cloned")),
-            other => panic!("expected cloned control message, got {other:?}"),
-        }
+        assert_eq!(
+            shepr_protocol::read_message::<_, ServerMessage>(&mut client_stream)
+                .expect("read control from cloned writer"),
+            labelled("cloned")
+        );
         assert!(
             done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
             "writer exited while cloned handles were still alive"

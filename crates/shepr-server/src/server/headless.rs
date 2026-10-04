@@ -80,15 +80,6 @@ enum LoopEvent {
     ServerEvent(ServerEvent),
 }
 
-/// What pulling the PTY-reported terminal titles changed.
-#[derive(Debug, PartialEq, Eq)]
-struct TitleSync {
-    /// Some pane title changed, so the shell projection is dirty.
-    sidebar_changed: bool,
-    /// A focused pane's title was forwarded as a client's window title.
-    window_title_synced: bool,
-}
-
 struct PendingCheckpointedPaneExit {
     event: shepr_mux::events::AppEvent,
     checkpoint_generation: app::CheckpointGeneration,
@@ -196,9 +187,6 @@ pub(crate) struct HeadlessServer {
     /// writers after a render drains, and the host shutdown monitor. Wakes an
     /// idle loop to reap, release replies, refresh surfaces, or sync shutdown.
     outbox_wake: Arc<tokio::sync::Notify>,
-    /// This server's `ui.window_title` and host name; `None` when window
-    /// titles are disabled. Never part of `AppState`.
-    window_title: Option<crate::ui::WindowTitleSettings>,
     /// The render cadence and the automatic workspace's retry backoff: the
     /// loop's own timing, folded into its next wake by `LoopSchedule`.
     schedule: schedule::LoopSchedule,
@@ -215,7 +203,6 @@ impl HeadlessServer {
         api_server: shepr_api::ServerHandle,
         stop_signal: Arc<shepr_api::ServerStopSignal>,
         boot_id: shepr_protocol::BootId,
-        window_title: Option<crate::ui::WindowTitleSettings>,
     ) -> Self {
         // Channel for server events from client threads.
         let server_events = mpsc::channel(SERVER_EVENT_CHANNEL_CAPACITY);
@@ -226,7 +213,6 @@ impl HeadlessServer {
             Some(api_server),
             stop_signal,
             boot_id,
-            window_title,
             server_events,
         )
     }
@@ -240,7 +226,6 @@ impl HeadlessServer {
         api_server: Option<shepr_api::ServerHandle>,
         stop_signal: Arc<shepr_api::ServerStopSignal>,
         boot_id: shepr_protocol::BootId,
-        window_title: Option<crate::ui::WindowTitleSettings>,
         (server_event_tx, server_event_rx): (
             mpsc::Sender<ServerEvent>,
             mpsc::Receiver<ServerEvent>,
@@ -273,7 +258,6 @@ impl HeadlessServer {
             shutdown_flushes: Vec::new(),
             pending_checkpointed_pane_exits: VecDeque::new(),
             outbox_wake,
-            window_title,
         }
     }
 
@@ -490,11 +474,7 @@ impl HeadlessServer {
                 if pty_dirty {
                     self.host_input_modes_dirty = true;
                 }
-                let TitleSync {
-                    sidebar_changed,
-                    window_title_synced: title_synced,
-                } = self.sync_terminal_title_sources(&request.terminal_title_sources);
-                if sidebar_changed {
+                if self.sync_terminal_title_sources(&request.terminal_title_sources) {
                     self.mark_view_changed();
                 }
                 let retried = pty_dirty && self.retry_refused_viewers(&request.pty_sources);
@@ -506,9 +486,6 @@ impl HeadlessServer {
                 } else {
                     plan
                 };
-                if plan.has_full() && !title_synced {
-                    self.sync_window_title();
-                }
                 if !plan.has_full() && !pty_dirty {
                     continue;
                 }
@@ -959,89 +936,15 @@ impl HeadlessServer {
         changes.raw_changed || changes.stripped_changed
     }
 
-    /// Pulls only titles reported dirty by the PTY parser. A title of a pane
-    /// some client has focused is forwarded as that client's window title.
-    /// Any changed title also updates the shell agent metadata, so it requires
-    /// a projection.
+    /// Pulls only titles reported dirty by the PTY parser. Returns whether any
+    /// title changed: a changed title updates the shell agent metadata, so it
+    /// requires a projection.
     fn sync_terminal_title_sources(
         &mut self,
         sources: &HashSet<shepr_core::layout::PaneId>,
-    ) -> TitleSync {
-        let focused_source = self
-            .window_title_clients()
-            .into_iter()
-            .filter_map(|client_id| self.shell_focus_target(client_id))
-            .any(|target| sources.contains(&target.pane_id));
+    ) -> bool {
         let changes = self.app.sync_terminal_titles(sources);
-        let outer_title_synced = focused_source
-            && self
-                .window_title
-                .as_ref()
-                .is_some_and(crate::ui::WindowTitleSettings::uses_terminal_title);
-        if outer_title_synced {
-            self.sync_window_title();
-        }
-        TitleSync {
-            sidebar_changed: changes.raw_changed || changes.stripped_changed,
-            window_title_synced: outer_title_synced,
-        }
-    }
-
-    /// The clients that show a window title: every active shell surface, in id
-    /// order.
-    fn window_title_clients(&self) -> Vec<ClientId> {
-        self.clients
-            .presenting()
-            .map(|(&client_id, _)| client_id)
-            .collect()
-    }
-
-    /// Renders `ui.window_title` against `client_id`'s own view. `None` means
-    /// window titles are disabled or every token resolved empty, which leaves
-    /// the client on Shepr's default title.
-    fn configured_window_title(&self, client_id: ClientId) -> Option<String> {
-        let settings = self.window_title.as_ref()?;
-        // A client viewing a workspace that no longer resolves has no title,
-        // where a client with no location renders the template without one.
-        let target = self.shell_target_for_client(client_id);
-        if let Some(target) = &target {
-            self.app.state().workspace(target)?;
-        }
-        let title = crate::ui::render_window_title(settings, self.app.state(), target.as_ref());
-        shepr_config::sanitize_window_title_text(&title)
-    }
-
-    /// Pushes each client the configured outer window title of its own view
-    /// when that changed since it was last delivered. Shepr consumes each
-    /// pane's own `OSC 0`/`OSC 2`, so without this the host terminal title
-    /// never follows the session - which is what window managers read for tab
-    /// and group bar labels.
-    fn sync_window_title(&mut self) {
-        if self.window_title.is_none() {
-            return;
-        }
-        let pending = self
-            .window_title_clients()
-            .into_iter()
-            .map(|client_id| (client_id, self.configured_window_title(client_id)))
-            .filter(|(client_id, title)| {
-                self.clients
-                    .get(client_id)
-                    .is_some_and(|client| !client.outbox.window_title_is_current(title))
-            })
-            .collect::<Vec<_>>();
-        for (client_id, title) in pending {
-            self.send_window_title(client_id, title);
-        }
-    }
-
-    /// Sends a client its window title and remembers it only when the client
-    /// took it, so a client that did not is written to again rather than
-    /// skipped.
-    fn send_window_title(&mut self, client_id: ClientId, title: Option<String>) -> bool {
-        self.clients
-            .get_mut(&client_id)
-            .is_some_and(|client| client.outbox.tell_window_title(title) == Delivery::Queued)
+        changes.raw_changed || changes.stripped_changed
     }
 
     /// Sends a message to all connected clients.
@@ -1337,7 +1240,6 @@ impl HeadlessServer {
                 client.outbox.forget_presentation();
                 self.stream_host_mouse_capture_mode();
                 self.stream_shell_keyboard_mode();
-                self.sync_window_title();
             }
             ServerEvent::ShellPaneInput {
                 client_id,

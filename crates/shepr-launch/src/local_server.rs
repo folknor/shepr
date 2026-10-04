@@ -268,6 +268,13 @@ pub fn running_server_status(
     }
 }
 
+/// What is at the local server address, read the way a launch probes it but
+/// never starting a server: an attach-only SSH bridge and the remote watcher
+/// that waits for a server to appear read this.
+pub fn server_presence(paths: &shepr_paths::AppPaths) -> io::Result<ServerPresence> {
+    crate::status::read_server_presence_at(paths.server_address().socket(), STATUS_REQUEST_TIMEOUT)
+}
+
 // ---------------------------------------------------------------------------
 // Probing
 // ---------------------------------------------------------------------------

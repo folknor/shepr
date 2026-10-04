@@ -35,7 +35,8 @@ impl AgentPanelModel {
     ) -> Self {
         let mut rows = Vec::new();
         for (endpoint_order, endpoint) in endpoints.iter().enumerate() {
-            let Some(snapshot) = endpoint.snapshot() else {
+            // A configured machine that is not connected contributes no agents.
+            let Some(snapshot) = endpoint.listed_snapshot() else {
                 continue;
             };
             let label = endpoint.endpoint_id.display_label(&config.local_label);
@@ -170,7 +171,7 @@ impl NavigatorIndex {
                 focused_pane_id: None,
                 workspaces: Vec::new(),
             };
-            let Some(snapshot) = endpoint.snapshot() else {
+            let Some(snapshot) = endpoint.listed_snapshot() else {
                 indexed_endpoints.push(indexed);
                 continue;
             };

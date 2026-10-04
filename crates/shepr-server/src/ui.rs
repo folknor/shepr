@@ -4,7 +4,6 @@ mod panes;
 mod scrollbar;
 mod surface;
 mod text;
-mod window_title;
 
 pub(crate) use self::pane_surface::{PaneSurface, core_rect, ratatui_rect};
 pub(crate) use self::panes::split_hit_rect;
@@ -12,4 +11,3 @@ pub(crate) use self::surface::{
     PaneLayoutCache, SurfaceLayout, SurfaceTarget, SurfaceView, compute_pane_surfaces,
     compute_surface_for, render_surface, surface_cursor,
 };
-pub(crate) use self::window_title::{WindowTitleSettings, render_window_title};

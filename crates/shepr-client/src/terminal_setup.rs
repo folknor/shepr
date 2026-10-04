@@ -20,12 +20,14 @@ use shepr_term::mouse::HostMouseCapture;
 // Terminal setup / restore
 // ---------------------------------------------------------------------------
 
-/// Sets up the terminal for client mode (raw mode, optional mouse, keyboard enhancements).
+/// Sets up the terminal for client mode (raw mode, optional mouse, keyboard enhancements)
+/// and sets its window title to `window_title`, which stays for the whole session.
 ///
 /// Returns the output writer and a guard that restores the terminal when dropped.
 pub(super) fn setup_terminal(
     mouse_capture: bool,
     modify_other_keys_mode: Option<shepr_term::ModifyOtherKeysLevel>,
+    window_title: &str,
 ) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
     let output_writer = HostTerminalWriter::from_stdout()?;
     let host_modes = HostModes::new(mouse_capture);
@@ -65,6 +67,14 @@ pub(super) fn setup_terminal(
     }
 
     host_modes.disable_line_wrap(&mut output)?;
+
+    // The client owns the outer window title: nothing else writes it while the
+    // client runs, whichever machine is presented, and the guard restores the
+    // host's own title on exit. A title the host did not take is cosmetic, so
+    // it does not fail the launch.
+    if let Err(error) = host_modes.write_window_title(&mut output, Some(window_title)) {
+        tracing::warn!(%error, "the host terminal's window title could not be set");
+    }
 
     terminal_guard.escape_disambiguation = escape_disambiguation;
     terminal_guard.buffered_host_input = buffered_host_input;

@@ -92,6 +92,15 @@ pub enum FailureCause {
     Unclassified,
     /// The server said it is shutting down.
     Shutdown(shepr_protocol::ShutdownReason),
+    /// No server runs on the endpoint's host, and the attempt was one that
+    /// only attaches: nothing started one.
+    NoServer,
+    /// The endpoint's server is stopping and no longer accepts clients.
+    ServerStopping,
+    /// The endpoint's server is still restoring its session.
+    ServerStarting,
+    /// The endpoint's server is another shepr build than this client.
+    DifferentBuild,
 }
 
 /// What a failure of the SSH bridge on a remote host asks of the operator, as
@@ -106,16 +115,22 @@ pub enum RemoteFailureClass {
     /// A transient condition the next attempt is expected to clear, such as a
     /// server still starting.
     Retry,
+    /// An attach-only bridge found no server on the host and started none.
+    NoServer,
+    /// An attach-only bridge found the host's server stopping.
+    Stopping,
 }
 
 impl RemoteFailureClass {
-    pub const ALL: [Self; 2] = [Self::Repair, Self::Retry];
+    pub const ALL: [Self; 4] = [Self::Repair, Self::Retry, Self::NoServer, Self::Stopping];
 
     /// The class as the remote host writes it.
     pub fn token(self) -> &'static str {
         match self {
             Self::Repair => "repair",
             Self::Retry => "retry",
+            Self::NoServer => "no-server",
+            Self::Stopping => "stopping",
         }
     }
 
@@ -131,6 +146,8 @@ impl RemoteFailureClass {
         match self {
             Self::Repair => EndpointFailure::remote_repair(message),
             Self::Retry => EndpointFailure::retry(message),
+            Self::NoServer => EndpointFailure::no_server(message),
+            Self::Stopping => EndpointFailure::server_stopping(message),
         }
     }
 }
@@ -199,6 +216,22 @@ impl EndpointFailure {
         Self::new(FailureCause::Shutdown(reason), &reason.to_string())
     }
 
+    pub fn no_server(message: impl Into<String>) -> Self {
+        Self::new(FailureCause::NoServer, &message.into())
+    }
+
+    pub fn server_stopping(message: impl Into<String>) -> Self {
+        Self::new(FailureCause::ServerStopping, &message.into())
+    }
+
+    pub fn server_starting(message: impl Into<String>) -> Self {
+        Self::new(FailureCause::ServerStarting, &message.into())
+    }
+
+    pub fn different_build(message: impl Into<String>) -> Self {
+        Self::new(FailureCause::DifferentBuild, &message.into())
+    }
+
     pub fn cause(&self) -> FailureCause {
         self.cause
     }
@@ -240,7 +273,8 @@ impl EndpointFailure {
                 | SshFailureClass::Unrecognized => D::Repair,
             },
             FailureCause::Io(io::ErrorKind::InvalidData | io::ErrorKind::Unsupported)
-            | FailureCause::Incompatible => D::Incompatible,
+            | FailureCause::Incompatible
+            | FailureCause::DifferentBuild => D::Incompatible,
             FailureCause::Io(kind) if is_link_error_kind(kind) => D::Offline,
             FailureCause::LocalSetup
             | FailureCause::InvalidLocalSetup
@@ -249,7 +283,10 @@ impl EndpointFailure {
             | FailureCause::Backpressure
             | FailureCause::Retry
             | FailureCause::Unclassified
-            | FailureCause::Shutdown(_) => D::Retry,
+            | FailureCause::Shutdown(_)
+            | FailureCause::NoServer
+            | FailureCause::ServerStopping
+            | FailureCause::ServerStarting => D::Retry,
         }
     }
 
@@ -444,15 +481,38 @@ mod tests {
 
     #[test]
     fn every_remote_failure_class_round_trips_and_keeps_its_operator_action() {
-        for (class, disposition) in [
-            (RemoteFailureClass::Repair, FailureDisposition::Repair),
-            (RemoteFailureClass::Retry, FailureDisposition::Retry),
+        for (class, disposition, cause) in [
+            (
+                RemoteFailureClass::Repair,
+                FailureDisposition::Repair,
+                FailureCause::RemoteRepair,
+            ),
+            (
+                RemoteFailureClass::Retry,
+                FailureDisposition::Retry,
+                FailureCause::Retry,
+            ),
+            (
+                RemoteFailureClass::NoServer,
+                FailureDisposition::Retry,
+                FailureCause::NoServer,
+            ),
+            (
+                RemoteFailureClass::Stopping,
+                FailureDisposition::Retry,
+                FailureCause::ServerStopping,
+            ),
         ] {
             assert_eq!(RemoteFailureClass::from_token(class.token()), Some(class));
             let failure = class.endpoint_failure("remote detail");
             assert_eq!(failure.disposition(), disposition, "{class:?}");
+            assert_eq!(failure.cause(), cause, "{class:?}");
             assert_eq!(failure.to_string(), "remote detail");
         }
+        assert_eq!(
+            EndpointFailure::different_build("another build").disposition(),
+            FailureDisposition::Incompatible
+        );
         assert_eq!(RemoteFailureClass::from_token("unknown"), None);
         assert_eq!(RemoteFailureClass::from_token(""), None);
     }

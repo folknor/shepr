@@ -17,11 +17,35 @@ pub(crate) const MAX_METADATA_BYTES: u64 = 16 * 1024;
 /// close its socket; this covers that plus the connection.
 pub(crate) const REMOTE_STOP_SSH_TIMEOUT: Duration = Duration::from_secs(45);
 
-/// How many times one machine is offered a restart. A server that was replaced
-/// between the check and the stop is a new occupant and is offered again, once;
-/// beyond that something keeps restarting it and the operator is told to run
-/// shepr again.
-pub(crate) const MAX_RESTART_OFFERS: usize = 2;
+/// How often a remote wait for a server checks the server while its runtime
+/// directory is watched and nothing is there. The directory watch ends the
+/// wait as soon as a socket appears, so this only covers an event the watch
+/// could miss.
+pub(crate) const SERVER_WAIT_RECHECK: Duration = Duration::from_secs(30);
+
+/// How often a remote wait for a server checks a server that is there but not
+/// ready yet (still restoring, stopping, or slow to answer). Its socket does
+/// not change again when it becomes ready, so only this check sees it.
+pub(crate) const SERVER_WAIT_SETTLING_RECHECK: Duration = Duration::from_millis(500);
+
+/// How often a remote wait for a server checks while the runtime directory
+/// does not exist yet and so cannot be watched. A local check on that host,
+/// not an SSH round trip.
+pub(crate) const SERVER_WAIT_UNWATCHED_RECHECK: Duration = Duration::from_secs(2);
+
+/// The longest a remote wait for a server runs before it exits and the client
+/// starts another. It bounds how long a wait whose client vanished without
+/// closing its stdin can linger on the host.
+pub(crate) const SERVER_WAIT_MAX: Duration = Duration::from_secs(60 * 60);
+
+/// Bytes read at a time from a waiting client's stdin, which carries nothing
+/// but its close.
+pub(crate) const SERVER_WAIT_INPUT_DISCARD_BYTES: usize = 64;
+
+/// How often the client checks whether a machine's server watch has ended or
+/// been cancelled. A local check of the watch's ssh child, not an SSH round
+/// trip.
+pub(crate) const SERVER_WATCH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Delay between checks that an SSH child process has exited. It bounds
 /// completion latency without spinning on `try_wait`.
@@ -101,6 +125,12 @@ pub(crate) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 /// cannot drift apart.
 pub const SSH_CONNECTION_ATTEMPT_BUDGET: Duration =
     SSH_COMMAND_TIMEOUT.saturating_add(SSH_ATTEMPT_SLACK);
+
+/// The longest an operator's Restart of a configured machine may run: the
+/// conditional stop of the server of another build, with its own timeout, and
+/// then an ordinary connection attempt that starts this build's server.
+pub const SSH_RESTART_ATTEMPT_BUDGET: Duration =
+    SSH_CONNECTION_ATTEMPT_BUDGET.saturating_add(REMOTE_STOP_SSH_TIMEOUT);
 
 /// How long the startup check of every configured machine may take in all. The
 /// checks run concurrently, so this is a bound on the whole phase, not per

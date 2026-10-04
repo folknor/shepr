@@ -3,9 +3,12 @@
 //!
 //! - machines that need an SSH prompt get it, one at a time, and are checked
 //!   again afterwards;
-//! - a running server of another build, local or remote, is offered a restart.
-//!   Every offer comes after the last authentication prompt, so prompts and
-//!   questions never interleave.
+//! - a running local server of another build is offered a restart, after the
+//!   last authentication prompt, so prompts and questions never interleave.
+//!
+//! A configured machine's server of another build gets no question here: the
+//! client never starts or restarts a server on another host by itself, and
+//! shows such a machine with a Restart entry the operator can choose.
 //!
 //! The machine mechanism lives in `shepr_remote::preflight` and the restart
 //! offer in `shepr_launch::restart`; this module supplies the config, the
@@ -19,20 +22,18 @@ use shepr_config::MachineConfig;
 use shepr_launch::restart::{RestartDecision, RestartFailure, RestartResult, StopOutcome};
 use shepr_launch::status::RuntimeStatus;
 use shepr_launch::stop::ServerStopError;
-use shepr_remote::DifferentBuildServer;
 
 mod words;
-use words::{local_notice, local_offer, prompt_notice, remote_offer, result_notices};
+use words::{local_notice, local_offer, prompt_notice, result_notices};
 
-/// Authenticates the machines that need it, then offers to restart each running
-/// server of another build: the local one first, then the machines'. Every
-/// question needs a terminal; without one nothing is asked and nothing is
-/// stopped.
+/// Authenticates the machines that need it, then offers to restart a running
+/// local server of another build. Every question needs a terminal; without one
+/// nothing is asked and nothing is stopped.
 ///
 /// Unreachable machines are not an error here: the client shows them offline
 /// and keeps retrying. Host keys are never accepted; a machine whose key is
-/// unknown or changed is named so the operator can fix it. A server left
-/// running is reported with what to do about it.
+/// unknown or changed is named so the operator can fix it. A local server left
+/// running is reported by the launch that follows.
 pub(crate) fn run(
     config: &shepr_config::ValidatedClientConfig,
     paths: &shepr_paths::AppPaths,
@@ -50,7 +51,7 @@ pub(crate) fn run(
     } else {
         None
     };
-    let mut outcomes = if machines.is_empty() {
+    let outcomes = if machines.is_empty() {
         Vec::new()
     } else {
         shepr_remote::preflight(machines, &ssh, authentication_prompt)
@@ -74,24 +75,6 @@ pub(crate) fn run(
         |boot_id| shepr_launch::stop::stop_active_server(paths, Some(boot_id)),
         local_decision,
     );
-    let mut decide_remote = |machine: &MachineConfig, server: &DifferentBuildServer| {
-        if confirm(&remote_offer(machine, server)) {
-            crate::cli::print_notice(&format!(
-                "shepr: stopping the server on machine {}.",
-                machine.label
-            ));
-            RestartDecision::Restart
-        } else {
-            RestartDecision::Keep
-        }
-    };
-    let remote_decision: Option<&mut shepr_remote::RestartDecider<'_>> = if can_prompt {
-        Some(&mut decide_remote)
-    } else {
-        None
-    };
-    shepr_remote::restart_different_builds(&mut outcomes, &ssh, remote_decision);
-
     for notice in local_notice(&local)
         .into_iter()
         .chain(result_notices(&outcomes, can_prompt))
@@ -208,7 +191,7 @@ mod tests {
     use super::*;
     use shepr_config::SshTarget;
     use shepr_launch::EndpointFailure;
-    use shepr_remote::machine::{MachineLabel, RemoteExecutable};
+    use shepr_remote::machine::MachineLabel;
     use shepr_remote::{MachineCheck, PreflightOutcome};
 
     fn machine(label: &str) -> MachineConfig {
@@ -229,7 +212,6 @@ mod tests {
             machine: machine.clone(),
             check,
             authentication,
-            restart: None,
         }
     }
 
@@ -237,14 +219,6 @@ mod tests {
         EndpointFailure::from_error(&io::Error::other(
             shepr_remote::SshFailureDiagnostic::from_ssh_output(Some(255), message),
         ))
-    }
-
-    fn different_build_server() -> DifferentBuildServer {
-        DifferentBuildServer {
-            executable: RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition"),
-            build_id: "ffffffffffffffff".parse().expect("build identity"),
-            boot_id: "17-23".parse().expect("boot identity"),
-        }
     }
 
     #[test]
@@ -421,71 +395,14 @@ mod tests {
         assert!(notices[0].contains("no terminal"), "{notices:?}");
     }
 
-    fn restart_notices(restart: RestartResult, check: MachineCheck) -> Vec<String> {
-        let machines = [machine("build")];
-        let mut outcomes = [outcome(&machines[0], check, None)];
-        outcomes[0].restart = Some(restart);
-        result_notices(&outcomes, true)
-    }
-
     #[test]
-    fn a_server_left_running_names_the_stop_command_and_what_it_ends() {
-        for (restart, extra) in [
-            (RestartResult::Declined, ""),
-            (RestartResult::NoTerminal, "interactive terminal"),
-            (
-                RestartResult::Failed(RestartFailure::Remote(io::Error::other("timed out"))),
-                "timed out",
-            ),
-        ] {
-            let notices = restart_notices(
-                restart,
-                MachineCheck::DifferentBuild(different_build_server()),
-            );
-            assert_eq!(notices.len(), 1, "{notices:?}");
-            let notice = &notices[0];
-            assert!(notice.contains("ffffffffffffffff"), "{notice}");
-            assert!(
-                notice.contains("`ssh build.example /usr/bin/shepr stop --expect-boot 17-23`"),
-                "{notice}"
-            );
-            assert!(notice.contains("pane processes"), "{notice}");
-            assert!(notice.contains("layout is restored"), "{notice}");
-            assert!(notice.contains(extra), "{notice}");
-            assert!(!notice.contains("--force"), "{notice}");
-        }
-    }
-
-    #[test]
-    fn a_stopped_server_and_a_changed_occupant_are_reported() {
-        let stopped = restart_notices(RestartResult::Stopped, MachineCheck::Ready);
-        assert_eq!(stopped.len(), 1, "{stopped:?}");
-        assert!(stopped[0].contains("stopped"), "{stopped:?}");
-
-        let changed = restart_notices(RestartResult::OccupantChanged, MachineCheck::Ready);
-        assert_eq!(changed.len(), 1, "{changed:?}");
-        assert!(changed[0].contains("no stop was sent"), "{changed:?}");
-
-        let replaced = restart_notices(
-            RestartResult::OccupantChanged,
-            MachineCheck::DifferentBuild(different_build_server()),
-        );
-        assert_eq!(replaced.len(), 1, "{replaced:?}");
-        assert!(replaced[0].contains("Run shepr again"), "{replaced:?}");
-    }
-
-    #[test]
-    fn the_offers_say_what_a_restart_ends_and_what_is_restored() {
-        let remote = remote_offer(&machine("build"), &different_build_server());
-        let local = local_offer(&status("ffffffffffffffff", "17-23"));
-        for offer in [&remote, &local] {
-            assert!(offer.contains("different build"), "{offer}");
-            assert!(offer.contains("ends every pane process"), "{offer}");
-            assert!(offer.contains("saved layout is restored"), "{offer}");
-            assert!(offer.contains("agents are resumed"), "{offer}");
-            assert!(offer.contains("[y/N]"), "the default is to keep: {offer}");
-        }
-        assert!(remote.contains("build (build.example)"), "{remote}");
+    fn the_local_offer_says_what_a_restart_ends_and_what_is_restored() {
+        let offer = local_offer(&status("ffffffffffffffff", "17-23"));
+        assert!(offer.contains("different build"), "{offer}");
+        assert!(offer.contains("ends every pane process"), "{offer}");
+        assert!(offer.contains("saved layout is restored"), "{offer}");
+        assert!(offer.contains("agents are resumed"), "{offer}");
+        assert!(offer.contains("[y/N]"), "the default is to keep: {offer}");
     }
 
     #[test]

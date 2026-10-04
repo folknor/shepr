@@ -2,9 +2,9 @@
 # Place this file at ~/.config/shepr/server.toml
 # Only shepr-server reads this file, on the host it runs on. It decides the
 # panes' shell and working directory, the session, pane borders, gaps and
-# scrollbars, their colours, and the window title. Keys, the sidebar, mouse and
-# copy behaviour and the machines belong in client.toml, which only the shepr
-# client reads. An unknown or misplaced setting fails the launch.
+# scrollbars, and their colours. Keys, the sidebar, mouse and copy behaviour and
+# the machines belong in client.toml, which only the shepr client reads. An
+# unknown or misplaced setting fails the launch.
 
 [theme]
 # Built-in themes: catppuccin, catppuccin-latte, terminal, tokyo-night,
@@ -85,15 +85,6 @@
 
 # Show detected/reported agent labels in split pane borders when no manual pane name is set.
 # show_agent_labels_on_pane_borders = false
-
-# Title Shepr writes to the terminal it runs in, which is what window managers
-# show in title, tab, and group bars. Tokens are {hostname}, {workspace},
-# {pane}, and {terminal_title}; {{ and }} are literal braces.
-# The title renders on the Shepr server, so {hostname} names the host the panes
-# run on even when attaching from a remote client.
-# The sanitized title is limited to 200 characters.
-# Set to "" to leave the outer terminal title alone.
-# window_title = "shepr: {hostname}"
 
 [session]
 # Resume supported AI-agent panes into their native conversation sessions after

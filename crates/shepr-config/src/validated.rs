@@ -12,7 +12,6 @@ use shepr_paths::AppPaths;
 use super::{
     ClientConfig, SidebarBounds,
     model::{ClientUiConfig, ImeCursorShape, NewTerminalCwdConfig, TerminalConfig},
-    window_title::WindowTitleTemplate,
 };
 use crate::limits::{DEFAULT_SIDEBAR_WIDTH, MIN_MOUSE_SCROLL_LINES};
 
@@ -681,7 +680,6 @@ pub struct ValidatedServerUiConfig {
     pub pane_scrollbars: bool,
     pub pane_gaps: bool,
     pub show_agent_labels_on_pane_borders: bool,
-    pub window_title: Option<WindowTitleTemplate>,
 }
 
 /// Session restore resolved by the server at launch.
@@ -716,17 +714,10 @@ pub(crate) fn validate_server(
         BoundedGridSize::new(config.server.headless_cols, config.server.headless_rows)
             .ok()
             .map(BoundedGridSize::grid);
-    let window_title = WindowTitleTemplate::parse(&config.ui.window_title);
     let terminal = ValidatedTerminalConfig::parse(&config.terminal, &paths);
     let mut diagnostics = Vec::new();
     if let Err(errors) = &palette {
         diagnostics.extend(errors.iter().cloned());
-    }
-    if let Err(error) = &window_title {
-        diagnostics.push(super::ConfigDiagnostic::validation(
-            super::ConfigKeyPath::root().key("ui").key("window_title"),
-            error.clone(),
-        ));
     }
     if headless_size.is_none() {
         diagnostics.push(super::ConfigDiagnostic::validation_related(
@@ -748,38 +739,35 @@ pub(crate) fn validate_server(
         return Err(diagnostics);
     }
 
-    match (palette, headless_size, window_title, terminal) {
-        (Ok(palette), Some(headless_size), Ok(window_title), Ok(terminal)) => {
-            Ok(ValidatedServerConfig {
-                paths,
-                palette,
-                headless_size,
-                terminal,
-                ui: ValidatedServerUiConfig {
-                    pane_borders: config.ui.pane_borders,
-                    pane_outer_borders: config.ui.pane_outer_borders,
-                    pane_scrollbars: config.ui.pane_scrollbars,
-                    pane_gaps: config.ui.pane_gaps,
-                    show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
-                    window_title,
-                },
-                session: ValidatedSessionConfig {
-                    resume_agents_on_restore: config.session.resume_agents_on_restore,
-                    startup_per_agent_delay: config.session.startup_per_agent_delay,
-                },
-                scrollback: shepr_core::scrollback::ScrollbackBudget::new(
-                    config.advanced.scrollback_limit_bytes,
-                ),
-                experimental: ValidatedExperimentalConfig {
-                    pane_history: config.experimental.pane_history,
-                    reveal_hidden_cursor_for_cjk_ime: config
-                        .experimental
-                        .reveal_hidden_cursor_for_cjk_ime,
-                    cjk_ime_agents: config.experimental.cjk_ime_agents.clone(),
-                    cjk_ime_cursor_shape: config.experimental.cjk_ime_cursor_shape,
-                },
-            })
-        }
+    match (palette, headless_size, terminal) {
+        (Ok(palette), Some(headless_size), Ok(terminal)) => Ok(ValidatedServerConfig {
+            paths,
+            palette,
+            headless_size,
+            terminal,
+            ui: ValidatedServerUiConfig {
+                pane_borders: config.ui.pane_borders,
+                pane_outer_borders: config.ui.pane_outer_borders,
+                pane_scrollbars: config.ui.pane_scrollbars,
+                pane_gaps: config.ui.pane_gaps,
+                show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
+            },
+            session: ValidatedSessionConfig {
+                resume_agents_on_restore: config.session.resume_agents_on_restore,
+                startup_per_agent_delay: config.session.startup_per_agent_delay,
+            },
+            scrollback: shepr_core::scrollback::ScrollbackBudget::new(
+                config.advanced.scrollback_limit_bytes,
+            ),
+            experimental: ValidatedExperimentalConfig {
+                pane_history: config.experimental.pane_history,
+                reveal_hidden_cursor_for_cjk_ime: config
+                    .experimental
+                    .reveal_hidden_cursor_for_cjk_ime,
+                cjk_ime_agents: config.experimental.cjk_ime_agents.clone(),
+                cjk_ime_cursor_shape: config.experimental.cjk_ime_cursor_shape,
+            },
+        }),
         _ => Err(vec![super::ConfigDiagnostic::internal(
             "configuration resolution could not produce validated server values",
         )]),
@@ -907,7 +895,6 @@ mod tests {
         let mut config = ServerConfig::default();
         config.server.headless_cols = 92;
         config.server.headless_rows = 31;
-        config.ui.window_title = "{hostname}: {workspace}".to_owned();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("relative/worktree".to_owned());
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
             .expect("scratch roots fit a socket");
@@ -919,7 +906,6 @@ mod tests {
             validated.headless_size(),
             shepr_core::geometry::GridSize::new(92, 31).expect("non-zero test dimensions")
         );
-        assert!(validated.ui().window_title.is_some());
         assert_eq!(
             validated.terminal().new_cwd,
             NewTerminalCwd::Path(

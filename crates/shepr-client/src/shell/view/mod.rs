@@ -152,8 +152,20 @@ impl ShellView {
             })
             .chain(expanded.iter().filter_map(|slot| match slot {
                 ExpandedSlot::Machine { hit, .. } => Some(hit),
-                ExpandedSlot::Workspace { .. } => None,
+                ExpandedSlot::MachineEntry { .. } | ExpandedSlot::Workspace { .. } => None,
             }))
+    }
+
+    /// The configured machines' state entries the expanded sidebar draws.
+    pub(in crate::shell) fn machine_entries(&self) -> impl Iterator<Item = &MachineEntryHit> + '_ {
+        let expanded: &[ExpandedSlot] = match (&self.sidebar, self.chrome_armed) {
+            (SidebarView::Expanded(view), true) => view.workspaces.slots.as_slice(),
+            _ => Default::default(),
+        };
+        expanded.iter().filter_map(|slot| match slot {
+            ExpandedSlot::MachineEntry { hit, .. } => Some(hit),
+            ExpandedSlot::Machine { .. } | ExpandedSlot::Workspace { .. } => None,
+        })
     }
 
     pub(in crate::shell) fn workspaces(
@@ -177,7 +189,7 @@ impl ShellView {
             })
             .chain(expanded.iter().filter_map(|slot| match slot {
                 ExpandedSlot::Workspace { hit, .. } => Some(hit),
-                ExpandedSlot::Machine { .. } => None,
+                ExpandedSlot::Machine { .. } | ExpandedSlot::MachineEntry { .. } => None,
             }))
     }
 
@@ -349,8 +361,17 @@ impl ShellView {
 pub(in crate::shell) struct MachineHit {
     pub(in crate::shell) rect: Rect,
     pub(in crate::shell) status_badge: Rect,
-    pub(in crate::shell) collapse_toggle: Rect,
     pub(in crate::shell) location: Location,
+}
+
+/// A configured machine's state entry on screen.
+#[derive(Clone)]
+pub(in crate::shell) struct MachineEntryHit {
+    pub(in crate::shell) rect: Rect,
+    /// The machine the entry belongs to.
+    pub(in crate::shell) location: Location,
+    /// The entry offers Connect or Restart: clicking it acts.
+    pub(in crate::shell) actionable: bool,
 }
 
 #[derive(Clone)]
@@ -713,5 +734,149 @@ mod tests {
 
         assert!(frame_row_text(&frame, 0).contains("workspaces"));
         assert!(state.drawn().notification_toast().y >= 1);
+    }
+
+    /// The text of each row of `area` in `frame`.
+    fn region_text(frame: &FrameData, area: ratatui::layout::Rect) -> Vec<String> {
+        (area.y..area.bottom())
+            .map(|y| {
+                let start = usize::from(y) * usize::from(frame.width()) + usize::from(area.x);
+                frame.cells()[start..start + usize::from(area.width)]
+                    .iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// A shell with an expanded 24-column sidebar and a workspace snapshot, presenting a pane
+    /// surface when `with_surface`.
+    fn shell_beside_a_sidebar(with_surface: bool) -> ClientShellState {
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        state.chrome.set_collapsed(false);
+        state.chrome.set_width(24);
+        state.set_snapshot(Box::new(crate::shell::tests::snapshot()));
+        if with_surface {
+            let generation = state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST);
+            state.receive_pane_surface_from(crate::shell::tests::surface(), generation);
+        }
+        state
+    }
+
+    /// An automatic notice whose body is one line far wider than any pane area.
+    fn push_wide_notice(state: &mut ClientShellState) {
+        assert!(state.push_endpoint_notice(
+            ClientEndpointNoticeKind::Unavailable,
+            crate::shell::notices::NoticeCode::EndpointUnavailable,
+            "Server unavailable",
+            "x".repeat(300),
+        ));
+    }
+
+    #[test]
+    fn a_wide_notice_stays_inside_the_pane_area_with_its_margin() {
+        for with_surface in [true, false] {
+            let mut state = shell_beside_a_sidebar(with_surface);
+            let before = state.compose(80, 24).expect("frame without the notice");
+            let sidebar = state.drawn().layout.sidebar;
+            assert_eq!(state.drawn().has_surface, with_surface);
+            push_wide_notice(&mut state);
+
+            let frame = state.compose(80, 24).expect("frame with the notice");
+
+            let drawn = state.drawn();
+            let pane = drawn.layout.pane_surface;
+            let card = drawn.notification_toast();
+            assert!(sidebar.width > 0, "surface {with_surface}");
+            assert!(!card.is_empty(), "surface {with_surface}");
+            // Wrapped inside the pane width less the right margin, which the card keeps.
+            assert_eq!(card.x, pane.x, "surface {with_surface}");
+            assert_eq!(
+                card.right(),
+                pane.right() - crate::limits::NOTICE_CARD_RIGHT_MARGIN,
+                "surface {with_surface}"
+            );
+            // Below the placeholder line when there is no surface (or a lifecycle banner),
+            // then the top margin.
+            let offset = if with_surface {
+                u16::from(drawn.lifecycle.is_some())
+            } else {
+                1
+            };
+            assert_eq!(
+                card.y,
+                pane.y + offset + crate::limits::NOTICE_CARD_TOP_MARGIN,
+                "surface {with_surface}"
+            );
+            // The automatic notice keeps its body cap: a border row each side and the title.
+            assert_eq!(
+                usize::from(card.height),
+                crate::limits::MAX_AUTOMATIC_NOTICE_BODY_ROWS + 3,
+                "surface {with_surface}"
+            );
+            // The sidebar, its heading included, is drawn exactly as without the card.
+            assert!(frame_row_text(&frame, 0).contains("workspaces"));
+            assert_eq!(
+                region_text(&frame, sidebar),
+                region_text(&before, sidebar),
+                "surface {with_surface}"
+            );
+        }
+    }
+
+    #[test]
+    fn mode_bars_without_a_surface_stay_inside_the_pane_area() {
+        for error in [false, true] {
+            let mut state = shell_beside_a_sidebar(false);
+            let before = state.compose(80, 24).expect("frame without a bar");
+            let sidebar = state.drawn().layout.sidebar;
+            if error {
+                state.set_endpoint_error("the server refused it", std::time::Instant::now());
+            } else {
+                state.mode.set(crate::shell::state::ClientShellMode::Prefix);
+            }
+
+            let frame = state.compose(80, 24).expect("frame with a bar");
+
+            let drawn = state.drawn();
+            let pane = drawn.layout.pane_surface;
+            assert!(!drawn.has_surface);
+            assert_eq!(drawn.mode_bar_area, pane, "error {error}");
+            let bar_row = ratatui::layout::Rect::new(pane.x, pane.bottom() - 1, pane.width, 1);
+            let bar = region_text(&frame, bar_row).concat();
+            let label = if error { "ERROR" } else { "PREFIX" };
+            assert!(bar.trim_start().starts_with(label), "{bar}");
+            // The sidebar, its footer row included, is drawn exactly as without the bar.
+            assert_eq!(
+                region_text(&frame, sidebar),
+                region_text(&before, sidebar),
+                "error {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn without_a_sidebar_column_the_card_and_the_bar_take_the_full_width() {
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        state.set_snapshot(Box::new(crate::shell::tests::snapshot()));
+        push_wide_notice(&mut state);
+        state.mode.set(crate::shell::state::ClientShellMode::Prefix);
+
+        state.compose(1, 12).expect("one-column frame");
+
+        let drawn = state.drawn();
+        let screen = ratatui::layout::Rect::new(0, 0, 1, 12);
+        assert_eq!(drawn.layout.sidebar.width, 0);
+        assert_eq!(drawn.layout.pane_surface, screen);
+        assert_eq!(drawn.mode_bar_area, screen);
+        // The right margin gives way on a column this narrow, so the card keeps one.
+        let card = drawn.notification_toast();
+        assert_eq!((card.x, card.width), (0, 1));
     }
 }

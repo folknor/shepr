@@ -3,8 +3,8 @@
 use std::io;
 
 use shepr_launch::RemoteFailureClass;
-use shepr_launch::local_server::{self, BuildCheck, SERVER_READY_TIMEOUT};
-use shepr_launch::status::RuntimeStatus;
+use shepr_launch::local_server::{self, BuildCheck, LaunchError, SERVER_READY_TIMEOUT};
+use shepr_launch::status::{RuntimeStatus, ServerPresence};
 
 use crate::relay::{RemoteBridgeOutcome, answer_remote_bridge, forward_remote_bridge_stdio};
 
@@ -14,6 +14,19 @@ use crate::relay::{RemoteBridgeOutcome, answer_remote_bridge, forward_remote_bri
 /// diagnostic on the lines after it. The local bridge consumes the record into
 /// the endpoint failure vocabulary.
 pub(crate) const BRIDGE_FAILURE_MARKER: &str = "shepr-remote-bridge-failure:";
+
+/// Whether a bridge may start the host's server. Every connection the client
+/// makes by itself attaches only; starting is reserved for the operator's
+/// explicit Connect or Restart on that machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BridgeMode {
+    /// Relay to a server that is already running. With none running, or one
+    /// stopping, the bridge fails with a [`RemoteFailureClass::NoServer`] or
+    /// [`RemoteFailureClass::Stopping`] record and starts nothing.
+    Attach,
+    /// Start the server when none is listening, then relay to it.
+    Start,
+}
 
 /// A failure of the bridge on this host, led by its classification record so
 /// the client can tell a host that needs repair from a transient failure. The
@@ -34,8 +47,14 @@ pub fn classified_bridge_failure(
 /// closes or the idle watchdog fires. The outcome goes back to the binary: on
 /// [`RemoteBridgeOutcome::IdleExpired`] it must end the
 /// process promptly with status 1, without writing to stdout.
-pub fn run_remote_client_bridge(paths: &shepr_paths::AppPaths) -> io::Result<RemoteBridgeOutcome> {
-    let status = ensure_remote_server_running(paths)?;
+pub fn run_remote_client_bridge(
+    paths: &shepr_paths::AppPaths,
+    mode: BridgeMode,
+) -> io::Result<RemoteBridgeOutcome> {
+    let status = match mode {
+        BridgeMode::Attach => attached_server_status(paths)?,
+        BridgeMode::Start => ensure_remote_server_running(paths)?,
+    };
     // A server of another build is answered here, never connected to: its
     // socket may not speak this build's client protocol at all, and the
     // client must still read a typed mismatch rather than an EOF it would
@@ -63,6 +82,39 @@ pub fn run_remote_client_bridge(paths: &shepr_paths::AppPaths) -> io::Result<Rem
     forward_remote_bridge_stdio(stream.into_local_stream())
 }
 
+/// The status of the server already running on this host, never starting
+/// one. A starting server is relayed to like a running one: its handshake
+/// refuses the client as starting, which the client retries. No server, a
+/// stopping one and one that does not answer each fail with their own
+/// classification record.
+fn attached_server_status(paths: &shepr_paths::AppPaths) -> io::Result<RuntimeStatus> {
+    let presence = local_server::server_presence(paths).map_err(|error| {
+        let error = LaunchError::Io(error);
+        classified_bridge_failure(error.remote_failure_class(), error.kind(), &error)
+    })?;
+    let socket = paths.server_address().socket().display();
+    match presence {
+        ServerPresence::Running(status) | ServerPresence::Starting(status) => Ok(status),
+        ServerPresence::Gone => Err(classified_bridge_failure(
+            RemoteFailureClass::NoServer,
+            io::ErrorKind::NotFound,
+            &format!("no shepr server is running at {socket}"),
+        )),
+        ServerPresence::Stopping(_) => Err(classified_bridge_failure(
+            RemoteFailureClass::Stopping,
+            io::ErrorKind::ConnectionAborted,
+            &format!("the shepr server at {socket} is stopping"),
+        )),
+        ServerPresence::Unresponsive => Err(classified_bridge_failure(
+            RemoteFailureClass::Repair,
+            io::ErrorKind::TimedOut,
+            &format!(
+                "a shepr server is listening at {socket}, but it is not answering status requests"
+            ),
+        )),
+    }
+}
+
 /// Starts the server when none is listening, through the launcher the local
 /// TUI uses: a `shepr-server` beside this executable, started under the launch
 /// lock and verified to be this build before the bridge relays anything. A
@@ -80,4 +132,41 @@ fn ensure_remote_server_running(paths: &shepr_paths::AppPaths) -> io::Result<Run
         .map_err(|error| {
             classified_bridge_failure(error.remote_failure_class(), error.kind(), &error)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An attach-only bridge on a host with no server reports that distinctly
+    /// and leaves the host as it found it: no socket, and no launch lock or
+    /// boot log, which any launch attempt creates first.
+    #[test]
+    fn an_attach_only_bridge_starts_no_server_and_reports_none() {
+        let scratch = shepr_test_support::ScratchDir::new("bridge-attach-only");
+        let paths = shepr_paths::AppPaths::rooted_at(&scratch, Some(&scratch), None)
+            .expect("scratch roots fit a socket");
+        let runtime_before = std::fs::read_dir(paths.runtime_dir()).map_or(0, Iterator::count);
+
+        let error = run_remote_client_bridge(&paths, BridgeMode::Attach)
+            .expect_err("no server runs, and an attach-only bridge starts none");
+
+        let message = error.to_string();
+        assert!(
+            message.starts_with(&format!(
+                "{BRIDGE_FAILURE_MARKER}{}\n",
+                RemoteFailureClass::NoServer.token()
+            )),
+            "{message}"
+        );
+        assert!(
+            !paths
+                .server_address()
+                .socket()
+                .try_exists()
+                .expect("stat the socket path")
+        );
+        let runtime_after = std::fs::read_dir(paths.runtime_dir()).map_or(0, Iterator::count);
+        assert_eq!(runtime_after, runtime_before, "nothing was launched");
+    }
 }

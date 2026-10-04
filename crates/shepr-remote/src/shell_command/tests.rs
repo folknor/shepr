@@ -83,6 +83,11 @@ fn remote_server_commands_name_no_session() {
             "stop --expect-boot 4242-1700000000",
         ),
         (RemoteCliCommand::ClientBridge, "remote-client-bridge"),
+        (
+            RemoteCliCommand::StartingClientBridge,
+            "remote-client-bridge --start",
+        ),
+        (RemoteCliCommand::WaitForServer, "remote-wait-for-server"),
     ] {
         assert_eq!(
             shepr.command(&command.args()).as_str(),
@@ -110,10 +115,24 @@ fn remote_executable_rejects_paths_that_need_shell_quoting() {
 fn remote_bridge_command_uses_installed_binary() {
     let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
     assert_eq!(
-        remote_shepr.bridge_command().as_str(),
+        remote_shepr
+            .bridge_command(crate::host::BridgeMode::Attach)
+            .as_str(),
         format!(
             "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq {SSH_OWN_FAILURE_EXIT_CODE} ]; then exit {REMAPPED_REMOTE_255_EXIT_CODE}; fi; exit $shepr_exit_status'"
         )
+    );
+    assert!(
+        remote_shepr
+            .bridge_command(crate::host::BridgeMode::Start)
+            .as_str()
+            .contains("/usr/bin/shepr remote-client-bridge --start;")
+    );
+    assert!(
+        remote_shepr
+            .wait_for_server_command()
+            .as_str()
+            .contains("/usr/bin/shepr remote-wait-for-server;")
     );
 }
 
@@ -122,7 +141,7 @@ fn remote_bridge_command_uses_installed_binary() {
 #[test]
 fn bridge_command_is_one_quoted_word_for_bin_sh_that_frames_its_output() {
     let remote = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
-    let command = remote.bridge_command();
+    let command = remote.bridge_command(crate::host::BridgeMode::Start);
     let script = command
         .as_str()
         .strip_prefix("/bin/sh -c '")

@@ -290,12 +290,6 @@ pub enum ServerMessage {
         data: Vec<u8>,
     },
 
-    /// Set the foreground client's outer terminal window title.
-    WindowTitle {
-        /// Sanitized title to write with OSC 0. `None` restores Shepr's default title.
-        title: Option<String>,
-    },
-
     /// Whether the client should currently capture host mouse input.
     MouseCapture {
         /// `Cells` when Shepr mouse UI is enabled or the focused pane app requests mouse

@@ -1,6 +1,6 @@
-//! The sidebar through the whole shell: machine and workspace rows, the agent panel,
-//! reveals, collapse toggles, diagnostics badges and workspace drags, on one machine and
-//! across several.
+//! The sidebar through the whole shell: machine and workspace rows, machine state
+//! entries, the agent panel, reveals, diagnostics badges and workspace drags, on one
+//! machine and across several.
 
 use crate::endpoint::{ClientEndpointId, EndpointFailureStatus};
 use crate::shell::config::ClientShellConfig;
@@ -258,7 +258,7 @@ fn revealing_an_active_workspace_ignores_a_same_id_on_another_endpoint() {
 }
 
 #[test]
-fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
+fn machine_diagnostic_badge_reopens_its_notice() {
     let (mut state, id) = state_with_remote();
     state.set_endpoint_status(&id, EndpointFailureStatus::Attention);
     // ssh exits 255 for its own failures; this is how an auth prompt failure arrives.
@@ -284,7 +284,10 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
         };
         let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
         assert!(outcome.repaint);
-        assert!(!state.endpoints.collapsed.contains(&id));
+        assert!(
+            outcome.actions.is_empty(),
+            "the badge only shows the reason"
+        );
         let notice = state.notices.visible().expect("test precondition");
         assert!(notice.body.contains("Permission denied"));
         assert!(
@@ -296,15 +299,7 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
     // A successful handshake clears the diagnostic.
     state.endpoint_connected(&id, crate::tests::test_generation(2));
     state.compose(120, 40).expect("test precondition");
-    assert!(
-        !state.machine_diagnostics.required_for(
-            state
-                .endpoints
-                .iter()
-                .find(|endpoint| endpoint.endpoint_id == id)
-                .expect("test precondition")
-        )
-    );
+    assert!(!state.machine_diagnostics.has(&id));
 }
 
 #[test]
@@ -620,7 +615,7 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
 }
 
 #[test]
-fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
+fn active_workspace_is_the_only_highlight_on_its_machine() {
     let (mut state, endpoint_id) = state_with_remote();
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
@@ -653,19 +648,6 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
     );
     assert_eq!(
         cell_bg(&frame, (workspace.x + 2, workspace.y)),
-        state.config.palette.active_row_bg
-    );
-
-    state.endpoints.collapsed.insert(endpoint_id.clone());
-    let frame = state.compose(100, 28).expect("collapsed endpoint frame");
-    let machine = state
-        .drawn()
-        .machines()
-        .find(|hit| hit.location.endpoint == endpoint_id)
-        .expect("remote machine hit")
-        .rect;
-    assert_eq!(
-        cell_bg(&frame, (machine.x, machine.y)),
         state.config.palette.active_row_bg
     );
 }
@@ -820,7 +802,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
 }
 
 #[test]
-fn clicking_an_offline_active_machine_row_only_toggles_its_collapse_state() {
+fn clicking_an_offline_active_machine_row_changes_nothing() {
     let (mut state, endpoint_id) = state_with_remote();
     assert!(state.activate_endpoint_projection(&endpoint_id));
     state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Reconnecting);
@@ -841,12 +823,207 @@ fn clicking_an_offline_active_machine_row_only_toggles_its_collapse_state() {
 
     assert!(outcome.actions.is_empty());
     assert!(outcome.repaint);
-    assert!(state.endpoints.collapsed.contains(&endpoint_id));
     assert!(state.notices.visible().is_none());
 }
 
+/// Every machine is listed expanded; one that is not connected shows its state entry
+/// in place of its workspaces, and neither workspaces nor agents of its last snapshot.
 #[test]
-fn clicking_an_online_active_machine_row_toggles_its_collapse_state_and_reselects_it() {
+fn a_machine_that_is_not_connected_shows_its_state_entry_and_no_stale_rows() {
+    use shepr_protocol::AgentStatus;
+
+    let (mut state, endpoint_id) = state_with_remote();
+    state.edit_endpoint_snapshot(&endpoint_id, |snapshot| {
+        snapshot.agents = vec![agent(AgentStatus::Blocked, 1)];
+    });
+    state.compose(100, 28).expect("connected remote frame");
+    assert!(
+        state
+            .drawn()
+            .workspaces()
+            .any(|hit| hit.location.endpoint == endpoint_id)
+    );
+    assert!(state.drawn().machine_entries().next().is_none());
+
+    state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Reconnecting);
+    state.set_machine_state(&endpoint_id, crate::shell::MachineState::NotRunning);
+    let frame = state.compose(100, 28).expect("remote with no server");
+    assert!(
+        !state
+            .drawn()
+            .workspaces()
+            .any(|hit| hit.location.endpoint == endpoint_id),
+        "no stale workspace rows"
+    );
+    assert!(
+        state
+            .endpoints
+            .agent_panel_model
+            .rows
+            .iter()
+            .all(|row| row.endpoint_id != endpoint_id),
+        "no stale agent rows"
+    );
+    let entry = state
+        .drawn()
+        .machine_entries()
+        .find(|hit| hit.location.endpoint == endpoint_id)
+        .expect("the remote's entry")
+        .clone();
+    assert!(entry.actionable);
+    let machine = state
+        .drawn()
+        .machines()
+        .find(|hit| hit.location.endpoint == endpoint_id)
+        .expect("remote machine row")
+        .rect;
+    assert_eq!(
+        entry.rect.y,
+        machine.bottom(),
+        "the entry sits under its machine"
+    );
+    let text = frame_rows(&frame).join("\n");
+    assert!(text.contains("Connect"), "{text}");
+
+    // The collapsed strip shows the state as the machine row's glyph, with no entry row.
+    state.chrome.set_collapsed(true);
+    let frame = state.compose(100, 28).expect("collapsed strip");
+    assert!(state.drawn().machine_entries().next().is_none());
+    let machine = state
+        .drawn()
+        .machines()
+        .find(|hit| hit.location.endpoint == endpoint_id)
+        .expect("collapsed remote machine row")
+        .rect;
+    assert_eq!(
+        frame_cell(&frame, (machine.right() - 1, machine.y)).symbol,
+        "○"
+    );
+}
+
+#[test]
+fn every_machine_state_has_its_own_entry() {
+    use crate::shell::MachineState;
+
+    let (mut state, endpoint_id) = state_with_remote();
+    state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Reconnecting);
+    for (machine_state, text, actionable) in [
+        (MachineState::Connecting, "Connecting...", false),
+        (MachineState::NotRunning, "Connect", true),
+        (MachineState::Starting, "Starting...", false),
+        (MachineState::Stopping, "Stopping...", false),
+        (MachineState::DifferentBuild, "Restart (other build)", true),
+        (MachineState::Restarting, "Restarting...", false),
+        (MachineState::Offline, "Offline", false),
+        (MachineState::NeedsLogin, "Needs SSH login", false),
+        (MachineState::Unavailable, "Unavailable", false),
+    ] {
+        state.set_machine_state(&endpoint_id, machine_state);
+        let frame = state.compose(100, 28).expect("remote entry frame");
+        let entry = state
+            .drawn()
+            .machine_entries()
+            .find(|hit| hit.location.endpoint == endpoint_id)
+            .expect("the remote's entry")
+            .clone();
+        assert_eq!(entry.actionable, actionable, "{machine_state:?}");
+        let drawn = (entry.rect.x..entry.rect.right())
+            .map(|x| frame_cell(&frame, (x, entry.rect.y)).symbol.as_str())
+            .collect::<String>();
+        assert!(drawn.contains(text), "{machine_state:?}: {drawn:?}");
+        if machine_state == MachineState::NeedsLogin {
+            assert_eq!(entry.rect.height, 2, "the login hint has a row of its own");
+            let hint = (entry.rect.x..entry.rect.right())
+                .map(|x| frame_cell(&frame, (x, entry.rect.y + 1)).symbol.as_str())
+                .collect::<String>();
+            assert!(hint.contains("run shepr again"), "{hint:?}");
+        }
+    }
+}
+
+#[test]
+fn clicking_a_connect_entry_starts_the_machine_and_attaches() {
+    let (mut state, endpoint_id) = state_with_remote();
+    state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Reconnecting);
+    state.set_machine_state(&endpoint_id, crate::shell::MachineState::NotRunning);
+    state.compose(100, 28).expect("remote with no server");
+    let entry = state
+        .drawn()
+        .machine_entries()
+        .find(|hit| hit.location.endpoint == endpoint_id)
+        .expect("the remote's entry")
+        .rect;
+
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: entry.x + 4,
+        row: entry.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::ConnectMachine(connected)] if *connected == endpoint_id
+    ));
+    assert_eq!(
+        state.machine_state(&endpoint_id),
+        Some(crate::shell::MachineState::Starting)
+    );
+}
+
+/// Restart asks first: the click only opens the question, and only its answer sends the
+/// Restart, whose attempt then does the conditional stop and the start.
+#[test]
+fn a_restart_entry_asks_before_it_restarts() {
+    let (mut state, endpoint_id) = state_with_remote();
+    state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Attention);
+    state.set_machine_state(&endpoint_id, crate::shell::MachineState::DifferentBuild);
+    state.compose(100, 28).expect("remote of another build");
+    let entry = state
+        .drawn()
+        .machine_entries()
+        .find(|hit| hit.location.endpoint == endpoint_id)
+        .expect("the remote's entry")
+        .rect;
+
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: entry.x + 4,
+        row: entry.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(outcome.actions.is_empty(), "nothing is restarted unasked");
+    let Some(crate::shell::overlays::Overlay::ConfirmRestart(question)) = state.overlay.as_ref()
+    else {
+        panic!("the Restart question is open");
+    };
+    let lines = question.lines().join(" ");
+    assert!(lines.contains("ends every pane process"), "{lines}");
+    assert!(lines.contains("saved layout is restored"), "{lines}");
+    assert!(lines.contains("agents are resumed"), "{lines}");
+
+    // Cancelling restarts nothing.
+    let cancelled =
+        crate::shell::tests::press_overlay_key(&mut state, crossterm::event::KeyCode::Esc);
+    assert!(cancelled.actions.is_empty());
+    assert!(state.overlay.is_none());
+
+    state.open_confirm_restart_overlay(&endpoint_id);
+    let confirmed =
+        crate::shell::tests::press_overlay_key(&mut state, crossterm::event::KeyCode::Enter);
+    assert!(matches!(
+        confirmed.actions.as_slice(),
+        [ClientShellAction::RestartMachine(restarted)] if *restarted == endpoint_id
+    ));
+    assert!(state.overlay.is_none());
+    assert_eq!(
+        state.machine_state(&endpoint_id),
+        Some(crate::shell::MachineState::Restarting)
+    );
+}
+
+#[test]
+fn clicking_an_online_active_machine_row_reselects_it() {
     let (mut state, endpoint_id) = state_with_remote();
     assert!(state.activate_endpoint_projection(&endpoint_id));
     state.compose(100, 28).expect("active remote frame");
@@ -873,90 +1050,29 @@ fn clicking_an_online_active_machine_row_toggles_its_collapse_state_and_reselect
             target: LocationTarget::Machine,
         })] if *selected == endpoint_id
     ));
-    assert!(state.endpoints.collapsed.contains(&endpoint_id));
 }
 
+/// A machine row has no fold marker and nothing to fold: every connected machine keeps
+/// its workspaces listed under it, in the expanded sidebar and the collapsed strip.
 #[test]
-fn machine_arrow_toggles_inactive_machine_without_switching() {
+fn every_connected_machine_lists_its_workspaces() {
     for sidebar_collapsed in [false, true] {
-        // None leaves the remote Online.
-        for failure in [None, Some(EndpointFailureStatus::Reconnecting)] {
-            let other_machine = machine_named("Other", "dev@other.example");
-            let other_id = ClientEndpointId::Ssh(other_machine.label.clone());
-            let (mut state, remote_id) = state_with_machines(&[remote_machine(), other_machine]);
-            state.connect_endpoint_with_snapshot(&other_id, 1, Box::new(snapshot()));
-            if let Some(failure) = failure {
-                state.set_endpoint_status(&remote_id, failure);
-            }
-            state.chrome.set_collapsed(sidebar_collapsed);
-
-            for collapsed in [true, false] {
-                let frame = state.compose(100, 28).expect("three machine frame");
-                let machine = state
+        let other_machine = machine_named("Other", "dev@other.example");
+        let other_id = ClientEndpointId::Ssh(other_machine.label.clone());
+        let (mut state, remote_id) = state_with_machines(&[remote_machine(), other_machine]);
+        state.connect_endpoint_with_snapshot(&other_id, 1, Box::new(snapshot()));
+        state.chrome.set_collapsed(sidebar_collapsed);
+        let frame = state.compose(100, 28).expect("three machine frame");
+        let text = frame_rows(&frame).join("\n");
+        assert!(!text.contains('▾') && !text.contains('▸'), "{text}");
+        for endpoint_id in [&ClientEndpointId::Local, &remote_id, &other_id] {
+            assert!(
+                state
                     .drawn()
-                    .machines()
-                    .find(|hit| hit.location.endpoint == remote_id)
-                    .expect("remote machine")
-                    .rect;
-                let column = machine.x + u16::from(!sidebar_collapsed);
-                assert_eq!(
-                    frame_cell(&frame, (column, machine.y)).symbol,
-                    if collapsed { "▾" } else { "▸" }
-                );
-                let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
-                    kind: MouseEventKind::Down(MouseButton::Left),
-                    column,
-                    row: machine.y,
-                    modifiers: KeyModifiers::empty(),
-                })]);
-                assert!(
-                    outcome.actions.is_empty(),
-                    "collapse must not switch machines"
-                );
-                assert!(outcome.requests.is_empty());
-                assert!(outcome.repaint);
-                assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
-                assert_eq!(
-                    state
-                        .endpoints
-                        .active
-                        .snapshot()
-                        .expect("test precondition")
-                        .boot_id,
-                    crate::tests::test_boot_id("boot-1")
-                );
-                assert_eq!(
-                    state
-                        .endpoints
-                        .active
-                        .shared_snapshot()
-                        .expect("test precondition")
-                        .focused_workspace_id
-                        .as_ref(),
-                    Some(&crate::tests::test_workspace_id("w1"))
-                );
-                assert_eq!(state.endpoints.collapsed.contains(&remote_id), collapsed);
-                assert!(!state.endpoints.collapsed.contains(&ClientEndpointId::Local));
-                assert!(!state.endpoints.collapsed.contains(&other_id));
-                assert!(state.endpoint_error.message().is_none());
-
-                state.compose(100, 28).expect("toggled machine frame");
-                assert_eq!(
-                    state
-                        .drawn()
-                        .workspaces()
-                        .any(|hit| hit.location.endpoint == remote_id),
-                    !collapsed
-                );
-                for endpoint_id in [&ClientEndpointId::Local, &other_id] {
-                    assert!(
-                        state
-                            .drawn()
-                            .workspaces()
-                            .any(|hit| &hit.location.endpoint == endpoint_id)
-                    );
-                }
-            }
+                    .workspaces()
+                    .any(|hit| &hit.location.endpoint == endpoint_id),
+                "{endpoint_id}"
+            );
         }
     }
 }

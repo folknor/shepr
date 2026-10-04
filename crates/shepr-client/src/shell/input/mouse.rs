@@ -1354,6 +1354,9 @@ impl ClientShellState {
                 if self.handle_endpoint_machine_click(point, outcome) {
                     return;
                 }
+                if self.handle_machine_entry_click(point, outcome) {
+                    return;
+                }
                 if crate::shell::input::hit_test::contains(
                     self.presentation.shown().global_launcher(),
                     point,
