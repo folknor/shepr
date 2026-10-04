@@ -52,27 +52,6 @@ impl PaneTerminal {
         protocol: shepr_term::key::KeyboardProtocol,
         input_modes: Option<shepr_vt::InputModes>,
     ) -> Vec<u8> {
-        let repeat_count = key.repeat_count;
-        let first = key.with_repeat_count(1);
-        let mut bytes =
-            self.encode_terminal_key_once_with_modes(first.clone(), protocol, input_modes);
-        if repeat_count > 1 && first.kind != crossterm::event::KeyEventKind::Release {
-            let repeated = first.with_kind(crossterm::event::KeyEventKind::Repeat);
-            let repeated_bytes =
-                self.encode_terminal_key_once_with_modes(repeated, protocol, input_modes);
-            for _ in 1..repeat_count {
-                bytes.extend_from_slice(&repeated_bytes);
-            }
-        }
-        bytes
-    }
-
-    pub(super) fn encode_terminal_key_once_with_modes(
-        &self,
-        key: shepr_term::key::TerminalKey,
-        protocol: shepr_term::key::KeyboardProtocol,
-        input_modes: Option<shepr_vt::InputModes>,
-    ) -> Vec<u8> {
         // Character keys follow the caller's protocol; every other key follows
         // the modes the child negotiated with this pane.
         if matches!(key.code, crossterm::event::KeyCode::Char(_)) {

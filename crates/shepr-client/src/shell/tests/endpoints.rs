@@ -60,7 +60,7 @@ fn client_keymap_and_modes_survive_snapshots_and_endpoint_switches() {
         assert_eq!(prefix_key(&state), prefix);
         assert_eq!(format!("{:?}", state.config.keybinds), bindings);
         match mode {
-            ClientShellMode::Navigate => state.mode.enter_navigate(None),
+            ClientShellMode::Navigate => crate::shell::tests::enter_navigation(&mut state),
             ClientShellMode::Prefix => {
                 state.handle_raw_events(vec![RawInputEvent::Key(
                     shepr_term::key::TerminalKey::new(prefix.0, prefix.1),

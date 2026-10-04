@@ -20,8 +20,7 @@ the history file and its restore path.
 Not defects: paths with no test, and code that works but reads worse than it
 should.
 
-- Host input never produces a key `repeat_count` above one, and the client is the only user of shepr-termio's `InputLeaseTable`, so its grouped-repeat paths (`complete_press`'s `repeat_count > 1` branch, `Reprocess` with several repetitions) look dead outside termio's own unit tests.
-- A few client shell tests still set state directly that input can reach: `mode.enter_navigate(None)` (prefix `w` reaches it) in `tests/endpoints.rs`, `tests/input_domain.rs` and `workspace_navigation.rs`; `composition_mut().pane_cursor_overridden` in `surface_patch.rs`; and the navigator `scroll` in `text_editing.rs`, which needs a fixture with more rows. `copy_mode_cursor_changed_on_owner` in `surface_patch.rs` may be redundant with `pane_cursor_overridden` outside the window between entering copy mode and the next compose.
+- Two client shell tests still enter Navigate mode with `mode.enter_navigate(None)` instead of the `enter_navigation` helper (prefix then `w`): in `shell/presentation/tests.rs` and `shell/copy/tests.rs`.
 - `terminal_collect_dirty_patch` builds one owned `String` per dirty cell for the wire's `CellData` symbol (plus padding). Not contention on glibc; worth checking if a many-pane, all-redrawing profile ever shows the allocator in the render path.
 
 # Possible capabilities

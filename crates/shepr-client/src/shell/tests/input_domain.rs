@@ -50,7 +50,7 @@ fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
                 .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
         );
         if mode == ClientShellMode::Navigate {
-            state.mode.enter_navigate(None);
+            crate::shell::tests::enter_navigation(&mut state);
         } else {
             let prefix = state.config.keybinds.prefix;
             press(&mut state, prefix.code, prefix.modifiers);

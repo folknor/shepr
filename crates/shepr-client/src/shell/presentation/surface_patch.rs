@@ -28,23 +28,6 @@ fn patch_updates_pane<'a>(
     patched_pane_ids.any(|patched| patched == pane_id)
 }
 
-fn copy_mode_cursor_changed_on_owner(
-    state: &ClientShellState,
-    patch: &shepr_protocol::PaneSurfacePatch,
-) -> bool {
-    let Some(copy_mode) = state.copy.as_ref() else {
-        return false;
-    };
-    let Some(surface) = state.pane_surface() else {
-        return false;
-    };
-    patch.cursor.as_ref() != surface.frame.cursor()
-        && surface
-            .panes
-            .iter()
-            .any(|pane| pane.focused && pane.pane_id == copy_mode.pane_id)
-}
-
 fn fast_path_blocker(
     state: &ClientShellState,
     patch: &shepr_protocol::PaneSurfacePatch,
@@ -76,14 +59,18 @@ fn fast_path_blocker(
                     selection.pane_id(),
                 )
         });
-    // The cursor is sampled independently of the changed pane list, so a patch can move it
-    // without naming its owner in metadata. Recompose only when that owner has copy state.
+    // A cursor-only patch needs no copy-mode check of its own. A copy session replaces the
+    // pane cursor only in Copy mode, and a frame composed in Copy mode records
+    // `pane_cursor_overridden`, which blocks every patch above. Every way into Copy mode
+    // (its binding, or a shown snapshot refocusing a parked session) leaves the client's
+    // presentation dirty, so a patch arriving before that compose is never written as rows.
+    // A parked session draws the pane's own cursor, which the patch carries.
     let copy_mode_patched = state.copy.as_ref().is_some_and(|copy_mode| {
         patch_updates_pane(
             patch.panes.iter().map(|pane| &pane.pane_id),
             &copy_mode.pane_id,
         )
-    }) || copy_mode_cursor_changed_on_owner(state, patch);
+    });
     let unknown_pane = patch.panes.iter().any(|pane| {
         !state
             .pane_hits()
@@ -368,11 +355,20 @@ mod tests {
 
     #[test]
     fn composed_cursor_suppression_blocks_cursor_only_patches() {
-        let (mut state, area) = state_with_copy_pane_focus(false);
+        // A parked session draws the pane's own cursor, so moving it takes the fast path.
+        let (parked, area) = state_with_copy_pane_focus(false);
+        let patch = cursor_patch(&parked, Some(cursor(2)));
+        assert!(!fast_path_blocker(&parked, &patch, area));
+
+        // A frame drawn in Copy mode replaces the pane cursor, so every cursor-only patch
+        // composes, whether it moves the cursor or not.
+        let (mut state, area) = state_with_copy_pane_focus(true);
+        state.compose(80, 24).expect("copy-mode frame");
+        assert!(state.presentation.composition().pane_cursor_overridden);
         let patch = cursor_patch(&state, Some(cursor(2)));
-        assert!(!fast_path_blocker(&state, &patch, area));
-        state.presentation.composition_mut().pane_cursor_overridden = true;
         assert!(fast_path_blocker(&state, &patch, area));
+        let unchanged = cursor_patch(&state, Some(cursor(1)));
+        assert!(fast_path_blocker(&state, &unchanged, area));
     }
 
     #[test]
@@ -386,19 +382,5 @@ mod tests {
 
         assert!(patch_updates_pane(updated.iter(), &copy_pane));
         assert!(!patch_updates_pane(updated.iter(), &parked_copy_pane));
-    }
-
-    #[test]
-    fn cursor_only_copy_blocker_is_limited_to_a_changed_cursor_on_its_owner() {
-        let (focused, area) = state_with_copy_pane_focus(true);
-        let changed_cursor = cursor_patch(&focused, Some(cursor(2)));
-        assert!(fast_path_blocker(&focused, &changed_cursor, area));
-
-        let unchanged_cursor = cursor_patch(&focused, Some(cursor(1)));
-        assert!(!fast_path_blocker(&focused, &unchanged_cursor, area));
-
-        let (parked, area) = state_with_copy_pane_focus(false);
-        let unrelated_cursor = cursor_patch(&parked, Some(cursor(2)));
-        assert!(!fast_path_blocker(&parked, &unrelated_cursor, area));
     }
 }

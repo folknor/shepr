@@ -1037,7 +1037,7 @@ fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
 fn cancelled_close_does_not_restore_an_older_navigation_highlight() {
     let mut state = local_navigation_state(false);
     request_local_navigation(&mut state, 2);
-    state.mode.enter_navigate(None);
+    enter_navigation(&mut state);
     state.open_confirm_close_overlay(shepr_test_fixtures::id("w1"));
     preview_key(&mut state, b"\x1b");
     assert_eq!(state.mode.kind(), ClientShellMode::Navigate);

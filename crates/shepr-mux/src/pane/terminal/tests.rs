@@ -1677,11 +1677,6 @@ fn terminal_legacy_modified_enter_is_shell_compatible() {
                 "{modifiers:?} {kind:?}"
             );
         }
-        assert_eq!(
-            pane.encode_terminal_key(key.clone().with_repeat_count(3), protocol),
-            expected.repeat(3),
-            "{modifiers:?} grouped repeat"
-        );
         assert!(
             pane.encode_terminal_key(key.with_kind(KeyEventKind::Release), protocol)
                 .is_empty(),
@@ -1875,39 +1870,16 @@ fn terminal_key_encoding_honors_application_cursor_mode() {
 }
 
 #[test]
-fn grouped_key_repeats_expand_at_the_destination() {
-    let terminal = shepr_vt::Terminal::new(
-        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
-        shepr_core::scrollback::ScrollbackBudget::new(0),
-    );
-    let pane = PaneTerminal::new(terminal);
-    let key = shepr_term::key::TerminalKey::new(
-        crossterm::event::KeyCode::Char('x'),
-        crossterm::event::KeyModifiers::empty(),
-    )
-    .with_repeat_count(3);
-
-    assert_eq!(
-        pane.encode_terminal_key(key, shepr_term::key::KeyboardProtocol::legacy()),
-        b"xxx"
-    );
-
+fn text_key_under_report_all_without_associated_text_encodes_as_csi_u() {
     let shifted = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Char('/'),
         crossterm::event::KeyModifiers::SHIFT,
     )
-    .with_generated_text(Some("/".to_owned()))
-    .with_repeat_count(3);
-    let legacy_expected = b"///".as_slice();
-    assert_eq!(
-        pane.encode_terminal_key(shifted.clone(), shepr_term::key::KeyboardProtocol::legacy(),),
-        legacy_expected
-    );
+    .with_generated_text(Some("/".to_owned()));
     // Flags 15 (disambiguate + event types + alternate keys + report all
     // keys) reports every key as CSI u but, without flag 16
-    // (REPORT_ASSOCIATED_TEXT), carries no committed text: the repeat
-    // still has to expand to three identical CSI u sequences rather than
-    // three literal slashes.
+    // (REPORT_ASSOCIATED_TEXT), carries no committed text, so a text press
+    // and its repeat are CSI u sequences rather than literal slashes.
     let mut terminal = shepr_vt::Terminal::new(
         shepr_core::geometry::PaneGeometry::cells_only(80, 24),
         shepr_core::scrollback::ScrollbackBudget::new(0),
@@ -1917,47 +1889,18 @@ fn grouped_key_repeats_expand_at_the_destination() {
     let kitty_protocol = shepr_term::key::KeyboardProtocol::from_flags(
         shepr_protocol::KittyKeyboardFlags::from_bits_retain(15),
     );
-    let pressed =
-        pane.encode_terminal_key_once(shifted.clone().with_repeat_count(1), kitty_protocol);
+    let pressed = pane.encode_terminal_key(shifted.clone(), kitty_protocol);
     assert!(
         !pressed.is_empty() && pressed != b"/",
         "flags 15 without REPORT_ASSOCIATED_TEXT should encode as CSI u, not plain text"
     );
-    let repeated_key = shifted
-        .clone()
-        .with_repeat_count(1)
-        .with_kind(crossterm::event::KeyEventKind::Repeat);
-    let repeated = pane.encode_terminal_key_once(repeated_key, kitty_protocol);
-    let mut expected = pressed;
-    expected.extend_from_slice(&repeated);
-    expected.extend_from_slice(&repeated);
-    assert_eq!(pane.encode_terminal_key(shifted, kitty_protocol), expected);
-}
-
-#[test]
-fn grouped_release_is_encoded_once() {
-    let mut terminal = shepr_vt::Terminal::new(
-        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
-        shepr_core::scrollback::ScrollbackBudget::new(0),
+    let repeated = pane.encode_terminal_key(
+        shifted.with_kind(crossterm::event::KeyEventKind::Repeat),
+        kitty_protocol,
     );
-    terminal.write(b"\x1b[>11u");
-    let pane = PaneTerminal::new(terminal);
-    let protocol = pane
-        .negotiated_keyboard_protocol()
-        .expect("test precondition");
-    let release = shepr_term::key::TerminalKey::new(
-        crossterm::event::KeyCode::Up,
-        crossterm::event::KeyModifiers::empty(),
-    )
-    .with_kind(crossterm::event::KeyEventKind::Release);
-    let expected = pane.encode_terminal_key(release.clone(), protocol);
-
-    assert!(!expected.is_empty());
-    let mut malformed_release = release;
-    malformed_release.repeat_count = 3;
-    assert_eq!(
-        pane.encode_terminal_key(malformed_release, protocol),
-        expected
+    assert!(
+        !repeated.is_empty() && repeated != b"/" && repeated != pressed,
+        "a repeat under event types is its own CSI u event"
     );
 }
 

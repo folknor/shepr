@@ -87,15 +87,13 @@ mod tests {
                     code: ClientKeyCode::Char('l'),
                     modifiers: crate::WireModifiers::SHIFT,
                     kind: ClientKeyKind::Release,
-                    repeat_count: 1,
                     shifted_codepoint: Some('L'),
                     generated_text: None,
                 },
                 ClientPaneInputEvent::Key {
                     code: ClientKeyCode::Char('7'),
                     modifiers: crate::WireModifiers::CONTROL,
-                    kind: ClientKeyKind::Press,
-                    repeat_count: 3,
+                    kind: ClientKeyKind::Repeat,
                     shifted_codepoint: None,
                     generated_text: None,
                 },
@@ -105,7 +103,6 @@ mod tests {
                         | crate::WireModifiers::HYPER
                         | crate::WireModifiers::META,
                     kind: ClientKeyKind::Press,
-                    repeat_count: 1,
                     shifted_codepoint: None,
                     generated_text: None,
                 },
@@ -146,7 +143,6 @@ mod tests {
             code: ClientKeyCode::Char('/'),
             modifiers: WireModifiers::SHIFT,
             kind: ClientKeyKind::Press,
-            repeat_count: 1,
             shifted_codepoint: None,
             generated_text: Some("/".into()),
         };

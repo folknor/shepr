@@ -26,7 +26,6 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
                     code: shepr_protocol::ClientKeyCode::Char('c'),
                     modifiers: shepr_protocol::WireModifiers::CONTROL,
                     kind: shepr_protocol::ClientKeyKind::Press,
-                    repeat_count: 1,
                     shifted_codepoint: None,
                     generated_text: None,
                 },
@@ -34,7 +33,6 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
                     code: shepr_protocol::ClientKeyCode::Char('c'),
                     modifiers: shepr_protocol::WireModifiers::CONTROL,
                     kind: shepr_protocol::ClientKeyKind::Release,
-                    repeat_count: 1,
                     shifted_codepoint: None,
                     generated_text: None,
                 },
@@ -42,7 +40,6 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
                     code: shepr_protocol::ClientKeyCode::Char('x'),
                     modifiers: shepr_protocol::WireModifiers::ALT,
                     kind: shepr_protocol::ClientKeyKind::Press,
-                    repeat_count: 1,
                     shifted_codepoint: None,
                     generated_text: None,
                 },
@@ -131,7 +128,6 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
         code: shepr_protocol::ClientKeyCode::Char('x'),
         modifiers: shepr_protocol::WireModifiers::NONE,
         kind,
-        repeat_count: 1,
         shifted_codepoint: None,
         generated_text: None,
     };
@@ -692,7 +688,6 @@ fn client_page_key(
         code,
         modifiers: shepr_protocol::WireModifiers::from_bits_retain(modifiers.bits()),
         kind,
-        repeat_count: 1,
         shifted_codepoint: None,
         generated_text: None,
     }
@@ -865,7 +860,6 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
         code: shepr_protocol::ClientKeyCode::Char('x'),
         modifiers: shepr_protocol::WireModifiers::NONE,
         kind,
-        repeat_count: 1,
         shifted_codepoint: None,
         // No generated text: the server only holds presses that will get a
         // release, and a key that committed text does not.

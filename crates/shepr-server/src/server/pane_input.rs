@@ -253,13 +253,11 @@ fn apply_client_pane_input_event(
             code,
             modifiers,
             kind,
-            repeat_count,
             shifted_codepoint,
             generated_text,
         } => {
             let mut key = TerminalKey::new(code.to_host(), modifiers.to_host())
                 .with_kind(kind.to_host())
-                .with_repeat_count(*repeat_count)
                 .with_generated_text(generated_text.clone());
             if let Some(shifted_codepoint) = shifted_codepoint {
                 key = key.with_shifted_codepoint(*shifted_codepoint);
@@ -521,7 +519,6 @@ mod tests {
                 code: shepr_protocol::ClientKeyCode::Char('h'),
                 modifiers: shepr_protocol::WireModifiers::NONE,
                 kind: shepr_protocol::ClientKeyKind::Press,
-                repeat_count: 1,
                 shifted_codepoint: None,
                 generated_text: Some(secret.to_owned()),
             },

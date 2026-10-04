@@ -478,7 +478,7 @@ impl ClientShellState {
                     self.push_pane_key(*target, key.clone(), outcome, accounting);
                 }
                 let resulting_context = self.input_context();
-                let plan = self.input_leases.complete_press(
+                self.input_leases.complete_press(
                     lease_key,
                     &key,
                     Some(&initial_context),
@@ -486,14 +486,20 @@ impl ClientShellState {
                     target,
                     host_reports_all_keys,
                 );
-                self.execute_repeat_plan(lease_key, key, plan, outcome, accounting);
             }
             KeyEventKind::Repeat => {
                 let context = self.input_context();
-                let plan = self
-                    .input_leases
-                    .plan_repeat(lease_key, &key, Some(&context));
-                self.execute_repeat_plan(lease_key, key, plan, outcome, accounting);
+                match self.input_leases.plan_repeat(lease_key, Some(&context)) {
+                    shepr_termio::input::RepeatPlan::Forwarded(target) => {
+                        self.push_pane_key(target, key, outcome, accounting);
+                    }
+                    shepr_termio::input::RepeatPlan::Reprocess => {
+                        if let Some(target) = self.route_key_press(&key, outcome) {
+                            self.push_pane_key(target, key, outcome, accounting);
+                        }
+                    }
+                    shepr_termio::input::RepeatPlan::Ignore => {}
+                }
             }
             KeyEventKind::Release => {
                 if let Some(lease) = self.input_leases.remove_forwarded(&lease_key) {
@@ -543,46 +549,6 @@ impl ClientShellState {
         }
         if let Some(session) = self.copy.as_mut() {
             session.pipeline_mut().clear_keys();
-        }
-    }
-
-    fn execute_repeat_plan(
-        &mut self,
-        lease_key: shepr_termio::input::InputLeaseKey<u8>,
-        key: shepr_term::key::TerminalKey,
-        plan: shepr_termio::input::RepeatPlan<ClientInputContext, shepr_protocol::PublicPaneId>,
-        outcome: &mut ClientShellInput,
-        accounting: &mut PaneInputBatchAccounting,
-    ) {
-        match plan {
-            shepr_termio::input::RepeatPlan::Forwarded(target) => {
-                self.push_pane_key(target, key, outcome, accounting);
-            }
-            shepr_termio::input::RepeatPlan::Reprocess {
-                context,
-                repetitions,
-                tracked,
-            } => {
-                for _ in 0..repetitions {
-                    let current = self.input_context();
-                    if !self.input_leases.reprocess_allowed(
-                        lease_key,
-                        &context,
-                        Some(&current),
-                        tracked,
-                    ) {
-                        break;
-                    }
-                    let repeated = key
-                        .clone()
-                        .with_repeat_count(1)
-                        .with_kind(KeyEventKind::Repeat);
-                    if let Some(target) = self.route_key_press(&repeated, outcome) {
-                        self.push_pane_key(target, repeated, outcome, accounting);
-                    }
-                }
-            }
-            shepr_termio::input::RepeatPlan::Ignore => {}
         }
     }
 

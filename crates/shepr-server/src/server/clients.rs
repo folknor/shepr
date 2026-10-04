@@ -710,7 +710,6 @@ impl ClientConnection {
                                 code: code.clone(),
                                 modifiers: *modifiers,
                                 kind: ClientKeyKind::Release,
-                                repeat_count: 1,
                                 shifted_codepoint: *shifted_codepoint,
                                 generated_text: None,
                             },
@@ -1044,7 +1043,6 @@ mod tests {
                 code: shepr_protocol::ClientKeyCode::Char('x'),
                 modifiers: shepr_protocol::WireModifiers::NONE,
                 kind: ClientKeyKind::Press,
-                repeat_count: 1,
                 shifted_codepoint: None,
                 generated_text: Some("x".into()),
             }],
@@ -1060,7 +1058,6 @@ mod tests {
             code,
             modifiers: shepr_protocol::WireModifiers::SHIFT,
             kind,
-            repeat_count: 1,
             shifted_codepoint: None,
             generated_text: None,
         };

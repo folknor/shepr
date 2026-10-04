@@ -25,7 +25,6 @@ pub struct TerminalKey {
     pub code: KeyCode,
     pub modifiers: KeyModifiers,
     pub kind: KeyEventKind,
-    pub repeat_count: u16,
     pub shifted_codepoint: Option<char>,
     pub generated_text: Option<String>,
 }
@@ -36,7 +35,6 @@ impl TerminalKey {
             code,
             modifiers,
             kind: KeyEventKind::Press,
-            repeat_count: 1,
             shifted_codepoint: None,
             generated_text: None,
         }
@@ -44,19 +42,9 @@ impl TerminalKey {
 
     pub fn with_kind(mut self, kind: KeyEventKind) -> Self {
         if kind == KeyEventKind::Release {
-            self.repeat_count = 1;
             self.generated_text = None;
         }
         self.kind = kind;
-        self
-    }
-
-    pub fn with_repeat_count(mut self, repeat_count: u16) -> Self {
-        self.repeat_count = if self.kind == KeyEventKind::Release {
-            1
-        } else {
-            repeat_count.max(1)
-        };
         self
     }
 
@@ -309,20 +297,16 @@ mod tests {
     }
 
     #[test]
-    fn release_clears_generated_text_and_grouped_repeat_count() {
+    fn release_clears_generated_text() {
         let release = TerminalKey::new(KeyCode::Char('a'), KeyModifiers::empty())
             .with_generated_text(Some("a".to_owned()))
-            .with_repeat_count(4)
             .with_kind(KeyEventKind::Release);
-        let regrouped_release = release
+        let retexted_release = release
             .clone()
-            .with_repeat_count(4)
             .with_generated_text(Some("ignored".to_owned()));
 
         assert_eq!(release.generated_text, None);
-        assert_eq!(release.repeat_count, 1);
-        assert_eq!(regrouped_release.generated_text, None);
-        assert_eq!(regrouped_release.repeat_count, 1);
+        assert_eq!(retexted_release.generated_text, None);
     }
 
     #[test]

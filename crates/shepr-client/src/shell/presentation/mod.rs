@@ -107,10 +107,6 @@ impl Presentation {
         self.view.as_mut()
     }
 
-    fn composition_mut(&mut self) -> &mut LastComposition {
-        &mut self.composition
-    }
-
     pub(in crate::shell) fn set_composed_at(&mut self, at: std::time::Instant) {
         self.composed_at = Some(at);
     }

@@ -41,13 +41,12 @@ pub enum InputLease<Context, Target> {
     Consumed(ConsumedInputLease<Context>),
 }
 
-pub enum RepeatPlan<Context, Target> {
+/// What a repeat event does: go to the pane its press was forwarded to, be
+/// routed again as a key in the unchanged input context, or nothing.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RepeatPlan<Target> {
     Forwarded(Target),
-    Reprocess {
-        context: Context,
-        repetitions: u16,
-        tracked: bool,
-    },
+    Reprocess,
     Ignore,
 }
 
@@ -96,6 +95,9 @@ where
         }
     }
 
+    /// Records the lease a completed press leaves: forwarded to `target`, or
+    /// consumed by the shell, in which case its repeats are routed again only
+    /// while the input context stays the one the press began and ended in.
     pub fn complete_press(
         &mut self,
         lease_key: InputLeaseKey<Source>,
@@ -104,13 +106,13 @@ where
         resulting_context: Option<&Context>,
         target: Option<Target>,
         host_reports_all_keys: bool,
-    ) -> RepeatPlan<Context, Target> {
+    ) {
         if !press_takes_lease(key, host_reports_all_keys) {
-            return RepeatPlan::Ignore;
+            return;
         }
         if let Some(target) = target {
             self.insert_forwarded(lease_key, target, key.clone());
-            return RepeatPlan::Ignore;
+            return;
         }
         if !self.leases.contains_key(&lease_key) {
             let disposition = match (initial_context, resulting_context) {
@@ -121,70 +123,29 @@ where
             };
             self.insert_consumed(lease_key, disposition);
         }
-        match self.leases.get(&lease_key) {
-            Some(InputLease::Consumed(ConsumedInputLease::ReprocessRepeats(context)))
-                if key.repeat_count > 1 =>
-            {
-                RepeatPlan::Reprocess {
-                    context: context.clone(),
-                    repetitions: key.repeat_count - 1,
-                    tracked: true,
-                }
-            }
-            _ => RepeatPlan::Ignore,
-        }
     }
 
     pub fn plan_repeat(
         &mut self,
         lease_key: InputLeaseKey<Source>,
-        key: &TerminalKey,
         current_context: Option<&Context>,
-    ) -> RepeatPlan<Context, Target> {
+    ) -> RepeatPlan<Target> {
         match self.leases.get(&lease_key) {
-            Some(InputLease::Forwarded(lease)) => {
-                return RepeatPlan::Forwarded(lease.target.clone());
-            }
+            Some(InputLease::Forwarded(lease)) => RepeatPlan::Forwarded(lease.target.clone()),
             Some(InputLease::Consumed(ConsumedInputLease::ReprocessRepeats(context)))
                 if current_context == Some(context) =>
             {
-                return RepeatPlan::Reprocess {
-                    context: context.clone(),
-                    repetitions: key.repeat_count,
-                    tracked: true,
-                };
+                RepeatPlan::Reprocess
             }
             Some(InputLease::Consumed(ConsumedInputLease::ReprocessRepeats(_))) => {
                 self.insert_consumed(lease_key, ConsumedInputLease::SuppressRepeats);
-                return RepeatPlan::Ignore;
+                RepeatPlan::Ignore
             }
-            Some(InputLease::Consumed(ConsumedInputLease::SuppressRepeats)) => {
-                return RepeatPlan::Ignore;
+            None if current_context.is_some() => RepeatPlan::Reprocess,
+            Some(InputLease::Consumed(ConsumedInputLease::SuppressRepeats)) | None => {
+                RepeatPlan::Ignore
             }
-            None => {}
         }
-        match current_context {
-            Some(context) => RepeatPlan::Reprocess {
-                context: context.clone(),
-                repetitions: key.repeat_count,
-                tracked: false,
-            },
-            None => RepeatPlan::Ignore,
-        }
-    }
-
-    pub fn reprocess_allowed(
-        &mut self,
-        lease_key: InputLeaseKey<Source>,
-        expected_context: &Context,
-        current_context: Option<&Context>,
-        tracked: bool,
-    ) -> bool {
-        let allowed = current_context == Some(expected_context);
-        if tracked && !allowed {
-            self.insert_consumed(lease_key, ConsumedInputLease::SuppressRepeats);
-        }
-        allowed
     }
 
     pub fn remove_forwarded(
@@ -273,6 +234,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Eq)]
     enum Context {
         Pane,
+        Overlay,
     }
 
     type Leases = InputLeaseTable<u64, Context, u64>;
@@ -333,45 +295,37 @@ mod tests {
         let context = Context::Pane;
         let mut leases = Leases::default();
 
-        assert!(matches!(
-            leases.complete_press(
-                lease_key,
-                &key,
-                Some(&context),
-                Some(&context),
-                Some(10),
-                false
-            ),
-            RepeatPlan::Ignore
-        ));
-        let repeated = key.with_kind(crossterm::event::KeyEventKind::Repeat);
-        assert!(matches!(
-            leases.plan_repeat(lease_key, &repeated, Some(&context)),
+        leases.complete_press(
+            lease_key,
+            &key,
+            Some(&context),
+            Some(&context),
+            Some(10),
+            false,
+        );
+        assert_eq!(
+            leases.plan_repeat(lease_key, Some(&context)),
             RepeatPlan::Forwarded(10)
-        ));
+        );
         assert!(leases.remove_forwarded(&lease_key).is_some());
     }
 
     #[test]
     fn forwarded_semantic_generated_text_has_no_release_lease() {
         let key = TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
-            .with_generated_text(Some("/".to_owned()))
-            .with_repeat_count(3);
+            .with_generated_text(Some("/".to_owned()));
         let lease_key = InputLeaseKey::new(7, &key);
         let context = Context::Pane;
         let mut leases = Leases::default();
 
-        assert!(matches!(
-            leases.complete_press(
-                lease_key,
-                &key,
-                Some(&context),
-                Some(&context),
-                Some(10),
-                false
-            ),
-            RepeatPlan::Ignore
-        ));
+        leases.complete_press(
+            lease_key,
+            &key,
+            Some(&context),
+            Some(&context),
+            Some(10),
+            false,
+        );
         assert_eq!(leases.remove_forwarded(&lease_key), None);
     }
 
@@ -386,60 +340,92 @@ mod tests {
         // Report-all mode sends the release: the press leases its target,
         // and the repeat and release follow it there.
         leases.prepare_press(&lease_key, &key, true);
-        assert!(matches!(
-            leases.complete_press(
-                lease_key,
-                &key,
-                Some(&context),
-                Some(&context),
-                Some(10),
-                true
-            ),
-            RepeatPlan::Ignore
-        ));
-        let repeated = key
-            .clone()
-            .with_kind(crossterm::event::KeyEventKind::Repeat);
-        assert!(matches!(
-            leases.plan_repeat(lease_key, &repeated, Some(&context)),
+        leases.complete_press(
+            lease_key,
+            &key,
+            Some(&context),
+            Some(&context),
+            Some(10),
+            true,
+        );
+        assert_eq!(
+            leases.plan_repeat(lease_key, Some(&context)),
             RepeatPlan::Forwarded(10)
-        ));
+        );
         // A fresh text press in report-all mode replaces the old lease.
         leases.prepare_press(&lease_key, &key, true);
         assert!(!leases.contains(&lease_key));
 
         // Without report-all no release follows, so no lease is taken.
-        assert!(matches!(
-            leases.complete_press(
-                lease_key,
-                &key,
-                Some(&context),
-                Some(&context),
-                Some(10),
-                false
-            ),
-            RepeatPlan::Ignore
-        ));
+        leases.complete_press(
+            lease_key,
+            &key,
+            Some(&context),
+            Some(&context),
+            Some(10),
+            false,
+        );
         assert!(!leases.contains(&lease_key));
     }
 
     #[test]
     fn new_semantic_press_recomputes_consumed_repeat_disposition() {
-        let key = TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()).with_repeat_count(3);
+        let key = TerminalKey::new(KeyCode::Esc, KeyModifiers::empty());
         let lease_key = InputLeaseKey::new(7, &key);
         let context = Context::Pane;
         let mut leases = Leases::default();
         leases.insert_consumed(lease_key, ConsumedInputLease::SuppressRepeats);
 
         leases.prepare_press(&lease_key, &key, false);
-        assert!(matches!(
-            leases.complete_press(lease_key, &key, Some(&context), Some(&context), None, false),
-            RepeatPlan::Reprocess {
-                context: Context::Pane,
-                repetitions: 2,
-                tracked: true,
-            }
-        ));
+        leases.complete_press(lease_key, &key, Some(&context), Some(&context), None, false);
+        assert_eq!(
+            leases.plan_repeat(lease_key, Some(&context)),
+            RepeatPlan::Reprocess
+        );
+    }
+
+    #[test]
+    fn consumed_repeats_stop_for_good_once_the_context_changes() {
+        let key = TerminalKey::new(KeyCode::Esc, KeyModifiers::empty());
+        let lease_key = InputLeaseKey::new(7, &key);
+        let mut leases = Leases::default();
+
+        leases.complete_press(
+            lease_key,
+            &key,
+            Some(&Context::Pane),
+            Some(&Context::Pane),
+            None,
+            false,
+        );
+        assert_eq!(
+            leases.plan_repeat(lease_key, Some(&Context::Overlay)),
+            RepeatPlan::Ignore
+        );
+        assert_eq!(
+            leases.plan_repeat(lease_key, Some(&Context::Pane)),
+            RepeatPlan::Ignore
+        );
+    }
+
+    #[test]
+    fn a_press_that_changes_the_context_suppresses_its_repeats() {
+        let key = TerminalKey::new(KeyCode::Esc, KeyModifiers::empty());
+        let lease_key = InputLeaseKey::new(7, &key);
+        let mut leases = Leases::default();
+
+        leases.complete_press(
+            lease_key,
+            &key,
+            Some(&Context::Pane),
+            Some(&Context::Overlay),
+            None,
+            false,
+        );
+        assert_eq!(
+            leases.plan_repeat(lease_key, Some(&Context::Overlay)),
+            RepeatPlan::Ignore
+        );
     }
 
     #[test]

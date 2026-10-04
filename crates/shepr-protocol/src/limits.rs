@@ -18,8 +18,8 @@ pub use shepr_core::limits::MAX_TERMINAL_GRID_DIMENSION as MAX_SURFACE_DIMENSION
 /// before they cross it and the server refuses a message past it. Every event
 /// counts at least once, so the wire field also caps the raw event count at
 /// this value: a longer list fails to decode before its events are
-/// materialized, and the server's expanded-count check still charges key
-/// repeats and scroll lines. One configured scroll step also fits this budget
+/// materialized, and the server's expanded-count check still charges scroll
+/// lines. One configured scroll step also fits this budget
 /// because each scrolled line expands to one input event.
 pub use shepr_core::limits::MAX_INPUT_EVENT_BATCH;
 
@@ -78,35 +78,25 @@ impl crate::ClientPaneInputEvent {
     /// Expanded input work represented by this event, as charged against
     /// `MAX_INPUT_EVENT_BATCH`.
     ///
-    /// Key repeats and mouse scroll lines are charged individually; other
-    /// events each count once.
+    /// Mouse scroll lines are charged individually; other events each count
+    /// once.
     pub fn expanded_event_count(&self) -> usize {
         match self {
-            Self::Key { repeat_count, .. } => {
-                usize::from((*repeat_count).max(MIN_KEY_REPEAT_COUNT))
-            }
             Self::Mouse {
                 kind: crate::ClientMouseKind::ScrollUp | crate::ClientMouseKind::ScrollDown,
                 lines,
                 ..
             } => usize::from((*lines).max(1)),
-            Self::TextCommit(_) | Self::Mouse { .. } | Self::Paste(_) => 1,
+            Self::Key { .. } | Self::TextCommit(_) | Self::Mouse { .. } | Self::Paste(_) => 1,
         }
     }
 
     /// Text bytes this event delivers to the pane, as charged against
-    /// `MAX_INPUT_PAYLOAD`: paste or committed text, or a key's generated text
-    /// times its repeat count. Mouse events carry no text.
+    /// `MAX_INPUT_PAYLOAD`: paste or committed text, or a key's generated
+    /// text. Mouse events carry no text.
     pub fn text_bytes(&self) -> usize {
         match self {
-            Self::Key {
-                repeat_count,
-                generated_text,
-                ..
-            } => generated_text.as_ref().map_or(0, |text| {
-                text.len()
-                    .saturating_mul(usize::from((*repeat_count).max(MIN_KEY_REPEAT_COUNT)))
-            }),
+            Self::Key { generated_text, .. } => generated_text.as_ref().map_or(0, String::len),
             Self::TextCommit(text) | Self::Paste(text) => text.len(),
             Self::Mouse { .. } => 0,
         }
@@ -234,9 +224,3 @@ pub const DEFAULT_MAX_DEPTH: usize = 128;
 /// with tighter protocol caps apply those through `serialize_bounded_vec` /
 /// `deserialize_bounded_vec` as well.
 pub const MAX_COLLECTION_ITEMS: usize = MAX_SURFACE_CELLS;
-
-/// Minimum key repeat count charged for a key event.
-///
-/// A zero repeat count still represents a delivered key event, so byte
-/// accounting charges a repetition.
-pub(crate) const MIN_KEY_REPEAT_COUNT: u16 = 1;

@@ -285,7 +285,6 @@ pub enum ClientPaneInputEvent {
         code: ClientKeyCode,
         modifiers: WireModifiers,
         kind: ClientKeyKind,
-        repeat_count: u16,
         shifted_codepoint: Option<char>,
         generated_text: Option<String>,
     },
@@ -447,16 +446,15 @@ mod host_mapping_tests {
     }
 
     #[test]
-    fn text_bytes_charges_repeated_generated_text_and_pastes() {
+    fn text_bytes_charges_generated_text_and_pastes() {
         let key = ClientPaneInputEvent::Key {
             code: ClientKeyCode::Char('a'),
             modifiers: WireModifiers::NONE,
             kind: ClientKeyKind::Press,
-            repeat_count: 3,
             shifted_codepoint: None,
             generated_text: Some("ab".into()),
         };
-        assert_eq!(key.text_bytes(), 6);
+        assert_eq!(key.text_bytes(), 2);
         assert_eq!(ClientPaneInputEvent::Paste("hello".into()).text_bytes(), 5);
     }
 }

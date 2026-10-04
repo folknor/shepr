@@ -889,15 +889,6 @@ fn intern_render_hyperlink(
 
 #[cfg(test)]
 impl PaneTerminal {
-    /// Encodes one key event without repeat expansion, reading the pane's own modes.
-    pub(super) fn encode_terminal_key_once(
-        &self,
-        key: shepr_term::key::TerminalKey,
-        protocol: shepr_term::key::KeyboardProtocol,
-    ) -> Vec<u8> {
-        self.encode_terminal_key_once_with_modes(key, protocol, None)
-    }
-
     pub(crate) fn encode_mouse_button(
         &self,
         kind: crossterm::event::MouseEventKind,

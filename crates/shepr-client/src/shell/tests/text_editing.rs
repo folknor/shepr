@@ -1,4 +1,4 @@
-use crate::endpoint::ClientEndpointId;
+use crate::shell::config::ClientShellConfig;
 use crate::shell::ledger::Ticket;
 use crate::shell::overlays::Overlay;
 use crate::shell::overlays::rename::RenameTarget;
@@ -10,10 +10,13 @@ use shepr_termio::input::raw_input::RawInputEvent;
 use crate::shell::state::{ClientShellInput, ClientShellState};
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use shepr_config::ClientConfig;
+use shepr_protocol::ClientShellPane;
 use shepr_protocol::command::EndpointReply;
 
 use crate::shell::tests::{
     fill_prompt, help_overlay, press, prompt_shell as shell, prompt_text as editor, rename_target,
+    snapshot, surface,
 };
 use crate::tests::test_pane_id;
 
@@ -146,31 +149,71 @@ fn rename_clear_exceptions_remain_local() {
     }
 }
 
+/// Panes in the one workspace of `long_navigator_shell`, more than its navigator shows.
+const LONG_NAVIGATOR_PANES: usize = 40;
+
+/// A presented shell drawn once, then the navigator opened with its search focused, the
+/// way `prompt_shell(3)` opens it. Its one workspace, "lab", holds `LONG_NAVIGATOR_PANES`
+/// panes, so the query "ab" matches every row through the workspace label and the list
+/// is longer than the navigator body.
+fn long_navigator_shell() -> ClientShellState {
+    let mut projection = snapshot();
+    projection.workspaces[0].label = "lab".into();
+    let first = projection.panes[0].clone();
+    projection
+        .panes
+        .extend((2..=LONG_NAVIGATOR_PANES).map(|n| ClientShellPane {
+            pane_id: test_pane_id(&format!("w1:p{n}")),
+            ..first.clone()
+        }));
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(projection));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.compose(106, 30).expect("initial shell");
+    state.open_navigator_overlay();
+    state.handle_input_bytes(b"/");
+    state
+}
+
+fn navigator_scroll(state: &ClientShellState) -> usize {
+    match state.overlay.as_ref() {
+        Some(Overlay::Navigator(v)) => v.scroll,
+        _ => panic!("expected navigator"),
+    }
+}
+
 #[test]
 fn cursor_movement_preserves_filter_selection_and_scroll() {
     for field in [3, 4] {
-        let mut state = shell(field);
-        fill_prompt(&mut state, "ab");
-        let help = match state.overlay.as_mut().expect("overlay") {
-            Overlay::Navigator(v) => {
-                // This one-pane shell lists two rows at most, which no key scrolls three
-                // rows down; the scroll and a selection are set directly to show that
-                // moving the cursor leaves them alone.
-                v.scroll = 3;
-                v.selected = Some(crate::shell::navigation::location::Location::pane(
-                    ClientEndpointId::Local,
-                    test_pane_id("w1:p1"),
-                ));
-                false
-            }
-            Overlay::Help(_) => true,
-            _ => unreachable!(),
+        let mut state = if field == 3 {
+            long_navigator_shell()
+        } else {
+            shell(field)
         };
-        if help {
+        fill_prompt(&mut state, "ab");
+        if matches!(state.overlay, Some(Overlay::Help(_))) {
             // No Help is drawn yet, so nothing clamps the scroll the keys ask for.
             for _ in 0..3 {
                 press(&mut state, KeyCode::Down, KeyModifiers::NONE);
             }
+        } else {
+            // The navigator scrolls when a frame draws its selection below the body, one
+            // row per Down once the selection reaches the bottom; stop three rows down.
+            for _ in 0..LONG_NAVIGATOR_PANES {
+                if navigator_scroll(&state) == 3 {
+                    break;
+                }
+                press(&mut state, KeyCode::Down, KeyModifiers::NONE);
+                state.compose(106, 30).expect("navigator frame");
+            }
+            assert_eq!(navigator_scroll(&state), 3, "the list scrolled");
         }
         press(&mut state, KeyCode::Home, KeyModifiers::NONE);
         press(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL); // Empty kill must not refresh results.
