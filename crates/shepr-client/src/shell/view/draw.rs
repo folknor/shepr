@@ -632,12 +632,15 @@ fn render_mode_bar(
 mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use shepr_config::ClientConfig;
     use shepr_config::theme::Palette;
-    use shepr_surface::ratatui_conversion::WireColorExt as _;
+    use shepr_protocol::{FrameData, SurfaceRect};
+    use shepr_surface::ratatui_conversion::{FrameDataExt as _, WireColorExt as _};
     use shepr_test_fixtures::ValidatedClientConfigFixture as _;
 
-    use crate::shell::copy::{ClientCopySearch, ClientCopySearchResult, CopyEntry, CopySession};
-    use crate::shell::state::ClientShellMode;
+    use crate::shell::config::ClientShellConfig;
+    use crate::shell::state::{ClientShellInput, ClientShellMode, ClientShellState};
+    use crate::shell::tests::{answer, copy_search, copy_search_result, snapshot, surface};
     use crate::shell::view::PaneHit;
     use crate::shell::view::draw::{render_client_copy_search_highlights, render_mode_bar};
 
@@ -677,29 +680,58 @@ mod tests {
             pane_size: (6, 4),
             presented: None,
         };
-        let mut copy_mode = CopySession::start(CopyEntry {
-            pane_id: crate::tests::test_pane_id("w1:p1"),
-            scroll: shepr_term::ScrollMetrics::new(0, 0, 4, shepr_term::AbsRow(0)),
-            geometry: (6, 4),
-            alternate_screen_active: false,
-            cursor: PaneTextPoint {
+        // The session comes from a shell showing the pane at its full height: copy mode on
+        // its last row, and a search answered with a match on each of its last two rows.
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        state.set_snapshot(Box::new(snapshot()));
+        let mut pane_surface = surface();
+        pane_surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
+            &Buffer::with_lines(["xxxxxx"; 4]),
+            None,
+            &[],
+        )
+        .expect("test buffer is a valid frame");
+        pane_surface.panes[0].rect = SurfaceRect {
+            x: 0,
+            y: 0,
+            width: 6,
+            height: 4,
+        };
+        pane_surface.panes[0].inner_rect = pane_surface.panes[0].rect;
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+            0,
+            0,
+            4,
+            shepr_term::AbsRow(0),
+        ));
+        state.receive_pane_surface_from(
+            pane_surface,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
+        state.compose(106, 20).expect("composed frame");
+        assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
+        let search = copy_search(&mut state);
+        answer(
+            &mut state,
+            &search,
+            Ok(copy_search_result(
+                vec![text_range(2, 0, 1), text_range(3, 0, 5)],
+                Some(1),
+            )),
+        );
+        let copy_mode = state.copy.as_ref().expect("copy mode");
+        assert_eq!(
+            copy_mode.cursor,
+            PaneTextPoint {
                 row: shepr_term::AbsRow(3),
                 col: 0,
-            },
-            rows: crate::shell::ledger::Ticket::fixture(1),
-        });
-        let search = copy_mode
-            .search
-            .get_or_insert_with(ClientCopySearch::default);
-        search.query = "x".into();
-        search.results = ClientCopySearchResult {
-            matches: vec![text_range(2, 0, 1), text_range(3, 0, 5)],
-            total: 2,
-            current: Some(shepr_protocol::command::PaneCopySearchPosition {
-                window_index: 1,
-                global_index: 1,
-            }),
-        };
+            }
+        );
         let palette = Palette::catppuccin();
         let mut frame =
             shepr_surface::compose::Canvas::from_buffer(&Buffer::empty(Rect::new(0, 0, 6, 3)))
@@ -708,7 +740,7 @@ mod tests {
         for current_only in [false, true] {
             render_client_copy_search_highlights(
                 &mut frame,
-                Some(&copy_mode),
+                Some(copy_mode),
                 &hit,
                 &palette,
                 current_only,

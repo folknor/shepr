@@ -72,9 +72,7 @@ fn overlays_render_without_a_pane_surface_or_snapshot() {
             state.set_snapshot(Box::new(snapshot()));
         }
         state.open_navigator_overlay();
-        if let Some(Overlay::Navigator(navigator)) = state.overlay.as_mut() {
-            navigator.search_focused = true;
-        }
+        state.handle_input_bytes(b"/");
         let frame = state.compose(106, 30).expect("navigator frame");
         assert!(frame.cursor().is_some());
         assert!(!state.drawn().navigator_popup().is_empty());

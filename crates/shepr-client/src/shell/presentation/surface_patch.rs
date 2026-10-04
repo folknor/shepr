@@ -198,7 +198,6 @@ mod tests {
     use shepr_protocol::FrameData;
     use shepr_surface::ratatui_conversion::FrameDataExt as _;
 
-    use crate::shell::copy::{CopyEntry, CopySession};
     use crate::shell::state::ClientShellState;
 
     use super::{fast_path_blocker, patch_updates_pane};
@@ -224,7 +223,13 @@ mod tests {
             rect,
             inner_rect: rect,
             scrollbar_rect: None,
-            scroll: None,
+            // Copy mode is entered only on a pane that reports its scroll position.
+            scroll: Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+                0,
+                0,
+                usize::from(rect.height),
+                shepr_term::AbsRow(0),
+            )),
             focused,
             mouse_reporting: false,
             pixel_mouse: shepr_term::mouse::PanePixelMouse::OFF,
@@ -232,44 +237,13 @@ mod tests {
         }
     }
 
-    fn state_with_copy_pane_focus(copy_pane_focused: bool) -> (ClientShellState, Rect) {
-        let mut state =
-            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-        let mut snapshot = crate::shell::tests::snapshot();
-        let copy_pane_id = snapshot.panes[0].pane_id;
-        let other_pane_id = crate::tests::test_pane_id("w1:p2");
-        if !copy_pane_focused {
-            snapshot.focused_pane_id = Some(other_pane_id);
-            let mut other_pane = snapshot.panes[0].clone();
-            other_pane.pane_id = other_pane_id;
-            snapshot.panes.push(other_pane);
-        }
-        state.set_snapshot(Box::new(snapshot));
-        let area = state.layout(80, 24).pane_surface;
-        let copy_rect = shepr_protocol::SurfaceRect {
-            x: 0,
-            y: 0,
-            width: if copy_pane_focused {
-                area.width
-            } else {
-                area.width / 2
-            },
-            height: area.height,
-        };
-        let panes = if copy_pane_focused {
-            vec![test_surface_pane(copy_pane_id, true, copy_rect)]
-        } else {
-            let other_rect = shepr_protocol::SurfaceRect {
-                x: copy_rect.width,
-                y: 0,
-                width: area.width.saturating_sub(copy_rect.width),
-                height: area.height,
-            };
-            vec![
-                test_surface_pane(copy_pane_id, false, copy_rect),
-                test_surface_pane(other_pane_id, true, other_rect),
-            ]
-        };
+    /// Presents a surface of `panes` over the whole pane area, with the cursor at (1, 0).
+    fn present(
+        state: &mut ClientShellState,
+        area: Rect,
+        surface_revision: shepr_protocol::SurfaceRevision,
+        panes: Vec<shepr_protocol::PaneSurfacePane>,
+    ) {
         let snapshot = state
             .endpoints
             .active
@@ -280,7 +254,7 @@ mod tests {
             shepr_protocol::PaneSurfaceFrame {
                 boot_id: snapshot.boot_id.clone(),
                 projection_revision: snapshot.revision,
-                surface_revision: shepr_protocol::SurfaceRevision::FIRST,
+                surface_revision,
                 frame: FrameData::from_ratatui_buffer_with_hyperlinks(
                     &buffer,
                     Some(cursor(1)),
@@ -296,22 +270,80 @@ mod tests {
                 .generation()
                 .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
         );
-        state.copy = Some(CopySession::start(CopyEntry {
-            pane_id: copy_pane_id,
-            scroll: shepr_term::ScrollMetrics::new(
-                0,
-                0,
-                usize::from(area.height),
-                shepr_term::AbsRow(0),
-            ),
-            geometry: (area.width, area.height),
-            alternate_screen_active: false,
-            cursor: shepr_protocol::command::PaneTextPoint {
-                row: shepr_term::AbsRow(0),
-                col: 0,
+    }
+
+    /// A shell that entered copy mode on its first pane, the only one when
+    /// `copy_pane_focused`. Otherwise a second pane beside it takes focus afterwards,
+    /// which parks the session.
+    fn state_with_copy_pane_focus(copy_pane_focused: bool) -> (ClientShellState, Rect) {
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        let mut snapshot = crate::shell::tests::snapshot();
+        let copy_pane_id = snapshot.panes[0].pane_id;
+        let other_pane_id = crate::tests::test_pane_id("w1:p2");
+        if !copy_pane_focused {
+            let mut other_pane = snapshot.panes[0].clone();
+            other_pane.pane_id = other_pane_id;
+            snapshot.panes.push(other_pane);
+        }
+        state.set_snapshot(Box::new(snapshot.clone()));
+        let area = state.layout(80, 24).pane_surface;
+        let copy_rect = shepr_protocol::SurfaceRect {
+            x: 0,
+            y: 0,
+            width: if copy_pane_focused {
+                area.width
+            } else {
+                area.width / 2
             },
-            rows: crate::shell::ledger::Ticket::fixture(1),
-        }));
+            height: area.height,
+        };
+        let other_rect = shepr_protocol::SurfaceRect {
+            x: copy_rect.width,
+            y: 0,
+            width: area.width.saturating_sub(copy_rect.width),
+            height: area.height,
+        };
+        let panes = |copy_pane_has_focus: bool| {
+            let mut panes = vec![test_surface_pane(
+                copy_pane_id,
+                copy_pane_has_focus,
+                copy_rect,
+            )];
+            if !copy_pane_focused {
+                panes.push(test_surface_pane(
+                    other_pane_id,
+                    !copy_pane_has_focus,
+                    other_rect,
+                ));
+            }
+            panes
+        };
+        present(
+            &mut state,
+            area,
+            shepr_protocol::SurfaceRevision::FIRST,
+            panes(true),
+        );
+        state.compose(80, 24).expect("terminal frame");
+        assert!(state.enter_copy_mode(&mut crate::shell::state::ClientShellInput::default()));
+        if !copy_pane_focused {
+            snapshot.focused_pane_id = Some(other_pane_id);
+            state.set_snapshot(Box::new(snapshot));
+            present(
+                &mut state,
+                area,
+                shepr_protocol::SurfaceRevision::FIRST
+                    .checked_next()
+                    .expect("test precondition"),
+                panes(false),
+            );
+        }
+        assert!(state.copy.is_some());
+        assert_eq!(
+            state.mode.is(crate::shell::state::ClientShellMode::Copy),
+            copy_pane_focused
+        );
         (state, area)
     }
 
@@ -324,7 +356,10 @@ mod tests {
             boot_id: surface.boot_id.clone(),
             projection_revision: surface.projection_revision,
             base_surface_revision: surface.surface_revision,
-            surface_revision: shepr_test_fixtures::counter_at(2),
+            surface_revision: surface
+                .surface_revision
+                .checked_next()
+                .expect("test precondition"),
             rows: Vec::new(),
             panes: Vec::new(),
             cursor,

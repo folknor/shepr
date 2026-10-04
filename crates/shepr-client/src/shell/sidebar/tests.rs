@@ -530,8 +530,9 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
 
 #[test]
 fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
-    let (mut state, remote_id) = state_with_remote();
-    state.config.spaces.row_gap = 1;
+    let mut config = ClientConfig::default();
+    config.ui.sidebar.spaces.row_gap = 1;
+    let (mut state, remote_id) = state_with_remote_config(&config);
 
     let add_second_workspace = |snapshot: &mut ClientShellSnapshot| {
         let mut workspace = snapshot.workspaces[0].clone();

@@ -1,6 +1,6 @@
-//! Client copy mode state: one `CopySession` per entered pane, owning the queue of
-//! operations and keys behind its outstanding request. Ending a session discards
-//! everything queued against it.
+//! Client copy mode state: one `CopySession` per entered pane, owning its outstanding
+//! request and the keys queued behind it. Ending a session discards everything queued
+//! against it.
 
 pub(in crate::shell) mod keys;
 mod pipeline;
@@ -48,21 +48,13 @@ pub(in crate::shell) struct ClientCopySearchResult {
     pub(in crate::shell) current: Option<shepr_protocol::command::PaneCopySearchPosition>,
 }
 
-/// One live search lifecycle: prompt, query, result projection and deferred-copy intent.
+/// One live search lifecycle: prompt, query and result projection.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::shell) struct ClientCopySearch {
     pub(in crate::shell) prompt: Option<ClientCopySearchPrompt>,
     pub(in crate::shell) query: TypedText,
     direction: Option<shepr_protocol::command::PaneCopySearchDirection>,
     pub(in crate::shell) results: ClientCopySearchResult,
-    copy_after_result: bool,
-}
-
-impl ClientCopySearch {
-    fn clear_results(&mut self) {
-        self.results = ClientCopySearchResult::default();
-        self.copy_after_result = false;
-    }
 }
 
 /// Stored copy cursor state; it can survive while the Copy input mode is parked.
@@ -91,19 +83,19 @@ pub(in crate::shell) struct CopySession {
 
 /// What a session starts from: the pane's geometry and cursor when copy mode is entered.
 #[derive(Clone, Copy)]
-pub(in crate::shell) struct CopyEntry {
-    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
-    pub(in crate::shell) scroll: shepr_term::ScrollMetrics,
-    pub(in crate::shell) geometry: (u16, u16),
-    pub(in crate::shell) alternate_screen_active: bool,
-    pub(in crate::shell) cursor: shepr_protocol::command::PaneTextPoint,
+struct CopyEntry {
+    pane_id: shepr_protocol::PublicPaneId,
+    scroll: shepr_term::ScrollMetrics,
+    geometry: (u16, u16),
+    alternate_screen_active: bool,
+    cursor: shepr_protocol::command::PaneTextPoint,
     /// The session-entry ticket for `CopySession::rows`.
-    pub(in crate::shell) rows: Ticket,
+    rows: Ticket,
 }
 
 impl CopySession {
     /// The only constructor; the entry offset is the scroll's `offset_from_bottom`.
-    pub(in crate::shell) fn start(entry: CopyEntry) -> Self {
+    fn start(entry: CopyEntry) -> Self {
         Self {
             pane_id: entry.pane_id,
             entry_offset_from_bottom: entry.scroll.offset_from_bottom,
@@ -281,7 +273,7 @@ pub(in crate::shell) fn surface_presented(
         session.selection = None;
         invalidated = true;
         if let Some(search) = session.search.as_mut() {
-            search.clear_results();
+            search.results = ClientCopySearchResult::default();
         }
         session.rows = ledger.ticket();
     }
@@ -369,11 +361,6 @@ fn prune_evicted_search_matches(session: &mut CopySession) {
 
 #[cfg(test)]
 impl CopySession {
-    fn with_search(mut self, search: ClientCopySearch) -> Self {
-        self.search = Some(search);
-        self
-    }
-
     fn with_selection(mut self, selection: ClientCopySelection) -> Self {
         self.selection = Some(selection);
         self
@@ -402,12 +389,6 @@ impl crate::shell::state::ClientShellState {
 
     pub(in crate::shell) fn copy_keys_empty(&self) -> bool {
         self.copy_keys_len() == 0
-    }
-
-    pub(in crate::shell) fn copy_ops_empty(&self) -> bool {
-        self.copy
-            .as_ref()
-            .is_none_or(|session| session.pipeline().ops_is_empty())
     }
 }
 

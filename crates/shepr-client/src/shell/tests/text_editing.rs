@@ -153,6 +153,9 @@ fn cursor_movement_preserves_filter_selection_and_scroll() {
         fill_prompt(&mut state, "ab");
         let help = match state.overlay.as_mut().expect("overlay") {
             Overlay::Navigator(v) => {
+                // This one-pane shell lists two rows at most, which no key scrolls three
+                // rows down; the scroll and a selection are set directly to show that
+                // moving the cursor leaves them alone.
                 v.scroll = 3;
                 v.selected = Some(crate::shell::navigation::location::Location::pane(
                     ClientEndpointId::Local,
@@ -211,8 +214,14 @@ fn escape_preserves_help_overlay_with_generated_text() {
 fn focused_filters_keep_ctrl_n_p_navigation_and_literal_commands() {
     for field in [3, 4] {
         let mut state = shell(field);
-        if let Some(Overlay::Navigator(navigator)) = state.overlay.as_mut() {
-            navigator.selected = None;
+        if field == 3 {
+            // Editing the search drops the navigator's selection.
+            press(&mut state, KeyCode::Char('x'), KeyModifiers::NONE);
+            press(&mut state, KeyCode::Char('u'), KeyModifiers::CONTROL);
+            let Some(Overlay::Navigator(navigator)) = state.overlay.as_ref() else {
+                panic!("expected navigator");
+            };
+            assert!(navigator.selected.is_none());
         }
         state.compose(106, 30).expect("filter frame");
         for ch in ['j', 'k', '?'] {

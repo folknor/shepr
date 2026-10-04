@@ -59,11 +59,19 @@ fn client_keymap_and_modes_survive_snapshots_and_endpoint_switches() {
         assert!(state.activate_endpoint_projection(&remote));
         assert_eq!(prefix_key(&state), prefix);
         assert_eq!(format!("{:?}", state.config.keybinds), bindings);
-        if mode == ClientShellMode::Navigate {
-            state.mode.enter_navigate(None);
-        } else {
-            state.mode.set(mode);
+        match mode {
+            ClientShellMode::Navigate => state.mode.enter_navigate(None),
+            ClientShellMode::Prefix => {
+                state.handle_raw_events(vec![RawInputEvent::Key(
+                    shepr_term::key::TerminalKey::new(prefix.0, prefix.1),
+                )]);
+            }
+            _ => state.record_binding(
+                &shepr_termio::input::KeybindAction::EnterResizeMode,
+                &mut ClientShellInput::default(),
+            ),
         }
+        assert_eq!(state.mode.kind(), mode);
         let mut next = state.endpoints.active.snapshot().expect("snapshot").clone();
         next.revision = next.revision.checked_next().expect("revision");
         state.set_endpoint_snapshot_for_generation(

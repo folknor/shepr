@@ -1680,8 +1680,10 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
     use shepr_term::host::RgbColor;
 
     for explicit_appearance in [false, true] {
-        let mut config = ClientShellConfig::from_config(&ClientConfig::default());
-        config.palette = Palette::terminal();
+        let mut values = ClientConfig::default();
+        values.theme.name = Some("terminal".into());
+        let config = ClientShellConfig::from_config(&values);
+        assert_eq!(config.palette, Palette::terminal());
         let mut state = ClientShellState::new(config);
         state.set_snapshot(Box::new(snapshot()));
         state.receive_pane_surface_from(
@@ -1863,8 +1865,9 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
 
 #[test]
 fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.config.copy_on_select = false;
+    let mut config = ClientConfig::default();
+    config.ui.copy_on_select = false;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
     state.receive_pane_surface_from(
         surface(),

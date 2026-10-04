@@ -20,15 +20,12 @@ use shepr_termio::text_editor::TextEditor;
 fn abandon_session_operation(copy: &mut Option<CopySession>) {
     if let Some(session) = copy.as_mut() {
         session.pipeline_mut().reset();
-        if let Some(search) = session.search.as_mut() {
-            search.copy_after_result = false;
-        }
     }
 }
 
 /// The rollback of a dropped copy request. Its queued keys depend on a result that will
-/// never be applied: they are discarded, with the deferred copy, rather than replayed
-/// into a frozen presentation. A no-op unless the session's pipeline holds `flight`.
+/// never be applied: they are discarded rather than replayed into a frozen presentation.
+/// A no-op unless the session's pipeline holds `flight`.
 pub(in crate::shell) fn drop_copy_flight(
     copy: &mut Option<CopySession>,
     flight: Ticket,
@@ -68,29 +65,21 @@ impl ClientShellState {
         if !self.copy_awaits(flight) {
             return Repaint::Unchanged;
         }
-        let (repaint, continue_queue) = match result {
+        let repaint = match result {
             Ok(shepr_protocol::command::PaneCopyMotionReply {
                 pane_id: returned_pane_id,
                 cursor,
             }) if returned_pane_id == pane_id => {
-                let applied = self.apply_copy_motion_target(pane_id, origin, *cursor, outcome);
-                (
-                    if applied {
-                        Repaint::Needed
-                    } else {
-                        Repaint::Unchanged
-                    },
-                    true,
-                )
+                if self.apply_copy_motion_target(pane_id, origin, *cursor, outcome) {
+                    Repaint::Needed
+                } else {
+                    Repaint::Unchanged
+                }
             }
-            Ok(shepr_protocol::command::PaneCopyMotionReply { .. }) => (Repaint::Unchanged, false),
-            Err(_) => (Repaint::Needed, false),
+            Ok(shepr_protocol::command::PaneCopyMotionReply { .. }) => Repaint::Unchanged,
+            Err(_) => Repaint::Needed,
         };
-        // The apply can reset the pipeline (a search with `copy_after_search` exits copy
-        // mode); then nothing queued behind this request may replay or dispatch.
-        if self.copy_awaits(flight) {
-            self.finish_copy_operation(continue_queue, outcome);
-        }
+        self.finish_copy_operation(outcome);
         repaint
     }
     pub(in crate::shell) fn complete_copy_search(
@@ -108,12 +97,11 @@ impl ClientShellState {
         if !self.copy_awaits(flight) {
             return Repaint::Unchanged;
         }
-        let (repaint, continue_queue) = match result {
+        let repaint = match result {
             Ok(shepr_protocol::command::PaneCopySearchReply {
                 pane_id: returned_pane_id,
                 search,
             }) if &returned_pane_id == pane_id => {
-                let current = search.current;
                 let applied = self.apply_copy_search_result(
                     pane_id,
                     origin,
@@ -124,31 +112,20 @@ impl ClientShellState {
                     ClientCopySearchResult {
                         matches: search.matches,
                         total: search.total,
-                        current,
+                        current: search.current,
                     },
                     outcome,
                 );
                 if applied {
-                    (Repaint::Needed, true)
+                    Repaint::Needed
                 } else {
-                    self.cancel_deferred_copy_after_search(rows);
-                    (Repaint::Unchanged, false)
+                    Repaint::Unchanged
                 }
             }
-            Ok(shepr_protocol::command::PaneCopySearchReply { .. }) => {
-                self.cancel_deferred_copy_after_search(rows);
-                (Repaint::Unchanged, false)
-            }
-            Err(_) => {
-                self.cancel_deferred_copy_after_search(rows);
-                (Repaint::Needed, false)
-            }
+            Ok(shepr_protocol::command::PaneCopySearchReply { .. }) => Repaint::Unchanged,
+            Err(_) => Repaint::Needed,
         };
-        // The apply can reset the pipeline (a search with `copy_after_search` exits copy
-        // mode); then nothing queued behind this request may replay or dispatch.
-        if self.copy_awaits(flight) {
-            self.finish_copy_operation(continue_queue, outcome);
-        }
+        self.finish_copy_operation(outcome);
         repaint
     }
 
@@ -307,10 +284,10 @@ impl ClientShellState {
             shepr_termio::copy_mode::CopyModeCommand::Exit => {
                 self.exit_copy_mode(false, outcome);
             }
+            // Typed behind a search, this key waits for its answer, so it copies the
+            // match the answer lands on.
             shepr_termio::copy_mode::CopyModeCommand::Copy => {
-                if !self.defer_copy_until_search_result() {
-                    self.exit_copy_mode(true, outcome);
-                }
+                self.exit_copy_mode(true, outcome);
             }
             shepr_termio::copy_mode::CopyModeCommand::MoveLeft => {
                 self.move_copy_cursor(0, -1, outcome);
@@ -564,26 +541,6 @@ impl ClientShellState {
         self.request_copy_search(query, direction, true, outcome);
     }
 
-    fn defer_copy_until_search_result(&mut self) -> bool {
-        let Some(copy_mode) = self.copy.as_ref() else {
-            return false;
-        };
-        // Only the awaited search counts, and only against the rows the session still
-        // has: every session change resets the pipeline, so a held flight is always the
-        // current session's.
-        let pending = copy_mode.pipeline().awaited_search_rows() == Some(copy_mode.rows)
-            || copy_mode.pipeline().has_queued_search();
-        if pending
-            && let Some(search) = self
-                .copy
-                .as_mut()
-                .and_then(|copy_mode| copy_mode.search.as_mut())
-        {
-            search.copy_after_result = true;
-        }
-        pending
-    }
-
     fn request_copy_search(
         &mut self,
         query: TypedText,
@@ -591,22 +548,17 @@ impl ClientShellState {
         repeat: bool,
         outcome: &mut ClientShellInput,
     ) {
-        if query.is_empty() || self.copy.is_none() {
+        if query.is_empty() {
             return;
         }
-        if let Some(copy_mode) = self.copy.as_mut() {
-            copy_mode
-                .search
-                .get_or_insert_with(ClientCopySearch::default);
-        }
-        if let Some(pipeline) = self.copy_pipeline_mut() {
-            pipeline.push_op(ClientCopyOperation::Search {
+        self.dispatch_copy_operation(
+            ClientCopyOperation::Search {
                 query,
                 direction,
                 repeat,
-            });
-        }
-        self.dispatch_next_copy_operation(outcome);
+            },
+            outcome,
+        );
     }
 
     fn apply_copy_search_result(
@@ -623,7 +575,6 @@ impl ClientShellState {
         let Some(copy_mode) = self.copy.as_mut() else {
             return false;
         };
-        let search_queued = copy_mode.pipeline().has_queued_search();
         if copy_mode.pane_id != *pane_id || copy_mode.cursor != origin || copy_mode.rows != rows {
             return false;
         }
@@ -638,53 +589,31 @@ impl ClientShellState {
             search.direction = Some(direction);
         }
         search.results = ClientCopySearchResult { current, ..result };
-        let target =
-            current.and_then(|position| search.results.matches.get(position.window_index).copied());
-        let copy_after_search = if search_queued {
-            false
-        } else {
-            std::mem::take(&mut search.copy_after_result)
-        };
-        if let Some(target) = target {
+        if let Some(target) =
+            current.and_then(|position| search.results.matches.get(position.window_index).copied())
+        {
             copy_mode.cursor = target.start;
             self.reveal_copy_cursor(outcome);
             self.sync_copy_selection();
-        }
-        if copy_after_search {
-            self.exit_copy_mode(true, outcome);
         }
         outcome.repaint = true;
         true
     }
 
-    pub(super) fn finish_copy_operation(
-        &mut self,
-        continue_queue: bool,
-        outcome: &mut ClientShellInput,
-    ) {
+    /// Ends the outstanding request, applied or not, and replays the keys queued behind
+    /// it. A failed request still releases them, which keeps local copy actions and later
+    /// remote motions in order.
+    fn finish_copy_operation(&mut self, outcome: &mut ClientShellInput) {
         if let Some(pipeline) = self.copy_pipeline_mut() {
             pipeline.finish();
         }
-        if continue_queue && self.copy_mode_owns_input() {
-            self.dispatch_next_copy_operation(outcome);
+        if self.copy_mode_owns_input() {
             let mut accounting = PaneInputBatchAccounting::default();
             self.dispatch_queued_copy_input(outcome, &mut accounting);
-        } else {
-            if let Some(pipeline) = self.copy_pipeline_mut() {
-                pipeline.clear_ops();
-            }
-            if self.copy_mode_owns_input() {
-                // Failed copy requests still release the buffered input. Replaying it here
-                // keeps local copy actions and later remote motions in order.
-                let mut accounting = PaneInputBatchAccounting::default();
-                self.dispatch_queued_copy_input(outcome, &mut accounting);
-            } else {
-                // These keys belonged to the copy pane. Do not send them into a pane that
-                // gained focus while the request was outstanding.
-                if let Some(pipeline) = self.copy_pipeline_mut() {
-                    pipeline.clear_keys();
-                }
-            }
+        } else if let Some(pipeline) = self.copy_pipeline_mut() {
+            // These keys belonged to the copy pane. Do not send them into a pane that
+            // gained focus while the request was outstanding.
+            pipeline.clear_keys();
         }
     }
 
@@ -719,17 +648,6 @@ impl ClientShellState {
                 let queued = pipeline.take_keys();
                 held.extend(queued);
             }
-        }
-    }
-
-    fn cancel_deferred_copy_after_search(&mut self, rows: Ticket) {
-        if let Some(search) = self
-            .copy
-            .as_mut()
-            .filter(|copy_mode| copy_mode.rows == rows)
-            .and_then(|copy_mode| copy_mode.search.as_mut())
-        {
-            search.copy_after_result = false;
         }
     }
 
@@ -934,108 +852,89 @@ impl ClientShellState {
         motion: shepr_protocol::command::PaneCopyMotion,
         outcome: &mut ClientShellInput,
     ) {
-        if self.copy.is_none() {
-            return;
-        }
-        if let Some(pipeline) = self.copy_pipeline_mut() {
-            pipeline.push_op(ClientCopyOperation::Motion(motion));
-        }
-        self.dispatch_next_copy_operation(outcome);
+        self.dispatch_copy_operation(ClientCopyOperation::Motion(motion), outcome);
     }
 
-    fn dispatch_next_copy_operation(&mut self, outcome: &mut ClientShellInput) {
-        if self
-            .copy
-            .as_ref()
-            .is_none_or(|session| session.pipeline().in_flight())
-        {
+    /// Sends `operation` as the session's one outstanding request. Copy keys only route
+    /// while none is outstanding (`handle_key` queues them behind it), so there is never
+    /// one to wait for here.
+    fn dispatch_copy_operation(
+        &mut self,
+        operation: ClientCopyOperation,
+        outcome: &mut ClientShellInput,
+    ) {
+        let Some(copy_mode) = self.copy.as_mut() else {
+            return;
+        };
+        if copy_mode.pipeline().in_flight() {
+            tracing::warn!("a copy operation was routed while another was outstanding");
             return;
         }
-        loop {
-            let Some(copy_mode) = self.copy.as_mut() else {
-                return;
-            };
-            let Some(operation) = copy_mode.pipeline_mut().pop_op() else {
-                return;
-            };
-            let pane_id = copy_mode.pane_id;
-            let origin = copy_mode.cursor;
-            let flight = self.ledger.ticket();
-            let mut search_rows = None;
-            let (command, kind) = match operation {
-                ClientCopyOperation::Motion(motion) => (
-                    shepr_protocol::command::EndpointCommand::PaneCopyMotion(
-                        shepr_protocol::command::PaneCopyMotionParams {
-                            pane_id,
-                            cursor: origin,
-                            motion,
-                        },
-                    ),
-                    Work::CopyMotion {
+        let pane_id = copy_mode.pane_id;
+        let origin = copy_mode.cursor;
+        let flight = self.ledger.ticket();
+        let (command, kind) = match operation {
+            ClientCopyOperation::Motion(motion) => (
+                shepr_protocol::command::EndpointCommand::PaneCopyMotion(
+                    shepr_protocol::command::PaneCopyMotionParams {
                         pane_id,
-                        origin,
-                        flight,
+                        cursor: origin,
+                        motion,
                     },
                 ),
-                ClientCopyOperation::Search {
-                    query,
-                    direction,
-                    repeat,
-                } => {
-                    if query.is_empty() {
-                        continue;
-                    }
-                    let rows = self.ledger.ticket();
-                    copy_mode.rows = rows;
-                    search_rows = Some(rows);
-                    let search = copy_mode
-                        .search
-                        .get_or_insert_with(ClientCopySearch::default);
-                    let previous = repeat
-                        .then(|| {
-                            search
-                                .results
-                                .current
-                                .and_then(|position| {
-                                    search.results.matches.get(position.window_index).copied()
-                                })
-                                .filter(|text_match| text_match.start == copy_mode.cursor)
-                        })
-                        .flatten();
-                    (
-                        shepr_protocol::command::EndpointCommand::PaneCopySearch(
-                            shepr_protocol::command::PaneCopySearchParams {
-                                pane_id,
-                                query: query.as_str().to_owned(),
-                                direction,
-                                cursor: origin,
-                                previous,
-                            },
-                        ),
-                        Work::CopySearch {
+                Work::CopyMotion {
+                    pane_id,
+                    origin,
+                    flight,
+                },
+            ),
+            ClientCopyOperation::Search {
+                query,
+                direction,
+                repeat,
+            } => {
+                let rows = self.ledger.ticket();
+                copy_mode.rows = rows;
+                let search = copy_mode
+                    .search
+                    .get_or_insert_with(ClientCopySearch::default);
+                let previous = repeat
+                    .then(|| {
+                        search
+                            .results
+                            .current
+                            .and_then(|position| {
+                                search.results.matches.get(position.window_index).copied()
+                            })
+                            .filter(|text_match| text_match.start == copy_mode.cursor)
+                    })
+                    .flatten();
+                (
+                    shepr_protocol::command::EndpointCommand::PaneCopySearch(
+                        shepr_protocol::command::PaneCopySearchParams {
                             pane_id,
-                            origin,
-                            query,
+                            query: query.as_str().to_owned(),
                             direction,
-                            repeat,
-                            flight,
-                            rows,
+                            cursor: origin,
+                            previous,
                         },
-                    )
-                }
-            };
-            let submitted = self.submit(command, kind, outcome);
-            if let Some(session) = self.copy.as_mut() {
-                if submitted == Submitted::Opened {
-                    session.pipeline_mut().begin(flight, search_rows);
-                } else {
-                    session.pipeline_mut().clear_ops();
-                    if let Some(search) = session.search.as_mut() {
-                        search.copy_after_result = false;
-                    }
-                }
+                    ),
+                    Work::CopySearch {
+                        pane_id,
+                        origin,
+                        query,
+                        direction,
+                        repeat,
+                        flight,
+                        rows,
+                    },
+                )
             }
-            return;
+        };
+        if self.submit(command, kind, outcome) == Submitted::Opened
+            && let Some(session) = self.copy.as_mut()
+        {
+            session.pipeline_mut().begin(flight);
         }
     }
 

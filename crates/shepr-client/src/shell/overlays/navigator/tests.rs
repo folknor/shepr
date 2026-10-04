@@ -117,23 +117,25 @@ fn up_after_scrolling_moves_the_selection_not_the_view() {
 
 #[test]
 fn navigator_workspace_headings_use_the_active_themes_primary_text() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(
-        surface(),
-        state
-            .endpoints
-            .active
-            .generation()
-            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-    );
-    state.open_navigator_overlay();
-    for palette in [
-        Palette::catppuccin(),
-        Palette::catppuccin_latte(),
-        Palette::terminal(),
+    for (theme, palette) in [
+        ("catppuccin", Palette::catppuccin()),
+        ("catppuccin-latte", Palette::catppuccin_latte()),
+        ("terminal", Palette::terminal()),
     ] {
-        state.config.palette = palette;
+        let mut config = ClientConfig::default();
+        config.theme.name = Some(theme.into());
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        assert_eq!(state.config.palette, palette);
+        state.set_snapshot(Box::new(snapshot()));
+        state.receive_pane_surface_from(
+            surface(),
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
+        state.open_navigator_overlay();
         let frame = state.compose(106, 30).expect("navigator");
         let (rect, _) = state
             .drawn()

@@ -1113,7 +1113,6 @@ mod tests {
         is_modal_paste_shortcut, navigate_alias_matches, navigate_indexed_binding_index,
         read_clipboard_text_bounded_with,
     };
-    use crate::shell::copy::{ClientCopySearch, ClientCopySearchPrompt};
     use crate::shell::overlays::Overlay;
     use crate::shell::state::{
         ClientShellInput, ClientShellMode, ClientShellRequest, ClientShellState,
@@ -1245,14 +1244,27 @@ mod tests {
         // Escape closes the name prompt; the copy search parked behind it is untouched.
         press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(prompt_text(&state).as_str(), "aXb");
-        state.mode.set(ClientShellMode::Terminal);
+        // Focus moving to another pane parks the session with its prompt, and a paste
+        // goes to that pane.
+        let copy_pane = crate::tests::test_pane_id("w1:p1");
+        let other_pane = crate::tests::test_pane_id("w1:p2");
+        let mut two_panes = crate::shell::tests::snapshot();
+        let mut second = two_panes.panes[0].clone();
+        second.pane_id = other_pane;
+        two_panes.panes.push(second);
+        two_panes.focused_pane_id = Some(other_pane);
+        state.set_snapshot(Box::new(two_panes.clone()));
+        assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
         assert!(!state.modal_paste_target_active());
         let input = state.handle_raw_events(vec![RawInputEvent::Paste("terminal".into())]);
         assert!(
-            matches!(&input.requests[..], [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. })] if matches!(&events[..], [ClientPaneInputEvent::Paste(text)] if text == "terminal"))
+            matches!(&input.requests[..], [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })] if *pane_id == other_pane && matches!(&events[..], [ClientPaneInputEvent::Paste(text)] if text == "terminal"))
         );
         assert_eq!(prompt_text(&state).as_str(), "aXb");
-        state.mode.set(ClientShellMode::Copy);
+        // Focus coming back resumes the session.
+        two_panes.focused_pane_id = Some(copy_pane);
+        state.set_snapshot(Box::new(two_panes));
+        assert_eq!(state.mode.kind(), ClientShellMode::Copy);
         press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
         press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
         assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
@@ -1278,18 +1290,22 @@ mod tests {
         );
         state.compose(100, 28).expect("test precondition");
         assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
-        enter_navigation(&mut state);
-        // Seed the hidden prompt after navigation: text editing consumes the prefix key.
-        state
-            .copy
-            .as_mut()
+        state.handle_input_bytes(b"/original");
+        // The open prompt takes every key while its pane has focus. Focus moving to
+        // another pane parks it, open, and the prefix then reaches navigation.
+        let mut two_panes = state
+            .endpoints
+            .active
+            .snapshot()
             .expect("test precondition")
-            .search
-            .get_or_insert_with(ClientCopySearch::default)
-            .prompt = Some(ClientCopySearchPrompt {
-            direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
-            query: "original".into(),
-        });
+            .clone();
+        let mut second = two_panes.panes[0].clone();
+        second.pane_id = crate::tests::test_pane_id("w1:p2");
+        two_panes.focused_pane_id = Some(second.pane_id);
+        two_panes.panes.push(second);
+        state.set_snapshot(Box::new(two_panes));
+        assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
+        enter_navigation(&mut state);
         preview_key(&mut state, b"\x1b[B");
         assert!(state.workspace_preview_action_blocked());
         assert!(!state.modal_paste_target_active());

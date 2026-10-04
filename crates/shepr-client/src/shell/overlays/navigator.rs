@@ -178,7 +178,7 @@ pub(in crate::shell) struct ClientNavigatorRow {
 #[derive(Debug, Default)]
 pub(in crate::shell) struct NavigatorOverlay {
     pub(in crate::shell) query: TextEditor,
-    pub(in crate::shell) search_focused: bool,
+    search_focused: bool,
     pub(in crate::shell) selected: Option<Location>,
     /// The first row the last frame showed.
     pub(in crate::shell) scroll: usize,

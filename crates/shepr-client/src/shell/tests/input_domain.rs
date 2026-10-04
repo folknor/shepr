@@ -17,7 +17,9 @@ use shepr_surface::ratatui_conversion::FrameDataExt as _;
 use crossterm::event::MouseEvent;
 
 use crate::shell::tests::copy_search_result;
-use crate::shell::tests::{frame_cell, frame_rows, open_help, snapshot, surface};
+use crate::shell::tests::{
+    copy_shell, frame_cell, frame_rows, help_overlay, open_help, press, snapshot, surface,
+};
 
 use crate::tests::{test_pane_id, test_workspace_id};
 
@@ -50,8 +52,10 @@ fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
         if mode == ClientShellMode::Navigate {
             state.mode.enter_navigate(None);
         } else {
-            state.mode.set(mode);
+            let prefix = state.config.keybinds.prefix;
+            press(&mut state, prefix.code, prefix.modifiers);
         }
+        assert_eq!(state.mode.kind(), mode);
 
         let outcome = state.handle_input_bytes(b"\t");
         let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
@@ -884,26 +888,20 @@ fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
 
 #[test]
 fn mode_bar_is_drawn_only_while_no_overlay_is_open() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(
-        surface(),
-        state
-            .endpoints
-            .active
-            .generation()
-            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-    );
-    state.mode.set(ClientShellMode::Prefix);
+    let mut state = copy_shell();
     let frame = state.compose(106, 30).expect("frame with the mode bar");
-    assert!(frame_rows(&frame).iter().any(|row| row.contains("PREFIX")));
+    assert!(frame_rows(&frame).iter().any(|row| row.contains(" COPY ")));
 
-    // An overlay that fits replaces the bar's row content; one that does not fit still
+    // Help opened with the prefix returns to copy mode, whose bar it then covers. An
+    // overlay that fits replaces the bar's row content; one that does not fit still
     // counts as open, so the bar's tail must not show beside the hint either.
-    open_help(&mut state);
-    state.mode.set(ClientShellMode::Prefix);
+    let prefix = state.config.keybinds.prefix;
+    press(&mut state, prefix.code, prefix.modifiers);
+    state.handle_input_bytes(b"?");
+    assert!(help_overlay(&state).is_some());
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
     let frame = state.compose(106, 30).expect("help frame");
-    assert!(!frame_rows(&frame).iter().any(|row| row.contains("PREFIX")));
+    assert!(!frame_rows(&frame).iter().any(|row| row.contains(" COPY ")));
     let frame = state
         .compose(106, 8)
         .expect("frame with a help that does not fit");
@@ -913,5 +911,5 @@ fn mode_bar_is_drawn_only_while_no_overlay_is_open() {
             .iter()
             .any(|row| row.contains("keybinds"))
     );
-    assert!(!frame_rows(&frame).iter().any(|row| row.contains("PREFIX")));
+    assert!(!frame_rows(&frame).iter().any(|row| row.contains(" COPY ")));
 }

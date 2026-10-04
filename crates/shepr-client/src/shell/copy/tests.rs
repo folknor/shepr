@@ -1,10 +1,7 @@
 //! Copy mode: the session on its own, and through the whole shell its cursor,
 //! selections, search, queued input and requests.
 
-use super::{
-    ClientCopyOperation, ClientCopySearch, ClientCopySearchPrompt, ClientCopySelection, CopyEntry,
-    CopySession,
-};
+use super::{ClientCopySelection, CopyEntry, CopySession};
 use crate::endpoint::{ClientEndpointId, EndpointFailureStatus};
 use crate::shell::config::ClientShellConfig;
 use crate::shell::input::events::PaneInputBatchAccounting;
@@ -15,7 +12,7 @@ use crate::shell::state::{
 };
 use crate::shell::tests::{
     answer, cell_bg, copy_search, copy_search_result, copy_shell, frame_rows, help_overlay,
-    open_help, pane_scroll_result, press_overlay_key, request_id, snapshot, surface,
+    open_help, pane_scroll_result, press_overlay_key, ready_shell, request_id, snapshot, surface,
 };
 use crate::tests::test_pane_id;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -28,7 +25,6 @@ use shepr_protocol::{
 use shepr_surface::ratatui_conversion::{FrameDataExt as _, WireColorExt as _};
 use shepr_term::selection::SelectionShape;
 use shepr_termio::input::raw_input::RawInputEvent;
-use shepr_termio::text_editor::TextEditor;
 
 fn pane_id() -> shepr_protocol::PublicPaneId {
     let workspace =
@@ -55,22 +51,16 @@ fn session() -> CopySession {
 
 #[test]
 fn ending_a_session_discards_its_queue() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    let mut first = session();
-    first.pipeline_mut().begin(Ticket::fixture(2), None);
-    first.pipeline_mut().push_op(ClientCopyOperation::Motion(
-        shepr_protocol::command::PaneCopyMotion::Word(
-            shepr_protocol::command::PaneWordMotion::NextStart,
-        ),
+    let mut state = copy_shell();
+    // A word motion goes to the server, and `j` typed behind it waits for its answer.
+    let motion = state.handle_input_bytes(b"w");
+    assert!(matches!(
+        &motion.actions[..],
+        [ClientShellAction::Endpoint { .. }]
     ));
-    first
-        .pipeline_mut()
-        .push_key(shepr_term::key::TerminalKey::new(
-            KeyCode::Char('j'),
-            KeyModifiers::empty(),
-        ));
-    state.copy = Some(first);
+    state.handle_input_bytes(b"j");
+    assert!(state.copy_in_flight());
+    assert_eq!(state.copy_keys_len(), 1);
 
     // The presented server reboots, which resets the projection.
     let mut rebooted = snapshot();
@@ -81,7 +71,6 @@ fn ending_a_session_discards_its_queue() {
     let next = session();
     assert!(!next.pipeline().in_flight());
     assert!(next.pipeline().keys_is_empty());
-    assert!(next.pipeline().ops_is_empty());
 }
 
 #[test]
@@ -129,24 +118,35 @@ fn projected_selection_follows_anchor_and_cursor() {
     );
 }
 
-/// A shell on the default snapshot, in copy mode on `session` with an operation in flight.
-fn shell_awaiting_copy_operation(session: CopySession) -> ClientShellState {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.mode.set(ClientShellMode::Copy);
-    state.copy = Some(session);
-    state
-        .copy
-        .as_mut()
-        .expect("a live copy session")
-        .pipeline_mut()
-        .begin(Ticket::fixture(2), None);
-    state
+/// A ready shell in copy mode with a word motion in flight, after typing `before` in it,
+/// and the motion's request id.
+fn shell_awaiting_copy_operation(before: &[u8]) -> (ClientShellState, shepr_protocol::RequestId) {
+    let mut state = copy_shell();
+    if !before.is_empty() {
+        state.handle_input_bytes(before);
+    }
+    let motion = state.handle_input_bytes(b"w");
+    let id = request_id(&motion.actions).to_owned();
+    assert!(state.copy_in_flight());
+    (state, id)
+}
+
+/// Answers the copy motion `id` with the cursor where it already is.
+fn answer_motion_in_place(state: &mut ClientShellState, id: &shepr_protocol::RequestId) {
+    let cursor = state.copy.as_ref().expect("copy mode").cursor;
+    answer(
+        state,
+        id,
+        Ok(EndpointReply::PaneCopyMotion {
+            pane_id: test_pane_id("w1:p1"),
+            cursor,
+        }),
+    );
 }
 
 #[test]
 fn copy_prefix_replays_after_keys_queued_behind_an_operation() {
-    let mut state = shell_awaiting_copy_operation(session());
+    let (mut state, motion) = shell_awaiting_copy_operation(b"");
     let mut outcome = ClientShellInput::default();
     let mut accounting = PaneInputBatchAccounting::default();
     let prefix = state.config.keybinds.prefix;
@@ -165,7 +165,7 @@ fn copy_prefix_replays_after_keys_queued_behind_an_operation() {
     assert_eq!(state.mode.kind(), ClientShellMode::Copy);
     assert_eq!(state.copy_keys_len(), 2);
 
-    state.finish_copy_operation(true, &mut outcome);
+    answer_motion_in_place(&mut state, &motion);
 
     assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
     assert!(
@@ -179,14 +179,14 @@ fn copy_prefix_replays_after_keys_queued_behind_an_operation() {
 
 #[test]
 fn copy_escape_cancels_selection_started_by_prior_queued_key() {
-    let mut state =
-        shell_awaiting_copy_operation(session().with_selection(ClientCopySelection::Character {
-            anchor: shepr_term::Point::new(shepr_term::AbsRow(0), 0),
-        }));
-    state.mouse_selection.selection = Some(shepr_term::selection::Selection::anchor(
-        pane_id(),
-        shepr_term::Point::new(shepr_term::AbsRow(0), 0),
-    ));
+    let (mut state, motion) = shell_awaiting_copy_operation(b"v");
+    assert!(
+        state
+            .copy
+            .as_ref()
+            .is_some_and(|copy_mode| copy_mode.selection.is_some())
+    );
+    assert!(state.mouse_selection.selection.is_some());
     let mut outcome = ClientShellInput::default();
     let mut accounting = PaneInputBatchAccounting::default();
 
@@ -202,7 +202,7 @@ fn copy_escape_cancels_selection_started_by_prior_queued_key() {
     );
 
     assert_eq!(state.copy_keys_len(), 2);
-    state.finish_copy_operation(true, &mut outcome);
+    answer_motion_in_place(&mut state, &motion);
 
     assert_eq!(state.mode.kind(), ClientShellMode::Copy);
     assert!(
@@ -217,8 +217,7 @@ fn copy_escape_cancels_selection_started_by_prior_queued_key() {
 
 #[test]
 fn pasted_help_and_copy_queries_normalize_single_line_text() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
+    let mut state = ready_shell();
     open_help(&mut state);
     press_overlay_key(&mut state, KeyCode::Char('/'));
 
@@ -231,27 +230,8 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
     // The first Escape leaves the search, the second closes Help.
     press_overlay_key(&mut state, KeyCode::Esc);
     press_overlay_key(&mut state, KeyCode::Esc);
-    state.mode.set(ClientShellMode::Copy);
-    state.copy = Some(
-        CopySession::start(CopyEntry {
-            pane_id: test_pane_id("w1:p1"),
-            scroll: shepr_term::ScrollMetrics::new(0, 0, 24, shepr_term::AbsRow(0)),
-            geometry: (80, 24),
-            alternate_screen_active: false,
-            cursor: shepr_protocol::command::PaneTextPoint {
-                row: shepr_term::AbsRow(0),
-                col: 0,
-            },
-            rows: crate::shell::ledger::Ticket::fixture(1),
-        })
-        .with_search(ClientCopySearch {
-            prompt: Some(ClientCopySearchPrompt {
-                direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
-                query: TextEditor::default(),
-            }),
-            ..Default::default()
-        }),
-    );
+    assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
+    state.handle_input_bytes(b"/");
 
     assert!(state.insert_copy_search_text("needle\r\n"));
     assert_eq!(
@@ -329,10 +309,21 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
     // Scrolled back, a motion onto the covered row scrolls one line instead of hiding the
     // cursor under the bar.
     let height = u64::from(area.height);
-    if let Some(copy_mode) = state.copy.as_mut() {
-        copy_mode.scroll = copy_mode.scroll.with_offset(10);
-        copy_mode.cursor.row = shepr_term::AbsRow(40 + height - 2);
+    // Up from row 48 + height to row 40 scrolls the viewport back ten lines; back down to
+    // the row above the covered one leaves it there.
+    for _ in 0..height + 8 {
+        state.handle_input_bytes(b"k");
     }
+    assert_eq!(
+        state.copy.as_ref().map(|copy_mode| copy_mode.cursor.row),
+        Some(shepr_term::AbsRow(40))
+    );
+    for _ in 0..height - 2 {
+        state.handle_input_bytes(b"j");
+    }
+    let copy_mode = state.copy.as_ref().expect("still in copy mode");
+    assert_eq!(copy_mode.cursor.row, shepr_term::AbsRow(40 + height - 2));
+    assert_eq!(copy_mode.scroll.offset_from_bottom, 10);
     state.handle_input_bytes(b"j");
     let copy_mode = state.copy.as_ref().expect("still in copy mode");
     assert_eq!(copy_mode.cursor.row, shepr_term::AbsRow(40 + height - 1));
@@ -477,8 +468,9 @@ fn copy_mode_in_a_clipped_pane_keeps_the_panes_full_geometry() {
 
 #[test]
 fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.config.copy_on_select = false;
+    let mut config = ClientConfig::default();
+    config.ui.copy_on_select = false;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
@@ -1236,8 +1228,9 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
 
 #[test]
 fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.config.copy_on_select = false;
+    let mut config = ClientConfig::default();
+    config.ui.copy_on_select = false;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
@@ -1391,7 +1384,11 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .as_ref()
             .is_some_and(|selection| selection.belongs_to(&crate::tests::test_pane_id("w1:p1")))
     );
-    state.mode.set(ClientShellMode::Resize);
+    state.record_binding(
+        &shepr_termio::input::KeybindAction::EnterResizeMode,
+        &mut ClientShellInput::default(),
+    );
+    assert_eq!(state.mode.kind(), ClientShellMode::Resize);
     state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
         KeyCode::Esc,
         KeyModifiers::empty(),
@@ -1785,7 +1782,7 @@ fn failed_copy_operation_replays_keys_while_the_copy_pane_still_owns_input() {
 }
 
 #[test]
-fn deferred_copy_input_is_bounded() {
+fn queued_copy_input_is_bounded() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
@@ -1863,20 +1860,10 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
 
                 assert!(state.ledger.is_empty());
                 assert!(!state.copy_in_flight());
-                assert!(state.copy_ops_empty());
                 assert!(state.copy_keys_empty());
                 assert!(state.notices.visible().is_none());
                 assert!(state.scroll_lanes.is_idle());
                 assert_eq!(state.mode.kind(), ClientShellMode::Copy);
-                assert!(
-                    !state
-                        .copy
-                        .as_ref()
-                        .expect("copy mode")
-                        .search
-                        .as_ref()
-                        .is_some_and(|search| search.copy_after_result)
-                );
                 // Cancellation leaves the copy session usable for newly typed input.
                 let next = state.handle_input_bytes(b"w");
                 assert!(matches!(
@@ -1933,7 +1920,6 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
     assert!(outcome.repaint);
     assert!(state.ledger.is_empty());
     assert!(!state.copy_in_flight());
-    assert!(state.copy_ops_empty());
     assert!(state.copy_keys_empty());
     assert!(state.notices.visible().is_none());
 }
@@ -2068,10 +2054,15 @@ fn reentering_copy_mode_on_the_same_pane_is_a_no_op() {
     state.compose(106, 20).expect("composed frame");
     let mut first = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut first));
-    {
-        let copy_mode = state.copy.as_mut().expect("copy mode");
-        copy_mode.scroll = copy_mode.scroll.with_offset(10);
-    }
+    // `g` scrolls to the top of history, ten lines up.
+    state.handle_input_bytes(b"g");
+    assert_eq!(
+        state
+            .copy
+            .as_ref()
+            .map(|copy_mode| copy_mode.scroll.offset_from_bottom),
+        Some(10)
+    );
     let mut reenter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut reenter));
     assert!(reenter.actions.is_empty());
@@ -2149,9 +2140,10 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
+    // Ten rows of history, so the matches below name rows the pane still holds.
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
         0,
-        0,
+        10,
         2,
         shepr_term::AbsRow(0),
     ));
@@ -2166,11 +2158,6 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
-    let copy_mode = state.copy.as_mut().expect("copy mode");
-    let search = copy_mode
-        .search
-        .get_or_insert_with(ClientCopySearch::default);
-    search.query = "needle".into();
     let found_on = |row| shepr_protocol::command::PaneTextRange {
         start: shepr_protocol::command::PaneTextPoint {
             row: shepr_term::AbsRow(row),
@@ -2181,19 +2168,32 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
             col: 1,
         },
     };
-    search.results.matches = vec![found_on(1), found_on(6)];
-    search.results.total = 2;
-    search.results.current = Some(shepr_protocol::command::PaneCopySearchPosition {
-        window_index: 1,
-        global_index: 1,
-    });
-    copy_mode.cursor = shepr_protocol::command::PaneTextPoint {
-        row: shepr_term::AbsRow(2),
-        col: 1,
-    };
-    copy_mode.selection = Some(ClientCopySelection::Character {
-        anchor: shepr_term::Point::new(shepr_term::AbsRow(1), 2),
-    });
+    // The search lands on the match on row 6; the selection then runs from (1, 2) to the
+    // cursor at (2, 1).
+    let search = copy_search(&mut state);
+    answer(
+        &mut state,
+        &search,
+        Ok(copy_search_result(vec![found_on(1), found_on(6)], Some(1))),
+    );
+    assert_eq!(
+        state.copy.as_ref().map(|copy_mode| copy_mode.cursor),
+        Some(found_on(6).start)
+    );
+    state.handle_input_bytes(b"kkkkkllvjh");
+    let copy_mode = state.copy.as_ref().expect("copy mode");
+    assert_eq!(
+        copy_mode.cursor,
+        shepr_protocol::command::PaneTextPoint {
+            row: shepr_term::AbsRow(2),
+            col: 1,
+        }
+    );
+    assert!(matches!(
+        copy_mode.selection,
+        Some(ClientCopySelection::Character { anchor })
+            if anchor == shepr_term::Point::new(shepr_term::AbsRow(1), 2)
+    ));
 
     pane_surface.surface_revision = pane_surface
         .surface_revision
@@ -2426,7 +2426,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
 }
 
 #[test]
-fn a_failed_submit_drops_the_queued_operations_and_keeps_the_invariant() {
+fn a_replayed_motion_the_endpoint_refuses_leaves_nothing_in_flight() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.receive_pane_surface_from(
@@ -2444,33 +2444,16 @@ fn a_failed_submit_drops_the_queued_operations_and_keeps_the_invariant() {
         panic!("request")
     };
     let id = request.id.clone();
-    for _ in 0..3 {
-        state
-            .copy
-            .as_mut()
-            .expect("a live copy session")
-            .pipeline_mut()
-            .push_op(ClientCopyOperation::Search {
-                query: "needle".into(),
-                direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
-                repeat: false,
-            });
-    }
-    state
-        .copy
-        .as_mut()
-        .expect("copy")
-        .search
-        .get_or_insert_with(ClientCopySearch::default)
-        .copy_after_result = true;
-    state.handle_input_bytes(b"v");
-    assert_eq!(state.copy_keys_len(), 1);
+    // A selection and a second motion wait behind the first; the endpoint then goes
+    // away, so the replayed motion cannot be sent.
+    state.handle_input_bytes(b"vw");
+    assert_eq!(state.copy_keys_len(), 2);
     state.set_endpoint_status(
         &ClientEndpointId::Local,
         EndpointFailureStatus::Reconnecting,
     );
     let cursor = state.copy.as_ref().expect("copy").cursor;
-    state.handle_endpoint_result(
+    let out = state.handle_endpoint_result(
         &crate::tests::test_boot_id("boot-1"),
         &id,
         Ok(EndpointReply::PaneCopyMotion {
@@ -2479,79 +2462,100 @@ fn a_failed_submit_drops_the_queued_operations_and_keeps_the_invariant() {
         }),
     );
     assert!(!state.copy_in_flight());
-    assert!(state.copy_ops_empty());
     assert!(state.copy_keys_empty());
+    assert!(!out.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(request.command, EndpointCommand::PaneCopyMotion(_))
+    )));
     let copy = state.copy.as_ref().expect("copy");
-    assert!(
-        !copy
-            .search
-            .as_ref()
-            .is_some_and(|search| search.copy_after_result)
-    );
     assert!(copy.selection.is_some(), "the queued key replayed");
+    // The session takes the next key at once rather than waiting for the refused motion.
+    let next = state.handle_input_bytes(b"l");
+    assert!(state.copy_keys_empty());
+    assert!(next.actions.is_empty());
 }
+
+/// `y` typed behind a search waits for its answer, so it copies the match the answer
+/// lands on; a key typed after it was typed after the exit and reaches the pane.
 #[test]
-fn a_search_that_exits_copy_mode_does_not_replay_or_dispatch() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(
-        surface(),
-        state
-            .endpoints
-            .active
-            .generation()
-            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-    );
-    state.compose(106, 20).expect("compose");
-    assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
-    let out = state.handle_input_bytes(b"/needle\r");
-    let [ClientShellAction::Endpoint { request, .. }] = out.actions.as_slice() else {
-        panic!("request")
+fn a_copy_typed_behind_a_search_copies_the_match_it_lands_on() {
+    let mut state = copy_shell();
+    let id = copy_search(&mut state);
+    let typed = state.handle_input_bytes(b"yx");
+    assert!(typed.actions.is_empty());
+    assert!(typed.requests.is_empty());
+    assert_eq!(state.copy_keys_len(), 2);
+    let found = shepr_protocol::command::PaneTextRange {
+        start: shepr_protocol::command::PaneTextPoint {
+            row: shepr_term::AbsRow(0),
+            col: 2,
+        },
+        end: shepr_protocol::command::PaneTextPoint {
+            row: shepr_term::AbsRow(0),
+            col: 5,
+        },
     };
-    let id = request.id.clone();
-    state.handle_input_bytes(b"w");
-    state
-        .copy
-        .as_mut()
-        .expect("copy")
-        .search
-        .get_or_insert_with(ClientCopySearch::default)
-        .copy_after_result = true;
-    let out = state.handle_endpoint_result(
-        &crate::tests::test_boot_id("boot-1"),
+
+    let out = answer(
+        &mut state,
         &id,
-        Ok(EndpointReply::PaneCopySearch {
-            pane_id: test_pane_id("w1:p1"),
-            search: shepr_protocol::command::PaneCopySearch {
-                matches: vec![],
-                total: 0,
-                current: None,
-            },
-        }),
+        Ok(copy_search_result(vec![found], Some(0))),
     );
+
+    assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
     assert!(state.copy.is_none());
+    assert!(out.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(
+                &request.command,
+                EndpointCommand::PaneSelectionRead(params)
+                    if params.anchor == found.start && params.cursor == found.end
+            )
+    )));
+    assert!(out.requests.iter().any(|request| matches!(
+        request,
+        ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })
+            if pane_id == &test_pane_id("w1:p1")
+                && events.iter().any(|event| matches!(
+                    event,
+                    ClientPaneInputEvent::Key {
+                        code: shepr_protocol::ClientKeyCode::Char('x'),
+                        ..
+                    }
+                ))
+    )));
+}
+
+/// Gives up on the copy request in flight the way input does: the queue behind it fills,
+/// the prefix then abandons it, and Esc returns to copy mode in the same session.
+fn abandon_through_a_full_queue(state: &mut ClientShellState) {
+    assert!(state.copy_in_flight());
+    for _ in 0..crate::limits::MAX_COPY_INPUT_QUEUE {
+        state.handle_input_bytes(b"j");
+    }
+    let prefix = state.config.keybinds.prefix;
+    state.handle_raw_events(vec![
+        RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+            prefix.code,
+            prefix.modifiers,
+        )),
+        RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+            KeyCode::Esc,
+            KeyModifiers::empty(),
+        )),
+    ]);
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
     assert!(!state.copy_in_flight());
     assert!(state.copy_keys_empty());
-    assert!(state.copy_ops_empty());
-    assert!(out.requests.is_empty());
-    assert!(out.actions.iter().all(|action| !matches!(
-        action,
-        ClientShellAction::Endpoint { request, .. } if matches!(
-            request.command,
-            EndpointCommand::PaneCopyMotion(_) | EndpointCommand::PaneCopySearch(_)
-        )
-    )));
 }
 
 #[test]
 fn an_ignored_answer_still_reports_its_server_error() {
     let mut s = copy_shell();
     let old = copy_search(&mut s);
-    s.copy
-        .as_mut()
-        .expect("a live copy session")
-        .pipeline_mut()
-        .reset();
+    abandon_through_a_full_queue(&mut s);
     let current = s.handle_input_bytes(b"w");
     let current = request_id(&current.actions).to_owned();
     let out = answer(&mut s, &old, Err(ClientShellEndpointError::Timeout));
@@ -2565,17 +2569,9 @@ fn an_ignored_answer_still_reports_its_server_error() {
                 shepr_protocol::command::CommandKind::PaneCopySearch
             ))
     );
-    s.copy
-        .as_mut()
-        .expect("a live copy session")
-        .pipeline_mut()
-        .reset();
+    abandon_through_a_full_queue(&mut s);
     let another = copy_search(&mut s);
-    s.copy
-        .as_mut()
-        .expect("a live copy session")
-        .pipeline_mut()
-        .reset();
+    abandon_through_a_full_queue(&mut s);
     let current = s.handle_input_bytes(b"w");
     let current = request_id(&current.actions).to_owned();
     answer(&mut s, &another, Ok(copy_search_result(Vec::new(), None)));
@@ -2593,12 +2589,8 @@ fn a_copy_answer_after_the_pipeline_was_reset_is_ignored() {
     let mut s = copy_shell();
     let out = s.handle_input_bytes(b"w");
     let id = request_id(&out.actions).to_owned();
+    abandon_through_a_full_queue(&mut s);
     let before = s.copy.as_ref().expect("copy").cursor;
-    s.copy
-        .as_mut()
-        .expect("a live copy session")
-        .pipeline_mut()
-        .reset();
     let out = answer(
         &mut s,
         &id,
@@ -2612,16 +2604,6 @@ fn a_copy_answer_after_the_pipeline_was_reset_is_ignored() {
     );
     assert!(out.actions.is_empty());
     assert_eq!(s.copy.as_ref().expect("copy").cursor, before);
-}
-#[test]
-fn an_abandoned_copy_search_does_not_defer_a_later_copy() {
-    let mut s = copy_shell();
-    let id = copy_search(&mut s);
-    s.abandon_copy_operation();
-    let out = s.handle_input_bytes(b"y");
-    assert!(s.copy.is_none());
-    assert!(s.ledger.contains(&id));
-    assert!(!out.actions.is_empty());
 }
 #[test]
 fn an_in_flight_search_answered_after_a_resize_finishes_without_applying() {
@@ -2669,51 +2651,4 @@ fn an_in_flight_search_answered_after_a_resize_finishes_without_applying() {
     assert_ne!(session.cursor, found.start);
     assert!(!s.copy_in_flight());
     assert!(s.copy_keys_empty());
-}
-
-/// A dropped copy motion or search runs the copy rollback: the keys and operations
-/// queued behind it and its deferred copy are discarded, and nothing is sent.
-#[test]
-fn a_dropped_copy_request_discards_its_queue_and_deferred_copy() {
-    for search in [false, true] {
-        let mut s = copy_shell();
-        let id = if search {
-            copy_search(&mut s)
-        } else {
-            let out = s.handle_input_bytes(b"w");
-            request_id(&out.actions).to_owned()
-        };
-        let session = s.copy.as_mut().expect("a live copy session");
-        session
-            .pipeline_mut()
-            .push_key(shepr_term::key::TerminalKey::new(
-                KeyCode::Char('j'),
-                KeyModifiers::empty(),
-            ));
-        session.pipeline_mut().push_op(ClientCopyOperation::Motion(
-            shepr_protocol::command::PaneCopyMotion::Word(
-                shepr_protocol::command::PaneWordMotion::NextStart,
-            ),
-        ));
-        session
-            .search
-            .get_or_insert_with(ClientCopySearch::default)
-            .copy_after_result = true;
-        let count = s.ledger.len();
-        assert!(count > 0);
-        s.drop_request(&id, DropReason::Unsent);
-        // Nothing removes an orphan: a rollback that opened a request would leave it here.
-        assert_eq!(s.ledger.len(), count - 1);
-        assert!(!s.copy_in_flight());
-        assert!(s.copy_ops_empty());
-        assert!(s.copy_keys_empty());
-        assert!(
-            !s.copy
-                .as_ref()
-                .expect("copy")
-                .search
-                .as_ref()
-                .is_some_and(|search| search.copy_after_result)
-        );
-    }
 }

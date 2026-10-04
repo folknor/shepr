@@ -501,7 +501,6 @@ fn a_projection_reset_drops_every_request_with_its_feature_state() {
     assert!(s.ledger.is_empty());
     assert!(s.scroll_lanes.is_idle());
     assert!(!s.copy_in_flight());
-    assert!(s.copy_ops_empty());
     assert!(s.copy_keys_empty());
     assert!(s.mouse_selection.word_gesture.is_none());
     assert!(s.overlay.is_none());
