@@ -144,14 +144,15 @@ fn detect_command() -> Command {
         )
         .subcommand(
             Command::new("explain")
-                .about("Explain which detection rule decided a pane's state")
+                .about("Explain a pane's effective state beside the current screen verdict")
                 .override_usage(
                     "shepr detect explain <PANE> [OPTIONS]\n       shepr detect explain --file <PATH> --agent <LABEL> [OPTIONS]",
                 )
                 .after_help(
-                    "While a hook reports the pane's full agent lifecycle, screen detection is \
-                     skipped and the output says so (screen_detection_skip_reason, or \
-                     state_source with --json) instead of showing rule evidence.",
+                    "Output gives the effective pane state and its source separately from the \
+                     current screen manifest verdict and rule evidence. A hook-owned state \
+                     includes its screen-detection skip reason. A saved capture has no pane \
+                     state; it reports the manifest verdict as state.",
                 )
                 .arg(pane_id_argument().required_unless_present("file").conflicts_with("file"))
                 .arg(

@@ -935,7 +935,9 @@ fn every_machine_state_has_its_own_entry() {
             let hint = (entry.rect.x..entry.rect.right())
                 .map(|x| frame_cell(&frame, (x, entry.rect.y + 1)).symbol.as_str())
                 .collect::<String>();
-            assert!(hint.contains("run shepr again"), "{hint:?}");
+            // The hint names this build's entry point (a dev build's is a long
+            // path) and the sidebar clips it, so only its opening is checked.
+            assert!(hint.trim_start().starts_with("run "), "{hint:?}");
         }
     }
 }

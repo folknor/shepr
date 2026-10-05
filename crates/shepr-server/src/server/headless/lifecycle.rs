@@ -89,6 +89,11 @@ pub(super) struct ShutdownLifecycle {
     /// `ShutdownPhase` carry data and lose the `Copy` that `UnexpectedPhase`
     /// relies on.
     freeze: Option<HostShutdownFreeze>,
+    /// The warning the current host checkpoint answers: set when a warning
+    /// starts or refreshes the checkpoint, cleared when the shutdown is called
+    /// off. A warning whose generation no longer matches gets a fresh
+    /// checkpoint before the delay lock is released.
+    checkpoint_generation: Option<WarningGeneration>,
     stop_signal: Arc<shepr_api::ServerStopSignal>,
     host_shutdown_request: Arc<AtomicBool>,
     /// When the first termination signal arrived, set by the signal handler.
@@ -102,6 +107,7 @@ impl ShutdownLifecycle {
             phase: ShutdownPhase::Running,
             monitor: None,
             freeze: None,
+            checkpoint_generation: None,
             stop_signal,
             host_shutdown_request: Arc::new(AtomicBool::new(false)),
             signal_quit_request: Arc::default(),
@@ -240,6 +246,9 @@ impl ShutdownLifecycle {
 
 impl ShutdownLifecycle {
     pub(super) fn start_host_shutdown_monitor(&mut self, wake: &Arc<tokio::sync::Notify>) {
+        if self.monitor.is_some() {
+            return;
+        }
         let wake_loop = Arc::clone(wake);
         self.monitor = Some(HostShutdownMonitor::start(
             Arc::clone(self.host_shutdown_request_flag()),
@@ -259,7 +268,12 @@ impl ShutdownLifecycle {
             return;
         }
 
+        let generation = self
+            .monitor
+            .as_ref()
+            .and_then(HostShutdownMonitor::warning_generation);
         if !self.host_shutdown_requested() {
+            self.checkpoint_generation = None;
             let was_warning = self.phase() == ShutdownPhase::HostShutdownWarning;
             if self.cancel_host_shutdown().is_some() {
                 app.cancel_host_shutdown_checkpoint();
@@ -273,23 +287,27 @@ impl ShutdownLifecycle {
         match self.phase() {
             ShutdownPhase::Running => {
                 if self.begin_host_shutdown_warning() {
+                    self.checkpoint_generation = generation;
                     self.freeze_for_host_shutdown(app);
                 }
             }
             ShutdownPhase::HostShutdownWarning => {
-                if !app.session_persists() || app.host_shutdown_checkpoint_result_ready() {
+                if self.checkpoint_generation != generation {
+                    // Void both an unclaimed result and the host ticket of an
+                    // in-flight save: neither captured this refreshed warning.
+                    app.cancel_host_shutdown_checkpoint();
+                    self.checkpoint_generation = generation;
+                    self.freeze_for_host_shutdown(app);
+                } else if !app.session_persists() || app.host_shutdown_checkpoint_result_ready() {
                     self.freeze_for_host_shutdown(app);
                 }
             }
             ShutdownPhase::Frozen => {
-                let generation = self
-                    .monitor
-                    .as_ref()
-                    .and_then(HostShutdownMonitor::warning_generation);
                 if self.frozen_warning_generation() != generation
                     && self.restart_host_shutdown_warning().is_some()
                 {
                     app.thaw_session_saves();
+                    self.checkpoint_generation = generation;
                     self.freeze_for_host_shutdown(app);
                 }
             }
@@ -308,13 +326,13 @@ impl ShutdownLifecycle {
             return;
         }
         info!("host shutdown announced; checkpointing the session and freezing saves");
-        let generation = self
-            .monitor
-            .as_ref()
-            .and_then(HostShutdownMonitor::warning_generation);
+        let generation = self.checkpoint_generation;
         if app.session_persists() {
-            let Some(outcome) = app.take_host_shutdown_checkpoint_result() else {
+            if !app.host_shutdown_checkpoint_result_ready() {
                 app.request_host_shutdown_checkpoint();
+            }
+            // Stopped persistence completes synchronously and sends no wake.
+            let Some(outcome) = app.take_host_shutdown_checkpoint_result() else {
                 return;
             };
             if outcome == app::HostCheckpointOutcome::Unsaved {
@@ -447,6 +465,22 @@ impl HeadlessServer {
 
 #[cfg(test)]
 impl ShutdownLifecycle {
+    pub(super) fn test_warning_monitor(
+        &mut self,
+    ) -> tokio::sync::watch::Receiver<Option<WarningGeneration>> {
+        let (monitor, checkpoints) =
+            HostShutdownMonitor::test_warning(Arc::clone(&self.host_shutdown_request));
+        self.monitor = Some(monitor);
+        checkpoints
+    }
+
+    pub(super) fn test_refresh_warning(&self) {
+        self.monitor
+            .as_ref()
+            .expect("test monitor")
+            .test_refresh_warning();
+    }
+
     pub(super) fn has_monitor(&self) -> bool {
         self.monitor.is_some()
     }

@@ -8,6 +8,8 @@ pub mod manifest;
 pub mod ownership;
 mod title_activity;
 
+pub use limits::PARKED_START_LIFETIME;
+
 use shepr_agent::{Agent, AgentState, normalized_agent_lookup_name, parse_agent_label};
 use shepr_platform::{ForegroundJob, ForegroundProcess, Pid, is_pane_shell_process_name};
 pub use title_activity::{TITLE_ACTIVITY_GLYPHS, TitleActivityGlyphs};

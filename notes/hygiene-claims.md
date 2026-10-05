@@ -122,7 +122,7 @@ arguably the subject; then say so, and give the others
 `shepr_test_support::fixture::resolved_shell` or `idle_shell`. A textlint on
 `"/bin/sh"` literals in fixture crates would close the gap.
 
-## CLAIM-006 - Host-shutdown tests run under a policy production never uses, and drive the loop by hand
+## CLAIM-006 - Host-shutdown tests run under a policy production never uses
 
 Reported by: save-shutdown.
 
@@ -134,10 +134,6 @@ Reported by: save-shutdown.
   `Never`; the first test's name says it waits for monitor cancellation with no
   monitor running, its last assertion (`!lifecycle.has_monitor()`) checks something
   no code path could do, and its second and third syncs assert the same thing.
-- `a_frozen_persisting_server_runs_the_final_save_and_writes_nothing` polls
-  `reap_finished_session_save` with `sleep(1ms)` up to 5000 times and syncs again,
-  reordering exactly what BUG-012 is about, so it passes while the loop stalls; it
-  also depends on the wall clock.
 
 ## CLAIM-007 - Save tests use test-only twins of the production paths and mix two clocks
 
@@ -200,8 +196,6 @@ Reported by: pane-lifecycle.
   `command.rs`, `backend.rs` and `runtime.rs` call it without the `IsolatedEnv` the
   repository rule requires (no wrong result today, since they override what they
   assert on).
-- No test exercises `Router` (park, retire, pid mismatch, hello timeout) or
-  `accept_hello`, so BUG-018, BUG-019 and BUG-021 have no test that could fail.
 
 ## CLAIM-010 - Most bundled detection manifests have no behaviour test
 
@@ -369,9 +363,6 @@ Reported by: remote.
 - `ssh/tests.rs` `shared_ssh_transport_survives_helper_config_drop` starts no master;
   it checks that two configs name one control path and that dropping one removes only
   its directory.
-- `managed_ssh_config_includes_user_config_then_fallback` builds its expected
-  `Include` line with `ssh_config_quote`, the function under test (BUG-064). Spell the
-  line literally.
 - `bridge/tests.rs` `remote_bridge_failures_need_attention_only_when_the_host_must_be_fixed`
   forges the remote stderr as `"error: {record}"` itself (VAL-060); its third case
   includes `"error: shepr-remote-daemon-boot-exit:11\n..."`, a record nothing produces
@@ -573,9 +564,8 @@ Reported by: pane-lifecycle.
   clippy::unwrap_used, clippy::expect_used, clippy::panic)]` on `launch_status.rs`
   outside tests makes it a build fact.
 - `PtyIoInbox`'s "never held across a syscall" holds today, by review only.
-- `LAUNCH_STATUS_AFTER_EXIT`'s "routed at once" (BUG-020), `launch::init`'s "A service
-  that cannot accept is an error" (BUG-018), `SHEPR_BIN_PATH` (BUG-022) and
-  `Unconfirmed`'s "The pane's death follows" (BUG-017) are false today.
+- `SHEPR_BIN_PATH` (BUG-022) and `Unconfirmed`'s "The pane's death follows"
+  (BUG-017) are false today.
 
 ## CLAIM-025 - Agent detection claims that are false today or unenforced
 
@@ -613,38 +603,14 @@ Reported by: integrations.
   reconstructs a second interpretation of the descriptor." Claude's install is a
   second, CST implementation, and Cursor's install inserts `"version": 1` that status
   never checks.
-- The Antigravity "every exit path" comment (BUG-041), the seq note (BUG-040) and
-  `AgentIntegrationPaths`' "never consults the process environment" (BUG-043).
+- `AgentIntegrationPaths`' "never consults the process environment" (BUG-043).
+- `bundle.rs` `EMPTY_OBJECT`: "every exit path emits an empty object" still fails for a
+  `set -e` abort on an unguarded failing command, which exits without `finish`; the
+  template guards most commands with `|| true`, not all.
 - `lib.rs` and the `bundle.rs` module doc each describe the whole envelope including
   the 500 ms number: two copies of one paragraph no test reads.
 - True and unenforced: `opencode.js`'s "it never runs alongside this server plugin"
   (rests on `ownsLocalLifecycle` and OpenCode's launch shapes).
-
-## CLAIM-027 - Workspace model and configuration docs that are false after the border removals
-
-Reported by: workspace-model, restore-resume.
-
-- `default-server.toml` header: "whether panes have borders, gaps and scrollbars"
-  (borders are no longer a choice).
-- `docs/config.md` line 8: "pane borders, gaps and scrollbars and their colours"
-  (borders are not a setting, and the same file says every colour is the client's).
-- `docs/config.md` "Config never crosses hosts": "a remote machine's panes use the
-  shell, borders and scrollbars set on that machine".
-- `AGENTS.md`: "whether panes have borders, gaps and scrollbars".
-- `PaneChrome::rect` is documented as "the outer rect (gaps already taken off)" and
-  `chrome.rs`'s module as computing "the gaps between panes", but `apply_pane_chrome`
-  never shrinks a rect: with `pane_gaps` on every pane keeps all four borders and two
-  adjacent boxes draw double lines with no gap cell
-  (`pane_gaps_keep_independent_bordered_panes` asserts the rects touch). Reword the
-  docs and the setting's description ("each pane draws its own border instead of
-  sharing the divider").
-- `Borders` claims four independent sides, but every pane always has `TOP` and `LEFT`
-  and `apply_pane_chrome` only removes `RIGHT` / `BOTTOM`; the `TOP` check in
-  `render_pane_border_titles` and the `TOP` / `LEFT` arms of `add_pane_border_cells`
-  can no longer fire, and `Borders::NONE`, `is_empty` and `BitOr` are test-only. Make
-  the type "shares its right edge / shares its bottom edge".
-- `shepr_core` `quote_always` says it is "useful for fixtures", but
-  `shepr-integration/src/command.rs` uses it in production.
 
 ## CLAIM-028 - Documentation restates numbers the code owns
 

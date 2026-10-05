@@ -37,11 +37,10 @@ impl App {
         })
     }
 
-    /// Explains what the detector concludes for one pane from the same input
-    /// the live detector reads. A pane whose effective state comes from hook
-    /// authority skips screen detection unless a visible blocker overrides the
-    /// hook report, so it answers with that source instead of rule evidence.
-    /// Either answer carries the pane's last parked or rejected hook report.
+    /// Reports the pane's effective state and source beside a fresh manifest
+    /// evaluation of the same screen input the live detector reads. Hook
+    /// authority includes its screen-detection skip reason. The answer also
+    /// carries the pane's last parked or rejected hook report.
     pub(super) fn handle_detect_explain(&mut self, target: &PaneTarget) -> ApiResult {
         let pane_id = self.json_pane(&target.pane_id)?;
         let Some(terminal) = self.state.terminal(pane_id) else {
@@ -58,36 +57,9 @@ impl App {
             .ownership()
             .last_unapplied_hook_report(now)
             .map(|report| UnappliedHookReport::from_ownership(&report, now));
-        let owner = terminal.ownership().state_owner();
-        if let Some(authority) = terminal.ownership().hook_authority().filter(|_| {
-            matches!(
-                owner,
-                shepr_detect::ownership::EffectiveStateSource::FullLifecycleHook
-                    | shepr_detect::ownership::EffectiveStateSource::Hook
-            )
-        }) {
-            let skip_reason =
-                if owner == shepr_detect::ownership::EffectiveStateSource::FullLifecycleHook {
-                    ScreenDetectionSkipReason::FullLifecycleHookAuthority
-                } else {
-                    ScreenDetectionSkipReason::HookAuthority
-                };
-            let explain = DetectionExplanation::hook_authority(
-                authority.origin.agent().label(),
-                terminal.ownership().state(),
-                authority.origin.source().as_str(),
-                skip_reason,
-            )
-            .with_last_unapplied_hook_report(last_unapplied_hook_report);
-            return success(ResponseResult::DetectExplain {
-                explain: Box::new(explain),
-            });
-        }
-        let Some(agent) = terminal
-            .ownership()
-            .effective_agent()
-            .or(terminal.ownership().detected_agent())
-        else {
+        let ownership = terminal.ownership();
+        let owner = ownership.state_owner();
+        let Some(agent) = ownership.effective_agent().or(ownership.detected_agent()) else {
             return failure(
                 ApiErrorCode::AgentExplainUnavailable,
                 format!(
@@ -98,7 +70,7 @@ impl App {
         };
 
         let capture = detection_capture(pane);
-        let explain = shepr_detect::manifest::explain_with_input(
+        let screen_explain = shepr_detect::manifest::explain_with_input(
             agent,
             shepr_detect::manifest::DetectionInput {
                 screen: &capture.screen,
@@ -106,9 +78,48 @@ impl App {
                 osc_progress: capture.osc_progress_evidence(),
             },
         );
+        // Effective ownership and a fresh screen evaluation answer separate
+        // questions. Detector timing gates live inside the mux's private
+        // DetectorState, so only a manifest skip and the effective owner are
+        // observable here; do not guess whether a state mismatch is pending
+        // idle confirmation, startup grace, or restore absence hold.
+        let state_source = match owner {
+            shepr_detect::ownership::EffectiveStateSource::Screen => {
+                shepr_api::schema::DetectionStateSource::Screen
+            }
+            shepr_detect::ownership::EffectiveStateSource::ProcessExit => {
+                shepr_api::schema::DetectionStateSource::ProcessExit
+            }
+            shepr_detect::ownership::EffectiveStateSource::Hook
+            | shepr_detect::ownership::EffectiveStateSource::FullLifecycleHook => {
+                match ownership.hook_authority() {
+                    Some(authority) => {
+                        let skip_reason = if owner
+                            == shepr_detect::ownership::EffectiveStateSource::FullLifecycleHook
+                        {
+                            ScreenDetectionSkipReason::FullLifecycleHookAuthority
+                        } else {
+                            ScreenDetectionSkipReason::HookAuthority
+                        };
+                        shepr_api::schema::DetectionStateSource::HookAuthority {
+                            hook_source: authority.origin.source().as_str().to_owned(),
+                            skip_reason,
+                        }
+                    }
+                    None => {
+                        tracing::error!(
+                            pane_id = %target.pane_id,
+                            "pane state owner names hook authority without an authority"
+                        );
+                        shepr_api::schema::DetectionStateSource::Screen
+                    }
+                }
+            }
+        };
         success(ResponseResult::DetectExplain {
             explain: Box::new(
-                DetectionExplanation::from(explain)
+                DetectionExplanation::from(screen_explain)
+                    .with_pane_decision(ownership.state(), state_source)
                     .with_last_unapplied_hook_report(last_unapplied_hook_report),
             ),
         })
@@ -181,7 +192,8 @@ mod tests {
         );
 
         assert_eq!(response["result"]["type"], "detect_explain");
-        assert_eq!(response["result"]["explain"]["state"], "blocked");
+        assert_eq!(response["result"]["explain"]["state"], "unknown");
+        assert_eq!(response["result"]["explain"]["screen_state"], "blocked");
         assert_eq!(
             response["result"]["explain"]["matched_rule"]["id"],
             "live_strong_blocker"
@@ -232,10 +244,47 @@ mod tests {
             "detect_explain",
             AppMethod::DetectExplain(PaneTarget { pane_id: pane }),
         );
-        assert_eq!(explain["result"]["explain"]["state"], "blocked");
+        assert_eq!(explain["result"]["explain"]["screen_state"], "blocked");
         assert_eq!(
             explain["result"]["explain"]["matched_rule"]["id"],
             "osc_title_blocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn explain_reports_the_pane_state_when_the_screen_verdict_differs() {
+        let (mut app, pane_id) = app_with_pane("detect-explain-state-differs");
+        // Exercise the API's observable state/evaluation mismatch. The
+        // detector's private timing gates are not exposed at this boundary.
+        app.state
+            .terminal_mut(pane_id)
+            .set_detected_state(Some(Agent::Codex), AgentState::Working);
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
+            80,
+            24,
+            b"press enter to confirm or esc to cancel",
+        );
+        app.terminal_runtimes.insert(pane_id, runtime);
+        let pane = app
+            .state
+            .pane(pane_id)
+            .expect("test precondition")
+            .public_id()
+            .to_string();
+
+        let response = request(
+            &mut app,
+            "detect_explain_state_differs",
+            AppMethod::DetectExplain(PaneTarget { pane_id: pane }),
+        );
+
+        let explain = &response["result"]["explain"];
+        assert_eq!(explain["state"], "working", "{response}");
+        assert_eq!(explain["state_source"]["kind"], "screen", "{response}");
+        assert_eq!(explain["screen_state"], "blocked", "{response}");
+        assert_eq!(
+            explain["matched_rule"]["id"], "live_strong_blocker",
+            "{response}"
         );
     }
 

@@ -6,7 +6,7 @@
 //! the same `WorkspaceChrome::visible_panes` (BSP split, chrome, the zoomed case)
 //! and the same `shepr_core::chrome` border and scrollbar gutter math.
 
-use shepr_core::chrome::{Borders, PaneChrome, PaneContent, apply_pane_chrome};
+use shepr_core::chrome::{PaneChrome, PaneContent, SharedPaneEdges, apply_pane_chrome};
 use shepr_core::geometry::{CellPx, GridSize, PaneGeometry, Rect};
 use shepr_core::layout::{PaneId, TileLayout};
 
@@ -65,9 +65,10 @@ impl WorkspaceChrome {
             .collect()
     }
 
-    /// The visible panes of a workspace with their chrome applied: outer rect and
-    /// borders. Call `PaneChrome::into_content` to settle content using the
-    /// pane's screen mode; scroll metrics then select whether its track draws.
+    /// The visible panes of a workspace with their chrome applied: layout rects
+    /// and shared-edge facts. Call `PaneChrome::into_content` to settle content
+    /// using the pane's screen mode; scroll metrics then select whether its
+    /// track draws.
     ///
     /// A zoomed workspace shows only its focused pane, filling `area`, framed
     /// on all sides.
@@ -80,7 +81,7 @@ impl WorkspaceChrome {
         vec![PaneChrome {
             id: zoomed_pane,
             rect: self.area,
-            borders: Borders::ALL,
+            shared_edges: SharedPaneEdges::default(),
             is_focused: true,
         }]
     }
@@ -290,10 +291,10 @@ mod tests {
         assert_eq!(panes[0].id, right);
         assert_eq!(panes[0].rect, geometry.area);
         assert!(panes[0].is_focused);
-        assert_eq!(panes[0].borders, Borders::ALL);
+        assert_eq!(panes[0].shared_edges, SharedPaneEdges::default());
         // Framed on every side: the whole area less one cell per edge.
         assert_eq!(
-            inner_rect(panes[0].rect, panes[0].borders),
+            inner_rect(panes[0].rect, panes[0].shared_edges),
             Rect::new(1, 1, 98, 38)
         );
         assert_eq!(geometry.pane_size(&layout, true, right), Some(grid(38, 98)));
@@ -304,13 +305,19 @@ mod tests {
     fn zoomed_pane_is_framed_whatever_the_pane_count() {
         let (mut layout, root) = TileLayout::new();
         let chrome = geometry(false);
-        assert_eq!(chrome.visible_panes(&layout, true)[0].borders, Borders::ALL);
+        assert_eq!(
+            chrome.visible_panes(&layout, true)[0].shared_edges,
+            SharedPaneEdges::default()
+        );
         assert!(layout.split_pane(
             root,
             Direction::Vertical,
             shepr_core::layout::SplitRatio::EVEN,
             PaneId::alloc(),
         ));
-        assert_eq!(chrome.visible_panes(&layout, true)[0].borders, Borders::ALL);
+        assert_eq!(
+            chrome.visible_panes(&layout, true)[0].shared_edges,
+            SharedPaneEdges::default()
+        );
     }
 }

@@ -18,7 +18,7 @@ hook_input_file="$(mktemp "${TMPDIR:-/tmp}/shepr-copilot-hook.XXXXXX")" || {
   finish
 }
 trap 'rm -f "$hook_input_file"' 0
-trap 'exit 0' HUP INT TERM
+trap 'finish' HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 # Shared agent configs contain release hooks only. Dev panes use detection.

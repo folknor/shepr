@@ -161,17 +161,36 @@ impl SessionWriter {
     /// Clears the layout, reporting a clear failure. `now` supplies the time
     /// used for recovery-copy naming and preservation.
     pub(super) fn clear(&mut self, now: SystemTime) -> Result<(), SaveError> {
+        self.clear_with_operation(now, files::clear_path)
+    }
+
+    fn clear_with_operation(
+        &mut self,
+        now: SystemTime,
+        clear: impl FnOnce(&Path) -> io::Result<files::ClearOutcome>,
+    ) -> Result<(), SaveError> {
         let result = self.preserve_unloaded(now).and_then(|()| {
             recovery::preserve_snapshot_history(&self.path, now, &mut self.snapshot_fingerprints);
-            files::clear_path(&self.path)
+            clear(&self.path)
         });
-        if let Err(err) = result {
-            session_clear_failed(&self.path, &err.to_string());
-            return Err(SaveError::Io(err));
+        match result {
+            Ok(files::ClearOutcome::Durable) => {
+                self.snapshot_fingerprints.forget_current();
+                session_cleared(&self.path);
+                Ok(())
+            }
+            Ok(files::ClearOutcome::NotDurable(err)) => {
+                session_clear_failed(
+                    &self.path,
+                    &format!("session was cleared, but syncing its directory failed: {err}"),
+                );
+                Err(SaveError::PublishedNotDurable(err))
+            }
+            Err(err) => {
+                session_clear_failed(&self.path, &err.to_string());
+                Err(SaveError::Io(err))
+            }
         }
-        self.snapshot_fingerprints.forget_current();
-        session_cleared(&self.path);
-        Ok(())
     }
 }
 
@@ -193,6 +212,17 @@ mod tests {
         /// A clear at the real current time; see [`Self::save_for_test`].
         fn clear_for_test(&mut self) -> Result<(), SaveError> {
             self.clear(SystemTime::now())
+        }
+
+        /// A clear at the real current time whose directory sync is
+        /// `sync_directory`, so a test can make the sync fail.
+        fn clear_with_directory_sync_for_test(
+            &mut self,
+            sync_directory: impl FnMut(&Path) -> io::Result<()>,
+        ) -> Result<(), SaveError> {
+            self.clear_with_operation(SystemTime::now(), move |path| {
+                files::clear_path_with_directory_sync(path, sync_directory)
+            })
         }
     }
 
@@ -311,6 +341,31 @@ mod tests {
         assert!(backups(&writer).is_empty());
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
+    }
+
+    #[test]
+    fn a_retried_clear_syncs_the_directory_after_the_first_sync_failed() {
+        use std::cell::Cell;
+
+        let mut writer = writer(false);
+        writer
+            .save_for_test(&snapshot())
+            .expect("save before clear");
+        let sync_calls = Cell::new(0);
+
+        let first = writer.clear_with_directory_sync_for_test(|_| {
+            sync_calls.set(sync_calls.get() + 1);
+            Err(io::Error::other("directory sync failed"))
+        });
+        assert!(matches!(first, Err(SaveError::PublishedNotDurable(_))));
+        assert!(!writer.path.try_exists().expect("test stat"));
+
+        let retry = writer.clear_with_directory_sync_for_test(|_| {
+            sync_calls.set(sync_calls.get() + 1);
+            Ok(())
+        });
+        assert!(retry.is_ok(), "the retry confirms the directory state");
+        assert_eq!(sync_calls.get(), 2, "NotFound still syncs the directory");
     }
 
     #[test]

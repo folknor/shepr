@@ -295,7 +295,8 @@ fn value_uses_hook_path(value: &Value, hook_path: &Path) -> bool {
 }
 
 /// Enable `features.hooks` in a Codex `config.toml`, preserving source layout
-/// when `features` is a table or root-level dotted table.
+/// when `features` is a table or root-level dotted table. An explicit false is
+/// the user's global opt-out, so installation must leave it alone.
 pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String> {
     let mut document = content.parse::<DocumentMut>().map_err(|error| {
         InstallIssue::io_error(
@@ -314,7 +315,12 @@ pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String>
     };
 
     if let Some(features) = features.as_table_mut() {
-        features.remove("codex_hooks");
+        if features.get("hooks").and_then(Item::as_bool) == Some(false) {
+            return Err(InstallIssue::io_error(
+                InstallErrorKind::ManagedBlockConflict,
+                "codex config.toml disables hooks with `features.hooks = false`; leaving the user's setting unchanged",
+            ));
+        }
         features.insert("hooks", Item::Value(TomlValue::from(true)));
     } else {
         return Err(InstallIssue::io_error(
@@ -340,10 +346,15 @@ pub(super) fn build_kimi_config_with_timeout(
             "kimi config.toml registers the Shepr hook outside its managed block; remove that hook and retry",
         ));
     }
-    let mut result = unmarked_content.trim_end_matches('\n').to_string();
+    let mut result = unmarked_content;
     if !result.is_empty() {
-        result.push('\n');
-        result.push('\n');
+        let separator = kimi_line_ending(&result);
+        if !result.ends_with('\n') {
+            result.push_str(separator);
+        }
+        if trailing_line_feed_count(&result) < 2 {
+            result.push_str(separator);
+        }
     }
 
     result.push_str(&kimi_integration_block(hook_path, timeout));
@@ -391,7 +402,8 @@ pub(super) fn kimi_config_block_with_timeout_is_current(
         }
     }
 
-    Ok(found_block && !in_block && actual == expected)
+    // TOML accepts CRLF, so compare line-ending independent managed bytes.
+    Ok(found_block && !in_block && actual.replace("\r\n", "\n") == expected)
 }
 
 fn kimi_config_uses_hook_path(content: &str, hook_path: &Path) -> io::Result<bool> {
@@ -452,17 +464,17 @@ pub(crate) fn kimi_hook_table(
     )
 }
 
-/// Remove shepr's marked block from a Kimi `config.toml`. A begin marker
-/// without a matching end marker is an error: guessing where the damaged
-/// block ends could delete the user's config that follows it.
+/// Remove shepr's marked block from a Kimi `config.toml`, leaving all bytes
+/// outside it untouched. An unmatched begin marker is an error: guessing where
+/// the damaged block ends could delete the user's config that follows it.
 pub(crate) fn remove_kimi_config_block(content: &str) -> io::Result<String> {
-    let trailing_newline = content.ends_with('\n');
-    let mut lines = Vec::new();
+    let mut result = String::with_capacity(content.len());
     let mut in_block = false;
     let mut removed_block = false;
 
-    for line in content.lines() {
-        if line.trim() == KIMI_CONFIG_BLOCK_BEGIN {
+    for line in content.split_inclusive('\n') {
+        let marker = line.trim();
+        if marker == KIMI_CONFIG_BLOCK_BEGIN {
             if in_block {
                 return Err(unterminated_kimi_block_error());
             }
@@ -471,31 +483,43 @@ pub(crate) fn remove_kimi_config_block(content: &str) -> io::Result<String> {
             continue;
         }
         if in_block {
-            if line.trim() == KIMI_CONFIG_BLOCK_END {
+            if marker == KIMI_CONFIG_BLOCK_END {
                 in_block = false;
             }
             continue;
         }
-        lines.push(line.to_string());
+        result.push_str(line);
     }
 
     if in_block {
         return Err(unterminated_kimi_block_error());
     }
 
-    if !removed_block {
-        return Ok(content.to_string());
-    }
-
-    let mut result = join_toml_lines(&lines, trailing_newline);
-    while result.ends_with("\n\n") {
-        result.pop();
-    }
-    if result == "\n" {
-        Ok(String::new())
+    Ok(if removed_block {
+        result
     } else {
-        Ok(result)
-    }
+        content.to_string()
+    })
+}
+
+fn kimi_line_ending(content: &str) -> &'static str {
+    content.rfind('\n').map_or("\n", |index| {
+        if index > 0 && content.as_bytes()[index - 1] == b'\r' {
+            "\r\n"
+        } else {
+            "\n"
+        }
+    })
+}
+
+fn trailing_line_feed_count(content: &str) -> usize {
+    content
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| matches!(**byte, b'\r' | b'\n'))
+        .filter(|byte| **byte == b'\n')
+        .count()
 }
 
 fn unterminated_kimi_block_error() -> io::Error {
@@ -530,15 +554,81 @@ pub(crate) fn toml_basic_string(value: &str) -> String {
     result
 }
 
-pub(crate) fn join_toml_lines(lines: &[String], trailing_newline: bool) -> String {
-    let mut result = lines.join("\n");
-    if trailing_newline || result.is_empty() {
-        result.push('\n');
-    }
-    result
-}
-
 #[cfg(test)]
 pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> io::Result<String> {
     build_kimi_config_with_timeout(content, hook_path, super::HOOK_TIMEOUT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removing_kimi_block_preserves_crlf_and_trailing_blank_lines() {
+        let content = format!(
+            "user = true\r\n\r\n{KIMI_CONFIG_BLOCK_BEGIN}\r\n\
+             managed = true\r\n{KIMI_CONFIG_BLOCK_END}\r\n\r\n"
+        );
+
+        // The blank line before the block and the one after it both stay.
+        assert_eq!(
+            remove_kimi_config_block(&content).expect("remove managed block"),
+            "user = true\r\n\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn kimi_status_accepts_crlf_managed_block() {
+        let hook_path = Path::new("/home/test/.kimi-code/hooks/shepr-agent-state.sh");
+        let config =
+            build_kimi_config_with_timeout("user = true\n\n", hook_path, Duration::from_secs(10))
+                .expect("build config");
+        // The whole file as a CRLF editor would save it.
+        let crlf = config.replace('\n', "\r\n");
+
+        assert!(
+            kimi_config_block_with_timeout_is_current(&crlf, hook_path, Duration::from_secs(10))
+                .expect("read status")
+        );
+    }
+
+    #[test]
+    fn kimi_update_preserves_crlf_user_text_and_blank_suffix() {
+        let hook_path = Path::new("/home/test/.kimi-code/hooks/shepr-agent-state.sh");
+        let original = format!(
+            "user = true\r\n\r\n{KIMI_CONFIG_BLOCK_BEGIN}\r\nmanaged = true\r\n\
+             {KIMI_CONFIG_BLOCK_END}\r\n\r\n\r\n"
+        );
+
+        let updated = build_kimi_config_with_timeout(&original, hook_path, Duration::from_secs(10))
+            .expect("update Kimi config");
+
+        // The user's CRLF line and the blank lines around the old block are
+        // kept byte for byte, ahead of the rewritten block.
+        assert!(
+            updated.starts_with(&format!(
+                "user = true\r\n\r\n\r\n\r\n{KIMI_CONFIG_BLOCK_BEGIN}\n"
+            )),
+            "{updated:?}"
+        );
+    }
+
+    #[test]
+    fn codex_explicitly_disabled_hooks_are_refused() {
+        let content = "model = \"x\"\n[features]\nhooks = false\ncodex_hooks = true\n";
+
+        let error = build_codex_config_with_hooks(content).expect_err("false is an opt-out");
+
+        assert!(error.to_string().contains("features.hooks = false"));
+    }
+
+    #[test]
+    fn codex_config_edit_does_not_remove_old_feature_keys() {
+        let content = "[features]\ncodex_hooks = true\n";
+
+        let updated = build_codex_config_with_hooks(content).expect("enable Codex hooks");
+
+        assert!(updated.contains("codex_hooks = true"));
+        assert!(updated.contains("hooks = true"));
+    }
 }

@@ -20,7 +20,8 @@ pub(crate) const LAUNCH_STATUS_RECORD_BYTES: usize = 16;
 
 /// How long the status listener waits for a new connection's hello. Our own
 /// pane child sends it right after connecting; the bound only keeps a stray
-/// local connection from stalling the listener.
+/// local connection from holding its descriptor open. Hellos are awaited
+/// together, so a silent connection delays no other.
 pub(crate) const LAUNCH_HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// How long a status connection that arrived before its launch registered
@@ -29,8 +30,8 @@ pub(crate) const LAUNCH_HELLO_TIMEOUT: std::time::Duration = std::time::Duration
 pub(crate) const LAUNCH_PARKED_CONNECTION_TTL: std::time::Duration =
     std::time::Duration::from_secs(30);
 
-/// How long the launch status listener waits before accepting again after the
-/// process ran out of fds or memory. Long enough not to spin while the
+/// How long the launch status listener waits before accepting or polling
+/// again after the process ran out of fds or memory. Long enough not to spin while the
 /// shortage lasts, short enough that waiting children are not held long.
 pub(crate) const LAUNCH_ACCEPT_RETRY_DELAY: std::time::Duration =
     std::time::Duration::from_millis(100);

@@ -423,6 +423,60 @@ mod tests {
     }
 
     #[test]
+    fn local_restart_probe_waits_for_a_starting_server_to_become_running() {
+        use crate::test_support::IsolatedEnv;
+        use std::io::{BufRead as _, Write as _};
+        use std::os::unix::net::UnixListener;
+
+        let _env = IsolatedEnv::new();
+        let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
+        shepr_platform::create_private_runtime_directory(paths.runtime_dir())
+            .expect("runtime directory");
+        let socket = paths.server_address().socket().to_path_buf();
+        let listener = UnixListener::bind(&socket).expect("bind server socket");
+        let expected_build = other_build().to_owned();
+        let server = std::thread::spawn(move || {
+            for starting in [true, false] {
+                loop {
+                    let (mut stream, _) = listener.accept().expect("accept probe");
+                    let mut line = String::new();
+                    let mut reader =
+                        std::io::BufReader::new(stream.try_clone().expect("clone status stream"));
+                    reader.read_line(&mut line).expect("read status request");
+                    // The liveness check connects and closes before the ping.
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let request: serde_json::Value =
+                        serde_json::from_str(&line).expect("status request JSON");
+                    let response = serde_json::json!({
+                        "id": request["id"],
+                        "result": {
+                            "type": "pong",
+                            "version": "0.1.0-test",
+                            "build_id": expected_build.as_str(),
+                            "boot_id": "17-23",
+                            "stopping": false,
+                            "starting": starting,
+                        },
+                    });
+                    writeln!(stream, "{response}").expect("write status response");
+                    break;
+                }
+            }
+        });
+
+        let status =
+            local_server_status(&paths).expect("starting server settles to a running status");
+        server.join().expect("fake server thread");
+        assert_eq!(status.build_id.to_string(), other_build());
+        assert_eq!(
+            status.lifecycle,
+            shepr_launch::status::RuntimeLifecycle::Running
+        );
+    }
+
+    #[test]
     fn consent_reads_only_through_the_answer_newline() {
         use std::io::Read as _;
 

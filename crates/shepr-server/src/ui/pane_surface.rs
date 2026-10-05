@@ -6,8 +6,7 @@
 //! patch diff both consume it, so neither re-derives any of them.
 
 use ratatui::layout::Rect;
-use ratatui::widgets::Borders;
-use shepr_core::chrome::{PaneChrome, PaneContent};
+use shepr_core::chrome::{PaneChrome, PaneContent, SharedPaneEdges};
 use shepr_core::layout::PaneId;
 use shepr_mux::pane::{PaneRuntime, ScrollMetrics};
 use shepr_protocol::{CellData, CursorState, PaneSurfacePane, SurfaceRect};
@@ -34,22 +33,6 @@ pub(crate) fn core_rect(rect: Rect) -> shepr_core::geometry::Rect {
     shepr_core::geometry::Rect::new(rect.x, rect.y, rect.width, rect.height)
 }
 
-fn ratatui_borders(borders: shepr_core::chrome::Borders) -> Borders {
-    use shepr_core::chrome::Borders as Side;
-    let mut out = Borders::NONE;
-    for (side, ratatui_side) in [
-        (Side::TOP, Borders::TOP),
-        (Side::RIGHT, Borders::RIGHT),
-        (Side::BOTTOM, Borders::BOTTOM),
-        (Side::LEFT, Borders::LEFT),
-    ] {
-        if borders.contains(side) {
-            out |= ratatui_side;
-        }
-    }
-    out
-}
-
 /// One pane's scrollbar column as a retained patch rewrites it.
 pub(crate) struct ScrollbarPaint {
     /// The column to rewrite.
@@ -67,8 +50,8 @@ impl ScrollbarPaint {
 
 /// A pane with its content settled for its screen mode, in ratatui terms:
 /// what the surface draws and the retained-render path compares against.
-/// It stays ratatui-typed because the server draws into ratatui buffers;
-/// `from_content` is the one place the core chrome model is converted.
+/// It stays ratatui-typed for geometry because the server draws into ratatui
+/// buffers; its shared-edge facts come directly from the core chrome model.
 #[derive(Clone)]
 pub(crate) struct PaneSurface {
     pub(crate) id: PaneId,
@@ -80,7 +63,7 @@ pub(crate) struct PaneSurface {
     pub(crate) scrollbar_gutter: Option<Rect>,
     /// The scrollbar track, present only when it draws.
     pub(crate) scrollbar_rect: Option<Rect>,
-    pub(crate) borders: Borders,
+    pub(crate) shared_edges: SharedPaneEdges,
     pub(crate) is_focused: bool,
 }
 
@@ -108,7 +91,7 @@ impl PaneSurface {
             inner_rect: ratatui_rect(content.content),
             scrollbar_gutter: content.scrollbar_gutter.map(ratatui_rect),
             scrollbar_rect: None,
-            borders: ratatui_borders(content.chrome.borders),
+            shared_edges: content.chrome.shared_edges,
             is_focused: content.chrome.is_focused,
         }
     }

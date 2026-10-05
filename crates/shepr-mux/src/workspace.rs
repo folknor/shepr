@@ -68,8 +68,8 @@ mod shape;
 
 pub use self::geometry::{SpawnGeometry, WorkspaceChrome, spawn_geometry};
 pub use self::pane_tree::{
-    PaneRecord, PaneTree, PreparedSplit, RemoveRefusal, SavedTreeState, SplitRefused, TreePlan,
-    TreeRejection,
+    PaneRecord, PaneTree, PreparedSplit, RemoveRefusal, SavedTreeState, SplitPreparationRefused,
+    SplitRefused, TreePlan, TreeRejection,
 };
 pub use self::set::{
     PaneRef, PaneRemoval, PaneRemovalScope, PreparedWorkspace, WorkspaceIdAllocator, WorkspaceSet,
@@ -370,7 +370,8 @@ pub(crate) fn test_workspace_id() -> WorkspaceId {
     TEST_WORKSPACE_IDS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .allocate()
+        .try_allocate()
+        .expect("test workspace ID space available")
 }
 
 #[cfg(test)]
@@ -398,7 +399,7 @@ impl Workspace {
         let target = self.tree.focused();
         let prepared = self
             .prepare_split(target, direction, &chrome, None, self.identity_cwd.clone())
-            .expect("the focused pane is in the tree");
+            .expect("the focused pane can be split");
         self.commit_split(prepared)
             .expect("a split prepared just now commits")
     }

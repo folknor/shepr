@@ -56,29 +56,6 @@ in scope and could be a field), and an `app/session.rs` test spells
 `data_dir.join("session-backups")` where `session_backup_directory` exists. Rename
 the directory and the log lies. Enforceable by VAL-001's textlint.
 
-## VAL-003 - The session file size limit and its message exist as three spellings
-
-Reported by: persistence.
-
-`files::SessionFileTooLarge` displays "session file exceeds {} bytes";
-`files::save_to_path` builds its own `format!("session file exceeds
-{MAX_SESSION_FILE_BYTES} bytes")` as an untyped `InvalidData`, so an oversized
-save is not the typed error; `SessionRestoreFailure::TooLarge` renders "it exceeds
-the {limit}-byte session file limit". Fix: `save_to_path` returns
-`SessionFileTooLarge` too. Enforceable only by a test matching both paths on the
-typed error.
-
-## VAL-004 - The not-regular-file error names the link on one path and the target on another
-
-Reported by: persistence.
-
-`open_regular(path)` passes the caller's path (the symlink) into `not_regular`;
-`save_to_path`, `clear_path` and `check_session_target` pass `resolved.target()`.
-The same condition on the same file gives two messages depending on whether a
-read or a write met it. Pick one (the target, mentioning the link when they
-differ) and let `SessionPath` construct the error. A test can assert both paths
-give equal messages.
-
 ## VAL-005 - `NotRegularFile` is defined twice over one platform primitive
 
 Reported by: persistence, integrations.
@@ -278,18 +255,6 @@ of many app tests, so a slow disk under the harness times many out together. A
 `SavePolicyConfig { debounce, retry, checkpoint }` handed to `SessionSaver::new`
 would let tests drop the hand-set deadlines.
 
-## VAL-022 - The logind monitor has no injection point for the bus or its delays
-
-Reported by: save-shutdown.
-
-`monitor()` hard-codes `zbus::Connection::system()` and
-`Backoff::new(SHUTDOWN_RECONNECT_*)`. The reconnect loop, the refresh path, the
-reconnect-without-delay path and the backoff reset while pending are untested; the
-only D-Bus test calls `watch_connection` with `refresh_pending_warning = false`,
-and its comment admits the refresh is untested. Take a connection factory and a
-`Backoff` as parameters so `monitor` runs against the private bus the test already
-starts. Needed to test BUG-013.
-
 ## VAL-023 - The pidfd exit wait has two owners per pane
 
 Reported by: pane-lifecycle.
@@ -331,7 +296,7 @@ Reported by: pane-lifecycle.
 - `numeric_file_name` is defined twice in platform (`process.rs`, `proc_tree.rs`),
   identical.
 - `ACTOR_IDLE_POLL` is restated as "at least once a second" in
-  `PtyIoActorConfig::core_broken`'s doc and assumed by two tests (CLAIM).
+  `PtyIoActorConfig::core_broken`'s doc and assumed by two tests (see the claims document).
 - "The user's home" has two resolution moments: `PtyCommand::interactive_shell`
   copies `std::env::vars_os()` on every spawn and `cwd_candidates` reads `HOME`
   from that copy, while `passwd_home` is read once at init. Take the environment
@@ -345,8 +310,7 @@ The values sit in three limits modules (`shepr-pty`: `LAUNCH_HELLO_TIMEOUT`,
 `LAUNCH_ACCEPT_RETRY_DELAY`, `LAUNCH_PARKED_CONNECTION_TTL`, `ACTOR_IDLE_POLL`;
 `shepr-mux`: `LAUNCH_STATUS_AFTER_EXIT`, `LAUNCH_SETTLE_AFTER_PANE_END`,
 `LAUNCH_EXIT_POLL_INTERVAL`, `TERMINAL_CLOSED_EXIT_GRACE`, `PANE_TEARDOWN_STEPS`;
-`shepr-server`: `PANE_TEARDOWN_WAIT`). The coupling in BUG-020 is stated only in
-prose. Injection gaps:
+`shepr-server`: `PANE_TEARDOWN_WAIT`). Injection gaps:
 
 - `ACTOR_IDLE_POLL`: documented as only a fallback for a missed wake, but it is
   also the only cadence at which a core poisoned off the reader thread is noticed
@@ -358,9 +322,6 @@ prose. Injection gaps:
   `a_hung_launch_does_not_keep_a_failed_reader_from_ending_the_pane` waits it out.
 - `PANE_TEARDOWN_STEPS`: `pane_teardown_reaches_background_jobs_after_the_leader_is_reaped`
   waits through real grace periods.
-- The router's timings live inside a process-global `OnceLock` service with no
-  seam, so parking, retirement and the pid-mismatch paths are untested
-  (BUG-018, BUG-019, BUG-021).
 
 ## VAL-027 - The braille spinner class is spelled per manifest, and the copies have diverged
 
@@ -401,8 +362,6 @@ resolved at compile.
 
 Reported by: agent-state, restore-resume.
 
-- `PARKED_START_LIFETIME` (detect) is derived in prose from mux's probe cadence
-  (BUG-033).
 - `HOOK_SEQUENCE_REANCHOR_AFTER`'s doc restates the hook assets' seq units
   (nanoseconds in shell and Python, microseconds in JS); needs a test in the
   integration crate that reads each asset's seq expression.
@@ -648,17 +607,7 @@ named only with spaces the prompt shows a blank name while the server names the
 workspace after the path. Already diverged. Fix: one function in core returning a
 label-shaped value (the client cannot see `shepr_mux::Label`). The test
 `workspace_rename_trims_defaults_and_renders_what_it_changed` computes its
-expectation with the same function (CLAIM).
-
-## VAL-050 - The scrollbar gutter cut-off is a bare `4` in two places
-
-Reported by: workspace-model.
-
-`shepr_core::chrome::content_rect` (`pane_inner.width <= 4`) and
-`ui/panes.rs` `render_pane_border_titles` (`info.rect.width <= 4`). With
-`PANE_MIN_COLS = 4`, the cut-off is evidently "keep at least the pane minimum", but
-nothing links them, and the limits textlint documents that it misses comparison
-literals. Fix: a named limit (`MIN_COLS_FOR_SCROLLBAR_GUTTER = PANE_MIN_COLS`).
+expectation with the same function (see the claims document).
 
 ## VAL-051 - `inner_rect` means two different rects
 
@@ -720,8 +669,7 @@ Reported by: server-lifecycle, remote.
 `SERVER_BINARY_NAME` exists, yet `"shepr-server"` is literal in `stop.rs`
 `ServerStopError::TimedOut`'s message, `shepr-daemon/src/main.rs`
 `report_server_error`, and every mismatch message in `shepr-remote/src/discovery.rs`.
-`"shepr"` is literal in `cli/error.rs` (`run 'shepr --help'`), `bootstrap.rs`
-`ServerReady` (BUG-055) and `shell/endpoints.rs` (BUG-061). `PROGRAM_NAME` and
+`"shepr"` is literal in `cli/error.rs` (`run 'shepr --help'`). `PROGRAM_NAME` and
 `REMOTE_INSTALL_NAME` are two constants of one value (a host never has more than one
 `shepr`); fold them unless they are meant to diverge. Route operator commands
 through `guidance::operator_entrypoint`. Enforceable with a textlint on

@@ -1,66 +1,41 @@
-//! Pane chrome math on the layout model's cell rect: which borders a pane
-//! draws, the gaps between panes, and the content rect left inside them. Pure
-//! cell arithmetic with no drawing library, so the server's view code and the
-//! spawn sizing that must agree with it share one implementation. Drawing
-//! crates adapt these values at their boundary.
-
-use std::ops::BitOr;
+//! Pane chrome math on the layout model's cell rect: which pane edges are
+//! shared with neighbors and the content rect left inside them. Pure cell
+//! arithmetic with no drawing library, so the server's view code and the spawn
+//! sizing that must agree with it share one implementation. Drawing crates
+//! adapt these values at their boundary.
 
 use crate::geometry::Rect;
 use crate::layout::{NavDirection, PaneId, PaneInfo as LayoutPaneInfo, rect_distance_in_direction};
+use crate::limits::PANE_MIN_COLS;
 
-/// A pane's border sides as a small bitset.
+/// A pane always draws its top and left edges. These flags say that a neighbor
+/// shares the pane's right or bottom edge, so this pane leaves that divider to
+/// the neighbor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Borders(u8);
-
-impl Borders {
-    pub const NONE: Self = Self(0);
-    pub const TOP: Self = Self(1);
-    pub const RIGHT: Self = Self(1 << 1);
-    pub const BOTTOM: Self = Self(1 << 2);
-    pub const LEFT: Self = Self(1 << 3);
-    pub const ALL: Self = Self(0b1111);
-
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    /// Whether every side of `other` is set.
-    pub const fn contains(self, other: Self) -> bool {
-        self.0 & other.0 == other.0
-    }
-
-    pub fn remove(&mut self, other: Self) {
-        self.0 &= !other.0;
-    }
+pub struct SharedPaneEdges {
+    pub shares_right: bool,
+    pub shares_bottom: bool,
 }
 
-impl BitOr for Borders {
-    type Output = Self;
+/// The minimum terminal width that must remain after reserving a scrollbar
+/// gutter.
+pub const MIN_COLS_FOR_SCROLLBAR_GUTTER: u16 = PANE_MIN_COLS;
 
-    fn bitor(self, other: Self) -> Self {
-        Self(self.0 | other.0)
-    }
-}
-
-/// The part of `area` inside `borders`: one cell off each bordered side,
-/// saturating, so a rect too small for its borders ends up empty.
-pub fn inner_rect(area: Rect, borders: Borders) -> Rect {
+/// The part of `area` inside the pane edges: top and left are always inset;
+/// right and bottom are inset when they are not shared. Saturates so a rect too
+/// small for its borders ends up empty.
+pub fn inner_rect(area: Rect, shared_edges: SharedPaneEdges) -> Rect {
     let mut inner = area;
     let right = area.x.saturating_add(area.width);
     let bottom = area.y.saturating_add(area.height);
-    if borders.contains(Borders::LEFT) {
-        inner.x = inner.x.saturating_add(1).min(right);
+    inner.x = inner.x.saturating_add(1).min(right);
+    inner.width = inner.width.saturating_sub(1);
+    inner.y = inner.y.saturating_add(1).min(bottom);
+    inner.height = inner.height.saturating_sub(1);
+    if !shared_edges.shares_right {
         inner.width = inner.width.saturating_sub(1);
     }
-    if borders.contains(Borders::TOP) {
-        inner.y = inner.y.saturating_add(1).min(bottom);
-        inner.height = inner.height.saturating_sub(1);
-    }
-    if borders.contains(Borders::RIGHT) {
-        inner.width = inner.width.saturating_sub(1);
-    }
-    if borders.contains(Borders::BOTTOM) {
+    if !shared_edges.shares_bottom {
         inner.height = inner.height.saturating_sub(1);
     }
     inner
@@ -70,7 +45,7 @@ pub fn inner_rect(area: Rect, borders: Borders) -> Rect {
 /// column is kept for the scrollbar gutter unless scrollbars are off, the pane
 /// is too narrow, or the terminal is on the alternate screen.
 pub fn content_rect(pane_inner: Rect, pane_scrollbars: bool, alternate_screen: bool) -> Rect {
-    if !pane_scrollbars || pane_inner.width <= 4 || alternate_screen {
+    if !pane_scrollbars || pane_inner.width <= MIN_COLS_FOR_SCROLLBAR_GUTTER || alternate_screen {
         return pane_inner;
     }
     Rect::new(
@@ -81,22 +56,22 @@ pub fn content_rect(pane_inner: Rect, pane_scrollbars: bool, alternate_screen: b
     )
 }
 
-/// A pane's layout position with its chrome applied: the outer rect (gaps
-/// already taken off) and the borders it draws. It carries no content
-/// geometry: the screen mode decides the scrollbar gutter, so content exists
-/// only on the [`PaneContent`] that [`PaneChrome::into_content`] produces.
+/// A pane's unchanged layout rect and the edges it shares with neighbors. The
+/// layout rect is not shrunk for gaps. It carries no content geometry: the
+/// screen mode decides the scrollbar gutter, so content exists only on the
+/// [`PaneContent`] that [`PaneChrome::into_content`] produces.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneChrome {
     pub id: PaneId,
     pub rect: Rect,
-    pub borders: Borders,
+    pub shared_edges: SharedPaneEdges,
     pub is_focused: bool,
 }
 
 impl PaneChrome {
     /// The rect inside the borders, before any scrollbar gutter.
     pub fn inner_rect(&self) -> Rect {
-        inner_rect(self.rect, self.borders)
+        inner_rect(self.rect, self.shared_edges)
     }
 
     /// Settle the content rect for a screen mode. Empty drawable rects stay
@@ -142,26 +117,23 @@ fn touching_neighbor<'a>(
     })
 }
 
-/// Apply the pane chrome settings to a layout's pane rects. Every pane draws
-/// its full border box; with no gaps, a side shared with a neighbouring pane
-/// is left to that neighbour so the two share one divider line.
+/// Find which right and bottom edges touch neighbors. Top and left edges always
+/// belong to the pane; a right or bottom edge belongs to its neighbor only when
+/// panes share dividers instead of drawing independent adjacent borders.
 pub fn apply_pane_chrome(panes: &[LayoutPaneInfo], pane_gaps: bool) -> Vec<PaneChrome> {
     panes
         .iter()
         .map(|layout_info| {
-            let mut borders = Borders::ALL;
-            if !pane_gaps {
-                if touching_neighbor(layout_info, panes, NavDirection::Right).is_some() {
-                    borders.remove(Borders::RIGHT);
-                }
-                if touching_neighbor(layout_info, panes, NavDirection::Down).is_some() {
-                    borders.remove(Borders::BOTTOM);
-                }
-            }
+            let shared_edges = SharedPaneEdges {
+                shares_right: !pane_gaps
+                    && touching_neighbor(layout_info, panes, NavDirection::Right).is_some(),
+                shares_bottom: !pane_gaps
+                    && touching_neighbor(layout_info, panes, NavDirection::Down).is_some(),
+            };
             PaneChrome {
                 id: layout_info.id,
                 rect: layout_info.rect,
-                borders,
+                shared_edges,
                 is_focused: layout_info.is_focused,
             }
         })
@@ -229,42 +201,66 @@ mod tests {
             Some(to.id)
         );
         let chrome = apply_pane_chrome(&panes, false);
-        assert!(!chrome[0].borders.contains(Borders::RIGHT));
+        assert!(chrome[0].shared_edges.shares_right);
     }
 
     #[test]
-    fn inner_rect_takes_one_cell_off_each_bordered_side() {
+    fn inner_rect_always_takes_top_and_left_and_only_unshared_edges() {
         let area = Rect::new(4, 2, 10, 6);
-        assert_eq!(inner_rect(area, Borders::NONE), area);
-        assert_eq!(inner_rect(area, Borders::ALL), Rect::new(5, 3, 8, 4));
         assert_eq!(
-            inner_rect(area, Borders::LEFT | Borders::BOTTOM),
-            Rect::new(5, 2, 9, 5)
+            inner_rect(area, SharedPaneEdges::default()),
+            Rect::new(5, 3, 8, 4)
+        );
+        assert_eq!(
+            inner_rect(
+                area,
+                SharedPaneEdges {
+                    shares_right: true,
+                    shares_bottom: false,
+                }
+            ),
+            Rect::new(5, 3, 9, 4)
         );
         // A rect too small for its borders ends up empty, never wrapped.
-        let tiny = inner_rect(Rect::new(0, 0, 1, 1), Borders::ALL);
+        let tiny = inner_rect(Rect::new(0, 0, 1, 1), SharedPaneEdges::default());
         assert_eq!((tiny.width, tiny.height), (0, 0));
-        let empty = inner_rect(Rect::new(u16::MAX, u16::MAX, 0, 0), Borders::ALL);
+        let empty = inner_rect(
+            Rect::new(u16::MAX, u16::MAX, 0, 0),
+            SharedPaneEdges::default(),
+        );
         assert_eq!((empty.width, empty.height), (0, 0));
     }
 
     #[test]
     fn content_layout_reserves_only_primary_wide_pane_gutters() {
-        for width in [0, 1, 4, 5, 20] {
+        for width in [
+            0,
+            1,
+            MIN_COLS_FOR_SCROLLBAR_GUTTER,
+            MIN_COLS_FOR_SCROLLBAR_GUTTER + 1,
+            MIN_COLS_FOR_SCROLLBAR_GUTTER + 2,
+            MIN_COLS_FOR_SCROLLBAR_GUTTER + 3,
+            20,
+        ] {
             for alternate in [false, true] {
                 for scrollbars in [false, true] {
                     let pane = PaneChrome {
                         id: PaneId::from_raw(1),
                         rect: Rect::new(10, 3, width, 8),
-                        borders: Borders::NONE,
+                        shared_edges: SharedPaneEdges::default(),
                         is_focused: true,
                     };
+                    let inner = pane.inner_rect();
                     let settled = pane.into_content(scrollbars, alternate);
-                    let reserved = scrollbars && !alternate && width > 4;
+                    let reserved =
+                        scrollbars && !alternate && inner.width > MIN_COLS_FOR_SCROLLBAR_GUTTER;
                     assert_eq!(settled.scrollbar_gutter.is_some(), reserved);
-                    assert_eq!(settled.content.width, width - u16::from(reserved));
+                    assert_eq!(settled.content.width, inner.width - u16::from(reserved));
                     if let Some(gutter) = settled.scrollbar_gutter {
-                        assert_eq!(gutter, Rect::new(10 + width - 1, 3, 1, 8));
+                        assert_eq!(
+                            gutter,
+                            Rect::new(inner.x + inner.width - 1, inner.y, 1, inner.height)
+                        );
                     }
                 }
             }
@@ -279,8 +275,8 @@ mod tests {
         let right = find(&chrome, second);
 
         assert_eq!(left.rect.x + left.rect.width, right.rect.x);
-        assert!(!left.borders.contains(Borders::RIGHT));
-        assert!(right.borders.contains(Borders::LEFT));
+        assert!(left.shared_edges.shares_right);
+        assert!(!right.shared_edges.shares_right);
     }
 
     #[test]
@@ -291,8 +287,8 @@ mod tests {
         let bottom = find(&chrome, second);
 
         assert_eq!(top.rect.y + top.rect.height, bottom.rect.y);
-        assert!(!top.borders.contains(Borders::BOTTOM));
-        assert!(bottom.borders.contains(Borders::TOP));
+        assert!(top.shared_edges.shares_bottom);
+        assert!(!bottom.shared_edges.shares_bottom);
     }
 
     #[test]
@@ -303,13 +299,16 @@ mod tests {
         let right = find(&chrome, second);
 
         assert_eq!(left.rect.x + left.rect.width, right.rect.x);
-        assert_eq!(left.borders, Borders::ALL);
-        assert_eq!(right.borders, Borders::ALL);
+        assert_eq!(left.shared_edges, SharedPaneEdges::default());
+        assert_eq!(right.shared_edges, SharedPaneEdges::default());
     }
 
     #[test]
     fn lone_pane_is_framed_on_every_side() {
         let (layout, _) = TileLayout::new();
-        assert_eq!(chrome_of(&layout, false)[0].borders, Borders::ALL);
+        assert_eq!(
+            chrome_of(&layout, false)[0].shared_edges,
+            SharedPaneEdges::default()
+        );
     }
 }

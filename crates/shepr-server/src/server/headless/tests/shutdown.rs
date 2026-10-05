@@ -361,14 +361,13 @@ async fn a_frozen_persisting_server_runs_the_final_save_and_writes_nothing() {
     // The warning requests its checkpoint and waits for the writer's result
     // before it freezes.
     server.lifecycle.sync_host_shutdown_freeze(&mut server.app);
-    for _ in 0..5000 {
-        if server.app.host_shutdown_checkpoint_result_ready() {
-            break;
-        }
-        server.app.reap_finished_session_save();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    server.lifecycle.sync_host_shutdown_freeze(&mut server.app);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        server.outputs.save_finished_signal().notified(),
+    )
+    .await
+    .expect("checkpoint writer completed");
+    server.handle_scheduled_tasks_headless(server.app.clock().now);
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
     assert!(server.app.session_persists());
 
@@ -423,4 +422,117 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
     // ... but the pane stays in the layout the final save captures.
     assert!(server.app.state().pane(pane_id).is_some());
     shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn refreshed_warning_requires_a_new_checkpoint_before_releasing_the_lock() {
+    let mut server = test_headless_server();
+    server.persist_for_test();
+    let mut checkpoints = server.lifecycle.test_warning_monitor();
+    let finished = server.outputs.save_finished_signal();
+    let old_checkpoint = server.app.test_saver().hold_test_host_checkpoint();
+    server.lifecycle.sync_host_shutdown_freeze(&mut server.app);
+    assert_eq!(server.lifecycle.phase(), ShutdownPhase::HostShutdownWarning);
+
+    // Refresh while the first checkpoint is held. Its completion must not
+    // answer the refreshed warning.
+    server.lifecycle.test_refresh_warning();
+    server.lifecycle.sync_host_shutdown_freeze(&mut server.app);
+    old_checkpoint.complete(Ok(()));
+    // Reaping the voided save starts the refreshed checkpoint on the real
+    // persister; until that one is reaped the warning stays unanswered.
+    server.app.service_session_saves(server.app.clock().now);
+    server.lifecycle.sync_host_shutdown_freeze(&mut server.app);
+    assert_eq!(server.lifecycle.phase(), ShutdownPhase::HostShutdownWarning);
+    assert!(checkpoints.borrow().is_none());
+
+    tokio::time::timeout(Duration::from_secs(5), finished.notified())
+        .await
+        .expect("refreshed checkpoint completed");
+    server.handle_scheduled_tasks_headless(server.app.clock().now);
+    checkpoints.changed().await.expect("delay lock released");
+    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
+    assert_eq!(
+        *checkpoints.borrow(),
+        server.lifecycle.frozen_warning_generation()
+    );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[test]
+fn idle_host_checkpoint_freezes_without_an_unrelated_loop_event() {
+    let output = shepr_test_support::command_in_scratch(
+        std::env::current_exe().expect("test executable"),
+        "idle-host-checkpoint",
+    )
+    .args([
+        "--exact",
+        "server::headless::tests::shutdown::idle_host_checkpoint_subprocess_entry_point",
+        "--ignored",
+        "--nocapture",
+    ])
+    .env("SHEPR_TEST_HOST_CHECKPOINT_CHILD", "1")
+    .output()
+    .expect("run isolated server loop");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("1 passed"),
+        "child ran no test: {stdout}\n{stderr}"
+    );
+}
+
+#[test]
+#[ignore = "re-exec entry point for idle_host_checkpoint_freezes_without_an_unrelated_loop_event"]
+fn idle_host_checkpoint_subprocess_entry_point() {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the marker belongs to this test's re-exec harness"
+    )]
+    if std::env::var_os("SHEPR_TEST_HOST_CHECKPOINT_CHILD").is_none() {
+        return;
+    }
+    let _env = IsolatedEnv::new();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let mut server = test_headless_server();
+            server.persist_for_test();
+            let workspace = shepr_mux::workspace::Workspace::test_new("idle-host-warning");
+            let pane = workspace.tree().root();
+            server
+                .app
+                .test_state_mut()
+                .test_set_workspaces(vec![workspace]);
+            server.app.test_state_mut().seed_bookmark_index(Some(0));
+            server.app.insert_idle_test_runtime(pane);
+            let mut checkpoints = server.lifecycle.test_warning_monitor();
+            let completion = server.app.test_saver().hold_test_host_checkpoint();
+            let finished = server.outputs.save_finished_signal();
+            let stop = Arc::clone(server.lifecycle.stop_signal());
+            let observe = async move {
+                // Let run() reach its idle wait with the checkpoint unfinished.
+                tokio::task::yield_now().await;
+                completion.complete(Ok(()));
+                finished.notify_one();
+                checkpoints
+                    .changed()
+                    .await
+                    .expect("checkpoint acknowledgement");
+                stop.request();
+            };
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let (result, ()) = tokio::join!(server.run(), observe);
+                result.expect("server exited cleanly");
+            })
+            .await
+            .expect("idle server failed to freeze after its checkpoint");
+            // The acknowledgement is only sent on the transition to Frozen;
+            // stopping retains that freeze, and the final save writes nothing.
+            assert_eq!(server.lifecycle.phase(), ShutdownPhase::Stopping);
+            assert!(!server.app.test_saver().save_in_flight());
+        });
 }

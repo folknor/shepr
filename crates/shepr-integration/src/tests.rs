@@ -571,7 +571,6 @@ fn install_codex_writes_hook_and_updates_hooks_and_config() {
     assert!(config.contains("model = \"gpt-5.4\""));
     assert!(config.contains("[features]"));
     assert!(config.contains("hooks = true"));
-    assert!(!config.contains("codex_hooks"));
 }
 
 #[test]
@@ -606,11 +605,8 @@ fn install_codex_is_idempotent_for_hook_entries_and_feature_flag() {
     let home = base.join("home");
     let codex_dir = home.join(".codex");
     fs::create_dir_all(&codex_dir).expect("test precondition");
-    fs::write(
-        codex_dir.join("config.toml"),
-        "[features]\ncodex_hooks = false\nother = true\n",
-    )
-    .expect("test precondition");
+    fs::write(codex_dir.join("config.toml"), "[features]\nother = true\n")
+        .expect("test precondition");
     env.set("HOME", &home);
 
     install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
@@ -642,38 +638,7 @@ fn install_codex_is_idempotent_for_hook_entries_and_feature_flag() {
     assert!(hooks["hooks"].get("PreToolUse").is_none());
     assert!(hooks["hooks"].get("PermissionRequest").is_none());
     assert_eq!(config.matches("hooks = true").count(), 1);
-    assert!(!config.contains("codex_hooks"));
     assert!(config.contains("other = true"));
-}
-
-#[test]
-fn install_codex_only_migrates_top_level_feature_flags() {
-    let env = IsolatedEnv::new();
-    let base = unique_base(&env);
-    let home = base.join("home");
-    let codex_dir = home.join(".codex");
-    fs::create_dir_all(&codex_dir).expect("test precondition");
-    fs::write(
-            codex_dir.join("config.toml"),
-            "profile = \"work\"\n\n[profiles.work.features]\nhooks = false\ncodex_hooks = false\n\n[features]\ncodex_hooks = true\nother = true\n",
-        )
-        .expect("test precondition");
-    env.set("HOME", &home);
-
-    install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
-
-    let config = fs::read_to_string(codex_dir.join("config.toml")).expect("test precondition");
-
-    assert!(config.contains("[profiles.work.features]\nhooks = false\ncodex_hooks = false"));
-    let parsed: toml::Table = toml::from_str(&config).expect("valid TOML");
-    let features = parsed
-        .get("features")
-        .and_then(toml::Value::as_table)
-        .expect("features table");
-    assert_eq!(features.get("hooks"), Some(&toml::Value::Boolean(true)));
-    assert_eq!(features.get("other"), Some(&toml::Value::Boolean(true)));
-    assert!(!features.contains_key("codex_hooks"), "{config}");
-    assert_eq!(config.matches("[features]").count(), 1, "{config}");
 }
 
 #[test]
@@ -2805,10 +2770,10 @@ fn grok_status_distinguishes_missing_malformed_and_drifted_hook_config() {
     fs::remove_file(&config_path).expect("test precondition");
     assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
 
-    // Corrupt config.
+    // Corrupt config: the file is wholly shepr's, so it is drift the next
+    // install replaces, not a user config error.
     fs::write(&config_path, "{not json").expect("test precondition");
-    let error = grok_status().expect_err("invalid config must be reported");
-    assert!(error.to_string().contains("cannot parse"));
+    assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
 
     // Config that no longer references the hook script.
     fs::write(
@@ -2996,25 +2961,35 @@ fn codex_features_hooks_follow_the_users_features_shape() {
     let built = build_codex_config_with_hooks("model = \"o3\"\n").expect("test precondition");
     assert!(hooks_enabled(&built), "{built}");
 
-    // Existing [features] table: key inserted under it, deprecated key dropped.
+    // Existing [features] table: key inserted under it, the user's other keys
+    // kept as written.
     let built = build_codex_config_with_hooks(
         "model = \"o3\"\n\n[features]\ncodex_hooks = true\nother = 1\n\n[tui]\nx = 1\n",
     )
     .expect("test precondition");
     assert!(hooks_enabled(&built), "{built}");
-    assert!(!built.contains("codex_hooks"));
+    assert!(built.contains("codex_hooks = true"), "{built}");
 
     // Root-level dotted keys: no second [features] table.
     for config in [
         "features.web_search = true\nmodel = \"o3\"\n",
-        "features.hooks = false\n",
-        "features . hooks=false\nfeatures.codex_hooks = true\n",
         "features.codex_hooks = true\n[tui]\nx = 1\n",
     ] {
         let built = build_codex_config_with_hooks(config).expect("test precondition");
         assert!(hooks_enabled(&built), "{config:?} -> {built}");
         assert!(!built.contains("[features]"), "{config:?} -> {built}");
-        assert!(!built.contains("codex_hooks"), "{config:?} -> {built}");
+    }
+
+    // The user's explicit opt-out is refused, however it is spelled.
+    for config in [
+        "features.hooks = false\n",
+        "features . hooks=false\nfeatures.codex_hooks = true\n",
+        "[features]\nhooks = false\n",
+    ] {
+        assert!(
+            build_codex_config_with_hooks(config).is_err(),
+            "{config:?} must be refused"
+        );
     }
 
     // A dotted `features.*` key inside another table is not the root table.

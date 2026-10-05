@@ -49,14 +49,31 @@ impl App {
                 shepr_core::layout::Direction::Vertical
             }
         };
-        let Some(prepared) = ws.prepare_split(
+        let prepared = match ws.prepare_split(
             target_pane_id,
             direction,
             &chrome,
             geometry.cell_px(),
             split_cwd,
-        ) else {
-            return Err(pane_missing(&params.pane_id).into());
+        ) {
+            Ok(prepared) => prepared,
+            Err(shepr_mux::workspace::SplitPreparationRefused::TargetGone) => {
+                return Err(pane_missing(&params.pane_id).into());
+            }
+            Err(shepr_mux::workspace::SplitPreparationRefused::NumberExhausted) => {
+                return Err(
+                    shepr_protocol::command::EndpointError::ResourceFailure(format!(
+                        "the pane number space is exhausted in workspace {workspace_id}"
+                    ))
+                    .into(),
+                );
+            }
+            Err(shepr_mux::workspace::SplitPreparationRefused::LayoutRefused) => {
+                return Err(shepr_protocol::command::EndpointError::ResourceFailure(
+                    "the workspace layout could not accept the split".to_owned(),
+                )
+                .into());
+            }
         };
         let runtime = match self.launch_pane(
             prepared.pane_id(),

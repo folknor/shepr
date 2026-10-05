@@ -23,7 +23,7 @@ use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use shepr_core::absolute_path::AbsolutePath;
 
@@ -254,13 +254,84 @@ struct Routes {
     /// Tickets whose launch withdrew before its child's connection was
     /// routed; that connection is dropped when it arrives instead of parked.
     retired: HashMap<u64, Instant>,
+    failure: Option<Arc<io::Error>>,
 }
 
 impl Routes {
-    fn prune(&mut self, now: Instant) {
-        let live = |at: Instant| now.saturating_duration_since(at) < LAUNCH_PARKED_CONNECTION_TTL;
+    fn prune(&mut self, now: Instant, ttl: Duration) {
+        let live = |at: Instant| now.saturating_duration_since(at) < ttl;
         self.parked.retain(|_, parked| live(parked.at));
         self.retired.retain(|_, at| live(*at));
+    }
+
+    fn register(&mut self, ticket: u64, waiting: Waiting) -> Option<(StatusDelivery, OwnedFd)> {
+        if self.failure.is_some() {
+            // Dropping delivery wakes a launch racing the listener's failure.
+            return None;
+        }
+        if let Some(parked) = self.parked.remove(&ticket) {
+            if parked.pid == waiting.pid {
+                return Some((waiting.deliver, parked.channel));
+            }
+            tracing::warn!(ticket, pid = %parked.pid, "pane launch status from an unexpected process");
+        }
+        self.waiting.insert(ticket, waiting);
+        None
+    }
+
+    fn route(
+        &mut self,
+        ticket: u64,
+        pid: shepr_platform::Pid,
+        channel: OwnedFd,
+        now: Instant,
+    ) -> Option<(StatusDelivery, OwnedFd)> {
+        if self.failure.is_some() || self.retired.contains_key(&ticket) {
+            return None;
+        }
+        match self.waiting.remove(&ticket) {
+            Some(waiting) if waiting.pid == pid => Some((waiting.deliver, channel)),
+            Some(waiting) => {
+                self.waiting.insert(ticket, waiting);
+                tracing::warn!(ticket, pid = %pid, "pane launch status from an unexpected process");
+                None
+            }
+            None => {
+                self.parked.insert(
+                    ticket,
+                    Parked {
+                        pid,
+                        channel,
+                        at: now,
+                    },
+                );
+                None
+            }
+        }
+    }
+
+    fn retire(&mut self, ticket: u64, now: Instant) {
+        self.parked.remove(&ticket);
+        if self.waiting.remove(&ticket).is_some() {
+            self.retired.insert(ticket, now);
+        }
+    }
+
+    fn fail(&mut self, error: io::Error) {
+        self.failure = Some(Arc::new(error));
+        self.waiting.clear();
+        self.parked.clear();
+        self.retired.clear();
+    }
+
+    fn check_health(&self) -> io::Result<()> {
+        match &self.failure {
+            Some(error) => Err(io::Error::new(
+                error.kind(),
+                CachedLaunchFailure(Arc::clone(error)),
+            )),
+            None => Ok(()),
+        }
     }
 }
 
@@ -277,6 +348,36 @@ pub(crate) struct LaunchService {
 struct Router {
     listener: OwnedFd,
     routes: Mutex<Routes>,
+    timing: RouterTiming,
+}
+
+#[derive(Clone, Copy)]
+struct RouterTiming {
+    hello: Duration,
+    parked: Duration,
+    retry: Duration,
+}
+
+impl Default for RouterTiming {
+    fn default() -> Self {
+        Self {
+            hello: LAUNCH_HELLO_TIMEOUT,
+            parked: LAUNCH_PARKED_CONNECTION_TTL,
+            retry: LAUNCH_ACCEPT_RETRY_DELAY,
+        }
+    }
+}
+
+struct PendingHello {
+    channel: OwnedFd,
+    pid: u32,
+    at: Instant,
+}
+
+impl PendingHello {
+    fn live(&self, now: Instant, timeout: Duration) -> bool {
+        now.saturating_duration_since(self.at) < timeout
+    }
 }
 
 #[derive(Debug)]
@@ -306,17 +407,24 @@ pub fn init() -> io::Result<()> {
 }
 
 pub(crate) fn service() -> io::Result<&'static LaunchService> {
-    SERVICE
+    let service = SERVICE
         .get_or_init(|| LaunchService::bind().map_err(Arc::new))
         .as_ref()
-        .map_err(|error| io::Error::new(error.kind(), CachedLaunchFailure(Arc::clone(error))))
+        .map_err(|error| io::Error::new(error.kind(), CachedLaunchFailure(Arc::clone(error))))?;
+    lock_auxiliary(&service.router.routes).check_health()?;
+    Ok(service)
 }
 
 impl LaunchService {
     fn bind() -> io::Result<Self> {
         // SAFETY: socket(2) takes integer arguments and returns a new fd or -1.
-        let fd =
-            unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC, 0) };
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_UNIX,
+                libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
+                0,
+            )
+        };
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -363,6 +471,7 @@ impl LaunchService {
         let router = std::sync::Arc::new(Router {
             listener,
             routes: Mutex::default(),
+            timing: RouterTiming::default(),
         });
         let accepting = std::sync::Arc::clone(&router);
         std::thread::Builder::new()
@@ -401,23 +510,13 @@ impl LaunchService {
         pid: shepr_platform::Pid,
         deliver: StatusDelivery,
     ) -> Registration {
-        let parked = {
+        let delivery = {
             let mut routes = lock_auxiliary(&self.router.routes);
-            // clock-io-ok: registration is the launch IO boundary that ages parked connections.
-            routes.prune(Instant::now());
-            match routes.parked.remove(&ticket) {
-                Some(parked) if parked.pid == pid => Some(parked.channel),
-                Some(_) => None,
-                None => {
-                    routes.waiting.insert(ticket, Waiting { pid, deliver });
-                    return Registration {
-                        service: self,
-                        ticket,
-                    };
-                }
-            }
+            // clock-io-ok: registration ages parked connections at the launch IO boundary.
+            routes.prune(Instant::now(), self.router.timing.parked);
+            routes.register(ticket, Waiting { pid, deliver })
         };
-        if let Some(channel) = parked {
+        if let Some((deliver, channel)) = delivery {
             deliver(channel);
         }
         Registration {
@@ -428,97 +527,157 @@ impl LaunchService {
 }
 
 impl Router {
-    /// Accepts status connections for the life of the process. It wakes at
-    /// least once per TTL and expires parked connections on every wake, even
-    /// when no launch happens or accepting fails, and rides out resource
-    /// exhaustion (fd or memory limits) rather than ending: a listener that
-    /// stopped accepting would leave every later launch unsettled.
+    /// Polls every unfinished hello together. A silent peer has its own
+    /// deadline and cannot hold up a child's hello or failure report.
+    /// The mux's post-exit status grace therefore need not exceed a stray
+    /// peer's hello timeout: that timeout is no longer spent serially before
+    /// reading the child's already queued hello.
     fn accept_loop(&self) {
+        self.accept_loop_with(poll_hellos, std::thread::sleep, || {
+            shepr_platform::ipc::accept_peer(
+                self.listener.as_raw_fd(),
+                shepr_platform::ipc::PeerAdmission::ExactOwner,
+            )
+        });
+    }
+
+    fn accept_loop_with(
+        &self,
+        mut poll: impl FnMut(&mut [libc::pollfd], Duration) -> io::Result<()>,
+        mut sleep: impl FnMut(Duration),
+        mut accept: impl FnMut() -> shepr_platform::ipc::Accepted,
+    ) {
+        let mut pending: Vec<PendingHello> = Vec::new();
+        // A shortage of fds or memory lasts many retries; it is logged when it
+        // starts and when the listener recovers, not on every retry.
         let mut exhausted = false;
-        let wake_ms = libc::c_int::try_from(LAUNCH_PARKED_CONNECTION_TTL.as_millis())
-            .unwrap_or(libc::c_int::MAX);
         loop {
-            let mut listener = libc::pollfd {
+            // clock-io-ok: listener wake ages pending hellos and routing entries.
+            let now = Instant::now();
+            lock_auxiliary(&self.routes).prune(now, self.timing.parked);
+            pending.retain(|peer| {
+                let live = peer.live(now, self.timing.hello);
+                if !live {
+                    tracing::warn!(pid = peer.pid, "pane launch status hello timed out");
+                }
+                live
+            });
+            let wait = pending
+                .iter()
+                .map(|peer| {
+                    self.timing
+                        .hello
+                        .saturating_sub(now.saturating_duration_since(peer.at))
+                })
+                .min()
+                .unwrap_or(self.timing.parked)
+                .min(self.timing.parked);
+            let mut fds = Vec::with_capacity(pending.len() + 1);
+            fds.push(libc::pollfd {
                 fd: self.listener.as_raw_fd(),
                 events: libc::POLLIN,
                 revents: 0,
-            };
-            // SAFETY: one live pollfd on this stack frame.
-            let ready = unsafe { libc::poll(&mut listener, 1, wake_ms) };
-            // Expired parked fds are what may hold the descriptors an accept
-            // needs, so they go before every accept, not only on idle wakes.
-            // clock-io-ok: the listener's wake is the IO boundary that ages parking.
-            lock_auxiliary(&self.routes).prune(Instant::now());
-            if ready <= 0 {
-                continue;
-            }
-            let peer = match shepr_platform::ipc::accept_peer(
-                self.listener.as_raw_fd(),
-                shepr_platform::ipc::PeerAdmission::ExactOwner,
-            ) {
-                shepr_platform::ipc::Accepted::Peer(peer) => peer,
-                shepr_platform::ipc::Accepted::RetryNow => continue,
-                shepr_platform::ipc::Accepted::Backoff(error) => {
+            });
+            fds.extend(pending.iter().map(|peer| libc::pollfd {
+                fd: peer.channel.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            }));
+            if let Err(error) = poll(&mut fds, wait) {
+                if error.kind() != io::ErrorKind::Interrupted {
                     if !exhausted {
-                        tracing::warn!(%error, "pane launch status listener failed; retrying");
+                        tracing::warn!(%error, "pane launch status poll failed; retrying");
                     }
                     exhausted = true;
-                    std::thread::sleep(LAUNCH_ACCEPT_RETRY_DELAY);
+                    sleep(self.timing.retry);
+                }
+                continue;
+            }
+            // Process established peers before accepting more, so a stream
+            // of new connections cannot starve already queued child reports.
+            for index in (0..pending.len()).rev() {
+                if fds[index + 1].revents == 0 {
                     continue;
                 }
-                shepr_platform::ipc::Accepted::Fatal(error) => {
-                    tracing::error!(%error, "pane launch status listener is invalid");
-                    return;
+                let peer = pending.swap_remove(index);
+                match accept_hello(&peer.channel, peer.pid) {
+                    Ok(Some((ticket, pid))) => self.route(ticket, pid, peer.channel),
+                    Ok(None) => pending.push(peer),
+                    Err(error) => {
+                        tracing::warn!(%error, "dropping a pane launch status connection");
+                    }
                 }
-            };
-            if exhausted {
-                tracing::info!("pane launch status listener recovered");
-                exhausted = false;
             }
-            let channel = peer.fd;
-            match accept_hello(&channel, peer.pid) {
-                Ok((ticket, pid)) => self.route(ticket, pid, channel),
-                Err(error) => {
-                    tracing::warn!(%error, "dropping a pane launch status connection");
+            if fds[0].revents & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 {
+                self.fail(io::Error::other("pane launch status listener is invalid"));
+                return;
+            }
+            if fds[0].revents & libc::POLLIN == 0 {
+                continue;
+            }
+            match accept() {
+                shepr_platform::ipc::Accepted::Peer(peer) => {
+                    if exhausted {
+                        tracing::info!("pane launch status listener recovered");
+                        exhausted = false;
+                    }
+                    pending.push(PendingHello {
+                        channel: peer.fd,
+                        pid: peer.pid,
+                        // clock-io-ok: accepted peer starts its own hello deadline.
+                        at: Instant::now(),
+                    });
+                }
+                shepr_platform::ipc::Accepted::RetryNow => {}
+                shepr_platform::ipc::Accepted::Backoff(error) => {
+                    if !exhausted {
+                        tracing::warn!(%error, "pane launch status accept failed; retrying");
+                    }
+                    exhausted = true;
+                    sleep(self.timing.retry);
+                }
+                shepr_platform::ipc::Accepted::Fatal(error) => {
+                    self.fail(error);
+                    return;
                 }
             }
         }
     }
 
+    fn fail(&self, error: io::Error) {
+        tracing::error!(%error, "pane launch status listener stopped; launches unavailable");
+        lock_auxiliary(&self.routes).fail(error);
+    }
+
     fn route(&self, ticket: u64, pid: shepr_platform::Pid, channel: OwnedFd) {
         let delivery = {
             let mut routes = lock_auxiliary(&self.routes);
-            // clock-io-ok: an accepted connection is the IO boundary that stamps parking.
+            // clock-io-ok: routing stamps and ages parking at the IO boundary.
             let now = Instant::now();
-            routes.prune(now);
-            match routes.waiting.remove(&ticket) {
-                Some(waiting) if waiting.pid == pid => Some(waiting.deliver),
-                Some(waiting) => {
-                    // A connection for this ticket from another process.
-                    routes.waiting.insert(ticket, waiting);
-                    tracing::warn!(ticket, pid = %pid, "pane launch status from an unexpected process");
-                    return;
-                }
-                None if routes.retired.remove(&ticket).is_some() => {
-                    // Its launch already gave up on it; the channel closes here.
-                    return;
-                }
-                None => {
-                    routes.parked.insert(
-                        ticket,
-                        Parked {
-                            pid,
-                            channel,
-                            at: now,
-                        },
-                    );
-                    return;
-                }
-            }
+            routes.prune(now, self.timing.parked);
+            routes.route(ticket, pid, channel, now)
         };
-        if let Some(deliver) = delivery {
+        if let Some((deliver, channel)) = delivery {
             deliver(channel);
         }
+    }
+}
+
+fn poll_hellos(fds: &mut [libc::pollfd], wait: Duration) -> io::Result<()> {
+    let count = libc::nfds_t::try_from(fds.len())
+        .map_err(|_| io::Error::other("too many launch hello channels"))?;
+    // SAFETY: the slice contains count live pollfd entries for this call.
+    let result = unsafe {
+        libc::poll(
+            fds.as_mut_ptr(),
+            count,
+            shepr_platform::Wait::After(wait).poll_millis(),
+        )
+    };
+    if result < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -532,46 +691,33 @@ pub struct Registration {
 impl Drop for Registration {
     fn drop(&mut self) {
         let mut routes = lock_auxiliary(&self.service.router.routes);
-        routes.parked.remove(&self.ticket);
-        if routes.waiting.remove(&self.ticket).is_some() {
-            // Never delivered: the child's connection may still be on its way.
-            // clock-io-ok: withdrawal is the launch IO boundary that stamps retirement.
-            routes.retired.insert(self.ticket, Instant::now());
-        }
+        // clock-io-ok: withdrawal stamps retirement at the launch IO boundary.
+        routes.retire(self.ticket, Instant::now());
     }
 }
 
-/// Reads the hello of a peer `accept_peer` already admitted (same user, with
-/// `pid` from its credentials), bounded by `LAUNCH_HELLO_TIMEOUT` so a stray
-/// local connection cannot stall the listener, then clears the receive
-/// timeout for the channel's reader.
-fn accept_hello(channel: &OwnedFd, pid: u32) -> io::Result<(u64, shepr_platform::Pid)> {
+/// Attempts one hello without waiting; the router owns each peer's deadline.
+fn accept_hello(channel: &OwnedFd, pid: u32) -> io::Result<Option<(u64, shepr_platform::Pid)>> {
     let pid = shepr_platform::Pid::new(pid)
         .ok_or_else(|| protocol_error("invalid launch peer process id"))?;
-    let timeout = libc::timeval {
-        tv_sec: libc::time_t::try_from(LAUNCH_HELLO_TIMEOUT.as_secs())
-            .map_err(|_| io::Error::other("hello timeout out of range"))?,
-        tv_usec: libc::suseconds_t::from(LAUNCH_HELLO_TIMEOUT.subsec_micros()),
-    };
-    set_receive_timeout(channel, &timeout)?;
     let mut buffer = [0_u8; LAUNCH_STATUS_RECORD_BYTES + 1];
     let read = loop {
-        // SAFETY: `buffer` is a live writable stack buffer of the length
-        // passed, and `channel` stays open for the call.
+        // SAFETY: buffer is writable and channel stays open during recv.
         let read = unsafe {
             libc::recv(
                 channel.as_raw_fd(),
                 buffer.as_mut_ptr().cast(),
                 buffer.len(),
-                0,
+                libc::MSG_DONTWAIT,
             )
         };
         if read < 0 {
             let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                continue;
+            match error.kind() {
+                io::ErrorKind::Interrupted => continue,
+                io::ErrorKind::WouldBlock => return Ok(None),
+                _ => return Err(error),
             }
-            return Err(error);
         }
         break usize::try_from(read).map_err(|_| io::Error::other("negative recv length"))?;
     };
@@ -580,39 +726,265 @@ fn accept_hello(channel: &OwnedFd, pid: u32) -> io::Result<(u64, shepr_platform:
             "launch status connection did not open with a hello",
         ));
     };
-    set_receive_timeout(
-        channel,
-        &libc::timeval {
-            tv_sec: 0,
-            tv_usec: 0,
-        },
-    )?;
-    Ok((ticket, pid))
-}
-
-fn set_receive_timeout(channel: &OwnedFd, timeout: &libc::timeval) -> io::Result<()> {
-    let length = libc::socklen_t::try_from(std::mem::size_of::<libc::timeval>())
-        .map_err(|_| io::Error::other("timeval size does not fit socklen_t"))?;
-    // SAFETY: `timeout` is a live timeval of the length passed; setsockopt
-    // reads it during the call only.
-    if unsafe {
-        libc::setsockopt(
-            channel.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_RCVTIMEO,
-            std::ptr::from_ref(timeout).cast(),
-            length,
-        )
-    } != 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    Ok(Some((ticket, pid)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pair() -> (OwnedFd, OwnedFd) {
+        let mut fds = [-1; 2];
+        // SAFETY: socketpair writes two fresh descriptors into the live array.
+        assert_eq!(
+            unsafe {
+                libc::socketpair(
+                    libc::AF_UNIX,
+                    libc::SOCK_SEQPACKET | libc::SOCK_CLOEXEC,
+                    0,
+                    fds.as_mut_ptr(),
+                )
+            },
+            0
+        );
+        // SAFETY: successful socketpair returned two independently owned fds.
+        unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+    }
+
+    fn pid(value: u32) -> shepr_platform::Pid {
+        shepr_platform::Pid::new(value).expect("positive test pid")
+    }
+
+    fn waiter(value: u32) -> (Waiting, std::sync::mpsc::Receiver<OwnedFd>) {
+        let (send, receive) = std::sync::mpsc::channel();
+        (
+            Waiting {
+                pid: pid(value),
+                deliver: Box::new(move |fd| {
+                    send.send(fd).expect("deliver");
+                }),
+            },
+            receive,
+        )
+    }
+
+    fn dispatch(delivery: Option<(StatusDelivery, OwnedFd)>) {
+        if let Some((deliver, channel)) = delivery {
+            deliver(channel);
+        }
+    }
+
+    fn router() -> Router {
+        let (listener, _other) = pair();
+        Router {
+            listener,
+            routes: Mutex::default(),
+            timing: RouterTiming::default(),
+        }
+    }
+
+    fn send_record(channel: &OwnedFd, record: &[u8]) {
+        // SAFETY: record is readable and channel is open during send.
+        assert_eq!(
+            unsafe {
+                libc::send(
+                    channel.as_raw_fd(),
+                    record.as_ptr().cast(),
+                    record.len(),
+                    libc::MSG_NOSIGNAL,
+                )
+            },
+            isize::try_from(record.len()).expect("small record")
+        );
+    }
+
+    #[test]
+    fn parked_and_waiting_routes_deliver_only_the_registered_pid() {
+        for parked_first in [false, true] {
+            let mut routes = Routes::default();
+            let now = Instant::now();
+            let (foreign, _foreign_peer) = pair();
+            let (waiting, receive) = waiter(42);
+            if parked_first {
+                assert!(routes.route(1, pid(7), foreign, now).is_none());
+                assert!(routes.register(1, waiting).is_none());
+            } else {
+                assert!(routes.register(1, waiting).is_none());
+                assert!(routes.route(1, pid(7), foreign, now).is_none());
+            }
+            assert!(matches!(
+                receive.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            assert!(routes.waiting.contains_key(&1));
+            let (child, _child_peer) = pair();
+            dispatch(routes.route(1, pid(42), child, now));
+            receive.try_recv().expect("real child delivered");
+            assert!(routes.waiting.is_empty());
+        }
+    }
+
+    #[test]
+    fn early_child_is_delivered_at_registration_and_parking_expires() {
+        let mut routes = Routes::default();
+        let now = Instant::now();
+        let ttl = Duration::from_millis(10);
+        let (child, _peer) = pair();
+        routes.route(1, pid(42), child, now);
+        let (waiting, receive) = waiter(42);
+        dispatch(routes.register(1, waiting));
+        receive.try_recv().expect("parked child delivered");
+        let (child, _peer) = pair();
+        routes.route(2, pid(42), child, now);
+        routes.prune(now + ttl, ttl);
+        assert!(routes.parked.is_empty());
+    }
+
+    #[test]
+    fn retirement_rejects_every_late_connection_until_expiry() {
+        let mut routes = Routes::default();
+        let now = Instant::now();
+        let ttl = Duration::from_millis(10);
+        let (waiting, _receive) = waiter(42);
+        routes.register(1, waiting);
+        routes.retire(1, now);
+        for _ in 0..2 {
+            let (child, _peer) = pair();
+            assert!(routes.route(1, pid(42), child, now).is_none());
+            assert!(routes.parked.is_empty());
+        }
+        routes.prune(now + ttl, ttl);
+        assert!(routes.retired.is_empty());
+    }
+
+    #[test]
+    fn listener_failure_drops_waiters_and_rejects_future_launches() {
+        let router = router();
+        let (waiting, receive) = waiter(42);
+        lock_auxiliary(&router.routes).register(1, waiting);
+        router.accept_loop_with(
+            |fds, _| {
+                fds[0].revents = libc::POLLNVAL;
+                Ok(())
+            },
+            |_| panic!("fatal listener must not retry"),
+            || panic!("must not accept"),
+        );
+        let mut routes = lock_auxiliary(&router.routes);
+        assert!(routes.check_health().is_err());
+        assert!(matches!(
+            receive.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+        let (waiting, receive) = waiter(42);
+        routes.register(2, waiting);
+        assert!(matches!(
+            receive.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Disconnected)
+        ));
+        assert!(routes.waiting.is_empty());
+    }
+
+    #[test]
+    fn fatal_accept_poisons_the_router() {
+        let router = router();
+        router.accept_loop_with(
+            |fds, _| {
+                fds[0].revents = libc::POLLIN;
+                Ok(())
+            },
+            |_| panic!("fatal accept must not retry"),
+            || shepr_platform::ipc::Accepted::Fatal(io::Error::from_raw_os_error(libc::EBADF)),
+        );
+        assert!(lock_auxiliary(&router.routes).check_health().is_err());
+    }
+
+    #[test]
+    fn poll_errors_back_off_but_interrupts_retry_immediately() {
+        let router = router();
+        let mut iteration = 0;
+        let mut sleeps = Vec::new();
+        router.accept_loop_with(
+            |fds, _| {
+                iteration += 1;
+                match iteration {
+                    1 => Err(io::Error::from_raw_os_error(libc::EINTR)),
+                    2 | 3 => Err(io::Error::from_raw_os_error(libc::ENOMEM)),
+                    _ => {
+                        fds[0].revents = libc::POLLNVAL;
+                        Ok(())
+                    }
+                }
+            },
+            |wait| sleeps.push(wait),
+            || panic!("must not accept"),
+        );
+        assert_eq!(sleeps, vec![router.timing.retry; 2]);
+    }
+
+    #[test]
+    fn hello_is_nonblocking_validated_and_expires_at_its_own_deadline() {
+        let (channel, peer) = pair();
+        assert_eq!(accept_hello(&channel, 42).expect("pending"), None);
+        send_record(&peer, &hello_record(9));
+        assert_eq!(
+            accept_hello(&channel, 42).expect("hello"),
+            Some((9, pid(42)))
+        );
+        send_record(&peer, &chdir_ok_record(0));
+        assert_eq!(
+            accept_hello(&channel, 42).expect_err("wrong kind").kind(),
+            io::ErrorKind::InvalidData
+        );
+        send_record(&peer, &[0; 3]);
+        assert!(accept_hello(&channel, 42).is_err());
+        assert!(accept_hello(&channel, 0).is_err());
+        drop(peer);
+        assert!(accept_hello(&channel, 42).is_err());
+        let now = Instant::now();
+        let pending = PendingHello {
+            channel,
+            pid: 42,
+            at: now,
+        };
+        let timeout = Duration::from_millis(10);
+        assert!(pending.live(now, timeout));
+        assert!(!pending.live(now + timeout, timeout));
+    }
+
+    #[test]
+    fn silent_peer_does_not_delay_a_later_child_failure() {
+        let router = router();
+        let (silent, _silent_peer) = pair();
+        let (child, child_peer) = pair();
+        send_record(&child_peer, &hello_record(1));
+        send_record(&child_peer, &chdir_failed_record(libc::ENOENT));
+        let (waiting, receive) = waiter(42);
+        lock_auxiliary(&router.routes).register(1, waiting);
+        let mut peers = std::collections::VecDeque::from([
+            shepr_platform::ipc::AdmittedPeer { fd: silent, pid: 7 },
+            shepr_platform::ipc::AdmittedPeer { fd: child, pid: 42 },
+        ]);
+        let mut iteration = 0;
+        router.accept_loop_with(
+            |fds, _| {
+                iteration += 1;
+                match iteration {
+                    1 | 2 => fds[0].revents = libc::POLLIN,
+                    3 => fds[2].revents = libc::POLLIN,
+                    _ => fds[0].revents = libc::POLLNVAL,
+                }
+                Ok(())
+            },
+            |_| panic!("must not sleep"),
+            || shepr_platform::ipc::Accepted::Peer(peers.pop_front().expect("queued peer")),
+        );
+        let channel = receive.try_recv().expect("child bypassed silent hello");
+        assert_eq!(
+            read_record(&channel).expect("failure retained"),
+            RecordRead::Record(LaunchRecord::ChdirFailed(libc::ENOENT))
+        );
+    }
 
     fn abs(path: &str) -> AbsolutePath {
         AbsolutePath::new(path).expect("test path is absolute")

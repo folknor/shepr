@@ -121,6 +121,8 @@ Reported by: restore-resume.
   (BUG-009).
 - `restore.rs` `restored_terminal`, "preserving unavailable restored pane": cwd and
   reason, no pane.
+- A session path resolve error now carries the path in its text, and the restore
+  warning also logs `path = ...`, so the line spells the path twice.
 - `agent_resume.rs` "failed to start shell for deferred agent resume": pane
   (internal id) and agent, no workspace, public id or session.
 - A restored shell whose launch fails before forking logs `error!("failed to
@@ -311,8 +313,7 @@ Reported by: integrations.
   `install_present_integrations` at warn with the error.
 - An info "integration action finished" status line is logged per present agent per
   launch even when nothing is done.
-- Nothing is logged when the Codex feature flag is flipped or `codex_hooks` deleted
-  (BUG-037), when a shell hook will be inert for lack of `python3` (BUG-039), or
+- Nothing is logged when a shell hook will be inert for lack of `python3` (BUG-039), or
   when a JSON target's whole file is re-serialized (BUG-036).
 - `targets.rs` names a binary spelling inline in the OpenCode V2 notice ("start
   opencode2 once and the next shepr server launch registers it").
@@ -325,14 +326,14 @@ Reported by: server-lifecycle, remote, restore-resume.
 yet: `local_server.rs` (`unresponsive_error` appends its own "If that fails, stop
 the server process manually"; `running_build_mismatch`, `no_server_at_override`,
 `boot_failure`), `stop.rs` (`TimedOut` tells the operator to SIGKILL by name, worded
-differently from the other manual-kill instruction), `bootstrap.rs` `ServerReady`
-(BUG-055), `cli.rs` `ensure_server_build_matches`, `cli/error.rs` (`Usage`,
+differently from the other manual-kill instruction), `cli.rs` `ensure_server_build_matches`, `cli/error.rs` (`Usage`,
 `Nested`), `preflight/words.rs`, `tui.rs` `local_startup_notice`, `discovery.rs`
 (`client_build_mismatch`, `ensure_remote_sibling_build`, "install or update it there
 manually and retry"), `supervisor.rs` `connect_once` ("the local server is
-unavailable; start it to reconnect"), `shell/endpoints.rs` `machine_entry`
-(BUG-061), `fleet.rs` `stop_plan` ("stop it on that host"), and `PaneStartFailure`
-(DIAG-005). The divergences BUG-055 and BUG-061 are what this produces. Structural
+unavailable; start it to reconnect"), `shell/endpoints.rs` `machine_entry` (now
+build-aware, but still worded at the site), `fleet.rs` `stop_plan` ("stop it on that
+host"), and `PaneStartFailure` (DIAG-005). A dev server ready notice and a dev
+client login entry that both named the release `shepr` were what this produced. Structural
 fix: typed failure causes whose wording lives in one module. Not mechanically
 enforceable short of a textlint on imperative operator verbs.
 
@@ -366,6 +367,10 @@ Reported by: server-lifecycle.
   `debug!("api connection failed")` with no peer or request id.
 - `local_server.rs` logs "server already running" / "server started by another
   client" without the socket path or the build and boot it found.
+- The startup restart probe (`src/preflight.rs`) now waits through a starting local
+  server for up to `SERVER_READY_TIMEOUT` before the TUI takes the terminal, and
+  prints nothing while it waits; after a reboot with a large session the operator sees
+  a silent pause.
 
 ## DIAG-023 - Server lifecycle errors swallowed or stripped of context
 

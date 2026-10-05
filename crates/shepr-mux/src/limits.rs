@@ -9,9 +9,15 @@ use std::time::Duration;
 pub(crate) const AGENT_MISS_CONFIRMATION_ATTEMPTS: u8 = 6;
 /// Recheck cadence for an already identified process, limiting probe work.
 pub(crate) const PROCESS_RECHECK_IDENTIFIED: Duration = Duration::from_secs(5);
-/// Recheck cadence when no foreground group is available; this condition is
-/// unlikely to resolve quickly and should not spin.
-pub(crate) const PROCESS_RECHECK_MISSING_FOREGROUND_GROUP: Duration = Duration::from_secs(30);
+/// Recheck cadence for an unidentified process after acquisition settles.
+/// This allows late-starting agents to be found without frequent /proc scans.
+pub(crate) const PROCESS_RECHECK_UNIDENTIFIED: Duration = Duration::from_secs(30);
+// A parked agent start must outlive several unidentified rechecks, so a
+// process the acquisition window missed is still attributed by a later probe.
+const _: () = assert!(
+    shepr_detect::PARKED_START_LIFETIME.as_secs() >= 4 * PROCESS_RECHECK_UNIDENTIFIED.as_secs()
+);
+
 /// Total fast-to-slow acquisition window after a pane starts.
 pub(crate) const PROCESS_ACQUISITION_WINDOW: Duration = Duration::from_secs(8);
 /// Initial fast portion of the acquisition window, when agents are most likely

@@ -59,14 +59,14 @@ pub(crate) const MAX_REGION_LINE_COUNT: usize = u16::MAX as usize;
 pub(crate) const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5);
 /// How long a parked hook start stays available to attribute a process.
 ///
-/// A start normally reaches process detection in one polling interval, but the
-/// detector's slowest cadence (no foreground process group) rechecks only every
-/// thirty seconds, and a loaded host adds scheduling delay on top. Two minutes
-/// covers that without keeping an identity available indefinitely for an
+/// The mux rechecks an unidentified process on a fixed interval, including
+/// when the foreground group remains unchanged, and its limits assert that
+/// this attribution window spans several such intervals: room for scheduling
+/// delay without keeping an identity available indefinitely for an
 /// unrelated future process. No PID is supplied by either input, so this bounds
 /// temporal attribution rather than proving identity. Both ends are monotonic
 /// `Instant`s, so a wall-clock step cannot expire or extend a start.
-pub(crate) const PARKED_START_LIFETIME: Duration = Duration::from_secs(120);
+pub const PARKED_START_LIFETIME: Duration = Duration::from_secs(120);
 /// Maximum stale lifecycle sessions remembered per hook source, bounding
 /// deduplication memory while retaining recent reports.
 pub(crate) const MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE: usize = 64;

@@ -543,11 +543,22 @@ pub enum SplitRefused {
     TargetGone,
 }
 
+/// Why a split could not be planned before launching its child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SplitPreparationRefused {
+    /// The requested pane is no longer in the workspace.
+    TargetGone,
+    /// The public pane number has no successor, so it cannot be committed.
+    NumberExhausted,
+    /// The layout refused a split despite the target being present.
+    LayoutRefused,
+}
+
 impl Workspace {
     /// Plans a split without launching a child or changing this workspace.
-    /// `None` when `target` is not in the tree, or when the next public number
-    /// has no successor, so an exhausted workspace never launches a child its
-    /// commit would refuse.
+    /// Refuses a missing target, an exhausted public number space, or a layout
+    /// that cannot accept the split, so an exhausted workspace never launches
+    /// a child its commit would refuse.
     ///
     /// The split is made on a local copy of the layout to size the new pane's
     /// PTY, then dropped: the token holds no layout.
@@ -558,23 +569,25 @@ impl Workspace {
         chrome: &WorkspaceChrome,
         cell: Option<shepr_core::geometry::CellPx>,
         cwd: AbsolutePath,
-    ) -> Option<PreparedSplit> {
-        let number = self.tree.next_number;
-        let next_number = number.checked_next()?;
+    ) -> Result<PreparedSplit, SplitPreparationRefused> {
         if !self.tree.contains(target) {
-            return None;
+            return Err(SplitPreparationRefused::TargetGone);
         }
+        let number = self.tree.next_number;
+        let next_number = number
+            .checked_next()
+            .ok_or(SplitPreparationRefused::NumberExhausted)?;
         let pane = PaneId::alloc();
         let mut planned = self.tree.layout.clone();
         if !planned.split_pane(target, direction, SplitRatio::EVEN, pane) {
-            return None;
+            return Err(SplitPreparationRefused::LayoutRefused);
         }
         // A split unzooms the workspace, so launch against the tiled layout.
         let geometry = chrome
             .pane_spawn_geometry(&planned, false, pane, cell)
             .unwrap_or_else(|| chrome.sole_pane_spawn_geometry(cell));
         let terminal = TerminalState::new(cwd);
-        Some(PreparedSplit {
+        Ok(PreparedSplit {
             workspace: self.id,
             target,
             direction,
@@ -792,16 +805,16 @@ mod tests {
         assert_eq!(prepared.public_id(), PublicPaneId::new(&id, number(2)));
         assert_eq!(prepared.workspace_id(), id);
         // An unknown target plans nothing.
-        assert!(
+        assert!(matches!(
             ws.prepare_split(
                 PaneId::alloc(),
                 Direction::Horizontal,
                 &chrome(),
                 None,
                 abs(cwd)
-            )
-            .is_none()
-        );
+            ),
+            Err(SplitPreparationRefused::TargetGone)
+        ));
 
         assert!(ws.commit_split(prepared).is_ok());
         assert_eq!(ws.tree().len(), 2);
@@ -821,16 +834,16 @@ mod tests {
         let mut ws = workspace_at(Path::new("/shepr-tree-test"));
         ws.tree = tree;
 
-        assert!(
+        assert!(matches!(
             ws.prepare_split(
                 root,
                 Direction::Horizontal,
                 &chrome(),
                 None,
                 abs("/shepr-tree-test")
-            )
-            .is_none()
-        );
+            ),
+            Err(SplitPreparationRefused::NumberExhausted)
+        ));
         assert_eq!(ws.tree().len(), 1);
     }
 

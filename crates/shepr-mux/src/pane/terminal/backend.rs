@@ -169,20 +169,17 @@ impl PaneTerminal {
     /// lock, so they describe the same observed terminal state. The OSC title
     /// is the latest OSC 0/2 title retained for detection and the progress the
     /// latest OSC 9;4 report; each is `None` when none was seen or it was cleared.
-    pub(crate) fn agent_detection_inputs(&self) -> AgentDetectionInputs {
-        let Ok(core) = self.core.lock() else {
-            // A read stays silent: the PTY actor reports a poisoned core and
-            // closes the pane, and a read is not a skipped mutation.
-            return AgentDetectionInputs::default();
-        };
-        AgentDetectionInputs {
-            screen_text: terminal_detection_text(&core.terminal).unwrap_or_default(),
+    /// Returns `None` if either the core lock or screen read fails.
+    pub(crate) fn agent_detection_inputs(&self) -> Option<AgentDetectionInputs> {
+        let core = self.core.lock().ok()?;
+        Some(AgentDetectionInputs {
+            screen_text: terminal_detection_text(&core.terminal).ok()?,
             osc_title: core.agent_osc_state.latest_title().map(str::to_owned),
             osc_progress: core
                 .agent_osc_state
                 .latest_progress()
                 .map(|progress| progress.to_string()),
-        }
+        })
     }
 
     /// Clears retained OSC title/progress evidence when the pane's foreground
@@ -972,6 +969,23 @@ impl PaneTerminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn poisoned_terminal_core_has_no_detection_observation() {
+        let terminal = std::sync::Arc::new(PaneTerminal::new(shepr_vt::Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(80, 24),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        )));
+        let poisoner = std::sync::Arc::clone(&terminal);
+        let poison_result = std::thread::spawn(move || {
+            let _core = poisoner.core.lock();
+            panic!("poison the terminal core for this test");
+        })
+        .join();
+
+        assert!(poison_result.is_err());
+        assert!(terminal.agent_detection_inputs().is_none());
+    }
 
     #[test]
     fn resize_returns_queued_replies_before_its_own() {

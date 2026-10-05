@@ -380,7 +380,11 @@ fn stop_socket_with_timeout(
                 });
             }
             BootProbe::Expected => {
-                match wait_until_boot_stops(socket_path, expected_boot_id, deadline, label)? {
+                // The lease wait may have extended the socket deadline beyond
+                // the original stop budget; keep using that later budget if
+                // the expected boot reappears during this final probe.
+                match wait_until_boot_stops(socket_path, expected_boot_id, socket_deadline, label)?
+                {
                     BootStopWait::Gone => {}
                     BootStopWait::Changed(actual_boot_id) => {
                         return Err(ServerStopError::OccupantChanged {

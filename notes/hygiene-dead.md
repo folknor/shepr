@@ -200,6 +200,9 @@ Reported by: agent-state, workspace-model.
   region, manifest or detector reads it; a herdr protocol leftover.
 - `set_detected_state_with_visible_blocker`'s `_ignored_screen_idle` parameter, a
   leftover of a removed screen-idle signal.
+- `DetectionExplanation::hook_authority` (`shepr-api/src/schema/detection.rs`) lost its
+  production caller when explain began reporting the effective state for every pane;
+  only two shepr-api tests use it.
 - `is_unsequenced_opencode_selection` is driven by
   `HookSessionPolicy::unsequenced_selection`, not OpenCode-specific; the name is stale.
 
@@ -236,9 +239,6 @@ Reported by: integrations.
   `NotInstalled` / `Outdated` split: all exist only to be logged, since currentness is
   exact bytes; the hand-bumped `version` in `SPECS` feeds only these (VAL-043).
 - `SHEPR_OMP_RETRY_GRACE_MS`, set by nothing (VAL-045).
-- The `codex_hooks` deletion in `build_codex_config_with_hooks` and the test
-  `install_codex_only_migrates_top_level_feature_flags`: migration code for Codex's old
-  flag name (BUG-037).
 - The `pi.events.on("shepr:blocked")` listener in `decoders/pi.ts` and
   `decoders/omp.ts`: an inbound event nothing in shepr emits and nothing documents (its
   payload's `label` field is a remnant). Document it as a feature or delete it.
@@ -273,6 +273,8 @@ Reported by: workspace-model.
   `EndpointOutcome::view_changed` and the `App` test adapters `handle_endpoint_command`,
   `handle_endpoint_command_in` and `handle_endpoint_command_with_render` are three names
   for one call.
+- `ui/panes.rs` carries a duplicated doc comment above `split_hit_rect` (reported by
+  the pane chrome fix).
 
 ## DEAD-015 - Server lifecycle types, payloads and arms with one value or no reader
 

@@ -2,7 +2,15 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use shepr_agent::resume::{AgentSessionStartSource, UnrecognizedAgentSessionStartSource};
 
-use super::common::PaneAgentState;
+/// States an integration may report through `pane.report_agent`.
+/// `unknown` is a detector/presentation state, not a hook report action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaneReportAgentState {
+    Working,
+    Blocked,
+    Idle,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneReportAgentParams {
@@ -13,7 +21,7 @@ pub struct PaneReportAgentParams {
     /// The agent the source belongs to, resolved and validated with source
     /// before internal dispatch; a label naming another agent is refused.
     pub agent: String,
-    pub state: PaneAgentState,
+    pub state: PaneReportAgentState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,6 +90,30 @@ mod session_start_source_wire {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn state_report_accepts_only_the_integration_state_vocabulary() {
+        for state in ["working", "blocked", "idle"] {
+            let params = serde_json::from_value::<PaneReportAgentParams>(serde_json::json!({
+                "pane_id": "w1:p1",
+                "source": "shepr:codex",
+                "agent": "codex",
+                "state": state
+            }));
+            assert!(params.is_ok(), "{state} should be accepted");
+        }
+
+        let unknown = serde_json::from_value::<PaneReportAgentParams>(serde_json::json!({
+            "pane_id": "w1:p1",
+            "source": "shepr:codex",
+            "agent": "codex",
+            "state": "unknown"
+        }));
+        assert!(
+            unknown.is_err(),
+            "unknown is not an integration report state"
+        );
+    }
 
     #[test]
     fn state_report_ignores_extra_message_without_storing_or_serializing_it() {

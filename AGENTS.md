@@ -69,7 +69,9 @@ override like the restart guidance. Workspaces and panes are managed from the TU
 is no CLI group for them, and no CLI attach to a single terminal. `shepr
 detect capture <pane>` prints the screen text and OSC title and progress the
 detector evaluates for a pane, as JSON that `detect explain --file` reads back,
-and `shepr detect explain <pane>` says which rule decided its state.
+and `shepr detect explain <pane>` shows the pane's state and what owns it
+(the screen, a hook or the process exit) beside the verdict the screen rules
+give now and the rule that matched.
 `shepr status` prints this installation (version, build profile and build
 id, then the binary path, and a `shepr-server` line only when the sibling
 binary is missing or of another version or build), then one line for the
@@ -125,9 +127,9 @@ colours until a background is reported. The focused pane's border takes the
 presented machine's own sidebar accent. `client.toml` holds those
 `[ui]` settings, `[keys]`, `[local]` (the local server's `label`) and
 `[[machines]]`. Each server applies its own config to what it
-runs and to what it renders into pane cells: shell and working directory,
-session, whether panes have borders, gaps and scrollbars, and the cursor it
-reveals for CJK input methods.
+runs and renders into pane cells: shell and working directory, session,
+scrollbars, whether split panes share a divider or draw adjacent borders, and
+the cursor it reveals for CJK input methods. Pane borders are always drawn.
 `server.toml` holds those `[ui]` settings, `[terminal]`, `[session]`,
 `[server]`, `[advanced]` and `[experimental]`. A server always
 computes a workspace's Git branch and ahead/behind, whatever any sidebar

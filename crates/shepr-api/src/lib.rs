@@ -110,7 +110,7 @@ mod tests {
                     pane_id: "w1:p1".into(),
                     source: "shepr:pi".into(),
                     agent: "pi".into(),
-                    state: crate::schema::PaneAgentState::Working,
+                    state: crate::schema::PaneReportAgentState::Working,
                     seq: None,
                     agent_session_id: None,
                     agent_session_path: None,

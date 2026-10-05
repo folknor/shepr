@@ -211,8 +211,6 @@ pub fn ensure_running(
         Probed::NoServer | Probed::Starting | Probed::Stopping => {}
     }
     require_own_runtime_address(paths)?;
-    let server = server_executable().map_err(LaunchError::Executable)?;
-
     let _lock = acquire_launch_lock(paths, timeout.saturating_add(LAUNCH_LOCK_WAIT_GRACE))
         .map_err(LaunchError::LaunchLock)?;
     // One budget covers every socket transition while this client owns the
@@ -244,6 +242,10 @@ pub fn ensure_running(
         }
     }
 
+    // The sibling is needed only if this client actually has to start a
+    // daemon. Resolve it after transition waits so a missing install cannot
+    // prevent attaching to a server that is already coming up.
+    let server = server_executable().map_err(LaunchError::Executable)?;
     info!(server = %server.display(), "no server running, starting the server daemon");
     let status = launch_daemon(paths, &server, timeout)?;
     accept_running(paths, status, build_check)
@@ -251,18 +253,30 @@ pub fn ensure_running(
 
 /// What is running at the local server address, without ever starting a server:
 /// the status of a stable server that answers, or `None` when no restartable
-/// server is present or the server is starting or stopping. The pre-TUI
-/// restart offer reads a different-build server through this. A live
-/// listener that does not answer, or a socket that cannot be judged, is an
-/// error, as it is for a launch, and the same [`LaunchError`] a launch would
-/// report: `Unresponsive` for the silent listener, `Io` for the socket.
+/// server is present or the server is stopping. A server that is still
+/// starting is waited out first, within the launcher's readiness budget, so
+/// the pre-TUI restart offer sees a different-build server once it has
+/// finished restoring; one that does not settle in time is a
+/// [`LaunchError::TransitionTimeout`]. A live listener that does not answer,
+/// or a socket that cannot be judged, is an error, as it is for a launch, and
+/// the same [`LaunchError`] a launch would report: `Unresponsive` for the
+/// silent listener, `Io` for the socket.
 pub fn running_server_status(
     paths: &shepr_paths::AppPaths,
 ) -> Result<Option<RuntimeStatus>, LaunchError> {
-    match probe_server(paths)? {
+    let probed = match probe_server(paths)? {
+        Probed::Starting => {
+            // The launcher's readiness budget. A boot that cannot settle
+            // within it gets no restart offer: the error says so, and the
+            // launch that follows waits for it under its own budget.
+            // clock-io-ok: bounds a wait on another process's real socket.
+            let deadline = Instant::now() + SERVER_READY_TIMEOUT;
+            wait_for_server_socket_to_settle_until(paths, deadline, SERVER_READY_TIMEOUT)?
+        }
+        probed => probed,
+    };
+    match probed {
         Probed::Running(status) => Ok(Some(status)),
-        // There is no stable server status to offer; the launch that follows
-        // resolves the transition under the profile lock.
         Probed::NoServer | Probed::Starting | Probed::Stopping => Ok(None),
         Probed::Unresponsive => Err(unresponsive_error(paths)),
     }
@@ -317,9 +331,9 @@ fn probe_server_at(socket: &Path) -> io::Result<Probed> {
 }
 
 /// Waits through a server transition until the server socket disappears or
-/// a different stable probe result appears. The launcher holds its profile
-/// lock while waiting, so another shepr client cannot start a competing
-/// successor in this interval.
+/// a different stable probe result appears. Launch callers hold their profile
+/// lock while waiting, so another client cannot start a competing successor
+/// in that interval; startup preflight uses this only to observe a transition.
 fn wait_for_server_socket_to_settle_until(
     paths: &shepr_paths::AppPaths,
     deadline: Instant,

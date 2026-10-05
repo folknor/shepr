@@ -12,13 +12,18 @@ finish() {
   exit 0
 }
 
+# Stamp the report the moment the hook starts. Every event runs this script in
+# a fresh process, and shepr drops a report whose seq is older than the last
+# one it accepted, so taking the timestamp after python3 has started would let
+# interpreter startup jitter reorder near-simultaneous events.
+hook_seq="$(date +%s%N 2>/dev/null || true)"
 action="${1:-}"
 hook_input_file="$(mktemp "${TMPDIR:-/tmp}/shepr-codex-hook.XXXXXX")" || {
   cat >/dev/null 2>/dev/null || true
   finish
 }
 trap 'rm -f "$hook_input_file"' 0
-trap 'exit 0' HUP INT TERM
+trap 'finish' HUP INT TERM
 cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in

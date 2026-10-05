@@ -12,6 +12,12 @@ use std::sync::Arc;
 use crate::shell::palette::Palette;
 use std::collections::HashMap;
 
+static OPERATOR_ENTRYPOINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+fn operator_entrypoint() -> &'static str {
+    OPERATOR_ENTRYPOINT.get_or_init(shepr_launch::guidance::operator_entrypoint)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ClientShellEndpoint {
     pub(in crate::shell) endpoint_id: ClientEndpointId,
@@ -431,7 +437,7 @@ impl ClientShellEndpoint {
             .ssh_check
             .as_ref()
             .filter(|_| self.machine == MachineState::NeedsLogin)
-            .map(|ssh| format!("run shepr again, or {ssh}"));
+            .map(|ssh| format!("run {} again, or {ssh}", operator_entrypoint()));
         Some(MachineEntry {
             state: self.machine,
             hint,
@@ -1302,7 +1308,14 @@ mod tests {
             .and_then(ClientShellEndpoint::machine_entry)
             .and_then(|entry| entry.hint)
             .expect("a login hint");
-        assert!(login.contains("run shepr again"), "{login}");
+        let entrypoint = operator_entrypoint();
+        if shepr_paths::BuildProfile::current() == shepr_paths::BuildProfile::Dev {
+            assert_ne!(entrypoint, "shepr");
+        }
+        assert!(
+            login.contains(&format!("run {entrypoint} again")),
+            "{login}"
+        );
         assert!(login.contains("ssh build.example"), "{login}");
 
         shell.connect_endpoint_with_snapshot(&id, 2, Box::new(crate::shell::tests::snapshot()));

@@ -234,7 +234,7 @@ impl DetectionTask {
                 if !self.live(pid) {
                     return None;
                 }
-                screen.resume(&mut self.detector, &inputs)
+                screen.resume(&mut self.detector, inputs.as_ref())
             }
         };
         // The identity transition from the probe is published before the

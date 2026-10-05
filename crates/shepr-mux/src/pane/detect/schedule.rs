@@ -7,7 +7,7 @@ use super::state::TickContext;
 use crate::limits::{
     PROCESS_ACQUISITION_FAST_RECHECK, PROCESS_ACQUISITION_FAST_WINDOW,
     PROCESS_ACQUISITION_IDLE_RESET, PROCESS_ACQUISITION_SLOW_RECHECK, PROCESS_ACQUISITION_WINDOW,
-    PROCESS_RECHECK_IDENTIFIED, PROCESS_RECHECK_MISSING_FOREGROUND_GROUP,
+    PROCESS_RECHECK_IDENTIFIED, PROCESS_RECHECK_UNIDENTIFIED,
 };
 use shepr_agent::Agent;
 use shepr_platform::Pgid;
@@ -83,7 +83,7 @@ pub(super) struct ProbeFinding {
 #[derive(Debug)]
 pub(super) struct ProcessProbeScheduler {
     last_check: Instant,
-    last_foreground_group: Option<Pgid>,
+    pub(super) last_foreground_group: Option<Pgid>,
     has_probe: bool,
     acquisition_started_at: Option<Instant>,
     last_content_change_at: Option<Instant>,
@@ -156,8 +156,7 @@ impl ProcessProbeScheduler {
                 || group_changed
                 || (tick.lifecycle_authority_active
                     && elapsed_since_check >= PROCESS_RECHECK_IDENTIFIED)
-                || (tick.foreground_group.is_none()
-                    && elapsed_since_check >= PROCESS_RECHECK_MISSING_FOREGROUND_GROUP)
+                || elapsed_since_check >= PROCESS_RECHECK_UNIDENTIFIED
         } else {
             group_changed || elapsed_since_check >= PROCESS_RECHECK_IDENTIFIED
         };
@@ -261,40 +260,45 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_probes_initially_then_waits_for_activity_or_safety_interval() {
+    fn unidentified_process_is_rechecked_after_the_safety_interval() {
         let now = Instant::now();
-        let mut scheduler = ProcessProbeScheduler::new(now);
+        let initial = ProcessProbeScheduler::new(now);
         assert!(matches!(
-            decide(&scheduler, now, None, None, false, false),
+            decide(&initial, now, None, None, false, false),
             ProbeScheduleDecision::Probe {
                 had_previous_probe: false,
                 ..
             }
         ));
 
-        scheduler.probe_started(now);
-        assert!(
-            !decide(
-                &scheduler,
-                now + PROCESS_RECHECK_MISSING_FOREGROUND_GROUP - Duration::from_millis(1),
-                None,
-                None,
-                false,
-                false,
-            )
-            .should_probe()
-        );
-        assert!(
-            decide(
-                &scheduler,
-                now + PROCESS_RECHECK_MISSING_FOREGROUND_GROUP,
-                None,
-                None,
-                false,
-                false,
-            )
-            .should_probe()
-        );
+        for foreground_group in [None, Some(pgid(42))] {
+            let mut scheduler = ProcessProbeScheduler::new(now);
+            scheduler.probe_started(now);
+            scheduler.last_foreground_group = foreground_group;
+
+            assert!(
+                !decide(
+                    &scheduler,
+                    now + PROCESS_RECHECK_UNIDENTIFIED - Duration::from_millis(1),
+                    None,
+                    foreground_group,
+                    false,
+                    false,
+                )
+                .should_probe()
+            );
+            assert!(
+                decide(
+                    &scheduler,
+                    now + PROCESS_RECHECK_UNIDENTIFIED,
+                    None,
+                    foreground_group,
+                    false,
+                    false,
+                )
+                .should_probe()
+            );
+        }
     }
 
     #[test]

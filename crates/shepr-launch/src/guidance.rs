@@ -2,9 +2,11 @@
 //!
 //! The text needs the server's address (its socket override) and this build's
 //! entry point, and every launcher shows it: the CLI, the local server
-//! launcher and the TUI client. Each public function names
-//! [`operator_entrypoint`] itself; the `_with` forms take the entry point as
-//! an argument so tests can pin it.
+//! launcher and the TUI client, and the `shepr-server` executable's ready
+//! notice names the client to run. Each public function resolves its entry
+//! point itself ([`operator_entrypoint`], or the server's sibling client for
+//! [`server_ready_hint`]); the `_with` forms take the entry point or the
+//! executable as an argument so tests can pin it.
 
 use std::path::Path;
 
@@ -114,6 +116,54 @@ pub fn operator_entrypoint() -> String {
     }
 }
 
+/// The line a foreground `shepr-server` ends its ready notice with, naming the
+/// client command that opens the TUI: `shepr` for a release build, which is
+/// the one installed on the path, and for a dev build the `shepr` client
+/// beside the running server executable, or `brokkr run --` when there is
+/// none.
+pub fn server_ready_hint() -> String {
+    let entrypoint = match BuildProfile::current() {
+        BuildProfile::Release => PROGRAM_NAME.to_owned(),
+        BuildProfile::Dev => {
+            let server_executable = shepr_platform::launch_executable().ok();
+            server_ready_entrypoint_with(
+                BuildProfile::Dev,
+                server_executable.as_deref(),
+                executable_file,
+            )
+        }
+    };
+    format!(
+        "did you mean to open the Shepr TUI? run `{entrypoint}`, which starts the server itself."
+    )
+}
+
+fn server_ready_entrypoint_with(
+    profile: BuildProfile,
+    server_executable: Option<&Path>,
+    is_executable: impl FnOnce(&Path) -> bool,
+) -> String {
+    match profile {
+        BuildProfile::Release => PROGRAM_NAME.to_owned(),
+        BuildProfile::Dev => {
+            let Some(server_executable) = server_executable else {
+                return "brokkr run --".to_owned();
+            };
+            let client_executable = server_executable.with_file_name(PROGRAM_NAME);
+            if is_executable(&client_executable) {
+                shepr_core::shell_quote::quote(&client_executable.to_string_lossy())
+            } else {
+                "brokkr run --".to_owned()
+            }
+        }
+    }
+}
+
+fn executable_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
+        && shepr_platform::has_execute_access(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +201,34 @@ mod tests {
         assert_eq!(
             status_build_mismatch_hint(&address),
             status_build_mismatch_hint_with(&address, &entrypoint)
+        );
+    }
+
+    #[test]
+    fn a_server_ready_notice_uses_the_sibling_dev_client() {
+        assert_eq!(
+            server_ready_entrypoint_with(
+                BuildProfile::Dev,
+                Some(Path::new("/src/shepr/target/debug/shepr-server")),
+                |_| true,
+            ),
+            "/src/shepr/target/debug/shepr"
+        );
+        assert_eq!(
+            server_ready_entrypoint_with(
+                BuildProfile::Dev,
+                Some(Path::new("/src/shepr/target/debug/shepr-server")),
+                |_| false,
+            ),
+            "brokkr run --"
+        );
+        assert_eq!(
+            server_ready_entrypoint_with(BuildProfile::Dev, None, |_| false),
+            "brokkr run --"
+        );
+        assert_eq!(
+            server_ready_entrypoint_with(BuildProfile::Release, None, |_| false),
+            "shepr"
         );
     }
 

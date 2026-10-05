@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Borders, Paragraph, Widget, Wrap},
+    widgets::{Paragraph, Widget, Wrap},
 };
 
 use super::PaneSurface;
@@ -14,6 +14,12 @@ use crate::app::AppState;
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
 use shepr_mux::terminal::{Label, PaneStartFailure};
 use shepr_protocol::{CellData, ChromeRole, FrameData, WireColor};
+
+// Two pane-edge cells and the title's two padding cells leave one column for
+// the shortest nonempty label.
+// limits-exempt: the border title's drawn layout, edge and padding cells.
+const PANE_BORDER_TITLE_OVERHEAD_COLS: u16 = 4;
+const MIN_PANE_WIDTH_FOR_BORDER_TITLE: u16 = PANE_BORDER_TITLE_OVERHEAD_COLS + 1;
 
 pub(super) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
     rt.read()
@@ -32,10 +38,10 @@ fn restore_failure_text(failure: &PaneStartFailure) -> Text<'_> {
 }
 
 fn pane_border_title(label: &Label, pane_width: u16) -> Option<String> {
-    if pane_width <= 4 {
+    if pane_width < MIN_PANE_WIDTH_FOR_BORDER_TITLE {
         return None;
     }
-    let max_label_width = pane_width.saturating_sub(4) as usize;
+    let max_label_width = pane_width.saturating_sub(PANE_BORDER_TITLE_OVERHEAD_COLS) as usize;
     Some(format!(
         " {} ",
         truncate_end(label.as_str(), max_label_width)
@@ -310,16 +316,14 @@ fn add_pane_border_cells(cells: &mut BorderGrid, info: &PaneSurface) {
     let right = rect.x.saturating_add(rect.width).saturating_sub(1);
     let bottom = rect.y.saturating_add(rect.height).saturating_sub(1);
 
-    if info.borders.contains(Borders::TOP) {
-        for x in rect.x..=right {
-            let Some(cell) = cells.entry(x, rect.y) else {
-                continue;
-            };
-            cell.set_if(LineCell::LEFT, x > rect.x);
-            cell.set_if(LineCell::RIGHT, x < right);
-        }
+    for x in rect.x..=right {
+        let Some(cell) = cells.entry(x, rect.y) else {
+            continue;
+        };
+        cell.set_if(LineCell::LEFT, x > rect.x);
+        cell.set_if(LineCell::RIGHT, x < right);
     }
-    if info.borders.contains(Borders::BOTTOM) {
+    if !info.shared_edges.shares_bottom {
         for x in rect.x..=right {
             let Some(cell) = cells.entry(x, bottom) else {
                 continue;
@@ -328,16 +332,14 @@ fn add_pane_border_cells(cells: &mut BorderGrid, info: &PaneSurface) {
             cell.set_if(LineCell::RIGHT, x < right);
         }
     }
-    if info.borders.contains(Borders::LEFT) {
-        for y in rect.y..=bottom {
-            let Some(cell) = cells.entry(rect.x, y) else {
-                continue;
-            };
-            cell.set_if(LineCell::UP, y > rect.y);
-            cell.set_if(LineCell::DOWN, y < bottom);
-        }
+    for y in rect.y..=bottom {
+        let Some(cell) = cells.entry(rect.x, y) else {
+            continue;
+        };
+        cell.set_if(LineCell::UP, y > rect.y);
+        cell.set_if(LineCell::DOWN, y < bottom);
     }
-    if info.borders.contains(Borders::RIGHT) {
+    if !info.shared_edges.shares_right {
         for y in rect.y..=bottom {
             let Some(cell) = cells.entry(right, y) else {
                 continue;
@@ -383,9 +385,6 @@ fn render_pane_border_titles(
 ) {
     let area = Rect::new(0, 0, frame.width(), frame.height());
     for info in pane_infos {
-        if !info.borders.contains(Borders::TOP) || info.rect.width <= 4 {
-            continue;
-        }
         let Some(title) = ws
             .tree()
             .pane(info.id)
@@ -513,6 +512,7 @@ fn compute_pane_infos(
 mod tests {
     use super::*;
     use crate::test_support::*;
+    use shepr_core::chrome::SharedPaneEdges;
     use shepr_core::layout::PaneId;
     use shepr_mux::pane::PaneRuntime;
     use shepr_mux::workspace::Workspace;
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(infos[0].scrollbar_rect, None);
         // A lone pane is framed on every side; the gutter is the one column
         // inside the frame its fresh shell does not get.
-        assert_eq!(infos[0].borders, Borders::ALL);
+        assert_eq!(infos[0].shared_edges, SharedPaneEdges::default());
         assert_eq!(
             infos[0].inner_rect,
             Rect::new(
@@ -651,7 +651,7 @@ mod tests {
             inner_rect: Rect::default(),
             scrollbar_gutter: None,
             scrollbar_rect: None,
-            borders: Borders::ALL,
+            shared_edges: SharedPaneEdges::default(),
             is_focused: false,
         }];
 
@@ -684,7 +684,7 @@ mod tests {
             inner_rect: Rect::new(1, 1, 10, 1),
             scrollbar_gutter: None,
             scrollbar_rect: None,
-            borders: Borders::ALL,
+            shared_edges: SharedPaneEdges::default(),
             is_focused,
         };
         for (is_focused, role) in [
@@ -715,7 +715,10 @@ mod tests {
                 inner_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
-                borders: Borders::TOP | Borders::LEFT,
+                shared_edges: SharedPaneEdges {
+                    shares_right: true,
+                    shares_bottom: true,
+                },
                 is_focused: true,
             },
             PaneSurface {
@@ -724,7 +727,10 @@ mod tests {
                 inner_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
-                borders: Borders::TOP | Borders::LEFT | Borders::RIGHT,
+                shared_edges: SharedPaneEdges {
+                    shares_right: false,
+                    shares_bottom: true,
+                },
                 is_focused: false,
             },
             PaneSurface {
@@ -733,7 +739,10 @@ mod tests {
                 inner_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
-                borders: Borders::TOP | Borders::LEFT | Borders::BOTTOM,
+                shared_edges: SharedPaneEdges {
+                    shares_right: true,
+                    shares_bottom: false,
+                },
                 is_focused: false,
             },
             PaneSurface {
@@ -742,7 +751,7 @@ mod tests {
                 inner_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
-                borders: Borders::ALL,
+                shared_edges: SharedPaneEdges::default(),
                 is_focused: false,
             },
         ];
@@ -784,7 +793,7 @@ mod tests {
                 inner_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
-                borders: Borders::ALL,
+                shared_edges: SharedPaneEdges::default(),
                 is_focused: true,
             },
             PaneSurface {
@@ -793,7 +802,7 @@ mod tests {
                 inner_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
-                borders: Borders::ALL,
+                shared_edges: SharedPaneEdges::default(),
                 is_focused: false,
             },
         ];

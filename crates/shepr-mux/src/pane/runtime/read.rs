@@ -144,10 +144,12 @@ impl PaneRead<'_> {
         self.terminal.terminal_title()
     }
 
-    /// The screen text, OSC title and OSC progress the detector evaluates,
-    /// read together under one terminal lock like the live detection tick.
+    /// Snapshot of screen text, OSC title and OSC progress, read together
+    /// under one terminal lock. A failed read returns the empty default for
+    /// this capture view; live detection uses the fallible path and leaves its
+    /// state unchanged on a failed read.
     pub fn agent_detection_inputs(&self) -> super::AgentDetectionInputs {
-        self.terminal.agent_detection_inputs()
+        self.terminal.agent_detection_inputs().unwrap_or_default()
     }
 
     pub fn extract_selection<P>(

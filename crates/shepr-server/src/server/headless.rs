@@ -1387,6 +1387,9 @@ impl HeadlessServer {
         }
 
         self.app.service_session_saves(now);
+        // Reaping can make the warning checkpoint ready without another wake.
+        // Claim it before sleeping or replaying checkpointed pane deaths.
+        self.lifecycle.sync_host_shutdown_freeze(&mut self.app);
 
         // Resized panes have only their viewers recompute (as a geometry
         // settlement does), so this does not count as a shared view change.

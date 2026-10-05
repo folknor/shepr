@@ -107,7 +107,11 @@ impl App {
         geometry: SpawnGeometry,
     ) -> std::io::Result<super::actions::WorkspaceCreationOutcome> {
         let chrome = self.state.chrome_in(geometry.area);
-        let prepared = self.state.workspaces.prepare_workspace(initial_cwd);
+        let prepared = self
+            .state
+            .workspaces
+            .prepare_workspace(initial_cwd)
+            .ok_or_else(|| std::io::Error::other("workspace ID space exhausted"))?;
         let runtime = self.launch_pane(
             prepared.root_pane(),
             prepared.root_public_id(),

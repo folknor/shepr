@@ -15,8 +15,10 @@ function agentEnabled() {
 // report their own lifecycle hooks, so this is not a shared agent policy.
 const idleDebounceMs = parseDurationEnv("SHEPR_OMP_IDLE_DEBOUNCE_MS", 250);
 const retryGraceMs = parseDurationEnv("SHEPR_OMP_RETRY_GRACE_MS", 2500);
+// Status codes must be whole numbers so token counts and durations do not
+// match one of their numeric suffixes.
 const retryableErrorPattern =
-  /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
+  /overloaded|provider.?returned.?error|rate.?limit|too many requests|(?<![0-9])(?:429|500|502|503|504)(?![0-9])|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
 
 function parseDurationEnv(name: string, fallback: number): number {
   const raw = process.env[name];

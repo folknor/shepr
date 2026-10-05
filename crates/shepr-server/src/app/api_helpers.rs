@@ -9,9 +9,13 @@ pub(super) fn pane_not_found(pane_id: &str) -> ApiError {
 }
 
 pub(super) fn detect_state_from_api(
-    state: shepr_api::schema::PaneAgentState,
+    state: shepr_api::schema::PaneReportAgentState,
 ) -> shepr_agent::AgentState {
-    state
+    match state {
+        shepr_api::schema::PaneReportAgentState::Working => shepr_agent::AgentState::Working,
+        shepr_api::schema::PaneReportAgentState::Blocked => shepr_agent::AgentState::Blocked,
+        shepr_api::schema::PaneReportAgentState::Idle => shepr_agent::AgentState::Idle,
+    }
 }
 
 pub(super) fn pane_agent_status(state: shepr_agent::AgentState) -> shepr_api::schema::AgentStatus {

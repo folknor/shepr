@@ -48,6 +48,18 @@ mod ssh_options {
             ],
         );
     }
+
+    /// Bound connection establishment consistently for foreground and
+    /// non-interactive SSH commands.
+    pub(super) fn append_connection_bounds(command: &mut Command) {
+        append(
+            command,
+            &[
+                crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
+                crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
+            ],
+        );
+    }
 }
 
 #[derive(Clone)]
@@ -246,6 +258,7 @@ fn authentication_command_with_config(
             crate::limits::SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION,
         ],
     );
+    ssh_options::append_connection_bounds(&mut command);
     ssh_options::append_shepr_options(&mut command);
     command.arg("-T");
     target.append_to(&mut command);
@@ -439,10 +452,9 @@ pub(crate) fn apply_batch_ssh_options(command: &mut Command) {
         &[
             ssh_options::BATCH_MODE_YES,
             crate::limits::SSH_NO_PASSWORD_PROMPTS_OPTION,
-            crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
-            crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
         ],
     );
+    ssh_options::append_connection_bounds(command);
 }
 
 pub(crate) fn apply_managed_ssh_options(
@@ -471,22 +483,36 @@ pub(crate) fn apply_managed_ssh_options(
     }
 }
 
-fn ssh_config_quote(path: &str) -> String {
-    format!("\"{path}\"")
+fn ssh_config_quote(path: &Path) -> io::Result<String> {
+    let Some(path_text) = path.to_str() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("SSH config path {path:?} is not valid UTF-8"),
+        ));
+    };
+    if path_text.contains('"') {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("SSH config path {path:?} contains a double quote"),
+        ));
+    }
+    Ok(format!("\"{path_text}\""))
 }
 
 /// Returns the quoted `Include` value for an SSH config file, or `None` when
 /// there is no such file (or the path names something other than a file).
 /// A stat failure other than absence, such as `EACCES`, is an error rather
-/// than a silently dropped include.
+/// than a silently dropped include, and so is a file whose path the `Include`
+/// line cannot spell (not UTF-8, or holding a double quote).
 fn ssh_config_include(path: Option<&Path>) -> io::Result<Option<String>> {
     let Some(path) = path else {
         return Ok(None);
     };
     match fs::metadata(path) {
         Ok(metadata) if metadata.is_file() => {
+            let include = ssh_config_quote(path)?;
             tracing::debug!(path = %path.display(), "emitting SSH config include");
-            Ok(Some(ssh_config_quote(&path.to_string_lossy())))
+            Ok(Some(include))
         }
         Ok(_) => {
             tracing::debug!(

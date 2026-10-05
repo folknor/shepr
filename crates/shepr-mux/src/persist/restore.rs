@@ -231,8 +231,10 @@ struct WorkspaceRestorePlan<'a> {
 
 /// Plan the complete saved session before any child is launched.
 /// `workspace_ids` is the allocator of the workspace set the restored
-/// workspaces join (`WorkspaceSet::restored` takes it over): it is moved past every saved ID first, and a repeated saved ID takes
-/// a fresh one from it.
+/// workspaces join (`WorkspaceSet::restored` takes it over): it is moved past
+/// every saved ID first, and a repeated saved ID takes a fresh one from it
+/// when the number space permits; otherwise that duplicate workspace is
+/// dropped.
 pub(super) fn plan_restore(
     snapshot: &SessionSnapshot,
     chrome: WorkspaceChrome,
@@ -269,7 +271,15 @@ pub(super) fn plan_restore(
             restored_index.push(None);
             continue;
         };
-        let workspace_id = restored_workspace_id(saved_id, &mut used_ids, workspace_ids);
+        let Some(workspace_id) = restored_workspace_id(saved_id, &mut used_ids, workspace_ids)
+        else {
+            // A duplicate at the end of the reserved number space has no
+            // collision-free replacement. Keep the earlier workspace and drop
+            // this one whole, counted like any other dropped workspace.
+            dropped_workspaces += 1;
+            restored_index.push(None);
+            continue;
+        };
         let restored = restore_workspace(
             plan,
             workspace_id,
@@ -319,17 +329,18 @@ fn remap_saved_index(saved: usize, restored: &[Option<usize>]) -> Option<usize> 
 
 /// The ID a restored workspace gets: its saved ID (decoding admits only
 /// canonical ones), unless an earlier workspace of the same file already took
-/// it, in which case a fresh one. The caller reserved every saved ID before
-/// restoring, so a fresh ID is past all of them.
+/// it, in which case a fresh one if the caller's reservation left one. The
+/// caller reserved every saved ID before restoring, so a fresh ID is past all
+/// of them.
 fn restored_workspace_id(
     saved: WorkspaceId,
     used_ids: &mut HashSet<WorkspaceId>,
     workspace_ids: &mut crate::workspace::WorkspaceIdAllocator,
-) -> WorkspaceId {
+) -> Option<WorkspaceId> {
     if used_ids.insert(saved) {
-        return saved;
+        return Some(saved);
     }
-    workspace_ids.allocate()
+    workspace_ids.try_allocate()
 }
 
 /// The terminal state of one restored pane. Every saved `PaneSnapshot` field
@@ -1267,7 +1278,8 @@ mod tests {
         // a workspace; a second workspace repeats that saved ID.
         let mut workspace_ids = crate::workspace::WorkspaceIdAllocator::new();
         let taken = crate::workspace::WorkspaceIdAllocator::new()
-            .allocate()
+            .try_allocate()
+            .expect("workspace id available")
             .to_string();
         let snapshot = session(
             vec![
@@ -1305,8 +1317,40 @@ mod tests {
         let unique: HashSet<_> = ids.iter().collect();
         assert_eq!(unique.len(), ids.len(), "{ids:?}");
         // A later new workspace does not reuse any restored ID either.
-        let fresh = workspace_ids.allocate();
+        let fresh = workspace_ids
+            .try_allocate()
+            .expect("workspace id available");
         assert!(!ids.contains(&fresh), "fresh workspace id reused: {ids:?}");
+    }
+
+    #[test]
+    fn restore_drops_an_unassignable_duplicate_workspace_id() {
+        let id = WorkspaceId::from_number(usize::MAX)
+            .expect("nonzero workspace id")
+            .to_string();
+        let snapshot = session(
+            vec![
+                one_pane_workspace(&id, "owner", 1),
+                one_pane_workspace(&id, "duplicate", 2),
+            ],
+            Some(1),
+        );
+        let mut workspace_ids = crate::workspace::WorkspaceIdAllocator::new();
+
+        let restored = plan_restore(
+            &snapshot,
+            test_geometry(5, 40),
+            false,
+            test_restore_now(),
+            &mut workspace_ids,
+        );
+
+        assert!(restored.restore_damage);
+        assert_eq!(restored.dropped_workspaces, 1);
+        assert_eq!(restored.workspaces.len(), 1);
+        assert_eq!(restored.workspaces[0].id().to_string(), id);
+        assert_eq!(restored.active, Some(0));
+        assert_eq!(workspace_ids.try_allocate(), None);
     }
 
     /// Validation precedes every side effect: a workspace the plan refuses

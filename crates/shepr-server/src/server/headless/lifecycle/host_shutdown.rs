@@ -327,6 +327,38 @@ async fn watch_connection(
 }
 
 #[cfg(test)]
+impl HostShutdownMonitor {
+    /// A warning source without a bus, retaining the real generation and
+    /// checkpoint acknowledgement machinery. The lifecycle regression needs
+    /// only this boundary; injecting bus connections and reconnect delays
+    /// would couple that test to transport behavior it does not exercise.
+    pub(super) fn test_warning(
+        requested: Arc<AtomicBool>,
+    ) -> (Self, watch::Receiver<Option<WarningGeneration>>) {
+        let shared = Arc::new(Shared {
+            requested,
+            generation: AtomicU64::new(0),
+            wake: Box::new(|| {}),
+        });
+        let (checkpointed, checkpoints) = watch::channel(None);
+        shared.announce();
+        let task = tokio::spawn(std::future::pending());
+        (
+            Self {
+                task,
+                shared,
+                checkpointed,
+            },
+            checkpoints,
+        )
+    }
+
+    pub(super) fn test_refresh_warning(&self) {
+        self.shared.refresh_warning();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{BufRead, Read};

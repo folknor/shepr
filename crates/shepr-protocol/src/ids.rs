@@ -36,8 +36,11 @@ fn decode_public_number(value: &str) -> Option<usize> {
 ///
 /// The only spelling is `w` followed by a one-based public number
 /// ([`encode_public_number`]). A value is built from that number or parsed
-/// from its canonical text, deserialization included, so no workspace ID
-/// exists that the server's allocator could not have issued.
+/// from its canonical text, deserialization included, so every workspace ID
+/// has exactly one spelling. Parsing admits any nonzero number, including
+/// `usize::MAX`, which an allocator never issues; a saved ID at the top of the
+/// number space leaves the allocator exhausted, so creating a workspace is
+/// then refused.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkspaceId(NonZeroUsize);
 

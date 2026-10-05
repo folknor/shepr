@@ -72,7 +72,9 @@ impl std::error::Error for RunServerError {
 
 /// Where a started server listens and logs, handed to the `on_ready` callback
 /// of [`run_server`] once the socket is bound and the TUI gate is open. Its
-/// `Display` form is the operator notice a foreground server shows.
+/// `Display` form is the start of the operator notice a foreground server
+/// shows; the `shepr-server` executable adds the client command to run, from
+/// `shepr_launch::guidance`, which this crate does not link.
 #[derive(Clone, Debug)]
 pub struct ServerReady {
     pub socket: PathBuf,
@@ -90,18 +92,14 @@ impl std::fmt::Display for ServerReady {
         )?;
         writeln!(f, "socket: {}", self.socket.display())?;
         match &self.log_file_unavailable {
-            None => writeln!(f, "logs: {}", self.log_file.display())?,
-            Some(unavailable) => writeln!(
+            None => write!(f, "logs: {}", self.log_file.display()),
+            Some(unavailable) => write!(
                 f,
                 "logs: unavailable, could not open {}: {}",
                 unavailable.path.display(),
                 unavailable.reason
-            )?,
+            ),
         }
-        write!(
-            f,
-            "did you mean to open the Shepr TUI? run `shepr`, which starts the server itself."
-        )
     }
 }
 

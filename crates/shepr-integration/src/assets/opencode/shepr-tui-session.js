@@ -38,8 +38,9 @@ function paneEndpoint() {
 // unit. Nanoseconds are not an option here: they exceed 2^53, where a JS
 // number stops being exact, so `+= 1` would round away. The wall-clock seed
 // puts a restarted process above its predecessor's last seq; after a backwards
-// clock step, shepr accepts any seq from a source that has been silent for a
-// few seconds.
+// clock step, shepr re-anchors only if wall time is earlier than it was at the
+// last accepted report or has fallen seconds behind monotonic time. Silence alone
+// never permits re-anchoring.
 function seedSeq() {
   return Date.now() * 1000;
 }

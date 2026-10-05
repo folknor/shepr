@@ -141,9 +141,12 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
 #[test]
 fn workspace_creation_state_command_commits_spawned_values() {
     let mut state = AppState::test_new();
-    let prepared = state.workspaces.prepare_workspace(
-        &shepr_core::absolute_path::AbsolutePath::new("/shepr-test/cwd").expect("absolute"),
-    );
+    let prepared = state
+        .workspaces
+        .prepare_workspace(
+            &shepr_core::absolute_path::AbsolutePath::new("/shepr-test/cwd").expect("absolute"),
+        )
+        .expect("workspace ID available");
     let root_pane = prepared.root_pane();
 
     let geometry = shepr_mux::workspace::SpawnGeometry {

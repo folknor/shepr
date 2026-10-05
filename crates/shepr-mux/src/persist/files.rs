@@ -56,7 +56,8 @@ impl NotRegularKind {
 
 #[derive(Debug)]
 struct NotRegularFile {
-    path: PathBuf,
+    target: PathBuf,
+    requested: Option<PathBuf>,
     kind: NotRegularKind,
 }
 
@@ -64,14 +65,41 @@ impl std::fmt::Display for NotRegularFile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{} is {}, not a regular file; remove it or make it a regular file",
-            self.path.display(),
+            "{} is {}, not a regular file",
+            self.target.display(),
             self.kind.description()
-        )
+        )?;
+        if let Some(requested) = &self.requested {
+            write!(f, " (resolved from {})", requested.display())?;
+        }
+        f.write_str("; remove it or make it a regular file")
     }
 }
 
 impl std::error::Error for NotRegularFile {}
+
+#[derive(Debug)]
+struct SessionPathResolveError {
+    path: PathBuf,
+    source: std::io::Error,
+}
+
+impl std::fmt::Display for SessionPathResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "failed to resolve session path {}: {}",
+            self.path.display(),
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for SessionPathResolveError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
 
 #[derive(Debug)]
 struct SessionFileTooLarge {
@@ -85,27 +113,6 @@ impl std::fmt::Display for SessionFileTooLarge {
 }
 
 impl std::error::Error for SessionFileTooLarge {}
-
-pub(super) fn not_regular(path: &Path, file_type: std::fs::FileType) -> std::io::Error {
-    use std::os::unix::fs::FileTypeExt;
-    let kind = if file_type.is_dir() {
-        NotRegularKind::Directory
-    } else if file_type.is_fifo() {
-        NotRegularKind::Fifo
-    } else if file_type.is_socket() {
-        NotRegularKind::Socket
-    } else if file_type.is_char_device() {
-        NotRegularKind::CharacterDevice
-    } else if file_type.is_block_device() {
-        NotRegularKind::BlockDevice
-    } else {
-        NotRegularKind::Other
-    };
-    std::io::Error::other(NotRegularFile {
-        path: path.to_path_buf(),
-        kind,
-    })
-}
 
 fn session_file_kind(error: &std::io::Error) -> Option<shepr_protocol::SessionFileKind> {
     let file = error.get_ref()?.downcast_ref::<NotRegularFile>()?;
@@ -167,18 +174,33 @@ enum SessionPathState {
 /// the same bounded symlink walk. Opening still goes through the platform's
 /// nonblocking regular-file open, which checks the object actually opened.
 pub(super) struct SessionPath {
+    requested: PathBuf,
     target: PathBuf,
     state: SessionPathState,
 }
 
 impl SessionPath {
     pub(super) fn resolve(path: &Path) -> std::io::Result<Self> {
+        Self::resolve_inner(path).map_err(|source| {
+            let kind = source.kind();
+            std::io::Error::new(
+                kind,
+                SessionPathResolveError {
+                    path: path.to_path_buf(),
+                    source,
+                },
+            )
+        })
+    }
+
+    fn resolve_inner(path: &Path) -> std::io::Result<Self> {
         let mut target = path.to_path_buf();
         for _ in 0..MAX_SESSION_PATH_SYMLINK_HOPS {
             let metadata = match std::fs::symlink_metadata(&target) {
                 Ok(metadata) => metadata,
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                     return Ok(Self {
+                        requested: path.to_path_buf(),
                         target,
                         state: SessionPathState::Absent,
                     });
@@ -188,7 +210,7 @@ impl SessionPath {
                 Err(err) => return Err(err),
             };
             if !metadata.file_type().is_symlink() {
-                return Ok(Self::from_metadata(target, metadata));
+                return Ok(Self::from_metadata(path, target, metadata));
             }
             let link = std::fs::read_link(&target)?;
             target = if link.is_absolute() {
@@ -202,8 +224,9 @@ impl SessionPath {
                 std::io::ErrorKind::InvalidInput,
                 "session path still resolves through a symlink after the hop limit",
             )),
-            Ok(metadata) => Ok(Self::from_metadata(target, metadata)),
+            Ok(metadata) => Ok(Self::from_metadata(path, target, metadata)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self {
+                requested: path.to_path_buf(),
                 target,
                 state: SessionPathState::Absent,
             }),
@@ -211,41 +234,65 @@ impl SessionPath {
         }
     }
 
-    fn from_metadata(target: PathBuf, metadata: std::fs::Metadata) -> Self {
+    fn from_metadata(requested: &Path, target: PathBuf, metadata: std::fs::Metadata) -> Self {
         let state = if metadata.file_type().is_file() {
             SessionPathState::Regular(metadata)
         } else {
             SessionPathState::NotRegular(metadata.file_type())
         };
-        Self { target, state }
+        Self {
+            requested: requested.to_path_buf(),
+            target,
+            state,
+        }
     }
 
     pub(super) fn target(&self) -> &Path {
         &self.target
     }
 
-    pub(super) fn ensure_replaceable(&self, path: &Path) -> std::io::Result<()> {
+    fn not_regular(&self, file_type: std::fs::FileType) -> std::io::Error {
+        use std::os::unix::fs::FileTypeExt;
+        let kind = if file_type.is_dir() {
+            NotRegularKind::Directory
+        } else if file_type.is_fifo() {
+            NotRegularKind::Fifo
+        } else if file_type.is_socket() {
+            NotRegularKind::Socket
+        } else if file_type.is_char_device() {
+            NotRegularKind::CharacterDevice
+        } else if file_type.is_block_device() {
+            NotRegularKind::BlockDevice
+        } else {
+            NotRegularKind::Other
+        };
+        let requested = (self.requested != self.target).then(|| self.requested.clone());
+        std::io::Error::other(NotRegularFile {
+            target: self.target.clone(),
+            requested,
+            kind,
+        })
+    }
+
+    pub(super) fn ensure_replaceable(&self) -> std::io::Result<()> {
         match &self.state {
-            SessionPathState::NotRegular(file_type) => Err(not_regular(path, *file_type)),
+            SessionPathState::NotRegular(file_type) => Err(self.not_regular(*file_type)),
             SessionPathState::Absent | SessionPathState::Regular(_) => Ok(()),
         }
     }
 
-    pub(super) fn regular_metadata(
-        &self,
-        path: &Path,
-    ) -> std::io::Result<Option<&std::fs::Metadata>> {
+    pub(super) fn regular_metadata(&self) -> std::io::Result<Option<&std::fs::Metadata>> {
         match &self.state {
             SessionPathState::Absent => Ok(None),
             SessionPathState::Regular(metadata) => Ok(Some(metadata)),
-            SessionPathState::NotRegular(file_type) => Err(not_regular(path, *file_type)),
+            SessionPathState::NotRegular(file_type) => Err(self.not_regular(*file_type)),
         }
     }
 
-    fn open_regular(&self, path: &Path) -> std::io::Result<std::fs::File> {
-        self.ensure_replaceable(path)?;
+    fn open_regular(&self) -> std::io::Result<std::fs::File> {
+        self.ensure_replaceable()?;
         shepr_platform::open_regular_file(&self.target)?
-            .map_err(|file_type| not_regular(path, file_type))
+            .map_err(|file_type| self.not_regular(file_type))
     }
 }
 
@@ -253,7 +300,7 @@ impl SessionPath {
 /// `shepr_platform::open_regular_file`): a FIFO in its place never blocks a
 /// read, and anything other than a regular file is a [`NotRegularFile`] error.
 pub(super) fn open_regular(path: &Path) -> std::io::Result<std::fs::File> {
-    SessionPath::resolve(path)?.open_regular(path)
+    SessionPath::resolve(path)?.open_regular()
 }
 
 /// The metadata stamp of the regular file `path` resolves to, `None` when it
@@ -262,7 +309,7 @@ pub(super) fn regular_file_stamp(
     path: &Path,
 ) -> std::io::Result<Option<shepr_platform::FileStamp>> {
     let resolved = SessionPath::resolve(path)?;
-    let Some(metadata) = resolved.regular_metadata(path)? else {
+    let Some(metadata) = resolved.regular_metadata()? else {
         return Ok(None);
     };
     Ok(Some(shepr_platform::FileStamp::from_metadata(metadata)))
@@ -274,15 +321,17 @@ pub(super) fn read_session_file(path: &Path) -> std::io::Result<String> {
     file.take((MAX_SESSION_FILE_BYTES as u64).saturating_add(1))
         .read_to_end(&mut content)?;
     if content.len() > MAX_SESSION_FILE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            SessionFileTooLarge {
-                limit_bytes: MAX_SESSION_FILE_BYTES,
-            },
-        ));
+        return Err(session_file_too_large(MAX_SESSION_FILE_BYTES));
     }
     String::from_utf8(content)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+fn session_file_too_large(limit_bytes: usize) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        SessionFileTooLarge { limit_bytes },
+    )
 }
 
 /// The directory holding `path`; a bare file name lives in `.`.
@@ -417,16 +466,21 @@ impl Write for CappedBuf {
 }
 
 pub(super) fn save_to_path(path: &Path, snapshot: &SessionSnapshot) -> std::io::Result<Published> {
-    let mut json = CappedBuf::new(MAX_SESSION_FILE_BYTES);
+    save_to_path_with_size_limit(path, snapshot, MAX_SESSION_FILE_BYTES)
+}
+
+fn save_to_path_with_size_limit(
+    path: &Path,
+    snapshot: &SessionSnapshot,
+    size_limit_bytes: usize,
+) -> std::io::Result<Published> {
+    let mut json = CappedBuf::new(size_limit_bytes);
     serde_json::to_writer_pretty(&mut json, snapshot)?;
-    if json.len > MAX_SESSION_FILE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("session file exceeds {MAX_SESSION_FILE_BYTES} bytes"),
-        ));
+    if json.len > size_limit_bytes {
+        return Err(session_file_too_large(size_limit_bytes));
     }
     let resolved = SessionPath::resolve(path)?;
-    resolved.ensure_replaceable(resolved.target())?;
+    resolved.ensure_replaceable()?;
     let target = resolved.target();
     let directory = containing_directory(target);
     let missing_directories = missing_directory_chain(directory)?;
@@ -449,20 +503,41 @@ pub(super) fn save_to_path(path: &Path, snapshot: &SessionSnapshot) -> std::io::
     Ok(published)
 }
 
+/// The unlink state, including whether its containing directory was synced.
+#[derive(Debug)]
+pub(super) enum ClearOutcome {
+    Durable,
+    NotDurable(std::io::Error),
+}
+
 /// Removes what a save to `path` would have written. Saves write through
 /// symlinks (stow users keep the session file in a dotfiles tree), so a clear
 /// removes the file the link points at and leaves the link in place, dangling
 /// until the next save writes through it again. Removing the link instead
 /// would strand the stale target with the old session and turn the next save
 /// into a plain file where the link was.
-pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
+pub(super) fn clear_path(path: &Path) -> std::io::Result<ClearOutcome> {
+    clear_path_with_directory_sync(path, shepr_platform::sync_directory)
+}
+
+pub(super) fn clear_path_with_directory_sync(
+    path: &Path,
+    mut sync_directory: impl FnMut(&Path) -> std::io::Result<()>,
+) -> std::io::Result<ClearOutcome> {
     let resolved = SessionPath::resolve(path)?;
-    resolved.ensure_replaceable(resolved.target())?;
+    resolved.ensure_replaceable()?;
     let target = resolved.target();
     match std::fs::remove_file(target) {
-        Ok(()) => shepr_platform::sync_directory(containing_directory(target)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err),
+    }
+    match sync_directory(containing_directory(target)) {
+        Ok(()) => Ok(ClearOutcome::Durable),
+        // If the containing directory itself is gone, the target cannot be
+        // present there; retain the established no-op result for that case.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ClearOutcome::Durable),
+        Err(error) => Ok(ClearOutcome::NotDurable(error)),
     }
 }
 
@@ -497,7 +572,7 @@ pub fn check_session_target(lease: &DataDirLease) -> std::io::Result<()> {
     // Use the shared resolver so startup and later saves apply the same
     // symlink hop limit, including dangling links.
     let resolved = SessionPath::resolve(&path)?;
-    resolved.ensure_replaceable(resolved.target())
+    resolved.ensure_replaceable()
 }
 
 /// The directory a session file is backed up to before a save replaces one
@@ -586,6 +661,10 @@ mod tests {
             .is_some_and(<dyn std::error::Error + Send + Sync>::is::<NotRegularFile>)
     }
 
+    fn too_large_limit(error: &std::io::Error) -> Option<usize> {
+        super::session_file_size_limit(error)
+    }
+
     #[test]
     fn a_session_path_still_a_symlink_after_the_hop_limit_is_refused() {
         let scratch = shepr_test_support::ScratchDir::new("session-symlink-loop");
@@ -596,6 +675,7 @@ mod tests {
 
         let error = resolve_write_target(&first).expect_err("a symlink loop is refused");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains(&first.display().to_string()));
     }
 
     #[test]
@@ -609,6 +689,18 @@ mod tests {
 
         let error = read_session_file(&path).expect_err("an oversized file is refused");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(too_large_limit(&error), Some(MAX_SESSION_FILE_BYTES));
+    }
+
+    #[test]
+    fn saving_an_oversized_session_returns_the_same_typed_limit_error() {
+        let path = temp_session_path("oversized-save");
+
+        let error = save_to_path_with_size_limit(&path, &empty_snapshot(), 1)
+            .expect_err("an oversized save is refused");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(too_large_limit(&error), Some(1));
     }
 
     /// A session file whose data directory does not exist yet, so saves
@@ -650,10 +742,12 @@ mod tests {
         assert!(is_not_regular(&error), "{error}");
         assert!(error.to_string().contains("a directory"), "{error}");
         // A save neither replaces it nor a clear removes it.
-        assert!(is_not_regular(
-            &save_to_path(&session, &empty_snapshot()).expect_err("refused")
-        ));
-        assert!(is_not_regular(&clear_path(&session).expect_err("refused")));
+        let save_error = save_to_path(&session, &empty_snapshot()).expect_err("refused");
+        let clear_error = clear_path(&session).expect_err("refused");
+        assert!(is_not_regular(&save_error));
+        assert!(is_not_regular(&clear_error));
+        assert_eq!(error.to_string(), save_error.to_string());
+        assert_eq!(error.to_string(), clear_error.to_string());
         assert!(std::fs::metadata(&session).expect("test stat").is_dir());
         std::fs::remove_dir(&session).expect("test precondition");
 
@@ -692,7 +786,7 @@ mod tests {
         let path = temp_session_path("clear-existing");
         save_to_path(&path, &empty_snapshot()).expect("test precondition");
 
-        clear_path(&path).expect("test precondition");
+        assert!(matches!(clear_path(&path), Ok(ClearOutcome::Durable)));
 
         assert!(!path.try_exists().expect("test stat"));
     }
@@ -701,7 +795,7 @@ mod tests {
     fn clear_path_ignores_missing_session_file() {
         let path = temp_session_path("clear-missing");
 
-        clear_path(&path).expect("test precondition");
+        assert!(matches!(clear_path(&path), Ok(ClearOutcome::Durable)));
 
         assert!(!path.try_exists().expect("test stat"));
     }
@@ -829,7 +923,7 @@ mod tests {
         save_to_path(&link, &empty_snapshot()).expect("test precondition");
         assert!(target.try_exists().expect("test stat"));
 
-        clear_path(&link).expect("test precondition");
+        assert!(matches!(clear_path(&link), Ok(ClearOutcome::Durable)));
 
         assert!(
             std::fs::symlink_metadata(&link)
@@ -839,7 +933,7 @@ mod tests {
         );
         assert!(!target.try_exists().expect("test stat"));
         // Clearing again with the link dangling is a no-op.
-        clear_path(&link).expect("test precondition");
+        assert!(matches!(clear_path(&link), Ok(ClearOutcome::Durable)));
         assert!(
             std::fs::symlink_metadata(&link)
                 .expect("test precondition")
@@ -872,16 +966,43 @@ mod tests {
         if inspectable {
             return;
         }
-        assert_eq!(
-            resolved
-                .expect_err("an unreadable path is not absent")
-                .kind(),
-            std::io::ErrorKind::PermissionDenied
+        let resolve_error = resolved.expect_err("an unreadable path is not absent");
+        let clear_error = cleared.expect_err("a clear must not guess");
+        assert_eq!(resolve_error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(clear_error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            resolve_error
+                .to_string()
+                .contains(&path.display().to_string())
         );
-        assert_eq!(
-            cleared.expect_err("a clear must not guess").kind(),
-            std::io::ErrorKind::PermissionDenied
+        assert!(
+            clear_error
+                .to_string()
+                .contains(&path.display().to_string())
         );
+    }
+
+    #[test]
+    fn non_regular_symlink_errors_report_the_target_and_link_consistently() {
+        let scratch = crate::test_support::ScratchDir::new("session-non-regular-link");
+        let lease = DataDirLease::acquire(&scratch).expect("lease");
+        let link = session_path(lease.directory());
+        let target = scratch.path().join("session-directory");
+        std::fs::create_dir(&target).expect("test precondition");
+        std::os::unix::fs::symlink(&target, &link).expect("test precondition");
+
+        let startup_error = check_session_target(&lease).expect_err("directory target is refused");
+        let read_error = read_session_file(&link).expect_err("directory target is not read");
+        let save_error =
+            save_to_path(&link, &empty_snapshot()).expect_err("directory not replaced");
+        let clear_error = clear_path(&link).expect_err("directory not removed");
+        let message = startup_error.to_string();
+
+        assert!(message.contains(&target.display().to_string()), "{message}");
+        assert!(message.contains(&link.display().to_string()), "{message}");
+        assert_eq!(message, read_error.to_string());
+        assert_eq!(message, save_error.to_string());
+        assert_eq!(message, clear_error.to_string());
     }
 
     #[test]

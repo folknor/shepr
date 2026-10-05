@@ -250,6 +250,7 @@ exclude = [
     "crates/shepr-remote/src/relay/tests.rs",
     "crates/shepr-server/src/server/headless/tests/already_running.rs",
     "crates/shepr-server/src/server/headless/tests/server_stop.rs",
+    "crates/shepr-server/src/server/headless/tests/shutdown.rs",
     "crates/shepr-test-support/src/fixture.rs",
     "crates/shepr-test-support/src/lib.rs",
     "src/test_support.rs",

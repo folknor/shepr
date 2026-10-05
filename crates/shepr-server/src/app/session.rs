@@ -760,6 +760,16 @@ impl SessionSaver {
         self.in_flight.is_some()
     }
 
+    /// Holds a host checkpoint until the test delivers its completion, so
+    /// the event loop can be exercised after it has gone idle.
+    pub(crate) fn hold_test_host_checkpoint(&mut self) -> shepr_mux::persist::SaveCompletion {
+        self.host.request();
+        self.hold_test_kind(SaveKind::Checkpoint(CheckpointTicket {
+            exit: None,
+            host: true,
+        }))
+    }
+
     /// Stands in for an autosave the persister is still running; it
     /// finishes when the test completes the returned handle.
     pub(crate) fn hold_test_save_in_flight(&mut self) -> shepr_mux::persist::SaveCompletion {

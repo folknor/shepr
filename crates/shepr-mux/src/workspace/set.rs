@@ -36,20 +36,11 @@ impl WorkspaceIdAllocator {
         }
     }
 
-    /// The next ID. Panics once the number space is exhausted: continuing
-    /// would have to reuse a live ID, and there is no safe value.
-    pub fn allocate(&mut self) -> WorkspaceId {
-        match self.try_allocate() {
-            Some(id) => id,
-            None => panic!("workspace id space exhausted"),
-        }
-    }
-
     /// Hands out the counter's number and advances it. `None` once the
     /// counter is exhausted: advancing refuses to pass `usize::MAX` rather
     /// than wrap, so that last number is never handed out and marks the space
     /// as used up.
-    fn try_allocate(&mut self) -> Option<WorkspaceId> {
+    pub fn try_allocate(&mut self) -> Option<WorkspaceId> {
         let number = self.next;
         self.next = number.checked_add(1)?;
         WorkspaceId::from_number(number)
@@ -157,15 +148,16 @@ impl WorkspaceSet {
 
     /// A one-pane workspace for a shell about to launch in `cwd`: its ID from
     /// this set's allocator, its pane and terminal state, and its public ID.
-    /// Nothing joins the set until `commit_workspace`, so a launch that fails
-    /// leaves the set as it was (the ID is simply not used).
-    pub fn prepare_workspace(&mut self, cwd: &AbsolutePath) -> PreparedWorkspace {
-        let id = self.ids.allocate();
+    /// Nothing joins the set until `commit_workspace`; a failed launch leaves
+    /// no workspace in the set, and the reserved ID is not reused. `None` when
+    /// the allocator has no ID left; then no pane ID or terminal is made.
+    pub fn prepare_workspace(&mut self, cwd: &AbsolutePath) -> Option<PreparedWorkspace> {
+        let id = self.ids.try_allocate()?;
         let terminal = TerminalState::new(cwd.clone());
         let tree = PaneTree::single(PaneId::alloc(), terminal);
-        PreparedWorkspace {
+        Some(PreparedWorkspace {
             workspace: Workspace::from_tree(id, None, cwd.clone(), tree),
-        }
+        })
     }
 
     /// Appends a prepared workspace with the geometry its first pane was
@@ -506,8 +498,14 @@ mod tests {
     fn separate_allocators_issue_independent_ids() {
         let mut first = WorkspaceIdAllocator::new();
         let mut second = WorkspaceIdAllocator::new();
-        assert_eq!(first.allocate(), second.allocate());
-        assert_ne!(first.allocate(), first.allocate());
+        assert_eq!(
+            first.try_allocate().expect("available"),
+            second.try_allocate().expect("available")
+        );
+        assert_ne!(
+            first.try_allocate().expect("available"),
+            first.try_allocate().expect("available")
+        );
     }
 
     #[test]
@@ -517,7 +515,7 @@ mod tests {
 
         ids.reserve([&restored]);
 
-        let generated = ids.allocate();
+        let generated = ids.try_allocate().expect("available");
         assert_ne!(generated.to_string(), "wZ");
         assert!(generated.number() > 31);
     }
@@ -552,6 +550,18 @@ mod tests {
 
         let next = ids.try_allocate().expect("numbers left");
         assert_eq!(next.number(), 10);
+    }
+
+    #[test]
+    fn preparing_a_workspace_refuses_when_ids_are_exhausted() {
+        let mut set = WorkspaceSet::new();
+        let saved_max = WorkspaceId::from_number(usize::MAX).expect("nonzero workspace ID");
+        set.ids.reserve([&saved_max]);
+        let cwd = AbsolutePath::new("/shepr-set-test").expect("absolute");
+
+        assert!(set.prepare_workspace(&cwd).is_none());
+        assert!(set.is_empty());
+        assert_eq!(set.ids.next, usize::MAX);
     }
 
     #[test]
@@ -595,7 +605,9 @@ mod tests {
             .unwrap_or_else(|_| panic!("a fresh id and panes"));
         assert_eq!(inserted.number(), 40);
 
-        let next = set.prepare_workspace(&AbsolutePath::new("/shepr-set-test").expect("absolute"));
+        let next = set
+            .prepare_workspace(&AbsolutePath::new("/shepr-set-test").expect("absolute"))
+            .expect("workspace id available");
         assert_eq!(next.id().number(), 41);
     }
 
@@ -823,7 +835,7 @@ mod tests {
     fn a_prepared_workspace_commits_with_its_geometry() {
         let mut set = WorkspaceSet::new();
         let cwd = AbsolutePath::new("/shepr-set-test").expect("absolute");
-        let prepared = set.prepare_workspace(&cwd);
+        let prepared = set.prepare_workspace(&cwd).expect("workspace id available");
         let id = prepared.id();
         let root = prepared.root_pane();
         assert_eq!(

@@ -347,12 +347,11 @@ fn grok_hook_config_is_valid(
     let Some(content) = read_config_content(config_path)? else {
         return Ok(false);
     };
-    let config = serde_json::from_str::<serde_json::Value>(&content).map_err(|error| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigUnparseable,
-            format!("cannot parse {}: {error}", config_path.display()),
-        )
-    })?;
+    let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) else {
+        // This file is wholly Shepr-owned, so malformed contents are drift
+        // that install can safely replace rather than a user config error.
+        return Ok(false);
+    };
     Ok(config == expected_config)
 }
 
@@ -834,6 +833,56 @@ mod registration_tests {
         assert_eq!(
             fs::read_to_string(config).expect("read config"),
             "[broken\n"
+        );
+    }
+
+    #[test]
+    fn codex_disabled_hooks_are_refused_without_publishing_anything() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let paths = AgentIntegrationPaths::resolve();
+        let dir = target_directory(&paths, Target::Codex).expect("Codex directory");
+        fs::create_dir_all(&dir).expect("create Codex directory");
+        let hook = target_path(&paths, Target::Codex).expect("hook path");
+        let hooks = dir.join(super::super::CODEX_HOOKS_NAME);
+        let config = dir.join(super::super::CODEX_CONFIG_NAME);
+        let original = "model = \"x\"\n[features]\nhooks = false\ncodex_hooks = true\n";
+        fs::write(&config, original).expect("write user's config");
+
+        let error = install_operation(&paths, Target::Codex)
+            .expect_err("explicit global opt-out must be respected");
+
+        assert!(error.to_string().contains("features.hooks = false"));
+        assert_eq!(fs::read_to_string(&config).expect("read config"), original);
+        assert!(
+            !hooks.try_exists().expect("stat hooks config"),
+            "hooks config must not be published"
+        );
+        assert!(
+            !hook.try_exists().expect("stat hook asset"),
+            "hook asset must not be published"
+        );
+    }
+
+    #[test]
+    fn grok_status_marks_malformed_owned_hook_config_outdated_and_repairs_it() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let paths = AgentIntegrationPaths::resolve();
+        let dir = target_directory(&paths, Target::Grok).expect("Grok directory");
+        fs::create_dir_all(agent_directory(&paths, Target::Grok).expect("agent directory"))
+            .expect("create Grok directory");
+        install_operation(&paths, Target::Grok).expect("initial install");
+
+        let config = dir.join("hooks").join(super::super::GROK_HOOK_CONFIG_NAME);
+        fs::write(&config, "{ truncated").expect("corrupt owned hook config");
+        let status = integration_status(&paths, Target::Grok).expect("status malformed config");
+        assert_eq!(status.state, IntegrationStatusKind::Outdated);
+
+        install_operation(&paths, Target::Grok).expect("repair malformed owned config");
+        assert_eq!(
+            integration_status(&paths, Target::Grok)
+                .expect("status repaired config")
+                .state,
+            IntegrationStatusKind::Current
         );
     }
 

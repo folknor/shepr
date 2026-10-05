@@ -103,7 +103,7 @@ const SPECS: [AssetSpec; 15] = [
         version: 6,
         asset: "codex/shepr-agent-state.sh",
         decoder: "codex.py",
-        kind: shell(None, false, false),
+        kind: shell(None, true, false),
     },
     AssetSpec {
         target: IntegrationTarget::Copilot,
@@ -213,8 +213,7 @@ const STATES: [IntegrationHookAction; 3] = [
 const EARLY_SEQ: &str = r#"# Stamp the report the moment the hook starts. Every event runs this script in
 # a fresh process, and shepr drops a report whose seq is older than the last
 # one it accepted, so taking the timestamp after python3 has started would let
-# interpreter startup jitter reorder near-simultaneous events (a PreToolUse
-# followed at once by a PermissionRequest).
+# interpreter startup jitter reorder near-simultaneous events.
 hook_seq="$(date +%s%N 2>/dev/null || true)""#;
 
 const EMPTY_OBJECT: &str = r"  # Antigravity CLI expects a JSON object on stdout and this hook never injects

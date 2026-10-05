@@ -395,8 +395,9 @@ Reported by: remote.
 `RemoteSsh::command`, `bridge_connection`, `MachineSshConnector::wait_for_server` and
 `authentication_command_with_config` each call `ssh_command()` +
 `apply_managed_ssh_options` + some of `apply_batch_ssh_options` /
-`ssh_options::append_shepr_options` + `-T` + target. BUG-063 is the divergence that
-already happened. Fix: one `SshInvocation { mode: Batch | Interactive, .. }` builder
+`ssh_options::append_shepr_options` + `-T` + target. The interactive login command
+once lacked the connect bound this way; a shared connection-bounds appender now
+covers that one option. Fix: one `SshInvocation { mode: Batch | Interactive, .. }` builder
 owning `-C`, `-F`, `-S`, the control and keepalive options, the connect bound, `-T` and
 the target, formatting the numeric options from `limits.rs` (VAL-062). Enforceable by
 making `ssh_command()` private to the builder.

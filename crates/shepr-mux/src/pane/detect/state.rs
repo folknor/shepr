@@ -110,9 +110,16 @@ impl ScreenTick {
     pub(in crate::pane) fn resume(
         self,
         detector: &mut DetectorState,
-        screen: &AgentDetectionInputs,
+        screen: Option<&AgentDetectionInputs>,
     ) -> TickOutput {
-        let update = detector.complete_screen(&self.tick, screen);
+        let update = if let Some(screen) = screen {
+            detector.complete_screen(&self.tick, screen)
+        } else {
+            // Keep the previous evidence and make the next tick retry even if
+            // this scan was requested only because the agent identity changed.
+            detector.last_screen_scan_detection_content_seq = None;
+            None
+        };
         detector.finish_tick(&self.tick, update)
     }
 }
@@ -326,7 +333,12 @@ mod tests {
         let held = step_done(step);
         assert!(held.state_changed.is_none());
         let deadline = now + AGENT_ABSENCE_STARTUP_HOLD;
-        let released = done(detector.begin(tick(deadline)));
+        // The hold outlasts the unidentified recheck, so the tick at the
+        // deadline probes again; that probe still finds no agent and the
+        // absence is published.
+        let token = needs_probe(detector.begin(tick(deadline)));
+        let (_change, step) = token.resume(&mut detector, &probe(None));
+        let released = step_done(step);
         let update = released
             .state_changed
             .expect("absence publishes without a core read");
@@ -355,10 +367,10 @@ mod tests {
         };
         let result = screen.resume(
             &mut detector,
-            &AgentDetectionInputs {
+            Some(&AgentDetectionInputs {
                 screen_text: "* Waiting for 1 background agent to finish".into(),
                 ..Default::default()
-            },
+            }),
         );
         assert_eq!(
             result
@@ -378,6 +390,33 @@ mod tests {
     }
 
     #[test]
+    fn failed_screen_read_does_not_publish_empty_screen_evidence() {
+        let now = Instant::now();
+        let mut detector = DetectorState::new(now, LaunchKind::Fresh);
+        detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Claude));
+        detector.last_published = Some(Detection::Working { visible: false });
+        detector.last_screen_scan_detection_content_seq = Some(1);
+        detector.scheduler.probe_started(now);
+        detector.scheduler.last_foreground_group = Some(pgid(25));
+
+        let mut screen_tick = tick(now + Duration::from_millis(1));
+        screen_tick.agent_changed = true;
+        let screen = match detector.begin(screen_tick) {
+            Tick::NeedsScreen(screen) => screen,
+            Tick::Done(_) | Tick::NeedsProbe(_) => panic!("expected a screen read"),
+        };
+
+        let output = screen.resume(&mut detector, None);
+
+        assert!(output.state_changed.is_none());
+        assert_eq!(
+            detector.last_published,
+            Some(Detection::Working { visible: false })
+        );
+        assert_eq!(detector.last_screen_scan_detection_content_seq, None);
+    }
+
+    #[test]
     fn tick_confirmed_misses_publish_exit_before_identity_withdrawal() {
         let now = Instant::now();
         let mut detector = DetectorState::new(now, LaunchKind::Fresh);
@@ -388,7 +427,9 @@ mod tests {
             let (_change, step) = token.resume(&mut detector, &probe(None));
             let output = match step {
                 Step::Done(output) => output,
-                Step::NeedsScreen(screen) => screen.resume(&mut detector, &Default::default()),
+                Step::NeedsScreen(screen) => {
+                    screen.resume(&mut detector, Some(&Default::default()))
+                }
             };
             if attempt == AGENT_MISS_CONFIRMATION_ATTEMPTS {
                 let update = output.state_changed.expect("confirmed exit");
@@ -409,7 +450,7 @@ mod tests {
         let (_change, step) = token.resume(&mut detector, &probe(None));
         let cleared = match step {
             Step::Done(output) => output,
-            Step::NeedsScreen(screen) => screen.resume(&mut detector, &Default::default()),
+            Step::NeedsScreen(screen) => screen.resume(&mut detector, Some(&Default::default())),
         };
         assert_eq!(detector.current_agent(), None);
         assert_eq!(

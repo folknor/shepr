@@ -1,11 +1,12 @@
 # shepr server configuration
 # Place this file at ~/.config/shepr/server.toml
 # Only shepr-server reads this file, on the host it runs on. It decides the
-# panes' shell and working directory, the session, and whether panes have
-# borders, gaps and scrollbars. Colours, keys, the sidebar, mouse and copy
-# behaviour and the machines belong in client.toml, which only the shepr client
-# reads: the client colours the pane chrome every server draws. An unknown or
-# misplaced setting fails the launch.
+# panes' shell and working directory, the session, scrollbars, and whether
+# neighbouring panes share a divider or draw adjacent borders. Pane borders are
+# always drawn. Colours, keys, the sidebar, mouse and copy behaviour and the
+# machines belong in client.toml, which only the shepr client reads: the client
+# colours the pane chrome every server draws. An unknown or misplaced setting
+# fails the launch.
 
 [terminal]
 # Executable used for new interactive panes.
@@ -35,7 +36,7 @@
 # Set false to reclaim the scrollbar column and keep it out of terminal-native selections.
 # pane_scrollbars = true
 
-# Keep split panes visually separated instead of sharing divider borders.
+# Draw each pane's own border beside its neighbour instead of sharing one divider.
 # pane_gaps = true
 
 [session]
@@ -66,4 +67,3 @@
 # Not a hard cap: nonzero values keep at least 1000 lines, and widening a pane
 # keeps its existing history.
 # scrollback_limit_bytes = 10000000
-

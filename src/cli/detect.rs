@@ -1,6 +1,7 @@
 //! `shepr detect`: the manifest-maintenance commands. `capture` prints the
-//! screen and OSC values the detector evaluates for a pane; `explain` shows
-//! which rule decided a pane's state, or evaluates a saved capture locally.
+//! screen and OSC values the detector evaluates for a pane; `explain` shows a
+//! pane's effective state beside the current screen verdict, or evaluates a
+//! saved capture locally.
 
 use std::path::{Path, PathBuf};
 
@@ -228,6 +229,23 @@ fn unapplied_hook_report_text(report: &UnappliedHookReport) -> String {
 pub(super) fn print_explain_text(explain: &DetectionExplanation, verbose: bool) {
     println!("agent: {}", explain.agent);
     println!("state: {}", explain.state);
+    match &explain.state_source {
+        DetectionStateSource::Screen => println!("state_source: screen"),
+        DetectionStateSource::ProcessExit => println!("state_source: process_exit"),
+        DetectionStateSource::HookAuthority { hook_source, .. } => {
+            println!("state_source: hook_authority ({hook_source})");
+        }
+    }
+    if let Some(screen_state) = explain.screen_state {
+        println!("screen_state: {screen_state}");
+        if screen_state != explain.state
+            && matches!(&explain.state_source, DetectionStateSource::Screen)
+        {
+            println!(
+                "screen_state_note: differs from the effective state; the reason is unavailable"
+            );
+        }
+    }
     if let Some(rule) = &explain.matched_rule {
         println!(
             "rule: {} (region={} priority={})",
@@ -254,6 +272,9 @@ pub(super) fn print_explain_text(explain: &DetectionExplanation, verbose: bool) 
         &explain.skipped_update_reason
     {
         println!("skipped_update_reason: matched_rule:{rule_id}");
+    }
+    if explain.skip_state_update {
+        println!("screen_gate: skip_state_update");
     }
     if let Some(report) = &explain.last_unapplied_hook_report {
         println!(

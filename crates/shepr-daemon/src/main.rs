@@ -9,6 +9,7 @@ use std::fmt::Display;
 use std::process::ExitCode;
 
 use shepr_launch::daemon_exit::DaemonExit;
+use shepr_launch::guidance::server_ready_hint;
 use shepr_launch::invocation::{ServerInvocation, server_usage, server_version_line};
 use shepr_server::{RunServerError, ServerReady, run_server};
 
@@ -59,11 +60,10 @@ fn serve(client_spawned: bool) -> ExitCode {
         Err(diagnostics) => return config_error(&diagnostics),
     };
     let on_ready = |ready: &ServerReady| {
-        if !client_spawned {
-            eprintln!("{ready}");
-        } else if ready.log_file_unavailable.is_some() {
-            // Nowhere durable to report to: the boot log stays the stderr.
-            eprintln!("{ready}");
+        if !client_spawned || ready.log_file_unavailable.is_some() {
+            // A client-spawned server without its log file has nowhere
+            // durable to report to: the boot log stays the stderr.
+            eprintln!("{ready}\n{}", server_ready_hint());
         } else if let Err(error) = shepr_platform::redirect_stderr_to_null() {
             // Stderr is still the boot log; one line there is bounded.
             eprintln!("shepr-server: could not detach stderr from the boot log: {error}");

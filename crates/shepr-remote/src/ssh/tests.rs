@@ -107,9 +107,11 @@ fn managed_ssh_config_includes_user_config_then_fallback() {
             .is_some(),
         "test user config must be included"
     );
+    // Spell OpenSSH's quoted Include syntax directly so this assertion can
+    // catch mistakes in the production quoting helper.
     let include = format!(
-        "Include {}",
-        ssh_config_quote(&user_config.to_string_lossy())
+        "Include \"{}\"",
+        user_config.to_str().expect("test path is UTF-8")
     );
     let include_at = contents.find(&include).expect("user config Included");
     let fallback_at = contents.find("Host *").expect("fallback present");
@@ -274,6 +276,8 @@ fn authentication_command_uses_shared_transport_without_askpass_or_host_key_rela
         ssh_options::REMOTE_COMMAND_NONE,
         ssh_options::LOG_LEVEL_ERROR,
         crate::limits::SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION,
+        crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
+        crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
     ] {
         assert!(args.iter().any(|arg| arg == required), "missing {required}");
     }
@@ -292,8 +296,34 @@ fn authentication_command_uses_shared_transport_without_askpass_or_host_key_rela
 #[test]
 fn ssh_config_quote_wraps_path_with_spaces() {
     assert_eq!(
-        ssh_config_quote("/home/a b/.ssh/config"),
+        ssh_config_quote(Path::new("/home/a b/.ssh/config")).expect("UTF-8 path is quotable"),
         "\"/home/a b/.ssh/config\""
+    );
+}
+
+#[test]
+fn ssh_config_include_rejects_quotes_and_non_utf8_paths() {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let scratch = shepr_test_support::ScratchDir::new("ssh-config-include-quote");
+    let quoted_path = scratch.join("alice\"smith-config");
+    fs::write(&quoted_path, "").expect("test precondition");
+    let error = ssh_config_include(Some(&quoted_path)).expect_err("quote cannot be escaped");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains(&format!("{quoted_path:?}")));
+
+    let non_utf8_path = scratch.join(std::ffi::OsStr::from_bytes(b"alice-\xff-config"));
+    fs::write(&non_utf8_path, "").expect("test precondition");
+    let error = ssh_config_include(Some(&non_utf8_path)).expect_err("non-UTF-8 path is refused");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    assert!(error.to_string().contains(&format!("{non_utf8_path:?}")));
+
+    // A path the Include line cannot spell is harmless while nothing is there.
+    let absent = scratch.join("missing\"config");
+    assert!(
+        ssh_config_include(Some(&absent))
+            .expect("an absent config is skipped")
+            .is_none()
     );
 }
 

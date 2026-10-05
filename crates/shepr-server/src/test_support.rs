@@ -181,7 +181,8 @@ pub(crate) fn next_fixture_workspace_id() -> shepr_protocol::WorkspaceId {
     TEST_WORKSPACE_IDS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .allocate()
+        .try_allocate()
+        .expect("test workspace ID space available")
 }
 
 impl WorkspaceFixture for Workspace {

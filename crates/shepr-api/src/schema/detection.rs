@@ -25,6 +25,7 @@ impl std::fmt::Display for ScreenDetectionSkipReason {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DetectionStateSource {
     Screen,
+    ProcessExit,
     HookAuthority {
         hook_source: String,
         skip_reason: ScreenDetectionSkipReason,
@@ -34,8 +35,13 @@ pub enum DetectionStateSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DetectionExplanation {
     pub agent: String,
+    /// The pane's effective state, or the screen verdict for a saved capture.
     pub state: AgentState,
     pub state_source: DetectionStateSource,
+    /// The current screen manifest verdict when explaining a live pane.
+    /// `state` and the rule evidence below describe the same response but
+    /// answer different questions when a mux gate holds the published state.
+    pub screen_state: Option<AgentState>,
     pub matched_rule: Option<DetectionMatchedRule>,
     pub visible_idle: bool,
     pub visible_blocker: bool,
@@ -248,6 +254,7 @@ impl From<DetectionExplain> for DetectionExplanation {
             agent: explain.agent.label().to_owned(),
             state: explain.verdict.state(),
             state_source: DetectionStateSource::Screen,
+            screen_state: None,
             matched_rule: explain.matched_rule.map(|rule| DetectionMatchedRule {
                 id: rule.id,
                 priority: rule.priority,
@@ -287,6 +294,19 @@ impl From<DetectionExplain> for DetectionExplanation {
 }
 
 impl DetectionExplanation {
+    /// Replaces the screen verdict as the pane's effective state while
+    /// retaining it beside the manifest evidence for live-pane diagnostics.
+    pub fn with_pane_decision(
+        mut self,
+        state: AgentState,
+        state_source: DetectionStateSource,
+    ) -> Self {
+        self.screen_state = Some(self.state);
+        self.state = state;
+        self.state_source = state_source;
+        self
+    }
+
     pub fn hook_authority(
         agent: &str,
         state: AgentState,
@@ -300,6 +320,7 @@ impl DetectionExplanation {
                 hook_source: hook_source.to_owned(),
                 skip_reason,
             },
+            screen_state: None,
             matched_rule: None,
             visible_idle: false,
             visible_blocker: false,

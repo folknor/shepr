@@ -5,7 +5,7 @@ shepr is configured with two TOML files, one for each of its two programs:
 | File | Read by | Holds |
 |---|---|---|
 | `client.toml` | the TUI (`shepr` with no subcommand) | keys, the sidebar, mouse and copy behaviour, prompts, the machines shown, the colours of everything the client draws |
-| `server.toml` | `shepr-server` | the pane shell and working directory, session restore, pane borders, gaps and scrollbars and their colours, scrollback |
+| `server.toml` | `shepr-server` | the pane shell and working directory, session restore, scrollbars and split divider drawing, scrollback |
 
 Every setting is optional. An empty or missing file means that program's
 defaults.
@@ -82,17 +82,19 @@ terminal's previous title where the terminal keeps a title stack, and leaves
 `shepr` elsewhere. There is no setting for it.
 
 Each server runs the panes and renders what goes inside the pane area: the
-pane contents and the borders and scrollbars around them. Those settings live
-in `server.toml`. Every colour is the client's, the pane chrome included:
-a server draws the borders and scrollbars, and your client colours them, on
-every machine it shows (see [Colours](#colours)).
+pane contents, borders and scrollbars. Its `server.toml` controls the pane
+processes, scrollbars and whether neighbouring panes share one divider or draw
+their own adjacent borders. Pane borders are always drawn. Every colour is the
+client's, the pane chrome included: a server draws the borders and scrollbars,
+and your client colours them, on every machine it shows (see
+[Colours](#colours)).
 
 Config never crosses hosts. When the client shows a machine over SSH, that
 machine's server uses its own `server.toml`, on that machine, and nothing from
-your local files. So a remote machine's panes use the shell, borders and
-scrollbars set on that machine. Nothing is sent from one
-host's config to another. (The client does tell each server whether it
-captures the mouse, from its own `ui.mouse_capture`.)
+your local files. So a remote machine's panes use the shell, scrollbar and
+divider settings from that machine. Nothing is sent from one host's config to
+another. (The client does tell each server whether it captures the mouse, from
+its own `ui.mouse_capture`.)
 
 # client.toml
 
@@ -571,7 +573,7 @@ greater than zero, each at most 4096, and together at most 4194304 cells.
 | Setting | Type | Default | What it does |
 |---|---|---|---|
 | `pane_scrollbars` | boolean | `true` | Draw interactive scrollbars beside panes. Turn off to reclaim the column and keep it out of selections the terminal makes itself. |
-| `pane_gaps` | boolean | `true` | Keep split panes visually apart instead of sharing divider borders. |
+| `pane_gaps` | boolean | `true` | Draw each pane's own border beside its neighbour instead of sharing one divider. |
 
 ## [experimental]
 
