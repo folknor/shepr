@@ -35,7 +35,6 @@ impl Throttle {
 pub(in crate::shell) struct ClientPaneMouseGesture {
     pub(super) hit: PaneHit,
     pub(super) button: crossterm::event::MouseButton,
-    pub(super) stripped_modifiers: crossterm::event::KeyModifiers,
     pub(super) last_event: crossterm::event::MouseEvent,
     pub(super) last_position: shepr_protocol::ClientMousePosition,
 }

@@ -765,7 +765,7 @@ impl ClientShellState {
             );
             if gesture_event {
                 let button = gesture.button;
-                let modifiers = mouse.modifiers.difference(gesture.stripped_modifiers);
+                let modifiers = mouse.modifiers;
                 let hit = self
                     .presentation
                     .pane_hits()
@@ -1121,19 +1121,11 @@ impl ClientShellState {
                         })
                         .is_some_and(|pane| pane.right_click_passthrough)
                         && mouse.modifiers.is_empty();
-                    let configured_modifiers = self
-                        .config
-                        .right_click_passthrough_modifiers
-                        .filter(|modifiers| *modifiers == mouse.modifiers);
-                    if hit.mouse_reporting
-                        && (pane_owns_right_click || configured_modifiers.is_some())
-                    {
-                        let stripped_modifiers =
-                            configured_modifiers.unwrap_or(crossterm::event::KeyModifiers::empty());
+                    if hit.mouse_reporting && pane_owns_right_click {
                         self.push_pane_mouse_event(
                             &hit,
                             mouse,
-                            mouse.modifiers.difference(stripped_modifiers),
+                            mouse.modifiers,
                             outcome,
                             accounting,
                         );
@@ -1149,7 +1141,6 @@ impl ClientShellState {
                             last_position: self.pane_mouse_position(&hit, mouse),
                             hit,
                             button: MouseButton::Right,
-                            stripped_modifiers,
                             last_event: mouse,
                         });
                         return;
@@ -1495,7 +1486,6 @@ impl ClientShellState {
                             last_position: self.pane_mouse_position(&hit, mouse),
                             hit: hit.clone(),
                             button: MouseButton::Left,
-                            stripped_modifiers: crossterm::event::KeyModifiers::empty(),
                             last_event: mouse,
                         });
                     } else if crate::shell::input::hit_test::contains(hit.inner_rect, point) {
@@ -1567,7 +1557,6 @@ impl ClientShellState {
                         last_position: self.pane_mouse_position(&hit, mouse),
                         hit,
                         button: MouseButton::Middle,
-                        stripped_modifiers: crossterm::event::KeyModifiers::empty(),
                         last_event: mouse,
                     });
                 }

@@ -873,7 +873,6 @@ const MODIFIER_ALIASES: &[(&str, KeyModifiers)] = &[
     ("control", KeyModifiers::CONTROL),
     ("alt", KeyModifiers::ALT),
     ("option", KeyModifiers::ALT),
-    // Terminal mouse reports encode Meta in Alt.
     ("meta", KeyModifiers::ALT),
     ("shift", KeyModifiers::SHIFT),
     ("cmd", KeyModifiers::SUPER),
@@ -881,10 +880,6 @@ const MODIFIER_ALIASES: &[(&str, KeyModifiers)] = &[
     ("super", KeyModifiers::SUPER),
     ("hyper", KeyModifiers::HYPER),
 ];
-
-pub(crate) fn modifier_aliases() -> &'static [(&'static str, KeyModifiers)] {
-    MODIFIER_ALIASES
-}
 
 pub(crate) fn parse_modifier_token(token: &str) -> Option<KeyModifiers> {
     MODIFIER_ALIASES

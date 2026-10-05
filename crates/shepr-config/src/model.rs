@@ -1,6 +1,5 @@
 use std::num::NonZeroUsize;
 
-use crossterm::event::KeyModifiers;
 use serde::{Deserialize, Deserializer, Serialize, de};
 
 use super::{
@@ -21,99 +20,6 @@ pub enum StatusIndicatorStyle {
     #[default]
     Dots,
     Symbols,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RightClickPassthroughModifierConfig(Option<KeyModifiers>);
-
-impl RightClickPassthroughModifierConfig {
-    pub fn modifiers(self) -> Option<KeyModifiers> {
-        self.0
-    }
-}
-
-impl<'de> Deserialize<'de> for RightClickPassthroughModifierConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        parse_right_click_passthrough_modifier(&value)
-            .map(Self)
-            .map_err(de::Error::custom)
-    }
-}
-
-const RIGHT_CLICK_DISABLED_ALIASES: &[&str] = &["", "off", "none", "disabled"];
-
-fn right_click_supported_modifiers() -> KeyModifiers {
-    KeyModifiers::CONTROL | KeyModifiers::ALT
-}
-
-fn right_click_modifier_aliases() -> Vec<(&'static str, Option<KeyModifiers>)> {
-    let supported = right_click_supported_modifiers();
-    let mut aliases = RIGHT_CLICK_DISABLED_ALIASES
-        .iter()
-        .map(|alias| (*alias, None))
-        .collect::<Vec<_>>();
-    aliases.extend(
-        crate::keybinds::modifier_aliases()
-            .iter()
-            .filter(|(_, modifiers)| {
-                !modifiers.is_empty() && modifiers.difference(supported).is_empty()
-            })
-            .map(|(alias, modifiers)| (*alias, Some(*modifiers))),
-    );
-    aliases.push(("ctrl+alt", Some(KeyModifiers::CONTROL | KeyModifiers::ALT)));
-    aliases
-}
-
-fn right_click_modifier_values_error() -> String {
-    let values = right_click_modifier_aliases()
-        .iter()
-        .map(|(alias, _)| if alias.is_empty() { "empty" } else { *alias })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("right_click_passthrough_modifier must be one of: {values}")
-}
-
-fn parse_right_click_passthrough_modifier(value: &str) -> Result<Option<KeyModifiers>, String> {
-    let trimmed = value.trim();
-    if let Some((_, modifiers)) = right_click_modifier_aliases()
-        .iter()
-        .find(|(alias, modifiers)| modifiers.is_none() && alias.eq_ignore_ascii_case(trimmed))
-    {
-        return Ok(*modifiers);
-    }
-
-    let mut modifiers = KeyModifiers::empty();
-    for token in trimmed.split('+') {
-        let token = token.trim().to_ascii_lowercase();
-        let Some(modifier) = crate::keybinds::parse_modifier_token(&token) else {
-            return Err(right_click_modifier_values_error());
-        };
-        let unsupported = modifier.difference(right_click_supported_modifiers());
-        if unsupported.contains(KeyModifiers::SHIFT) {
-            // Terminals commonly reserve Shift+mouse for their own selection.
-            return Err(format!(
-                "{}; shift is unsupported",
-                right_click_modifier_values_error()
-            ));
-        }
-        if !unsupported.is_empty() {
-            // A mouse report's button byte has bits for shift, alt and ctrl only.
-            return Err(format!(
-                "right_click_passthrough_modifier cannot use {token:?}: terminal mouse reports only carry ctrl and alt"
-            ));
-        }
-        modifiers |= modifier;
-    }
-
-    if modifiers.is_empty() {
-        Err(right_click_modifier_values_error())
-    } else {
-        Ok(Some(modifiers))
-    }
 }
 
 /// The exact strings `follow`, `home`, and `current` are policy keywords;
@@ -296,8 +202,6 @@ pub struct ClientUiConfig {
     pub mouse_capture: bool,
     /// Copy text selected with the mouse. Default: true.
     pub copy_on_select: bool,
-    /// Modifier that lets right-click gestures pass through to pane apps. Empty disables it.
-    pub right_click_passthrough_modifier: RightClickPassthroughModifierConfig,
     /// Force a full host-terminal redraw when the outer terminal regains focus. Default: true.
     pub redraw_on_focus_gained: bool,
     /// Lines to scroll per mouse wheel notch. Default: 3.
@@ -450,7 +354,6 @@ impl Default for ClientUiConfig {
             sidebar_start_collapsed: None,
             mouse_capture: true,
             copy_on_select: true,
-            right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
             confirm_close: true,
@@ -478,10 +381,6 @@ impl ClientUiConfig {
     pub fn mouse_scroll_lines(&self) -> usize {
         self.mouse_scroll_lines
             .map_or(DEFAULT_MOUSE_SCROLL_LINES, NonZeroUsize::get)
-    }
-
-    pub fn right_click_passthrough_modifiers(&self) -> Option<KeyModifiers> {
-        self.right_click_passthrough_modifier.modifiers()
     }
 }
 
@@ -807,98 +706,6 @@ copy_on_select = false
 "#;
         let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert!(!config.ui.copy_on_select);
-    }
-
-    #[test]
-    fn right_click_passthrough_modifier_defaults_off_and_parses() {
-        let default_config = ClientConfig::default();
-        assert_eq!(default_config.ui.right_click_passthrough_modifiers(), None);
-
-        for value in ["", "off", "none", "disabled"] {
-            let toml = format!(
-                r#"
-[ui]
-right_click_passthrough_modifier = "{value}"
-"#
-            );
-            let config: ClientConfig = toml::from_str(&toml).expect("test precondition");
-            assert_eq!(
-                config.ui.right_click_passthrough_modifiers(),
-                None,
-                "value {value:?} should disable passthrough"
-            );
-        }
-
-        for (value, expected) in [
-            ("ctrl", KeyModifiers::CONTROL),
-            ("control", KeyModifiers::CONTROL),
-            ("alt", KeyModifiers::ALT),
-            ("option", KeyModifiers::ALT),
-            ("meta", KeyModifiers::ALT),
-            ("ctrl+alt", KeyModifiers::CONTROL | KeyModifiers::ALT),
-            ("Control + Meta", KeyModifiers::CONTROL | KeyModifiers::ALT),
-        ] {
-            let toml = format!(
-                r#"
-[ui]
-right_click_passthrough_modifier = "{value}"
-"#
-            );
-            let config: ClientConfig = toml::from_str(&toml).expect("test precondition");
-            assert_eq!(
-                config.ui.right_click_passthrough_modifiers(),
-                Some(expected),
-                "value {value:?} should parse"
-            );
-        }
-    }
-
-    /// Every alias parses to its table value and is named in the error message.
-    #[test]
-    fn right_click_modifier_aliases_parse() {
-        let error = right_click_modifier_values_error();
-        for (alias, value) in right_click_modifier_aliases() {
-            let parsed = parse_right_click_passthrough_modifier(alias).expect("alias parses");
-            assert_eq!(parsed, value, "alias {alias:?}");
-            if !alias.is_empty() {
-                assert!(error.contains(alias), "{error} omits {alias:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn right_click_passthrough_modifier_rejects_modifiers_mouse_reports_cannot_carry() {
-        for value in ["cmd", "command", "super", "hyper", "cmd+alt", "ctrl+hyper"] {
-            let toml = format!(
-                r#"
-[ui]
-right_click_passthrough_modifier = "{value}"
-"#
-            );
-            let error = toml::from_str::<ClientConfig>(&toml)
-                .expect_err("a modifier mouse reports cannot carry must be rejected")
-                .to_string();
-            assert!(
-                error.contains("only carry ctrl and alt"),
-                "value {value:?} gave {error}"
-            );
-        }
-    }
-
-    #[test]
-    fn right_click_passthrough_modifier_rejects_shift() {
-        for value in ["shift", "shift+ctrl", "ctrl+", "ctrl++alt", "banana"] {
-            let toml = format!(
-                r#"
-[ui]
-right_click_passthrough_modifier = "{value}"
-"#
-            );
-            assert!(
-                toml::from_str::<ClientConfig>(&toml).is_err(),
-                "value {value:?} should be rejected"
-            );
-        }
     }
 
     #[test]

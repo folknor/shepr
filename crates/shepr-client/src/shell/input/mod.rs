@@ -523,10 +523,7 @@ impl ClientShellState {
             );
         }
         if let Some(gesture) = self.pointer.pane_mouse_gesture.take() {
-            let modifiers = gesture
-                .last_event
-                .modifiers
-                .difference(gesture.stripped_modifiers);
+            let modifiers = gesture.last_event.modifiers;
             crate::shell::input::events::push_target_event(
                 gesture.hit.pane_id,
                 ClientPaneInputEvent::Mouse {

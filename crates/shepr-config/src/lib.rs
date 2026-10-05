@@ -32,8 +32,8 @@ pub use self::{
         format_key_chord, parse_key_chord,
     },
     model::{
-        AgentPanelSortConfig, NewTerminalCwdConfig, PaneBordersConfig,
-        RightClickPassthroughModifierConfig, SidebarBounds, SidebarWidth, StatusIndicatorStyle,
+        AgentPanelSortConfig, NewTerminalCwdConfig, PaneBordersConfig, SidebarBounds, SidebarWidth,
+        StatusIndicatorStyle,
     },
     sidebar::{
         AgentSidebarToken, AgentSidebarTokenKind, AgentsSidebarConfig, SidebarConfig,
@@ -375,7 +375,6 @@ mod tests {
             sidebar_start_collapsed => _,
             mouse_capture => _,
             copy_on_select => _,
-            right_click_passthrough_modifier => _,
             redraw_on_focus_gained => _,
             mouse_scroll_lines => _,
             confirm_close => _,
