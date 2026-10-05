@@ -20,6 +20,11 @@ pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis
 ///
 /// This bounds redraw work to a practical frame cadence.
 pub(crate) const SELECTION_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
+/// Pane scrollback lines moved by one mouse wheel notch.
+///
+/// A few lines make a wheel step useful without jumping a large part of the
+/// visible history. It is fixed: there is no setting for it.
+pub(crate) const MOUSE_WHEEL_SCROLL_LINES: u16 = 3;
 /// Maximum lines scrolled for each pointer row beyond a selection edge.
 ///
 /// Scaling lines with pointer distance makes edge scrolling accelerate smoothly.

@@ -24,6 +24,7 @@ use shepr_termio::input::raw_input::RawInputEvent;
 
 use crate::limits::{
     CLIPBOARD_RESULT_QUEUE_CAPACITY, MAX_COPY_INPUT_QUEUE, MODAL_PASTE_CLIPBOARD_TIMEOUT,
+    MOUSE_WHEEL_SCROLL_LINES,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -530,7 +531,7 @@ impl ClientShellState {
                     ),
                     position: gesture.last_position,
                     modifiers: shepr_protocol::WireModifiers::from_host(modifiers),
-                    lines: self.config.mouse_scroll_lines,
+                    lines: MOUSE_WHEEL_SCROLL_LINES,
                 },
                 outcome,
                 accounting,

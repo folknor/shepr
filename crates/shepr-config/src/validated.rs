@@ -3,9 +3,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use shepr_core::geometry::BoundedGridSize;
-use shepr_core::limits::{
-    MAX_INPUT_EVENT_BATCH, MAX_TERMINAL_GRID_CELLS, MAX_TERMINAL_GRID_DIMENSION,
-};
+use shepr_core::limits::{MAX_TERMINAL_GRID_CELLS, MAX_TERMINAL_GRID_DIMENSION};
 use shepr_core::shell::ResolvedShell;
 use shepr_paths::AppPaths;
 
@@ -13,7 +11,7 @@ use super::{
     ClientConfig, SidebarBounds,
     model::{ClientUiConfig, ImeCursorShape, NewTerminalCwdConfig, TerminalConfig},
 };
-use crate::limits::{DEFAULT_SIDEBAR_WIDTH, MIN_MOUSE_SCROLL_LINES};
+use crate::limits::DEFAULT_SIDEBAR_WIDTH;
 
 /// A value paired with whether it came from the document or the built-in
 /// default.
@@ -97,7 +95,6 @@ pub struct ValidatedClientUiConfig {
     pub sidebar_start_collapsed: Setting<bool>,
     pub mouse_capture: bool,
     pub copy_on_select: bool,
-    pub mouse_scroll_lines: std::num::NonZeroU16,
     pub confirm_close: bool,
     pub prompt_new_workspace_name: bool,
     pub agent_panel_sort: Setting<super::AgentPanelSortConfig>,
@@ -364,7 +361,6 @@ impl ValidatedClientUiConfig {
         config: &ClientUiConfig,
         bounds: SidebarBounds,
         sidebar_width: super::SidebarWidth,
-        mouse_scroll_lines: std::num::NonZeroU16,
     ) -> Self {
         Self {
             sidebar_width: if config.sidebar_width.is_some() {
@@ -378,7 +374,6 @@ impl ValidatedClientUiConfig {
                 .map_or(Setting::Default(false), Setting::Explicit),
             mouse_capture: config.mouse_capture,
             copy_on_select: config.copy_on_select,
-            mouse_scroll_lines,
             confirm_close: config.confirm_close,
             prompt_new_workspace_name: config.prompt_new_workspace_name,
             agent_panel_sort: config.agent_panel_sort.map_or(
@@ -479,14 +474,6 @@ pub(crate) fn validate_client(
     let sidebar_width = config.ui.sidebar_width.unwrap_or(DEFAULT_SIDEBAR_WIDTH);
     let validated_sidebar_width =
         sidebar_bounds.and_then(|bounds| bounds.checked_width(sidebar_width));
-    let mouse_scroll_lines = config.ui.mouse_scroll_lines();
-    let mouse_scroll_lines = u16::try_from(mouse_scroll_lines)
-        .ok()
-        .filter(|lines| {
-            (usize::from(MIN_MOUSE_SCROLL_LINES)..=MAX_INPUT_EVENT_BATCH)
-                .contains(&usize::from(*lines))
-        })
-        .and_then(std::num::NonZeroU16::new);
 
     let mut diagnostics = keybind_validation.diagnostics;
     if sidebar_bounds.is_none() {
@@ -518,17 +505,6 @@ pub(crate) fn validate_client(
             format!("value {sidebar_width} must be between the configured minimum and maximum"),
         ));
     }
-    if mouse_scroll_lines.is_none() {
-        diagnostics.push(super::ConfigDiagnostic::validation(
-            super::ConfigKeyPath::root()
-                .key("ui")
-                .key("mouse_scroll_lines"),
-            format!(
-                "must be between {MIN_MOUSE_SCROLL_LINES} and {MAX_INPUT_EVENT_BATCH} (got {})",
-                config.ui.mouse_scroll_lines()
-            ),
-        ));
-    }
     let local_label = resolve_local_label(&config.local);
     if let Err(diagnostic) = &local_label {
         diagnostics.push(diagnostic.clone());
@@ -545,16 +521,9 @@ pub(crate) fn validate_client(
         keybind_validation.live,
         sidebar_bounds,
         validated_sidebar_width,
-        mouse_scroll_lines,
         local_label,
     ) {
-        (
-            Some(live_keybinds),
-            Some(sidebar_bounds),
-            Some(sidebar_width),
-            Some(mouse_scroll_lines),
-            Ok(local_label),
-        ) => {
+        (Some(live_keybinds), Some(sidebar_bounds), Some(sidebar_width), Ok(local_label)) => {
             // This host's own entry is dropped; its palette is the local
             // server's hue.
             let (own, machines): (Vec<_>, Vec<_>) = config
@@ -568,12 +537,7 @@ pub(crate) fn validate_client(
             Ok(ValidatedClientConfig {
                 paths,
                 live_keybinds,
-                ui: ValidatedClientUiConfig::from_config(
-                    &config.ui,
-                    sidebar_bounds,
-                    sidebar_width,
-                    mouse_scroll_lines,
-                ),
+                ui: ValidatedClientUiConfig::from_config(&config.ui, sidebar_bounds, sidebar_width),
                 local_hue,
                 local_label,
                 machines,

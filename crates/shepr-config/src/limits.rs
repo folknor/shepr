@@ -5,13 +5,6 @@
 /// line count, with a separate minimum-line policy documented on the setting.
 pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
 
-/// Default number of pane lines moved by each mouse-wheel notch.
-///
-/// A small number of lines makes a wheel step useful without jumping a large part of the
-/// visible history.
-/// Its `usize` matches the raw config accessor, which stays wide for diagnostics.
-pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
-
 /// Initial virtual terminal width when the server has no attached client.
 ///
 /// This gives headless shells a conventional wide terminal before an
@@ -62,11 +55,6 @@ pub(crate) const DEFAULT_SIDEBAR_WIDTH: u16 = 26;
 ///
 /// No blank rows keep the default sidebar compact; users can add spacing in config.
 pub(crate) const DEFAULT_SIDEBAR_ROW_GAP: u16 = 0;
-
-/// Minimum accepted mouse-wheel scroll step.
-///
-/// A zero-line step has no effect, so the setting requires a positive step.
-pub(crate) const MIN_MOUSE_SCROLL_LINES: u16 = 1;
 
 /// Lowest digit accepted for indexed workspace and agent bindings.
 ///

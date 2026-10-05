@@ -107,10 +107,6 @@
 # copies and clears it.
 # copy_on_select = true
 
-# Pane scrollback lines to scroll per mouse wheel notch.
-# Values must be between 1 and 4096 lines.
-# mouse_scroll_lines = 3
-
 # Ask for confirmation before closing a workspace
 # confirm_close = true
 

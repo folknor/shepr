@@ -12,8 +12,7 @@ mod validated;
 
 pub use self::agent::ConfigAgent;
 pub use self::limits::{
-    DEFAULT_HEADLESS_COLS, DEFAULT_HEADLESS_ROWS, DEFAULT_MOUSE_SCROLL_LINES,
-    DEFAULT_SCROLLBACK_LIMIT_BYTES,
+    DEFAULT_HEADLESS_COLS, DEFAULT_HEADLESS_ROWS, DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 pub use self::machine::{
     DEFAULT_LOCAL_HUE, LocalConfig, MachineConfig, MachineLabel, MachineLabelError, SshTarget,
@@ -145,12 +144,6 @@ mod tests {
         let mut documented: ClientConfig =
             toml::from_str(&document).expect("documented defaults parse");
         let defaults = ClientConfig::default();
-        assert_eq!(
-            documented.ui.mouse_scroll_lines(),
-            defaults.ui.mouse_scroll_lines()
-        );
-        // The optional input resolves to the same default, despite Some/None.
-        documented.ui.mouse_scroll_lines = defaults.ui.mouse_scroll_lines;
         // These values carry explicitness into validation; raw defaults keep
         // them unset even though the documented template spells them out, so
         // the documented values are checked against the validated defaults.
@@ -375,7 +368,6 @@ mod tests {
             sidebar_start_collapsed => _,
             mouse_capture => _,
             copy_on_select => _,
-            mouse_scroll_lines => _,
             confirm_close => _,
             prompt_new_workspace_name => _,
             agent_panel_sort => _,

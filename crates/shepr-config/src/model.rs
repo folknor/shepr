@@ -1,10 +1,6 @@
-use std::num::NonZeroUsize;
-
 use serde::{Deserialize, Deserializer, Serialize, de};
 
-use super::{
-    BindingConfig, DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES, SidebarConfig,
-};
+use super::{BindingConfig, DEFAULT_SCROLLBACK_LIMIT_BYTES, SidebarConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -202,9 +198,6 @@ pub struct ClientUiConfig {
     pub mouse_capture: bool,
     /// Copy text selected with the mouse. Default: true.
     pub copy_on_select: bool,
-    /// Lines to scroll per mouse wheel notch. Default: 3.
-    /// The raw count stays wide so validation can report an oversized value as entered.
-    pub mouse_scroll_lines: Option<NonZeroUsize>,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
     /// Ask for a workspace name before interactive creation. Default: true.
@@ -352,7 +345,6 @@ impl Default for ClientUiConfig {
             sidebar_start_collapsed: None,
             mouse_capture: true,
             copy_on_select: true,
-            mouse_scroll_lines: None,
             confirm_close: true,
             prompt_new_workspace_name: true,
             agent_panel_sort: None,
@@ -371,13 +363,6 @@ impl Default for ServerUiConfig {
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
         }
-    }
-}
-
-impl ClientUiConfig {
-    pub fn mouse_scroll_lines(&self) -> usize {
-        self.mouse_scroll_lines
-            .map_or(DEFAULT_MOUSE_SCROLL_LINES, NonZeroUsize::get)
     }
 }
 
@@ -703,31 +688,6 @@ copy_on_select = false
 "#;
         let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert!(!config.ui.copy_on_select);
-    }
-
-    #[test]
-    fn mouse_scroll_lines_defaults_to_three_and_parses() {
-        let default_config = ClientConfig::default();
-        assert_eq!(
-            default_config.ui.mouse_scroll_lines(),
-            DEFAULT_MOUSE_SCROLL_LINES
-        );
-
-        let toml = r#"
-[ui]
-mouse_scroll_lines = 1
-"#;
-        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
-        assert_eq!(config.ui.mouse_scroll_lines(), 1);
-    }
-
-    #[test]
-    fn mouse_scroll_lines_rejects_zero() {
-        let toml = r#"
-[ui]
-mouse_scroll_lines = 0
-"#;
-        assert!(toml::from_str::<ClientConfig>(toml).is_err());
     }
 
     #[test]

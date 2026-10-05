@@ -26,7 +26,8 @@ use ratatui::layout::Rect;
 
 use crate::limits::{
     MAX_SELECTION_EDGE_SCROLL_LINES, MIN_SELECTION_EDGE_SCROLL_LINES, MOUSE_DRAG_SEND_INTERVAL,
-    SELECTION_AUTOSCROLL_INTERVAL, SELECTION_EDGE_SCROLL_LINES_PER_ROW, SELECTION_REPAINT_INTERVAL,
+    MOUSE_WHEEL_SCROLL_LINES, SELECTION_AUTOSCROLL_INTERVAL, SELECTION_EDGE_SCROLL_LINES_PER_ROW,
+    SELECTION_REPAINT_INTERVAL,
 };
 use crossterm::event::MouseEvent;
 use std::time::Instant;
@@ -443,11 +444,11 @@ impl ClientShellState {
         let offset_from_bottom = match mouse.kind {
             MouseEventKind::ScrollUp => metrics
                 .offset_from_bottom
-                .saturating_add(usize::from(self.config.mouse_scroll_lines))
+                .saturating_add(usize::from(MOUSE_WHEEL_SCROLL_LINES))
                 .min(metrics.max_offset_from_bottom),
             MouseEventKind::ScrollDown => metrics
                 .offset_from_bottom
-                .saturating_sub(usize::from(self.config.mouse_scroll_lines)),
+                .saturating_sub(usize::from(MOUSE_WHEEL_SCROLL_LINES)),
             _ => unreachable!(),
         };
         if offset_from_bottom != metrics.offset_from_bottom {
@@ -1645,7 +1646,7 @@ impl ClientShellState {
                 kind,
                 position,
                 modifiers: shepr_protocol::WireModifiers::from_host(modifiers),
-                lines: self.config.mouse_scroll_lines,
+                lines: MOUSE_WHEEL_SCROLL_LINES,
             },
             outcome,
             accounting,
