@@ -627,9 +627,9 @@ mod tests {
         let cells: Vec<CellData> = (0..(width as usize) * (height as usize))
             .map(|i| CellData {
                 symbol: if i % 256 < 32 {
-                    " ".to_owned()
+                    " ".into()
                 } else {
-                    format!("{:03}", i % 1000)
+                    compact_str::format_compact!("{:03}", i % 1000)
                 },
                 grid_width: GridCellWidth::Grapheme,
                 fg: WireColor::Rgb(

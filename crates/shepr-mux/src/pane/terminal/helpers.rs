@@ -1,5 +1,6 @@
 use super::*;
 use shepr_core::limits::PALETTE_COLOR_COUNT;
+use shepr_protocol::CompactString;
 
 /// What the core queued for the pane to deliver.
 pub(super) struct CoreEffects {
@@ -213,15 +214,18 @@ pub(super) fn terminal_collect_dirty_patch(
                 resolved_bg,
                 palette_overrides.as_ref(),
             );
-            let symbol =
-                terminal_buffer_symbol_into(&cell_view, basic.wide, &mut symbol_scratch).to_owned();
+            let symbol = CompactString::new(terminal_buffer_symbol_into(
+                &cell_view,
+                basic.wide,
+                &mut symbol_scratch,
+            ));
             patch_cells.push(paint.into_cell(symbol, terminal_grid_width(basic.wide)));
             x = x.saturating_add(1);
         }
         while x < area_width {
             patch_cells.push(
                 CellPaint::blank(default_fg, default_bg)
-                    .into_cell(" ".to_owned(), GridCellWidth::One),
+                    .into_cell(CompactString::const_new(" "), GridCellWidth::One),
             );
             x += 1;
         }
@@ -488,7 +492,7 @@ impl CellPaint {
         }
     }
 
-    pub(super) fn into_cell(self, symbol: String, grid_width: GridCellWidth) -> CellData {
+    pub(super) fn into_cell(self, symbol: CompactString, grid_width: GridCellWidth) -> CellData {
         CellData {
             symbol,
             grid_width,

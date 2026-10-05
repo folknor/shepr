@@ -93,7 +93,7 @@ impl Harness {
             let y = u16::try_from(index / usize::from(frame.width())).expect("test precondition");
             links.push((
                 (x, y),
-                cell.symbol.clone(),
+                cell.symbol.to_string(),
                 frame.hyperlinks()[usize::try_from(link).expect("test precondition")].clone(),
             ));
         }

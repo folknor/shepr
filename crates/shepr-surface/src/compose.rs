@@ -385,7 +385,7 @@ mod tests {
 
     fn cell(symbol: &str) -> CellData {
         CellData {
-            symbol: symbol.to_owned(),
+            symbol: symbol.into(),
             grid_width: GridCellWidth::Grapheme,
             fg: WireColor::Reset,
             bg: WireColor::Reset,
@@ -722,7 +722,7 @@ mod tests {
     #[test]
     fn overlay_edge_after_narrow_vs16_cell_keeps_the_pane_glyph() {
         let mut source = frame("  ");
-        source.cells_mut()[0].symbol = "\u{26a0}\u{fe0f}".to_owned();
+        source.cells_mut()[0].symbol = "\u{26a0}\u{fe0f}".into();
         source.cells_mut()[0].grid_width = GridCellWidth::One;
         source.cells_mut()[1].grid_width = GridCellWidth::One;
         let mut canvas = canvas(source);
@@ -752,7 +752,7 @@ mod tests {
         let voiced = "\u{ff76}\u{ff9e}";
         assert_eq!(shepr_term::width::text_width(voiced), 2);
         let mut source = frame("a~");
-        source.cells_mut()[0].symbol = voiced.to_owned();
+        source.cells_mut()[0].symbol = voiced.into();
         let mut canvas = canvas(source);
         let mut scratch = blank_scratch(2, 1);
         scratch.set_string(0, 0, "#", Style::default());
@@ -897,7 +897,7 @@ mod tests {
     fn compose_clip_edge_uses_grid_width_for_narrow_vs16_cells() {
         let mut target = canvas(frame(".."));
         let mut source = frame("  ");
-        source.cells_mut()[0].symbol = "\u{26a0}\u{fe0f}".to_owned();
+        source.cells_mut()[0].symbol = "\u{26a0}\u{fe0f}".into();
         source.cells_mut()[0].grid_width = GridCellWidth::One;
         source.cells_mut()[1].grid_width = GridCellWidth::One;
 

@@ -3686,7 +3686,7 @@ fn render_into_a_sub_rect_touches_only_that_rect_and_clips_to_the_frame() {
     let pane = PaneTerminal::new(terminal);
     let mut frame = FrameData::blank(8, 4).expect("test frame size is valid");
     for cell in frame.cells_mut() {
-        cell.symbol = "#".to_owned();
+        cell.symbol = "#".into();
     }
 
     pane.render_into(&mut frame, Rect::new(1, 1, 6, 3));

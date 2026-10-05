@@ -1,12 +1,15 @@
 use super::*;
+pub use compact_str::{CompactString, ToCompactString};
 use serde::{Deserialize, Serialize};
 
 /// A single cell in a rendered frame, serialized independently from ratatui's
 /// `Cell` type to keep the wire protocol semantic and explicit.
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellData {
-    /// Grapheme cluster displayed in this cell (usually 1-2 chars).
-    pub symbol: String,
+    /// Grapheme cluster displayed in this cell (usually 1-2 chars). Held
+    /// inline up to 24 bytes, so a cell built, decoded or cloned on the
+    /// render path does not allocate; it encodes as a plain string.
+    pub symbol: CompactString,
     /// Grid width of this cell, or grapheme-based width for client chrome.
     pub grid_width: GridCellWidth,
     /// Foreground color.
@@ -43,7 +46,7 @@ impl CellData {
     /// An unstyled space: the cell of an empty surface.
     pub fn blank() -> Self {
         Self {
-            symbol: " ".to_owned(),
+            symbol: CompactString::const_new(" "),
             grid_width: GridCellWidth::Grapheme,
             fg: WireColor::Reset,
             bg: WireColor::Reset,
@@ -462,6 +465,26 @@ mod tests {
         );
         let bytes = crate::codec::to_vec(&short).expect("tuple encoding");
         assert!(crate::codec::from_slice_exact::<FrameData>(&bytes).is_err());
+    }
+
+    #[test]
+    fn a_cell_symbol_is_as_small_as_a_string_and_encodes_as_one() {
+        assert_eq!(
+            std::mem::size_of::<CompactString>(),
+            std::mem::size_of::<String>()
+        );
+        let mut symbol = CompactString::default();
+        symbol.push_str("\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}");
+        assert!(!symbol.is_heap_allocated());
+        assert_eq!(
+            crate::codec::to_vec(&symbol).expect("symbol encoding"),
+            crate::codec::to_vec(&symbol.as_str()).expect("str encoding")
+        );
+        let decoded: CompactString =
+            crate::codec::from_slice_exact(&crate::codec::to_vec(&symbol).expect("encoding"))
+                .expect("symbol decodes");
+        assert_eq!(decoded, symbol);
+        assert!(!decoded.is_heap_allocated());
     }
 
     #[test]

@@ -26,6 +26,10 @@ bytes = "1"
 # clap is the CLI parser (src/cli/spec.rs). error-context makes usage errors
 # name the offending argument and value instead of only the error kind.
 clap = { version = "4.5", default-features = false, features = ["std", "help", "usage", "error-context"] }
+# A wire cell's symbol (`shepr_protocol::CellData`): graphemes up to 24 bytes
+# stay inline, so building, decoding and cloning a frame or patch cell does not
+# allocate. Ratatui already links it for its own cells.
+compact_str = { version = "0.9", features = ["serde"] }
 crossterm = { version = "0.29", default-features = false, features = ["bracketed-paste", "events"] }
 ctrlc = { version = "3", features = ["termination"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

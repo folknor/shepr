@@ -6,6 +6,7 @@ publish = false
 build = "build.rs"
 
 [dependencies]
+compact_str = { workspace = true }
 crossterm = { workspace = true }
 serde = { workspace = true }
 shepr-agent = { path = "../shepr-agent" }

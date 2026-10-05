@@ -952,7 +952,7 @@ mod tests {
 
     fn make_cell(symbol: &str, fg: WireColor, bg: WireColor, style: WireStyle) -> CellData {
         CellData {
-            symbol: symbol.to_owned(),
+            symbol: symbol.into(),
             grid_width: GridCellWidth::Grapheme,
             fg,
             bg,

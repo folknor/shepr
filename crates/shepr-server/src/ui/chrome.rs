@@ -24,7 +24,7 @@ mod tests {
 
     fn cell(symbol: &str) -> CellData {
         CellData {
-            symbol: symbol.to_owned(),
+            symbol: symbol.into(),
             ..CellData::blank()
         }
     }

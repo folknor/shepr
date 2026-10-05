@@ -917,11 +917,12 @@ allow = ["crossterm", "ratatui", "serde", "serde_ignored", "shepr-agent", "shepr
 kinds = ["normal"]
 
 # Protocol takes the grid and input-batch resource budgets from core, which
-# config also reads; config never depends on protocol.
+# config also reads; config never depends on protocol. compact_str holds a
+# wire cell's symbol inline.
 [[dependency_rule]]
 name = "shepr-protocol-layer"
 from = "shepr-protocol"
-allow = ["crossterm", "serde", "shepr-agent", "shepr-core", "shepr-term", "tracing"]
+allow = ["compact_str", "crossterm", "serde", "shepr-agent", "shepr-core", "shepr-term", "tracing"]
 kinds = ["normal"]
 
 # What a pane surface means above the wire: the server's delta planner, the

@@ -219,6 +219,7 @@ dependencies = [
  "itoa",
  "rustversion",
  "ryu",
+ "serde",
  "static_assertions",
 ]
 
@@ -1493,6 +1494,7 @@ dependencies = [
 name = "shepr-protocol"
 version = "0.1.0"
 dependencies = [
+ "compact_str",
  "crossterm",
  "serde",
  "shepr-agent",

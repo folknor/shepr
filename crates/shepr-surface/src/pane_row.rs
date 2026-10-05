@@ -83,16 +83,16 @@ pub fn normalize_pane_row(row: &mut [CellData]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_protocol::{WireColor, WireStyle};
+    use shepr_protocol::{CompactString, ToCompactString, WireColor, WireStyle};
 
     /// One pane row: `W` is a wide lead, `~` an empty tail, other chars narrow.
     fn row(text: &str) -> Vec<CellData> {
         text.chars()
             .map(|c| CellData {
                 symbol: match c {
-                    '~' => String::new(),
-                    'W' => "\u{754c}".to_owned(),
-                    c => c.to_string(),
+                    '~' => CompactString::default(),
+                    'W' => "\u{754c}".into(),
+                    c => c.to_compact_string(),
                 },
                 grid_width: match c {
                     'W' => GridCellWidth::WideLead,

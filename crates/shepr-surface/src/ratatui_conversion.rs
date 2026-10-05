@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 
 use shepr_protocol::{
-    CellData, CursorState, FrameData, FrameGridError, GridCellWidth, SurfaceRect, WireColor,
-    WireStyle, WireStyleFlags,
+    CellData, CompactString, CursorState, FrameData, FrameGridError, GridCellWidth, SurfaceRect,
+    WireColor, WireStyle, WireStyleFlags,
 };
 
 /// Conversion between a wire color and a ratatui color. Lossless both ways.
@@ -132,7 +132,7 @@ pub trait CellDataExt: Sized {
 impl CellDataExt for CellData {
     fn from_ratatui_cell(cell: &ratatui::buffer::Cell) -> Self {
         Self {
-            symbol: cell.symbol().to_owned(),
+            symbol: CompactString::new(cell.symbol()),
             grid_width: GridCellWidth::Grapheme,
             fg: WireColor::from_ratatui(cell.fg),
             bg: WireColor::from_ratatui(cell.bg),
@@ -261,7 +261,7 @@ mod tests {
         assert!(built.matches_ratatui_cell(&source));
 
         let mut assigned = CellData {
-            symbol: "longer previous symbol".to_owned(),
+            symbol: "a previous symbol longer than inline".into(),
             grid_width: GridCellWidth::WideLead,
             fg: WireColor::Red,
             hyperlink: Some(0),

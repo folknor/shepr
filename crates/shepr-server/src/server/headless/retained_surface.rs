@@ -509,7 +509,7 @@ mod tests {
 
     fn cell(symbol: &str) -> shepr_protocol::CellData {
         shepr_protocol::CellData {
-            symbol: symbol.to_owned(),
+            symbol: symbol.into(),
             grid_width: shepr_protocol::GridCellWidth::Grapheme,
             fg: shepr_protocol::WireColor::Reset,
             bg: shepr_protocol::WireColor::Reset,
