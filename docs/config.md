@@ -107,19 +107,19 @@ captures the mouse, from its own `ui.mouse_capture`.)
 | `mouse_capture` | boolean | `true` | Capture the mouse for shepr's own mouse UI (selection, sidebar, menus). Set `false` to let the terminal handle normal clicks, such as clicking URLs. Programs in panes that ask for the mouse still get it. |
 | `copy_on_select` | boolean | `true` | Copy mouse selections as soon as the button is released. With `false` the selection stays until `ctrl+c` copies and clears it. See [Clipboard](clipboard.md). |
 | `confirm_close` | boolean | `true` | Ask for confirmation before closing a workspace. |
-| `agent_panel_sort` | `"spaces"` or `"priority"` | `"spaces"` | Order of the agent panel: `spaces` groups agents by workspace, `priority` orders them as an attention queue. |
 | `status_indicators` | `"dots"` or `"symbols"` | `"dots"` | How agent states are marked: compact coloured dots, or a distinct glyph for each of Working, Blocked and Idle. |
 
 The default `sidebar_width` also has to fit the bounds: if you raise
 `sidebar_min_width` above 26 or lower `sidebar_max_width` below it, set
 `sidebar_width` too.
 
-**Remembered sidebar state.** While `sidebar_width`,
-`sidebar_start_collapsed` or `agent_panel_sort` is absent from the file, a
-change you make by hand (dragging the sidebar edge, collapsing it, toggling
-the panel order) is remembered by the client and used at the next launch.
-Once the key is set in the file, the file wins at every launch; changes made
-by hand then last only until you quit.
+**Remembered sidebar state.** While `sidebar_width` or
+`sidebar_start_collapsed` is absent from the file, a change you make by hand
+(dragging the sidebar edge, collapsing it) is remembered by the client and
+used at the next launch. Once the key is set in the file, the file wins at
+every launch; changes made by hand then last only until you quit. The agent
+panel's order (grouped by workspace, or as a priority queue) is toggled by
+clicking the sort label in the panel header; the client always remembers it.
 
 ## Sidebar layouts: [ui.sidebar.agents] and [ui.sidebar.spaces]
 

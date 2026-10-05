@@ -18,11 +18,12 @@ use crate::shell::state::{ClientShellInput, ClientShellState};
 /// Sidebar chrome changed by hand, remembered by the client across launches.
 /// One file per local server socket, whichever endpoint is presented.
 ///
-/// Three of these values also have `[ui]` config keys (`sidebar_width`,
-/// `sidebar_start_collapsed`, `agent_panel_sort`). The documented key wins:
-/// a remembered value is used only while its key is absent from client.toml,
-/// and is neither loaded nor stored once the key is set. Manual changes still
-/// apply for the rest of the session either way.
+/// Two of these values also have `[ui]` config keys (`sidebar_width`,
+/// `sidebar_start_collapsed`). The documented key wins: a remembered value is
+/// used only while its key is absent from client.toml, and is neither loaded
+/// nor stored once the key is set. Manual changes still apply for the rest of
+/// the session either way. The agent panel sort has no key; it is always
+/// remembered.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub(in crate::shell) struct ClientChromePreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -33,7 +34,8 @@ pub(in crate::shell) struct ClientChromePreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(in crate::shell) sidebar_collapsed: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(in crate::shell) agent_panel_sort: Option<shepr_config::AgentPanelSortConfig>,
+    pub(in crate::shell) agent_panel_sort:
+        Option<crate::shell::sidebar::agent_sidebar::AgentPanelSort>,
     /// Which of the values above client.toml sets. Taken from the config at
     /// launch, never from the file.
     #[serde(skip)]
@@ -45,7 +47,6 @@ pub(in crate::shell) struct ClientChromePreferences {
 pub(in crate::shell) struct ConfiguredChrome {
     pub(in crate::shell) sidebar_width: bool,
     pub(in crate::shell) sidebar_collapsed: bool,
-    pub(in crate::shell) agent_panel_sort: bool,
 }
 
 impl ConfiguredChrome {
@@ -56,7 +57,6 @@ impl ConfiguredChrome {
         Self {
             sidebar_width: ui.sidebar_width_is_explicit(),
             sidebar_collapsed: ui.sidebar_start_collapsed_is_explicit(),
-            agent_panel_sort: ui.agent_panel_sort_is_explicit(),
         }
     }
 }
@@ -69,9 +69,6 @@ impl ClientChromePreferences {
         }
         if configured.sidebar_collapsed {
             self.sidebar_collapsed = None;
-        }
-        if configured.agent_panel_sort {
-            self.agent_panel_sort = None;
         }
         self.configured = configured;
         self
@@ -334,8 +331,8 @@ impl ClientShellState {
             agent_panel_sort: self.agent_panel_sort_chrome.remembered_value(),
             ..self.chrome.preferences()
         }
-        // A value client.toml sets is only a session change: storing it would
-        // bring it back if the key were later removed from the config.
+        // A width or collapse state client.toml sets is only a session change:
+        // storing it would bring it back if the key were later removed.
         .without_configured(self.config.preferences.configured);
         if let Err(error) = store(path, &preferences) {
             self.set_endpoint_error(error.to_string(), self.now);
@@ -369,24 +366,22 @@ mod tests {
             sidebar_width: Some(31),
             sidebar_section_split: crate::shell::sidebar::sidebar_tokens::SectionSplit::new(0.3),
             sidebar_collapsed: Some(true),
-            agent_panel_sort: Some(shepr_config::AgentPanelSortConfig::Priority),
+            agent_panel_sort: Some(crate::shell::sidebar::agent_sidebar::AgentPanelSort::Priority),
             configured: ConfiguredChrome::default(),
         };
 
         let untouched = remembered().without_configured(ConfiguredChrome::default());
         assert_eq!(untouched.sidebar_width, Some(31));
         assert_eq!(untouched.sidebar_collapsed, Some(true));
-        assert!(untouched.agent_panel_sort.is_some());
 
         let configured = ConfiguredChrome {
             sidebar_width: true,
             sidebar_collapsed: true,
-            agent_panel_sort: true,
         };
         let owned = remembered().without_configured(configured);
         assert_eq!(owned.sidebar_width, None);
         assert_eq!(owned.sidebar_collapsed, None);
-        assert_eq!(owned.agent_panel_sort, None);
+        assert!(owned.agent_panel_sort.is_some());
         assert_eq!(
             owned
                 .sidebar_section_split

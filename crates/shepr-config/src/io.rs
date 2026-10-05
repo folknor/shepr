@@ -938,15 +938,10 @@ mouse_captur = true
             r#"
 [ui]
 sidebar_width = 26
-agent_panel_sort = "priority"
 "#,
         )
         .expect("the document parses");
         assert_eq!(document.config.ui.sidebar_width, Some(26));
-        assert_eq!(
-            document.config.ui.agent_panel_sort,
-            Some(super::super::AgentPanelSortConfig::Priority)
-        );
         assert_eq!(document.config.ui.sidebar_start_collapsed, None);
         assert!(document.validate_client(&crate::test_paths()).is_ok());
 

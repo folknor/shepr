@@ -18,6 +18,17 @@ use crate::shell::sidebar::sidebar_tokens::{
 use shepr_protocol::{ClientShellSnapshot, ClientShellWorkspace};
 use std::collections::HashMap;
 
+/// How the agent panel orders its agents: grouped by workspace, or as an
+/// attention queue. Remembered across launches in the sidebar preferences
+/// file, where it is stored as `"spaces"` or `"priority"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(in crate::shell) enum AgentPanelSort {
+    #[default]
+    Spaces,
+    Priority,
+}
+
 pub(in crate::shell) struct AgentRow {
     pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
     pub(in crate::shell) status: shepr_protocol::AgentStatus,
@@ -31,7 +42,7 @@ pub(super) fn draw_agent_panel_header(
     buffer: &mut Buffer,
     panel: &AgentPanelView,
     palette: &Palette,
-    sort: shepr_config::AgentPanelSortConfig,
+    sort: AgentPanelSort,
 ) {
     let area = panel.area;
     if area.height == 0 {

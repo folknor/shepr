@@ -96,7 +96,6 @@ pub struct ValidatedClientUiConfig {
     pub mouse_capture: bool,
     pub copy_on_select: bool,
     pub confirm_close: bool,
-    pub agent_panel_sort: Setting<super::AgentPanelSortConfig>,
     pub status_indicators: super::StatusIndicatorStyle,
     pub sidebar: super::SidebarConfig,
 }
@@ -348,10 +347,6 @@ impl ValidatedClientUiConfig {
         self.sidebar_start_collapsed.is_explicit()
     }
 
-    pub fn agent_panel_sort_is_explicit(&self) -> bool {
-        self.agent_panel_sort.is_explicit()
-    }
-
     pub fn sidebar_bounds(&self) -> SidebarBounds {
         self.sidebar_bounds
     }
@@ -374,10 +369,6 @@ impl ValidatedClientUiConfig {
             mouse_capture: config.mouse_capture,
             copy_on_select: config.copy_on_select,
             confirm_close: config.confirm_close,
-            agent_panel_sort: config.agent_panel_sort.map_or(
-                Setting::Default(super::AgentPanelSortConfig::Spaces),
-                Setting::Explicit,
-            ),
             status_indicators: config.status_indicators,
             sidebar: config.sidebar.clone(),
         }
@@ -781,24 +772,19 @@ mod tests {
         assert_eq!(defaults.ui().sidebar_width().value(), 26);
         assert!(!defaults.ui().sidebar_width_is_explicit());
         assert!(!defaults.ui().sidebar_start_collapsed_is_explicit());
-        assert!(!defaults.ui().agent_panel_sort_is_explicit());
 
         let mut config = ClientConfig::default();
         config.ui.sidebar_width = Some(31);
         config.ui.sidebar_start_collapsed = Some(true);
-        config.ui.agent_panel_sort = Some(super::super::AgentPanelSortConfig::Priority);
         let configured = ValidatedClientConfig::validate(
             &config,
-            Some(
-                "[ui]\nsidebar_width = 31\nsidebar_start_collapsed = true\nagent_panel_sort = \"priority\"\n",
-            ),
+            Some("[ui]\nsidebar_width = 31\nsidebar_start_collapsed = true\n"),
             paths,
         )
         .expect("explicit chrome settings are valid");
         assert_eq!(configured.ui().sidebar_width().value(), 31);
         assert!(configured.ui().sidebar_width_is_explicit());
         assert!(configured.ui().sidebar_start_collapsed_is_explicit());
-        assert!(configured.ui().agent_panel_sort_is_explicit());
     }
 
     #[test]

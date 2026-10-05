@@ -708,7 +708,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     })]);
     assert_eq!(
         state.agent_panel_sort_chrome.value(),
-        shepr_config::AgentPanelSortConfig::Priority
+        crate::shell::sidebar::agent_sidebar::AgentPanelSort::Priority
     );
     assert!(click.actions.is_empty());
 
@@ -726,10 +726,10 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     use shepr_protocol::AgentStatus;
 
     let mut config = ClientConfig::default();
-    config.ui.agent_panel_sort = Some(shepr_config::AgentPanelSortConfig::Priority);
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::Machine, AgentSidebarToken::Agent]];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_agent_panel_sort(crate::shell::sidebar::agent_sidebar::AgentPanelSort::Priority);
     let machine = remote_machine();
     let endpoint_id = ClientEndpointId::Ssh(machine.label.clone());
     state.set_machines(&[machine]);

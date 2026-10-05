@@ -129,7 +129,7 @@ pub(in crate::shell) struct SidebarInputs<'a> {
     /// The colours the sidebar is drawn with.
     pub(in crate::shell) palette: &'a Palette,
     /// The live agent panel sort, which the header labels.
-    pub(in crate::shell) agent_panel_sort: shepr_config::AgentPanelSortConfig,
+    pub(in crate::shell) agent_panel_sort: crate::shell::sidebar::agent_sidebar::AgentPanelSort,
     pub(in crate::shell) machine_diagnostics: &'a MachineDiagnostics,
     pub(in crate::shell) active_snapshot: Option<&'a ClientShellSnapshot>,
     pub(in crate::shell) selected: Option<&'a PinnedLocation>,
@@ -168,10 +168,12 @@ enum Row {
     },
 }
 
-pub(super) fn agent_sort_label(sort: shepr_config::AgentPanelSortConfig) -> &'static str {
+pub(super) fn agent_sort_label(
+    sort: crate::shell::sidebar::agent_sidebar::AgentPanelSort,
+) -> &'static str {
     match sort {
-        shepr_config::AgentPanelSortConfig::Spaces => "grouped",
-        shepr_config::AgentPanelSortConfig::Priority => "priority",
+        crate::shell::sidebar::agent_sidebar::AgentPanelSort::Spaces => "grouped",
+        crate::shell::sidebar::agent_sidebar::AgentPanelSort::Priority => "priority",
     }
 }
 

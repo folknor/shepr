@@ -13,11 +13,6 @@ pub(crate) struct ClientShellConfig {
     pub(in crate::shell) sidebar_start_collapsed: bool,
     pub(in crate::shell) spaces: SpacesSidebarConfig,
     pub(in crate::shell) agents: shepr_config::AgentsSidebarConfig,
-    /// The `ui.agent_panel_sort` setting (or its default) as launched. It only
-    /// seeds `ClientShellState::agent_panel_sort_chrome`, which holds the live
-    /// sort (a remembered or clicked toggle) that every reader goes through;
-    /// nothing writes this field after launch.
-    pub(in crate::shell) agent_panel_sort: shepr_config::AgentPanelSortConfig,
     pub(in crate::shell) status_indicators: shepr_config::StatusIndicatorStyle,
     pub(in crate::shell) copy_on_select: bool,
     /// The name shown for the local server (`ClientEndpointId::display_label`).
@@ -61,7 +56,6 @@ impl ClientShellConfig {
             sidebar_start_collapsed: *config.sidebar_start_collapsed.value(),
             spaces: config.sidebar.spaces.clone(),
             agents: config.sidebar.agents.clone(),
-            agent_panel_sort: *config.agent_panel_sort.value(),
             status_indicators: config.status_indicators,
             copy_on_select: config.copy_on_select,
             local_label,
@@ -209,7 +203,6 @@ mod tests {
             &preferences::ClientChromePreferences {
                 sidebar_width: Some(31),
                 sidebar_collapsed: Some(true),
-                agent_panel_sort: Some(shepr_config::AgentPanelSortConfig::Priority),
                 ..preferences::ClientChromePreferences::default()
             },
         )
@@ -217,10 +210,9 @@ mod tests {
 
         let mut values = ClientConfig::default();
         values.ui.sidebar_width = Some(24);
-        values.ui.agent_panel_sort = Some(shepr_config::AgentPanelSortConfig::Spaces);
         let config = shepr_config::ValidatedClientConfig::test_from_config(
             values,
-            Some("[ui]\nsidebar_width = 24\nagent_panel_sort = \"spaces\"\n"),
+            Some("[ui]\nsidebar_width = 24\n"),
         );
         let shell_config =
             ClientShellConfig::from_validated_config(&config).with_preferences_path(path.clone());
@@ -233,14 +225,6 @@ mod tests {
             crate::shell::sidebar::chrome::ChromeOrigin::Configured
         );
         assert!(state.chrome.preferences().sidebar_width.is_none());
-        assert_eq!(
-            state.agent_panel_sort_chrome.origin(),
-            crate::shell::sidebar::chrome::ChromeOrigin::Configured
-        );
-        assert_eq!(
-            state.agent_panel_sort_chrome.value(),
-            shepr_config::AgentPanelSortConfig::Spaces
-        );
         assert!(state.chrome.collapsed());
         assert_eq!(
             state.chrome.collapsed_origin(),
@@ -254,16 +238,53 @@ mod tests {
             state.chrome.width_origin(),
             crate::shell::sidebar::chrome::ChromeOrigin::Manual
         );
-        state.set_agent_panel_sort(shepr_config::AgentPanelSortConfig::Priority);
-        assert_eq!(
-            state.agent_panel_sort_chrome.origin(),
-            crate::shell::sidebar::chrome::ChromeOrigin::Manual
-        );
         state.persist_chrome_preferences(&mut ClientShellInput::default());
         let stored = preferences::load(&path).expect("stored chrome");
         assert_eq!(stored.sidebar_width, None);
-        assert_eq!(stored.agent_panel_sort, None);
         assert_eq!(stored.sidebar_collapsed, Some(true));
+        std::fs::remove_file(path).expect("remove endpoint chrome");
+    }
+
+    #[test]
+    fn agent_panel_sort_is_remembered_and_restored_by_its_stored_spelling() {
+        use crate::shell::sidebar::agent_sidebar::AgentPanelSort;
+        use crate::shell::sidebar::chrome::ChromeOrigin;
+
+        let scratch = shepr_test_support::ScratchDir::new("shell-prefs-sort");
+        let path = scratch.join("preferences.json");
+        let mut state = ClientShellState::new(
+            ClientShellConfig::from_config(&ClientConfig::default())
+                .with_preferences_path(path.clone()),
+        );
+        assert_eq!(
+            state.agent_panel_sort_chrome.value(),
+            AgentPanelSort::Spaces
+        );
+        assert_eq!(
+            state.agent_panel_sort_chrome.origin(),
+            ChromeOrigin::Default
+        );
+
+        state.set_agent_panel_sort(AgentPanelSort::Priority);
+        state.persist_chrome_preferences(&mut ClientShellInput::default());
+        let stored = std::fs::read_to_string(&path).expect("stored chrome");
+        assert!(
+            stored.contains("\"agent_panel_sort\": \"priority\""),
+            "{stored}"
+        );
+
+        let restored = ClientShellState::new(
+            ClientShellConfig::from_config(&ClientConfig::default())
+                .with_preferences_path(path.clone()),
+        );
+        assert_eq!(
+            restored.agent_panel_sort_chrome.value(),
+            AgentPanelSort::Priority
+        );
+        assert_eq!(
+            restored.agent_panel_sort_chrome.origin(),
+            ChromeOrigin::Remembered
+        );
         std::fs::remove_file(path).expect("remove endpoint chrome");
     }
 

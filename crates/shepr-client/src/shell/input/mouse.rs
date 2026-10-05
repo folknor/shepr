@@ -1330,11 +1330,11 @@ impl ClientShellState {
                     point,
                 ) {
                     let sort = match self.agent_panel_sort_chrome.value() {
-                        shepr_config::AgentPanelSortConfig::Spaces => {
-                            shepr_config::AgentPanelSortConfig::Priority
+                        crate::shell::sidebar::agent_sidebar::AgentPanelSort::Spaces => {
+                            crate::shell::sidebar::agent_sidebar::AgentPanelSort::Priority
                         }
-                        shepr_config::AgentPanelSortConfig::Priority => {
-                            shepr_config::AgentPanelSortConfig::Spaces
+                        crate::shell::sidebar::agent_sidebar::AgentPanelSort::Priority => {
+                            crate::shell::sidebar::agent_sidebar::AgentPanelSort::Spaces
                         }
                     };
                     self.set_agent_panel_sort(sort);

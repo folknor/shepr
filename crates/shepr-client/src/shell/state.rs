@@ -18,6 +18,7 @@ use crate::shell::navigation::location::Location;
 use crate::shell::navigation::workspace_navigation::PendingWorkspaceHighlight;
 use crate::shell::overlays::{Overlay, OverlayKind};
 use crate::shell::presentation::Presentation;
+use crate::shell::sidebar::agent_sidebar::AgentPanelSort;
 
 /// User-entered text stored in shell state, with redacted debug output.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -210,7 +211,7 @@ pub(crate) struct ClientShellState {
     pub(in crate::shell) scroll_lanes: ScrollLanes,
     pub(in crate::shell) chrome: crate::shell::sidebar::chrome::ChromeLayout,
     pub(in crate::shell) agent_panel_sort_chrome:
-        crate::shell::sidebar::chrome::Chrome<shepr_config::AgentPanelSortConfig>,
+        crate::shell::sidebar::chrome::Chrome<AgentPanelSort>,
     pub(in crate::shell) pointer: Pointer,
     pub(in crate::shell) sidebar_scroll: crate::shell::sidebar::scroll::SidebarScroll,
     pub(in crate::shell) mouse_selection: MouseSelection,
@@ -252,22 +253,21 @@ impl ClientShellState {
         let preferences = config.preferences.clone();
         let overlay = None;
         let chrome = crate::shell::sidebar::chrome::ChromeLayout::new(&config);
-        let sort_origin = if preferences.configured.agent_panel_sort {
-            crate::shell::sidebar::chrome::ChromeOrigin::Configured
-        } else if preferences.agent_panel_sort.is_some() {
-            crate::shell::sidebar::chrome::ChromeOrigin::Remembered
-        } else {
-            crate::shell::sidebar::chrome::ChromeOrigin::Default
-        };
-        let agent_panel_sort = if preferences.configured.agent_panel_sort {
-            config.agent_panel_sort
-        } else {
-            preferences
-                .agent_panel_sort
-                .unwrap_or(config.agent_panel_sort)
-        };
-        let agent_panel_sort_chrome =
-            crate::shell::sidebar::chrome::Chrome::new(agent_panel_sort, sort_origin);
+        let agent_panel_sort_chrome = preferences.agent_panel_sort.map_or_else(
+            || {
+                crate::shell::sidebar::chrome::Chrome::new(
+                    AgentPanelSort::default(),
+                    crate::shell::sidebar::chrome::ChromeOrigin::Default,
+                )
+            },
+            |sort| {
+                crate::shell::sidebar::chrome::Chrome::new(
+                    sort,
+                    crate::shell::sidebar::chrome::ChromeOrigin::Remembered,
+                )
+            },
+        );
+        let agent_panel_sort = agent_panel_sort_chrome.value();
         let endpoints = Endpoints::new(vec![local_endpoint()], &config, agent_panel_sort);
         let host_theme = shepr_term::host::TerminalTheme::default();
         let palette = crate::shell::palette::Palette::derive(&host_theme, config.host_hues.local());

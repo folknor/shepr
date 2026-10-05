@@ -159,7 +159,7 @@ impl Endpoints {
     pub(in crate::shell) fn new(
         entries: Vec<ClientShellEndpoint>,
         config: &ClientShellConfig,
-        agent_panel_sort: shepr_config::AgentPanelSortConfig,
+        agent_panel_sort: crate::shell::sidebar::agent_sidebar::AgentPanelSort,
     ) -> Self {
         let agent_panel_model = AgentPanelModel::build(&entries, config, agent_panel_sort);
         let navigator_index = NavigatorIndex::build(&entries, &config.local_label);
@@ -828,7 +828,7 @@ impl ClientShellState {
     /// rebuilds the agent panel in that order.
     pub(in crate::shell) fn set_agent_panel_sort(
         &mut self,
-        sort: shepr_config::AgentPanelSortConfig,
+        sort: crate::shell::sidebar::agent_sidebar::AgentPanelSort,
     ) {
         self.agent_panel_sort_chrome.set_manual(sort);
         self.rebuild_agent_panel_model();

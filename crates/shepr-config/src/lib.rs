@@ -31,8 +31,7 @@ pub use self::{
         format_key_chord, parse_key_chord,
     },
     model::{
-        AgentPanelSortConfig, NewTerminalCwdConfig, PaneBordersConfig, SidebarBounds, SidebarWidth,
-        StatusIndicatorStyle,
+        NewTerminalCwdConfig, PaneBordersConfig, SidebarBounds, SidebarWidth, StatusIndicatorStyle,
     },
     sidebar::{
         AgentSidebarToken, AgentSidebarTokenKind, AgentsSidebarConfig, SidebarConfig,
@@ -158,13 +157,8 @@ mod tests {
             documented.ui.sidebar_start_collapsed,
             Some(*validated.ui().sidebar_start_collapsed.value())
         );
-        assert_eq!(
-            documented.ui.agent_panel_sort,
-            Some(*validated.ui().agent_panel_sort.value())
-        );
         documented.ui.sidebar_width = None;
         documented.ui.sidebar_start_collapsed = None;
-        documented.ui.agent_panel_sort = None;
         assert_eq!(documented, defaults);
     }
 
@@ -369,7 +363,6 @@ mod tests {
             mouse_capture => _,
             copy_on_select => _,
             confirm_close => _,
-            agent_panel_sort => _,
             status_indicators => _,
             sidebar => sidebar,
         });

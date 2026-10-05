@@ -1,14 +1,6 @@
-use serde::{Deserialize, Deserializer, Serialize, de};
+use serde::{Deserialize, Deserializer, de};
 
 use super::{BindingConfig, DEFAULT_SCROLLBACK_LIMIT_BYTES, SidebarConfig};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AgentPanelSortConfig {
-    #[default]
-    Spaces,
-    Priority,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -200,10 +192,6 @@ pub struct ClientUiConfig {
     pub copy_on_select: bool,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
-    /// Agent sidebar ordering: "spaces" or "priority". Default: "spaces".
-    /// While unset, the client shell remembers the last toggle of the agent
-    /// panel's sort control; once set, it wins at every launch.
-    pub agent_panel_sort: Option<AgentPanelSortConfig>,
     /// Agent status indicator style. Values are "dots" or "symbols". Default: "dots".
     pub status_indicators: StatusIndicatorStyle,
     /// Expanded sidebar row composition.
@@ -344,7 +332,6 @@ impl Default for ClientUiConfig {
             mouse_capture: true,
             copy_on_select: true,
             confirm_close: true,
-            agent_panel_sort: None,
             status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),
         }
@@ -463,21 +450,6 @@ startup_per_agent_delay_ms = 0
         assert_eq!(
             config.session.startup_per_agent_delay,
             std::time::Duration::ZERO
-        );
-    }
-
-    #[test]
-    fn agent_panel_sort_config_parses_and_defaults() {
-        assert_eq!(ClientConfig::default().ui.agent_panel_sort, None);
-
-        let toml = r#"
-[ui]
-agent_panel_sort = "priority"
-"#;
-        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
-        assert_eq!(
-            config.ui.agent_panel_sort,
-            Some(AgentPanelSortConfig::Priority)
         );
     }
 
