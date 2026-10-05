@@ -13,7 +13,7 @@ use crate::shell::tests::{
 };
 use crate::tests::{test_pane_id, test_workspace_id};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use shepr_config::{AgentSidebarToken, ClientConfig, StatusIndicatorStyle};
+use shepr_config::{AgentSidebarToken, ClientConfig};
 use shepr_protocol::command::EndpointCommand;
 use shepr_protocol::{AgentStatus, ClientMessage, ClientShellAgent, ClientShellPane};
 use shepr_termio::input::raw_input::RawInputEvent;
@@ -1148,7 +1148,6 @@ fn disconnected_active_endpoint_freezes_surface_and_lists_no_stale_rows() {
     use shepr_protocol::AgentStatus;
 
     let mut config = ClientConfig::default();
-    config.ui.status_indicators = StatusIndicatorStyle::Symbols;
     config.ui.sidebar.agents.rows = vec![vec![
         AgentSidebarToken::StateIcon,
         AgentSidebarToken::Machine,

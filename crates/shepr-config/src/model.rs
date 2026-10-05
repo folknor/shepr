@@ -2,14 +2,6 @@ use serde::{Deserialize, Deserializer, de};
 
 use super::{BindingConfig, DEFAULT_SCROLLBACK_LIMIT_BYTES, SidebarConfig};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum StatusIndicatorStyle {
-    #[default]
-    Dots,
-    Symbols,
-}
-
 /// The exact strings `follow`, `home`, and `current` are policy keywords;
 /// every other string is preserved as a literal path for launch-time parsing.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -192,8 +184,6 @@ pub struct ClientUiConfig {
     pub copy_on_select: bool,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
-    /// Agent status indicator style. Values are "dots" or "symbols". Default: "dots".
-    pub status_indicators: StatusIndicatorStyle,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
 }
@@ -332,7 +322,6 @@ impl Default for ClientUiConfig {
             mouse_capture: true,
             copy_on_select: true,
             confirm_close: true,
-            status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),
         }
     }
@@ -451,23 +440,6 @@ startup_per_agent_delay_ms = 0
             config.session.startup_per_agent_delay,
             std::time::Duration::ZERO
         );
-    }
-
-    #[test]
-    fn status_indicator_style_defaults_to_dots_and_parses_symbols() {
-        assert_eq!(
-            ClientConfig::default().ui.status_indicators,
-            StatusIndicatorStyle::Dots
-        );
-
-        let config: ClientConfig = toml::from_str(
-            r#"
-[ui]
-status_indicators = "symbols"
-"#,
-        )
-        .expect("test precondition");
-        assert_eq!(config.ui.status_indicators, StatusIndicatorStyle::Symbols);
     }
 
     #[test]

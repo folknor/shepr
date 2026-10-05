@@ -107,7 +107,6 @@ captures the mouse, from its own `ui.mouse_capture`.)
 | `mouse_capture` | boolean | `true` | Capture the mouse for shepr's own mouse UI (selection, sidebar, menus). Set `false` to let the terminal handle normal clicks, such as clicking URLs. Programs in panes that ask for the mouse still get it. |
 | `copy_on_select` | boolean | `true` | Copy mouse selections as soon as the button is released. With `false` the selection stays until `ctrl+c` copies and clears it. See [Clipboard](clipboard.md). |
 | `confirm_close` | boolean | `true` | Ask for confirmation before closing a workspace. |
-| `status_indicators` | `"dots"` or `"symbols"` | `"dots"` | How agent states are marked: compact coloured dots, or a distinct glyph for each of Working, Blocked and Idle. |
 
 The default `sidebar_width` also has to fit the bounds: if you raise
 `sidebar_min_width` above 26 or lower `sidebar_max_width` below it, set

@@ -14,7 +14,7 @@ use crate::shell::tests::{
 use crate::tests::test_workspace_id;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
-use shepr_config::{AgentSidebarToken, ClientConfig, StatusIndicatorStyle};
+use shepr_config::{AgentSidebarToken, ClientConfig};
 use shepr_protocol::{ClientShellSnapshot, ClientShellWorkspace};
 use shepr_surface::ratatui_conversion::WireColorExt as _;
 use shepr_termio::input::raw_input::RawInputEvent;
@@ -657,7 +657,6 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     use shepr_protocol::AgentStatus;
 
     let mut config = ClientConfig::default();
-    config.ui.status_indicators = StatusIndicatorStyle::Symbols;
     config.ui.sidebar.agents.rows = vec![vec![
         AgentSidebarToken::StateIcon,
         AgentSidebarToken::Machine,

@@ -10,17 +10,14 @@ pub(in crate::shell) struct StatusGlyph {
 
 pub(in crate::shell) fn status_glyph(
     status: shepr_protocol::AgentStatus,
-    indicator_style: shepr_config::StatusIndicatorStyle,
     palette: &Palette,
     stale: bool,
 ) -> StatusGlyph {
-    use shepr_config::StatusIndicatorStyle;
     use shepr_protocol::AgentStatus;
-    let text = match (indicator_style, status) {
-        (StatusIndicatorStyle::Dots, AgentStatus::Working | AgentStatus::Blocked) => "●",
-        (_, AgentStatus::Idle) => "○",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Blocked) => "×",
-        (StatusIndicatorStyle::Symbols, AgentStatus::Working) => "◐",
+    let text = match status {
+        AgentStatus::Idle => "○",
+        AgentStatus::Blocked => "×",
+        AgentStatus::Working => "◐",
     };
     let color = if stale {
         palette.overlay0

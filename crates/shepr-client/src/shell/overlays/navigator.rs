@@ -446,9 +446,7 @@ impl NavigatorOverlay {
             let connector_x = rect.x + padding;
             let indent = format!("{:width$}{connector}", "", width = usize::from(padding));
             let current = if r.current { "◆ " } else { "" };
-            let glyph_option = r.status.map(|status| {
-                status_glyph(status, shepr_config::StatusIndicatorStyle::Dots, p, r.stale)
-            });
+            let glyph_option = r.status.map(|status| status_glyph(status, p, r.stale));
             let status = glyph_option.map_or("", |glyph| glyph.text);
             let status_separator = if status.is_empty() { "" } else { " " };
             let label = format!("{indent}{current}{status}{status_separator}{}", r.label);

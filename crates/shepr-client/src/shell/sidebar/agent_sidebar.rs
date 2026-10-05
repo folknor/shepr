@@ -193,7 +193,6 @@ pub(super) fn render_agent_row(
     rect: Rect,
     row: &AgentRow,
     state: AgentEntryState,
-    config: &ClientShellConfig,
     palette: &Palette,
 ) {
     let AgentEntryState {
@@ -224,7 +223,7 @@ pub(super) fn render_agent_row(
             .fg(palette.subtext0)
             .add_modifier(Modifier::BOLD)
     };
-    let glyph = status_glyph(row.status, config.status_indicators, palette, false);
+    let glyph = status_glyph(row.status, palette, false);
     let status_style = glyph.style;
     let secondary = Style::default().fg(palette.overlay0);
     let fallback = [vec![ResolvedToken {

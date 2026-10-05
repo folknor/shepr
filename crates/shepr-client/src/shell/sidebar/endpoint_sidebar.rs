@@ -20,7 +20,6 @@ pub(in crate::shell) fn draw_collapsed(
     view: &CollapsedSidebarView,
     inputs: &SidebarInputs<'_>,
 ) {
-    let config = inputs.config;
     let palette = inputs.palette;
     let single_endpoint = inputs.single_endpoint();
     crate::shell::presentation::text::render_sidebar_background(buffer, view.area, palette);
@@ -114,12 +113,7 @@ pub(in crate::shell) fn draw_collapsed(
                     );
                 }
                 let stale = endpoint.state.stale();
-                let glyph = status_glyph(
-                    workspace.agent_status,
-                    config.status_indicators,
-                    palette,
-                    stale,
-                );
+                let glyph = status_glyph(workspace.agent_status, palette, stale);
                 let number = if single_endpoint {
                     format!("{:<2}", entry + 1)
                 } else {
@@ -241,7 +235,6 @@ pub(in crate::shell) fn draw_expanded(
                     *nested,
                     *entry + 1,
                     status,
-                    config.status_indicators,
                     &tokens,
                     crate::shell::sidebar::WorkspaceEntryState {
                         focused: endpoint_active

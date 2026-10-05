@@ -410,7 +410,6 @@ mod tests {
             area,
             1,
             shepr_protocol::AgentStatus::Idle,
-            shepr_config::StatusIndicatorStyle::Dots,
             &[Vec::new(), Vec::new()],
             crate::shell::sidebar::WorkspaceEntryState {
                 focused,

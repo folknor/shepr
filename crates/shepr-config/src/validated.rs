@@ -96,7 +96,6 @@ pub struct ValidatedClientUiConfig {
     pub mouse_capture: bool,
     pub copy_on_select: bool,
     pub confirm_close: bool,
-    pub status_indicators: super::StatusIndicatorStyle,
     pub sidebar: super::SidebarConfig,
 }
 
@@ -369,7 +368,6 @@ impl ValidatedClientUiConfig {
             mouse_capture: config.mouse_capture,
             copy_on_select: config.copy_on_select,
             confirm_close: config.confirm_close,
-            status_indicators: config.status_indicators,
             sidebar: config.sidebar.clone(),
         }
     }

@@ -13,7 +13,6 @@ pub(crate) struct ClientShellConfig {
     pub(in crate::shell) sidebar_start_collapsed: bool,
     pub(in crate::shell) spaces: SpacesSidebarConfig,
     pub(in crate::shell) agents: shepr_config::AgentsSidebarConfig,
-    pub(in crate::shell) status_indicators: shepr_config::StatusIndicatorStyle,
     pub(in crate::shell) copy_on_select: bool,
     /// The name shown for the local server (`ClientEndpointId::display_label`).
     pub(in crate::shell) local_label: shepr_config::MachineLabel,
@@ -56,7 +55,6 @@ impl ClientShellConfig {
             sidebar_start_collapsed: *config.sidebar_start_collapsed.value(),
             spaces: config.sidebar.spaces.clone(),
             agents: config.sidebar.agents.clone(),
-            status_indicators: config.status_indicators,
             copy_on_select: config.copy_on_select,
             local_label,
             host_hues,

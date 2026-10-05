@@ -334,9 +334,9 @@ fn text_tokens(ui: &UiPalette) -> [(&'static str, RgbColor); 9] {
 /// its own name otherwise.
 fn sample_word(name: &str) -> String {
     match name {
-        "green" => "● idle".to_owned(),
-        "yellow" => "● working".to_owned(),
-        "red" => "● blocked".to_owned(),
+        "green" => "○ idle".to_owned(),
+        "yellow" => "◐ working".to_owned(),
+        "red" => "× blocked".to_owned(),
         "mauve" => "main".to_owned(),
         other => other.to_owned(),
     }

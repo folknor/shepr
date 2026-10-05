@@ -30,9 +30,7 @@ pub use self::{
         ActionKeybinds, BindingConfig, IndexedKeybind, IndexedRange, Keybinds, LiveKeybindConfig,
         format_key_chord, parse_key_chord,
     },
-    model::{
-        NewTerminalCwdConfig, PaneBordersConfig, SidebarBounds, SidebarWidth, StatusIndicatorStyle,
-    },
+    model::{NewTerminalCwdConfig, PaneBordersConfig, SidebarBounds, SidebarWidth},
     sidebar::{
         AgentSidebarToken, AgentSidebarTokenKind, AgentsSidebarConfig, SidebarConfig,
         SidebarTokenRendering, SidebarTokenRule, SidebarTokenSpec, SidebarTokenStyle,
@@ -363,7 +361,6 @@ mod tests {
             mouse_capture => _,
             copy_on_select => _,
             confirm_close => _,
-            status_indicators => _,
             sidebar => sidebar,
         });
         record_config_fields!(fields, sidebar, "ui.sidebar", SidebarConfig {

@@ -270,7 +270,6 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
                 &rows[0],
                 crate::shell::presentation::status::status_glyph(
                     shepr_protocol::AgentStatus::Working,
-                    shepr_config::StatusIndicatorStyle::Dots,
                     &crate::shell::palette::Palette::test_dark(),
                     false,
                 ),

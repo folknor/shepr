@@ -94,7 +94,6 @@ pub(in crate::shell::sidebar) fn render_workspace_rows(
     area: Rect,
     workspace_number: usize,
     status: shepr_protocol::AgentStatus,
-    indicators: shepr_config::StatusIndicatorStyle,
     rows: &[Vec<ResolvedToken>],
     state: WorkspaceEntryState,
     palette: &Palette,
@@ -152,7 +151,7 @@ pub(in crate::shell::sidebar) fn render_workspace_rows(
         } else {
             palette.overlay0
         });
-        let glyph = status_glyph(status, indicators, palette, false);
+        let glyph = status_glyph(status, palette, false);
         let themed = TokenStyles::plain(
             glyph.style,
             workspace_style,

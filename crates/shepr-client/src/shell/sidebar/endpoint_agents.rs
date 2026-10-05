@@ -19,7 +19,6 @@ pub(in crate::shell) fn draw_collapsed(
     slots: &[AgentSlot],
     inputs: &SidebarInputs<'_>,
 ) {
-    let config = inputs.config;
     for slot in slots {
         let Some(row) = inputs.model.rows.get(slot.row) else {
             continue;
@@ -42,12 +41,7 @@ pub(in crate::shell) fn draw_collapsed(
                 )),
             );
         }
-        let glyph = status_glyph(
-            row.agent.status,
-            config.status_indicators,
-            inputs.palette,
-            row.stale,
-        );
+        let glyph = status_glyph(row.agent.status, inputs.palette, row.stale);
         if inputs.single_endpoint() {
             put_text(
                 buffer,
@@ -123,7 +117,6 @@ pub(super) fn draw_agent_panel(
                 navigating: inputs.selected.is_some(),
                 look,
             },
-            config,
             inputs.palette,
         );
         if row.stale {
