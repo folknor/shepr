@@ -502,10 +502,13 @@ terminal switches between light and dark:
 - surfaces (panels, the active and selected rows, separators) sit a little
   off the terminal's background, toward its foreground;
 - text and muted text keep a readable contrast against every surface;
-- the accent (highlights, the focused pane's border) is the local server's
-  hue, and the agent state colours (green for Idle, yellow for Working, red
-  for Blocked) and branch names share its brightness. Where your terminal
-  reports its own colour of a hue, that hue is used.
+- the accent (highlights, navigation) is the local server's hue, and the
+  agent state colours (green for Idle, yellow for Working, red for Blocked)
+  and branch names share its brightness. Where your terminal reports its own
+  colour of a hue, that hue is used;
+- the focused pane's border is in the shown machine's own accent, the colour
+  its sidebar entries carry, so the border tells you which machine you are
+  looking at.
 
 Until the terminal reports a background, and on a terminal that never does,
 shepr draws with the terminal's own default and ANSI colours.

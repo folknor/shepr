@@ -26,12 +26,17 @@ use crate::shell::view::resolve::{
 use crate::shell::view::{DrawnFrame, PaneHit, ShellView};
 
 /// The colours of the pane chrome a server draws, which names each cell's role and
-/// leaves the colour to the client.
-fn chrome_palette(palette: &Palette) -> ChromePalette {
+/// leaves the colour to the client. The focused pane's border is in the presented
+/// machine's own accent, the one its sidebar entries carry.
+fn chrome_palette(state: &ClientShellState) -> ChromePalette {
+    let palette = &state.palette;
     let color = WireColor::from_ratatui;
+    let host_accent = state
+        .host_accent(state.endpoints.presented())
+        .unwrap_or(palette.accent);
     ChromePalette {
         border: color(palette.overlay0),
-        border_focused: color(palette.accent),
+        border_focused: color(host_accent),
         scroll_track: color(palette.surface_dim),
         scroll_track_focused: color(palette.overlay0),
         scroll_thumb: color(palette.overlay0),
@@ -95,7 +100,7 @@ pub(super) fn draw_frame(state: &ClientShellState, view: &ShellView) -> Option<D
         frame.compose_pane(
             &surface.frame,
             view.layout.pane_surface,
-            &chrome_palette(palette),
+            &chrome_palette(state),
         );
         let has_selection = state
             .mouse_selection

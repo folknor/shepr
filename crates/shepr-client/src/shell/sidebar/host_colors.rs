@@ -70,6 +70,14 @@ impl ClientShellState {
         self.palette = palette;
         changed
     }
+
+    /// The colour that identifies `endpoint`: its sidebar accent, which the
+    /// focused pane's border takes while `endpoint` is presented. `None` for a
+    /// machine the config does not name.
+    pub(in crate::shell) fn host_accent(&self, endpoint: &ClientEndpointId) -> Option<Color> {
+        PillLook::for_endpoint(&self.config.host_hues, self.host_pills.as_ref(), endpoint)
+            .map(PillLook::accent)
+    }
 }
 
 /// How the entries of an endpoint with a configured hue are drawn.
@@ -308,6 +316,54 @@ mod tests {
             .expect("still derived");
         assert_ne!(dark, light);
         assert_ne!(dark_palette, state.palette);
+    }
+
+    /// The server names the focused border's role; the client draws it in the
+    /// presented machine's sidebar accent, and redraws it when that changes.
+    #[test]
+    fn the_focused_pane_border_takes_the_presented_machines_accent() {
+        use shepr_protocol::{ChromeRole, WireColor};
+        use shepr_surface::ratatui_conversion::WireColorExt as _;
+        use shepr_termio::input::raw_input::RawInputEvent;
+
+        let config = local_desk(vec![machine("desk", HostHue::Green)]);
+        let mut state = ClientShellState::new(
+            crate::shell::config::ClientShellConfig::from_config(&config),
+        );
+        state.set_snapshot(Box::new(crate::shell::tests::snapshot()));
+        let mut surface = crate::shell::tests::surface();
+        surface.frame.cells_mut()[0].fg = WireColor::Chrome(ChromeRole::BorderFocused);
+        state.receive_pane_surface_from(
+            surface,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
+        let border_fg = |state: &mut ClientShellState| {
+            let frame = state.compose(100, 20).expect("pane frame");
+            let inner = state.pane_hits()[0].inner_rect;
+            frame.cells()[usize::from(inner.y) * 100 + usize::from(inner.x)].fg
+        };
+
+        // No background reported: the hue's own ANSI colour.
+        assert_eq!(border_fg(&mut state), WireColor::Indexed(2));
+
+        let outcome = state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
+            kind: shepr_term::host::DefaultColorKind::Background,
+            color: shepr_term::RgbColor {
+                r: 0x1e,
+                g: 0x1e,
+                b: 0x2e,
+            },
+        }]);
+        assert!(outcome.repaint);
+        let accent = state
+            .host_accent(&crate::endpoint::ClientEndpointId::Local)
+            .expect("the local server has a hue");
+        assert!(matches!(accent, Color::Rgb(..)), "{accent:?}");
+        assert_eq!(border_fg(&mut state), WireColor::from_ratatui(accent));
     }
 
     #[test]

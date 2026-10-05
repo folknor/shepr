@@ -53,31 +53,6 @@ as idle agents. A status signal ("hook interpreter missing") would make that
 visible. Nothing claims hooks work without `python3` or that a broken hook is
 reported.
 
-## One colour system for hosts and themes
-
-Two colour systems exist side by side and do not know about each other:
-
-- Themes: `[theme]` (`name`, `accent`, `[theme.custom]` tokens) in both
-  `client.toml` and `server.toml`. The client's theme colours what it draws
-  (sidebar, overlays, toasts, mode bars); each server's own theme colours what
-  it draws into pane cells (borders, gaps, scrollbars), from `ui/panes.rs` and
-  `ui/scrollbar.rs`.
-- Per-host palettes: `palette` on `[[machines]]` and `[local]` in
-  `client.toml`, from which the client derives a tint, main and dim text and an
-  accent per host against the terminal's reported colours
-  (`shepr-term/src/host_tint.rs`, `shell/sidebar/host_colors.rs`). Only the
-  sidebar uses them.
-
-The expectation is that a host's palette also colours its pane chrome (the
-focused border at least), and it does not: the server never sees the
-client's palette, since config never crosses hosts. Decide how the two
-systems become one: whether the client hands each server the colours to draw
-its view in (per client, beside the other per-client presentation state) or
-draws the chrome accent itself; what is left of `[theme]` on the server side;
-and how the built-in themes relate to the derived per-host colours. The
-per-colour overrides (`[theme.custom]` and `theme.accent`) are to be removed
-as part of this.
-
 ## Shut down the fleet from one host
 
 Stopping every server means running `shepr stop` on each host by hand. Add a

@@ -108,7 +108,8 @@ the client colours the roles as it composes the surface. There is no colour
 theme and no colour setting besides the hues: the client derives its whole
 palette from the colours the host terminal reports (`host_tint::UiPalette`),
 with the local server's hue as its accent, and uses the terminal's own ANSI
-colours until a background is reported. `client.toml` holds those
+colours until a background is reported. The focused pane's border takes the
+presented machine's own sidebar accent. `client.toml` holds those
 `[ui]` settings, `[keys]`, `[local]` (the local server's `label`) and
 `[[machines]]`. Each server applies its own config to what it
 runs and to what it renders into pane cells: shell and working directory,
