@@ -22,19 +22,47 @@ pub fn capture_job(
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &AbsolutePath,
     host_theme: shepr_term::host::TerminalTheme,
-) -> SessionCapture {
+) -> Result<SessionCapture, super::SaveError> {
+    capture_job_with_workspace_capture(
+        workspaces,
+        terminal_runtimes,
+        fallback_cwd,
+        host_theme,
+        capture_workspace,
+    )
+}
+
+fn capture_job_with_workspace_capture(
+    workspaces: &WorkspaceSet,
+    terminal_runtimes: &PaneRuntimeRegistry,
+    fallback_cwd: &AbsolutePath,
+    host_theme: shepr_term::host::TerminalTheme,
+    capture_one: impl FnMut(
+        usize,
+        &Workspace,
+        &PaneRuntimeRegistry,
+        &AbsolutePath,
+        &mut PendingCwds,
+        &mut HashMap<SavedPaneRef, PaneId>,
+    ) -> Result<WorkspaceSnapshot, super::SaveError>,
+) -> Result<SessionCapture, super::SaveError> {
     if workspaces.is_empty() {
-        return SessionCapture {
+        return Ok(SessionCapture {
             job: PersistJob::Clear,
             pane_ids: HashMap::new(),
-        };
+        });
     }
-    let (snapshot, cwds, pane_ids) =
-        capture_deferred(workspaces, terminal_runtimes, fallback_cwd, host_theme);
-    SessionCapture {
+    let (snapshot, cwds, pane_ids) = capture_deferred_with_workspace_capture(
+        workspaces,
+        terminal_runtimes,
+        fallback_cwd,
+        host_theme,
+        capture_one,
+    )?;
+    Ok(SessionCapture {
         job: PersistJob::Save(SessionBundle { snapshot, cwds }),
         pane_ids,
-    }
+    })
 }
 
 /// What [`capture_job`] captured: the persister's job, and the live pane each
@@ -153,11 +181,11 @@ pub fn capture(
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &AbsolutePath,
     host_theme: shepr_term::host::TerminalTheme,
-) -> SessionSnapshot {
+) -> Result<SessionSnapshot, super::SaveError> {
     let (mut snapshot, cwds, _) =
-        capture_deferred(workspaces, terminal_runtimes, fallback_cwd, host_theme);
+        capture_deferred(workspaces, terminal_runtimes, fallback_cwd, host_theme)?;
     cwds.resolve(&mut snapshot);
-    snapshot
+    Ok(snapshot)
 }
 
 /// Capture the current app state without reading any shell's /proc cwd: the
@@ -168,25 +196,46 @@ fn capture_deferred(
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &AbsolutePath,
     host_theme: shepr_term::host::TerminalTheme,
-) -> (SessionSnapshot, PendingCwds, HashMap<SavedPaneRef, PaneId>) {
+) -> Result<(SessionSnapshot, PendingCwds, HashMap<SavedPaneRef, PaneId>), super::SaveError> {
+    capture_deferred_with_workspace_capture(
+        workspaces,
+        terminal_runtimes,
+        fallback_cwd,
+        host_theme,
+        capture_workspace,
+    )
+}
+
+fn capture_deferred_with_workspace_capture(
+    workspaces: &WorkspaceSet,
+    terminal_runtimes: &PaneRuntimeRegistry,
+    fallback_cwd: &AbsolutePath,
+    host_theme: shepr_term::host::TerminalTheme,
+    mut capture_one: impl FnMut(
+        usize,
+        &Workspace,
+        &PaneRuntimeRegistry,
+        &AbsolutePath,
+        &mut PendingCwds,
+        &mut HashMap<SavedPaneRef, PaneId>,
+    ) -> Result<WorkspaceSnapshot, super::SaveError>,
+) -> Result<(SessionSnapshot, PendingCwds, HashMap<SavedPaneRef, PaneId>), super::SaveError> {
     let mut cwds = PendingCwds::default();
     let mut pane_ids = HashMap::new();
     let mut captured = Vec::with_capacity(workspaces.len());
     let mut captured_ids = Vec::with_capacity(workspaces.len());
     for workspace in workspaces.iter() {
-        // Keyed by its place in the snapshot, which only differs from its
-        // place in the set if a workspace failed to capture.
+        // Capture fails as a whole on inconsistency, so this is also the
+        // workspace's position in the set.
         let snapshot_index = captured.len();
-        let Some(saved) = capture_workspace(
+        let saved = capture_one(
             snapshot_index,
             workspace,
             terminal_runtimes,
             fallback_cwd,
             &mut cwds,
             &mut pane_ids,
-        ) else {
-            continue;
-        };
+        )?;
         captured_ids.push(workspace.id());
         captured.push(saved);
     }
@@ -201,12 +250,13 @@ fn capture_deferred(
         workspaces: captured,
         active,
     };
-    (snapshot, cwds, pane_ids)
+    Ok((snapshot, cwds, pane_ids))
 }
 
 /// One workspace as saved, read through `Workspace` and its tree's read
-/// methods. `None` only if the tree's layout and records disagreed, which its
-/// constructors and mutators rule out.
+/// methods. A disagreement is an error for the whole save: writing the other
+/// workspaces would make their snapshot silently replace this workspace's
+/// last good on-disk layout.
 fn capture_workspace(
     workspace_index: usize,
     ws: &Workspace,
@@ -214,13 +264,15 @@ fn capture_workspace(
     fallback_cwd: &AbsolutePath,
     cwds: &mut PendingCwds,
     pane_ids: &mut HashMap<SavedPaneRef, PaneId>,
-) -> Option<WorkspaceSnapshot> {
+) -> Result<WorkspaceSnapshot, super::SaveError> {
     let tree = ws.tree();
     let number_of = |pane| tree.pane(pane).map(PaneRecord::number);
     let (Some(focused), Some(root_pane)) = (number_of(tree.focused()), number_of(tree.root()))
     else {
-        tracing::error!(workspace = %ws.id(), "workspace focus or root has no pane record; not saved");
-        return None;
+        return Err(super::SaveError::CaptureInconsistent {
+            workspace: ws.id().to_string(),
+            detail: "focus or root pane has no record",
+        });
     };
     let shape = tree.map_shape(|pane, record| {
         let number = record.number();
@@ -251,10 +303,12 @@ fn capture_workspace(
         }
     });
     let Some(shape) = shape else {
-        tracing::error!(workspace = %ws.id(), "workspace layout and pane records disagree; not saved");
-        return None;
+        return Err(super::SaveError::CaptureInconsistent {
+            workspace: ws.id().to_string(),
+            detail: "layout and pane records disagree",
+        });
     };
-    Some(WorkspaceSnapshot {
+    Ok(WorkspaceSnapshot {
         id: ws.id(),
         name: ws.name_label().clone(),
         next_public_pane_number: tree.next_number(),
@@ -315,6 +369,7 @@ mod tests {
             &AbsolutePath::root(),
             Default::default(),
         )
+        .expect("fixture workspace trees capture consistently")
     }
 
     #[test]
@@ -354,6 +409,43 @@ mod tests {
         let layout = layout.expect("a save keeps its layout");
         let unpaired = CapturedLayout::new(layout.snapshot().clone(), HashMap::new());
         assert!(unpaired.recapture(&PaneRuntimeRegistry::new()).is_none());
+    }
+
+    #[test]
+    fn one_inconsistent_workspace_fails_the_whole_capture() {
+        let first = Workspace::test_new("consistent");
+        let broken = Workspace::test_new("inconsistent");
+        let broken_id = broken.id();
+        let workspaces = WorkspaceSet::restored(
+            crate::workspace::WorkspaceIdAllocator::new(),
+            vec![first, broken],
+            None,
+        );
+
+        // Workspace constructors deliberately preserve the tree invariant, so
+        // the failure `capture_workspace` reports is injected at the seam for
+        // one workspace only. The others still capture; the job must not be
+        // a save of the remaining workspaces, which would replace the last
+        // good file without the broken one.
+        let failed = capture_job_with_workspace_capture(
+            &workspaces,
+            &PaneRuntimeRegistry::new(),
+            &AbsolutePath::root(),
+            Default::default(),
+            |index, workspace, runtimes, fallback, cwds, pane_ids| {
+                if workspace.id() == broken_id {
+                    return Err(super::super::SaveError::CaptureInconsistent {
+                        workspace: workspace.id().to_string(),
+                        detail: "layout and pane records disagree",
+                    });
+                }
+                capture_workspace(index, workspace, runtimes, fallback, cwds, pane_ids)
+            },
+        );
+        assert!(matches!(
+            failed,
+            Err(super::super::SaveError::CaptureInconsistent { .. })
+        ));
     }
 
     #[test]
@@ -402,7 +494,8 @@ mod tests {
                 &PaneRuntimeRegistry::new(),
                 &AbsolutePath::root(),
                 Default::default(),
-            );
+            )
+            .expect("a one-pane workspace captures");
 
             let LayoutSnapshot::Pane(saved) = &snapshot.workspaces[0].layout else {
                 panic!("a one-pane workspace saves one leaf");

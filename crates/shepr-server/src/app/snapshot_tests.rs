@@ -100,6 +100,7 @@ fn capture_from_state_with_runtimes(
         &shepr_core::absolute_path::AbsolutePath::root(),
         state.host_terminal_theme,
     )
+    .expect("fixture workspace trees capture consistently")
 }
 
 fn root_split_ratio(workspace: &WorkspaceSnapshot) -> Option<f32> {

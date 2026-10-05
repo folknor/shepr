@@ -16,6 +16,7 @@ impl AppState {
         }
         crate::logging::workspace_renamed(&workspace.id());
         self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
         Some(ViewMutation::Metadata)
     }
 
@@ -30,6 +31,7 @@ impl AppState {
             return ViewMutation::Unchanged;
         }
         self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
         ViewMutation::WorkspaceOrder
     }
 
@@ -41,10 +43,11 @@ impl AppState {
     pub(crate) fn remove_pane(&mut self, pane_id: PaneId) -> Option<PaneRemovalOutcome> {
         let removal = self.workspaces.remove_pane(pane_id)?;
         self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
         if removal.scope == PaneRemovalScope::Workspace {
             crate::logging::workspace_closed(&removal.workspace_id);
         }
-        let removed = self.forget_removed_panes(&removal.removed);
+        let removed = self.forget_removed_panes(removal.removed.iter().map(|(pane, _)| *pane));
         Some(PaneRemovalOutcome {
             workspace_id: removal.workspace_id,
             pane_id: removal.pane,
@@ -65,11 +68,9 @@ impl AppState {
         // workspace now at its index.
         let workspace = self.workspaces.remove(workspace_id)?;
         self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
         crate::logging::workspace_closed(workspace_id);
-        let removed: Vec<PaneId> = workspace.tree().panes().map(|(pane, _)| pane).collect();
-        for pane in &removed {
-            self.lifecycle_authority_dirty.remove(pane);
-        }
+        let removed = self.forget_removed_panes(workspace.tree().panes().map(|(pane, _)| pane));
         Some(WorkspaceRemovalOutcome {
             workspace_id: *workspace_id,
             removed,
@@ -78,15 +79,10 @@ impl AppState {
 
     /// The panes that just left their workspace. Their pending authority syncs
     /// go too: a pane that is gone has no runtime to sync.
-    fn forget_removed_panes(
-        &mut self,
-        removed: &[(PaneId, shepr_mux::workspace::PaneRecord)],
-    ) -> Vec<PaneId> {
+    fn forget_removed_panes(&mut self, removed: impl Iterator<Item = PaneId>) -> Vec<PaneId> {
         removed
-            .iter()
-            .map(|(pane, _)| {
+            .inspect(|pane| {
                 self.lifecycle_authority_dirty.remove(pane);
-                *pane
             })
             .collect()
     }

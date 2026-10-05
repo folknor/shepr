@@ -10,6 +10,8 @@ pub(crate) enum CliError {
     Response(ErrorResponse),
     /// `shepr stop` could not stop the server.
     ServerStop(shepr_launch::stop::ServerStopError),
+    /// A local CLI failure that does not belong in the server API vocabulary.
+    Message(String),
     Usage(String),
     Io(std::io::Error),
     Launch(shepr_launch::local_server::LaunchError),
@@ -29,9 +31,6 @@ pub(crate) enum CliError {
     },
     /// A client run that failed; see [`finish_client`].
     Client(shepr_client::ClientRunError),
-    /// The remote bridge's idle watchdog fired. Nothing is printed: stdout
-    /// belongs to the relay, and the far side already stopped listening.
-    BridgeIdle,
 }
 
 impl CliError {
@@ -61,19 +60,9 @@ impl CliError {
             {
                 eprintln!("{}", response.error.message);
             }
-            Self::Response(response) => match serde_json::to_string(response) {
-                Ok(json) => eprintln!("{json}"),
-                Err(error) => eprintln!("error: {error}"),
-            },
-            Self::ServerStop(error) => eprintln!(
-                "{}",
-                serde_json::json!({
-                    "error": shepr_api::schema::ErrorBody::new(
-                        &error.error_code(),
-                        error.to_string(),
-                    )
-                })
-            ),
+            Self::Response(response) => eprintln!("error: {}", response.error.message),
+            Self::ServerStop(error) => eprintln!("error: {error}"),
+            Self::Message(message) => eprintln!("error: {message}"),
             Self::Usage(message) => {
                 eprintln!("error: {message}");
                 eprintln!("run 'shepr --help' for usage");
@@ -94,11 +83,17 @@ impl CliError {
                 }
             }
             Self::Nested { quip } => {
+                let (bold, dim, reset) =
+                    if super::color_enabled(&std::io::stderr()).unwrap_or_default() {
+                        ("\x1b[1m", "\x1b[2m", "\x1b[0m")
+                    } else {
+                        ("", "", "")
+                    };
                 eprintln!(
-                    "\x1b[1merror:\x1b[0m shepr does not run inside a pane of a server of its own build profile."
+                    "{bold}error:{reset} shepr does not run inside a pane of a server of its own build profile."
                 );
                 eprintln!();
-                eprintln!("\x1b[2m\"{quip}\"\x1b[0m");
+                eprintln!("{dim}\"{quip}\"{reset}");
             }
             Self::Client(shepr_client::ClientRunError::Launch(error)) => {
                 eprintln!("shepr: {error}");
@@ -106,7 +101,6 @@ impl CliError {
             Self::Client(shepr_client::ClientRunError::Session(exit)) => {
                 print_client_lines(exit);
             }
-            Self::BridgeIdle => {}
         }
     }
 }
@@ -177,7 +171,7 @@ impl std::fmt::Display for CliError {
         match self {
             Self::Response(response) => f.write_str(&response.error.message),
             Self::ServerStop(error) => error.fmt(f),
-            Self::Usage(message) => f.write_str(message),
+            Self::Message(message) | Self::Usage(message) => f.write_str(message),
             Self::Io(error) | Self::Terminal(error) => error.fmt(f),
             Self::Launch(error) => error.fmt(f),
             Self::Config(diagnostics) => {
@@ -196,7 +190,6 @@ impl std::fmt::Display for CliError {
             }
             Self::Nested { .. } => f.write_str("nested shepr is refused"),
             Self::Client(error) => error.fmt(f),
-            Self::BridgeIdle => f.write_str("remote bridge idle timeout expired"),
         }
     }
 }
@@ -237,7 +230,7 @@ mod tests {
             CliError::Io(std::io::Error::other("io")),
             CliError::Config(vec![shepr_config::ConfigDiagnostic::parse("bad key")]),
             CliError::Nested { quip: "deeper" },
-            CliError::BridgeIdle,
+            CliError::Message("local error".into()),
         ] {
             assert_eq!(error.exit_status().code(), 1, "{error}");
         }

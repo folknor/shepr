@@ -239,11 +239,7 @@ impl App {
                 (result, resolved_identity_cwd)
             })
             .collect();
-        let changed = self.state.apply_workspace_git_statuses(results);
-        if changed {
-            self.state.mark_shell_projection_dirty();
-        }
-        changed
+        self.state.apply_workspace_git_statuses(results)
     }
 
     /// Check the producer before publication, checkpointing, or forwarding.
@@ -443,9 +439,6 @@ impl App {
         if let Some(outcome) = &outcome {
             self.shutdown_detached_pane_runtimes(&outcome.removed);
         }
-        if removed {
-            self.state.mark_shell_projection_dirty();
-        }
         removed
     }
 
@@ -455,12 +448,8 @@ impl App {
         ending: shepr_mux::pane::PaneEnding,
         ended_at: std::time::Instant,
     ) {
-        if self
-            .state
-            .publish_pane_process_exit(pane_id, ending, ended_at)
-        {
-            self.state.mark_shell_projection_dirty();
-        }
+        self.state
+            .publish_pane_process_exit(pane_id, ending, ended_at);
         self.apply_lifecycle_authority_changes();
     }
 
@@ -509,9 +498,7 @@ impl App {
         failure: shepr_mux::terminal::PaneStartFailure,
         now: std::time::Instant,
     ) {
-        self.state.update_terminal_state(pane_id, |terminal| {
-            Some(terminal.abandon_agent_resume(failure, now))
-        });
+        self.state.abandon_pane_agent_resume(pane_id, failure, now);
         self.apply_lifecycle_authority_changes();
     }
 

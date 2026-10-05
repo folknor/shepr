@@ -22,6 +22,7 @@ enum CaptureRetention {
 pub(crate) struct PipeCapture {
     captured: Arc<Mutex<VecDeque<u8>>>,
     done: mpsc::Receiver<io::Result<()>>,
+    context: Option<(u32, &'static str)>,
 }
 
 impl PipeCapture {
@@ -51,7 +52,16 @@ impl PipeCapture {
             // is left to want the result.
             drop(done_tx.send(result));
         });
-        Self { captured, done }
+        Self {
+            captured,
+            done,
+            context: None,
+        }
+    }
+
+    pub(crate) fn with_context(mut self, child_pid: u32, pipe: &'static str) -> Self {
+        self.context = Some((child_pid, pipe));
+        self
     }
 
     /// Waits up to `grace` for the pipe to reach end of stream and returns what
@@ -62,6 +72,8 @@ impl PipeCapture {
             Ok(result) => result?,
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 tracing::debug!(
+                    bridge_pid = std::process::id(),
+                    child_pipe = ?self.context,
                     "ssh pipe is still open after the child exited; another process holds it"
                 );
             }
@@ -131,8 +143,14 @@ pub(crate) fn wait_with_output_timeout(
         .ok_or_else(|| io::Error::other("SSH command stderr was not captured"))?;
     // Discovery and status responses are small. Drain both pipes to avoid a
     // child blocking, but retain only bounded output from the remote host.
-    running.stdout = Some(PipeCapture::spawn_tail(stdout, SSH_STDOUT_CAPTURE_LIMIT));
-    running.stderr = Some(PipeCapture::spawn(stderr, SSH_STDERR_CAPTURE_LIMIT));
+    running.stdout = Some(
+        PipeCapture::spawn_tail(stdout, SSH_STDOUT_CAPTURE_LIMIT)
+            .with_context(running.child.id(), "command stdout"),
+    );
+    running.stderr = Some(
+        PipeCapture::spawn(stderr, SSH_STDERR_CAPTURE_LIMIT)
+            .with_context(running.child.id(), "command stderr"),
+    );
     // clock-io-ok: this deadline measures the running child's wall time.
     let started = Instant::now();
     let status = loop {

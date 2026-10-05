@@ -350,6 +350,29 @@ fn a_saves_stopped_card_shows_once_per_boot_beside_the_restore_card() {
 }
 
 #[test]
+fn a_backup_blocked_card_tells_the_operator_to_fix_access_and_restart() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let boot = crate::tests::test_boot_id("backup-blocked");
+
+    assert!(state.receive_session_saves_blocked_on_backup(&ClientEndpointId::Local, &boot));
+    assert!(!state.receive_session_saves_blocked_on_backup(&ClientEndpointId::Local, &boot));
+
+    let card = state.notices.visible().expect("backup blocked card");
+    assert!(
+        card.title.ends_with(": session saves blocked"),
+        "{}",
+        card.title
+    );
+    assert!(card.body.contains("access permissions"), "{}", card.body);
+    assert!(card.body.contains("restart the server"), "{}", card.body);
+    assert!(state.receive_session_saves_blocked_on_backup(
+        &ClientEndpointId::Local,
+        &crate::tests::test_boot_id("backup-blocked-next")
+    ));
+}
+
+#[test]
 fn transient_cards_do_not_discard_queued_restore_cards() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let boot = crate::tests::test_boot_id("restored");

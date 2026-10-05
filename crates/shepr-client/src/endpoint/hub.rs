@@ -168,6 +168,7 @@ impl EndpointHub {
                 ) {
                     return Vec::new();
                 }
+                tracing::info!(endpoint = %endpoint_id, %generation, "endpoint connected");
                 self.registry.insert_native(
                     endpoint_id.clone(),
                     connection.activate(),
@@ -204,6 +205,8 @@ impl EndpointHub {
         };
         if status == EndpointFailureStatus::Attention {
             warn!(endpoint = %endpoint_id, %generation, error = %message, "endpoint needs attention");
+        } else {
+            tracing::info!(endpoint = %endpoint_id, %generation, ?status, error = %message, "endpoint attempt ended");
         }
         shell.set_endpoint_status(endpoint_id, status);
         shell.set_machine_diagnostic(endpoint_id, message);
@@ -305,8 +308,9 @@ impl EndpointHub {
             // installed by its supervisor's attempt, the supervisor starts no attempt while
             // its generation is connected, and only `endpoint_lost` below re-arms it. So
             // every queued failure ends its endpoint's lane here.
-            warn!(
+            tracing::info!(
                 endpoint = %failure.endpoint_id,
+                generation = %failure.generation,
                 error = %failure.failure,
                 "endpoint transport failed"
             );
@@ -583,6 +587,9 @@ impl EndpointHub {
                     }
                 }
                 shell::ClientShellAction::ClipboardWrite(bytes) => clipboard.push(bytes),
+                // These actions currently arrive after the shell optimistically
+                // changes its entry. Refusal must eventually be fed back to that
+                // reducer; merely setting the entry here cannot undo its change.
                 shell::ClientShellAction::ConnectMachine(endpoint_id) => {
                     self.supervisors
                         .request(&endpoint_id, shepr_remote::ConnectMode::Start, now);

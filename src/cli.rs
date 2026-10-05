@@ -1,3 +1,5 @@
+use std::io::IsTerminal;
+
 use clap::ArgMatches;
 
 use shepr_api::client::{ApiClient, ApiClientError};
@@ -185,7 +187,10 @@ pub(crate) fn print_help() {
             println!("Server config: {}", paths.server_config_file().display());
             println!(
                 "Logs:          {}",
-                shepr_platform::logging::help_log_paths_summary(paths.data_dir())
+                shepr_platform::logging::help_log_paths_summary(
+                    &paths.server_log(),
+                    &paths.client_log(),
+                )
             );
         }
         Err(error) => {
@@ -230,17 +235,26 @@ fn resolve_app_paths() -> CliResult<shepr_paths::AppPaths> {
     shepr_paths::AppPaths::resolve().map_err(CliError::from)
 }
 
+/// Colour is on only when `stream` (the one the coloured text goes to) is a
+/// terminal and `NO_COLOR` is unset or empty (no-color.org: any non-empty
+/// value turns colour off).
+pub(super) fn color_enabled(stream: &impl IsTerminal) -> CliResult<bool> {
+    let no_color = shepr_core::env::read_present(shepr_core::env::EnvVar::NoColor)
+        .map_err(std::io::Error::from)?;
+    Ok(!no_color && stream.is_terminal())
+}
+
 /// Sends one request to the local server and decodes the response envelope
 /// through shepr-api's schema: the typed result, or the server's error
 /// response as [`CliError::Response`]. Commands match on the result variant
 /// they asked for and never probe the JSON.
 fn send_request(paths: &shepr_paths::AppPaths, request: &Request) -> CliResult<ResponseResult> {
     let client = ApiClient::local(paths);
-    ensure_server_build_matches(paths, &client, &request.id)?;
+    ensure_server_build_matches(paths, &client)?;
     client
         .request(request)
         .map(|success| success.result)
-        .map_err(|err| map_server_not_running_or_io(paths, err, &request.id, &client))
+        .map_err(|err| map_server_not_running_or_io(paths, err, &client))
 }
 
 /// The failure for a successful response whose result is not the variant the
@@ -253,38 +267,25 @@ fn unexpected_result(result: &ResponseResult) -> CliError {
     .into()
 }
 
-fn ensure_server_build_matches(
-    paths: &shepr_paths::AppPaths,
-    client: &ApiClient,
-    request_id: &str,
-) -> CliResult<()> {
+fn ensure_server_build_matches(paths: &shepr_paths::AppPaths, client: &ApiClient) -> CliResult<()> {
     let pong = client
         .ping()
-        .map_err(|err| map_server_not_running_or_io(paths, err, request_id, client))?;
+        .map_err(|err| map_server_not_running_or_io(paths, err, client))?;
     if pong.build_id.is_this_build() {
         return Ok(());
     }
-    let response = shepr_api::schema::ErrorResponse {
-        id: Some(request_id.to_owned()),
-        error: shepr_api::schema::ErrorBody::new(
-            &shepr_api::error::ApiErrorCode::BuildMismatch,
-            format!(
-                "this shepr client (build {}) differs from the running server (build {}); restart the server with this build before using this command. {}",
-                shepr_protocol::BUILD_ID,
-                pong.build_id,
-                shepr_launch::guidance::build_mismatch_guidance(paths.server_address())
-            ),
-        ),
-    };
-
-    Err(CliError::Response(response))
+    Err(CliError::Message(format!(
+        "this shepr client (build {}) differs from the running server (build {}); restart the server with this build before using this command. {}",
+        shepr_protocol::BUILD_ID,
+        pong.build_id,
+        shepr_launch::guidance::build_mismatch_guidance(paths.server_address())
+    )))
 }
 
 /// Classify a socket failure before it reaches the CLI printer.
 fn map_server_not_running_or_io(
     paths: &shepr_paths::AppPaths,
     err: ApiClientError,
-    request_id: &str,
     client: &ApiClient,
 ) -> CliError {
     if let ApiClientError::Io(original) = &err {
@@ -294,13 +295,7 @@ fn map_server_not_running_or_io(
                 let attach_command = shepr_launch::guidance::attach_command(paths.server_address());
                 let message =
                     shepr_launch::guidance::server_not_running(&socket_path, &attach_command);
-                return CliError::Response(shepr_api::schema::ErrorResponse {
-                    id: Some(request_id.to_owned()),
-                    error: shepr_api::schema::ErrorBody::new(
-                        &shepr_api::error::ApiErrorCode::ServerNotRunning,
-                        message,
-                    ),
-                });
+                return CliError::Message(message);
             }
             Ok(false) => {}
             Err(probe_error) => {
@@ -615,7 +610,6 @@ mod tests {
         let mapped = super::map_server_not_running_or_io(
             &paths,
             ApiClientError::Io(std::io::Error::other("original request failure")),
-            shepr_api::schema::RequestId::DetectCapture.as_str(),
             &client,
         );
         let message = mapped.to_string();
@@ -637,22 +631,13 @@ mod tests {
         let mapped = super::map_server_not_running_or_io(
             &paths,
             ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::NotFound)),
-            shepr_api::schema::RequestId::DetectCapture.as_str(),
             &client,
         );
 
-        let CliError::Response(response) = &mapped else {
-            panic!("dead-server connect failure should carry a response");
+        let CliError::Message(message) = &mapped else {
+            panic!("dead-server connect failure should carry a human message");
         };
-        assert_eq!(
-            response.id.as_deref(),
-            Some(shepr_api::schema::RequestId::DetectCapture.as_str())
-        );
-        assert_eq!(
-            response.error.code,
-            shepr_api::error::ApiErrorCode::ServerNotRunning
-        );
-        assert!(response.error.message.contains(&socket));
+        assert!(message.contains(&socket));
     }
 
     #[test]
@@ -668,13 +653,8 @@ mod tests {
         let mapped = super::map_server_not_running_or_io(
             &paths,
             ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut)),
-            shepr_api::schema::RequestId::DetectCapture.as_str(),
             &client,
         );
-        assert!(!matches!(
-            &mapped,
-            CliError::Response(response)
-                if response.error.code == shepr_api::error::ApiErrorCode::ServerNotRunning
-        ));
+        assert!(matches!(mapped, CliError::Io(_)));
     }
 }

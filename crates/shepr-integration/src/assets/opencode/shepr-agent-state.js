@@ -10,6 +10,7 @@ const SOURCE = "shepr:opencode";
 const AGENT = "opencode";
 const METHOD_SESSION = "pane.report_agent_session";
 const METHOD_STATE = "pane.report_agent";
+const START = { startup: "startup", resume: "resume", select: "select" };
 const SOCKET_WAIT_MS = 500;
 const STATE = { working: "working", blocked: "blocked", idle: "idle" };
 // Seqs are microseconds since the epoch plus one per report, while the shell
@@ -175,7 +176,7 @@ let reportedLocalSessionID;
 
 // The local root's recognized start. Only the TUI integration reports
 // `select`, which can replace an existing OpenCode root.
-const LOCAL_START_SOURCE = "startup";
+const LOCAL_START_SOURCE = START.startup;
 
 // A state report also records which root session this process last spoke for.
 function reportRootState(state, sessionID) {

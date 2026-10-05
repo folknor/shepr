@@ -37,20 +37,6 @@ migration code, so this is an operator action, not a code change: remove
 `session-backups/session-history-*` by hand where present. Filed because nothing else
 will ever do it.
 
-## DEAD-002 - `sha2` in shepr-mux exists only for an in-memory equality
-
-Reported by: persistence.
-
-The layout fingerprint is SHA-256 over a hand-built encoding, compared only in process
-and never stored. Its original reason (keeping digests apart from history pairing) went
-with pane history. Comparing the encodings, or deriving `PartialEq` on a
-`Shape<PanePublicNumber>` projection, does the same; then `sha2` leaves
-`shepr-mux/Cargo.toml` and the `shepr-mux-layer` allow list in `brokkr.toml` (whose
-dependency rule then catches a reintroduction). The `Option` plumbing through
-`layout_fingerprint` and `append_fingerprint_count` (`u64::try_from(usize)`, which
-cannot fail on 64-bit Linux) and the `SavedLayout::Unknown` result of a failed
-fingerprint go with it.
-
 ## DEAD-004 - Recovery copy sequence numbers and a defensive publish branch are almost never used
 
 Reported by: persistence, restore-resume.
@@ -73,18 +59,6 @@ Reported by: persistence.
 - `SessionWriter::retire(self) { drop(self) }` and `DataDirLease::release(self)` are
   names for `drop`.
 - `actor::abandoned()` is a one-line wrapper around an enum constructor.
-
-## DEAD-006 - Restore re-validates an already validated session through an alias
-
-Reported by: restore-resume.
-
-`schema.rs` `pub type PaneAgentSessionSnapshot = shepr_agent::resume::PersistedAgentSession;`
-is the remnant of a once-separate snapshot type. `restore.rs`
-`persisted_agent_session_from_snapshot` rebuilds a `PersistedAgentSession` from the
-fields of a `PersistedAgentSession` through the validating constructor, which cannot
-fail for a decoded value, and `restored_terminal_agent_session` /
-`restore_plan_for_snapshot` wrap it in `Option` plumbing that is never `None` for a
-present session. Fold to `.cloned()`.
 
 ## DEAD-007 - The pane-gone resume abandonment path cannot run
 
@@ -147,52 +121,24 @@ Reported by: agent-state, workspace-model.
   always sends `Some` (`SnapshotAgent.agent` became required).
 - `SessionRestoreDamage.repaired_bookmarks` is a count that can only be 0 or 1 (there
   is one bookmark); a `bool` says that.
-
-## DEAD-012 - Pane-history read helpers survived the feature
-
-Reported by: agent-state.
-
-`pane/terminal/backend.rs` and `pane/runtime.rs`: `recent_text`, `recent_ansi`,
-`recent_unwrapped_text`, `visible_ansi` and `PaneRuntime::recent_unwrapped_text`. The
-comment calls them "Test-only reads", yet they are `pub(crate)` / `pub` production items
-with no production caller. `cfg(test)` them or delete them with their tests;
-`check_dead_test_helpers.py` misses them because they are not under a test cfg. The
-`shepr-vt` VT formatter (`Format::Vt`, `AnsiCarry`, `read_ansi_screen_carrying` and its
-open-ended reads) was also left with no production caller by the removal (reported by
-the agent that removed pane history), and `PaneRuntime::launched()` has only a restore
-test caller.
+- `session_saves_stopped` and `session_saves_blocked_on_backup` are two wire booleans
+  for mutually exclusive states; one unit enum says that (check the codec rule against
+  tagged enums first).
+- `bundle.rs` builds dummy params to read an API method name because `shepr-api`'s
+  `MethodKind` and its `traits()` are private; a public name lookup by kind is cleaner.
 
 ## DEAD-013 - Integration code, keys and assets nothing needs
 
 Reported by: integrations.
 
-- The `Devin | Droid` arms of `expected_events`' exception: both descriptors give every
-  event an action, so only Copilot takes it (goes with POL-019).
-- The update-in-place branch of `ensure_direct_command_hook`: its only caller starts
-  from an empty map and Copilot has one event, so the `find(..)` never matches;
-  `direct_command_field()` returns the constant `"bash"`.
-- `targets::grok_hook_command`, identical to `hook_command` (its doc remembers when it
-  differed); `registry::install_operation`, a pass-through to `targets::install`.
-- `missing_agent_directory`'s per-agent prose table: reachable in production only if an
-  agent directory vanishes between the presence check and the install, and it reads like
-  CLI install guidance for a command that no longer exists.
 - `SHEPR_INTEGRATION_ID` (read by nothing), and `SHEPR_INTEGRATION_VERSION` with
   `installed_version`, `parse_integration_version`, `IntegrationOutdatedReason` and the
   `NotInstalled` / `Outdated` split: all exist only to be logged, since currentness is
   exact bytes; the hand-bumped `version` in `SPECS` feeds only these (VAL-043).
-- `SHEPR_OMP_RETRY_GRACE_MS`, set by nothing (VAL-045).
 - The `pi.events.on("shepr:blocked")` listener in `decoders/pi.ts` and
   `decoders/omp.ts`: an inbound event nothing in shepr emits and nothing documents (its
   payload's `label` field is a remnant). Document it as a feature or delete it.
-- `process_owned_integration_assets_do_not_report_release` (CLAIM-013).
-- `PermissionPolicy`'s two match arms both yield `0o666` (`atomic_replace.rs`).
 - `case "session.deleted": break; default: break;` in both OpenCode-family decoders.
-- Qoder and Qwen config-dir overrides are captured by `IntegrationEnvironment::capture`
-  (it takes every descriptor's `config_dir_override`) although neither has an
-  integration target.
-- Fifteen `#[cfg(test)] install_<agent>` wrappers in `targets.rs` and
-  `registry::integration_hook_events` are one-line forwards of `install(paths,
-  Target::X)` and `target.hook_events()`.
 
 ## DEAD-014 - Workspace model leftovers: misplaced agent types, stale module names, small duplicates
 

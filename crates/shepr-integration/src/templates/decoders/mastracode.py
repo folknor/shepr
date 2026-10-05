@@ -5,6 +5,6 @@ if not session_id:
 if action == ACTION_SESSION:
     # Preserve MastraCode's source for server validation. A bare SessionStart
     # still identifies the start of a fresh root session, so use its known source.
-    report_session(session_id, first_text("source") or "startup")
+    report_session(session_id, first_text("source") or START.startup)
 else:
     report_state(action, session_id)

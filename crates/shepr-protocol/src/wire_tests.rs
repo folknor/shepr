@@ -466,6 +466,7 @@ mod tests {
                 backup_dir: "/state/session-backups".into(),
             }),
             session_saves_stopped: true,
+            session_saves_blocked_on_backup: false,
             revision: crate::revision::at(1),
             focused_workspace_id: Some("w1".into()),
             focused_pane_id: Some("w1:p1".into()),

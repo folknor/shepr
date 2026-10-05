@@ -10,6 +10,7 @@ const source = "@SOURCE@";
 const AGENT = "@LABEL@";
 const METHOD_SESSION = "@METHOD_SESSION@";
 const METHOD_STATE = "@METHOD_STATE@";
+const START = @START_JS@;
 const SOCKET_WAIT_MS = @SOCKET_WAIT_MS@;
 
 // Only a release pane of a shepr server has anything to report to, and the

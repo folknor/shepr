@@ -607,59 +607,6 @@ pub(super) fn recent_text_from_rows(rows: &[String], lines: usize) -> String {
 }
 
 #[cfg(test)]
-pub(super) fn terminal_visible_ansi(
-    core: &PaneTerminalCore,
-) -> Result<String, shepr_vt::ReadError> {
-    let rows = core.terminal.rows();
-    let cols = core.terminal.cols();
-    if rows == 0 || cols == 0 {
-        return Ok(String::new());
-    }
-    let offset = core.terminal.scrollbar().viewport_start().0;
-    terminal_read_ansi_screen(
-        &core.terminal,
-        Point::new(ScreenRow(offset), 0),
-        Point::new(
-            ScreenRow(offset.saturating_add(usize::from(rows) - 1)),
-            cols - 1,
-        ),
-    )
-}
-
-#[cfg(test)]
-pub(super) fn terminal_recent_ansi(
-    core: &mut PaneTerminalCore,
-    lines: usize,
-) -> Result<String, shepr_vt::ReadError> {
-    let terminal = &core.terminal;
-    let Some(RecentReadRange { start, end }) = terminal_recent_read_range(terminal, lines)? else {
-        return Ok(String::new());
-    };
-    let text = terminal_read_ansi_screen(
-        terminal,
-        Point::new(ScreenRow(start), 0),
-        Point::new(ScreenRow(end), terminal.cols().saturating_sub(1)),
-    )?;
-    Ok(text)
-}
-
-#[cfg(test)]
-fn terminal_read_ansi_screen(
-    terminal: &shepr_vt::Terminal,
-    start: Point<ScreenRow>,
-    end: Point<ScreenRow>,
-) -> Result<String, shepr_vt::ReadError> {
-    let (mut text, content_end) = terminal.read_ansi_screen_carrying(
-        start,
-        end,
-        &mut shepr_vt::AnsiCarry::default(),
-        false,
-    )?;
-    text.truncate(content_end.unwrap_or(0));
-    Ok(text)
-}
-
-#[cfg(test)]
 fn terminal_text_rows(
     terminal: &shepr_vt::Terminal,
     start: usize,

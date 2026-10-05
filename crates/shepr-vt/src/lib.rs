@@ -7,7 +7,7 @@
 //! What this adapter adds on top of alacritty:
 //! * render snapshots with row dirty flags derived from alacritty's damage
 //!   (`RenderState` and borrowed row/cell views);
-//! * plain and VT formatters for reads (`format.rs`);
+//! * plain-text formatting for screen reads (`format.rs`);
 //! * a `Handler` wrapper the parser drives in place of `Term` (`handler.rs`):
 //!   it caps the kitty keyboard-mode stack before alacritty's broken overflow
 //!   branch can panic, models modes 9/1016/2031/2048 and modifyOtherKeys,
@@ -49,7 +49,6 @@ mod scan;
 pub use cell::{CellBasicData, CellColor, CellStyle, CellView, CellWide};
 use cell::{CellText, cell_text, cell_text_into, cell_wide};
 pub use cell::{ColorSource, RenderColors, RowWrap};
-pub use format::AnsiCarry;
 // The terminal vocabulary the emulator speaks lives in `shepr-term`, so the
 // client can share it without linking the emulator; it is re-exported here so
 // emulator users name one crate.
@@ -88,7 +87,6 @@ use self::color::HostDefaults;
 use self::damage::Damage;
 use self::effects::{Effects, Listener};
 use self::emulator::{Emulator, SyncUpdateTimeout};
-use self::format::Format;
 use self::handler::CoreHandler;
 use self::history::HistoryCapacity;
 use self::rows::RowOrigin;
@@ -902,9 +900,6 @@ impl Terminal {
 fn saturating_u16(value: usize) -> u16 {
     u16::try_from(value).unwrap_or(u16::MAX)
 }
-
-#[cfg(test)]
-use cell::cell_style;
 
 #[cfg(test)]
 impl PtyResponse {

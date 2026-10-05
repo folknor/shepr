@@ -119,8 +119,8 @@ fn launch_fixture(
     probe: impl FnMut() -> io::Result<Probed>,
 ) -> (Result<RuntimeStatus, LaunchError>, FixtureDaemonGuard) {
     let server = dir.join("shepr-server");
-    let boot_log = dir.join("server-boot.log");
-    let server_log = dir.join("shepr-server.log");
+    let boot_log = shepr_paths::boot_log_path(dir.path());
+    let server_log = shepr_paths::server_log_path(dir.path());
     let pid = Cell::new(0);
     let result = launch_with(
         &LaunchFiles {
@@ -486,7 +486,8 @@ fn a_hung_sibling_version_is_cut_off_at_the_deadline() {
 #[test]
 fn the_launch_lock_wait_is_bounded_and_its_file_persists() {
     let dir = ScratchDir::new("launch-lock");
-    let lock_path = dir.join("runtime/launch.lock");
+    let runtime = dir.join("runtime");
+    let lock_path = shepr_paths::launch_lock_path(&runtime);
     let held = shepr_platform::ipc::acquire_flock_lock(
         &lock_path,
         shepr_platform::ipc::LockWait::FailIfHeld,
@@ -616,8 +617,14 @@ fn a_daemon_that_dies_during_boot_reports_its_exit_and_output() {
     let message = error.to_string();
     assert!(message.contains("refused its configuration"), "{message}");
     assert!(message.contains("no such runtime directory"), "{message}");
-    assert!(message.contains("server-boot.log"), "{message}");
-    assert!(message.contains("shepr-server.log"), "{message}");
+    assert!(
+        message.contains(shepr_paths::BOOT_LOG_FILE_NAME),
+        "{message}"
+    );
+    assert!(
+        message.contains(shepr_paths::SERVER_LOG_FILE_NAME),
+        "{message}"
+    );
 }
 
 #[test]
@@ -690,8 +697,8 @@ fn launch_after_a_refused_first_daemon(
     mut probe: impl FnMut(u32) -> io::Result<Probed>,
 ) -> (Result<RuntimeStatus, LaunchError>, u32, FixtureDaemonGuard) {
     let server = dir.join("shepr-server");
-    let boot_log = dir.join("server-boot.log");
-    let server_log = dir.join("shepr-server.log");
+    let boot_log = shepr_paths::boot_log_path(dir.path());
+    let server_log = shepr_paths::server_log_path(dir.path());
     let spawned = Cell::new(0_u32);
     let group = Cell::new(0_u32);
     let refused = [Step::Exit(crate::daemon_exit::ALREADY_RUNNING_EXIT_CODE)];
@@ -849,8 +856,8 @@ fn launch_against_other_build(
     answering_pid: impl Fn(u32) -> u32,
 ) -> (Result<RuntimeStatus, LaunchError>, FixtureDaemonGuard) {
     let server = dir.join("shepr-server");
-    let boot_log = dir.join("server-boot.log");
-    let server_log = dir.join("shepr-server.log");
+    let boot_log = shepr_paths::boot_log_path(dir.path());
+    let server_log = shepr_paths::server_log_path(dir.path());
     let pid = Cell::new(0);
     let result = launch_with(
         &LaunchFiles {
@@ -937,10 +944,10 @@ fn a_symlinked_boot_log_refuses_the_launch_before_spawning() {
     let dir = ScratchDir::new("launch-boot-log-link");
     let target = dir.join("target");
     std::fs::write(&target, b"keep").expect("test precondition");
-    let boot_log = dir.join("server-boot.log");
+    let boot_log = shepr_paths::boot_log_path(dir.path());
     std::os::unix::fs::symlink(&target, &boot_log).expect("plant a link");
     let server = dir.join("shepr-server");
-    let server_log = dir.join("shepr-server.log");
+    let server_log = shepr_paths::server_log_path(dir.path());
 
     let result = launch_with(
         &LaunchFiles {
@@ -969,14 +976,11 @@ fn runtime_socket(paths: &shepr_paths::AppPaths) -> PathBuf {
 }
 
 fn assert_nothing_was_launched(paths: &shepr_paths::AppPaths) {
-    for name in [LAUNCH_LOCK_FILE_NAME, BOOT_LOG_FILE_NAME] {
+    for path in [paths.launch_lock_path(), paths.boot_log_path()] {
         assert!(
-            !paths
-                .runtime_dir()
-                .join(name)
-                .try_exists()
-                .expect("stat the runtime file"),
-            "{name} must not exist: no launch was attempted"
+            !path.try_exists().expect("stat the runtime file"),
+            "{} must not exist: no launch was attempted",
+            path.display()
         );
     }
 }

@@ -272,9 +272,9 @@ impl EndpointFailure {
                 | SshFailureClass::RemoteRejected
                 | SshFailureClass::Unrecognized => D::Repair,
             },
-            FailureCause::Io(io::ErrorKind::InvalidData | io::ErrorKind::Unsupported)
-            | FailureCause::Incompatible
-            | FailureCause::DifferentBuild => D::Incompatible,
+            // Only a protocol boundary can establish incompatibility; bare IO
+            // kinds also arise from local paths and socket setup.
+            FailureCause::Incompatible | FailureCause::DifferentBuild => D::Incompatible,
             FailureCause::Io(kind) if is_link_error_kind(kind) => D::Offline,
             FailureCause::LocalSetup
             | FailureCause::InvalidLocalSetup
@@ -335,6 +335,8 @@ fn find_failure<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a 
 /// mid-session (a broken pipe, an unexpected EOF) is a remote fault to retry,
 /// not evidence that the machine is unreachable.
 pub fn is_link_error_kind(kind: io::ErrorKind) -> bool {
+    // AddrInUse is left out: it describes a local bind collision, not remote
+    // reachability.
     matches!(
         kind,
         io::ErrorKind::TimedOut
@@ -440,7 +442,9 @@ mod tests {
                 io::ErrorKind::ConnectionRefused,
                 FailureDisposition::Offline,
             ),
-            (io::ErrorKind::InvalidData, FailureDisposition::Incompatible),
+            (io::ErrorKind::InvalidData, FailureDisposition::Retry),
+            (io::ErrorKind::Unsupported, FailureDisposition::Retry),
+            (io::ErrorKind::AddrInUse, FailureDisposition::Retry),
             (io::ErrorKind::BrokenPipe, FailureDisposition::Retry),
         ] {
             let restored = EndpointFailure::from_error(&io::Error::from(kind));

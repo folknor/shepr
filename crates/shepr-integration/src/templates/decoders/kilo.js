@@ -29,12 +29,12 @@ function ownsLocalLifecycle() {
   return !["acp", "attach", "console", "daemon", "remote", "serve", "web"].includes(args[0]);
 }
 
-// Kilo's session events carry no start source, so "startup" is the only
+// Kilo's session events carry no start source, so the startup source is the only
 // selection marker available for both new and resumed sessions. The mux
 // allows it to replace the pane identity when this process owns the local
 // lifecycle. Event payloads expose the ID directly or through `info.id`,
 // and `updated` also fires for new sessions.
-const SESSION_START_SOURCE = "startup";
+const SESSION_START_SOURCE = START.startup;
 
 export const SheprAgentStatePlugin = async () => {
   if (!ownsLocalLifecycle() || !reportingEnabled()) {

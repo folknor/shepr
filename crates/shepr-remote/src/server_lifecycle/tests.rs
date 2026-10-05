@@ -56,6 +56,10 @@ fn an_unresponsive_remote_server_fails_the_check() {
         error.to_string().contains("not answering status requests"),
         "{error}"
     );
+    assert_eq!(
+        EndpointFailure::from_error(&error).cause(),
+        shepr_launch::FailureCause::RemoteRepair
+    );
 }
 
 fn running(build_id: &str, boot_id: &str) -> RemoteServerStatus {

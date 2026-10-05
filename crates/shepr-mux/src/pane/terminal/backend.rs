@@ -921,22 +921,16 @@ impl PaneTerminal {
             .is_ok_and(|core| core.transient_default_color_owner_pgid.is_some())
     }
 
+    #[cfg(test)]
     pub(crate) fn visible_text(&self) -> String {
         self.core
             .lock()
             .map_or_default(|mut core| terminal_visible_text(&mut core))
     }
 
-    pub(crate) fn visible_ansi(&self) -> String {
-        self.core
-            .lock()
-            .ok()
-            .and_then(|core| terminal_visible_ansi(&core).ok())
-            .unwrap_or_default()
-    }
-
     // Test-only reads of retained content; they need only text, not
     // truncation metadata.
+    #[cfg(test)]
     pub(crate) fn recent_text(&self, lines: usize) -> String {
         self.core
             .lock()
@@ -945,14 +939,7 @@ impl PaneTerminal {
             .unwrap_or_default()
     }
 
-    pub(crate) fn recent_ansi(&self, lines: usize) -> String {
-        self.core
-            .lock()
-            .ok()
-            .and_then(|mut core| terminal_recent_ansi(&mut core, lines).ok())
-            .unwrap_or_default()
-    }
-
+    #[cfg(test)]
     pub(crate) fn recent_unwrapped_text(&self, lines: usize) -> String {
         self.core
             .lock()

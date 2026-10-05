@@ -154,7 +154,8 @@ fn open_and_summarize(
                         renamed_workspaces = damage.renamed_workspaces,
                         repaired_bookmarks = damage.repaired_bookmarks,
                         dropped_agent_sessions = damage.dropped_agent_sessions.len(),
-                        "session restore dropped or repaired saved data; the saved session is backed up to session-backups before the first save"
+                        backup_dir = %backup_dir(),
+                        "session restore dropped or repaired saved data; the session backup is made before the first save"
                     );
                     restore_notice = Some(shepr_protocol::SessionRestoreNotice {
                         loss: shepr_protocol::SessionRestoreLoss::Damaged(damage),
@@ -293,7 +294,7 @@ mod tests {
             &PaneRuntimeRegistry::new(),
             &shepr_core::absolute_path::AbsolutePath::root(),
             opened.host_theme,
-        )
+        )?
         .into_job();
         opened.persister.submit(job, SystemTime::now()).wait()
     }

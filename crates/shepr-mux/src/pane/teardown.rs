@@ -105,10 +105,6 @@ impl ChildLiveness {
         }
     }
 
-    pub(super) fn is_launched(&self) -> bool {
-        self.launch_committed() == Some(true)
-    }
-
     /// The pid the pane owns, launched or not: teardown signals it.
     pub(super) fn process_id(&self) -> Option<shepr_platform::Pid> {
         match &shepr_core::locks::lock_auxiliary(&self.state).identity {

@@ -5,12 +5,12 @@ use tracing::{error, warn};
 use crate::pane::PaneRuntime;
 use crate::terminal::{Label, PaneStartFailure, TerminalState};
 use crate::workspace::{PaneTree, SavedTreeState, TreePlan, Workspace, WorkspaceChrome};
-use shepr_agent::AgentState;
+use shepr_agent::{AgentState, resume::PersistedAgentSession};
 use shepr_core::absolute_path::AbsolutePath;
 use shepr_core::layout::{PaneId, TileLayout};
 use shepr_protocol::{PublicPaneId, WorkspaceId};
 
-use super::schema::{PaneAgentSessionSnapshot, PaneSnapshot};
+use super::schema::PaneSnapshot;
 use super::schema::{SessionSnapshot, WorkspaceSnapshot};
 
 struct AgentRestoreState<'a> {
@@ -49,7 +49,7 @@ struct UnsizedLaunch {
     public_id: PublicPaneId,
     saved_cwd: AbsolutePath,
     saved_label: Option<Label>,
-    saved_agent_session: Option<PaneAgentSessionSnapshot>,
+    saved_agent_session: Option<PersistedAgentSession>,
 }
 
 impl UnsizedLaunch {
@@ -74,7 +74,7 @@ struct RestoredLaunch {
     geometry: shepr_core::geometry::PaneGeometry,
     saved_cwd: AbsolutePath,
     saved_label: Option<Label>,
-    saved_agent_session: Option<PaneAgentSessionSnapshot>,
+    saved_agent_session: Option<PersistedAgentSession>,
 }
 
 impl SessionRestorePlan {
@@ -318,7 +318,7 @@ fn restored_workspace_id(
 fn restored_terminal(
     cwd: &AbsolutePath,
     label: Option<&Label>,
-    agent_session: Option<&PaneAgentSessionSnapshot>,
+    agent_session: Option<&PersistedAgentSession>,
     start: RestoredPaneStart,
     now: std::time::Instant,
 ) -> TerminalState {
@@ -566,7 +566,7 @@ fn restore_workspace(
 }
 
 fn pane_restore_startup(
-    session: Option<&PaneAgentSessionSnapshot>,
+    session: Option<&PersistedAgentSession>,
     agent_restore: &mut AgentRestoreState<'_>,
 ) -> PaneRestoreStartup {
     let restore_plan =
@@ -588,34 +588,23 @@ fn pane_restore_startup(
 }
 
 fn restore_plan_for_snapshot(
-    session: &PaneAgentSessionSnapshot,
+    session: &PersistedAgentSession,
     resume_agents_on_restore: bool,
 ) -> Option<shepr_agent::resume::AgentResumePlan> {
     if !resume_agents_on_restore {
         return None;
     }
-    let persisted = persisted_agent_session_from_snapshot(session)?;
-    Some(persisted.resume_plan())
-}
-
-fn persisted_agent_session_from_snapshot(
-    session: &PaneAgentSessionSnapshot,
-) -> Option<shepr_agent::resume::PersistedAgentSession> {
-    shepr_agent::resume::PersistedAgentSession::new(
-        *session.source(),
-        session.agent(),
-        session.session_ref().clone(),
-    )
+    Some(session.resume_plan())
 }
 
 fn restored_terminal_agent_session(
-    session: Option<&PaneAgentSessionSnapshot>,
+    session: Option<&PersistedAgentSession>,
     duplicate_agent_session: bool,
-) -> Option<shepr_agent::resume::PersistedAgentSession> {
+) -> Option<PersistedAgentSession> {
     if duplicate_agent_session {
         return None;
     }
-    session.and_then(persisted_agent_session_from_snapshot)
+    session.cloned()
 }
 
 #[cfg(test)]
@@ -665,7 +654,7 @@ fn restore(
 
 #[cfg(test)]
 fn take_restore_plan_for_snapshot(
-    session: &PaneAgentSessionSnapshot,
+    session: &PersistedAgentSession,
     resume_agents_on_restore: bool,
     resumed_agent_sessions: &mut HashSet<shepr_agent::resume::AgentResumeKey>,
 ) -> Option<shepr_agent::resume::AgentResumePlan> {
@@ -947,7 +936,8 @@ mod tests {
             &crate::pane::PaneRuntimeRegistry::new(),
             &shepr_core::absolute_path::AbsolutePath::root(),
             Default::default(),
-        );
+        )
+        .expect("fixture workspace trees capture consistently");
         let plan = plan_restore(
             &snapshot,
             test_geometry(24, 80),
@@ -1069,7 +1059,8 @@ mod tests {
                 &runtimes,
                 &shepr_core::absolute_path::AbsolutePath::root(),
                 Default::default(),
-            );
+            )
+            .expect("fixture workspace trees capture consistently");
             let pane = only_pane(&captured.workspaces[0]);
             assert_eq!(
                 pane.label.as_ref().map(Label::as_str),
@@ -1623,7 +1614,8 @@ mod tests {
                 &runtimes,
                 &shepr_core::absolute_path::AbsolutePath::root(),
                 Default::default(),
-            );
+            )
+            .expect("fixture workspace trees capture consistently");
             assert_eq!(
                 captured.workspaces.len(),
                 2,

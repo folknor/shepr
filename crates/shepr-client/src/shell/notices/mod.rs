@@ -34,9 +34,14 @@ pub(in crate::shell) enum NoticeCode {
 /// The cards an endpoint's snapshot carries for its whole server boot. Only these queue
 /// behind the visible card, once per endpoint, boot and code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::enum_variant_names,
+    reason = "every boot card is about the session, and the variant names say which part"
+)]
 pub(in crate::shell) enum BootNoticeCode {
     SessionRestoreIncomplete,
     SessionSavesStopped,
+    SessionSavesBlockedOnBackup,
 }
 
 #[derive(Clone, Copy)]

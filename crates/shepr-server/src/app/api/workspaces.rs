@@ -34,11 +34,8 @@ impl App {
         let workspace_id = outcome.workspace_id;
         // A workspace created without a name, or with a blank one, keeps the
         // name of its directory that it was given at creation.
-        if let Some(label) = params.label.and_then(Label::new)
-            && let Some(workspace) = self.state.workspaces.get_mut(&workspace_id)
-        {
-            workspace.set_name(label);
-            crate::logging::workspace_renamed(&workspace.id());
+        if let Some(label) = params.label.and_then(Label::new) {
+            self.state.rename_workspace(&workspace_id, label);
         }
         let effects = EndpointEffects::from(&outcome);
         if self.state.workspace(&workspace_id).is_none() {

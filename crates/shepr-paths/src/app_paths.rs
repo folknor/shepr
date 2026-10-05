@@ -5,12 +5,11 @@ use shepr_core::absolute_path::AbsolutePath;
 use shepr_core::env::{EnvVar, SHARED_APP_DIR_NAME};
 
 use crate::profile::{PaneMarker, PaneOwner};
-use crate::{BuildProfile, PathsError, ServerAddress};
-
-/// The lease file inside the data directory. The server locks it for as long as
-/// it owns the directory (`shepr-mux`'s `DataDirLease`), and a stop waits for
-/// its release. One name for both.
-pub const DATA_DIR_LEASE_FILE_NAME: &str = "session.lock";
+use crate::{
+    BuildProfile, PathsError, ServerAddress, boot_log_path, client_log_path, data_dir_lease_path,
+    launch_lock_path, server_log_path, session_backup_directory, session_file_path,
+    session_snapshot_directory,
+};
 
 /// Paths and the local target resolved once at the process boundary and
 /// passed to consumers. Production constructors reject unresolved path inputs
@@ -43,24 +42,60 @@ impl AppPaths {
         &self.state_dir
     }
 
-    /// The directory of the saved layout, server log and the
-    /// lease that keeps one server per directory. For a release build it is
-    /// [`state_dir`](Self::state_dir) itself; a dev build gets a `shepr-dev`
-    /// sibling of it.
+    /// The directory for the saved layout, its recovery files, the client and
+    /// server logs, and the lease that keeps one server per directory. For a
+    /// release build it is [`state_dir`](Self::state_dir) itself; a dev build
+    /// gets a `shepr-dev` sibling of it.
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
     }
 
     /// The server log in this build profile's data directory.
     pub fn server_log(&self) -> PathBuf {
-        shepr_platform::logging::server_log_path(self.data_dir())
+        server_log_path(self.data_dir())
+    }
+
+    /// The client log in this build profile's data directory.
+    pub fn client_log(&self) -> PathBuf {
+        client_log_path(self.data_dir())
     }
 
     /// The lease file inside [`data_dir`](Self::data_dir): the server that holds
     /// an exclusive lock on it owns the directory. It is never removed, so every
     /// contender locks the same inode.
     pub fn data_dir_lease_path(&self) -> PathBuf {
-        self.data_dir.join(DATA_DIR_LEASE_FILE_NAME)
+        data_dir_lease_path(self.data_dir())
+    }
+
+    /// The saved layout file in this build profile's data directory.
+    pub fn session_file_path(&self) -> PathBuf {
+        session_file_path(self.data_dir())
+    }
+
+    /// The directory for recovery snapshots of the saved layout.
+    pub fn session_snapshot_directory(&self) -> PathBuf {
+        session_snapshot_directory(self.data_dir())
+    }
+
+    /// The directory for preserving a saved layout that could not be fully
+    /// restored.
+    pub fn session_backup_directory(&self) -> PathBuf {
+        session_backup_directory(self.data_dir())
+    }
+
+    /// The launch lock in this build profile's runtime directory.
+    pub fn launch_lock_path(&self) -> PathBuf {
+        launch_lock_path(self.runtime_dir())
+    }
+
+    /// The temporary stderr log in this build profile's runtime directory.
+    pub fn boot_log_path(&self) -> PathBuf {
+        boot_log_path(self.runtime_dir())
+    }
+
+    /// The startup lock sidecar for this process's selected server socket.
+    pub fn server_socket_startup_lock_path(&self) -> PathBuf {
+        self.server_address.startup_lock_path()
     }
 
     /// The client-owned state directory beneath the shared application state
@@ -401,6 +436,49 @@ mod tests {
     }
 
     #[test]
+    fn profile_file_accessors_cover_the_data_and_runtime_layout() {
+        let paths = AppPaths::rooted_at(Path::new("/r"), None, None)
+            .expect("short root has a valid layout");
+
+        assert_eq!(
+            paths.data_dir_lease_path().as_path(),
+            Path::new("/r/state/session.lock")
+        );
+        assert_eq!(
+            paths.server_log().as_path(),
+            Path::new("/r/state/shepr-server.log")
+        );
+        assert_eq!(
+            paths.client_log().as_path(),
+            Path::new("/r/state/shepr-client.log")
+        );
+        assert_eq!(
+            paths.session_file_path().as_path(),
+            Path::new("/r/state/session.json")
+        );
+        assert_eq!(
+            paths.session_snapshot_directory().as_path(),
+            Path::new("/r/state/session-snapshots")
+        );
+        assert_eq!(
+            paths.session_backup_directory().as_path(),
+            Path::new("/r/state/session-backups")
+        );
+        assert_eq!(
+            paths.launch_lock_path().as_path(),
+            Path::new("/r/runtime/launch.lock")
+        );
+        assert_eq!(
+            paths.boot_log_path().as_path(),
+            Path::new("/r/runtime/server-boot.log")
+        );
+        assert_eq!(
+            paths.server_socket_startup_lock_path().as_path(),
+            Path::new("/r/runtime/shepr.sock.lock")
+        );
+    }
+
+    #[test]
     fn a_root_too_long_for_the_server_socket_is_refused() {
         let root =
             PathBuf::from("/").join("x".repeat(shepr_core::socket_path::UNIX_SOCKET_PATH_MAX));
@@ -576,7 +654,10 @@ mod tests {
             let paths =
                 resolve_paths_from_env(profile, CurrentDirOrigin::Process).expect("paths resolve");
             let runtime = env.path().join("runtime").join(profile.app_dir_name());
-            assert_eq!(paths.server_address().socket(), runtime.join("shepr.sock"));
+            assert_eq!(
+                paths.server_address().socket(),
+                crate::server_socket_path(&runtime)
+            );
         }
     }
 

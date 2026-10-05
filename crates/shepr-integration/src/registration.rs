@@ -11,6 +11,7 @@ use super::config_edit::{
     ensure_command_hook, ensure_direct_command_hook, ensure_flat_command_hook,
     ensure_simple_command_hook,
 };
+use super::types::ArtifactRole;
 use shepr_agent::Agent;
 use shepr_agent::IntegrationTarget as Target;
 use shepr_agent::resume::AgentSessionStartSource;
@@ -45,13 +46,53 @@ pub(super) fn claude_session_start_matcher() -> String {
 #[derive(Clone, Copy)]
 pub(super) enum HooksRoot {
     HooksKey,
+    // Root-level registration is currently MastraCode's format. Keep the
+    // location generic; target wording belongs to its registration row.
     Document,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum MatcherSource {
+    Descriptor,
+    ClaudeSessionStartPolicy,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct HookEventPolicy {
+    pub(super) matcher_source: MatcherSource,
+    pub(super) decodes_events_without_action: bool,
+}
+
+impl HookEventPolicy {
+    pub(super) const DESCRIPTOR: Self = Self {
+        matcher_source: MatcherSource::Descriptor,
+        decodes_events_without_action: false,
+    };
+    pub(super) const COPILOT: Self = Self {
+        matcher_source: MatcherSource::Descriptor,
+        decodes_events_without_action: true,
+    };
+    pub(super) const CLAUDE: Self = Self {
+        matcher_source: MatcherSource::ClaudeSessionStartPolicy,
+        decodes_events_without_action: false,
+    };
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct RequiredJsonField {
+    pub(super) key: &'static str,
+    pub(super) default_number: u64,
+}
+
+impl RequiredJsonField {
+    pub(super) fn value(self) -> Value {
+        Value::from(self.default_number)
+    }
 }
 
 #[derive(Clone, Copy)]
 pub(super) enum JsonShape {
     Nested(Duration),
-    NestedClaude(Duration),
     Flat(Duration),
     Direct(Duration),
     Simple,
@@ -64,11 +105,20 @@ pub(super) enum Registration {
         file: &'static str,
         root: HooksRoot,
         shape: JsonShape,
+        artifact_role: ArtifactRole,
+        document_description: &'static str,
+        required_fields: &'static [RequiredJsonField],
+        event_policy: HookEventPolicy,
     },
     Codex {
         hooks: &'static str,
         config: &'static str,
         timeout: Duration,
+        hooks_artifact_role: ArtifactRole,
+        config_artifact_role: ArtifactRole,
+        document_description: &'static str,
+        required_fields: &'static [RequiredJsonField],
+        event_policy: HookEventPolicy,
     },
     Kimi {
         file: &'static str,
@@ -105,39 +155,34 @@ impl Registration {
 }
 
 impl JsonShape {
-    /// Event selection, action arguments, matcher, entry fields and timeout
-    /// units are decided here. Install merges these entries and status matches
-    /// them; neither reconstructs a second interpretation of the descriptor.
+    /// The registration row supplies event decoding and matcher policy. The
+    /// shape decides entry fields and timeout units. Install and status use
+    /// the same result instead of rebuilding separate interpretations.
     pub(super) fn expected_events(
         self,
         target: Target,
         hook_path: &Path,
+        policy: HookEventPolicy,
     ) -> io::Result<Map<String, Value>> {
         let mut entries = Map::new();
+        let claude_matcher = match policy.matcher_source {
+            MatcherSource::Descriptor => None,
+            MatcherSource::ClaudeSessionStartPolicy => Some(claude_session_start_matcher()),
+        };
         for hook in target.hook_events() {
-            // Copilot, Devin and Droid call their payload-decoding hooks for
-            // every event. The other integrations require an explicit action.
-            if hook.action.is_none()
-                && !matches!(target, Target::Copilot | Target::Devin | Target::Droid)
-            {
+            if hook.action.is_none() && !policy.decodes_events_without_action {
                 continue;
             }
             let action = hook.action.map(shepr_agent::IntegrationHookAction::as_str);
             let command = hook_command(hook_path, action);
+            let matcher = claude_matcher.as_deref().or(hook.matcher);
             match self {
                 JsonShape::Nested(timeout) => ensure_command_hook(
                     &mut entries,
                     hook.event,
                     &command,
                     timeout.as_secs(),
-                    hook.matcher,
-                )?,
-                JsonShape::NestedClaude(timeout) => ensure_command_hook(
-                    &mut entries,
-                    hook.event,
-                    &command,
-                    timeout.as_secs(),
-                    Some(&claude_session_start_matcher()),
+                    matcher,
                 )?,
                 JsonShape::Flat(timeout) => ensure_flat_command_hook(
                     &mut entries,
@@ -150,7 +195,7 @@ impl JsonShape {
                     hook.event,
                     command,
                     timeout.as_secs(),
-                    hook.matcher,
+                    matcher,
                 )?,
                 JsonShape::Simple => {
                     ensure_simple_command_hook(&mut entries, hook.event, &command)?;
@@ -172,10 +217,7 @@ impl Registration {
         match self {
             Self::Json {
                 shape:
-                    JsonShape::Nested(timeout)
-                    | JsonShape::NestedClaude(timeout)
-                    | JsonShape::Flat(timeout)
-                    | JsonShape::Direct(timeout),
+                    JsonShape::Nested(timeout) | JsonShape::Flat(timeout) | JsonShape::Direct(timeout),
                 ..
             }
             | Self::Codex { timeout, .. }

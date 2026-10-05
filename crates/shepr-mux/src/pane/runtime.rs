@@ -343,12 +343,6 @@ impl PaneRuntime {
     pub fn child_pid(&self) -> Option<shepr_platform::Pid> {
         self.child_liveness.live_process_id()
     }
-
-    /// Whether the pane's shell exec committed. Before that the pane has a PTY
-    /// but no shell.
-    pub fn launched(&self) -> bool {
-        self.child_liveness.is_launched()
-    }
 }
 
 impl Drop for PaneRuntime {
@@ -382,6 +376,12 @@ use std::cell::Cell;
 
 #[cfg(test)]
 impl PaneRuntime {
+    /// Whether the pane's shell exec committed. Before that the pane has a PTY
+    /// but no shell.
+    pub fn launched(&self) -> bool {
+        self.child_liveness.launch_committed() == Some(true)
+    }
+
     pub fn agent_detection_reset_notify_for_test(&self) -> Arc<Notify> {
         Arc::clone(&self.detect_reset_notify)
     }

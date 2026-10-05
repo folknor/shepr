@@ -27,9 +27,9 @@ impl AtomicReplace {
         contents: &[u8],
     ) -> io::Result<Self> {
         use shepr_platform::publish_file::{Durability, PreparedFile, PublishOptions};
-        let (existing, mode) = match policy {
-            PermissionPolicy::ManagedAsset { .. } => (None, 0o666),
-            PermissionPolicy::UserConfig { existing } => (existing, 0o666),
+        let existing = match policy {
+            PermissionPolicy::ManagedAsset { .. } => None,
+            PermissionPolicy::UserConfig { existing } => existing,
         };
         let prepared = PreparedFile::prepare(
             target,
@@ -39,7 +39,7 @@ impl AtomicReplace {
                 refuse_symlink_target: false,
                 durability: Durability::FileOnly,
                 existing: shepr_platform::publish_file::PublishTarget::ReplaceExisting,
-                mode,
+                mode: 0o666,
             },
         )?;
         if matches!(policy, PermissionPolicy::ManagedAsset { executable: true }) {

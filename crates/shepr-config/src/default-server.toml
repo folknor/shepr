@@ -44,8 +44,9 @@
 # a Shepr server restart. Needs the agent's hooks, which the server installs at
 # launch for every agent present on its host.
 # resume_agents_on_restore = true
-# Milliseconds between automatic agent restores; 0 starts them without spacing.
-# startup_per_agent_delay_ms = 100
+# Time between automatic agent resumes on restore. Fresh shells start together;
+# 0 resumes agents without spacing.
+# agent_resume_spacing_ms = 100
 
 [experimental]
 # Expose the focused pane's cursor to the outer terminal so input
@@ -64,6 +65,6 @@
 
 [advanced]
 # Approximate per-pane scrollback budget in bytes; 0 disables scrollback.
-# Not a hard cap: nonzero values keep at least 1000 lines, and widening a pane
-# keeps its existing history.
+# Not a hard cap: nonzero values keep at least the minimum history length, and
+# widening a pane keeps its existing history.
 # scrollback_limit_bytes = 10000000

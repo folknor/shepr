@@ -43,14 +43,6 @@ use crate::status::{RuntimeStatus, ServerPresence};
 
 pub use crate::limits::SERVER_READY_TIMEOUT;
 
-/// The launch lock inside the runtime directory. It is never removed, so
-/// every contender locks the same inode.
-const LAUNCH_LOCK_FILE_NAME: &str = "launch.lock";
-
-/// Where a launched server's stderr goes while it boots, inside the runtime
-/// directory.
-const BOOT_LOG_FILE_NAME: &str = "server-boot.log";
-
 /// A local launch failure retains its cause and the full operator diagnostic.
 #[derive(Debug)]
 pub enum LaunchError {
@@ -662,7 +654,7 @@ fn acquire_launch_lock(paths: &shepr_paths::AppPaths, wait: Duration) -> io::Res
         )
     })?;
     acquire_launch_lock_with(
-        &paths.runtime_dir().join(LAUNCH_LOCK_FILE_NAME),
+        &paths.launch_lock_path(),
         wait,
         &mut real_now,
         &mut std::thread::sleep,
@@ -733,7 +725,7 @@ fn launch_daemon(
     server: &Path,
     timeout: Duration,
 ) -> Result<RuntimeStatus, LaunchError> {
-    let boot_log = paths.runtime_dir().join(BOOT_LOG_FILE_NAME);
+    let boot_log = paths.boot_log_path();
     let server_log = paths.server_log();
     let working_dir = server_daemon_working_dir(paths);
     launch_with(

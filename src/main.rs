@@ -181,14 +181,20 @@ fn launch_bridge(mode: shepr_remote::BridgeMode) -> CliResult<ProcessExit> {
 }
 
 /// A bridge that ended on its idle watchdog logs the measured idle duration
-/// and ends the process with status 1. Its relay threads may still hold stdin
-/// and stdout, so the caller must not join them or write to stdout.
+/// and ends the process with status 1, leading its stderr with a retry record
+/// so the client's machine diagnostic says the relay timed out. Its relay
+/// threads may still hold stdin and stdout, so the caller must not join them
+/// or write to stdout.
 fn finish_bridge(outcome: shepr_remote::RemoteBridgeOutcome) -> CliResult<ProcessExit> {
     match outcome {
         shepr_remote::RemoteBridgeOutcome::Closed => Ok(ProcessExit::Success),
         shepr_remote::RemoteBridgeOutcome::IdleExpired { idle_for } => {
             tracing::warn!(idle_for = ?idle_for, "remote bridge idle timeout expired");
-            Err(CliError::BridgeIdle)
+            Err(CliError::Io(shepr_remote::classified_bridge_failure(
+                shepr_launch::RemoteFailureClass::Retry,
+                io::ErrorKind::TimedOut,
+                &"the SSH bridge's idle watchdog expired",
+            )))
         }
     }
 }
@@ -202,7 +208,7 @@ fn finish_bridge(outcome: shepr_remote::RemoteBridgeOutcome) -> CliResult<Proces
 fn init_client_logging(paths: &shepr_paths::AppPaths) -> io::Result<()> {
     let logging_config = shepr_platform::logging::FileLoggingConfig::from_environment()?;
     let outcome =
-        shepr_platform::logging::init_client_file_logging(paths.data_dir(), logging_config)?;
+        shepr_platform::logging::init_client_file_logging(&paths.client_log(), logging_config)?;
     if let Some(unavailable) = outcome.unavailable {
         cli::print_notice(&format!(
             "shepr: could not initialize file logging at {}: {}",

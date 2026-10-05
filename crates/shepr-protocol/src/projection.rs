@@ -18,6 +18,10 @@ pub struct ClientShellSnapshot {
     /// persister refused a save it can never run): layout changes from then
     /// on are not restored when it next starts. Repeated on every projection.
     pub session_saves_stopped: bool,
+    /// The saved session source could not be opened for its required backup.
+    /// The server stops saving until its access is fixed and it is restarted.
+    /// Repeated on every projection.
+    pub session_saves_blocked_on_backup: bool,
     pub focused_workspace_id: Option<WorkspaceId>,
     pub focused_pane_id: Option<PublicPaneId>,
     /// Ordered workspaces. The client derives one-based display positions

@@ -106,9 +106,11 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
     // The public ID a launch would export is the one the pane is registered
     // under.
     let reserved = prepared.public_id().number();
+    let revision = state.shell_projection_revision();
     let outcome = state
         .commit_pane_split(prepared)
         .expect("prepared pane split commits");
+    assert_ne!(state.shell_projection_revision(), revision);
 
     assert_eq!(
         state
@@ -154,9 +156,11 @@ fn workspace_creation_state_command_commits_spawned_values() {
         cell: None,
     };
 
+    let revision = state.shell_projection_revision();
     let outcome = state
         .commit_workspace_creation(prepared, geometry)
         .expect("a fresh workspace commits");
+    assert_ne!(state.shell_projection_revision(), revision);
 
     assert_eq!(outcome.workspace_id, state.ws(0).id());
     assert_eq!(outcome.root_pane, root_pane);
@@ -179,6 +183,7 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
     let first_cwd = state.ws(0).identity_cwd().to_path_buf();
     let second_id = state.ws(1).id();
 
+    let revision = state.shell_projection_revision();
     let changed = state.apply_workspace_git_statuses(vec![(
         WorkspaceGitStatus {
             owner: first_id,
@@ -195,6 +200,7 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
         Some(first_cwd),
     )]);
 
+    assert_ne!(state.shell_projection_revision(), revision);
     assert!(changed);
     assert_eq!(state.ws(0).branch(), Some("main"));
     assert_eq!(
@@ -227,6 +233,7 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
     );
 
     let current_cwd = state.ws(0).identity_cwd().to_path_buf();
+    let revision = state.shell_projection_revision();
     let changed = state.apply_workspace_git_statuses(vec![(
         WorkspaceGitStatus {
             owner: workspace_id,
@@ -245,6 +252,7 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
         Some(current_cwd),
     )]);
 
+    assert_eq!(state.shell_projection_revision(), revision);
     assert!(!changed);
     assert_eq!(state.ws(0).branch(), Some("old"));
     assert_eq!(
@@ -930,4 +938,91 @@ fn removing_a_pane_reports_whether_focus_moved() {
         outcome.map(|outcome| outcome.scope),
         Some(PaneRemovalScope::Workspace)
     );
+}
+
+// These call reducers directly: endpoint effects and the periodic /proc
+// refresh cannot supply missing invalidation for them.
+#[test]
+fn projected_reducers_invalidate_without_an_endpoint_caller() {
+    let mut state = app_with_workspaces(&["one", "two"]);
+    let workspace = state.ws(0).id();
+    let root = state.ws(0).tree().root();
+    let split = state.test_split_workspace(0, Direction::Horizontal);
+
+    fn advances(state: &mut AppState, apply: impl FnOnce(&mut AppState)) {
+        let before = state.shell_projection_revision();
+        apply(state);
+        assert_ne!(state.shell_projection_revision(), before);
+    }
+
+    advances(&mut state, |state| {
+        assert_eq!(state.focus_pane(root), ViewMutation::Focus);
+    });
+    advances(&mut state, |state| {
+        assert_eq!(
+            state.set_pane_input(root, true),
+            Some(ViewMutation::Metadata)
+        );
+    });
+    advances(&mut state, |state| {
+        assert_eq!(
+            state.rename_pane(root, Some("renamed".into())),
+            Some(ViewMutation::Metadata)
+        );
+    });
+    advances(&mut state, |state| {
+        assert_eq!(
+            state.rename_workspace(
+                &workspace,
+                shepr_mux::terminal::Label::new("renamed").expect("label")
+            ),
+            Some(ViewMutation::Metadata)
+        );
+    });
+    advances(&mut state, |state| {
+        assert_eq!(
+            state.move_workspace(&workspace, None),
+            ViewMutation::WorkspaceOrder
+        );
+    });
+    advances(&mut state, |state| {
+        assert!(state.swap_panes(root, split).changed());
+    });
+    advances(&mut state, |state| {
+        assert!(state.toggle_pane_zoom(root).expect("pane").changed);
+    });
+    advances(&mut state, |state| {
+        assert!(state.remove_pane(split).is_some());
+    });
+    advances(&mut state, |state| {
+        assert!(state.close_workspace(&workspace).is_some());
+    });
+}
+
+#[test]
+fn unchanged_projected_reducers_keep_the_revision() {
+    let mut state = app_with_workspaces(&["one"]);
+    let workspace = state.ws(0).id();
+    let pane = state.ws(0).tree().root();
+    let before = state.shell_projection_revision();
+    assert_eq!(state.focus_pane(pane), ViewMutation::Unchanged);
+    assert_eq!(
+        state.set_pane_input(pane, false),
+        Some(ViewMutation::Unchanged)
+    );
+    assert_eq!(state.rename_pane(pane, None), Some(ViewMutation::Unchanged));
+    assert_eq!(
+        state.rename_workspace(
+            &workspace,
+            shepr_mux::terminal::Label::new("one").expect("label")
+        ),
+        Some(ViewMutation::Unchanged)
+    );
+    assert_eq!(
+        state.move_workspace(&workspace, None),
+        ViewMutation::Unchanged
+    );
+    assert!(!state.toggle_pane_zoom(pane).expect("pane").changed);
+    assert!(!state.apply_workspace_git_statuses(Vec::new()));
+    assert_eq!(state.shell_projection_revision(), before);
 }

@@ -21,40 +21,6 @@ entry says which.
 
 ---
 
-## BUG-004 - A capture inconsistency silently drops a workspace from disk
-
-Reported by: persistence.
-
-`capture_workspace` returns `None` (logged) when a tree's focus or root lacks a
-record, or its shape and records disagree. `capture_deferred` skips that
-workspace and the save proceeds, replacing the session file without it and with
-no backup (the backup policy covers only load-time losses). If every workspace
-fails, the job is a `Save` of zero workspaces, not a `Clear`. The comment says
-constructors and mutators rule this out, which is exactly when failing closed
-costs nothing.
-
-Fix: a capture inconsistency fails the whole job (a new `SaveError` variant, or
-`capture_job` returning `Result`) so the last good file survives. Enforce with
-a test that builds an inconsistent tree through a seam and asserts the file is
-unchanged.
-
-## BUG-005 - A permanently unreadable session file retries forever with no operator signal
-
-Reported by: persistence.
-
-When the session file is unreadable (EACCES), the load is `Unusable` and the
-policy `PreserveExisting`. Every save then fails in `preserve_existing` (the
-source cannot be opened to back it up) with a retryable `SaveError::Io`, so
-autosave retries for the life of the boot, logging an error and a warning each
-time. The operator sees the restore notice ("copied ... before the server first
-saves over it") and nothing saying no save will ever land.
-`SaveError::is_retryable` is the classifier; "cannot back up the source" is a
-condition the operator must fix, which neither retryable nor refused models.
-
-Fix: a distinct "blocked on backup" outcome the server projects to clients, the
-way `session_saves_stopped` is projected. Testable at the writer and saver
-level.
-
 ## BUG-011 - The resume command is quoted for POSIX shells, but config accepts non-POSIX shells
 
 Reported by: restore-resume.
@@ -194,22 +160,6 @@ server launches again. The limit is commented in `json_edit.rs`. Fix: a command
 that resolves the hook path on the host at run time (for example through `$HOME`
 or the agent config directory variable) instead of an absolute path.
 
-## BUG-049 - A launched pane's cwd change does not advance the shell projection
-
-Reported by: workspace-model.
-
-`StateEvent::TerminalCwdReported` sets the cwd only when it differs and marks
-both the session and the shell projection dirty. `handle_pane_launch_settled`
-(`LaunchOutcome::Launched`) calls `set_cwd(cwd)` directly through `pub(super)`
-fields, unconditionally, marks the session dirty, and does not advance the
-projection revision. The launched cwd differs from the requested one whenever
-the child's chdir fell back to `HOME` / passwd home / `/`, so the projected pane
-cwd is stale until the 1 s `SHELL_CWD_REFRESH_INTERVAL` rebuild. The comment in
-`apply_runtime_state_event` ("the projection revision is what says the cwd
-moved") holds for only one writer. Fix: route the launch cwd through
-`StateEvent::TerminalCwdReported`. See POL (projection invalidation has no
-owner).
-
 ## BUG-060 - The client never heartbeats the local server, though the heartbeat module says it probes every endpoint
 
 Reported by: remote.
@@ -233,18 +183,6 @@ uses `pw_dir`. With `HOME` differing from the passwd home (sudo -E, a leaked tes
 env), shepr's ssh reads config from one home and keys and known hosts from
 another. Low impact; pick one home and say which.
 
-## BUG-066 - The remote bridge download busy-polls a stalled local reader
-
-Reported by: remote.
-
-`copy_reader_to_local_stream` sleeps `BRIDGE_IO_POLL` (1 ms) on every
-`WouldBlock` of the nonblocking local stream, so a stalled client reader makes
-the thread wake 1000 times a second for as long as it lasts; the upload side
-already uses `StreamWake`, which waits only for readability. (The stdout join is
-now bounded by `PIPE_DRAIN_GRACE`.) Fix: a cancellable writable-readiness wait in
-`shepr-platform` beside `StreamWake`, used here; the constraint is commented at
-the retry.
-
 ## BUG-067 - A machine refusing authentication is retried every 30 seconds for the client's life
 
 Reported by: remote.
@@ -255,3 +193,13 @@ is refused each time. On a host with fail2ban or `MaxAuthTries` accounting this
 can ban the client's address, turning an auth problem into Offline for every
 client on it. Consider not retrying authentication refusals automatically (only
 on operator action or a key-agent change), or a much longer interval.
+
+## BUG-075 - Claude's SessionStart matcher is applied to every Claude hook event
+
+Reported by: the wave review.
+
+`HookEventPolicy::CLAUDE` (formerly `JsonShape::NestedClaude`) puts the SessionStart
+matcher on every event Claude registers. Correct only while Claude registers one
+event; a second event would get a matcher meant for session starts and never fire
+for other sources. Latent. Fix: the matcher belongs to the SessionStart event row,
+not the target.

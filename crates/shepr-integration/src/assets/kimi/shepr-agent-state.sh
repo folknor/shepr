@@ -41,6 +41,7 @@ command -v python3 >/dev/null 2>&1 || finish
 # non-zero with a traceback on stderr, which the agent may show to the user.
 SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" SHEPR_HOOK_SEQ="${hook_seq:-}" python3 - 2>/dev/null <<'PY' || true
 import json
+from types import SimpleNamespace
 import os
 import socket
 import time
@@ -49,6 +50,7 @@ SOURCE = "shepr:kimi"
 AGENT = "kimi"
 METHOD_SESSION = "pane.report_agent_session"
 METHOD_STATE = "pane.report_agent"
+START = SimpleNamespace(**{"startup": "startup", "resume": "resume", "select": "select"})
 ACTION_SESSION = "session"
 SOCKET_WAIT_SECONDS = 0.5
 # The hook events this integration is registered for, per action and in all.
@@ -142,7 +144,7 @@ if session_id is None:
 if action == ACTION_SESSION:
     # Preserve the source Kimi reports for server validation. A bare
     # SessionStart still identifies the start of a fresh root session.
-    report_session(session_id, first_text("source") or "startup")
+    report_session(session_id, first_text("source") or START.startup)
 else:
     report_state(action, session_id)
 PY

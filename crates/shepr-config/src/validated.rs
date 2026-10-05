@@ -617,7 +617,7 @@ pub struct ValidatedSessionConfig {
     /// Resume supported agent panes into their own conversations on restore.
     pub resume_agents_on_restore: bool,
     /// The spacing between automatic agent resumes; zero disables spacing.
-    pub startup_per_agent_delay: std::time::Duration,
+    pub agent_resume_spacing: std::time::Duration,
 }
 
 /// The `[experimental]` settings resolved by the server at launch.
@@ -674,7 +674,7 @@ pub(crate) fn validate_server(
             },
             session: ValidatedSessionConfig {
                 resume_agents_on_restore: config.session.resume_agents_on_restore,
-                startup_per_agent_delay: config.session.startup_per_agent_delay,
+                agent_resume_spacing: config.session.agent_resume_spacing,
             },
             scrollback: shepr_core::scrollback::ScrollbackBudget::new(
                 config.advanced.scrollback_limit_bytes,

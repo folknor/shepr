@@ -15,6 +15,7 @@ use tracing::warn;
 pub(crate) struct AcceptedEndpoint {
     stream: LocalStream,
     lifetime: Box<dyn Send>,
+    ssh_bridge: Option<Arc<shepr_remote::MachineSshBridge>>,
 }
 
 pub(crate) enum LocalAttachFailure {
@@ -77,11 +78,16 @@ pub(crate) fn attach_endpoint_stream(
             ssh_bridge.as_ref(),
         ));
     }
-    let lifetime: Box<dyn Send> = match ssh_bridge {
-        Some(bridge) => Box::new(bridge),
+    let ssh_bridge = ssh_bridge.map(Arc::new);
+    let lifetime: Box<dyn Send> = match &ssh_bridge {
+        Some(bridge) => Box::new(Arc::clone(bridge)),
         None => Box::new(()),
     };
-    Ok(AcceptedEndpoint { stream, lifetime })
+    Ok(AcceptedEndpoint {
+        stream,
+        lifetime,
+        ssh_bridge,
+    })
 }
 
 /// Owns both halves of one accepted connection, for launch and supervised attaches alike.
@@ -100,12 +106,21 @@ impl EndpointConnectionIo {
         endpoint_id: endpoint::ClientEndpointId,
         generation: shepr_protocol::ConnectionGeneration,
     ) -> io::Result<Self> {
+        tracing::info!(endpoint = %endpoint_id, %generation, "endpoint handshake accepted");
         let assemble = || -> io::Result<Self> {
             let reader = accepted.stream.try_clone()?;
             let writer =
                 NativeEndpointTransport::with_lifetime(accepted.stream, accepted.lifetime)?;
             let (start_reader, wait) = std::sync::mpsc::channel();
-            spawn_endpoint_reader(reader, event_tx, &writer, endpoint_id, generation, wait)?;
+            spawn_endpoint_reader(
+                reader,
+                event_tx,
+                &writer,
+                endpoint_id,
+                generation,
+                wait,
+                accepted.ssh_bridge,
+            )?;
             Ok(Self {
                 writer,
                 start_reader,
@@ -136,6 +151,7 @@ fn spawn_endpoint_reader(
     endpoint_id: endpoint::ClientEndpointId,
     generation: shepr_protocol::ConnectionGeneration,
     wait: std::sync::mpsc::Receiver<()>,
+    ssh_bridge: Option<Arc<shepr_remote::MachineSshBridge>>,
 ) -> io::Result<()> {
     let event_tx = event_tx.clone();
     let stopped = transport.stop_handle();
@@ -153,7 +169,7 @@ fn spawn_endpoint_reader(
                 &read_activity,
                 &endpoint_id,
                 generation,
-                shepr_surface::decode::Decoder::default(),
+                ssh_bridge.as_deref(),
             );
         })?;
     Ok(())
@@ -188,8 +204,9 @@ fn server_reader_thread(
     read_activity: &EndpointReadActivity,
     endpoint_id: &endpoint::ClientEndpointId,
     generation: shepr_protocol::ConnectionGeneration,
-    mut surface_decoder: shepr_surface::decode::Decoder,
+    ssh_bridge: Option<&shepr_remote::MachineSshBridge>,
 ) {
+    let mut surface_decoder = shepr_surface::decode::Decoder::default();
     // The reader is a clone of the writer's stream, sharing one file description, which
     // the writer set nonblocking during assembly; no setup remains here.
     let mut stream = EndpointReader {
@@ -237,10 +254,18 @@ fn server_reader_thread(
                     ClientLoopEvent::ServerDisconnected {
                         endpoint_id: endpoint_id.clone(),
                         generation,
-                        error: read_error_to_io(
-                            EndpointReadError::Framing(shepr_protocol::FramingError::UnexpectedEof),
-                            endpoint_id.clone(),
-                        ),
+                        // EOF means the bridge worker has closed its stream;
+                        // joining now drains its bounded SSH diagnostic.
+                        error: ssh_bridge
+                            .and_then(shepr_remote::MachineSshBridge::reported_failure)
+                            .unwrap_or_else(|| {
+                                read_error_to_io(
+                                    EndpointReadError::Framing(
+                                        shepr_protocol::FramingError::UnexpectedEof,
+                                    ),
+                                    endpoint_id.clone(),
+                                )
+                            }),
                     },
                 );
                 break;
@@ -444,6 +469,7 @@ mod tests {
             AcceptedEndpoint {
                 stream: client,
                 lifetime: Box::new(()),
+                ssh_bridge: None,
             },
             &event_tx,
             endpoint::ClientEndpointId::Local,
@@ -483,6 +509,7 @@ mod tests {
             AcceptedEndpoint {
                 stream,
                 lifetime: Box::new(()),
+                ssh_bridge: None,
             },
             &event_tx,
             endpoint::ClientEndpointId::Local,

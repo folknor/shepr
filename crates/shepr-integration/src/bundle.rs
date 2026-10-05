@@ -4,7 +4,7 @@
 //! (a release pane of a shepr server, with a socket and a pane id), one JSON
 //! request line whose `id` is `<source>:<seq>`, the method and parameter
 //! names, the action vocabulary, the descriptor's source and label, and a
-//! 500 ms wait on the socket. Those facts live here and in the agent
+//! bounded wait on the socket. Those facts live here and in the agent
 //! descriptor table, and nowhere else. An asset is its agent's decoder
 //! (what the agent's own payload means) appended to a preamble generated for
 //! its language: `templates/hook_kit.py` under `templates/shell_hook.sh` for
@@ -27,15 +27,40 @@ use std::time::Duration;
 use shepr_agent::{IntegrationHookAction, IntegrationTarget};
 use shepr_core::env::{EnvVar, SHEPR_ENV_IN_PANE};
 
-/// The `SHEPR_BUILD_PROFILE` value of a release server's panes, the only
-/// profile whose panes the shared agent configs report from. Spelled in
-/// `shepr-paths`, which this crate cannot depend on.
-const RELEASE_PROFILE: &str = "release";
-/// The API methods the hooks call, as `shepr-api` names them. That crate is
-/// above this one, so the tests in `shepr-server` replay each asset's requests
-/// against the real handlers.
-const METHOD_SESSION: &str = "pane.report_agent_session";
-const METHOD_STATE: &str = "pane.report_agent";
+use shepr_agent::resume::AgentSessionStartSource;
+use shepr_api::schema::{
+    Method, PaneReportAgentParams, PaneReportAgentSessionParams, PaneReportAgentState,
+};
+use shepr_paths::BuildProfile;
+
+fn method_state() -> &'static str {
+    Method::PaneReportAgent(PaneReportAgentParams {
+        pane_id: String::new(),
+        source: String::new(),
+        agent: String::new(),
+        state: PaneReportAgentState::Idle,
+        seq: None,
+        agent_session_id: None,
+        agent_session_path: None,
+    })
+    .traits()
+    .name
+}
+
+fn method_session() -> &'static str {
+    Method::PaneReportAgentSession(PaneReportAgentSessionParams {
+        pane_id: String::new(),
+        source: String::new(),
+        agent: String::new(),
+        seq: None,
+        agent_session_id: None,
+        agent_session_path: None,
+        session_start_source: None,
+    })
+    .traits()
+    .name
+}
+
 const SOCKET_WAIT: Duration = crate::limits::HOOK_SOCKET_WAIT;
 
 /// The shell around a Python decoder: its gates and bookkeeping.
@@ -327,11 +352,60 @@ fn common_facts(spec: &AssetSpec) -> Vec<(&'static str, String)> {
         .iter()
         .map(|name| format!("{name}: \"{name}\""))
         .collect();
+    let starts = [
+        AgentSessionStartSource::Startup,
+        AgentSessionStartSource::Resume,
+        AgentSessionStartSource::Select,
+    ];
+    let names: Vec<&str> = starts.iter().map(|source| source.as_str()).collect();
+    let start_js = names
+        .iter()
+        .map(|name| format!("{name}: \"{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let start_py = names
+        .iter()
+        .map(|name| format!("\"{name}\": \"{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
     vec![
+        ("START_JS", format!("{{ {start_js} }}")),
+        ("START_PY", format!("{{{start_py}}}")),
+        (
+            "TUI_RETRY_MS",
+            crate::limits::TUI_RETRY_WAIT.as_millis().to_string(),
+        ),
+        (
+            "TUI_REQUEST_MS",
+            crate::limits::TUI_REQUEST_WAIT.as_millis().to_string(),
+        ),
+        (
+            "TUI_POLL_MS",
+            crate::limits::TUI_ROUTE_POLL.as_millis().to_string(),
+        ),
+        (
+            "TUI_SELECTION_DELAYS_MS",
+            format!(
+                "[{}]",
+                crate::limits::TUI_SELECTION_RETRIES
+                    .iter()
+                    .map(|delay| delay.as_millis().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ),
+        (
+            "OMP_IDLE_MS",
+            crate::limits::OMP_IDLE_DEBOUNCE.as_millis().to_string(),
+        ),
+        (
+            "OMP_GRACE_MS",
+            crate::limits::OMP_RETRY_GRACE.as_millis().to_string(),
+        ),
         ("LABEL", spec.target.label().to_owned()),
         ("SOURCE", spec.target.source().to_owned()),
-        ("METHOD_SESSION", METHOD_SESSION.to_owned()),
-        ("METHOD_STATE", METHOD_STATE.to_owned()),
+        ("METHOD_SESSION", method_session().to_owned()),
+        ("METHOD_STATE", method_state().to_owned()),
         (
             "ACTION_SESSION",
             IntegrationHookAction::Session.as_str().to_owned(),
@@ -339,7 +413,7 @@ fn common_facts(spec: &AssetSpec) -> Vec<(&'static str, String)> {
         ("SOCKET_WAIT_MS", SOCKET_WAIT.as_millis().to_string()),
         ("SOCKET_WAIT_SECONDS", SOCKET_WAIT.as_secs_f64().to_string()),
         ("ENV_PROFILE", EnvVar::SheprBuildProfile.name().to_owned()),
-        ("PROFILE_RELEASE", RELEASE_PROFILE.to_owned()),
+        ("PROFILE_RELEASE", BuildProfile::Release.marker().to_owned()),
         ("ENV_MARKER", EnvVar::SheprEnv.name().to_owned()),
         ("ENV_MARKER_VALUE", SHEPR_ENV_IN_PANE.to_owned()),
         ("ENV_SOCKET", EnvVar::SheprSocketPath.name().to_owned()),
@@ -369,7 +443,7 @@ fn render_shell(spec: &AssetSpec, hook: ShellHook) -> String {
     let python = format!(
         "{}{}",
         fill(&template("hook_kit.py"), &common),
-        decoder(spec.decoder)
+        fill(&decoder(spec.decoder), &common)
     );
     let (by_action, _) = event_tables(spec.target);
     let actions: Vec<&str> = by_action.iter().map(|(action, _)| *action).collect();
@@ -408,19 +482,19 @@ fn render(spec: &AssetSpec) -> String {
             js_header(spec),
             fill(&template("plugin_kit.js"), &common_facts(spec)),
             template("opencode_family.js"),
-            decoder(spec.decoder)
+            fill(&decoder(spec.decoder), &common_facts(spec))
         ),
         Kind::Tui => format!(
             "{}\n{}{}",
             js_header(spec),
             fill(&template("tui_kit.js"), &common_facts(spec)),
-            decoder(spec.decoder)
+            fill(&decoder(spec.decoder), &common_facts(spec))
         ),
         Kind::Extension => format!(
             "{}{}{}",
             js_header(spec),
             fill(&template("extension_kit.ts"), &common_facts(spec)),
-            decoder(spec.decoder)
+            fill(&decoder(spec.decoder), &common_facts(spec))
         ),
     };
     let leftover = regex::Regex::new(r"@[A-Z_]+@").expect("test precondition");
@@ -485,7 +559,7 @@ fn every_asset_with_a_decoder_is_generated() {
 #[test]
 fn hook_assets_share_one_envelope() {
     let forbidden: Vec<String> = [
-        METHOD_STATE,
+        method_state(),
         EnvVar::SheprBuildProfile.name(),
         EnvVar::SheprSocketPath.name(),
         EnvVar::SheprPaneId.name(),
@@ -493,15 +567,25 @@ fn hook_assets_share_one_envelope() {
         "settimeout",
         "AF_UNIX",
         "Math.random",
+        "\"startup\"",
+        "\"resume\"",
+        "\"select\"",
         "import random",
     ]
     .into_iter()
     .map(str::to_owned)
     .chain(IntegrationTarget::all().map(|target| format!("\"{}\"", target.source())))
     .collect();
+    let numeric_delay = regex::Regex::new(
+        r"Date\.now\(\)\s*\+\s*[0-9]|AbortSignal\.timeout\(\s*[0-9]|(?:setTimeout|setInterval)\([^;]*,\s*[0-9][0-9_]*\s*\)",
+    ).expect("test precondition");
     for spec in &SPECS {
         let name = format!("decoders/{}", spec.decoder);
         let text = decoder(spec.decoder);
+        assert!(
+            !numeric_delay.is_match(&text),
+            "{name} spells a numeric delay"
+        );
         for needle in &forbidden {
             assert!(
                 !text.contains(needle.as_str()),
@@ -533,14 +617,16 @@ fn hook_assets_share_one_envelope() {
             "{name} does not report its descriptor source"
         );
         let wait = match spec.kind {
-            Kind::Shell(_) => "SOCKET_WAIT_SECONDS = 0.5\n",
-            Kind::Plugin | Kind::Tui | Kind::Extension => "SOCKET_WAIT_MS = 500;\n",
+            Kind::Shell(_) => format!("SOCKET_WAIT_SECONDS = {}\n", SOCKET_WAIT.as_secs_f64()),
+            Kind::Plugin | Kind::Tui | Kind::Extension => {
+                format!("SOCKET_WAIT_MS = {};\n", SOCKET_WAIT.as_millis())
+            }
         };
         assert!(
-            text.contains(wait),
-            "{name} does not wait 500 ms on the socket"
+            text.contains(&wait),
+            "{name} does not use the socket wait limit"
         );
-        for method in [METHOD_SESSION, METHOD_STATE] {
+        for method in [method_session(), method_state()] {
             assert_eq!(
                 text.matches(&format!("\"{method}\"")).count(),
                 1,

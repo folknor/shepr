@@ -498,6 +498,22 @@ pattern = '\b(?:PathBuf::from|Path::new)\(\s*"\.[A-Za-z_]'
 paths = ["crates/**/*.rs", "src/**/*.rs"]
 message = "a relative dot-directory path resolves against the working directory, which under cargo test is the crate directory; in a test use shepr_test_support::ScratchDir, and for a path only compared or rendered spell it /nonexistent/..."
 
+# Profile-owned file names are composed only by shepr-paths. No `region` is
+# set because the rule must inspect the string literals passed to path methods.
+[[textlint]]
+name = "profile-file-paths-come-from-shepr-paths"
+pattern = '\.(?:join|with_file_name)\s*\(\s*"(?:session\.lock|shepr-server\.log|shepr-client\.log|session\.json|session-snapshots|session-backups|shepr\.sock|launch\.lock|server-boot\.log|client(?:\.toml)?|server\.toml|shepr-dev)"'
+paths = ["crates/**/*.rs", "src/**/*.rs"]
+exclude = ["crates/shepr-paths/src/**"]
+message = "compose profile-owned file paths through shepr_paths so each filename and layout has one owner"
+
+[[textlint]]
+name = "socket-lock-sidecar-is-named-by-shepr-paths"
+pattern = '\.push\s*\(\s*"\.lock"\s*\)'
+paths = ["crates/**/*.rs", "src/**/*.rs"]
+exclude = ["crates/shepr-paths/src/**"]
+message = "ask shepr_paths for the socket lock sidecar path instead of appending its suffix here"
+
 # Test data and scratch state live under the project's build tree, never the
 # host's shared temp directory. `clippy.toml` bans `std::env::temp_dir` by path;
 # this catches the spelling, including a site that would expect its way past
@@ -1016,7 +1032,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-mux-layer"
 from = "shepr-mux"
-allow = ["bytes", "crossterm", "ratatui", "regex", "serde", "serde_json", "sha2", "shepr-agent", "shepr-config", "shepr-core", "shepr-detect", "shepr-git", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-surface", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width"]
+allow = ["bytes", "crossterm", "ratatui", "regex", "serde", "serde_json", "shepr-agent", "shepr-config", "shepr-core", "shepr-detect", "shepr-git", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-surface", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width"]
 kinds = ["normal"]
 
 # The client binary launches the server executable as a sibling process and

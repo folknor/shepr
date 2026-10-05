@@ -6,7 +6,7 @@ let reportedLocalSessionID;
 
 // The local root's recognized start. Only the TUI integration reports
 // `select`, which can replace an existing OpenCode root.
-const LOCAL_START_SOURCE = "startup";
+const LOCAL_START_SOURCE = START.startup;
 
 // A state report also records which root session this process last spoke for.
 function reportRootState(state, sessionID) {

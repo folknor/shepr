@@ -77,7 +77,7 @@ const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
 // request line whose `id` is `<source>:<seq>`, the report's own `source` and
 // `seq` params (the OpenCode TUI's session selection report has no seq and
 // puts a clock reading in the seq's unit there), and every socket attempt
-// waits at most 500 ms for the reply.
+// waits for the bounded socket deadline for the reply.
 //
 // Those shared facts are written once, in `bundle.rs` and the agent descriptor
 // table, and generated into each asset as a preamble for its language: shell

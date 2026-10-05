@@ -48,7 +48,6 @@ macro_rules! api_error_codes {
 }
 
 api_error_codes! {
-    AgentExplainFileReadFailed => "agent_explain_file_read_failed",
     AgentExplainUnavailable => "agent_explain_unavailable",
     InvalidAgent => "invalid_agent",
     InvalidRequest => "invalid_request",
@@ -59,9 +58,6 @@ api_error_codes! {
     ServerUnavailable => "server_unavailable",
     Timeout => "timeout",
     EndpointBusy => "endpoint_busy",
-    BuildMismatch => "build_mismatch",
-    ServerNotRunning => "server_not_running",
-    ServerStopFailed => "server_stop_failed",
     ServerBootMismatch => "server_boot_mismatch",
 }
 

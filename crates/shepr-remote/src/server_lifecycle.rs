@@ -62,10 +62,12 @@ pub(crate) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
             })
         }
         // Not a link failure kind: SSH answered, the remote server did not.
-        ServerStatus::Unresponsive => Err(io::Error::other(format!(
-            "the remote shepr server at {} is not answering status requests",
-            remote_display_value(Some(&parsed.socket))
-        ))),
+        ServerStatus::Unresponsive => {
+            Err(io::Error::other(EndpointFailure::remote_repair(format!(
+                "the remote shepr server at {} is not answering status requests",
+                remote_display_value(Some(&parsed.socket))
+            ))))
+        }
     }
 }
 

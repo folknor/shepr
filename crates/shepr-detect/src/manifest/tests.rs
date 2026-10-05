@@ -69,19 +69,9 @@ fn synthetic_loaded(rules: &str) -> CompiledManifest {
     parse_manifest(&rules_manifest(rules)).expect("test precondition")
 }
 
-fn detect_loaded(loaded: &CompiledManifest, input: DetectionInput<'_>) -> Option<String> {
-    let mut texts = RegionTexts::new(input);
-    loaded
-        .priority_order
-        .iter()
-        .copied()
-        .find(|&index| compiled_rule_matches(&loaded.rules[index], &loaded.regions, &mut texts))
-        .map(|index| loaded.rules[index].id.clone())
-}
-
 #[test]
 fn priority_ordered_detection_agrees_with_full_explain() {
-    let loaded = synthetic_loaded(
+    let manifests = TestManifests::new(&rules_manifest(
         r#"
 [[rules]]
 id = "first_tie"
@@ -108,7 +98,7 @@ state = "working"
 priority = -3
 regex = ['low']
 "#,
-    );
+    ));
     for screen in [
         "shared",
         "shared\nhigh",
@@ -118,25 +108,30 @@ regex = ['low']
         "",
         "low shared",
     ] {
-        let explained = explain_loaded_manifest(Agent::Codex, screen_input(screen), &loaded);
-        assert_eq!(
-            detect_loaded(&loaded, screen_input(screen)),
-            explained.matched_rule.map(|rule| rule.id),
-            "screen={screen:?}"
-        );
+        let input = screen_input(screen);
+        let detected = manifests.detect_input(input);
+        let explained = manifests.explain_input(Agent::Codex, input);
+        assert_eq!(detected, explained.verdict, "screen={screen:?}");
     }
+    let tied = manifests.explain(Agent::Codex, "shared");
     assert_eq!(
-        detect_loaded(&loaded, screen_input("shared")).as_deref(),
-        Some("first_tie")
+        tied.matched_rule.map(|rule| rule.id).as_deref(),
+        Some("first_tie"),
+        "manifest order breaks equal-priority ties"
     );
-    let higher_priority =
-        explain_loaded_manifest(Agent::Codex, screen_input("shared\nhigh"), &loaded);
+    let higher_priority_input = screen_input("shared\nhigh");
+    let higher_priority = manifests.explain_input(Agent::Codex, higher_priority_input);
     assert_eq!(
         higher_priority
             .matched_rule
             .as_ref()
             .map(|rule| rule.id.as_str()),
         Some("high")
+    );
+    assert_eq!(
+        manifests.detect_input(higher_priority_input),
+        AgentDetection::State(Detection::Blocked { visible: false }),
+        "production detection must honor priority order"
     );
     assert_eq!(
         higher_priority.evaluated_rules[2].evidence.contains,
@@ -209,7 +204,7 @@ fn contains_matches_keep_unicode_lowercase_semantics() {
 
 #[test]
 fn gate_region_reads_a_different_input_than_its_rule() {
-    let loaded = synthetic_loaded(
+    let manifests = TestManifests::new(&rules_manifest(
         r#"
 [[rules]]
 id = "title_working"
@@ -223,30 +218,38 @@ not = [
   ] },
 ]
 "#,
-    );
+    ));
     let working = DetectionInput {
         screen: "output\nesc to interrupt",
         osc_title: Some("spin task"),
         osc_progress: None,
     };
     assert_eq!(
-        detect_loaded(&loaded, working).as_deref(),
-        Some("title_working")
+        manifests.detect_input(working),
+        AgentDetection::State(Detection::Working { visible: false })
     );
     let dialog = DetectionInput {
         screen: "Do you want to proceed?\nEsc to cancel",
         osc_title: Some("spin task"),
         osc_progress: None,
     };
-    assert_eq!(detect_loaded(&loaded, dialog), None);
+    // The gate excludes the rule, so nothing matches and the manifest's
+    // fallback verdict stands.
+    let gated = manifests.explain_input(Agent::Codex, dialog);
+    assert!(gated.matched_rule.is_none());
+    assert_eq!(manifests.detect_input(dialog), gated.verdict);
+    assert_ne!(
+        manifests.detect_input(dialog),
+        AgentDetection::State(Detection::Working { visible: false })
+    );
     let stale_dialog = DetectionInput {
         screen: "Do you want to proceed?\nEsc to cancel\nlater output\nmore output",
         osc_title: Some("spin task"),
         osc_progress: None,
     };
     assert_eq!(
-        detect_loaded(&loaded, stale_dialog).as_deref(),
-        Some("title_working")
+        manifests.detect_input(stale_dialog),
+        AgentDetection::State(Detection::Working { visible: false })
     );
     assert!(
         parse_manifest(&rules_manifest(
@@ -504,7 +507,7 @@ fn opencode_permission_follow_up_screens_need_their_own_controls() {
 }
 
 #[test]
-fn codex_no_match_is_unknown_without_changing_other_agents() {
+fn codex_no_match_uses_manifest_unknown_fallback() {
     let manifests = TestManifests::new(&local_manifest("working", "active-marker"));
     let explain = manifests.explain(Agent::Codex, "unmatched-marker");
 
@@ -514,13 +517,6 @@ fn codex_no_match_is_unknown_without_changing_other_agents() {
         explain.fallback_reason,
         Some(FallbackReason::ManifestUnknownFallback)
     );
-    let pi = bundled_loaded(Agent::Pi);
-    let other = fallback_explain(Agent::Pi, Some((&pi, Vec::new())));
-    assert_eq!(other.verdict.state(), AgentState::Idle);
-    assert_eq!(
-        other.fallback_reason,
-        Some(FallbackReason::DefaultKnownAgentIdleFallback)
-    );
 }
 
 #[test]
@@ -528,7 +524,7 @@ fn agents_without_a_screen_manifest_are_unknown_not_idle() {
     for agent in [Agent::Omp, Agent::Mastracode] {
         assert!(bundled_manifest_source(agent).is_none());
         assert!(screen_unknown_is_stable(agent));
-        let detection = detect_with_manifest(screen_input(" \n"), None);
+        let detection = detect_with_osc(agent, screen_input(" \n"));
         assert_eq!(detection.state(), AgentState::Unknown);
         assert!(!detection.visible_idle());
         let explain = fallback_explain(agent, None);
@@ -548,9 +544,12 @@ fn explain_for_label_evaluates_the_bundled_manifest_and_names_an_unknown_label()
     let screen =
         "Bash command\n  rm -rf build\nDo you want to proceed?\n 1. Yes\n  2. No\nEsc to cancel\n";
     let by_label = explain_for_label("claude", screen_input(screen));
-    let direct = explain_with_input(Agent::Claude, screen_input(screen));
-    assert_eq!(by_label, direct);
+    assert_eq!(by_label.agent, ExplainedAgent::Known(Agent::Claude));
     assert_eq!(by_label.verdict.state(), AgentState::Blocked);
+    assert_eq!(
+        by_label.matched_rule.map(|rule| rule.id).as_deref(),
+        Some("bash_permission_prompt")
+    );
 
     let unknown = explain_for_label("no-such-agent", screen_input(screen));
     assert_eq!(unknown.verdict.state(), AgentState::Unknown);
@@ -809,11 +808,24 @@ fn screen_regions_extract_structure_without_classifying_agent_state() {
 // Enforcement: every bundled manifest parses and compiles.
 #[test]
 fn all_bundled_manifests_parse_validate_and_compile() {
+    // These agents deliberately have no screen rules. Every other known agent
+    // must have a bundled manifest, so adding a manifestless agent requires an
+    // explicit policy decision here.
+    let manifestless_agents = [Agent::Omp, Agent::Mastracode];
     for agent in Agent::all() {
         let Some(content) = bundled_manifest_source(agent) else {
-            assert!(screen_manifest_agents().all(|candidate| candidate != agent));
+            assert!(
+                manifestless_agents.contains(&agent),
+                "{} unexpectedly has no screen manifest",
+                agent.label()
+            );
             continue;
         };
+        assert!(
+            !manifestless_agents.contains(&agent),
+            "{} is expected to have no screen manifest",
+            agent.label()
+        );
         assert!(
             bundled_manifest(agent).is_some(),
             "missing compiled manifest for {}",

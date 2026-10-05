@@ -1,4 +1,4 @@
-//! A cancellable wait for a local stream to become readable.
+//! Cancellable readiness waits for a local stream.
 
 use std::os::fd::{AsFd as _, AsRawFd};
 
@@ -22,10 +22,23 @@ impl StreamWake {
 
     /// Blocks until `stream` is readable (or closed) or [`Self::cancel`] ran.
     pub fn wait(&self, stream: &crate::ipc::LocalStream) -> std::io::Result<()> {
+        self.wait_for(stream, libc::POLLIN)
+    }
+
+    /// Blocks until `stream` is writable (or closed) or cancellation ran.
+    pub fn wait_writable(&self, stream: &crate::ipc::LocalStream) -> std::io::Result<()> {
+        self.wait_for(stream, libc::POLLOUT)
+    }
+
+    fn wait_for(
+        &self,
+        stream: &crate::ipc::LocalStream,
+        events: libc::c_short,
+    ) -> std::io::Result<()> {
         let mut descriptors = [
             libc::pollfd {
                 fd: stream.as_fd().as_raw_fd(),
-                events: libc::POLLIN,
+                events,
                 revents: 0,
             },
             libc::pollfd {
@@ -44,5 +57,41 @@ impl StreamWake {
                 return Err(error);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+    use std::sync::Arc;
+
+    #[test]
+    fn cancelled_writable_wait_releases_a_stalled_stream() {
+        let (mut writer, _reader) = crate::ipc::LocalStream::pair().expect("socket pair");
+        writer.set_nonblocking(true).expect("nonblocking writer");
+        let bytes = [0_u8; 8192];
+        loop {
+            match writer.write(&bytes) {
+                Ok(count) => assert!(count > 0),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => panic!("fill socket: {error}"),
+            }
+        }
+        let wake = Arc::new(StreamWake::new().expect("cancellation socket"));
+        let worker_wake = Arc::clone(&wake);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            done_tx
+                .send(worker_wake.wait_writable(&writer))
+                .expect("report wait");
+        });
+        // Cancellation also works when it races before poll starts.
+        wake.cancel().expect("cancel writable wait");
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("wait was cancelled")
+            .expect("poll succeeded");
+        worker.join().expect("waiter ended");
     }
 }

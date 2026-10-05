@@ -1,7 +1,9 @@
 use shepr_core::env::EnvVar;
 use shepr_core::socket_path::SocketPath;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+
+use crate::{server_socket_path, socket_startup_lock_path};
 
 /// The server socket this process targets: the build profile's runtime
 /// `shepr.sock`, or the socket `SHEPR_SOCKET_PATH` selects.
@@ -26,7 +28,7 @@ impl ServerAddress {
         runtime_dir: &Path,
         socket_override: Option<&Path>,
     ) -> std::io::Result<Self> {
-        let runtime = runtime_dir.join(SOCKET_FILE_NAME);
+        let runtime = server_socket_path(runtime_dir);
         let socket_override = socket_override.filter(|path| !same_socket_path(path, &runtime));
         Ok(Self {
             socket: SocketPath::new(socket_override.map_or(runtime, Path::to_path_buf))?,
@@ -40,6 +42,11 @@ impl ServerAddress {
 
     pub fn socket(&self) -> &Path {
         self.socket.as_path()
+    }
+
+    /// The persistent startup-lock sidecar for this selected server socket.
+    pub fn startup_lock_path(&self) -> PathBuf {
+        socket_startup_lock_path(self.socket())
     }
 
     /// Whether this is the build profile's own runtime address, as opposed to
@@ -95,9 +102,6 @@ fn canonical_socket_path(path: &Path) -> Option<std::path::PathBuf> {
     Some(std::fs::canonicalize(parent).ok()?.join(file_name))
 }
 
-/// File name of the server socket inside a runtime directory.
-const SOCKET_FILE_NAME: &str = "shepr.sock";
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +122,10 @@ mod tests {
     fn the_runtime_address_is_its_runtime_socket() {
         let address = ServerAddress::resolve_paths(Path::new("/run/user/1/shepr"), None);
         assert_eq!(address.socket(), Path::new("/run/user/1/shepr/shepr.sock"));
+        assert_eq!(
+            address.startup_lock_path().as_path(),
+            Path::new("/run/user/1/shepr/shepr.sock.lock")
+        );
         assert!(address.is_runtime_address());
     }
 
@@ -134,7 +142,7 @@ mod tests {
     #[test]
     fn a_pane_exported_runtime_socket_is_not_an_override() {
         let runtime = Path::new("/run/user/1/shepr");
-        let socket = runtime.join("shepr.sock");
+        let socket = server_socket_path(runtime);
         let address = ServerAddress::resolve_paths(runtime, Some(&socket));
         assert!(address.is_runtime_address());
         assert_eq!(address.socket(), socket);
@@ -157,13 +165,13 @@ mod tests {
         std::fs::create_dir_all(&runtime).expect("test precondition");
         let alias = scratch.join("alias");
         std::os::unix::fs::symlink(&runtime, &alias).expect("test precondition");
-        let through_alias = alias.join(SOCKET_FILE_NAME);
+        let through_alias = server_socket_path(&alias);
 
         let address = ServerAddress::resolve_paths(&runtime, Some(&through_alias));
         assert!(address.is_runtime_address());
-        assert_eq!(address.socket(), runtime.join(SOCKET_FILE_NAME));
+        assert_eq!(address.socket(), server_socket_path(&runtime));
 
-        std::fs::write(runtime.join(SOCKET_FILE_NAME), b"").expect("test precondition");
+        std::fs::write(server_socket_path(&runtime), b"").expect("test precondition");
         let address = ServerAddress::resolve_paths(&runtime, Some(&through_alias));
         assert!(address.is_runtime_address());
 

@@ -20,42 +20,6 @@ the hunts that reported it and says how the fixed form could be enforced.
 
 ---
 
-## VAL-001 - The file names under the data and runtime directories have no single owner
-
-Reported by: persistence, server-lifecycle.
-
-`shepr-paths` claims the runtime layout, but the names are spread out:
-
-- data directory: `session.lock` in `shepr-paths` (`DATA_DIR_LEASE_FILE_NAME`);
-  `server.log` in `shepr-platform::logging` (`SERVER_LOG_FILE`, reached through
-  `AppPaths::server_log()` and also directly in bootstrap's
-  `init_file_logging(data_dir, SERVER_LOG_FILE)`); `session.json`,
-  `session-snapshots` and `session-backups` in `shepr-mux::persist::files`.
-- runtime directory: `shepr.sock` in `address.rs`; `launch.lock` and
-  `server-boot.log` as private consts in `local_server.rs`; the socket's `.lock`
-  sibling as a naming rule in `shepr_platform::ipc::socket_startup_lock_path`;
-  SSH control sockets in `shepr-remote/src/ssh_paths.rs`.
-- config and profile: `"client"`, `"client.toml"`, `"server.toml"` and
-  `"shepr-dev"` as literals in `app_paths.rs` / `profile.rs`.
-- the test `assert_nothing_was_launched` re-lists two of them.
-
-Nothing answers "what files does a shepr profile own". The history-era files left
-on disk (DEAD) show the cost. Fix: one layout in `shepr-paths` with an accessor
-per file (`launch_lock_path()`, `boot_log_path()`, session, snapshot and backup
-directories, server log), platform helpers taking paths. Enforceable by a textlint
-forbidding `.join("` with a `.lock` / `.log` / `.sock` / `.json` literal, or the
-known names, outside `shepr-paths`.
-
-## VAL-002 - `session-backups` is spelled as a literal outside its owner
-
-Reported by: persistence, restore-resume.
-
-`files::BACKUP_DIRECTORY_NAME` owns it. `open.rs` logs "the saved session is
-backed up to session-backups before the first save" (the actual `backup_dir` is
-in scope and could be a field), and an `app/session.rs` test spells
-`data_dir.join("session-backups")` where `session_backup_directory` exists. Rename
-the directory and the log lies. Enforceable by VAL-001's textlint.
-
 ## VAL-005 - `NotRegularFile` is defined twice over one platform primitive
 
 Reported by: persistence, integrations.
@@ -66,21 +30,6 @@ define a `NotRegularFile` error over `shepr_platform::open_regular_file`'s
 an `InstallErrorKind::NotRegularFile` encoding (DIAG, typed errors through
 `io::Error`). Platform's `open_regular_file` should return the typed error itself.
 Enforceable by a textlint on `struct NotRegularFile` outside platform.
-
-## VAL-007 - The default resume spacing is spelled in five places
-
-Reported by: restore-resume.
-
-`startup_per_agent_delay_ms = 100`: `shepr-config/src/limits.rs`
-`DEFAULT_STARTUP_PER_AGENT_DELAY` (the owner); the model doc ("Default: 100 ms");
-`default-server.toml` (checked by
-`server_default_template_documented_values_match_defaults`); `docs/config.md`'s
-`[session]` table (unchecked, as is its `resume_agents_on_restore = true`); and the
-`agent_resume.rs` test `pending_agent_resume_launches_hidden_panes_with_current_terminal_area`
-(`now + Duration::from_millis(100)`). They agree today. Fix: the test reads the
-config value, the model doc drops the number, and a test compares the
-`docs/config.md` defaults tables with `ServerConfig::default()` as the template
-test does.
 
 ## VAL-008 - The agent is stored twice in every saved session identity and every report
 
@@ -152,22 +101,13 @@ startup window).
 
 Reported by: restore-resume.
 
-When and how a resume happens is decided by `[session] startup_per_agent_delay_ms`
+When and how a resume happens is decided by `[session] agent_resume_spacing_ms`
 (config), `PENDING_AGENT_RESUME_THEME_WAIT` (750 ms, server limits),
 `AGENT_ABSENCE_STARTUP_HOLD` (30 s, mux limits) and `LAUNCH_SETTLE_AFTER_PANE_END`
 (mux limits). Each is named in its crate's limits, but nothing tells a reader these
 four are the resume timeline. Add a section in `reference/` or a module doc in
 `resume_schedule.rs` naming them. The theme wait has an injection point at
 `ResumeSchedule::new` but none at the `App` (it always passes the constant).
-
-## VAL-015 - `startup_per_agent_delay_ms` does not say what it does, and three docs describe it three ways
-
-Reported by: restore-resume.
-
-It spaces agent resumes only; restored fresh shells all launch at once. The
-template says "Milliseconds between automatic agent restores", `docs/config.md`
-"Pause between automatic agent resumes", the model doc "Time between automatic
-agent restores". Rename it (no compatibility owed) and use one wording.
 
 ## VAL-016 - The pane teardown step count is restated as a literal factor in another crate
 
@@ -357,61 +297,6 @@ Doc: "Default screen depth sampled for agent detection when no caller supplies
 one". Detection reads `terminal.rows()`; no caller supplies a depth. The const is
 only the floor of the resize recovery probe. Rename and reword.
 
-## VAL-037 - The integration build profile marker, socket variables and API method names are restated
-
-Reported by: integrations.
-
-- `bundle.rs` restates `"release"` as `RELEASE_PROFILE` ("Spelled in
-  `shepr-paths`, which this crate cannot depend on"). Not forced: the generator is
-  `#[cfg(test)]` and a dev-dependency on `shepr-paths` creates no cycle. More
-  copies: `tests.rs` (`SHEPR_BUILD_PROFILE` `"release"` four times, `"dev"` once),
-  `shepr-test-support/src/hook_capture.rs` (`SHEPR_ENV`, `SHEPR_SOCKET_PATH`,
-  `SHEPR_PANE_ID` as literals, not `EnvVar::*.name()` / `SHEPR_ENV_IN_PANE`), and
-  `agent_integration_contract_tests.rs`.
-- `bundle.rs` restates `pane.report_agent_session` / `pane.report_agent` from
-  `shepr-api`; a dev-dependency on `shepr-api` is also cycle-free. What keeps them
-  in step today is real (the server's contract test replays every captured request
-  through the real handlers).
-
-Fix: read them from their owners in the generator. A textlint refusing
-`"SHEPR_[A-Z_]+"` literals outside `shepr-core/src/env.rs` (asset-internal names
-excepted) would catch the test copies.
-
-## VAL-038 - Hook timings are spelled as literals in assets, decoders and tests
-
-Reported by: integrations.
-
-- The 500 ms socket wait lives in `limits::HOOK_SOCKET_WAIT` and is restated in
-  prose in `lib.rs` and the `bundle.rs` module doc, and as literals in the bundle
-  test (`"SOCKET_WAIT_SECONDS = 0.5\n"`, `"SOCKET_WAIT_MS = 500;\n"`), so a change
-  to the limit fails the test rather than being checked by it. Build the expected
-  strings from the limit; reword the prose.
-- `decoders/opencode_tui.js` uses a bare 500 ms retry delay seven times
-  (`Date.now() + 500` x6, `setTimeout(.., 500)`), plus `AbortSignal.timeout(5_000)`,
-  `ROUTE_POLL_INTERVAL_MS = 100` and `SELECTION_RETRY_DELAYS_MS = [100, 400, 1_000]`;
-  the bun tests hard-code their consequences (650, 1_600, 700 ms waits).
-- `HOOK_TIMEOUT` (10 s) appears as test literals in `assert_kimi_hook`,
-  `codex_needs_the_hooks_entry_and_the_feature_flag`, the Kimi stale-registration
-  fixtures and `claude_settings` `install_is_a_byte_exact_noop_for_a_canonical_hook`.
-
-Fix: name every timing once in `limits` and generate them into the kits; extend
-`hook_assets_share_one_envelope` to forbid numeric delays in decoders; format test
-expectations from the constants.
-
-## VAL-039 - Session start source spellings are hand-written in six assets
-
-Reported by: integrations.
-
-`shepr_agent::resume::AgentSessionStartSource` owns `"startup"`, `"select"`,
-`"resume"`, but they are spelled by hand in `decoders/opencode.js`
-(`LOCAL_START_SOURCE`), `decoders/kilo.js` (`SESSION_START_SOURCE`),
-`decoders/kimi.py` and `decoders/mastracode.py` (`or "startup"`),
-`decoders/omp.ts`, and `templates/tui_kit.js` (`SELECTION_START_SOURCE`). A
-misspelling fails nothing: the server parses it as `Unrecognized`, which never
-replaces a session, so resume degrades silently. Generate a `START` table into
-every preamble from the enum (as `STATES_JS` is) and forbid the literals in
-decoders in `hook_assets_share_one_envelope`.
-
 ## VAL-040 - The Antigravity target has four names
 
 Reported by: integrations.
@@ -455,21 +340,6 @@ Reported by: integrations.
 split, the `--attach` test and the `--print-logs` / `--log-level` stripping are
 identical; only the final verdict differs. The shared part belongs in
 `templates/opencode_family.js`, which both include.
-
-## VAL-045 - OMP reads two undocumented environment knobs with their own resolution rule
-
-Reported by: integrations.
-
-`SHEPR_OMP_IDLE_DEBOUNCE_MS` and `SHEPR_OMP_RETRY_GRACE_MS` (`decoders/omp.ts`) are
-read inside the agent process, documented nowhere ("a setting that is not
-documented is not supported"), and fall back silently on an invalid or negative
-value where the core policy refuses naming the variable.
-`SHEPR_OMP_RETRY_GRACE_MS` is set by nothing; `SHEPR_OMP_IDLE_DEBOUNCE_MS` only by
-the bun tests, so it is a test seam shipped in production. Both are listed in
-`SHEPR_ASSET_INTERNAL_NAMES` as "tunables only the omp extension reads". Fix:
-constants generated from `limits`, with the test seam passed through the
-extension's install options. Dropping them from `SHEPR_ASSET_INTERNAL_NAMES` makes
-its test fail on any asset that still spells them.
 
 ## VAL-046 - Integration tunables live as literals in the plugins, with no clock seam
 

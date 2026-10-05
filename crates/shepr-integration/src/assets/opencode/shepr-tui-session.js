@@ -10,10 +10,11 @@ const SOURCE = "shepr:opencode";
 const AGENT = "opencode";
 const METHOD_SESSION = "pane.report_agent_session";
 const METHOD_STATE = "pane.report_agent";
+const START = { startup: "startup", resume: "resume", select: "select" };
 const SOCKET_WAIT_MS = 500;
 const STATE = { working: "working", blocked: "blocked", idle: "idle" };
 // The start source of the report that selects the pane's session.
-const SELECTION_START_SOURCE = "select";
+const SELECTION_START_SOURCE = START.select;
 
 // Only a release pane of a shepr server has anything to report to.
 function reportingEnabled() {
@@ -102,7 +103,9 @@ function requestOnce(sessionID, state, seq, isCurrent = () => true) {
 // the same unit and stands down whenever a TUI owns the lifecycle. Selection
 // reports carry no seq at all.
 const ROUTE_POLL_INTERVAL_MS = 100;
-const SELECTION_RETRY_DELAYS_MS = [100, 400, 1_000];
+const RETRY_WAIT_MS = 500;
+const REQUEST_WAIT_MS = 5000;
+const SELECTION_RETRY_DELAYS_MS = [100, 400, 1000];
 
 export default {
   id: "shepr.opencode.session-selection",
@@ -131,7 +134,7 @@ async function tui(api) {
 
   async function read(ctx, request) {
     const result = await request({
-      signal: AbortSignal.any([ctx.controller.signal, AbortSignal.timeout(5_000)]),
+      signal: AbortSignal.any([ctx.controller.signal, AbortSignal.timeout(REQUEST_WAIT_MS)]),
       throwOnError: true,
     });
     if (!current(ctx) || result?.data === undefined) throw new Error("session data unavailable");
@@ -205,7 +208,7 @@ async function tui(api) {
       if (!isCurrent()) return;
       if (ctx.selectionPending) {
         if (!await requestOnce(selected, undefined, undefined, isCurrent)) {
-          ctx.retryAt = Date.now() + 500;
+          ctx.retryAt = Date.now() + RETRY_WAIT_MS;
           return;
         }
         if (!isCurrent()) return;
@@ -217,11 +220,11 @@ async function tui(api) {
       const delivered = await requestOnce(selected, value, ++sequence, isCurrent);
       if (!isCurrent()) return;
       ctx.lastState = delivered ? value : undefined;
-      if (!delivered) ctx.retryAt = Date.now() + 500;
+      if (!delivered) ctx.retryAt = Date.now() + RETRY_WAIT_MS;
     }).catch(() => {
       if (current(ctx)) {
         ctx.lastState = undefined;
-        ctx.retryAt = Date.now() + 500;
+        ctx.retryAt = Date.now() + RETRY_WAIT_MS;
       }
     });
   }
@@ -255,7 +258,7 @@ async function tui(api) {
       await Promise.all([...owners(ctx)].map((id) => resolveRoot(ctx, id)));
       if (current(ctx)) publish(ctx);
     })().catch(() => {
-      if (current(ctx)) ctx.retryAt = Date.now() + 500;
+      if (current(ctx)) ctx.retryAt = Date.now() + RETRY_WAIT_MS;
     }).finally(() => {
       ctx.resolving = false;
       if (ctx.resolveAgain) {
@@ -372,10 +375,10 @@ async function tui(api) {
       // a later snapshot must not revive a replied or cancelled request.
       for (const event of ctx.events) apply(ctx, event);
       ctx.hydrated = validated;
-      if (!validated) ctx.retryAt = Date.now() + 500;
+      if (!validated) ctx.retryAt = Date.now() + RETRY_WAIT_MS;
       reconcile(ctx);
     } catch {
-      if (current(ctx)) ctx.retryAt = Date.now() + 500;
+      if (current(ctx)) ctx.retryAt = Date.now() + RETRY_WAIT_MS;
     } finally {
       ctx.loading = false;
       if (ctx.hydrated) ctx.events = [];
@@ -500,7 +503,7 @@ function setup(api) {
     retryTimer = setTimeout(() => {
       retryTimer = undefined;
       publish();
-    }, 500);
+    }, RETRY_WAIT_MS);
     retryTimer.unref?.();
   }
 

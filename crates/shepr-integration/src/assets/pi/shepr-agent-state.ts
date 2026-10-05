@@ -15,6 +15,7 @@ const source = "shepr:pi";
 const AGENT = "pi";
 const METHOD_SESSION = "pane.report_agent_session";
 const METHOD_STATE = "pane.report_agent";
+const START = { startup: "startup", resume: "resume", select: "select" };
 const SOCKET_WAIT_MS = 500;
 
 // Only a release pane of a shepr server has anything to report to, and the

@@ -166,6 +166,11 @@ impl ClientLoop {
                         .shell
                         .receive_session_saves_stopped(endpoint_id, &snapshot.boot_id);
                 }
+                if snapshot.session_saves_blocked_on_backup {
+                    state
+                        .shell
+                        .receive_session_saves_blocked_on_backup(endpoint_id, &snapshot.boot_id);
+                }
                 match hub.install_snapshot(&mut state.shell, endpoint_id, snapshot, role) {
                     Some(SnapshotDirty::Pane) => state.mark_pane_dirty(),
                     Some(SnapshotDirty::Chrome) => state.mark_chrome_dirty(),

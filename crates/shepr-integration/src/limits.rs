@@ -18,3 +18,26 @@ pub(crate) const TOML_BASIC_STRING_DELIMITER_BYTES: usize = 2;
 /// this by an unreachable server.
 #[cfg(test)]
 pub(crate) const HOOK_SOCKET_WAIT: Duration = Duration::from_millis(500);
+
+/// Retry spacing for OpenCode TUI lifecycle delivery.
+#[cfg(test)]
+pub(crate) const TUI_RETRY_WAIT: Duration = Duration::from_millis(500);
+/// Deadline for an OpenCode TUI SDK request.
+#[cfg(test)]
+pub(crate) const TUI_REQUEST_WAIT: Duration = Duration::from_secs(5);
+/// Cadence for observing OpenCode's selected route.
+#[cfg(test)]
+pub(crate) const TUI_ROUTE_POLL: Duration = Duration::from_millis(100);
+/// Backoff after an undelivered session selection.
+#[cfg(test)]
+pub(crate) const TUI_SELECTION_RETRIES: &[Duration] = &[
+    Duration::from_millis(100),
+    Duration::from_millis(400),
+    Duration::from_secs(1),
+];
+/// Delay Idle across a quick OMP turn transition.
+#[cfg(test)]
+pub(crate) const OMP_IDLE_DEBOUNCE: Duration = Duration::from_millis(250);
+/// Retain Working while OMP may start a provider retry.
+#[cfg(test)]
+pub(crate) const OMP_RETRY_GRACE: Duration = Duration::from_millis(2500);

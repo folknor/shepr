@@ -724,9 +724,9 @@ pub fn detect_state(agent: Option<Agent>, screen_content: &str) -> AgentState {
 mod tests {
     use super::*;
     use shepr_platform::Pgid;
-    use shepr_platform::foreground_job;
+    use shepr_platform::{ForegroundJob, foreground_job};
     use shepr_test_support::fixture::{self, Held, Step};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     fn foreground_process(pid: u32, name: &str, argv: &[&str]) -> ForegroundProcess {
         ForegroundProcess {
@@ -738,6 +738,22 @@ mod tests {
 
     fn pgid(value: u32) -> Pgid {
         Pgid::new(value).expect("test process group")
+    }
+
+    fn wait_for_foreground_job(
+        child_pid: Pid,
+        expected: impl Fn(&ForegroundJob) -> bool,
+    ) -> Option<ForegroundJob> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if let Some(job) = foreground_job(child_pid)
+                && expected(&job)
+            {
+                return Some(job);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
     }
 
     /// A path that does not exist yet, in a fresh scratch directory.
@@ -1587,10 +1603,14 @@ mod tests {
         .expect("failed to spawn");
         let pid = spawned.child.process_id();
 
-        // Give the process a moment to become the foreground group
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        let job = foreground_job(pid).expect("expected foreground job");
+        let job = wait_for_foreground_job(pid, |job| {
+            job.processes
+                .iter()
+                .any(|process| process.name == fixture::FIXTURE_NAME)
+        });
+        spawned.child.kill().expect("kill the fixture");
+        spawned.child.wait().expect("reap the fixture");
+        let job = job.expect("fixture should become the foreground job");
         assert!(
             job.processes
                 .iter()
@@ -1602,10 +1622,6 @@ mod tests {
             None,
             "the fixture should not map to an agent"
         );
-
-        // Clean up
-        spawned.child.kill().expect("kill the fixture");
-        spawned.child.wait().expect("reap the fixture");
     }
 
     #[test]
@@ -1648,9 +1664,14 @@ mod tests {
             .expect("write the command to the stand-in shell");
         drop(writer);
 
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        let job = foreground_job(pid).expect("expected foreground job");
+        let job = wait_for_foreground_job(pid, |job| {
+            job.processes
+                .iter()
+                .any(|process| process.name == fixture::FIXTURE_NAME)
+        });
+        spawned.child.kill().expect("kill the command");
+        spawned.child.wait().expect("reap the command");
+        let job = job.expect("command should become the foreground job");
         assert!(
             job.processes
                 .iter()
@@ -1662,9 +1683,6 @@ mod tests {
             None,
             "the command should not map to an agent"
         );
-
-        spawned.child.kill().expect("kill the command");
-        spawned.child.wait().expect("reap the command");
     }
 
     #[test]
@@ -1697,9 +1715,9 @@ mod tests {
         )
         .expect("failed to spawn");
         let child_pid = spawned.child.process_id();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-
-        let job = foreground_job(child_pid);
+        let job = wait_for_foreground_job(child_pid, |job| {
+            identify_agent_in_job(job).is_some_and(|(agent, _)| agent == Agent::Codex)
+        });
         let process_group_id = job
             .as_ref()
             .map_or(Pgid::led_by(child_pid), |job| job.process_group_id)

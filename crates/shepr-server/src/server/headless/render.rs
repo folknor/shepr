@@ -878,6 +878,7 @@ impl HeadlessServer {
             revision,
             restore_notice: app.restore_notice().cloned(),
             session_saves_stopped: app.session_saves_stopped(),
+            session_saves_blocked_on_backup: app.session_saves_blocked_on_backup(),
             focused_workspace_id,
             focused_pane_id,
             workspaces,

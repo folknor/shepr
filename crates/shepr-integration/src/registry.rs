@@ -6,11 +6,10 @@ use std::time::Duration;
 use shepr_agent::IntegrationTarget as Target;
 
 use super::config_edit::HOOK_COMMAND_FIELDS;
-use super::env::{AgentIntegrationPaths, DirectoryKey};
-use super::registration::{HooksRoot, JsonShape, Registration};
+use super::env::{AgentIntegrationPaths, IntegrationEnvironment};
+use super::registration::{HookEventPolicy, HooksRoot, JsonShape, Registration, RequiredJsonField};
 use super::types::{
-    ArtifactRole, InstallError, InstallErrorKind, InstallIssue, InstallOutcome,
-    IntegrationOutdatedReason,
+    ArtifactRole, InstallError, InstallErrorKind, InstallIssue, IntegrationOutdatedReason,
 };
 
 #[derive(Clone, Copy)]
@@ -24,16 +23,32 @@ pub(super) struct ManagedAsset {
 #[derive(Clone, Copy)]
 struct IntegrationSpec {
     target: Target,
+    directory: fn(&IntegrationEnvironment) -> io::Result<PathBuf>,
     primary_asset: ManagedAsset,
     additional_assets: &'static [ManagedAsset],
-    directory: DirectoryKey,
+    action_label: Option<&'static str>,
+    presence_directory: PresenceDirectory,
+    different_directory_from: Option<Target>,
     registration: Registration,
 }
+
+#[derive(Clone, Copy)]
+enum PresenceDirectory {
+    TargetDirectory,
+    ParentDirectory,
+}
+
+const NO_REQUIRED_JSON_FIELDS: &[RequiredJsonField] = &[];
+const CURSOR_REQUIRED_JSON_FIELDS: &[RequiredJsonField] = &[RequiredJsonField {
+    key: "version",
+    default_number: 1,
+}];
 
 const fn spec_for(target: Target) -> &'static IntegrationSpec {
     match target {
         Target::Pi => &IntegrationSpec {
             target: Target::Pi,
+            directory: super::env::pi_extension_dir,
             registration: Registration::DirectoryLoaded,
             primary_asset: ManagedAsset {
                 contents: super::PI_EXTENSION_ASSET,
@@ -42,10 +57,13 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Extension),
             },
             additional_assets: &[],
-            directory: DirectoryKey::PiExtension,
+            action_label: None,
+            presence_directory: PresenceDirectory::ParentDirectory,
+            different_directory_from: None,
         },
         Target::Omp => &IntegrationSpec {
             target: Target::Omp,
+            directory: super::env::omp_extension_dir,
             registration: Registration::DirectoryLoaded,
             primary_asset: ManagedAsset {
                 contents: super::OMP_EXTENSION_ASSET,
@@ -54,14 +72,21 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Extension),
             },
             additional_assets: &[],
-            directory: DirectoryKey::OmpExtension,
+            action_label: None,
+            presence_directory: PresenceDirectory::ParentDirectory,
+            different_directory_from: Some(Target::Pi),
         },
         Target::Claude => &IntegrationSpec {
             target: Target::Claude,
+            directory: super::env::claude_dir,
             registration: Registration::Json {
                 file: super::CLAUDE_SETTINGS_NAME,
                 root: HooksRoot::HooksKey,
-                shape: JsonShape::NestedClaude(super::HOOK_TIMEOUT),
+                shape: JsonShape::Nested(super::HOOK_TIMEOUT),
+                artifact_role: ArtifactRole::Settings,
+                document_description: "Claude settings",
+                required_fields: NO_REQUIRED_JSON_FIELDS,
+                event_policy: HookEventPolicy::CLAUDE,
             },
             primary_asset: ManagedAsset {
                 contents: super::CLAUDE_HOOK_ASSET,
@@ -70,14 +95,22 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            directory: DirectoryKey::Claude,
+            action_label: None,
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
         Target::Codex => &IntegrationSpec {
             target: Target::Codex,
+            directory: super::env::codex_dir,
             registration: Registration::Codex {
                 hooks: super::CODEX_HOOKS_NAME,
                 config: super::CODEX_CONFIG_NAME,
                 timeout: super::HOOK_TIMEOUT,
+                hooks_artifact_role: ArtifactRole::Hooks,
+                config_artifact_role: ArtifactRole::Config,
+                document_description: "Codex hooks file",
+                required_fields: NO_REQUIRED_JSON_FIELDS,
+                event_policy: HookEventPolicy::DESCRIPTOR,
             },
             primary_asset: ManagedAsset {
                 contents: super::CODEX_HOOK_ASSET,
@@ -86,14 +119,21 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            directory: DirectoryKey::Codex,
+            action_label: None,
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
         Target::Copilot => &IntegrationSpec {
             target: Target::Copilot,
+            directory: super::env::copilot_dir,
             registration: Registration::Json {
                 file: super::COPILOT_SETTINGS_NAME,
                 root: HooksRoot::HooksKey,
                 shape: JsonShape::Direct(super::HOOK_TIMEOUT),
+                artifact_role: ArtifactRole::Settings,
+                document_description: "Copilot settings",
+                required_fields: NO_REQUIRED_JSON_FIELDS,
+                event_policy: HookEventPolicy::COPILOT,
             },
             primary_asset: ManagedAsset {
                 contents: super::COPILOT_HOOK_ASSET,
@@ -102,14 +142,21 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            directory: DirectoryKey::Copilot,
+            action_label: None,
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
         Target::Devin => &IntegrationSpec {
             target: Target::Devin,
+            directory: super::env::devin_dir,
             registration: Registration::Json {
                 file: super::DEVIN_CONFIG_NAME,
                 root: HooksRoot::HooksKey,
                 shape: JsonShape::Nested(super::HOOK_TIMEOUT),
+                artifact_role: ArtifactRole::Settings,
+                document_description: "Devin config",
+                required_fields: NO_REQUIRED_JSON_FIELDS,
+                event_policy: HookEventPolicy::DESCRIPTOR,
             },
             primary_asset: ManagedAsset {
                 contents: super::DEVIN_HOOK_ASSET,
@@ -118,14 +165,21 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            directory: DirectoryKey::Devin,
+            action_label: None,
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
         Target::Droid => &IntegrationSpec {
             target: Target::Droid,
+            directory: super::env::droid_dir,
             registration: Registration::Json {
                 file: super::DROID_SETTINGS_NAME,
                 root: HooksRoot::HooksKey,
                 shape: JsonShape::Nested(super::HOOK_TIMEOUT),
+                artifact_role: ArtifactRole::Hooks,
+                document_description: "Droid settings",
+                required_fields: NO_REQUIRED_JSON_FIELDS,
+                event_policy: HookEventPolicy::DESCRIPTOR,
             },
             primary_asset: ManagedAsset {
                 contents: super::DROID_HOOK_ASSET,
@@ -134,10 +188,13 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            directory: DirectoryKey::Droid,
+            action_label: None,
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
         Target::Kimi => &IntegrationSpec {
             target: Target::Kimi,
+            directory: super::env::kimi_dir,
             registration: Registration::Kimi {
                 file: super::KIMI_CONFIG_NAME,
                 timeout: super::HOOK_TIMEOUT,
@@ -149,10 +206,13 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            directory: DirectoryKey::Kimi,
+            action_label: None,
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
         Target::Opencode => &IntegrationSpec {
             target: Target::Opencode,
+            directory: super::env::opencode_dir,
             registration: Registration::Opencode,
             primary_asset: ManagedAsset {
                 contents: super::OPENCODE_PLUGIN_ASSET,
@@ -174,10 +234,13 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                     role: None,
                 },
             ],
-            directory: DirectoryKey::Opencode,
+            action_label: None,
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
         Target::Kilo => &IntegrationSpec {
             target: Target::Kilo,
+            directory: super::env::kilo_dir,
             registration: Registration::DirectoryLoaded,
             primary_asset: ManagedAsset {
                 contents: super::KILO_PLUGIN_ASSET,
@@ -186,14 +249,21 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Plugin),
             },
             additional_assets: &[],
-            directory: DirectoryKey::Kilo,
+            action_label: None,
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
         Target::Cursor => &IntegrationSpec {
             target: Target::Cursor,
+            directory: super::env::cursor_dir,
             registration: Registration::Json {
                 file: super::CURSOR_HOOKS_NAME,
                 root: HooksRoot::HooksKey,
                 shape: JsonShape::Simple,
+                artifact_role: ArtifactRole::UpdatedHooks,
+                document_description: "Cursor hooks file",
+                required_fields: CURSOR_REQUIRED_JSON_FIELDS,
+                event_policy: HookEventPolicy::DESCRIPTOR,
             },
             primary_asset: ManagedAsset {
                 contents: super::CURSOR_HOOK_ASSET,
@@ -202,14 +272,21 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            directory: DirectoryKey::Cursor,
+            action_label: None,
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
         Target::Mastracode => &IntegrationSpec {
             target: Target::Mastracode,
+            directory: super::env::mastracode_dir,
             registration: Registration::Json {
                 file: super::MASTRACODE_HOOKS_NAME,
                 root: HooksRoot::Document,
                 shape: JsonShape::Flat(super::HOOK_TIMEOUT),
+                artifact_role: ArtifactRole::Hooks,
+                document_description: "MastraCode hooks file",
+                required_fields: NO_REQUIRED_JSON_FIELDS,
+                event_policy: HookEventPolicy::DESCRIPTOR,
             },
             primary_asset: ManagedAsset {
                 contents: super::MASTRACODE_HOOK_ASSET,
@@ -218,10 +295,13 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            directory: DirectoryKey::Mastracode,
+            action_label: None,
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
         Target::AntigravityCli => &IntegrationSpec {
             target: Target::AntigravityCli,
+            directory: super::env::antigravity_cli_dir,
             registration: Registration::AntigravityCli {
                 file: super::ANTIGRAVITY_CLI_HOOKS_NAME,
                 timeout: super::HOOK_TIMEOUT,
@@ -233,10 +313,13 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            directory: DirectoryKey::AntigravityCli,
+            action_label: Some("antigravity-cli"),
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
         Target::Grok => &IntegrationSpec {
             target: Target::Grok,
+            directory: super::env::grok_dir,
             registration: Registration::Grok {
                 file: super::GROK_HOOK_CONFIG_NAME,
                 timeout: super::HOOK_TIMEOUT,
@@ -248,9 +331,18 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            directory: DirectoryKey::Grok,
+            action_label: None,
+            presence_directory: PresenceDirectory::TargetDirectory,
+            different_directory_from: None,
         },
     }
+}
+
+pub(super) fn resolve_target_directory(
+    environment: &IntegrationEnvironment,
+    target: Target,
+) -> io::Result<PathBuf> {
+    (spec_for(target).directory)(environment)
 }
 
 pub(super) fn registration(target: Target) -> Registration {
@@ -261,7 +353,7 @@ pub(super) fn target_directory(
     paths: &AgentIntegrationPaths,
     target: Target,
 ) -> io::Result<PathBuf> {
-    paths.directory(spec_for(target).directory)
+    paths.directory(target)
 }
 
 pub(super) fn target_path(paths: &AgentIntegrationPaths, target: Target) -> io::Result<PathBuf> {
@@ -269,17 +361,13 @@ pub(super) fn target_path(paths: &AgentIntegrationPaths, target: Target) -> io::
 }
 
 pub(crate) fn action_label(target: Target) -> &'static str {
-    match target {
-        Target::AntigravityCli => "antigravity-cli",
-        _ => target.label(),
-    }
+    spec_for(target)
+        .action_label
+        .unwrap_or_else(|| target.label())
 }
 
-pub(crate) fn install_operation(
-    paths: &AgentIntegrationPaths,
-    target: Target,
-) -> io::Result<InstallOutcome> {
-    super::targets::install(paths, target)
+pub(super) fn directory_must_differ_from(target: Target) -> Option<Target> {
+    spec_for(target).different_directory_from
 }
 
 pub(super) fn managed_assets(target: Target) -> impl Iterator<Item = &'static ManagedAsset> {
@@ -289,7 +377,7 @@ pub(super) fn managed_assets(target: Target) -> impl Iterator<Item = &'static Ma
 
 /// The primary managed file `spec` installs, whose bundled bytes status checks.
 fn installed_path(paths: &AgentIntegrationPaths, spec: &IntegrationSpec) -> io::Result<PathBuf> {
-    let mut path = paths.directory(spec.directory)?;
+    let mut path = paths.directory(spec.target)?;
     for part in spec.primary_asset.path {
         path.push(part);
     }
@@ -317,11 +405,15 @@ pub(crate) fn agent_present(paths: &AgentIntegrationPaths, target: Target) -> io
     super::file_ops::is_dir(&agent_directory(paths, target)?)
 }
 
-fn agent_directory(paths: &AgentIntegrationPaths, target: Target) -> io::Result<PathBuf> {
+pub(super) fn agent_directory(
+    paths: &AgentIntegrationPaths,
+    target: Target,
+) -> io::Result<PathBuf> {
     let spec = spec_for(target);
-    let directory = paths.directory(spec.directory)?;
-    let agent_directory = match spec.directory {
-        DirectoryKey::PiExtension | DirectoryKey::OmpExtension => {
+    let directory = paths.directory(target)?;
+    let agent_directory = match spec.presence_directory {
+        PresenceDirectory::TargetDirectory => directory,
+        PresenceDirectory::ParentDirectory => {
             directory.parent().map(Path::to_path_buf).ok_or_else(|| {
                 io::Error::other(format!(
                     "{} extension directory {} has no parent",
@@ -330,7 +422,6 @@ fn agent_directory(paths: &AgentIntegrationPaths, target: Target) -> io::Result<
                 ))
             })?
         }
-        _ => directory,
     };
     Ok(agent_directory)
 }
@@ -432,11 +523,18 @@ fn json_hook_commands_registered(
     config_path: &Path,
     root: HooksRoot,
     expected: &serde_json::Map<String, serde_json::Value>,
+    required_fields: &[RequiredJsonField],
     hook_path: &Path,
 ) -> io::Result<bool> {
     let Some(document) = read_json(config_path)? else {
         return Ok(false);
     };
+    if !required_fields
+        .iter()
+        .all(|field| document.get(field.key).is_some())
+    {
+        return Ok(false);
+    }
     let events = match root {
         HooksRoot::HooksKey => document.get("hooks"),
         HooksRoot::Document => Some(&document),
@@ -570,7 +668,7 @@ fn hook_registration_is_current(
         Registration::Opencode => {
             return opencode_tui_integration_is_valid(
                 hook_path,
-                &paths.directory(DirectoryKey::OpencodeState)?,
+                &paths.opencode_state_directory()?,
             );
         }
         Registration::Kimi { file, timeout } => {
@@ -587,18 +685,34 @@ fn hook_registration_is_current(
             hooks,
             config,
             timeout,
+            required_fields,
+            event_policy,
+            ..
         } => {
             json_hook_commands_registered(
                 &dir.join(hooks),
                 HooksRoot::HooksKey,
-                &JsonShape::Nested(timeout).expected_events(spec.target, hook_path)?,
+                &JsonShape::Nested(timeout).expected_events(
+                    spec.target,
+                    hook_path,
+                    event_policy,
+                )?,
+                required_fields,
                 hook_path,
             )? && codex_hooks_feature_enabled(&dir.join(config))?
         }
-        Registration::Json { file, root, shape } => json_hook_commands_registered(
+        Registration::Json {
+            file,
+            root,
+            shape,
+            required_fields,
+            event_policy,
+            ..
+        } => json_hook_commands_registered(
             &dir.join(file),
             root,
-            &shape.expected_events(spec.target, hook_path)?,
+            &shape.expected_events(spec.target, hook_path, event_policy)?,
+            required_fields,
             hook_path,
         )?,
     };
@@ -733,13 +847,6 @@ pub(crate) fn integration_asset(target: Target) -> Option<&'static str> {
     Some(spec_for(target).primary_asset.contents)
 }
 
-#[cfg(test)]
-pub(crate) fn integration_hook_events(
-    target: Target,
-) -> &'static [shepr_agent::IntegrationHookEvent] {
-    target.hook_events()
-}
-
 /// `integration_status_at_with_paths` with the paths resolved from the
 /// process environment.
 #[cfg(test)]
@@ -787,7 +894,7 @@ mod registration_tests {
             let label = spec.target.label();
             let agent_directory = agent_directory(&paths, spec.target).expect("test precondition");
             fs::create_dir_all(&agent_directory).expect("test precondition");
-            install_operation(&paths, spec.target)
+            super::super::targets::install(&paths, spec.target)
                 .unwrap_or_else(|error| panic!("{label} install failed: {error}"));
             let status = integration_status(&paths, spec.target)
                 .unwrap_or_else(|error| panic!("{label} status failed: {error}"));
@@ -813,7 +920,10 @@ mod registration_tests {
                 .expect("create hook parent");
             fs::write(&hook_path, "previous hook").expect("write previous hook");
 
-            assert!(install_operation(&paths, target).is_err(), "{target:?}");
+            assert!(
+                super::super::targets::install(&paths, target).is_err(),
+                "{target:?}"
+            );
             assert_eq!(
                 fs::read_to_string(&hook_path).expect("read previous hook"),
                 "previous hook",
@@ -838,7 +948,7 @@ mod registration_tests {
         fs::write(&hooks, "{}\n").expect("write hooks config");
         fs::write(&config, "[broken\n").expect("write malformed TOML config");
 
-        assert!(install_operation(&paths, Target::Codex).is_err());
+        assert!(super::super::targets::install(&paths, Target::Codex).is_err());
         assert_eq!(
             fs::read_to_string(hook).expect("read hook"),
             "previous hook"
@@ -862,7 +972,7 @@ mod registration_tests {
         let original = "model = \"x\"\n[features]\nhooks = false\ncodex_hooks = true\n";
         fs::write(&config, original).expect("write user's config");
 
-        let error = install_operation(&paths, Target::Codex)
+        let error = super::super::targets::install(&paths, Target::Codex)
             .expect_err("explicit global opt-out must be respected");
 
         assert!(error.to_string().contains("features.hooks = false"));
@@ -884,14 +994,15 @@ mod registration_tests {
         let dir = target_directory(&paths, Target::Grok).expect("Grok directory");
         fs::create_dir_all(agent_directory(&paths, Target::Grok).expect("agent directory"))
             .expect("create Grok directory");
-        install_operation(&paths, Target::Grok).expect("initial install");
+        super::super::targets::install(&paths, Target::Grok).expect("initial install");
 
         let config = dir.join("hooks").join(super::super::GROK_HOOK_CONFIG_NAME);
         fs::write(&config, "{ truncated").expect("corrupt owned hook config");
         let status = integration_status(&paths, Target::Grok).expect("status malformed config");
         assert_eq!(status.state, IntegrationStatusKind::Outdated);
 
-        install_operation(&paths, Target::Grok).expect("repair malformed owned config");
+        super::super::targets::install(&paths, Target::Grok)
+            .expect("repair malformed owned config");
         assert_eq!(
             integration_status(&paths, Target::Grok)
                 .expect("status repaired config")
@@ -1144,7 +1255,7 @@ mod registration_tests {
         write_current_hook(IntegrationTarget::Codex, &hook);
         let entry = |action| {
             serde_json::json!([
-                { "hooks": [{ "type": "command", "command": hook_command(&hook, Some(action)), "timeout": 10 }] }
+                { "hooks": [{ "type": "command", "command": hook_command(&hook, Some(action)), "timeout": super::super::HOOK_TIMEOUT.as_secs() }] }
             ])
         };
         let hooks_json = serde_json::json!({
@@ -1207,7 +1318,7 @@ mod registration_tests {
         let dir = env.home().join(".kimi-code");
         fs::create_dir_all(&dir).expect("test precondition");
         let paths = AgentIntegrationPaths::resolve();
-        super::super::targets::install_kimi(&paths).expect("install");
+        super::super::targets::install(&paths, IntegrationTarget::Kimi).expect("install");
 
         let status = integration_status(&paths, IntegrationTarget::Kimi).expect("status");
         assert_eq!(status.state, IntegrationStatusKind::Current);
@@ -1215,8 +1326,9 @@ mod registration_tests {
         let config_path = dir.join(super::super::KIMI_CONFIG_NAME);
         let config = fs::read_to_string(&config_path).expect("test precondition");
         let stale_registration = format!(
-            "[[hooks]]\nevent = \"OldEvent\"\ncommand = {}\ntimeout = 10\n\n{}",
+            "[[hooks]]\nevent = \"OldEvent\"\ncommand = {}\ntimeout = {}\n\n{}",
             super::super::config_edit::toml_basic_string(&hook_command(&hook, Some("old-action"),)),
+            super::super::HOOK_TIMEOUT.as_secs(),
             super::super::KIMI_CONFIG_BLOCK_END,
         );
         let stale = config.replace(super::super::KIMI_CONFIG_BLOCK_END, &stale_registration);
@@ -1229,7 +1341,7 @@ mod registration_tests {
             IntegrationStatusKind::Outdated
         );
 
-        super::super::targets::install_kimi(&paths).expect("reinstall");
+        super::super::targets::install(&paths, IntegrationTarget::Kimi).expect("reinstall");
         assert_eq!(
             integration_status(&paths, IntegrationTarget::Kimi)
                 .expect("status")
@@ -1249,15 +1361,16 @@ mod registration_tests {
         let dir = env.home().join(".kimi-code");
         fs::create_dir_all(&dir).expect("test precondition");
         let paths = AgentIntegrationPaths::resolve();
-        super::super::targets::install_kimi(&paths).expect("install");
+        super::super::targets::install(&paths, IntegrationTarget::Kimi).expect("install");
 
         let status = integration_status(&paths, IntegrationTarget::Kimi).expect("status");
         let hook = status.path;
         let config_path = dir.join(super::super::KIMI_CONFIG_NAME);
         let config = fs::read_to_string(&config_path).expect("test precondition");
         let external_hook = format!(
-            "[[hooks]]\nevent = \"SessionStart\"\ncommand = {}\ntimeout = 10\n\n",
-            super::super::config_edit::toml_basic_string(&hook_command(&hook, Some("session")))
+            "[[hooks]]\nevent = \"SessionStart\"\ncommand = {}\ntimeout = {}\n\n",
+            super::super::config_edit::toml_basic_string(&hook_command(&hook, Some("session"))),
+            super::super::HOOK_TIMEOUT.as_secs()
         );
         let config_with_external_hook = format!("{external_hook}{config}");
         fs::write(&config_path, &config_with_external_hook).expect("test precondition");
@@ -1268,7 +1381,7 @@ mod registration_tests {
                 .state,
             IntegrationStatusKind::Outdated
         );
-        let error = super::super::targets::install_kimi(&paths)
+        let error = super::super::targets::install(&paths, IntegrationTarget::Kimi)
             .expect_err("an unmarked Shepr hook must not be installed twice")
             .to_string();
         assert!(error.contains("outside its managed block"), "{error}");
@@ -1286,7 +1399,7 @@ mod registration_tests {
         let mut document = serde_json::Map::new();
         let timeout_millis = super::super::registration::timeout_millis(super::super::HOOK_TIMEOUT)
             .expect("test precondition");
-        for event_spec in integration_hook_events(IntegrationTarget::Mastracode) {
+        for event_spec in IntegrationTarget::Mastracode.hook_events() {
             let Some(action) = event_spec.action else {
                 continue;
             };
@@ -1323,8 +1436,9 @@ mod registration_tests {
         let claude = base("claude-malformed");
         fs::write(claude.join("settings.json"), "{ not json").expect("test precondition");
         env.set("CLAUDE_CONFIG_DIR", &claude);
-        let result = super::super::targets::install_claude(
+        let result = super::super::targets::install(
             &super::super::env::AgentIntegrationPaths::resolve(),
+            IntegrationTarget::Claude,
         );
         assert!(result.is_err());
         assert!(
@@ -1338,8 +1452,9 @@ mod registration_tests {
         let codex = base("codex-malformed");
         fs::write(codex.join("hooks.json"), "[1,").expect("test precondition");
         env.set("CODEX_HOME", &codex);
-        let result = super::super::targets::install_codex(
+        let result = super::super::targets::install(
             &super::super::env::AgentIntegrationPaths::resolve(),
+            IntegrationTarget::Codex,
         );
         assert!(result.is_err());
         assert!(
@@ -1352,8 +1467,9 @@ mod registration_tests {
         let copilot = base("copilot-malformed");
         fs::write(copilot.join("settings.json"), "{\"hooks\": []}").expect("test precondition");
         env.set("COPILOT_HOME", &copilot);
-        let result = super::super::targets::install_copilot(
+        let result = super::super::targets::install(
             &super::super::env::AgentIntegrationPaths::resolve(),
+            IntegrationTarget::Copilot,
         );
         assert!(result.is_err());
         assert!(!copilot.join("hooks").try_exists().expect("stat hooks dir"));
@@ -1376,49 +1492,49 @@ mod registration_tests {
                 &[".claude"],
                 "settings.json",
                 HooksRoot::HooksKey,
-                |paths| targets::install_claude(paths).map(|_| ()),
+                |paths| targets::install(paths, IntegrationTarget::Claude).map(|_| ()),
             ),
             (
                 IntegrationTarget::Codex,
                 &[".codex"],
                 "hooks.json",
                 HooksRoot::HooksKey,
-                |paths| targets::install_codex(paths).map(|_| ()),
+                |paths| targets::install(paths, IntegrationTarget::Codex).map(|_| ()),
             ),
             (
                 IntegrationTarget::Copilot,
                 &[".copilot"],
                 "settings.json",
                 HooksRoot::HooksKey,
-                |paths| targets::install_copilot(paths).map(|_| ()),
+                |paths| targets::install(paths, IntegrationTarget::Copilot).map(|_| ()),
             ),
             (
                 IntegrationTarget::Devin,
                 &[".config", "devin"],
                 "config.json",
                 HooksRoot::HooksKey,
-                |paths| targets::install_devin(paths).map(|_| ()),
+                |paths| targets::install(paths, IntegrationTarget::Devin).map(|_| ()),
             ),
             (
                 IntegrationTarget::Droid,
                 &[".factory"],
                 "settings.json",
                 HooksRoot::HooksKey,
-                |paths| targets::install_droid(paths).map(|_| ()),
+                |paths| targets::install(paths, IntegrationTarget::Droid).map(|_| ()),
             ),
             (
                 IntegrationTarget::Cursor,
                 &[".cursor"],
                 "hooks.json",
                 HooksRoot::HooksKey,
-                |paths| targets::install_cursor(paths).map(|_| ()),
+                |paths| targets::install(paths, IntegrationTarget::Cursor).map(|_| ()),
             ),
             (
                 IntegrationTarget::Mastracode,
                 &[".mastracode"],
                 "hooks.json",
                 HooksRoot::Document,
-                |paths| targets::install_mastracode(paths).map(|_| ()),
+                |paths| targets::install(paths, IntegrationTarget::Mastracode).map(|_| ()),
             ),
         ];
 

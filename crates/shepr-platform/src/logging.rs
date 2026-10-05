@@ -56,22 +56,20 @@ impl FileLoggingConfig {
 /// the process runs without file logging.
 /// An already-installed global logger also fails initialization because this
 /// call cannot install its file writer.
-/// Keep this writer generic over leaf names; AppPaths owns the server path exposed to clients.
-pub fn init_file_logging(dir: &Path, file_name: &str) -> io::Result<FileLoggingOutcome> {
-    init_file_logging_with_config(dir, file_name, FileLoggingConfig::from_environment()?)
+/// The caller supplies the complete path from its profile layout.
+pub fn init_file_logging(path: &Path) -> io::Result<FileLoggingOutcome> {
+    init_file_logging_with_config(path, FileLoggingConfig::from_environment()?)
 }
 
 /// Installs the file logger with a filter already validated for this process.
 pub fn init_file_logging_with_config(
-    dir: &Path,
-    file_name: &str,
+    path: &Path,
     config: FileLoggingConfig,
 ) -> io::Result<FileLoggingOutcome> {
     let filter = config.filter;
 
     let make_writer = match RotatingFileMakeWriter::new(
-        dir,
-        file_name,
+        path,
         super::limits::DEFAULT_MAX_LOG_BYTES,
         super::limits::DEFAULT_RETAINED_LOG_FILES,
     ) {
@@ -79,7 +77,7 @@ pub fn init_file_logging_with_config(
         Err(error) => {
             return Ok(FileLoggingOutcome {
                 unavailable: Some(FileLoggingUnavailable {
-                    path: dir.join(file_name),
+                    path: path.to_path_buf(),
                     reason: std::sync::Arc::new(error),
                 }),
             });
@@ -96,8 +94,7 @@ pub fn init_file_logging_with_config(
         .try_init()
     {
         tracing::warn!(
-            file = file_name,
-            dir = %dir.display(),
+            path = %path.display(),
             error = %error,
             "file logging not installed: a logger is already set"
         );
@@ -125,30 +122,22 @@ fn log_filter(directives: Option<&str>) -> io::Result<EnvFilter> {
     })
 }
 
-/// The log the headless server writes.
-pub const SERVER_LOG_FILE: &str = "shepr-server.log";
-/// Compose the server log path for callers that own only a data directory.
-pub fn server_log_path(dir: &Path) -> std::path::PathBuf {
-    dir.join(SERVER_LOG_FILE)
-}
-
-/// The log every client process appends to.
-pub const CLIENT_LOG_FILE: &str = "shepr-client.log";
-
 /// Installs the process-wide client file logger from the binary launch path.
 /// The client library reuses this subscriber and does not install one itself.
 pub fn init_client_file_logging(
-    dir: &Path,
+    path: &Path,
     config: FileLoggingConfig,
 ) -> io::Result<FileLoggingOutcome> {
-    init_file_logging_with_config(dir, CLIENT_LOG_FILE, config)
+    init_file_logging_with_config(path, config)
 }
 
 /// The log files `--help` names: the only two any process writes.
-pub fn help_log_paths_summary(dir: &Path) -> String {
+pub fn help_log_paths_summary(server_log: &Path, client_log: &Path) -> String {
+    let client_name = client_log.file_name().unwrap_or(client_log.as_os_str());
     format!(
-        "{} (and {CLIENT_LOG_FILE} beside it)",
-        server_log_path(dir).display()
+        "{} (and {} beside it)",
+        server_log.display(),
+        client_name.to_string_lossy()
     )
 }
 
@@ -160,11 +149,14 @@ struct RotatingFileMakeWriter {
 }
 
 impl RotatingFileMakeWriter {
-    fn new(dir: &Path, file_name: &str, max_bytes: u64, retained_files: usize) -> io::Result<Self> {
+    fn new(path: &Path, max_bytes: u64, retained_files: usize) -> io::Result<Self> {
+        let dir = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
         super::create_private_directory_all(dir)?;
-        let path = dir.join(file_name);
         let mut state = RotatingFileState {
-            path,
+            path: path.to_path_buf(),
             max_bytes,
             retained_files,
             lost_reason: None,
@@ -530,11 +522,9 @@ mod tests {
 
     #[test]
     fn help_names_only_the_logs_that_are_written() {
-        let summary = help_log_paths_summary(Path::new("/data"));
-        assert_eq!(
-            summary,
-            "/data/shepr-server.log (and shepr-client.log beside it)"
-        );
+        let summary =
+            help_log_paths_summary(Path::new("/data/server.log"), Path::new("/data/client.log"));
+        assert_eq!(summary, "/data/server.log (and client.log beside it)");
     }
 
     #[test]
@@ -578,8 +568,7 @@ mod tests {
         let dir = path.parent().expect("test precondition").to_path_buf();
         fs::create_dir_all(&dir).expect("test precondition");
 
-        let writer =
-            RotatingFileMakeWriter::new(&dir, "shepr.log", 8, 0).expect("test precondition");
+        let writer = RotatingFileMakeWriter::new(&path, 8, 0).expect("test precondition");
         {
             let mut guard = writer.make_writer();
             guard.write_all(b"12345678").expect("test precondition");
@@ -602,8 +591,8 @@ mod tests {
         fs::create_dir_all(&dir).expect("test precondition");
 
         // Two processes' writers on the same client log.
-        let first = RotatingFileMakeWriter::new(&dir, "shepr.log", 16, 1).expect("first writer");
-        let second = RotatingFileMakeWriter::new(&dir, "shepr.log", 16, 1).expect("second writer");
+        let first = RotatingFileMakeWriter::new(&path, 16, 1).expect("first writer");
+        let second = RotatingFileMakeWriter::new(&path, 16, 1).expect("second writer");
 
         first
             .make_writer()
@@ -635,7 +624,7 @@ mod tests {
         let dir = path.parent().expect("test precondition").to_path_buf();
         fs::create_dir_all(&dir).expect("test precondition");
 
-        let writer = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
+        let writer = RotatingFileMakeWriter::new(&path, 0, 0).expect("writer");
         writer.make_writer().write_all(b"before").expect("write");
         fs::remove_file(&path).expect("simulated rotation by another process");
         let_path_check_come_due(&writer);
@@ -652,7 +641,7 @@ mod tests {
         let dir = path.parent().expect("test precondition").to_path_buf();
         fs::create_dir_all(&dir).expect("test precondition");
 
-        let writer = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
+        let writer = RotatingFileMakeWriter::new(&path, 0, 0).expect("writer");
         fs::remove_dir_all(&dir).expect("simulated lost log directory");
         let_path_check_come_due(&writer);
         // The directory is gone: the write fails, but the caller is not told.
@@ -676,7 +665,7 @@ mod tests {
         let dir = path.parent().expect("test precondition").to_path_buf();
         fs::create_dir_all(&dir).expect("test precondition");
 
-        let writer = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
+        let writer = RotatingFileMakeWriter::new(&path, 0, 0).expect("writer");
         let poisoner = Arc::clone(&writer.state);
         let joined = std::thread::spawn(move || {
             let _state = poisoner.lock().expect("test lock");
@@ -706,7 +695,7 @@ mod tests {
         let dir = root.join("logs");
         let path = dir.join("shepr.log");
 
-        let _created = RotatingFileMakeWriter::new(&dir, "shepr.log", 0, 0).expect("writer");
+        let _created = RotatingFileMakeWriter::new(&path, 0, 0).expect("writer");
         let created_mode = fs::metadata(&path).expect("log").permissions().mode() & 0o777;
         let directory_mode = fs::metadata(&dir)
             .expect("log directory")

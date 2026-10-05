@@ -110,16 +110,6 @@ pub enum ServerStopError {
 }
 
 impl ServerStopError {
-    /// The API error code the CLI reports this failure under.
-    pub fn error_code(&self) -> ApiErrorCode {
-        match self {
-            Self::BootMismatch { .. } | Self::OccupantChanged { .. } => {
-                ApiErrorCode::ServerBootMismatch
-            }
-            _ => ApiErrorCode::ServerStopFailed,
-        }
-    }
-
     /// Whether a conditional stop found a different boot, either when the
     /// request arrived or while the requested boot was shutting down.
     pub fn is_boot_mismatch(&self) -> bool {
@@ -1001,7 +991,6 @@ mod tests {
             "{error}"
         );
         assert!(error.is_boot_mismatch());
-        assert_eq!(error.error_code(), ApiErrorCode::ServerBootMismatch);
         // The expected boot travelled in the one stop request; nothing else was sent.
         assert_eq!(requests.len(), 1, "{requests:?}");
         assert!(requests[0].contains("server.stop"), "{requests:?}");
@@ -1211,7 +1200,7 @@ mod tests {
     #[test]
     fn lease_wait_sees_a_held_lease_and_its_release() {
         let scratch = ScratchDir::new("stop-lease");
-        let lease_path = scratch.join("session.lock");
+        let lease_path = shepr_paths::data_dir_lease_path(scratch.path());
         let soon = || Instant::now() + Duration::from_millis(60);
 
         // No lease file: never served, nothing to wait for, nothing created.
@@ -1277,7 +1266,7 @@ mod tests {
     fn a_conditional_stop_uses_the_lease_deadline_for_the_socket() {
         let scratch = ScratchDir::new("stop-lease-socket");
         let path = scratch.join("server.sock");
-        let lease_path = scratch.join("session.lock");
+        let lease_path = shepr_paths::data_dir_lease_path(scratch.path());
         let held_lease = shepr_platform::ipc::acquire_flock_lock(
             &lease_path,
             shepr_platform::ipc::LockWait::FailIfHeld,

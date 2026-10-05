@@ -123,51 +123,20 @@ pub(crate) fn ensure_direct_command_hook(
             )
         })?;
 
-    let command_field = direct_command_field();
-    if let Some(entry) = entries.iter_mut().find(|entry| {
-        entry.get("type").and_then(Value::as_str) == Some("command")
-            && is_matching_direct_command_entry(entry, command.as_str())
-    }) {
-        let Some(entry_object) = entry.as_object_mut() else {
-            return Ok(());
-        };
-        entry_object.remove("command");
-        entry_object.remove("bash");
-        entry_object.insert(command_field.to_string(), Value::String(command.clone()));
-        entry_object.insert("timeoutSec".to_string(), Value::Number(timeout_sec.into()));
-        match matcher {
-            Some(matcher) => {
-                entry_object.insert("matcher".to_string(), Value::String(matcher.to_string()));
-            }
-            None => {
-                entry_object.remove("matcher");
-            }
-        }
-        return Ok(());
-    }
-
     let mut entry = Map::new();
     entry.insert("type".to_string(), Value::String("command".to_string()));
     if let Some(matcher) = matcher {
         entry.insert("matcher".to_string(), Value::String(matcher.to_string()));
     }
-    entry.insert(command_field.to_string(), Value::String(command));
+    // Copilot's direct-command registration is built in a fresh map for each
+    // target install. Existing entries are removed by the shared CST editor.
+    entry.insert("bash".to_string(), Value::String(command));
     entry.insert("timeoutSec".to_string(), Value::Number(timeout_sec.into()));
     entries.push(Value::Object(entry));
     Ok(())
 }
 
 pub(super) const HOOK_COMMAND_FIELDS: &[&str] = &["command", "bash"];
-
-pub(crate) fn direct_command_field() -> &'static str {
-    "bash"
-}
-
-pub(crate) fn is_matching_direct_command_entry(entry: &Value, command: &str) -> bool {
-    HOOK_COMMAND_FIELDS
-        .iter()
-        .any(|field| entry.get(*field).and_then(Value::as_str) == Some(command))
-}
 
 // Cursor hooks.json uses the minimal shape `{ "command": "..." }` documented at
 // https://cursor.com/docs/hooks.
@@ -512,14 +481,17 @@ mod tests {
     #[test]
     fn kimi_status_accepts_crlf_managed_block() {
         let hook_path = Path::new("/home/test/.kimi-code/hooks/shepr-agent-state.sh");
-        let config =
-            build_kimi_config_with_timeout("user = true\n\n", hook_path, Duration::from_secs(10))
-                .expect("build config");
+        let config = build_kimi_config_with_timeout(
+            "user = true\n\n",
+            hook_path,
+            super::super::HOOK_TIMEOUT,
+        )
+        .expect("build config");
         // The whole file as a CRLF editor would save it.
         let crlf = config.replace('\n', "\r\n");
 
         assert!(
-            kimi_config_block_with_timeout_is_current(&crlf, hook_path, Duration::from_secs(10))
+            kimi_config_block_with_timeout_is_current(&crlf, hook_path, super::super::HOOK_TIMEOUT)
                 .expect("read status")
         );
     }
@@ -532,14 +504,15 @@ mod tests {
              {KIMI_CONFIG_BLOCK_END}\r\n\r\n\r\n"
         );
 
-        let updated = build_kimi_config_with_timeout(&original, hook_path, Duration::from_secs(10))
-            .expect("update Kimi config");
+        let updated =
+            build_kimi_config_with_timeout(&original, hook_path, super::super::HOOK_TIMEOUT)
+                .expect("update Kimi config");
 
         assert!(updated.starts_with(&format!("user = true\r\n\r\n{KIMI_CONFIG_BLOCK_BEGIN}\r\n")));
         assert!(updated.ends_with(&format!("{KIMI_CONFIG_BLOCK_END}\r\n\r\n\r\n")));
         assert!(!updated.replace("\r\n", "").contains('\n'));
         assert_eq!(
-            build_kimi_config_with_timeout(&updated, hook_path, Duration::from_secs(10))
+            build_kimi_config_with_timeout(&updated, hook_path, super::super::HOOK_TIMEOUT)
                 .expect("repeat update"),
             updated
         );

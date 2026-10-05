@@ -68,9 +68,11 @@ fn already_running_subprocess_entry_point() {
     );
     let socket = paths.server_address().socket();
     // What a running server holds: the startup lock and a live listener.
-    let _held =
-        shepr_platform::ipc::bind_owned_private_socket(paths.server_address().socket_path())
-            .expect("hold the socket");
+    let _held = shepr_platform::ipc::bind_owned_private_socket(
+        paths.server_address().socket_path(),
+        &paths.server_socket_startup_lock_path(),
+    )
+    .expect("hold the socket");
 
     let ready = AtomicBool::new(false);
     let error = run_server(&config, &paths, |_| ready.store(true, Ordering::Relaxed))

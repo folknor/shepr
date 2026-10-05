@@ -85,11 +85,25 @@ impl SessionWriter {
         drop(self);
     }
 
-    fn preserve_unloaded(&mut self, now: SystemTime) -> io::Result<()> {
-        if self.backup_policy == SessionBackupPolicy::PreserveExisting
-            && recovery::preserve_existing(&self.path, now)?
-        {
-            self.backup_policy = SessionBackupPolicy::NoBackupNeeded;
+    fn preserve_unloaded(&mut self, now: SystemTime) -> Result<(), SaveError> {
+        self.preserve_unloaded_with(now, recovery::preserve_existing)
+    }
+
+    fn preserve_unloaded_with(
+        &mut self,
+        now: SystemTime,
+        preserve_existing: impl FnOnce(&Path, SystemTime) -> Result<bool, recovery::BackupError>,
+    ) -> Result<(), SaveError> {
+        if self.backup_policy != SessionBackupPolicy::PreserveExisting {
+            return Ok(());
+        }
+        match preserve_existing(&self.path, now) {
+            Ok(true) => self.backup_policy = SessionBackupPolicy::NoBackupNeeded,
+            Ok(false) => {}
+            Err(recovery::BackupError::SourceUnreadable(error)) => {
+                return Err(SaveError::BlockedOnBackup(error));
+            }
+            Err(recovery::BackupError::Io(error)) => return Err(SaveError::Io(error)),
         }
         Ok(())
     }
@@ -102,16 +116,26 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         now: SystemTime,
     ) -> Result<(), SaveError> {
-        let mut snapshot_history_plan = SnapshotHistoryPlan::RetryAfterWrite;
-        let result = self.preserve_unloaded(now).and_then(|()| {
-            snapshot_history_plan = recovery::plan_snapshot_history(
-                &self.path,
-                snapshot,
-                now,
-                &mut self.snapshot_fingerprints,
-            );
-            files::save_to_path(&self.path, snapshot)
-        });
+        self.save_with_preserve(snapshot, now, recovery::preserve_existing)
+    }
+
+    fn save_with_preserve(
+        &mut self,
+        snapshot: &SessionSnapshot,
+        now: SystemTime,
+        preserve_existing: impl FnOnce(&Path, SystemTime) -> Result<bool, recovery::BackupError>,
+    ) -> Result<(), SaveError> {
+        if let Err(error) = self.preserve_unloaded_with(now, preserve_existing) {
+            session_save_failed(&self.path, &error.to_string());
+            return Err(error);
+        }
+        let snapshot_history_plan = recovery::plan_snapshot_history(
+            &self.path,
+            snapshot,
+            now,
+            &mut self.snapshot_fingerprints,
+        );
+        let result = files::save_to_path(&self.path, snapshot);
         self.finish_save(result, snapshot, snapshot_history_plan, now)
     }
 
@@ -169,10 +193,12 @@ impl SessionWriter {
         now: SystemTime,
         clear: impl FnOnce(&Path) -> io::Result<files::ClearOutcome>,
     ) -> Result<(), SaveError> {
-        let result = self.preserve_unloaded(now).and_then(|()| {
-            recovery::preserve_snapshot_history(&self.path, now, &mut self.snapshot_fingerprints);
-            clear(&self.path)
-        });
+        if let Err(error) = self.preserve_unloaded(now) {
+            session_clear_failed(&self.path, &error.to_string());
+            return Err(error);
+        }
+        recovery::preserve_snapshot_history(&self.path, now, &mut self.snapshot_fingerprints);
+        let result = clear(&self.path);
         match result {
             Ok(files::ClearOutcome::Durable) => {
                 self.snapshot_fingerprints.forget_current();
@@ -540,6 +566,30 @@ mod tests {
         assert_eq!(backups(&writer), vec![original.to_vec()]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
+    }
+
+    #[test]
+    fn an_unreadable_source_blocks_before_replacing_the_existing_session() {
+        let original = b"unreadable session source";
+        let mut writer = writer(true);
+        std::fs::write(&writer.path, original).expect("test precondition");
+
+        let result = writer.save_with_preserve(&snapshot(), SystemTime::now(), |_, _| {
+            Err(recovery::BackupError::SourceUnreadable(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "permission denied",
+            )))
+        });
+
+        assert!(matches!(result, Err(SaveError::BlockedOnBackup(_))));
+        assert_eq!(
+            std::fs::read(&writer.path).expect("test precondition"),
+            original
+        );
+        assert_eq!(writer.backup_policy, SessionBackupPolicy::PreserveExisting);
+        assert!(backups(&writer).is_empty());
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test cleanup");
     }
 
     #[test]

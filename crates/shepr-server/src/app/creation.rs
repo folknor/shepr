@@ -57,7 +57,7 @@ impl App {
         follow_cwd: Option<AbsolutePath>,
     ) -> AbsolutePath {
         resolve_new_terminal_cwd(
-            &self.state.settings.new_terminal_cwd,
+            &self.state.settings().new_terminal_cwd,
             self.paths.home_dir(),
             self.paths.fallback_cwd(),
             follow_cwd,
@@ -81,7 +81,7 @@ impl App {
     /// headless area, with no cell size.
     pub(crate) fn headless_spawn_geometry(&self) -> SpawnGeometry {
         SpawnGeometry {
-            area: self.state.settings.headless_rect(),
+            area: self.state.settings().headless_rect(),
             cell: None,
         }
     }
@@ -109,7 +109,6 @@ impl App {
         let chrome = self.state.chrome_in(geometry.area);
         let prepared = self
             .state
-            .workspaces
             .prepare_workspace(initial_cwd)
             .ok_or_else(|| std::io::Error::other("workspace ID space exhausted"))?;
         let runtime = self.launch_pane(

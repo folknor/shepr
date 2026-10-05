@@ -8,8 +8,7 @@ use bytes::Bytes;
 use shepr_core::layout::PaneId;
 use shepr_mux::pane::{LaunchKind, LaunchOutcome, LaunchSettlement};
 
-use shepr_mux::terminal::{PaneStartFailure, ResumeUnavailableReason, TerminalState};
-use shepr_mux::workspace::PaneRecord;
+use shepr_mux::terminal::{PaneStartFailure, ResumeUnavailableReason};
 
 use super::App;
 
@@ -18,9 +17,7 @@ impl App {
     /// stays until then, so a save keeps the agent identity, and a launch that
     /// fails still abandons the plan with the reason.
     pub(super) fn hold_resume_command(&mut self, pane_id: PaneId, command: Bytes) {
-        if let Some(record) = self.state.workspaces.pane_mut(pane_id) {
-            record.terminal_mut().begin_agent_resume_launch(command);
-        }
+        self.state.begin_agent_resume_launch(pane_id, command);
     }
 
     pub(super) fn handle_pane_launch_settled(
@@ -34,16 +31,14 @@ impl App {
         let kind = settlement.kind;
         match settlement.outcome {
             LaunchOutcome::Launched { cwd } => {
-                if let Some(record) = self.state.workspaces.pane_mut(pane_id) {
-                    record.terminal_mut().set_cwd(cwd);
-                }
-                let command = self
-                    .state
-                    .workspaces
-                    .pane_mut(pane_id)
-                    .map(PaneRecord::terminal_mut)
-                    .filter(|_| kind == LaunchKind::AgentResume)
-                    .and_then(TerminalState::take_agent_resume_command);
+                self.state
+                    .handle_state_event(super::events::StateEvent::TerminalCwdReported {
+                        pane_id,
+                        cwd,
+                    });
+                let command = (kind == LaunchKind::AgentResume)
+                    .then(|| self.state.take_agent_resume_command(pane_id))
+                    .flatten();
                 if kind == LaunchKind::AgentResume {
                     if let Some(command) = command {
                         self.send_resume_command(pane_id, command);
@@ -55,7 +50,6 @@ impl App {
                         self.fail_agent_resume(pane_id, ResumeUnavailableReason::CommandSendFailed);
                     }
                 }
-                self.state.mark_session_dirty();
                 self.request_git_identity_refresh(self.clock.now);
                 true
             }
@@ -65,11 +59,9 @@ impl App {
                 self.terminal_runtimes.remove(&pane_id);
                 if kind == LaunchKind::AgentResume {
                     self.abandon_agent_resume(pane_id, failure, self.clock.now);
-                } else if let Some(record) = self.state.workspaces.pane_mut(pane_id) {
-                    record.terminal_mut().record_start_failure(failure);
+                } else {
+                    self.state.record_pane_start_failure(pane_id, failure);
                 }
-                self.state.mark_session_dirty();
-                self.state.mark_shell_projection_dirty();
                 true
             }
             // The child is gone, or the pane ended before the launch settled,
@@ -99,13 +91,10 @@ impl App {
                     return true;
                 }
                 self.terminal_runtimes.remove(&pane_id);
-                if let Some(record) = self.state.workspaces.pane_mut(pane_id) {
-                    record
-                        .terminal_mut()
-                        .record_start_failure(PaneStartFailure::launch_unobservable(&error));
-                }
-                self.state.mark_session_dirty();
-                self.state.mark_shell_projection_dirty();
+                self.state.record_pane_start_failure(
+                    pane_id,
+                    PaneStartFailure::launch_unobservable(&error),
+                );
                 true
             }
         }
@@ -134,8 +123,6 @@ impl App {
             PaneStartFailure::resume_unavailable(reason),
             self.clock.now,
         );
-        self.state.mark_session_dirty();
-        self.state.mark_shell_projection_dirty();
     }
 
     fn send_resume_command(&mut self, pane_id: PaneId, command: Bytes) {
@@ -145,9 +132,7 @@ impl App {
             .map(|runtime| runtime.try_send_bytes(command));
         match sent {
             Some(Ok(())) => {
-                if let Some(record) = self.state.workspaces.pane_mut(pane_id) {
-                    record.terminal_mut().clear_agent_resume();
-                }
+                self.state.finish_agent_resume_launch(pane_id);
             }
             Some(Err(error)) => {
                 tracing::warn!(
@@ -211,6 +196,39 @@ mod tests {
 
     fn status_unavailable() -> LaunchOutcome {
         LaunchOutcome::StatusUnavailable(std::io::Error::other("status channel failed"))
+    }
+
+    #[test]
+    fn a_launch_cwd_change_invalidates_immediately_and_a_repeat_does_not() {
+        let (mut app, pane_id) = app_with_launching_resume();
+        let scratch = crate::test_support::ScratchDir::new("launch-cwd-projection");
+        let cwd = shepr_mux::UsableCwd::new(scratch.to_path_buf()).expect("usable cwd");
+        let before = app.state.shell_projection_revision();
+        app.state.test_clear_session_dirty();
+
+        assert!(settle_as(
+            &mut app,
+            pane_id,
+            LaunchKind::Fresh,
+            LaunchOutcome::Launched { cwd: cwd.clone() },
+        ));
+        assert_eq!(
+            app.state.terminal(pane_id).expect("pane").cwd(),
+            cwd.as_absolute()
+        );
+        assert_ne!(app.state.shell_projection_revision(), before);
+        assert!(app.state.session_dirty());
+
+        let before = app.state.shell_projection_revision();
+        app.state.test_clear_session_dirty();
+        assert!(settle_as(
+            &mut app,
+            pane_id,
+            LaunchKind::Fresh,
+            LaunchOutcome::Launched { cwd },
+        ));
+        assert_eq!(app.state.shell_projection_revision(), before);
+        assert!(!app.state.session_dirty());
     }
 
     #[test]

@@ -15,6 +15,7 @@ const source = "shepr:omp";
 const AGENT = "omp";
 const METHOD_SESSION = "pane.report_agent_session";
 const METHOD_STATE = "pane.report_agent";
+const START = { startup: "startup", resume: "resume", select: "select" };
 const SOCKET_WAIT_MS = 500;
 
 // Only a release pane of a shepr server has anything to report to, and the
@@ -228,24 +229,12 @@ function agentEnabled() {
 // Working during the retry window and delay Idle across a quick new turn. Pi's
 // separate agent_settled event already denotes settlement; other integrations
 // report their own lifecycle hooks, so this is not a shared agent policy.
-const idleDebounceMs = parseDurationEnv("SHEPR_OMP_IDLE_DEBOUNCE_MS", 250);
-const retryGraceMs = parseDurationEnv("SHEPR_OMP_RETRY_GRACE_MS", 2500);
+const DEFAULT_IDLE_DEBOUNCE_MS = 250;
+const DEFAULT_RETRY_GRACE_MS = 2500;
 // Status codes must be whole numbers so token counts and durations do not
 // match one of their numeric suffixes.
 const retryableErrorPattern =
   /overloaded|provider.?returned.?error|rate.?limit|too many requests|(?<![0-9])(?:429|500|502|503|504)(?![0-9])|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
-
-function parseDurationEnv(name: string, fallback: number): number {
-  const raw = process.env[name];
-  if (!raw) {
-    return fallback;
-  }
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    return fallback;
-  }
-  return parsed;
-}
 
 function lastAssistantMessage(messages: unknown[]): any | undefined {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -266,7 +255,9 @@ function endedOnRetryableError(event: any): boolean {
   return retryableErrorPattern.test(String(assistant.errorMessage ?? ""));
 }
 
-export default function (pi) {
+export default function (pi, options: { idleDebounceMs?: number; retryGraceMs?: number } = {}) {
+  const idleDebounceMs = options.idleDebounceMs ?? DEFAULT_IDLE_DEBOUNCE_MS;
+  const retryGraceMs = options.retryGraceMs ?? DEFAULT_RETRY_GRACE_MS;
   if (!enabled()) {
     return;
   }
@@ -389,7 +380,7 @@ export default function (pi) {
   pi.on("session_start", (event, ctx) => {
     // Use Pi's reported reason when present; a bare session_start event marks
     // the root startup needed to establish this pane's initial session.
-    if (!activateRootSession(ctx, event?.reason || "startup")) {
+    if (!activateRootSession(ctx, event?.reason || START.startup)) {
       return;
     }
     // A reload can replace this extension mid-run without emitting another agent_start.
@@ -399,7 +390,7 @@ export default function (pi) {
 
   pi.on("session_switch", (event, ctx) => {
     // A source-less session_switch is a resume of the selected root.
-    if (!activateRootSession(ctx, event?.reason || "resume")) {
+    if (!activateRootSession(ctx, event?.reason || START.resume)) {
       return;
     }
     resetSessionState();

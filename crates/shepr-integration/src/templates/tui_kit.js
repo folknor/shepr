@@ -4,10 +4,11 @@ const SOURCE = "@SOURCE@";
 const AGENT = "@LABEL@";
 const METHOD_SESSION = "@METHOD_SESSION@";
 const METHOD_STATE = "@METHOD_STATE@";
+const START = @START_JS@;
 const SOCKET_WAIT_MS = @SOCKET_WAIT_MS@;
 const STATE = @STATES_JS@;
 // The start source of the report that selects the pane's session.
-const SELECTION_START_SOURCE = "select";
+const SELECTION_START_SOURCE = START.select;
 
 // Only a release pane of a shepr server has anything to report to.
 function reportingEnabled() {

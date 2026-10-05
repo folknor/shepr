@@ -700,10 +700,11 @@ mod tests {
         ));
         assert!(!remote_executable_must_be_rediscovered(&own_failure));
 
-        let server_mismatch = io::Error::new(
-            io::ErrorKind::Unsupported,
+        // Only a typed incompatibility from the protocol boundary needs
+        // attention; a bare Unsupported IO kind no longer does.
+        let server_mismatch = io::Error::other(EndpointFailure::different_build(
             "SSH endpoint handshake failed: build mismatch: peer is a different shepr build",
-        );
+        ));
         assert!(!remote_executable_must_be_rediscovered(&server_mismatch));
         assert!(SshFailureDiagnostic::from_error(&server_mismatch).needs_attention());
     }

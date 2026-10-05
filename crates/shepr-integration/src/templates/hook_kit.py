@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 import os
 import socket
 import time
@@ -7,6 +8,7 @@ SOURCE = "@SOURCE@"
 AGENT = "@LABEL@"
 METHOD_SESSION = "@METHOD_SESSION@"
 METHOD_STATE = "@METHOD_STATE@"
+START = SimpleNamespace(**@START_PY@)
 ACTION_SESSION = "@ACTION_SESSION@"
 SOCKET_WAIT_SECONDS = @SOCKET_WAIT_SECONDS@
 # The hook events this integration is registered for, per action and in all.

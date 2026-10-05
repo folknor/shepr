@@ -2575,7 +2575,6 @@ fn recent_reads_limit_rendered_rows() {
 
     assert_eq!(pane.recent_text(2), "three\nfour\n");
     assert_eq!(pane.recent_unwrapped_text(2), "three\nfour");
-    assert!(!pane.recent_ansi(2).contains("two"));
     assert!(pane.recent_text(100).contains("one"));
 }
 
@@ -2590,7 +2589,6 @@ fn recent_reads_trim_trailing_blank_rows() {
 
     assert_eq!(pane.recent_text(5), "one\ntwo\n");
     assert_eq!(pane.recent_unwrapped_text(5), "one\ntwo");
-    assert!(!pane.recent_ansi(5).contains("\n\n"));
 }
 
 #[test]
@@ -2637,36 +2635,6 @@ fn recent_rows_preserve_combining_text_and_hide_image_placeholders() {
     assert_eq!(detection, "old\nold\n界 e\u{301}   tail\n");
     pane.set_scroll_offset_from_bottom(100);
     assert_eq!(pane.detection_text(), detection);
-}
-
-#[test]
-fn visible_ansi_preserves_cell_style_sequences() {
-    let mut terminal = shepr_vt::Terminal::new(
-        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
-        shepr_core::scrollback::ScrollbackBudget::new(100),
-    );
-    terminal.write(b"\x1b[31;1mred\x1b[0m plain");
-    let pane = PaneTerminal::new(terminal);
-
-    let ansi = pane.visible_ansi();
-    assert!(ansi.contains("red"));
-    assert!(ansi.contains("plain"));
-    assert!(ansi.contains("\x1b["));
-}
-
-#[test]
-fn recent_ansi_can_read_styled_scrollback() {
-    let mut terminal = shepr_vt::Terminal::new(
-        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
-        shepr_core::scrollback::ScrollbackBudget::new(100),
-    );
-    terminal.write(b"\x1b[34mblue\x1b[0m\r\nline2\r\nline3\r\nline4");
-    let pane = PaneTerminal::new(terminal);
-
-    let ansi = pane.recent_ansi(4);
-    assert!(ansi.contains("blue"));
-    assert!(ansi.contains("line4"));
-    assert!(ansi.contains("\x1b["));
 }
 
 #[test]

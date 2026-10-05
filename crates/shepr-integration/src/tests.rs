@@ -12,11 +12,24 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use shepr_agent::{KIMI_ASK_USER_QUESTION_MATCHER, KIMI_OTHER_TOOL_MATCHER};
+use shepr_agent::{
+    IntegrationTarget as Target, KIMI_ASK_USER_QUESTION_MATCHER, KIMI_OTHER_TOOL_MATCHER,
+};
 use shepr_core::env::EnvVar;
 use shepr_test_support::IsolatedEnv;
 
 use super::test_support::StatPath;
+
+fn install_target_for_test(target: Target) -> std::io::Result<InstallOutcome> {
+    install_target_at_paths_for_test(target, &AgentIntegrationPaths::resolve())
+}
+
+fn install_target_at_paths_for_test(
+    target: Target,
+    paths: &AgentIntegrationPaths,
+) -> std::io::Result<InstallOutcome> {
+    super::targets::install(paths, target)
+}
 
 fn install_path(outcome: &InstallOutcome, role: ArtifactRole) -> PathBuf {
     outcome
@@ -55,7 +68,8 @@ fn assert_kimi_hook(
             hook.get("event").and_then(toml::Value::as_str) == Some(event)
                 && hook.get("matcher").and_then(toml::Value::as_str) == matcher
                 && hook.get("command").and_then(toml::Value::as_str) == Some(command.as_str())
-                && hook.get("timeout").and_then(toml::Value::as_integer) == Some(10)
+                && hook.get("timeout").and_then(toml::Value::as_integer)
+                    == Some(i64::try_from(HOOK_TIMEOUT.as_secs()).expect("test precondition"))
         }),
         "missing kimi hook for {event} ({matcher:?}) -> {action}"
     );
@@ -77,7 +91,7 @@ fn install_pi_writes_embedded_asset_to_pi_extensions_dir() {
     env.set("HOME", &home);
 
     let path = install_path(
-        &install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition"),
+        &install_target_for_test(Target::Pi).expect("test precondition"),
         ArtifactRole::Extension,
     )
     .clone();
@@ -97,7 +111,7 @@ fn install_pi_creates_extensions_dir_when_agent_dir_exists() {
     env.set("HOME", &home);
 
     let path = install_path(
-        &install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition"),
+        &install_target_for_test(Target::Pi).expect("test precondition"),
         ArtifactRole::Extension,
     )
     .clone();
@@ -119,7 +133,7 @@ fn install_pi_uses_pi_coding_agent_dir_env() {
     env.set(EnvVar::PiCodingAgentDir, &agent_dir);
 
     let path = install_path(
-        &install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition"),
+        &install_target_for_test(Target::Pi).expect("test precondition"),
         ArtifactRole::Extension,
     )
     .clone();
@@ -138,7 +152,7 @@ fn install_pi_expands_tilde_in_pi_coding_agent_dir_env() {
     env.set(EnvVar::PiCodingAgentDir, "~/custom-pi-agent");
 
     let path = install_path(
-        &install_pi(&AgentIntegrationPaths::resolve()).expect("test precondition"),
+        &install_target_for_test(Target::Pi).expect("test precondition"),
         ArtifactRole::Extension,
     )
     .clone();
@@ -155,7 +169,7 @@ fn install_omp_writes_embedded_asset_to_omp_extensions_dir() {
     fs::create_dir_all(&ext_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Omp).expect("test precondition");
     let content = fs::read_to_string(install_path(&installed, ArtifactRole::Extension))
         .expect("test precondition");
 
@@ -176,7 +190,7 @@ fn install_omp_uses_omp_config_dir_env() {
     env.set("HOME", &home);
     env.set(EnvVar::PiConfigDir, "~/custom-omp");
 
-    let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Omp).expect("test precondition");
 
     assert_eq!(
         install_path(&installed, ArtifactRole::Extension),
@@ -200,7 +214,7 @@ fn install_omp_uses_its_own_config_when_pi_agent_dir_is_set() {
     env.set(EnvVar::PiCodingAgentDir, &agent_dir);
     env.set(EnvVar::PiConfigDir, "~/ignored-omp-config");
 
-    let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Omp).expect("test precondition");
 
     assert_eq!(
         install_path(&installed, ArtifactRole::Extension),
@@ -208,6 +222,27 @@ fn install_omp_uses_its_own_config_when_pi_agent_dir_is_set() {
     );
     assert!(pi_extension.stat_is_file());
     assert!(install_path(&installed, ArtifactRole::Extension).stat_is_file());
+}
+
+#[test]
+fn install_omp_refuses_a_config_directory_shared_with_pi() {
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    let home = base.join("home");
+    let shared_agent_dir = home.join(".pi/agent");
+    fs::create_dir_all(&shared_agent_dir).expect("test precondition");
+    env.set("HOME", &home);
+    env.set(EnvVar::PiCodingAgentDir, &shared_agent_dir);
+    env.set(EnvVar::PiConfigDir, "~/.pi");
+
+    let error = install_target_for_test(Target::Omp)
+        .expect_err("Pi and OMP cannot share one extension directory")
+        .to_string();
+
+    assert!(
+        error.contains("pi and omp share integration directory"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -220,7 +255,7 @@ fn install_omp_creates_extensions_dir_when_agent_dir_exists() {
     fs::create_dir_all(&agent_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Omp).expect("test precondition");
 
     assert_eq!(
         install_path(&installed, ArtifactRole::Extension),
@@ -237,11 +272,11 @@ fn install_omp_errors_when_extension_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_omp(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Omp)
         .expect_err("test precondition")
         .to_string();
 
-    assert!(err.contains("omp extension directory not found"));
+    assert!(err.contains("omp agent config directory not found"));
 }
 
 #[test]
@@ -339,7 +374,8 @@ fn launch_install_leaves_a_current_hook_alone_when_its_config_cannot_be_read() {
     fs::create_dir_all(&claude_dir).expect("test precondition");
     env.set("HOME", &home);
     let paths = AgentIntegrationPaths::resolve();
-    let installed = install_claude(&paths).expect("test precondition");
+    let installed =
+        install_target_at_paths_for_test(Target::Claude, &paths).expect("test precondition");
     let hook_path = install_path(&installed, ArtifactRole::Hook);
     let settings_path = claude_dir.join("settings.json");
     let broken_settings = "{ not json";
@@ -389,11 +425,11 @@ fn install_pi_errors_when_extension_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_pi(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Pi)
         .expect_err("test precondition")
         .to_string();
 
-    assert!(err.contains("pi extension directory not found"));
+    assert!(err.contains("pi agent config directory not found"));
 }
 
 #[test]
@@ -410,7 +446,7 @@ fn install_claude_writes_hook_and_updates_settings() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Claude).expect("test precondition");
     let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
         .expect("test precondition");
     let settings: Value = serde_json::from_str(
@@ -453,7 +489,7 @@ fn install_claude_uses_claude_config_dir_env() {
     fs::create_dir_all(&claude_dir).expect("test precondition");
     env.set(EnvVar::ClaudeConfigDir, &claude_dir);
 
-    let installed = install_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Claude).expect("test precondition");
 
     assert_eq!(
         install_path(&installed, ArtifactRole::Settings),
@@ -485,12 +521,12 @@ fn claude_install_replaces_registrations_from_an_old_config_path_alias() {
     symlink(&shared_dir, &second_alias).expect("test precondition");
 
     env.set(EnvVar::ClaudeConfigDir, &first_alias);
-    install_claude(&AgentIntegrationPaths::resolve()).expect("first host install");
+    install_target_for_test(Target::Claude).expect("first host install");
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
 
     env.set(EnvVar::ClaudeConfigDir, &second_alias);
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Outdated);
-    install_claude(&AgentIntegrationPaths::resolve()).expect("second host install");
+    install_target_for_test(Target::Claude).expect("second host install");
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
 
     let settings: Value = serde_json::from_str(
@@ -520,8 +556,8 @@ fn install_claude_is_idempotent_for_hook_entries() {
     fs::create_dir_all(&claude_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    install_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    install_claude(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Claude).expect("test precondition");
+    install_target_for_test(Target::Claude).expect("test precondition");
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(claude_dir.join("settings.json")).expect("test precondition"),
@@ -552,11 +588,11 @@ fn install_claude_errors_when_claude_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_claude(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Claude)
         .expect_err("test precondition")
         .to_string();
 
-    assert!(err.contains("claude directory not found"));
+    assert!(err.contains("claude agent config directory not found"));
 }
 
 #[test]
@@ -569,7 +605,7 @@ fn install_codex_writes_hook_and_updates_hooks_and_config() {
     fs::write(codex_dir.join("config.toml"), "model = \"gpt-5.4\"\n").expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Codex).expect("test precondition");
     let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
         .expect("test precondition");
     let hooks: Value = serde_json::from_str(
@@ -628,7 +664,7 @@ fn install_codex_uses_codex_home_env() {
     fs::write(codex_dir.join("config.toml"), "model = \"gpt-5.4\"\n").expect("test precondition");
     env.set(EnvVar::CodexHome, &codex_dir);
 
-    let installed = install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Codex).expect("test precondition");
 
     assert_eq!(
         install_path(&installed, ArtifactRole::Hook),
@@ -655,8 +691,8 @@ fn install_codex_is_idempotent_for_hook_entries_and_feature_flag() {
         .expect("test precondition");
     env.set("HOME", &home);
 
-    install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    install_codex(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Codex).expect("test precondition");
+    install_target_for_test(Target::Codex).expect("test precondition");
 
     let hooks: Value = serde_json::from_str(
         &fs::read_to_string(codex_dir.join("hooks.json")).expect("test precondition"),
@@ -695,11 +731,11 @@ fn install_codex_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_codex(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Codex)
         .expect_err("test precondition")
         .to_string();
 
-    assert!(err.contains("codex config directory not found"));
+    assert!(err.contains("codex agent config directory not found"));
 }
 
 #[test]
@@ -716,7 +752,7 @@ fn install_kimi_writes_hook_and_updates_config() {
         .expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Kimi).expect("test precondition");
     let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
         .expect("test precondition");
     let config = fs::read_to_string(install_path(&installed, ArtifactRole::Config))
@@ -795,7 +831,7 @@ fn install_kimi_uses_kimi_code_home_env() {
     fs::create_dir_all(&kimi_dir).expect("test precondition");
     env.set(EnvVar::KimiCodeHome, &kimi_dir);
 
-    let installed = install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Kimi).expect("test precondition");
 
     assert_eq!(
         install_path(&installed, ArtifactRole::Hook),
@@ -816,8 +852,8 @@ fn install_kimi_is_idempotent_for_config_block() {
     fs::create_dir_all(&kimi_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    install_kimi(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Kimi).expect("test precondition");
+    install_target_for_test(Target::Kimi).expect("test precondition");
 
     let config = fs::read_to_string(kimi_dir.join("config.toml")).expect("test precondition");
     let hooks = kimi_config_hooks(&config);
@@ -838,11 +874,11 @@ fn install_kimi_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_kimi(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Kimi)
         .expect_err("test precondition")
         .to_string();
 
-    assert!(err.contains("kimi code config directory not found"));
+    assert!(err.contains("kimi agent config directory not found"));
 }
 
 #[test]
@@ -859,7 +895,7 @@ fn install_copilot_writes_hook_and_updates_settings() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_copilot(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Copilot).expect("test precondition");
     let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
         .expect("test precondition");
     let settings: Value = serde_json::from_str(
@@ -887,7 +923,7 @@ fn install_copilot_writes_hook_and_updates_settings() {
     );
     assert_eq!(settings["hooks"]["PreToolUse"][0]["command"], "echo keep");
     assert!(
-        settings["hooks"]["SessionStart"][0][direct_command_field()]
+        settings["hooks"]["SessionStart"][0]["bash"]
             .as_str()
             .expect("test precondition")
             .contains(COPILOT_HOOK_INSTALL_NAME)
@@ -908,8 +944,8 @@ fn install_copilot_uses_copilot_home_env_and_is_idempotent() {
     fs::create_dir_all(&copilot_dir).expect("test precondition");
     env.set(EnvVar::CopilotHome, &copilot_dir);
 
-    let installed = install_copilot(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    install_copilot(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Copilot).expect("test precondition");
+    install_target_for_test(Target::Copilot).expect("test precondition");
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(copilot_dir.join("settings.json")).expect("test precondition"),
@@ -937,11 +973,11 @@ fn install_copilot_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_copilot(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Copilot)
         .expect_err("test precondition")
         .to_string();
 
-    assert!(err.contains("copilot config directory not found"));
+    assert!(err.contains("copilot agent config directory not found"));
 }
 
 #[test]
@@ -959,7 +995,7 @@ fn install_devin_writes_hook_and_updates_settings() {
     env.set("XDG_CONFIG_HOME", &xdg_config);
     env.set("HOME", base.join("home"));
 
-    let installed = install_devin(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Devin).expect("test precondition");
     let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
         .expect("test precondition");
     let settings: Value = serde_json::from_str(
@@ -978,7 +1014,7 @@ fn install_devin_writes_hook_and_updates_settings() {
     );
     assert_eq!(hook_content, DEVIN_HOOK_ASSET);
     assert_eq!(settings["theme_mode"], "dark");
-    for hook in integration_hook_events(shepr_agent::IntegrationTarget::Devin) {
+    for hook in shepr_agent::IntegrationTarget::Devin.hook_events() {
         let action = hook
             .action
             .map(shepr_agent::IntegrationHookAction::as_str)
@@ -1004,14 +1040,14 @@ fn install_devin_is_idempotent_for_hook_entries() {
     env.set("XDG_CONFIG_HOME", &xdg_config);
     env.set("HOME", base.join("home"));
 
-    install_devin(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    install_devin(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Devin).expect("test precondition");
+    install_target_for_test(Target::Devin).expect("test precondition");
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(devin_dir.join("config.json")).expect("test precondition"),
     )
     .expect("test precondition");
-    for hook in integration_hook_events(shepr_agent::IntegrationTarget::Devin) {
+    for hook in shepr_agent::IntegrationTarget::Devin.hook_events() {
         assert_eq!(
             settings["hooks"][hook.event]
                 .as_array()
@@ -1033,10 +1069,10 @@ fn install_devin_errors_when_config_dir_missing() {
     env.set("XDG_CONFIG_HOME", &xdg_config);
     env.set("HOME", base.join("home"));
 
-    let err = install_devin(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Devin)
         .expect_err("test precondition")
         .to_string();
-    assert!(err.contains("devin config directory not found"));
+    assert!(err.contains("devin agent config directory not found"));
 }
 
 #[test]
@@ -1053,7 +1089,7 @@ fn install_droid_writes_hook_to_settings() {
     .expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_droid(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Droid).expect("test precondition");
     let hook_content = fs::read_to_string(install_path(&installed, ArtifactRole::Hook))
         .expect("test precondition");
     let settings: Value = serde_json::from_str(
@@ -1083,7 +1119,7 @@ fn install_droid_writes_hook_to_settings() {
             .get("matcher")
             .is_none()
     );
-    for hook in integration_hook_events(shepr_agent::IntegrationTarget::Droid) {
+    for hook in shepr_agent::IntegrationTarget::Droid.hook_events() {
         let action = hook
             .action
             .map(shepr_agent::IntegrationHookAction::as_str)
@@ -1108,14 +1144,14 @@ fn install_droid_is_idempotent_for_hook_entries() {
     fs::create_dir_all(&droid_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    install_droid(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    install_droid(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Droid).expect("test precondition");
+    install_target_for_test(Target::Droid).expect("test precondition");
 
     let settings: Value = serde_json::from_str(
         &fs::read_to_string(droid_dir.join("settings.json")).expect("test precondition"),
     )
     .expect("test precondition");
-    for hook in integration_hook_events(shepr_agent::IntegrationTarget::Droid) {
+    for hook in shepr_agent::IntegrationTarget::Droid.hook_events() {
         assert_eq!(
             settings["hooks"][hook.event]
                 .as_array()
@@ -1136,11 +1172,11 @@ fn install_droid_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_droid(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Droid)
         .expect_err("test precondition")
         .to_string();
 
-    assert!(err.contains("droid config directory not found"));
+    assert!(err.contains("droid agent config directory not found"));
 }
 
 #[test]
@@ -1152,7 +1188,7 @@ fn install_opencode_writes_server_and_tui_plugins() {
     fs::create_dir_all(&opencode_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Opencode).expect("test precondition");
 
     assert_eq!(
         install_path(&installed, ArtifactRole::Plugin),
@@ -1208,8 +1244,7 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
     fs::write(&json_path, original).expect("test precondition");
 
     for _ in 0..2 {
-        let installed =
-            install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+        let installed = install_target_for_test(Target::Opencode).expect("test precondition");
         assert_eq!(install_path(&installed, ArtifactRole::TuiConfig), json_path);
 
         assert!(!dir.join("tui.jsonc").try_exists().expect("stat"));
@@ -1238,7 +1273,7 @@ fn opencode_reuses_json_registration_in_symlinked_config_directory() {
     .expect("test precondition");
     assert_eq!(
         install_path(
-            &install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition"),
+            &install_target_for_test(Target::Opencode).expect("test precondition"),
             ArtifactRole::TuiConfig
         ),
         jsonc_path
@@ -1263,7 +1298,7 @@ fn opencode_install_defers_v2_registration_while_migration_pending() {
     fs::write(state_dir.join("kv.json"), "{}").expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Opencode).expect("test precondition");
 
     assert!(!opencode_dir.join("cli.json").try_exists().expect("stat"));
     let status = || {
@@ -1278,7 +1313,7 @@ fn opencode_install_defers_v2_registration_while_migration_pending() {
     fs::remove_file(state_dir.join("kv.json")).expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
 
-    install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Opencode).expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Current);
     assert!(opencode_dir.join("cli.json").stat_is_file());
     assert!(
@@ -1303,7 +1338,7 @@ fn opencode_v2_install_and_status_preserve_cli_preferences() {
         r#"{"theme":{"name":"catppuccin"},"plugins":["other"]}"#,
     )
     .expect("test precondition");
-    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Opencode).expect("test precondition");
 
     let status = || {
         integration_status_at(
@@ -1321,7 +1356,7 @@ fn opencode_v2_install_and_status_preserve_cli_preferences() {
     );
     fs::remove_file(&entry).expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
-    install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Opencode).expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Current);
     // The user dropping shepr's cli.json entry reads outdated, and a reinstall
     // puts it back beside their own preferences.
@@ -1331,7 +1366,7 @@ fn opencode_v2_install_and_status_preserve_cli_preferences() {
     )
     .expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
-    install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Opencode).expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Current);
     assert_eq!(
         serde_json::from_str::<Value>(&fs::read_to_string(&cli).expect("test precondition"))
@@ -1340,7 +1375,7 @@ fn opencode_v2_install_and_status_preserve_cli_preferences() {
     );
     fs::remove_file(&cli).expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Outdated);
-    install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Opencode).expect("test precondition");
     assert_eq!(status(), IntegrationStatusKind::Current);
 }
 
@@ -1398,7 +1433,7 @@ fn opencode_json_config_validation_precedes_asset_changes() {
     let config = dir.join("tui.json");
     fs::write(&config, r#"{"plugin":{}}"#).expect("test precondition");
     assert!(
-        install_opencode(&AgentIntegrationPaths::resolve())
+        install_target_for_test(Target::Opencode)
             .expect_err("test precondition")
             .to_string()
             .contains("plugin list")
@@ -1411,7 +1446,7 @@ fn opencode_json_config_validation_precedes_asset_changes() {
     fs::write(&config, original).expect("test precondition");
     let alias = base.join("linked-config");
     fs::hard_link(&config, &alias).expect("test precondition");
-    let error = install_opencode(&AgentIntegrationPaths::resolve()).expect_err("test precondition");
+    let error = install_target_for_test(Target::Opencode).expect_err("test precondition");
     assert!(error.to_string().contains("multiple hard links"));
     assert!(error.to_string().contains("tui.json"));
     assert_eq!(
@@ -1442,7 +1477,7 @@ fn opencode_invalid_cli_config_does_not_overwrite_existing_plugins() {
     let plugin = dir.join("plugins").join(OPENCODE_PLUGIN_INSTALL_NAME);
     fs::write(&plugin, "previous integration").expect("test precondition");
     fs::write(dir.join("cli.json"), r#"{"plugins":{}}"#).expect("test precondition");
-    assert!(install_opencode(&AgentIntegrationPaths::resolve()).is_err());
+    assert!(install_target_for_test(Target::Opencode).is_err());
     assert_eq!(
         fs::read_to_string(plugin).expect("test precondition"),
         "previous integration"
@@ -1458,7 +1493,7 @@ fn opencode_status_requires_the_tui_plugin_and_config_entry() {
     let opencode_dir = home.join(".config/opencode");
     fs::create_dir_all(&opencode_dir).expect("test precondition");
     env.set("HOME", &home);
-    let installed = install_opencode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Opencode).expect("test precondition");
     let status = || {
         integration_status_at(
             shepr_agent::IntegrationTarget::Opencode,
@@ -1508,7 +1543,7 @@ fn install_opencode_invalid_tui_config_does_not_write_plugins() {
     fs::write(opencode_dir.join("tui.jsonc"), r#"{"plugin":{}}"#).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_opencode(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Opencode)
         .expect_err("test precondition")
         .to_string();
 
@@ -1536,11 +1571,11 @@ fn install_opencode_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_opencode(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Opencode)
         .expect_err("test precondition")
         .to_string();
 
-    assert!(err.contains("opencode config directory not found"));
+    assert!(err.contains("opencode agent config directory not found"));
 }
 
 #[test]
@@ -1552,7 +1587,7 @@ fn install_kilo_writes_plugin_to_plugin_dir() {
     fs::create_dir_all(&kilo_dir).expect("test precondition");
     env.set("HOME", &home);
 
-    let installed = install_kilo(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Kilo).expect("test precondition");
     let plugin_content = fs::read_to_string(install_path(&installed, ArtifactRole::Plugin))
         .expect("test precondition");
 
@@ -1571,27 +1606,11 @@ fn install_kilo_errors_when_config_dir_missing() {
     fs::create_dir_all(&home).expect("test precondition");
     env.set("HOME", &home);
 
-    let err = install_kilo(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Kilo)
         .expect_err("test precondition")
         .to_string();
 
-    assert!(err.contains("kilo config directory not found"));
-}
-
-#[test]
-fn process_owned_integration_assets_do_not_report_release() {
-    for (name, asset) in [
-        ("pi", PI_EXTENSION_ASSET),
-        ("omp", OMP_EXTENSION_ASSET),
-        ("mastracode", MASTRACODE_HOOK_ASSET),
-        ("kimi", KIMI_HOOK_ASSET),
-        ("kilo", KILO_PLUGIN_ASSET),
-    ] {
-        assert!(
-            !asset.contains("pane.release_agent"),
-            "{name} process exit should own lifecycle release"
-        );
-    }
+    assert!(err.contains("kilo agent config directory not found"));
 }
 
 #[test]
@@ -1695,7 +1714,7 @@ fn omp_session_start_and_switch_use_root_activation() {
         .expect("omp extension registers session_start handler");
     let session_start_handler = &OMP_EXTENSION_ASSET[session_start..];
     session_start_handler
-        .find("if (!activateRootSession(ctx, event?.reason || \"startup\"))")
+        .find("if (!activateRootSession(ctx, event?.reason || START.startup))")
         .expect("omp session_start handler should activate root session with its reason");
 
     // Per-turn activation must not claim a startup: only session_start and
@@ -1705,14 +1724,14 @@ fn omp_session_start_and_switch_use_root_activation() {
         agent_start.contains("activateRootSession(ctx)"),
         "{agent_start}"
     );
-    assert!(!agent_start.contains("\"startup\""), "{agent_start}");
+    assert!(!agent_start.contains("START.startup"), "{agent_start}");
 
     let session_switch = OMP_EXTENSION_ASSET
         .find("pi.on(\"session_switch\", (event, ctx)")
         .expect("omp extension registers session_switch handler");
     let session_switch_handler = &OMP_EXTENSION_ASSET[session_switch..];
     session_switch_handler
-        .find("if (!activateRootSession(ctx, event?.reason || \"resume\"))")
+        .find("if (!activateRootSession(ctx, event?.reason || START.resume))")
         .expect("omp session_switch handler should activate root session with switch reason");
 }
 
@@ -1806,10 +1825,10 @@ fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
 
     // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
     let mut command = shepr_test_support::command_in_scratch("sh", "kimi-hook");
-    command
-        .arg(&hook)
-        .arg(action)
-        .env("SHEPR_BUILD_PROFILE", "release");
+    command.arg(&hook).arg(action).env(
+        shepr_core::env::EnvVar::SheprBuildProfile.name(),
+        shepr_paths::BuildProfile::Release.marker(),
+    );
     let capture = shepr_test_support::capture_hook(command, &socket_path, base, "w1:p2", payload);
     assert!(
         capture.status.success(),
@@ -1832,10 +1851,10 @@ fn run_state_hook(
 
     // host-program-ok: the shipped shell hook asset is the subject, run as its agent runs it
     let mut command = shepr_test_support::command_in_scratch("sh", name);
-    command
-        .arg(&hook)
-        .arg(action)
-        .env("SHEPR_BUILD_PROFILE", "release");
+    command.arg(&hook).arg(action).env(
+        shepr_core::env::EnvVar::SheprBuildProfile.name(),
+        shepr_paths::BuildProfile::Release.marker(),
+    );
     let output = shepr_test_support::capture_hook(command, &socket_path, base, "w1:p2", payload);
     (
         output.status.success(),
@@ -1993,10 +2012,10 @@ fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>,
 
     // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
     let mut command = shepr_test_support::command_in_scratch("sh", "session-hook");
-    command
-        .arg(&hook)
-        .arg("session")
-        .env("SHEPR_BUILD_PROFILE", "release");
+    command.arg(&hook).arg("session").env(
+        shepr_core::env::EnvVar::SheprBuildProfile.name(),
+        shepr_paths::BuildProfile::Release.marker(),
+    );
     let output = shepr_test_support::capture_hook(command, &socket_path, base, "w1:p2", payload);
     (
         output.status.success(),
@@ -2112,7 +2131,10 @@ fn claude_hook_stays_silent_in_background_sessions() {
             .arg("sh")
             .arg(&hook)
             .arg("session")
-            .env("SHEPR_BUILD_PROFILE", "release");
+            .env(
+                shepr_core::env::EnvVar::SheprBuildProfile.name(),
+                shepr_paths::BuildProfile::Release.marker(),
+            );
         let output =
             shepr_test_support::capture_hook(command, &dir.join("s.sock"), &dir, "w1:p2", payload);
         assert!(output.status.success(), "{name}: the hook failed");
@@ -2163,7 +2185,7 @@ fn install_cursor_writes_hook_and_updates_hooks_json() {
     .expect("test precondition");
     env.set(EnvVar::CursorConfigDir, &cursor_dir);
 
-    let installed = install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Cursor).expect("test precondition");
 
     assert_eq!(
         install_path(&installed, ArtifactRole::Hook),
@@ -2225,8 +2247,8 @@ fn install_cursor_is_idempotent_for_hook_entries() {
     fs::create_dir_all(&cursor_dir).expect("test precondition");
     env.set(EnvVar::CursorConfigDir, &cursor_dir);
 
-    install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Cursor).expect("test precondition");
+    install_target_for_test(Target::Cursor).expect("test precondition");
 
     let hooks_file: Value = serde_json::from_str(
         &fs::read_to_string(cursor_dir.join("hooks.json")).expect("test precondition"),
@@ -2253,7 +2275,7 @@ fn install_cursor_uses_cursor_config_dir_env() {
     fs::create_dir_all(&cursor_dir).expect("test precondition");
     env.set(EnvVar::CursorConfigDir, &cursor_dir);
 
-    let installed = install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Cursor).expect("test precondition");
 
     assert_eq!(
         install_path(&installed, ArtifactRole::Hook),
@@ -2275,7 +2297,7 @@ fn cursor_integration_status_is_current_after_install() {
     // A hook script alone is not enough: the agent's hooks.json must also
     // register it, so install through the real path instead of hand-writing
     // just the script.
-    install_cursor(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Cursor).expect("test precondition");
 
     let cursor = integration_status(
         &AgentIntegrationPaths::resolve(),
@@ -2286,17 +2308,63 @@ fn cursor_integration_status_is_current_after_install() {
 }
 
 #[test]
+fn cursor_required_version_is_added_and_checked_by_status() {
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    let cursor_dir = base.join(".cursor");
+    fs::create_dir_all(&cursor_dir).expect("test precondition");
+    env.set(EnvVar::CursorConfigDir, &cursor_dir);
+
+    install_target_for_test(Target::Cursor).expect("install Cursor hooks");
+    let config_path = cursor_dir.join("hooks.json");
+    let mut config: Value = serde_json::from_slice(&fs::read(&config_path).expect("read config"))
+        .expect("parse installed config");
+    assert_eq!(config.get("version"), Some(&Value::from(1)));
+    assert_eq!(
+        integration_status(&AgentIntegrationPaths::resolve(), Target::Cursor)
+            .expect("status")
+            .state,
+        IntegrationStatusKind::Current
+    );
+
+    config
+        .as_object_mut()
+        .expect("config object")
+        .remove("version");
+    fs::write(
+        &config_path,
+        serde_json::to_vec(&config).expect("serialize config"),
+    )
+    .expect("write config without required version");
+    assert_eq!(
+        integration_status(&AgentIntegrationPaths::resolve(), Target::Cursor)
+            .expect("status missing Cursor version")
+            .state,
+        IntegrationStatusKind::Outdated
+    );
+
+    install_target_for_test(Target::Cursor).expect("restore required version");
+    assert_eq!(
+        integration_status(&AgentIntegrationPaths::resolve(), Target::Cursor)
+            .expect("status repaired Cursor config")
+            .state,
+        IntegrationStatusKind::Current
+    );
+    env.remove(EnvVar::CursorConfigDir);
+}
+
+#[test]
 fn install_cursor_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let missing = base.join(".cursor");
     env.set(EnvVar::CursorConfigDir, &missing);
 
-    let err = install_cursor(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Cursor)
         .expect_err("test precondition")
         .to_string();
     assert!(
-        err.contains("cursor config directory not found"),
+        err.contains("cursor agent config directory not found"),
         "unexpected error: {err}"
     );
 
@@ -2316,8 +2384,7 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
     .expect("test precondition");
     env.set("HOME", &base);
 
-    let installed =
-        install_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Mastracode).expect("test precondition");
 
     assert_eq!(
         install_path(&installed, ArtifactRole::Hook),
@@ -2340,7 +2407,7 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
     )
     .expect("test precondition");
     let hooks = hooks_file.as_object().expect("test precondition");
-    for hook in integration_hook_events(shepr_agent::IntegrationTarget::Mastracode) {
+    for hook in shepr_agent::IntegrationTarget::Mastracode.hook_events() {
         let action = hook
             .action
             .map(shepr_agent::IntegrationHookAction::as_str)
@@ -2395,7 +2462,7 @@ fn install_grok_writes_hook_and_config() {
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(EnvVar::GrokHome, &grok_dir);
 
-    let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Grok).expect("test precondition");
 
     let hooks_dir = grok_dir.join("hooks");
     assert_eq!(
@@ -2438,8 +2505,8 @@ fn install_mastracode_is_idempotent_for_hook_entries() {
     fs::create_dir_all(base.join(".mastracode")).expect("test precondition");
     env.set("HOME", &base);
 
-    install_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
-    install_mastracode(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Mastracode).expect("test precondition");
+    install_target_for_test(Target::Mastracode).expect("test precondition");
 
     let hooks_file: Value = serde_json::from_str(
         &fs::read_to_string(base.join(".mastracode").join("hooks.json"))
@@ -2447,7 +2514,7 @@ fn install_mastracode_is_idempotent_for_hook_entries() {
     )
     .expect("test precondition");
     let hooks = hooks_file.as_object().expect("test precondition");
-    for hook in integration_hook_events(shepr_agent::IntegrationTarget::Mastracode) {
+    for hook in shepr_agent::IntegrationTarget::Mastracode.hook_events() {
         assert_eq!(
             hooks
                 .get(hook.event)
@@ -2467,10 +2534,10 @@ fn install_grok_is_idempotent() {
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(EnvVar::GrokHome, &grok_dir);
 
-    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Grok).expect("test precondition");
     let first = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME))
         .expect("test precondition");
-    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Grok).expect("test precondition");
     let second = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME))
         .expect("test precondition");
     assert_eq!(first, second);
@@ -2483,12 +2550,12 @@ fn install_mastracode_refuses_when_config_dir_missing() {
     fs::create_dir_all(&base).expect("test precondition");
     env.set("HOME", &base);
 
-    let err = install_mastracode(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Mastracode)
         .expect_err("missing mastracode directory must be refused")
         .to_string();
 
     assert!(
-        err.contains("mastracode config directory not found"),
+        err.contains("mastracode agent config directory not found"),
         "{err}"
     );
     assert!(!base.join(".mastracode").try_exists().expect("stat"));
@@ -2504,11 +2571,11 @@ fn install_grok_errors_when_config_dir_missing() {
     let missing = base.join(".grok");
     env.set(EnvVar::GrokHome, &missing);
 
-    let err = install_grok(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Grok)
         .expect_err("test precondition")
         .to_string();
     assert!(
-        err.contains("grok config directory not found"),
+        err.contains("grok agent config directory not found"),
         "unexpected error: {err}"
     );
 }
@@ -2521,7 +2588,7 @@ fn install_grok_uses_grok_home_env() {
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(EnvVar::GrokHome, &grok_dir);
 
-    let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Grok).expect("test precondition");
 
     let hooks_dir = grok_dir.join("hooks");
     assert_eq!(
@@ -2542,7 +2609,8 @@ fn hook_path_strip_rejects_non_array_event_values() {
         Path::new("/hooks/shepr-agent-state.sh"),
         super::registration::HooksRoot::HooksKey,
         serde_json::Map::new(),
-        false,
+        &[],
+        "agent config",
     )
     .expect_err("all event values must be arrays");
 
@@ -2562,7 +2630,7 @@ fn install_mastracode_errors_when_event_value_not_array() {
         .expect("test precondition");
     env.set("HOME", &base);
 
-    let err = install_mastracode(&AgentIntegrationPaths::resolve())
+    let err = install_target_for_test(Target::Mastracode)
         .expect_err("test precondition")
         .to_string();
     assert!(
@@ -2581,7 +2649,7 @@ fn install_codex_rejects_non_array_event_while_stripping_hook_paths() {
     fs::write(&hooks_path, r#"{"hooks":{"UnrelatedEvent":{}}}"#).expect("test precondition");
     env.set("HOME", &base);
 
-    let error = install_codex(&AgentIntegrationPaths::resolve())
+    let error = install_target_for_test(Target::Codex)
         .expect_err("malformed event list must be rejected during hook stripping")
         .to_string();
 
@@ -2615,8 +2683,7 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
     .expect("test precondition");
     env.set(EnvVar::AntigravityCliConfigDir, &agy_dir);
 
-    let installed =
-        install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::AntigravityCli).expect("test precondition");
 
     assert_eq!(
         install_path(&installed, ArtifactRole::Hook),
@@ -2726,7 +2793,7 @@ fn install_antigravity_cli_rewrites_stale_shepr_block() {
     .expect("test precondition");
     env.set(EnvVar::AntigravityCliConfigDir, &agy_dir);
 
-    install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::AntigravityCli).expect("test precondition");
 
     let hooks_file: Value = serde_json::from_str(
         &fs::read_to_string(agy_dir.join("hooks.json")).expect("test precondition"),
@@ -2766,9 +2833,11 @@ fn install_antigravity_cli_errors_when_config_dir_missing() {
     let agy_dir = base.join(".gemini").join("config");
     env.set(EnvVar::AntigravityCliConfigDir, &agy_dir);
 
-    let err =
-        install_antigravity_cli(&AgentIntegrationPaths::resolve()).expect_err("test precondition");
-    assert!(err.to_string().contains("install antigravity cli first"));
+    let err = install_target_for_test(Target::AntigravityCli).expect_err("test precondition");
+    assert!(
+        err.to_string()
+            .contains("antigravity-cli agent config directory not found")
+    );
     assert!(
         !agy_dir.try_exists().expect("stat"),
         "install must not create the config dir"
@@ -2785,7 +2854,7 @@ fn grok_integration_status_is_current_after_install() {
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(EnvVar::GrokHome, &grok_dir);
     // A real install writes both the hook script and hooks/shepr.json.
-    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Grok).expect("test precondition");
 
     let grok = integration_status(
         &AgentIntegrationPaths::resolve(),
@@ -2802,7 +2871,7 @@ fn grok_status_distinguishes_missing_malformed_and_drifted_hook_config() {
     let grok_dir = base.join(".grok");
     fs::create_dir_all(&grok_dir).expect("test precondition");
     env.set(EnvVar::GrokHome, &grok_dir);
-    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Grok).expect("test precondition");
     let config_path = grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME);
 
     let grok_status = || {
@@ -2890,7 +2959,7 @@ fn grok_status_distinguishes_missing_malformed_and_drifted_hook_config() {
     assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
 
     // Reinstall repairs both files.
-    install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    install_target_for_test(Target::Grok).expect("test precondition");
     assert_eq!(grok_state(), IntegrationStatusKind::Current);
 }
 
@@ -2904,7 +2973,7 @@ fn grok_dir_honors_grok_home() {
 
     // The grok CLI reads its config (and hooks/) from $GROK_HOME, so the
     // integration must install there too.
-    let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Grok).expect("test precondition");
     assert_eq!(
         install_path(&installed, ArtifactRole::Hook),
         home_dir.join("hooks").join(GROK_HOOK_INSTALL_NAME)
@@ -2914,7 +2983,7 @@ fn grok_dir_honors_grok_home() {
     let changed_home = base.join("changed-grok-home");
     fs::create_dir_all(&changed_home).expect("test precondition");
     env.set(EnvVar::GrokHome, &changed_home);
-    let installed = install_grok(&AgentIntegrationPaths::resolve()).expect("test precondition");
+    let installed = install_target_for_test(Target::Grok).expect("test precondition");
     assert_eq!(
         install_path(&installed, ArtifactRole::Hook),
         changed_home.join("hooks").join(GROK_HOOK_INSTALL_NAME)
@@ -2958,7 +3027,7 @@ fn install_kimi_refuses_invalid_or_conflicting_config_before_writing() {
     for config in ["model = [\n", "hooks = []\n", "[hooks]\ncustom = true\n"] {
         fs::write(&config_path, config).expect("test precondition");
 
-        assert!(install_kimi(&AgentIntegrationPaths::resolve()).is_err());
+        assert!(install_target_for_test(Target::Kimi).is_err());
         assert_eq!(
             fs::read_to_string(&config_path).expect("read config"),
             config
@@ -2977,7 +3046,7 @@ fn install_kimi_leaves_a_damaged_config_and_no_hook() {
     fs::write(kimi_dir.join("config.toml"), &damaged).expect("test precondition");
     env.set(EnvVar::KimiCodeHome, &kimi_dir);
 
-    assert!(install_kimi(&AgentIntegrationPaths::resolve()).is_err());
+    assert!(install_target_for_test(Target::Kimi).is_err());
     assert_eq!(
         fs::read_to_string(kimi_dir.join("config.toml")).expect("test precondition"),
         damaged
@@ -3233,7 +3302,10 @@ fn installer_ignores_the_inherited_build_profile_marker() {
     let env = IsolatedEnv::new();
     let dir = env.home().join(".claude");
     fs::create_dir_all(&dir).expect("test precondition");
-    env.set("SHEPR_BUILD_PROFILE", "dev");
+    env.set(
+        shepr_core::env::EnvVar::SheprBuildProfile.name(),
+        shepr_paths::BuildProfile::Dev.marker(),
+    );
     install_present_integrations(&AgentIntegrationPaths::resolve());
     assert_eq!(
         status_of(shepr_agent::IntegrationTarget::Claude),
@@ -3257,10 +3329,10 @@ fn shell_hooks_reject_dev_panes_after_draining_input() {
         fs::write(&hook, asset).expect("test precondition");
         // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
         let mut command = shepr_test_support::command_in_scratch("sh", "dev-hook");
-        command
-            .arg(&hook)
-            .arg("session")
-            .env("SHEPR_BUILD_PROFILE", "dev");
+        command.arg(&hook).arg("session").env(
+            shepr_core::env::EnvVar::SheprBuildProfile.name(),
+            shepr_paths::BuildProfile::Dev.marker(),
+        );
         let capture = shepr_test_support::capture_hook(
             command,
             &dir.join("s.sock"),

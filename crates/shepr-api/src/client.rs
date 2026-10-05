@@ -353,7 +353,7 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
         let client = ApiClient::local(&paths);
-        assert_eq!(client.socket_path(), paths.runtime_dir().join("shepr.sock"));
+        assert_eq!(client.socket_path(), paths.server_address().socket());
     }
 
     #[test]

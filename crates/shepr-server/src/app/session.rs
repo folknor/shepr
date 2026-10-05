@@ -105,6 +105,9 @@ enum SaveMode {
     Persisting,
     /// The persister refused work permanently for this boot.
     Stopped,
+    /// The required backup of the session source could not be opened. The
+    /// operator must fix its access permissions and restart the server.
+    BlockedOnBackup,
 }
 
 /// Save admission and host-shutdown freezing are independent: stopping a
@@ -137,6 +140,14 @@ impl SavePolicy {
         self.mode == SaveMode::Stopped
     }
 
+    fn is_blocked_on_backup(self) -> bool {
+        self.mode == SaveMode::BlockedOnBackup
+    }
+
+    fn is_unavailable(self) -> bool {
+        self.mode != SaveMode::Persisting
+    }
+
     fn freeze(&mut self) {
         self.frozen = true;
     }
@@ -147,6 +158,10 @@ impl SavePolicy {
 
     fn stop(&mut self) {
         self.mode = SaveMode::Stopped;
+    }
+
+    fn block_on_backup(&mut self) {
+        self.mode = SaveMode::BlockedOnBackup;
     }
 }
 
@@ -176,7 +191,7 @@ impl SessionSaver {
     /// in flight (its end fires the persister's completion signal, which wakes
     /// the loop), or the host checkpoint finished unsaved and no pane exit is
     /// held (the lifecycle freezes saves once it takes that result), or this
-    /// boot's persister has stopped.
+    /// boot's persistence has stopped.
     fn blocked(&self) -> bool {
         !self.policy.allows_saves()
             || self.in_flight.is_some()
@@ -262,7 +277,7 @@ impl SessionSaver {
     fn request_host_checkpoint(&mut self) -> bool {
         let requested = self.host.request();
         if requested {
-            if self.policy.is_stopped() {
+            if self.policy.is_unavailable() {
                 self.host.fail_permanently();
             } else {
                 self.exit.expedite_retry();
@@ -273,6 +288,13 @@ impl SessionSaver {
 
     fn stop_persistence(&mut self) {
         self.policy.stop();
+        self.autosave.clear();
+        self.exit.abandon();
+        self.host.fail_permanently();
+    }
+
+    fn block_persistence_on_backup(&mut self) {
+        self.policy.block_on_backup();
         self.autosave.clear();
         self.exit.abandon();
         self.host.fail_permanently();
@@ -333,14 +355,18 @@ impl App {
 
     // A missing identity must never replace the protected layout with the
     // post-exit layout. Keep the durable checkpoint if refreshing it fails.
-    fn capture_final_session_save_job(&self) -> Option<shepr_mux::persist::PersistJob> {
+    fn capture_final_session_save_job(
+        &self,
+    ) -> Result<Option<shepr_mux::persist::PersistJob>, shepr_mux::persist::SaveError> {
         let Some(layout) = self
             .session_saver
             .exit
             .preserved()
             .filter(|_| !self.state.session_dirty())
         else {
-            return Some(self.capture_session_save().into_job());
+            return self
+                .capture_session_save()
+                .map(|capture| Some(capture.into_job()));
         };
         let job = layout.recapture(&self.terminal_runtimes);
         if job.is_none() {
@@ -348,7 +374,7 @@ impl App {
                 "could not pair fresh cwd probes with the saved pane-exit layout; keeping the durable checkpoint"
             );
         }
-        job
+        Ok(job)
     }
 
     /// Consumes the pure state mutation signal and applies persistence effects
@@ -379,10 +405,17 @@ impl App {
     }
 
     /// Whether session saves have stopped for the rest of this boot: the
-    /// persister refused a save it can never run, so layout changes from now
-    /// on are not restored by the next server start.
+    /// persister refused a save it can never run, so later layout changes
+    /// are not restored on the next start.
     pub(crate) fn session_saves_stopped(&self) -> bool {
         self.session_saver.policy.is_stopped()
+    }
+
+    /// Whether the saved source could not be opened for the backup required
+    /// before a replacement. The server stops saving for this boot so the
+    /// client can tell the operator to fix access and restart.
+    pub(crate) fn session_saves_blocked_on_backup(&self) -> bool {
+        self.session_saver.policy.is_blocked_on_backup()
     }
 
     /// The one place a save's outcome is applied to the autosave backoff and
@@ -422,10 +455,20 @@ impl App {
                     self.session_saver.autosave.clear();
                 }
             }
+            Err(error) if error.is_blocked_on_backup() => {
+                tracing::error!(
+                    error = %error,
+                    "session saves are blocked because the existing session could not be opened for backup; fix access and restart the server"
+                );
+                if !self.session_saver.policy.is_blocked_on_backup() {
+                    self.state.mark_shell_projection_dirty();
+                }
+                self.session_saver.block_persistence_on_backup();
+            }
             Err(error) if !error.is_retryable() => {
                 tracing::error!(
                     error = %error,
-                    "session persister cannot accept further saves; disabling session persistence for this boot"
+                    "session persistence failed permanently; disabling session saves for this boot"
                 );
                 if !self.session_saver.policy.is_stopped() {
                     // Every client's snapshot carries the stop, so the user
@@ -435,9 +478,10 @@ impl App {
                 self.session_saver.stop_persistence();
             }
             Err(error) => {
-                // A retryable write failure re-arms the normal retry; a
-                // checkpoint's own retry is its machine's, below. (A refusal
-                // or abandonment took the branch above.)
+                // A retryable write or capture failure re-arms the normal
+                // retry; a checkpoint's own retry is its machine's, below. A
+                // failed capture submitted nothing, so the last good file
+                // stays. (A refusal or abandonment took the branch above.)
                 let (failures, delay) = self.session_saver.autosave.record_failure(now);
                 tracing::warn!(error = %error, failures, retry_ms = delay.as_millis(), "session save failed");
                 if let SaveKind::Checkpoint(ticket) = kind {
@@ -460,7 +504,9 @@ impl App {
     /// Runs on the event loop, so it takes only what must be read here: the
     /// structural snapshot and a probe of each shell's cwd. No /proc file is
     /// read; reading the cwds is the persister's work.
-    fn capture_session_save(&self) -> shepr_mux::persist::SessionCapture {
+    fn capture_session_save(
+        &self,
+    ) -> Result<shepr_mux::persist::SessionCapture, shepr_mux::persist::SaveError> {
         shepr_mux::persist::capture_job(
             &self.state.workspaces,
             &self.terminal_runtimes,
@@ -485,7 +531,22 @@ impl App {
                     self.session_saver.note_mutation(self.clock.now);
                 }
                 self.session_saver.autosave.clear();
-                let capture = self.capture_session_save();
+                let capture = match self.capture_session_save() {
+                    Ok(capture) => capture,
+                    Err(error) => {
+                        self.finish_session_save(
+                            SaveKind::Checkpoint(CheckpointTicket {
+                                exit: exit_generation.map(|generation| ExitTicket {
+                                    generation,
+                                    layout: None,
+                                }),
+                                host,
+                            }),
+                            Err(error),
+                        );
+                        return;
+                    }
+                };
                 // Only a held pane exit keeps the layout it saves.
                 let (job, exit) = match exit_generation {
                     Some(generation) => {
@@ -503,8 +564,12 @@ impl App {
             }
             Some(NextSave::Autosave) => {
                 self.session_saver.autosave.clear();
-                let job = self.capture_session_save().into_job();
-                self.spawn_session_save(job, SaveKind::Autosave);
+                match self.capture_session_save() {
+                    Ok(capture) => {
+                        self.spawn_session_save(capture.into_job(), SaveKind::Autosave);
+                    }
+                    Err(error) => self.finish_session_save(SaveKind::Autosave, Err(error)),
+                }
             }
         }
     }
@@ -593,21 +658,23 @@ impl App {
         }
     }
 
-    fn submit_final_session_save(&mut self) -> Option<shepr_mux::persist::PendingSave> {
+    fn submit_final_session_save(
+        &mut self,
+    ) -> Result<Option<shepr_mux::persist::PendingSave>, shepr_mux::persist::SaveError> {
         if !self.session_saver.policy.allows_saves() {
             self.session_saver.autosave.clear();
-            return None;
+            return Ok(None);
         }
 
-        let Some(job) = self.capture_final_session_save_job() else {
+        let Some(job) = self.capture_final_session_save_job()? else {
             self.session_saver.autosave.clear();
-            return None;
+            return Ok(None);
         };
-        Some(
+        Ok(Some(
             self.session_saver
                 .persister
                 .submit(job, self.clock.wall_now),
-        )
+        ))
     }
 
     fn finish_final_session_save(
@@ -654,13 +721,17 @@ impl App {
             self.finish_session_save(save.kind, result);
         }
 
-        let Some(pending) = self.submit_final_session_save() else {
-            if self.session_saver.policy.is_stopped() {
+        let pending = match self.submit_final_session_save() {
+            Ok(Some(pending)) => pending,
+            Ok(None) if self.session_saver.policy.is_unavailable() => {
                 return self.finish_final_session_save(Err(std::io::Error::other(
-                    "session persistence stopped before the final save",
+                    "session persistence was blocked before the final save",
                 )));
             }
-            return Ok(());
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                return self.finish_final_session_save(Err(std::io::Error::other(error)));
+            }
         };
         // Keep a blocking task panic or cancellation as the error source.
         let result = match tokio::task::spawn_blocking(move || pending.wait()).await {
@@ -804,7 +875,7 @@ impl App {
 
         if !self.session_saver.policy.allows_saves() {
             self.session_saver.autosave.clear();
-            return !self.session_saver.policy.is_stopped();
+            return !self.session_saver.policy.is_unavailable();
         }
 
         self.session_saver
@@ -817,13 +888,17 @@ impl App {
     /// claim until their processes have finished tearing down.
     pub(crate) fn save_session_before_teardown(&mut self) -> Result<(), std::io::Error> {
         self.wait_for_session_save();
-        let Some(pending) = self.submit_final_session_save() else {
-            if self.session_saver.policy.is_stopped() {
+        let pending = match self.submit_final_session_save() {
+            Ok(Some(pending)) => pending,
+            Ok(None) if self.session_saver.policy.is_unavailable() => {
                 return self.finish_final_session_save(Err(std::io::Error::other(
-                    "session persistence stopped before the final save",
+                    "session persistence was blocked before the final save",
                 )));
             }
-            return Ok(());
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                return self.finish_final_session_save(Err(std::io::Error::other(error)));
+            }
         };
         self.finish_final_session_save(pending.wait().map_err(std::io::Error::other))
     }
@@ -1093,6 +1168,53 @@ mod tests {
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
         assert_eq!(app.request_pane_exit_checkpoint(), None);
         assert_eq!(app.session_saver.deadline(), None);
+    }
+
+    #[test]
+    fn an_unreadable_backup_source_blocks_saves_and_projects_the_condition() {
+        let mut app = test_app();
+        app.persist();
+        let generation = app.session_saver.exit.request(true).expect("held");
+        let projection_before = app.state.shell_projection_revision;
+
+        app.finish_session_save(
+            exit_kind(generation),
+            Err(shepr_mux::persist::SaveError::BlockedOnBackup(
+                std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied"),
+            )),
+        );
+
+        assert!(app.session_saves_blocked_on_backup());
+        assert!(!app.session_saves_stopped());
+        assert_ne!(app.state.shell_projection_revision, projection_before);
+        assert!(app.pane_exit_checkpoint_generation_settled(generation));
+        assert_eq!(app.session_saver.deadline(), None);
+        assert!(!app.session_saver.policy.allows_saves());
+    }
+
+    /// A capture inconsistency submitted nothing, so the last good file is
+    /// untouched; the saver retries on its backoff instead of stopping for
+    /// the boot, and a later consistent capture saves again.
+    #[test]
+    fn a_capture_inconsistency_is_retried_rather_than_stopping_saves() {
+        let mut app = test_app();
+        app.persist();
+        let generation = app.session_saver.exit.request(true).expect("held");
+
+        app.finish_session_save(
+            exit_kind(generation),
+            Err(shepr_mux::persist::SaveError::CaptureInconsistent {
+                workspace: "w1".into(),
+                detail: "layout and pane records disagree",
+            }),
+        );
+
+        assert!(!app.session_saves_stopped());
+        assert!(!app.session_saves_blocked_on_backup());
+        assert!(app.session_saver.policy.allows_saves());
+        assert!(!app.pane_exit_checkpoint_generation_settled(generation));
+        assert!(app.session_saver.exit.retry_at().is_some());
+        app.wait_for_session_save();
     }
 
     #[test]
@@ -1537,7 +1659,7 @@ mod tests {
             vec!["healthy"],
             "the saved session loaded and only the invalid workspace was dropped"
         );
-        let backups = data_dir.join("session-backups");
+        let backups = paths.session_backup_directory();
         // The notice every client of this boot is sent.
         assert_eq!(
             app.restore_notice,
@@ -1855,7 +1977,7 @@ mod tests {
         }
 
         /// The resume identity the saved session holds for its only pane.
-        fn saved_agent_session(app: &App) -> shepr_mux::persist::schema::PaneAgentSessionSnapshot {
+        fn saved_agent_session(app: &App) -> shepr_agent::resume::PersistedAgentSession {
             let lease = shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir())
                 .expect("test lease");
             shepr_mux::persist::load(&lease)

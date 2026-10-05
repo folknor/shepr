@@ -323,21 +323,6 @@ client login entry that both named the release `shepr` were what this produced. 
 fix: typed failure causes whose wording lives in one module. Not mechanically
 enforceable short of a textlint on imperative operator verbs.
 
-## DIAG-021 - CLI output: raw escapes regardless of `NO_COLOR`, and JSON envelopes printed to a human
-
-Reported by: server-lifecycle.
-
-- `CliError::Nested` prints raw `\x1b[1m` / `\x1b[2m` escapes unconditionally,
-  although `shepr man` honours `NO_COLOR` and a non-terminal stdout.
-- `CliError::ServerStop` prints a JSON envelope (`{"error":{...}}`) to an operator's
-  stderr for an ordinary "no server running" stop; the human `shepr stop` and the
-  SSH caller share one rendering, though the SSH caller reads only the exit code.
-- `ApiErrorCode`'s `BuildMismatch`, `ServerNotRunning`, `AgentExplainFileReadFailed`
-  and `ServerStopFailed` are never produced by a server; the CLI fabricates
-  `ErrorResponse` envelopes with them (`cli.rs` `ensure_server_build_matches`,
-  `map_server_not_running_or_io`, `cli/error.rs` for stops). The wire vocabulary
-  carries CLI-local failures.
-
 ## DIAG-022 - Server lifecycle events that log nothing, log at debug, or omit the cause
 
 Reported by: server-lifecycle.
@@ -370,40 +355,12 @@ Reported by: server-lifecycle.
 - `SshStdioBridge::start_command` uses `thread::spawn`, which panics if the thread
   cannot start; `Builder::spawn` mapped to a local setup error would refuse instead.
 
-## DIAG-024 - Remote supervision logs routine events at warn and leaves failures silent
-
-Reported by: remote.
-
-- A remote bridge exiting with the `no-server` record (the normal state of a
-  machine with no server, once per backoff cycle) logs `warn!("remote SSH bridge
-  failed")` in `bridge.rs`; every lost connection, including a deliberate
-  `shepr stop` on a machine, logs `warn!("endpoint transport failed")` in `hub.rs`
-  `reconcile`. Meanwhile a failed attempt leaving the machine Offline or Reconnecting
-  logs nothing (`attempt_failed` warns only for Attention), and so do scheduling a
-  wait for a server, a wait ending, and an operator Connect or Restart being taken.
-- `attempt_failed`'s warn and the bridge's warn log the same failure twice at two
-  layers with different fields.
-- `handshake.rs`: `info!("endpoint handshake succeeded")` has no endpoint id,
-  generation or boot, so with several machines connecting the log cannot say which.
-- Remote-host lines (`relay.rs` "SSH bridge upload failed", "SSH bridge failed to
-  half-close the server socket"; `process.rs` `PipeCapture::finish` "ssh pipe is
-  still open...") carry only the error; every client's bridge on that host writes
-  to the same log, so a line cannot be tied to a client, bridge process or command.
-
-Fix: one level per class (state transitions at info, attention at warn) and every
-supervisor transition logged with endpoint, generation and mode.
-
 ## DIAG-025 - The same remote condition is classified three ways
 
 Reported by: remote.
 
-A remote server that does not answer: the attach bridge (`host.rs`
-`attached_server_status`) reports `RemoteFailureClass::Repair` (needs attention);
-the Restart path's `parse_remote_server_status_json` returns a bare
-`io::Error::other` (unclassified, so `Retry`, "Connecting..."); `fleet::stop_plan`
-returns another bare `io::Error::other`. Same fact, three operator outcomes. Build
-it once as `EndpointFailure::remote_repair(..)`. Related: the remote wait's setup
-failures are plain `CliError::Io` (unclassified) where the bridge maps the same path
+An unresponsive remote server is now a repair on every path. Remaining: the remote
+wait's setup failures are plain `CliError::Io` (unclassified) where the bridge maps the same path
 and logging setup failures to a `Repair` record (`src/main.rs`
 `bridge_setup_failure`), so a host whose logging cannot start shows Unavailable
 through the bridge and "Connecting..." through the wait.
@@ -412,37 +369,11 @@ through the bridge and "Connecting..." through the wait.
 
 Reported by: remote.
 
-- `server_wait.rs`: `DirectoryWatch::new(dir).ok()` drops the inotify error (an
-  exhausted `max_user_watches` is common on hosts running many agents), so the wait
-  degrades to a 2 s poll for its hour, silently; `Err(_) => ServerSeen::Settling`
-  turns a `server_presence` IO error (EACCES on the runtime directory) into a 500 ms
-  spin for an hour, also silent. Log once per spell, and treat a persistent presence
-  error as a failure of the wait.
-- `bridge.rs`: a failing `prepare_remote_bridge_stream` is logged and `continue`d;
-  the stream is dropped, the client reads EOF, waits the full
-  `BRIDGE_FAILURE_REPORT_TIMEOUT` on `reported_failure` (nothing was sent), and shows
-  "connection closed before the endpoint finished connecting". Send it through the
-  failure channel like every other bridge error.
-- `ssh_metadata.rs` `load_metadata` swallows everything (EACCES and ELOOP included)
-  via `.ok()?` on `symlink_metadata`, `open`, `read` and the JSON parse, contrary to
-  the clippy seal's stance. It is a disposable hint, but an unreadable cache should
-  log once with its path.
 - `hub.rs` `dispatch` ignores `supervisors.request(..)`'s refusal for
   `ConnectMachine` and `RestartMachine`, after the shell has set the entry to
   Starting... or Restarting.... Latent today (the refusal cases do not offer the
-  entry); return the outcome so the entry is set only when the request was taken.
-- Post-handshake EOF on an SSH endpoint loses ssh's diagnostic: only
-  `classify_handshake_error` consults `MachineSshBridge::reported_failure`; once
-  connected, `server_reader_thread` reports "server closed connection" and the
-  bridge's classified stderr never reaches the machine diagnostic. After a remote
-  bridge idles out (`IdleExpired`) the bridge prints nothing and exits 1, so the
-  diagnostic gives no hint that the relay timed out; a `retry` record on stderr would
-  show it.
-- `is_link_error_kind` counts `AddrInUse` as a link failure, so a local bridge bind
-  collision reads as the machine Offline; `FailureCause::Io(InvalidData |
-  Unsupported)` maps to `Incompatible`, so an untyped local IO error of those kinds
-  (a non-UTF-8 path, a refused `set_nonblocking`) is shown as the machine running an
-  incompatible shepr.
+  entry); the shell should set the entry only when the request was taken, which
+  needs the shell reducers to take the outcome (commented at `hub.rs`).
 
 ## DIAG-027 - Integration errors travel as downcast payloads inside `io::Error`
 

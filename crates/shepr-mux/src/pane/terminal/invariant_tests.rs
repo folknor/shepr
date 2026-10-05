@@ -264,15 +264,33 @@ fn mixed_reflow_reads_are_stable_and_chunk_independent() {
         assert_eq!(whole.observe(), expected, "reads must not mutate semantics");
         assert_eq!(fragmented.observe(), expected);
         // alacritty reflows bottom-anchored and keeps the blank row below the
-        // cursor, so at 8x4 the linked rows scroll into history. The link must
-        // survive every reflow, visible or not.
+        // cursor, so linked rows can move into history. Scrolling the retained
+        // rows back into view must still expose their hyperlink.
+        let whole_metrics = whole.pane.scroll_metrics().expect("scroll metrics");
+        let fragmented_metrics = fragmented.pane.scroll_metrics().expect("scroll metrics");
+        assert_eq!(
+            whole_metrics.max_offset_from_bottom,
+            fragmented_metrics.max_offset_from_bottom
+        );
+        whole
+            .pane
+            .set_scroll_offset_from_bottom(whole_metrics.max_offset_from_bottom);
+        fragmented
+            .pane
+            .set_scroll_offset_from_bottom(fragmented_metrics.max_offset_from_bottom);
+        // The cursor is not shown while scrolled back, so compare the rows,
+        // not a full observation.
+        let historical = whole.links();
         assert!(
-            whole
-                .pane
-                .recent_ansi(64)
-                .contains("https://example.test/reflow"),
+            historical
+                .iter()
+                .any(|(_, _, uri)| uri == "https://example.test/reflow"),
             "reflow at {width}x{height} must retain the link"
         );
+        assert_eq!(fragmented.links(), historical);
+        assert_eq!(fragmented.full_cells(), whole.full_cells());
+        whole.pane.scroll_reset();
+        fragmented.pane.scroll_reset();
         if step == 0 {
             assert!(
                 !expected.links.is_empty(),

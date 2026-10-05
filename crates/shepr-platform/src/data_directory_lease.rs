@@ -10,22 +10,23 @@ pub struct DataDirectoryLease {
 }
 
 impl DataDirectoryLease {
-    /// Creates and locks `file_name` in `directory`, returning a busy error if
+    /// Creates and locks the lease at `path`, returning a busy error if
     /// another process already owns it.
-    pub fn acquire(directory: &Path, file_name: &str) -> Result<Self, LeaseAcquireError> {
-        if file_name.is_empty() || file_name == "." || file_name == ".." || file_name.contains('/')
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "lease file name must be a single path component",
-            )
-            .into());
-        }
+    pub fn acquire(path: &Path) -> Result<Self, LeaseAcquireError> {
+        let Some(file_name) = path.file_name() else {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "lease path must name a file").into(),
+            );
+        };
+        let directory = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
 
         crate::create_private_directory_all(directory)?;
         let directory = std::fs::canonicalize(directory)?;
-        let path = directory.join(file_name);
-        let Some(lock) = try_acquire(&path)? else {
+        let canonical_path = directory.join(file_name);
+        let Some(lock) = try_acquire(&canonical_path)? else {
             return Err(LeaseAcquireError::Held(DataDirectoryLeaseHeld {
                 directory,
             }));

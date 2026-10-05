@@ -51,6 +51,10 @@ pub(crate) struct AppState {
     /// surface is active, and not a mirror of any client's view) and, through
     /// each workspace, the geometry its PTYs were last laid out in and the
     /// panes with their terminal state.
+    // App siblings still read this directly (including session capture and
+    // title/resume observation). Making it private requires moving reducers
+    // beneath this module and converting those callers together. Until then,
+    // projected mutations must use named reducers, which own invalidation.
     pub(super) workspaces: WorkspaceSet,
     /// Immutable settings resolved from the launch configuration.
     pub(super) settings: AppSettings,
@@ -182,6 +186,15 @@ impl AppState {
     /// The session's workspaces, their order, IDs and bookmark.
     pub(crate) fn workspaces(&self) -> &WorkspaceSet {
         &self.workspaces
+    }
+
+    /// Reserves a workspace identity without exposing the mutable set to
+    /// launch orchestration. Nothing is projected until creation commits.
+    pub(crate) fn prepare_workspace(
+        &mut self,
+        cwd: &shepr_core::absolute_path::AbsolutePath,
+    ) -> Option<shepr_mux::workspace::PreparedWorkspace> {
+        self.workspaces.prepare_workspace(cwd)
     }
 
     /// The pane `pane_id` and the workspace that owns it; `None` for a closed

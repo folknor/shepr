@@ -82,10 +82,6 @@ pub(crate) const BRIDGE_CONNECTION_SHUTDOWN_GRACE: Duration = Duration::from_mil
 /// busy loop.
 pub(crate) const BRIDGE_CHILD_POLL: Duration = Duration::from_millis(50);
 
-/// Delay after a bridge socket write would block. A short pause lets the
-/// local reader catch up without spinning continuously.
-pub(crate) const BRIDGE_IO_POLL: Duration = Duration::from_millis(1);
-
 /// Buffer used by each bridge transfer direction. The chunk amortizes IO
 /// calls while keeping temporary memory for each worker bounded.
 pub(crate) const BRIDGE_IO_BUFFER_BYTES: usize = 16 * 1024;

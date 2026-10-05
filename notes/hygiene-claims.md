@@ -23,18 +23,6 @@ and says how the fixed form could be enforced.
 
 ## Tests
 
-## CLAIM-001 - The session snapshot version test cannot fail on the version
-
-Reported by: persistence.
-
-`schema::tests::snapshot_types_reject_wrong_version_during_deserialization` parses
-`{"version":2,"workspaces":[],"active":null}` and `{"version":2,"workspaces":[]}`
-and asserts an error. Neither has `host_theme`, a required key, so both fail with
-version 1 too; the test passes with `SnapshotVersion`'s check deleted, leaving the
-`SNAPSHOT_VERSION` claim ("Deserialization rejects every other value") unverified.
-Fix: build a valid file, change only `version`, assert the error, and assert the
-same file parses with `SNAPSHOT_VERSION`. See CLAIM-020 (the version was not bumped).
-
 ## CLAIM-002 - Persistence tests that pass vacuously, use a developer's paths, or fight the scratch convention
 
 Reported by: persistence.
@@ -202,44 +190,18 @@ VAL-027 safe to change.
 
 Reported by: agent-state.
 
-- `priority_ordered_detection_agrees_with_full_explain` and
-  `gate_region_reads_a_different_input_than_its_rule` use a test-local
-  `detect_loaded`, a copy of `detect_with_manifest`'s loop; call the production one.
-- `all_bundled_manifests_parse_validate_and_compile`: the `None` branch asserts
-  `screen_manifest_agents().all(|c| c != agent)`, but that set is defined as the
-  filter of `bundled_manifest_source(..).is_some()`.
-- `explain_for_label_evaluates_the_bundled_manifest_and_names_an_unknown_label`
-  compares `explain_for_label` with `explain`, which both call `explain_with_input`.
-- `agents_without_a_screen_manifest_are_unknown_not_idle` loops over Omp and
-  Mastracode but calls `detect_with_manifest(.., None)`, which does not take the
-  agent.
-- `codex_no_match_is_unknown_without_changing_other_agents`: its second half cannot
-  be changed by anything the test does (a leftover from the removed local manifest
-  overrides).
-- `fallback_idle_does_not_override_other_agent_hook_working` uses Codex for both the
-  detector and the hook.
 - `visible_working_does_not_override_hook_idle_for_same_agent` and
   `visible_working_does_not_override_full_lifecycle_hook_idle` pass no visible-working
-  flag; ownership has no such input (BUG-031).
-- `set_detected_state_with_visible_blocker(.., _ignored_screen_idle, ..)` takes an
-  ignored parameter that tests pass `true` to as if it meant something.
+  flag; ownership has no such input (BUG-031). They wait on that decision, and so does
+  the clock-reading `set_detected_state` helper they use (CLAIM-012).
 
 ## CLAIM-012 - Detection tests that depend on wall-clock timing
 
 Reported by: agent-state.
 
-- `foreground_job_detects_sleep`, `foreground_job_detects_shell_running_command` and
-  `foreground_job_detects_agent_behind_shell_wrapper` sleep 50 to 100 ms and hope the
-  child became the foreground group; poll `foreground_job` with a deadline instead.
-- `state_changed_event_waits_for_queue_space_instead_of_dropping` relies on 20 ms and
-  50 ms `tokio::time::timeout`s; use paused tokio time.
-- `core_contention_does_not_park_the_async_worker` measures real elapsed time.
-- The ownership test seams `set_hook_authority_with_session_ref`,
-  `set_agent_session_ref`, `set_agent_session_ref_for_session_start` and
-  `set_detected_state*` call `Instant::now()` inside, while tests use
-  `Instant::now() + 1s` as "later", so results depend on the test running in under a
-  second (for example `fresh_detected_process_keeps_old_session_suppressed_after_process_exit`).
-  Every seam should take its instant.
+Every ownership seam now takes its instant except the no-time `set_detected_state`
+helper, which still calls `Instant::now()` because the two pending visible-working
+tests (CLAIM-011) use it; the exception is commented at the seam.
 
 ## CLAIM-013 - Integration tests that cannot fail or guard removed things
 
@@ -429,19 +391,6 @@ Reported by: integrations, server-lifecycle, remote.
 
 ## Claims nothing enforces
 
-## CLAIM-020 - The session file's version field claims a role it no longer has
-
-Reported by: persistence.
-
-The pane-history removal changed `session.json` from an envelope to the bare layout
-object and the version stayed `1`. Old files still fail, but through
-`deny_unknown_fields` and missing fields, not the version check, so
-`SessionSnapshot::version`'s "Format version - used to detect incompatible changes" is
-false: the last incompatible change kept the number. Given `deny_unknown_fields`,
-required keys and no migration, the field adds nothing; bump it on every format
-change or delete it. Enforceable by a golden fixture per version (changing the schema
-without a new fixture and a bump fails), not by a text rule.
-
 ## CLAIM-021 - Persistence doc comments that are false today
 
 Reported by: persistence.
@@ -583,16 +532,6 @@ Reported by: integrations.
   the 500 ms number: two copies of one paragraph no test reads.
 - True and unenforced: `opencode.js`'s "it never runs alongside this server plugin"
   (rests on `ownsLocalLifecycle` and OpenCode's launch shapes).
-
-## CLAIM-028 - Documentation restates numbers the code owns
-
-Reported by: workspace-model, restore-resume.
-
-`docs/config.md` `[server]`: "each at most 4096, and together at most 4194304 cells"
-(`MAX_TERMINAL_GRID_DIMENSION`, `MAX_TERMINAL_GRID_CELLS`); `default-server.toml`
-`[advanced]`: "keep at least 1000 lines" (`MIN_HISTORY_LINES`); the `docs/config.md`
-defaults tables (VAL-007). True today, checked by nothing. Reword ("within the shared
-grid limits") or add a test that compares the docs with the constants.
 
 ## CLAIM-029 - The environment registry claims every variable a shepr process interprets
 

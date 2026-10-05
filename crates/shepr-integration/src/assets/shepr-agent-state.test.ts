@@ -9,7 +9,6 @@ const originalArgv = process.argv;
 const originalEnvironment = {
   SHEPR_ENV: process.env.SHEPR_ENV,
   SHEPR_BUILD_PROFILE: process.env.SHEPR_BUILD_PROFILE,
-  SHEPR_OMP_IDLE_DEBOUNCE_MS: process.env.SHEPR_OMP_IDLE_DEBOUNCE_MS,
   SHEPR_PANE_ID: process.env.SHEPR_PANE_ID,
   SHEPR_SOCKET_PATH: process.env.SHEPR_SOCKET_PATH,
   OMPCODE: process.env.OMPCODE,
@@ -515,11 +514,10 @@ async function startDroppedFirstResponseServer(name: string) {
 
 test("Oh My Pi retries working before a queued idle state", async () => {
   const { attemptedRequests } = await startDroppedFirstResponseServer("omp-retry");
-  process.env.SHEPR_OMP_IDLE_DEBOUNCE_MS = "0";
   const { handlers, pi } = createExtensionHarness();
 
   const { default: install } = await importFresh("./omp/shepr-agent-state.ts");
-  install(pi);
+  install(pi, { idleDebounceMs: 0 });
 
   const context = {
     hasUI: true,
@@ -546,11 +544,10 @@ test("Oh My Pi retries working before a queued idle state", async () => {
 
 test("Oh My Pi keeps working when a turn ends with a scheduled continuation", async () => {
   const requests = await startRecordingServer("omp-will-continue");
-  process.env.SHEPR_OMP_IDLE_DEBOUNCE_MS = "0";
   const { handlers, pi } = createExtensionHarness();
 
   const { default: install } = await importFresh("./omp/shepr-agent-state.ts");
-  install(pi);
+  install(pi, { idleDebounceMs: 0 });
 
   let idle = true;
   const context = {
@@ -606,10 +603,9 @@ test("Oh My Pi does not report state without a session reference", async () => {
 
 test("Oh My Pi reports session-bound state", async () => {
   const requests = await startRecordingServer("omp-contract");
-  process.env.SHEPR_OMP_IDLE_DEBOUNCE_MS = "0";
   const { handlers, pi } = createExtensionHarness();
   const { default: install } = await importFresh("./omp/shepr-agent-state.ts");
-  install(pi);
+  install(pi, { idleDebounceMs: 0 });
 
   handlers.get("session_start")?.(
     { reason: "startup" },

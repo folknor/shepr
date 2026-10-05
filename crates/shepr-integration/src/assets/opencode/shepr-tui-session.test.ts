@@ -5,6 +5,19 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expectContractTrace } from "../../contract_traces.ts";
 
+// The plugin's timings are generated from shepr-integration's limits. They are
+// read from the asset's text rather than exported by it: OpenCode-family
+// loaders may treat every export of a plugin module as a plugin.
+const TUI_SOURCE = await readFile(new URL("./shepr-tui-session.js", import.meta.url), "utf8");
+function assetTiming(name: string): string {
+  const match = TUI_SOURCE.match(new RegExp(`^const ${name} = (.+);$`, "m"));
+  if (!match) throw new Error(`shepr-tui-session.js does not define ${name}`);
+  return match[1];
+}
+const ROUTE_POLL_INTERVAL_MS = Number(assetTiming("ROUTE_POLL_INTERVAL_MS"));
+const RETRY_WAIT_MS = Number(assetTiming("RETRY_WAIT_MS"));
+const SELECTION_RETRY_DELAYS_MS: number[] = JSON.parse(assetTiming("SELECTION_RETRY_DELAYS_MS"));
+
 const requests: unknown[] = [];
 const activeDisposers: Array<() => void> = [];
 const activeTempDirs: string[] = [];
@@ -431,7 +444,7 @@ test("V1 retains replies received between failed hydration and its retry", async
   await (await loadPlugin()).tui(tui.api);
   await flushReports();
   tui.emit("permission.replied", { sessionID: "child", requestID: "p" });
-  await new Promise((resolve) => setTimeout(resolve, 650));
+  await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS + 50));
   expect(states().at(-1)).toBe("idle");
   expect(states()).not.toContain("blocked");
 });
@@ -511,7 +524,7 @@ test("V1 unknown tool evidence remains blocked and retries failed message reads"
   await flushReports();
   expect(states().at(-1)).toBe("blocked");
   tui.messages.set("m", { parts: [{ type: "tool", callID: "call", state: { status: "error" } }] });
-  await new Promise((resolve) => setTimeout(resolve, 650));
+  await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS + 50));
   expect(states().at(-1)).toBe("idle");
 });
 
@@ -546,7 +559,7 @@ test("V1 reselecting an aborted request does not resurrect it or poll completed 
   await flushReports();
   expect(states()).not.toContain("blocked");
   const reads = tui.calls.length;
-  await new Promise((resolve) => setTimeout(resolve, 650));
+  await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS + 50));
   expect(tui.calls).toHaveLength(reads);
 });
 
@@ -564,7 +577,7 @@ test("V1 home and selected-session deletion settle authority and retry a dropped
     } else tui.emit("session.deleted", { info: { id: "root" } });
     await flushReports();
     failConnections = false;
-    await new Promise((resolve) => setTimeout(resolve, 650));
+    await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS + 50));
     expect(states().at(-1)).toBe("idle");
     tui.dispose();
   }
@@ -730,14 +743,14 @@ test("V2 resends the latest state after a failed delivery", async () => {
   activeDisposers.push(dispose);
   await flushReports();
   // Exhaust the selection retry schedule so only the event report remains.
-  await new Promise((resolve) => setTimeout(resolve, 1_600));
+  await new Promise((resolve) => setTimeout(resolve, SELECTION_RETRY_DELAYS_MS.reduce((sum, delay) => sum + delay, 0) + ROUTE_POLL_INTERVAL_MS));
   requests.length = 0;
   tui.emit("session.execution.started", { sessionID: "a" });
   await flushReports();
   failConnections = true;
   tui.emit("session.execution.succeeded", { sessionID: "a" });
   const resend = waitForStateReport();
-  await new Promise((resolve) => setTimeout(resolve, 700));
+  await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS + 2 * ROUTE_POLL_INTERVAL_MS));
   failConnections = false;
   await resend;
   expect(states().at(-1)).toBe("idle");

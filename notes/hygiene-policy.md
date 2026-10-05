@@ -259,24 +259,6 @@ Reported by: agent-state.
   "agent changed" log line; `foreground_group_leader_job` and then `foreground_job` read
   `/proc` twice per probe when the leader is unidentified. Fine at current cadences.
 
-## POL-019 - Per-target integration behaviour is scattered over seven modules instead of carried by the spec
-
-Reported by: integrations.
-
-`targets::install` picks the artifact role by `match target` (`Claude | Copilot |
-Devin => Settings`, `Cursor => UpdatedHooks`), inserts Cursor's `version` by
-`target == Target::Cursor` (now a positional `cursor_version: bool` to the shared
-`install_json`), hard-codes "mastracode hooks file" for any
-`HooksRoot::Document` target, and checks OMP against Pi; `missing_agent_directory` has
-its own name table; `registration::expected_events` has `matches!(target, Copilot |
-Devin | Droid)`; `registry::action_label` special-cases Antigravity;
-`registry::agent_directory` special-cases Pi and OMP; `JsonShape::NestedClaude` applies
-the SessionStart matcher to every Claude event (correct only while Claude registers one
-event). `DirectoryKey` is a second enum restating `IntegrationTarget`. Fix: the spec row
-carries role, document root description, extra required keys, presence directory,
-matcher source and the "decodes every event" flag; the per-site matches go. Once the rows
-carry it, the exhaustive `spec_for` match is the check.
-
 ## POL-021 - Three hand-written delivery retry policies in the plugin kits
 
 Reported by: integrations.
@@ -351,7 +333,9 @@ Reported by: remote.
   directories) whose correctness rests on calling `release_ssh_resources_before_exit`
   once, after the loop, before exit (documented call order, not structural).
 - `server_wait` watches the whole runtime directory; on a host that is also a client,
-  every lock sidecar and managed config directory created there wakes
+  (`shepr-platform` `DirectoryWatch` drains events without exposing entry names, so
+  this needs a named-event API there first) every lock sidecar and managed config
+  directory created there wakes
   the wait for a pointless presence check. Filter inotify events by the server socket's
   name.
 - `MachineSshPreflight::check` holds a machine's probe mutex for the whole bounded SSH
@@ -359,31 +343,18 @@ Reported by: remote.
   deadline lock are two more mutexes around what could be a `Vec<MachineProbe>` handed
   to scoped threads by `&mut`, removing all three.
 
-## POL-027 - Shell-projection invalidation has three mechanisms and no owner, and reducers are bypassed
+## POL-027 - Some projection invalidation is still manual, and `AppState` fields are still open
 
 Reported by: workspace-model.
 
-Some `AppState` reducers advance the projection revision themselves
-(`TerminalCwdReported`, `update_terminal_state`, `sync_terminal_titles`); most do not
-(`focus_pane`, `commit_pane_split`, `commit_workspace_creation`, `rename_*`,
-`move_workspace`, `remove_pane`, `close_workspace`, `swap_panes`, `toggle_pane_zoom`,
-`set_pane_input`). For those, the endpoint path relies on `ViewMutation` / `*Outcome` ->
-`EndpointEffects::shell_projection_changed` and on
-`handle_endpoint_app_command_with_render` marking afterwards; non-endpoint callers
-remember by hand (`apply_pane_removal`, `create_default_workspace`,
-`handle_git_status_refreshed`, `handle_pane_launch_settled`'s failure arm) or forget
-(BUG-049). Every caller then diffs the revision as well. The 1 s timer rebuild in
-`render.rs` masks any miss, so no test notices one. Fix: every reducer that changes
-projected data advances the revision itself (session-dirty marking already works that
-way), and `EndpointEffects` keeps only surface and topology facts.
-
-Callers inside `app/` also bypass the reducers through `pub(super)` fields:
-`handle_workspace_create` sets the name with `workspace.set_name` +
-`logging::workspace_renamed` instead of `AppState::rename_workspace`; `pane_launch.rs`
-writes the terminal cwd and resume state directly; `close_workspace` reimplements
-`forget_removed_panes`. Each mutation's bookkeeping (dirty marks, logs, authority drain)
-is re-decided per site. Making the fields private to `state.rs` forces every mutation
-through a named reducer.
+The `AppState` reducers now advance the projection revision themselves and
+`EndpointEffects` no longer carries a projection flag. What remains: manual
+invalidation in `app/mod.rs`, `terminal_titles.rs`, `agent_resume.rs` and
+`app/session.rs`; and `AppState`'s `pub(super)` fields, which let callers in `app/`
+mutate past the reducers (the reason they stay open is commented beside
+`AppState.workspaces`). Making the fields private to `state.rs` forces every mutation
+through a named reducer. The 1 s timer rebuild stays regardless, for `/proc` cwd
+observations no event reports.
 
 ## POL-028 - Label validation is decided at different layers per command
 

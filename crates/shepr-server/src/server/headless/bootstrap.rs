@@ -205,7 +205,8 @@ fn start_server(
     // panes whose layout can never be saved.
     shepr_mux::persist::check_session_target(&lease).map_err(RunServerError::SessionTarget)?;
     on_step(StartupStep::LeaseHeld);
-    let file_logging = start_logging(data_dir)?;
+    let server_log = paths.server_log();
+    let file_logging = start_logging(&server_log)?;
     // Compile the bundled detection manifests off the tokio loop, before App
     // restores PTYs whose detection workers consult them, and after logging
     // starts, so a bundled manifest that fails to compile reaches the log.
@@ -256,18 +257,15 @@ fn start_server(
     })
 }
 
-/// Starts this server process's file logging under `data_dir` and, when the
+/// Starts this server process's file logging at `server_log` and, when the
 /// log file opened, routes panics to it. A log file that cannot be opened
 /// does not stop the server; the ready notice says so instead of naming a log
 /// that is not being written.
 fn start_file_logging(
-    data_dir: &std::path::Path,
+    server_log: &std::path::Path,
 ) -> Result<shepr_platform::logging::FileLoggingOutcome, RunServerError> {
-    let file_logging = shepr_platform::logging::init_file_logging(
-        data_dir,
-        shepr_platform::logging::SERVER_LOG_FILE,
-    )
-    .map_err(RunServerError::Logging)?;
+    let file_logging =
+        shepr_platform::logging::init_file_logging(server_log).map_err(RunServerError::Logging)?;
     if file_logging.unavailable.is_none() {
         log_panics();
     }
@@ -434,8 +432,8 @@ mod startup_tests {
         let started = start_server(
             &config,
             &paths,
-            |data_dir| {
-                assert_eq!(data_dir, paths.data_dir());
+            |server_log| {
+                assert_eq!(server_log, paths.server_log().as_path());
                 lease_held_and_unbound("file logging");
                 observed.borrow_mut().push("FileLogging".to_owned());
                 Ok(shepr_platform::logging::FileLoggingOutcome { unavailable: None })

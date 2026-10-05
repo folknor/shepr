@@ -196,6 +196,87 @@ mod tests {
     }
 
     #[test]
+    fn server_config_documented_defaults_match_defaults() {
+        let mut in_server_config = false;
+        let mut section = None;
+        let mut written_section = None;
+        let mut document = String::new();
+        let mut documented_fields = BTreeSet::new();
+
+        let docs = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/config.md"),
+        )
+        .expect("read docs/config.md");
+        for line in docs.lines() {
+            let line = line.trim();
+            if line == "# server.toml" {
+                in_server_config = true;
+                section = None;
+                continue;
+            }
+            if !in_server_config {
+                continue;
+            }
+            if let Some(header) = line.strip_prefix("## [") {
+                let Some((table, _)) = header.split_once(']') else {
+                    continue;
+                };
+                section = Some(table);
+                continue;
+            }
+            let Some(section) = section else {
+                continue;
+            };
+            if !line.starts_with('|') {
+                continue;
+            }
+            let columns = line.split('|').map(str::trim).collect::<Vec<_>>();
+            if columns.len() < 5 {
+                continue;
+            }
+            let Some(key) = columns[1]
+                .strip_prefix('`')
+                .and_then(|key| key.strip_suffix('`'))
+            else {
+                continue;
+            };
+            let path = format!("{section}.{key}");
+            documented_fields.insert(path.clone());
+
+            // The effective shell default is supplied by the process
+            // environment, so it has no raw ServerConfig value to compare.
+            if path == "terminal.default_shell" {
+                continue;
+            }
+
+            let default = columns[3].trim_matches('`');
+            if written_section != Some(section) {
+                document.push('[');
+                document.push_str(section);
+                document.push_str("]\n");
+                written_section = Some(section);
+            }
+            document.push_str(key);
+            document.push_str(" = ");
+            document.push_str(default);
+            document.push('\n');
+        }
+
+        let mut fields = server_config_field_paths(ServerConfig::default());
+        fields.remove("server");
+        fields.remove("terminal");
+        fields.remove("session");
+        fields.remove("ui");
+        fields.remove("advanced");
+        fields.remove("experimental");
+        assert_eq!(documented_fields, fields);
+
+        let documented: ServerConfig =
+            toml::from_str(&document).expect("documented defaults parse");
+        assert_eq!(documented, ServerConfig::default());
+    }
+
+    #[test]
     fn default_template_documents_every_config_field() {
         let mut config = ClientConfig::default();
         config.machines.push(MachineConfig {
@@ -402,7 +483,7 @@ mod tests {
         });
         record_config_fields!(fields, session, "session", SessionConfig {
             resume_agents_on_restore => _,
-            startup_per_agent_delay as "startup_per_agent_delay_ms" => _,
+            agent_resume_spacing as "agent_resume_spacing_ms" => _,
         });
         record_config_fields!(fields, server, "server", HeadlessConfig {
             headless_cols => _,

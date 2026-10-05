@@ -190,7 +190,9 @@ fn stop_plan(state: &ServerStatus) -> io::Result<StopPlan> {
         | ServerStatus::Running(identity)
         | ServerStatus::Stopping(identity) => Ok(StopPlan::Stop(identity.boot_id.clone())),
         ServerStatus::Unresponsive => Err(io::Error::other(
-            "the server there is not answering, so it cannot be stopped by its boot; stop it on that host",
+            shepr_launch::EndpointFailure::remote_repair(
+                "the server there is not answering, so it cannot be stopped by its boot; stop it on that host",
+            ),
         )),
     }
 }
@@ -268,6 +270,10 @@ mod tests {
                 StopPlan::Stop(identity.boot_id.clone())
             );
         }
-        assert!(stop_plan(&ServerStatus::Unresponsive).is_err());
+        let error = stop_plan(&ServerStatus::Unresponsive).expect_err("unresponsive server");
+        assert_eq!(
+            shepr_launch::EndpointFailure::from_error(&error).cause(),
+            shepr_launch::FailureCause::RemoteRepair
+        );
     }
 }

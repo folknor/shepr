@@ -24,6 +24,7 @@ impl AppState {
             }
         };
         self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
         Some(WorkspaceCreationOutcome {
             workspace_id,
             root_pane,
@@ -50,6 +51,7 @@ impl AppState {
             }
         };
         self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
         Some(PaneCreationOutcome {
             workspace_id,
             pane_id,
@@ -68,6 +70,7 @@ impl AppState {
         }
         if ws.focus_pane(pane_id) {
             self.mark_session_dirty();
+            self.mark_shell_projection_dirty();
             return ViewMutation::Focus;
         }
         ViewMutation::Unchanged

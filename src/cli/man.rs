@@ -9,8 +9,6 @@
 
 mod render;
 
-use std::io::IsTerminal as _;
-
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser as _};
 use clap::{Arg, ArgMatches};
 use shepr_launch::invocation::{COMMAND_MAN, PROGRAM_NAME};
@@ -107,19 +105,11 @@ pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
 /// reads the environment.
 pub(super) fn run(command: &Command) -> super::CliResult<i32> {
     let out = match command.topic {
-        Some(topic) => render::render(topic.content(), !color_enabled()?),
+        Some(topic) => render::render(topic.content(), !super::color_enabled(&std::io::stdout())?),
         None => list_topics(),
     };
     print!("{out}");
     Ok(0)
-}
-
-/// Colour is on only when stdout is a terminal and `NO_COLOR` is unset or
-/// empty (no-color.org: any non-empty value turns colour off).
-fn color_enabled() -> super::CliResult<bool> {
-    let no_color = shepr_core::env::read_present(shepr_core::env::EnvVar::NoColor)
-        .map_err(std::io::Error::from)?;
-    Ok(!no_color && std::io::stdout().is_terminal())
 }
 
 fn list_topics() -> String {

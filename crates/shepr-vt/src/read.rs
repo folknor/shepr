@@ -96,50 +96,6 @@ impl Terminal {
             .screen_line(end.row)
             .and_then(|line| format::grid_point(grid, line, end.col))
             .ok_or(ReadError::RowNotRetained)?;
-        Ok(format::format_range(grid, start, end, Format::Plain))
-    }
-
-    /// A VT read for a range that lies inside one logical line's continuation
-    /// or ends inside a logical line, so a long line can be read a few rows
-    /// at a time. The read starts from the state `carry` holds (default at a
-    /// logical line start). With `open_end` the last row must be a
-    /// soft-wrapped row whose line continues in the next row: every cell of it
-    /// is emitted, nothing is closed or trimmed, and `carry` holds the state
-    /// the read of the next rows starts from. Joining such reads with no
-    /// separator gives exactly the bytes one read of the whole line gives.
-    /// Without `open_end` the range ends its line like any read, and `carry`
-    /// is left at the default. `carry` is unchanged on error.
-    ///
-    /// The text is not cut back to its last content: trailing blank lines stay
-    /// in it. The second value is the byte length the text has when cut there,
-    /// `None` when the range has no content at all, `Some(0)` when it only
-    /// finishes a line that began before it (a carry that has started) without
-    /// emitting a cell, and the whole length with `open_end`. The caller that
-    /// joins reads picks the end of the whole read from the last read that has
-    /// content.
-    pub fn read_ansi_screen_carrying(
-        &self,
-        start: Point<ScreenRow>,
-        end: Point<ScreenRow>,
-        carry: &mut format::AnsiCarry,
-        open_end: bool,
-    ) -> Result<(String, Option<usize>), ReadError> {
-        let grid = self.emu.term.grid();
-        let start = self
-            .screen_line(start.row)
-            .and_then(|line| format::grid_point(grid, line, start.col))
-            .ok_or(ReadError::RowNotRetained)?;
-        let end = self
-            .screen_line(end.row)
-            .and_then(|line| format::grid_point(grid, line, end.col))
-            .ok_or(ReadError::RowNotRetained)?;
-        Ok(format::format_range_carrying(
-            grid,
-            start,
-            end,
-            Format::Vt,
-            carry,
-            open_end,
-        ))
+        Ok(format::format_range(grid, start, end))
     }
 }

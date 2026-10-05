@@ -372,7 +372,10 @@ fn capture_shell_asset(
         let mut command = command_in_scratch("sh", "agent-integration-shell-asset");
         command.arg(script);
         // Hook assets report only from panes of a release server.
-        command.env("SHEPR_BUILD_PROFILE", "release");
+        command.env(
+            shepr_core::env::EnvVar::SheprBuildProfile.name(),
+            shepr_paths::BuildProfile::Release.marker(),
+        );
         if let Some(action) = step.action {
             command.arg(action);
         }

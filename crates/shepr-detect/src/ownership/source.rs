@@ -2307,8 +2307,9 @@ impl AgentOwnership {
         state: AgentState,
         session_ref: Option<shepr_agent::resume::AgentSessionRef>,
         seq: Option<u64>,
+        now: Instant,
     ) -> Option<AgentOwnershipMutation> {
-        self.set_hook_authority_at(source, agent_label, state, session_ref, seq, Instant::now())
+        self.set_hook_authority_at(source, agent_label, state, session_ref, seq, now)
     }
 }
 
@@ -2320,12 +2321,13 @@ impl AgentOwnership {
         agent_label: &str,
         session_ref: Option<shepr_agent::resume::AgentSessionRef>,
         seq: Option<u64>,
+        now: Instant,
     ) -> Option<AgentOwnershipMutation> {
         self.set_agent_session_ref_at(
             ReportOrigin::parse(source, agent_label).ok()?,
             session_ref,
             seq,
-            Instant::now(),
+            now,
         )
     }
 
@@ -2336,54 +2338,67 @@ impl AgentOwnership {
         session_ref: Option<shepr_agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         session_start_source: Option<&str>,
+        now: Instant,
     ) -> Option<AgentOwnershipMutation> {
         self.set_agent_session_ref_for_typed_start_source_at(
             ReportOrigin::parse(source, agent_label).ok()?,
             session_ref,
             seq,
             ReportedSessionStart::from_wire(session_start_source),
-            Instant::now(),
+            now,
         )
     }
 }
 
 #[cfg(test)]
 impl AgentOwnership {
+    /// Convenience for the two visible-working fixtures whose expected behavior
+    /// is pending an owner decision. Time-sensitive ownership tests use the
+    /// explicit `set_detected_state_at` seam below.
     pub fn set_detected_state(
         &mut self,
         agent: Option<Agent>,
         fallback_state: AgentState,
     ) -> Option<EffectiveStateChange> {
-        self.set_detected_state_with_visible_blocker(agent, fallback_state, false, false)
+        self.set_detected_state_at(agent, fallback_state, Instant::now())
+    }
+
+    pub fn set_detected_state_at(
+        &mut self,
+        agent: Option<Agent>,
+        fallback_state: AgentState,
+        now: Instant,
+    ) -> Option<EffectiveStateChange> {
+        self.confirmed_detection_for_test(agent, fallback_state, false, false, now)
+            .effective_state_change
     }
 
     pub fn set_detected_state_with_mutation(
         &mut self,
         agent: Option<Agent>,
         fallback_state: AgentState,
+        now: Instant,
     ) -> AgentOwnershipMutation {
-        self.set_detected_state_with_screen_signals_at(
-            agent,
-            fallback_state,
-            false,
-            false,
-            Instant::now(),
-        )
+        self.set_detected_state_with_screen_signals_at(agent, fallback_state, false, false, now)
     }
 
+    /// Idle visibility is not a separate ownership signal; this seam supplies
+    /// only the screen state, visible blocker, and process-exit inputs used by
+    /// the production transition.
     pub fn set_detected_state_with_visible_blocker(
         &mut self,
         agent: Option<Agent>,
         fallback_state: AgentState,
         visible_blocker: bool,
         process_exited: bool,
+        now: Instant,
     ) -> Option<EffectiveStateChange> {
         self.confirmed_detection_for_test(
             agent,
             fallback_state,
             visible_blocker,
             process_exited,
-            Instant::now(),
+            now,
         )
         .effective_state_change
     }
@@ -2411,6 +2426,7 @@ impl AgentOwnership {
 mod pane_exit_tests {
     use super::*;
     use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
+    use std::time::Duration;
 
     fn running_terminal() -> AgentOwnership {
         let mut terminal = AgentOwnership::new();
@@ -2609,6 +2625,7 @@ mod pane_exit_tests {
             Some(AgentSessionRef::id("late-new").expect("session id")),
             Some(99),
             Some("new"),
+            now + Duration::from_millis(1),
         );
         assert!(terminal.hook_authority.is_none());
         assert!(terminal.effective_agent().is_none());

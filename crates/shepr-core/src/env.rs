@@ -75,9 +75,6 @@ pub const SHEPR_ASSET_INTERNAL_NAMES: &[&str] = &[
     "SHEPR_ACTION",
     "SHEPR_HOOK_INPUT_FILE",
     "SHEPR_HOOK_SEQ",
-    // Tunables only the omp extension reads.
-    "SHEPR_OMP_IDLE_DEBOUNCE_MS",
-    "SHEPR_OMP_RETRY_GRACE_MS",
 ];
 
 /// Declares a closed vocabulary of environment variable names: the enum, its

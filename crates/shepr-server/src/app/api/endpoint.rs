@@ -24,13 +24,11 @@ pub(crate) enum Invalidation {
 /// These describe committed changes, not what a command could change according
 /// to its protocol traits. The headless loop uses the topology fields to decide
 /// whether client PTY sources need reconciling, while the app uses the
-/// projection and surface fields to request rendering.
+/// surface fields to request rendering. Projection invalidation belongs to AppState.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EndpointEffects {
     /// A surface change owed only to clients presenting this pane.
     pub(crate) pane_viewers: Option<PaneId>,
-    /// The client-shell snapshot derived from shared app state changed.
-    pub(crate) shell_projection_changed: bool,
     /// A rendered pane surface changed without necessarily changing the shell
     /// snapshot (for example, scroll position or split geometry).
     pub(crate) pane_surface_changed: bool,
@@ -54,8 +52,7 @@ impl EndpointEffects {
     }
 
     pub(crate) const fn needs_shared_render(self) -> bool {
-        self.shell_projection_changed
-            || (self.pane_surface_changed && self.pane_viewers.is_none())
+        (self.pane_surface_changed && self.pane_viewers.is_none())
             || self.changes_immediate_pty_sources()
             || self.workspace_order_changed
     }
@@ -81,13 +78,8 @@ impl From<crate::app::actions::ViewMutation> for EndpointEffects {
     fn from(outcome: crate::app::actions::ViewMutation) -> Self {
         use crate::app::actions::ViewMutation;
         match outcome {
-            ViewMutation::Unchanged => Self::default(),
-            ViewMutation::Metadata => Self {
-                shell_projection_changed: true,
-                ..Self::default()
-            },
+            ViewMutation::Unchanged | ViewMutation::Metadata => Self::default(),
             ViewMutation::Focus => Self {
-                shell_projection_changed: true,
                 pane_surface_changed: true,
                 focus_changed: true,
                 ..Self::default()
@@ -98,12 +90,10 @@ impl From<crate::app::actions::ViewMutation> for EndpointEffects {
                 ..Self::default()
             },
             ViewMutation::WorkspaceOrder => Self {
-                shell_projection_changed: true,
                 workspace_order_changed: true,
                 ..Self::default()
             },
             ViewMutation::Swap { focus_changed } => Self {
-                shell_projection_changed: true,
                 pane_surface_changed: true,
                 focus_changed,
                 layout_changed: true,
@@ -116,7 +106,6 @@ impl From<crate::app::actions::ViewMutation> for EndpointEffects {
 impl From<&crate::app::actions::WorkspaceCreationOutcome> for EndpointEffects {
     fn from(_: &crate::app::actions::WorkspaceCreationOutcome) -> Self {
         Self {
-            shell_projection_changed: true,
             pane_surface_changed: true,
             layout_changed: true,
             workspace_membership_changed: true,
@@ -128,7 +117,6 @@ impl From<&crate::app::actions::WorkspaceCreationOutcome> for EndpointEffects {
 impl From<&crate::app::actions::WorkspaceRemovalOutcome> for EndpointEffects {
     fn from(_: &crate::app::actions::WorkspaceRemovalOutcome) -> Self {
         Self {
-            shell_projection_changed: true,
             pane_surface_changed: true,
             layout_changed: true,
             workspace_membership_changed: true,
@@ -140,7 +128,6 @@ impl From<&crate::app::actions::WorkspaceRemovalOutcome> for EndpointEffects {
 impl From<&crate::app::actions::PaneCreationOutcome> for EndpointEffects {
     fn from(_: &crate::app::actions::PaneCreationOutcome) -> Self {
         Self {
-            shell_projection_changed: true,
             pane_surface_changed: true,
             focus_changed: true,
             layout_changed: true,
@@ -152,7 +139,6 @@ impl From<&crate::app::actions::PaneCreationOutcome> for EndpointEffects {
 impl From<&crate::app::actions::PaneRemovalOutcome> for EndpointEffects {
     fn from(outcome: &crate::app::actions::PaneRemovalOutcome) -> Self {
         Self {
-            shell_projection_changed: true,
             pane_surface_changed: true,
             focus_changed: outcome.focus_changed,
             layout_changed: true,
@@ -166,9 +152,6 @@ impl From<&crate::app::actions::PaneRemovalOutcome> for EndpointEffects {
 impl From<crate::app::actions::PaneZoomOutcome> for EndpointEffects {
     fn from(outcome: crate::app::actions::PaneZoomOutcome) -> Self {
         Self {
-            // The projection carries each workspace's zoom, so a zoom change
-            // moves it as well as a focus change.
-            shell_projection_changed: outcome.changed || outcome.focus_changed,
             pane_surface_changed: outcome.changed || outcome.focus_changed,
             focus_changed: outcome.focus_changed,
             layout_changed: outcome.changed,

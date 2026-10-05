@@ -253,6 +253,25 @@ impl ClientShellState {
         )
     }
 
+    /// The endpoint could not open the saved session to make its required
+    /// recovery copy, so it will not save again until restarted.
+    pub(crate) fn receive_session_saves_blocked_on_backup(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        boot_id: &shepr_protocol::BootId,
+    ) -> bool {
+        self.queue_boot_notice(
+            endpoint_id,
+            boot_id,
+            BootNoticeCode::SessionSavesBlockedOnBackup,
+            "session saves blocked",
+            "The server cannot open the saved session file to make its required recovery copy. \
+             Check the server log for its path, fix its access permissions, and restart the server. \
+             Layout changes made meanwhile will not be restored."
+                .to_owned(),
+        )
+    }
+
     /// Queues a card an endpoint's snapshot carries for its whole boot, once
     /// per boot and `code`.
     fn queue_boot_notice(

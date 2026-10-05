@@ -146,9 +146,6 @@ impl App {
                 };
                 (result, navigate, effects)
             });
-        if effects.shell_projection_changed && !projection_changed {
-            self.state.mark_shell_projection_dirty();
-        }
         let invalidation = effects.invalidation(projection_changed);
         EndpointOutcome {
             result,
@@ -376,7 +373,7 @@ mod tests {
 
         let (name, effects, render, before, after) = rename("  logs  ");
         assert_eq!(name, "logs");
-        assert!(effects.shell_projection_changed);
+        assert_eq!(effects, EndpointEffects::default());
         assert!(render);
         assert_ne!(after, before);
 
@@ -389,7 +386,7 @@ mod tests {
         // A blank name names the workspace after its directory.
         let (name, effects, render, before, after) = rename("   ");
         assert_eq!(name, directory_name);
-        assert!(effects.shell_projection_changed);
+        assert_eq!(effects, EndpointEffects::default());
         assert!(render);
         assert_ne!(after, before);
 

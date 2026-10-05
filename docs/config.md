@@ -551,7 +551,7 @@ empty string is an error; write `"follow"` for the default.
 | Setting | Type | Default | What it does |
 |---|---|---|---|
 | `resume_agents_on_restore` | boolean | `true` | When the server restarts and restores its layout, resume supported agent panes into their own conversations. |
-| `startup_per_agent_delay_ms` | integer (milliseconds) | 100 | Pause between automatic agent resumes, so they do not all start at once. `0` starts them without spacing. |
+| `agent_resume_spacing_ms` | integer (milliseconds) | 100 | Time between automatic agent resumes on restore. Fresh shells start together; `0` resumes agents without spacing. |
 
 Resuming needs the agent's session, which shepr learns from the hooks a
 release server installs into each agent's own config at launch, for every
@@ -566,7 +566,7 @@ not resume agents.
 | `headless_rows` | integer | 40 | Height of the virtual terminal used while no client is attached. |
 
 Attached clients always use their own terminal size. Both values must be
-greater than zero, each at most 4096, and together at most 4194304 cells.
+greater than zero and within the terminal grid's per-axis and total cell limits.
 
 ## [ui] in server.toml
 
@@ -589,6 +589,6 @@ greater than zero, each at most 4096, and together at most 4194304 cells.
 |---|---|---|---|
 | `scrollback_limit_bytes` | integer | 10000000 | Approximate scrollback budget per pane, in bytes, turned into a line count for the pane's width. `0` turns scrollback off. |
 
-The budget is not a hard cap: any nonzero value keeps at least 1000 lines,
-and a pane that is widened keeps the history it already has rather than
-dropping it.
+The budget is not a hard cap: any nonzero value keeps at least the minimum
+history length, and a pane that is widened keeps the history it already has
+rather than dropping it.

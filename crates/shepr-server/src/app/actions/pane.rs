@@ -14,6 +14,7 @@ impl AppState {
         if !pane.set_right_click_passthrough(right_click_passthrough) {
             return Some(ViewMutation::Unchanged);
         }
+        self.mark_shell_projection_dirty();
         Some(ViewMutation::Metadata)
     }
 
@@ -33,6 +34,7 @@ impl AppState {
             None => terminal.clear_manual_label(),
         }
         self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
         Some(ViewMutation::Metadata)
     }
 
@@ -64,6 +66,7 @@ impl AppState {
         workspace.focus_pane(source);
         let focus_changed = workspace.tree().focused() != focused;
         self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
         ViewMutation::Swap { focus_changed }
     }
 
@@ -91,6 +94,7 @@ impl AppState {
             });
         }
         self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
         Some(PaneZoomOutcome {
             changed: true,
             focus_changed,

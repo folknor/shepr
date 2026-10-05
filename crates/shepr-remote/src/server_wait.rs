@@ -41,18 +41,27 @@ pub fn wait_for_server(paths: &shepr_paths::AppPaths) -> io::Result<ServerWaitEn
     wait_for_server_with(
         paths.runtime_dir(),
         stdin,
-        || match local_server::server_presence(paths) {
-            Ok(ServerPresence::Running(_)) => ServerSeen::Ready,
-            Ok(ServerPresence::Gone) => ServerSeen::Absent,
-            // A server still restoring, one going away, one not answering
-            // yet and a socket that cannot be judged right now all settle
-            // without touching the directory again.
-            Ok(
+        || {
+            let presence = match local_server::server_presence(paths) {
+                Ok(presence) => presence,
+                Err(error) => {
+                    tracing::warn!(
+                        socket = %paths.server_address().socket().display(),
+                        %error,
+                        "server presence check failed while waiting for a server"
+                    );
+                    return Err(error);
+                }
+            };
+            Ok(match presence {
+                ServerPresence::Running(_) => ServerSeen::Ready,
+                ServerPresence::Gone => ServerSeen::Absent,
+                // A server still restoring, one going away, or one not
+                // answering yet settles without touching the directory again.
                 ServerPresence::Starting(_)
                 | ServerPresence::Stopping(_)
-                | ServerPresence::Unresponsive,
-            )
-            | Err(_) => ServerSeen::Settling,
+                | ServerPresence::Unresponsive => ServerSeen::Settling,
+            })
         },
         WaitTimes {
             recheck: SERVER_WAIT_RECHECK,
@@ -91,19 +100,49 @@ struct WaitTimes {
 fn wait_for_server_with(
     dir: &Path,
     input: RawFd,
-    mut check_server: impl FnMut() -> ServerSeen,
+    mut check_server: impl FnMut() -> io::Result<ServerSeen>,
     times: WaitTimes,
 ) -> io::Result<ServerWaitEnd> {
     // clock-io-ok: the longest life bounds a real wait on another process.
     let started = Instant::now();
     let mut watch = None;
+    let mut watch_failure_logged = false;
     loop {
         // The watch is set up before the check, so a socket that appears
         // between the two still wakes the next wait.
         if watch.is_none() {
-            watch = DirectoryWatch::new(dir).ok();
+            // DirectoryWatch reports that the directory changed, but does not
+            // expose the changed entry's name. Filtering to the selected server
+            // socket needs a named-event API from shepr-platform; keeping the
+            // inotify parser here would put platform plumbing in this SSH-policy
+            // crate. Unrelated entries can therefore cause an extra presence
+            // check; periodic checks also catch socket events the watch misses.
+            match DirectoryWatch::new(dir) {
+                Ok(new_watch) => {
+                    watch = Some(new_watch);
+                    watch_failure_logged = false;
+                }
+                Err(error) => {
+                    if !watch_failure_logged {
+                        if error.kind() == io::ErrorKind::NotFound {
+                            tracing::debug!(
+                                directory = %dir.display(),
+                                %error,
+                                "could not watch runtime directory while waiting for a server"
+                            );
+                        } else {
+                            tracing::warn!(
+                                directory = %dir.display(),
+                                %error,
+                                "could not watch runtime directory while waiting for a server"
+                            );
+                        }
+                        watch_failure_logged = true;
+                    }
+                }
+            }
         }
-        let seen = check_server();
+        let seen = check_server()?;
         if seen == ServerSeen::Ready {
             return Ok(ServerWaitEnd::Ready);
         }
@@ -188,7 +227,7 @@ mod tests {
         let end = wait_for_server_with(
             scratch.path(),
             raw(&input),
-            || seen(socket.try_exists().unwrap_or(false)),
+            || Ok(seen(socket.try_exists().unwrap_or(false))),
             watched_times(),
         )
         .expect("the wait runs");
@@ -204,7 +243,7 @@ mod tests {
         let end = wait_for_server_with(
             scratch.path(),
             raw(&input),
-            || ServerSeen::Ready,
+            || Ok(ServerSeen::Ready),
             watched_times(),
         )
         .expect("the wait runs");
@@ -222,9 +261,9 @@ mod tests {
             || {
                 checks += 1;
                 if checks > 2 {
-                    ServerSeen::Ready
+                    Ok(ServerSeen::Ready)
                 } else {
-                    ServerSeen::Settling
+                    Ok(ServerSeen::Settling)
                 }
             },
             WaitTimes {
@@ -244,7 +283,7 @@ mod tests {
         let end = wait_for_server_with(
             scratch.path(),
             raw(&input),
-            || ServerSeen::Absent,
+            || Ok(ServerSeen::Absent),
             watched_times(),
         )
         .expect("the wait runs");
@@ -261,7 +300,7 @@ mod tests {
             raw(&input),
             || {
                 checks += 1;
-                seen(checks > 2)
+                Ok(seen(checks > 2))
             },
             WaitTimes {
                 unwatched_recheck: Duration::from_millis(10),
@@ -279,7 +318,7 @@ mod tests {
         let end = wait_for_server_with(
             scratch.path(),
             raw(&input),
-            || ServerSeen::Absent,
+            || Ok(ServerSeen::Absent),
             WaitTimes {
                 max: Duration::from_millis(50),
                 ..watched_times()

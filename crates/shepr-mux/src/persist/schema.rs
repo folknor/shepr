@@ -4,17 +4,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::terminal::Label;
 use crate::workspace::Shape;
+use shepr_agent::resume::PersistedAgentSession;
 use shepr_core::absolute_path::AbsolutePath;
 use shepr_core::layout::Direction;
 use shepr_core::limits::PALETTE_COLOR_COUNT;
 use shepr_protocol::PanePublicNumber;
 
-/// Current snapshot format version. Deserialization rejects every other value.
+/// Current snapshot format version. Bump it whenever the on-disk schema changes;
+/// deserialization rejects every other value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct SnapshotVersion(u32);
 
-pub const SNAPSHOT_VERSION: SnapshotVersion = SnapshotVersion(1);
+pub const SNAPSHOT_VERSION: SnapshotVersion = SnapshotVersion(2);
 
 impl<'de> Deserialize<'de> for SnapshotVersion {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -231,7 +233,7 @@ pub struct PaneSnapshot {
     pub public_number: shepr_protocol::PanePublicNumber,
     pub label: Option<Label>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_session: Option<PaneAgentSessionSnapshot>,
+    pub agent_session: Option<PersistedAgentSession>,
     /// A saved agent session this build cannot use (an agent it no longer
     /// knows, a reference its resume support refuses), in place of
     /// `agent_session`. Only decoding sets it, and it is never written.
@@ -259,7 +261,7 @@ struct SavedPaneSnapshot {
     #[serde(deserialize_with = "required_nullable")]
     label: Option<Label>,
     #[serde(default, deserialize_with = "deserialize_agent_session")]
-    agent_session: Option<Result<PaneAgentSessionSnapshot, UnusableAgentSession>>,
+    agent_session: Option<Result<PersistedAgentSession, UnusableAgentSession>>,
 }
 
 impl<'de> Deserialize<'de> for PaneSnapshot {
@@ -288,8 +290,6 @@ impl<'de> Deserialize<'de> for PaneSnapshot {
     }
 }
 
-pub type PaneAgentSessionSnapshot = shepr_agent::resume::PersistedAgentSession;
-
 fn deserialize_cwd<'de, D>(deserializer: D) -> Result<AbsolutePath, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -305,7 +305,7 @@ where
 // snapshot fingerprint reads decode files too.
 fn deserialize_agent_session<'de, D>(
     deserializer: D,
-) -> Result<Option<Result<PaneAgentSessionSnapshot, UnusableAgentSession>>, D::Error>
+) -> Result<Option<Result<PersistedAgentSession, UnusableAgentSession>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -462,12 +462,32 @@ mod tests {
 
     #[test]
     fn snapshot_types_reject_wrong_version_during_deserialization() {
-        for json in [
-            r#"{"version":2,"workspaces":[],"active":null}"#,
-            r#"{"version":2,"workspaces":[]}"#,
-        ] {
-            assert!(serde_json::from_str::<super::SessionSnapshot>(json).is_err());
-        }
+        // One golden file per format version: a schema change breaks this
+        // file's round trip and fails here until a new golden file is written,
+        // which is when the version is bumped and the file named for it.
+        let fixture = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/persist/fixtures/session-v2.json"),
+        )
+        .expect("the golden session file");
+        let fixture = fixture.as_str();
+        let parsed = super::parse_session_file(fixture).expect("the current golden file parses");
+        assert_eq!(parsed.version, super::SNAPSHOT_VERSION);
+
+        let saved = serde_json::to_value(&parsed).expect("serialize current snapshot");
+        let fixture_value: serde_json::Value =
+            serde_json::from_str(fixture).expect("the golden file is JSON");
+        assert_eq!(
+            saved, fixture_value,
+            "update the golden file and bump the version when the schema changes"
+        );
+
+        let mut wrong_version = fixture_value;
+        wrong_version["version"] = serde_json::json!(super::SNAPSHOT_VERSION.0 + 1);
+        assert!(
+            super::parse_session_file(&wrong_version.to_string()).is_err(),
+            "changing only the version of a valid file must make it unreadable"
+        );
     }
 
     #[test]
@@ -650,7 +670,7 @@ mod tests {
                 workspace[key] = value;
             }
             serde_json::json!({
-                "version": 1,
+                "version": super::SNAPSHOT_VERSION,
                 "host_theme": super::SavedHostTheme::default(),
                 "workspaces": [workspace],
                 "active": null,
@@ -687,7 +707,7 @@ mod tests {
     fn a_blank_workspace_name_fails_the_whole_file() {
         let file = |name: &str| {
             serde_json::json!({
-                "version": 1,
+                "version": super::SNAPSHOT_VERSION,
                 "host_theme": super::SavedHostTheme::default(),
                 "workspaces": [{
                     "id": "w1",

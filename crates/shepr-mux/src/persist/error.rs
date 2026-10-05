@@ -11,6 +11,18 @@ pub enum SaveRefusal {
 /// The outcome of a session save.
 #[derive(Debug)]
 pub enum SaveError {
+    /// The live workspace tree could not be captured consistently. No save
+    /// job was produced, so the previous session file is still authoritative.
+    /// Retryable: the tree lives in memory, and a later mutation (closing the
+    /// workspace, for one) can make the next capture consistent again.
+    CaptureInconsistent {
+        workspace: String,
+        detail: &'static str,
+    },
+    /// The original session file could not be opened to make the recovery
+    /// copy required before replacing it. The operator must fix access and
+    /// restart this server before saves can resume.
+    BlockedOnBackup(io::Error),
     /// The write failed before it was known to have been published.
     Io(io::Error),
     /// The layout was published but could not be confirmed durable.
@@ -24,7 +36,15 @@ pub enum SaveError {
 impl SaveError {
     /// Whether a later attempt on this persister can plausibly succeed.
     pub fn is_retryable(&self) -> bool {
-        matches!(self, Self::Io(_) | Self::PublishedNotDurable(_))
+        matches!(
+            self,
+            Self::CaptureInconsistent { .. } | Self::Io(_) | Self::PublishedNotDurable(_)
+        )
+    }
+
+    /// Whether the saved source could not be opened for its required backup.
+    pub fn is_blocked_on_backup(&self) -> bool {
+        matches!(self, Self::BlockedOnBackup(_))
     }
 }
 
@@ -37,6 +57,18 @@ impl From<io::Error> for SaveError {
 impl std::fmt::Display for SaveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CaptureInconsistent { workspace, detail } => {
+                write!(
+                    f,
+                    "cannot capture inconsistent workspace {workspace}: {detail}"
+                )
+            }
+            Self::BlockedOnBackup(error) => {
+                write!(
+                    f,
+                    "cannot open the existing session file for its required backup: {error}"
+                )
+            }
             Self::Io(error) => std::fmt::Display::fmt(error, f),
             Self::PublishedNotDurable(error) => {
                 write!(f, "session was published but may not be durable: {error}")
@@ -55,8 +87,34 @@ impl std::fmt::Display for SaveError {
 impl std::error::Error for SaveError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io(error) | Self::PublishedNotDurable(error) => Some(error),
-            Self::Abandoned | Self::Refused(_) => None,
+            Self::BlockedOnBackup(error) | Self::Io(error) | Self::PublishedNotDurable(error) => {
+                Some(error)
+            }
+            Self::CaptureInconsistent { .. } | Self::Abandoned | Self::Refused(_) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A capture inconsistency wrote nothing and may clear with the next
+    /// mutation, so the saver retries it; an unopenable backup source blocks
+    /// saves until the operator fixes it, and a refusal ends them.
+    #[test]
+    fn capture_inconsistencies_are_retried_and_backup_blocks_are_not() {
+        let capture = SaveError::CaptureInconsistent {
+            workspace: "w1".into(),
+            detail: "layout and pane records disagree",
+        };
+        assert!(capture.is_retryable());
+        assert!(!capture.is_blocked_on_backup());
+
+        let blocked = SaveError::BlockedOnBackup(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(!blocked.is_retryable());
+        assert!(blocked.is_blocked_on_backup());
+
+        assert!(!SaveError::Refused(SaveRefusal::Retired).is_retryable());
     }
 }

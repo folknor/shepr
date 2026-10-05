@@ -145,8 +145,7 @@ mod tests {
             "connection timed out; reconnecting"
         );
         assert_eq!(
-            shepr_launch::EndpointFailure::from_error(&io::Error::from(io::ErrorKind::InvalidData))
-                .disconnect_notice(),
+            shepr_launch::EndpointFailure::incompatible("bad frame").disconnect_notice(),
             "connection failed; needs attention"
         );
     }

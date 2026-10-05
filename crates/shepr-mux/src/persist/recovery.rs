@@ -23,40 +23,32 @@ pub enum SessionBackupPolicy {
 
 // The layout's shape and each pane's public number, which tell whether two
 // layouts are the same for recovery-copy cadence (the writer's snapshot
-// history).
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct LayoutFingerprint([u8; 32]);
+// history). It is compared only in memory and never stored, so the encoding
+// itself is the fingerprint.
+#[derive(Clone, PartialEq, Eq)]
+struct LayoutFingerprint(Vec<u8>);
 
-impl LayoutFingerprint {
-    fn from_bytes(bytes: &[u8]) -> Self {
-        use sha2::{Digest, Sha256};
-
-        Self(Sha256::digest(bytes).into())
-    }
-}
-
-fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<LayoutFingerprint> {
+fn layout_fingerprint(snapshot: &SessionSnapshot) -> LayoutFingerprint {
     // The encoding uses tagged tree nodes and fixed-width little-endian counts,
     // numbers, and ratios. Each leaf carries its pane's public number; other
     // saved fields (cwds, labels, agent sessions) do not count.
     let mut encoding = Vec::new();
-    append_fingerprint_count(snapshot.workspaces.len(), &mut encoding)?;
+    append_fingerprint_count(snapshot.workspaces.len(), &mut encoding);
     for workspace in &snapshot.workspaces {
-        append_layout_fingerprint(&workspace.layout, &mut encoding)?;
+        append_layout_fingerprint(&workspace.layout, &mut encoding);
     }
-    Some(LayoutFingerprint::from_bytes(&encoding))
+    LayoutFingerprint(encoding)
 }
 
-fn append_fingerprint_count(count: usize, encoding: &mut Vec<u8>) -> Option<()> {
-    encoding.extend_from_slice(&u64::try_from(count).ok()?.to_le_bytes());
-    Some(())
+fn append_fingerprint_count(count: usize, encoding: &mut Vec<u8>) {
+    encoding.extend_from_slice(&count.to_le_bytes());
 }
 
-fn append_layout_fingerprint(layout: &LayoutSnapshot, encoding: &mut Vec<u8>) -> Option<()> {
+fn append_layout_fingerprint(layout: &LayoutSnapshot, encoding: &mut Vec<u8>) {
     match layout {
         LayoutSnapshot::Pane(pane) => {
             encoding.push(0);
-            append_fingerprint_count(pane.public_number.get(), encoding)?;
+            append_fingerprint_count(pane.public_number.get(), encoding);
         }
         LayoutSnapshot::Split {
             direction,
@@ -70,11 +62,10 @@ fn append_layout_fingerprint(layout: &LayoutSnapshot, encoding: &mut Vec<u8>) ->
                 DirectionSnapshot::Vertical => 1,
             });
             encoding.extend_from_slice(&ratio.get().to_bits().to_le_bytes());
-            append_layout_fingerprint(first, encoding)?;
-            append_layout_fingerprint(second, encoding)?;
+            append_layout_fingerprint(first, encoding);
+            append_layout_fingerprint(second, encoding);
         }
     }
-    Some(())
 }
 
 struct CachedSnapshotLayout {
@@ -83,7 +74,7 @@ struct CachedSnapshotLayout {
     layout: Option<SavedLayout>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum SavedLayout {
     Empty,
     Known(LayoutFingerprint),
@@ -116,7 +107,7 @@ impl SnapshotFingerprintCache {
             && cached.path.as_path() == path
             && cached.stamp == stamp
         {
-            return Ok(cached.layout);
+            return Ok(cached.layout.clone());
         }
         // The writer owns the session lease, so its own publications update
         // these entries directly. Metadata avoids rereading unchanged JSON on
@@ -141,7 +132,7 @@ impl SnapshotFingerprintCache {
         *cached = Some(CachedSnapshotLayout {
             path: path.to_path_buf(),
             stamp,
-            layout,
+            layout: layout.clone(),
         });
         Ok(layout)
     }
@@ -314,10 +305,7 @@ fn saved_layout(snapshot: &SessionSnapshot) -> SavedLayout {
     if snapshot.workspaces.is_empty() {
         return SavedLayout::Empty;
     }
-    match layout_fingerprint(snapshot) {
-        Some(fingerprint) => SavedLayout::Known(fingerprint),
-        None => SavedLayout::Unknown,
-    }
+    SavedLayout::Known(layout_fingerprint(snapshot))
 }
 
 fn layout_differs_from_latest(layout: &SavedLayout, latest: Option<&SavedLayout>) -> bool {
@@ -327,8 +315,8 @@ fn layout_differs_from_latest(layout: &SavedLayout, latest: Option<&SavedLayout>
             Some(SavedLayout::Known(latest)) => latest != fingerprint,
             _ => true,
         },
-        // A nonempty layout with no fingerprint cannot be proven identical to
-        // a recovery copy, so preserve it conservatively.
+        // A file whose layout could not be read cannot be proven identical
+        // to a recovery copy, so preserve it conservatively.
         SavedLayout::Unknown => true,
     }
 }
@@ -425,10 +413,27 @@ fn preserve_snapshot_after_write(
     Ok(())
 }
 
+/// Why the required first-save backup could not be made.
+#[derive(Debug)]
+pub(super) enum BackupError {
+    /// The current session file itself could not be opened. Retrying this
+    /// server's save loop cannot make the original readable.
+    SourceUnreadable(io::Error),
+    /// The source opened, but the recovery copy could not be published. This
+    /// can be a transient filesystem failure and keeps the ordinary retry path.
+    Io(io::Error),
+}
+
 /// Copies the session file at `path` into the backup directory. `false` when
-/// there is no file to copy.
-pub(super) fn preserve_existing(path: &Path, now: SystemTime) -> io::Result<bool> {
-    preserve_existing_in(path, RecoveryKind::Backup, now)
+/// there is no file to copy. A source-open failure is kept distinct because
+/// the writer must not replace that source without preserving it first.
+pub(super) fn preserve_existing(path: &Path, now: SystemTime) -> Result<bool, BackupError> {
+    let mut source = match files::open_regular(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(BackupError::SourceUnreadable(err)),
+    };
+    preserve_opened_source(path, RecoveryKind::Backup, now, &mut source).map_err(BackupError::Io)
 }
 
 /// The bool is whether a session file existed to copy. The snapshot caller
@@ -446,6 +451,15 @@ fn preserve_existing_in(path: &Path, kind: RecoveryKind, now: SystemTime) -> io:
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(err),
     };
+    preserve_opened_source(path, kind, now, &mut source)
+}
+
+fn preserve_opened_source(
+    path: &Path,
+    kind: RecoveryKind,
+    now: SystemTime,
+    source: &mut std::fs::File,
+) -> io::Result<bool> {
     let directory = kind.directory(path);
     let keep = kind.keep_limit();
     shepr_platform::create_private_directory_all(&directory)?;
@@ -482,7 +496,7 @@ fn preserve_existing_in(path: &Path, kind: RecoveryKind, now: SystemTime) -> io:
         // (which the lease rules out) reaches it. A refused copy has read the
         // source, so every attempt starts from its beginning.
         source.rewind()?;
-        match copy_recovery(&mut source, &backup) {
+        match copy_recovery(source, &backup) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
@@ -614,10 +628,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_unfingerprintable_layout_is_not_treated_as_identical() {
-        let known = SavedLayout::Known(LayoutFingerprint::from_bytes(b"known"));
-        let same = SavedLayout::Known(LayoutFingerprint::from_bytes(b"same"));
-        let changed = SavedLayout::Known(LayoutFingerprint::from_bytes(b"changed"));
+    fn an_unreadable_layout_is_not_treated_as_identical() {
+        let known = SavedLayout::Known(LayoutFingerprint(b"known".to_vec()));
+        let same = SavedLayout::Known(LayoutFingerprint(b"same".to_vec()));
+        let changed = SavedLayout::Known(LayoutFingerprint(b"changed".to_vec()));
         assert!(layout_differs_from_latest(
             &SavedLayout::Unknown,
             Some(&known)

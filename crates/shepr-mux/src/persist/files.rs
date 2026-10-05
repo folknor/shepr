@@ -10,23 +10,21 @@ use super::lock::DataDirLease;
 use super::schema::{SessionSnapshot, parse_session_file};
 use crate::limits::{MAX_SESSION_FILE_BYTES, MAX_SESSION_PATH_SYMLINK_HOPS};
 
-pub(super) const SESSION_FILE_NAME: &str = "session.json";
-pub(super) const SNAPSHOT_DIRECTORY_NAME: &str = "session-snapshots";
-pub(super) const BACKUP_DIRECTORY_NAME: &str = "session-backups";
-
 /// The session layout file in `data_dir`: the file restore reads and every
 /// save replaces.
 #[must_use]
 pub fn session_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(SESSION_FILE_NAME)
+    shepr_paths::session_file_path(data_dir)
 }
 
 pub(super) fn snapshot_directory(path: &Path) -> PathBuf {
-    path.with_file_name(SNAPSHOT_DIRECTORY_NAME)
+    let data_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    shepr_paths::session_snapshot_directory(data_dir)
 }
 
 pub(super) fn backup_directory(path: &Path) -> PathBuf {
-    path.with_file_name(BACKUP_DIRECTORY_NAME)
+    let data_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    shepr_paths::session_backup_directory(data_dir)
 }
 
 /// A session path that resolves to something other than a regular file: a
@@ -539,7 +537,7 @@ pub fn check_session_target(lease: &DataDirLease) -> std::io::Result<()> {
 /// that restore could not fully use.
 #[must_use]
 pub(super) fn session_backup_directory(data_dir: &Path) -> PathBuf {
-    backup_directory(&session_path(data_dir))
+    shepr_paths::session_backup_directory(data_dir)
 }
 
 /// Reads the saved layout while the caller owns the data directory.
@@ -623,7 +621,7 @@ mod tests {
     #[test]
     fn an_oversized_session_file_is_refused() {
         let scratch = shepr_test_support::ScratchDir::new("session-oversized");
-        let path = scratch.path().join("session.json");
+        let path = session_path(scratch.path());
         // Sparse, so the test writes no real data.
         std::fs::File::create(&path)
             .and_then(|file| file.set_len(MAX_SESSION_FILE_BYTES as u64 + 1))
@@ -648,9 +646,8 @@ mod tests {
     /// A session file whose data directory does not exist yet, so saves
     /// exercise creating it.
     fn temp_session_path(name: &str) -> PathBuf {
-        crate::test_support::ScratchDir::new(name)
-            .join("data")
-            .join("session.json")
+        let scratch = crate::test_support::ScratchDir::new(name);
+        session_path(&scratch.join("data"))
     }
 
     fn empty_snapshot() -> SessionSnapshot {
@@ -821,7 +818,7 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(
             entry_names(&data_dir),
-            ["session.json"],
+            [shepr_paths::SESSION_FILE_NAME],
             "no staging file is left behind"
         );
         let directory_mode = std::fs::metadata(&data_dir)
@@ -852,7 +849,9 @@ mod tests {
             std::fs::read(&leftover).expect("test precondition"),
             b"{\"trunc"
         );
-        assert_eq!(entry_names(directory), ["session.json", "session.json.tmp"]);
+        let names = entry_names(directory);
+        assert_eq!(names[0], shepr_paths::SESSION_FILE_NAME);
+        assert_eq!(names[1], format!("{}.tmp", shepr_paths::SESSION_FILE_NAME));
     }
 
     #[test]
@@ -893,7 +892,7 @@ mod tests {
         let dir = session.parent().expect("test precondition");
         let locked = dir.join("locked");
         std::fs::create_dir_all(&locked).expect("test precondition");
-        let path = locked.join("session.json");
+        let path = session_path(&locked);
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
             .expect("test precondition");
         let inspectable = !std::fs::symlink_metadata(&path)

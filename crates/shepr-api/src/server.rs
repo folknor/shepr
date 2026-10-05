@@ -102,8 +102,11 @@ pub fn start_server(
         listener,
         file: socket_file,
         lock: startup_lock,
-    } = shepr_platform::ipc::bind_owned_private_socket(paths.server_address().socket_path())?
-        .into_parts();
+    } = shepr_platform::ipc::bind_owned_private_socket(
+        paths.server_address().socket_path(),
+        &paths.server_socket_startup_lock_path(),
+    )?
+    .into_parts();
     info!(path = %path.display(), "server socket listening");
     let running = Arc::new(AtomicBool::new(true));
     let gate = ClientGate::default();
@@ -142,9 +145,12 @@ mod tests {
             listener,
             file: socket_file,
             lock: startup_lock,
-        } = shepr_platform::ipc::bind_owned_private_socket(&socket_path)
-            .expect("bind")
-            .into_parts();
+        } = shepr_platform::ipc::bind_owned_private_socket(
+            &socket_path,
+            &shepr_paths::socket_startup_lock_path(&path),
+        )
+        .expect("bind")
+        .into_parts();
         let running = Arc::new(AtomicBool::new(true));
         let gate = ClientGate::default();
         let (tx, _rx) = mpsc::channel(1);
@@ -166,9 +172,10 @@ mod tests {
             gate,
             _startup_lock: startup_lock,
         };
-        let refusal = bind_owned_private_socket(&socket_path)
-            .err()
-            .expect("path stays locked");
+        let refusal =
+            bind_owned_private_socket(&socket_path, &shepr_paths::socket_startup_lock_path(&path))
+                .err()
+                .expect("path stays locked");
         let shepr_platform::ipc::BindError::Busy(busy) = refusal else {
             panic!("expected a busy socket")
         };
@@ -176,7 +183,7 @@ mod tests {
         drop(handle);
         assert_eq!(Arc::strong_count(&alive), 1, "listener has exited");
         assert!(!path.try_exists().expect("socket removed"));
-        bind_owned_private_socket(&socket_path)
+        bind_owned_private_socket(&socket_path, &shepr_paths::socket_startup_lock_path(&path))
             .expect("released lock and listener")
             .remove_if_still_ours()
             .expect("cleanup");

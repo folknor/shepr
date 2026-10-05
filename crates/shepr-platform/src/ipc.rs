@@ -394,8 +394,13 @@ impl BoundSocket {
     }
 }
 
-pub fn bind_owned_private_socket(path: &SocketPath) -> Result<BoundSocket, BindError> {
-    bind_private_socket(path.as_path())
+/// Binds a private listener while holding its profile-selected startup lock.
+/// The caller supplies both paths so IPC does not choose a profile filename.
+pub fn bind_owned_private_socket(
+    path: &SocketPath,
+    startup_lock_path: &Path,
+) -> Result<BoundSocket, BindError> {
+    bind_private_socket(path.as_path(), startup_lock_path)
 }
 
 /// What a socket startup lock attempt did, as logged in `ipc.socket_lock`.
@@ -524,14 +529,15 @@ pub(crate) fn flock_exclusive(file: &fs::File, wait: LockWait) -> io::Result<()>
 
 /// Acquire the lifetime lock associated with an absolute `socket_path`.
 ///
-/// The lock file has `.lock` appended to the socket path, so it shares the
-/// socket's parent directory without counting against the socket path limit
-/// (`shepr_core::socket_path`).
-fn acquire_socket_startup_lock(socket_path: &Path) -> Result<SocketStartupLock, BindError> {
+/// The profile path owner supplies the persistent sidecar path; taking it as
+/// input keeps this IPC layer independent of the profile's file layout.
+fn acquire_socket_startup_lock(
+    socket_path: &Path,
+    startup_lock_path: &Path,
+) -> Result<SocketStartupLock, BindError> {
     let checked_socket_path = SocketPath::new(socket_path.to_path_buf())?;
     socket_parent(socket_path)?;
-    let lock_path = socket_startup_lock_path(socket_path);
-    let lock = match acquire_flock_lock(&lock_path, LockWait::FailIfHeld) {
+    let lock = match acquire_flock_lock(startup_lock_path, LockWait::FailIfHeld) {
         Ok(lock) => lock,
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
             tracing::info!(
@@ -566,8 +572,8 @@ fn acquire_socket_startup_lock(socket_path: &Path) -> Result<SocketStartupLock, 
 /// owns the lock, which could unlink a socket another server is about to use.
 /// A busy path is returned as a [`SocketBusy`] error naming it; the caller
 /// chooses any operator-facing wording.
-fn bind_private_socket(path: &Path) -> Result<BoundSocket, BindError> {
-    let startup_lock = acquire_socket_startup_lock(path)?;
+fn bind_private_socket(path: &Path, startup_lock_path: &Path) -> Result<BoundSocket, BindError> {
+    let startup_lock = acquire_socket_startup_lock(path, startup_lock_path)?;
     bind_private_socket_with_lock(startup_lock)
 }
 
@@ -588,14 +594,6 @@ fn bind_private_socket_with_lock(
         },
         lock: startup_lock,
     })
-}
-
-/// The sidecar file [`bind_private_socket`] locks for `socket_path`.
-/// It outlives the lock so later binders always lock the same inode.
-pub fn socket_startup_lock_path(socket_path: &Path) -> PathBuf {
-    let mut name = socket_path.as_os_str().to_os_string();
-    name.push(".lock");
-    name.into()
 }
 
 /// Connects to a local socket, giving up with `TimedOut` after
@@ -1112,6 +1110,22 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    fn startup_lock_path_for_test(socket_path: &Path) -> PathBuf {
+        socket_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("startup-lock")
+    }
+
+    fn reserve_test_socket(socket_path: &Path) -> Result<SocketStartupLock, BindError> {
+        let lock_path = startup_lock_path_for_test(socket_path);
+        acquire_socket_startup_lock(socket_path, &lock_path)
+    }
+
+    fn bind_test_socket(socket_path: &Path) -> Result<BoundSocket, BindError> {
+        let lock_path = startup_lock_path_for_test(socket_path);
+        bind_private_socket(socket_path, &lock_path)
+    }
     #[test]
     fn accept_failures_keep_transient_and_unknown_errors_retryable() {
         for errno in [
@@ -1157,7 +1171,7 @@ mod tests {
             listener,
             lock: startup_lock,
             ..
-        } = bind_private_socket(&path).expect("bind").into_parts();
+        } = bind_test_socket(&path).expect("bind").into_parts();
         let mode = fs::metadata(&path)
             .expect("socket exists")
             .permissions()
@@ -1170,7 +1184,7 @@ mod tests {
             .filter_map(Result::ok)
             .map(|entry| entry.file_name())
             .collect::<std::collections::BTreeSet<_>>();
-        let expected_entries = ["server.sock", "server.sock.lock"]
+        let expected_entries = ["server.sock", "startup-lock"]
             .map(std::ffi::OsString::from)
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
@@ -1179,9 +1193,7 @@ mod tests {
         assert!(connect_local_stream(&path).is_ok());
         assert!(listener.accept().is_ok());
         // A second server never replaces a socket that is already there.
-        let err = bind_private_socket(&path)
-            .err()
-            .expect("startup lock is held");
+        let err = bind_test_socket(&path).err().expect("startup lock is held");
         assert_eq!(err.kind(), io::ErrorKind::AddrInUse);
 
         drop(listener);
@@ -1319,7 +1331,7 @@ mod tests {
         fs::write(&path, b"not a socket").expect("write regular file");
 
         assert!(matches!(probe(&path), Liveness::Unreachable(_)));
-        let Err(error) = bind_private_socket(&path) else {
+        let Err(error) = bind_test_socket(&path) else {
             panic!("a regular file at the socket path was bound over");
         };
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
@@ -1341,8 +1353,8 @@ mod tests {
             let _listener = std::os::unix::net::UnixListener::bind(&stale).expect("bind stale");
         }
         let BoundSocketParts { listener, lock, .. } =
-            bind_private_socket(&stale).expect("reclaim").into_parts();
-        let second = bind_private_socket(&stale)
+            bind_test_socket(&stale).expect("reclaim").into_parts();
+        let second = bind_test_socket(&stale)
             .err()
             .expect("the first binder holds the startup lock");
         assert_busy_at(&second, &stale);
@@ -1351,7 +1363,7 @@ mod tests {
 
         let live = dir.join("live.sock");
         let _foreign = std::os::unix::net::UnixListener::bind(&live).expect("bind live");
-        let refused = bind_private_socket(&live)
+        let refused = bind_test_socket(&live)
             .err()
             .expect("a live socket is never replaced");
         assert_busy_at(&refused, &live);
@@ -1361,9 +1373,9 @@ mod tests {
     fn held_socket_reservation_binds_without_releasing_its_lock() {
         let scratch = shepr_test_support::ScratchDir::new("socket-reservation-handoff");
         let path = scratch.join("client.sock");
-        let reservation = acquire_socket_startup_lock(&path).expect("reserve socket");
+        let reservation = reserve_test_socket(&path).expect("reserve socket");
         assert!(!path.try_exists().expect("unpublished socket"));
-        let before = fs::symlink_metadata(socket_startup_lock_path(&path)).expect("lock inode");
+        let before = fs::symlink_metadata(startup_lock_path_for_test(&path)).expect("lock inode");
         let BoundSocketParts {
             listener,
             file,
@@ -1372,25 +1384,23 @@ mod tests {
             .expect("bind reserved socket")
             .into_parts();
         let after =
-            fs::symlink_metadata(socket_startup_lock_path(&path)).expect("lock inode after bind");
+            fs::symlink_metadata(startup_lock_path_for_test(&path)).expect("lock inode after bind");
         assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
         assert_busy_at(
-            &acquire_socket_startup_lock(&path)
-                .err()
-                .expect("lock still held"),
+            &reserve_test_socket(&path).err().expect("lock still held"),
             &path,
         );
         drop(listener);
         file.remove_if_still_ours().expect("cleanup socket");
         drop(lock);
-        let _next = acquire_socket_startup_lock(&path).expect("lock released at teardown");
+        let _next = reserve_test_socket(&path).expect("lock released at teardown");
     }
 
     #[test]
     fn reserved_socket_bind_refuses_a_listener_that_ignores_the_lock() {
         let scratch = shepr_test_support::ScratchDir::new("socket-reservation-race");
         let path = scratch.join("client.sock");
-        let reservation = acquire_socket_startup_lock(&path).expect("reserve socket");
+        let reservation = reserve_test_socket(&path).expect("reserve socket");
         let _racer = std::os::unix::net::UnixListener::bind(&path).expect("uncooperative listener");
         let identity = socket_file_identity(&path).expect("racer identity");
         let error = bind_private_socket_with_lock(reservation)
@@ -1477,13 +1487,13 @@ mod tests {
             };
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
 
-            let error = match acquire_socket_startup_lock(path) {
+            let error = match reserve_test_socket(path) {
                 Ok(_) => panic!("relative socket path unexpectedly locked"),
                 Err(error) => error,
             };
             assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
 
-            let error = match bind_private_socket(path) {
+            let error = match bind_test_socket(path) {
                 Ok(_) => panic!("relative socket path unexpectedly bound"),
                 Err(error) => error,
             };

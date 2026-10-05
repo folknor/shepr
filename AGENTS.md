@@ -502,7 +502,7 @@ The emulator is `alacritty_terminal`, pinned with `=` in `Cargo.toml` (bump it
 deliberately, never through a loose requirement). Direct use of its types stays
 in `crates/shepr-vt/src/`: `lib.rs` defines `shepr_vt::Terminal` and the adapter
 boundary, with supporting implementation split across modules. `format.rs`
-provides the plain/VT formatters used for reads;
+provides the plain-text formatter used for reads;
 `handler.rs` wraps the parser's `Handler` for dispatched input, while `scan.rs`
 scans sequences vte does not dispatch that shepr still needs to answer or track.
 Alacritty types must not leak out of `shepr-vt`. In the mux

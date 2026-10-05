@@ -1,5 +1,3 @@
-use tracing::info;
-
 use shepr_platform::ipc::{LocalStream, LocalStreamDeadlineReader};
 use shepr_protocol::endpoint::{EndpointClientHello, EndpointServerWelcome};
 use shepr_protocol::{ClientMessage, ServerMessage};
@@ -76,7 +74,8 @@ pub(crate) fn do_handshake_for_endpoint(
     };
     match welcome {
         EndpointServerWelcome::Accepted => {
-            info!("endpoint handshake succeeded");
+            // The caller logs acceptance with the endpoint and generation,
+            // which this exchange does not know.
             Ok(())
         }
         EndpointServerWelcome::Refused(error) => Err(HandshakeError::HandshakeRejected { error }),

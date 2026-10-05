@@ -395,7 +395,7 @@ mod tests {
         cleared.wait().expect("clear");
         assert!(
             !directory
-                .join(super::super::files::SESSION_FILE_NAME)
+                .join(shepr_paths::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("test stat"),
             "the clear ran after the save"
@@ -427,7 +427,7 @@ mod tests {
         ));
         assert!(
             directory
-                .join(super::super::files::SESSION_FILE_NAME)
+                .join(shepr_paths::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("test stat"),
             "a retired persister writes nothing"
@@ -500,7 +500,7 @@ mod tests {
         );
         assert!(
             !directory
-                .join(super::super::files::SESSION_FILE_NAME)
+                .join(shepr_paths::SESSION_FILE_NAME)
                 .try_exists()
                 .expect("test stat"),
             "the job after the panic did not run"

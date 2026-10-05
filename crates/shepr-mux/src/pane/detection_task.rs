@@ -302,22 +302,28 @@ mod tests {
         let holder = std::thread::spawn(move || {
             let _core = terminal.core.lock().expect("lock core");
             locked_tx.send(()).expect("announce held core");
-            // A finite fallback also lets this test fail without hanging if
-            // detection ever starts waiting on the current-thread worker.
-            release_rx.recv_timeout(Duration::from_secs(2)).ok();
+            // Safety release only: the assertion observes executor progress
+            // while this guard is still held, without measuring elapsed time.
+            release_rx.recv_timeout(Duration::from_secs(5)).ok();
         });
         locked_rx.await.expect("core is held");
-        let started = Instant::now();
-        let detection = tokio::spawn(task.run());
-        tokio::time::sleep(Duration::from_millis(30)).await;
-        let elapsed = started.elapsed();
+
+        let probe_terminal = Arc::clone(&task.handles.terminal);
+        let detection = tokio::spawn(task.blocking_tick());
+        tokio::task::yield_now().await;
+        let worker_probe = tokio::spawn(async move { probe_terminal.core.try_lock().is_err() });
+        let async_worker_ran_while_core_was_held = worker_probe
+            .await
+            .expect("executor worker probe should finish");
         release_tx.send(()).ok();
         holder.join().expect("core holder finished");
-        detection.abort();
-        detection.await.ok();
+        detection
+            .await
+            .expect("blocking detector tick should finish after the core is released")
+            .expect("blocking detector tick should join");
         assert!(
-            elapsed < Duration::from_secs(1),
-            "worker parked for {elapsed:?}"
+            async_worker_ran_while_core_was_held,
+            "async worker should run while detector waits for the terminal core"
         );
     }
 

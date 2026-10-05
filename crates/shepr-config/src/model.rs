@@ -47,20 +47,20 @@ pub struct SessionConfig {
     /// Resume supported AI-agent panes into their native conversation sessions
     /// when restoring a Shepr session. Default: true.
     pub resume_agents_on_restore: bool,
-    /// Time between automatic agent restores. Zero disables spacing. The TOML
-    /// key is `startup_per_agent_delay_ms`, in milliseconds. Default: 100 ms.
+    /// Time between automatic agent resumes on restore. Fresh shells start
+    /// together; zero resumes agents without spacing.
     #[serde(
-        rename = "startup_per_agent_delay_ms",
+        rename = "agent_resume_spacing_ms",
         deserialize_with = "deserialize_millis"
     )]
-    pub startup_per_agent_delay: std::time::Duration,
+    pub agent_resume_spacing: std::time::Duration,
 }
 
 impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             resume_agents_on_restore: true,
-            startup_per_agent_delay: crate::limits::DEFAULT_STARTUP_PER_AGENT_DELAY,
+            agent_resume_spacing: crate::limits::DEFAULT_AGENT_RESUME_SPACING,
         }
     }
 }
@@ -233,7 +233,8 @@ pub struct AdvancedConfig {
     /// Approximate scrollback budget in bytes per pane terminal, converted to a
     /// line count for the pane's width (`shepr_core::scrollback::ScrollbackBudget`
     /// owns the policy); 0 disables scrollback. Not a hard cap:
-    /// any non-zero budget keeps at least 1000 lines, and a pane that is
+    /// any non-zero budget keeps at least
+    /// [`shepr_core::scrollback::MIN_HISTORY_LINES`] lines, and a pane that is
     /// widened keeps the history it already holds rather than dropping it, so
     /// it can exceed the budget until it narrows again. Default: 10000000.
     pub scrollback_limit_bytes: usize,
@@ -406,19 +407,19 @@ new_cwd = "~/Projects"
         let default_config = ServerConfig::default();
         assert!(default_config.session.resume_agents_on_restore);
         assert_eq!(
-            default_config.session.startup_per_agent_delay,
-            std::time::Duration::from_millis(100)
+            default_config.session.agent_resume_spacing,
+            crate::limits::DEFAULT_AGENT_RESUME_SPACING
         );
 
         let toml = r#"
 [session]
 resume_agents_on_restore = false
-startup_per_agent_delay_ms = 0
+agent_resume_spacing_ms = 0
 "#;
         let config: ServerConfig = toml::from_str(toml).expect("test precondition");
         assert!(!config.session.resume_agents_on_restore);
         assert_eq!(
-            config.session.startup_per_agent_delay,
+            config.session.agent_resume_spacing,
             std::time::Duration::ZERO
         );
     }

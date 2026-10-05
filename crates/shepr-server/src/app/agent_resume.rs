@@ -360,7 +360,7 @@ mod tests {
     #[tokio::test]
     async fn resumes_whose_directory_is_gone_settle_as_placeholders() {
         let config: shepr_config::ServerConfig =
-            toml::from_str("[session]\nstartup_per_agent_delay_ms = 0").expect("test precondition");
+            toml::from_str("[session]\nagent_resume_spacing_ms = 0").expect("test precondition");
         let mut app = App::new(&config);
         app.state.test_set_workspaces(
             (0..4)
@@ -763,7 +763,10 @@ mod tests {
         assert!(app.terminal_runtimes.get(&active_pane).is_some());
         assert!(app.terminal_runtimes.get(&hidden_pane).is_none());
         // The launch spaces the next one out; the wakeup is the barrier.
-        let barrier = now + std::time::Duration::from_millis(100);
+        let barrier = now
+            + shepr_config::ServerConfig::default()
+                .session
+                .agent_resume_spacing;
         assert!(!app.start_pending_agent_resumes(now).consumed);
         assert_eq!(app.pending_agent_resume_wakeup(), Some(barrier));
         assert!(app.start_pending_agent_resumes(barrier).consumed);

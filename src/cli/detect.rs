@@ -8,9 +8,8 @@ use std::path::{Path, PathBuf};
 use clap::ArgMatches;
 
 use shepr_api::schema::{
-    DetectionCapture, DetectionExplanation, DetectionStateSource, ErrorBody, ErrorResponse,
-    ParkedHookAwaiting, Request, RequestId, ResponseResult, UnappliedHookOutcome,
-    UnappliedHookReport, UnappliedHookReportKind,
+    DetectionCapture, DetectionExplanation, DetectionStateSource, ParkedHookAwaiting, Request,
+    ResponseResult, UnappliedHookOutcome, UnappliedHookReport, UnappliedHookReportKind,
 };
 
 use super::matches::{try_flag, try_string};
@@ -148,13 +147,10 @@ pub(super) fn explain_file(
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(err) => {
-            return Err(super::CliError::Response(ErrorResponse {
-                id: Some(RequestId::DetectExplain.as_str().to_owned()),
-                error: ErrorBody::new(
-                    &shepr_api::error::ApiErrorCode::AgentExplainFileReadFailed,
-                    format!("failed to read explain file {}: {err}", path.display()),
-                ),
-            }));
+            return Err(super::CliError::Message(format!(
+                "failed to read explain file {}: {err}",
+                path.display()
+            )));
         }
     };
     let capture: DetectionCapture = serde_json::from_str(&content).map_err(|error| {

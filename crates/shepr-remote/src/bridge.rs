@@ -14,7 +14,7 @@ use crate::failure::{
 };
 use crate::host::{BRIDGE_FAILURE_MARKER, BridgeMode};
 use crate::limits::{
-    BRIDGE_CHILD_POLL, BRIDGE_CONNECTION_SHUTDOWN_GRACE, BRIDGE_IO_BUFFER_BYTES, BRIDGE_IO_POLL,
+    BRIDGE_CHILD_POLL, BRIDGE_CONNECTION_SHUTDOWN_GRACE, BRIDGE_IO_BUFFER_BYTES,
     BRIDGE_WRITE_CHUNK_BYTES, PIPE_DRAIN_GRACE, SSH_STDERR_CAPTURE_LIMIT,
 };
 use crate::machine::{RemoteExecutable, SshTarget};
@@ -48,6 +48,8 @@ impl SshStdioBridge {
         let should_stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&should_stop);
         let ssh_options = ssh_options.cloned();
+        // Setup errors return through this same joined worker result;
+        // the endpoint supervisor logs the classified transition once.
         let worker = thread::spawn(move || {
             bridge_connection(
                 stream,
@@ -56,9 +58,6 @@ impl SshStdioBridge {
                 ssh_options.as_ref(),
                 &thread_stop,
             )
-            .inspect_err(|error| {
-                tracing::warn!(%error, target = %target.as_str(), "remote SSH bridge failed");
-            })
         });
         Ok((
             Self {
@@ -305,12 +304,14 @@ fn bridge_connection(
         child.child()?.stderr.take().ok_or_else(|| {
             io::Error::new(io::ErrorKind::BrokenPipe, "ssh bridge stderr missing")
         })?;
-    let stderr_reader = PipeCapture::spawn(child_stderr, SSH_STDERR_CAPTURE_LIMIT);
+    let stderr_reader = PipeCapture::spawn(child_stderr, SSH_STDERR_CAPTURE_LIMIT)
+        .with_context(child.child()?.id(), "bridge stderr");
     let stream_to_child = stream.try_clone()?;
     stream.set_nonblocking(true)?;
     let mut child_to_stream = stream;
     let download_shutdown = child_to_stream.try_clone()?;
 
+    let download_wake = Arc::new(shepr_platform::StreamWake::new()?);
     let connection_stop = Arc::new(AtomicBool::new(false));
     let download_done = Arc::new(AtomicBool::new(false));
     let upload = BridgeUpload::spawn(stream_to_child, child_stdin, Arc::clone(bridge_stop))?;
@@ -320,6 +321,7 @@ fn bridge_connection(
     let download_bridge_stop = Arc::clone(bridge_stop);
     let download_done_worker = Arc::clone(&download_done);
     let download_upload_stop = Arc::clone(&upload_stop);
+    let download_worker_wake = Arc::clone(&download_wake);
     let download = BridgeDownload::spawn(move || {
         let mut child_stdout = io::BufReader::new(child_stdout);
         let result = discard_remote_output_preamble(&mut child_stdout).and_then(|()| {
@@ -328,6 +330,7 @@ fn bridge_connection(
                 &mut child_to_stream,
                 &download_stop,
                 &download_bridge_stop,
+                &download_worker_wake,
             )
         });
         download_done_worker.store(true, Ordering::Release);
@@ -371,6 +374,11 @@ fn bridge_connection(
     upload_stop.cancel();
     if !child_exited {
         connection_stop.store(true, Ordering::Release);
+    }
+    if connection_stop.load(Ordering::Acquire)
+        && let Err(error) = download_wake.cancel()
+    {
+        tracing::debug!(%error, "remote bridge write cancellation failed");
     }
     let upload_end = upload.join();
     let download_result = download.finish(PIPE_DRAIN_GRACE, &connection_stop, &download_shutdown);
@@ -567,6 +575,7 @@ fn copy_reader_to_local_stream<R: io::Read>(
     stream: &mut shepr_platform::ipc::LocalStream,
     connection_stop: &AtomicBool,
     bridge_stop: &AtomicBool,
+    wake: &shepr_platform::StreamWake,
 ) -> io::Result<u64> {
     let mut buffer = [0_u8; BRIDGE_IO_BUFFER_BYTES];
     let mut total = 0;
@@ -585,14 +594,16 @@ fn copy_reader_to_local_stream<R: io::Read>(
             }
             let chunk_len = (read - written).min(BRIDGE_WRITE_CHUNK_BYTES);
             match stream.write(&buffer[written..written + chunk_len]) {
-                Ok(0) => thread::sleep(BRIDGE_IO_POLL),
+                Ok(0) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WriteZero,
+                        "local bridge stream accepted no bytes",
+                    ));
+                }
                 Ok(count) => written += count,
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                    // StreamWake only waits for reads; writable readiness
-                    // needs a shepr-platform primitive to keep fd polling out
-                    // of this SSH policy layer.
-                    thread::sleep(BRIDGE_IO_POLL);
+                    wake.wait_writable(stream)?;
                 }
                 Err(err) => return Err(err),
             }

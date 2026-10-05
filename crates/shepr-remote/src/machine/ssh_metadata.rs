@@ -134,24 +134,39 @@ fn store_private_json_with_directory_sync(
 }
 
 fn load_metadata(path: &Path, target: &SshTarget) -> Option<RemoteExecutable> {
-    let file_type = std::fs::symlink_metadata(path).ok()?.file_type();
-    if !file_type.is_file() {
-        return None;
+    // A missing hint is normal. Every other read/parse failure is observable
+    // once per load, while discovery remains free to rebuild the hint.
+    let load = || -> io::Result<Option<RemoteExecutable>> {
+        let file_type = match std::fs::symlink_metadata(path) {
+            Ok(metadata) => metadata.file_type(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if !file_type.is_file() {
+            return Err(io::Error::other("SSH metadata hint is not a regular file"));
+        }
+        let mut bytes = Vec::new();
+        std::fs::File::open(path)?
+            .take(MAX_METADATA_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_METADATA_BYTES {
+            return Err(io::Error::other("SSH metadata hint exceeds its size limit"));
+        }
+        let stored: StoredMetadata = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        if &stored.target != target {
+            return Ok(None);
+        }
+        RemoteExecutable::parse(stored.executable)
+            .map(Some)
+            .map_err(io::Error::other)
+    };
+    match load() {
+        Ok(hint) => hint,
+        Err(error) => {
+            tracing::debug!(path = %path.display(), %error, "ignoring unreadable SSH metadata hint");
+            None
+        }
     }
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(MAX_METADATA_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > MAX_METADATA_BYTES {
-        return None;
-    }
-    let stored: StoredMetadata = serde_json::from_slice(&bytes).ok()?;
-    if &stored.target != target {
-        return None;
-    }
-    RemoteExecutable::parse(stored.executable).ok()
 }
 
 #[cfg(test)]

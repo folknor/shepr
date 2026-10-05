@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::{collections::HashMap, io::ErrorKind};
 
 use super::types::{InstallErrorKind, InstallIssue};
-use shepr_agent::Agent;
+use shepr_agent::{Agent, IntegrationTarget};
 use shepr_core::env::EnvVar;
 
 #[derive(Clone, Debug)]
@@ -36,7 +36,7 @@ type CapturedDirectory = Result<PathBuf, DirectoryError>;
 type CapturedEnvPath = Result<Option<PathBuf>, DirectoryError>;
 
 #[derive(Clone, Debug)]
-struct IntegrationEnvironment {
+pub(super) struct IntegrationEnvironment {
     paths: HashMap<EnvVar, CapturedEnvPath>,
 }
 
@@ -47,7 +47,11 @@ impl IntegrationEnvironment {
             .chain(
                 shepr_agent::AGENTS
                     .iter()
-                    .filter_map(|agent| agent.config_dir_override),
+                    // Only agents with an integration target have a directory
+                    // to install into; another agent's override is never read.
+                    .filter_map(|descriptor| {
+                        descriptor.integration.and(descriptor.config_dir_override)
+                    }),
             )
             .map(|variable| {
                 let value =
@@ -75,29 +79,6 @@ impl IntegrationEnvironment {
     }
 }
 
-// These are physical roots, not integration targets: OpenCode uses both its
-// config and state roots, and OMP must compare its root with Pi's. Specs select
-// captured roots; embedding a resolver per target would duplicate shared roots
-// or let one install re-read an environment that has changed since launch.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub(crate) enum DirectoryKey {
-    PiExtension,
-    OmpExtension,
-    Claude,
-    Codex,
-    Copilot,
-    Devin,
-    Droid,
-    Kimi,
-    Opencode,
-    OpencodeState,
-    Kilo,
-    Cursor,
-    Mastracode,
-    AntigravityCli,
-    Grok,
-}
-
 /// Agent-owned config locations, resolved once by the caller that starts an
 /// install (the server, at launch). Install and status code receives this
 /// value and never consults the process environment while it is choosing
@@ -116,21 +97,8 @@ pub(crate) enum DirectoryKey {
 /// of these overrides.
 #[derive(Clone, Debug)]
 pub struct AgentIntegrationPaths {
-    pi_extension: CapturedDirectory,
-    omp_extension: CapturedDirectory,
-    claude: CapturedDirectory,
-    codex: CapturedDirectory,
-    copilot: CapturedDirectory,
-    devin: CapturedDirectory,
-    droid: CapturedDirectory,
-    kimi: CapturedDirectory,
-    opencode: CapturedDirectory,
+    directories: HashMap<IntegrationTarget, CapturedDirectory>,
     opencode_state: CapturedDirectory,
-    kilo: CapturedDirectory,
-    cursor: CapturedDirectory,
-    mastracode: CapturedDirectory,
-    antigravity_cli: CapturedDirectory,
-    grok: CapturedDirectory,
     config_update_lock_dir: CapturedDirectory,
 }
 
@@ -141,45 +109,36 @@ impl AgentIntegrationPaths {
 
     fn resolve_with(read_path: impl Fn(EnvVar) -> io::Result<Option<PathBuf>>) -> Self {
         let environment = IntegrationEnvironment::capture(read_path);
+        let directories = IntegrationTarget::all()
+            .map(|target| {
+                (
+                    target,
+                    capture_directory(super::registry::resolve_target_directory(
+                        &environment,
+                        target,
+                    )),
+                )
+            })
+            .collect();
         Self {
-            pi_extension: capture_directory(pi_extension_dir(&environment)),
-            omp_extension: capture_directory(omp_extension_dir(&environment)),
-            claude: capture_directory(claude_dir(&environment)),
-            codex: capture_directory(codex_dir(&environment)),
-            copilot: capture_directory(copilot_dir(&environment)),
-            devin: capture_directory(devin_dir(&environment)),
-            droid: capture_directory(droid_dir(&environment)),
-            kimi: capture_directory(kimi_dir(&environment)),
-            opencode: capture_directory(opencode_dir(&environment)),
+            directories,
             opencode_state: capture_directory(opencode_state_dir(&environment)),
-            kilo: capture_directory(kilo_dir(&environment)),
-            cursor: capture_directory(cursor_dir(&environment)),
-            mastracode: capture_directory(mastracode_dir(&environment)),
-            antigravity_cli: capture_directory(antigravity_cli_dir(&environment)),
-            grok: capture_directory(grok_dir(&environment)),
             config_update_lock_dir: capture_directory(resolve_config_update_lock_dir(&environment)),
         }
     }
 
-    pub(crate) fn directory(&self, key: DirectoryKey) -> io::Result<PathBuf> {
-        let directory = match key {
-            DirectoryKey::PiExtension => &self.pi_extension,
-            DirectoryKey::OmpExtension => &self.omp_extension,
-            DirectoryKey::Claude => &self.claude,
-            DirectoryKey::Codex => &self.codex,
-            DirectoryKey::Copilot => &self.copilot,
-            DirectoryKey::Devin => &self.devin,
-            DirectoryKey::Droid => &self.droid,
-            DirectoryKey::Kimi => &self.kimi,
-            DirectoryKey::Opencode => &self.opencode,
-            DirectoryKey::OpencodeState => &self.opencode_state,
-            DirectoryKey::Kilo => &self.kilo,
-            DirectoryKey::Cursor => &self.cursor,
-            DirectoryKey::Mastracode => &self.mastracode,
-            DirectoryKey::AntigravityCli => &self.antigravity_cli,
-            DirectoryKey::Grok => &self.grok,
-        };
+    pub(crate) fn directory(&self, target: IntegrationTarget) -> io::Result<PathBuf> {
+        let directory = self.directories.get(&target).ok_or_else(|| {
+            io::Error::new(
+                ErrorKind::NotFound,
+                format!("integration directory for {target:?} was not resolved"),
+            )
+        })?;
         captured_directory(directory)
+    }
+
+    pub(crate) fn opencode_state_directory(&self) -> io::Result<PathBuf> {
+        captured_directory(&self.opencode_state)
     }
 
     pub(crate) fn config_update_lock_dir(&self) -> io::Result<PathBuf> {
@@ -195,11 +154,11 @@ fn resolve_config_update_lock_dir(environment: &IntegrationEnvironment) -> io::R
     Ok(shepr_paths::integration_lock_dir(&xdg_state_home))
 }
 
-fn pi_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn pi_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     Ok(config_dir_from_env_or_home(environment, Agent::Pi, &[".pi", "agent"])?.join("extensions"))
 }
 
-fn omp_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn omp_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     let config_dir =
         agent_config_override(environment, Agent::Omp)?.unwrap_or_else(|| ".omp".into());
     let config_dir = if config_dir.is_absolute() {
@@ -210,27 +169,27 @@ fn omp_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf
     Ok(config_dir.join("agent").join("extensions"))
 }
 
-fn claude_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn claude_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     config_dir_from_env_or_home(environment, Agent::Claude, &[".claude"])
 }
 
-fn codex_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn codex_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     config_dir_from_env_or_home(environment, Agent::Codex, &[".codex"])
 }
 
-fn kimi_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn kimi_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     config_dir_from_env_or_home(environment, Agent::Kimi, &[".kimi-code"])
 }
 
-fn copilot_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn copilot_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     config_dir_from_env_or_home(environment, Agent::GithubCopilot, &[".copilot"])
 }
 
-fn devin_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn devin_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     Ok(shepr_core::env::xdg_config_home_with(|variable| environment.path(variable))?.join("devin"))
 }
 
-fn droid_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn droid_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     Ok(environment.home_dir()?.join(".factory"))
 }
 
@@ -274,7 +233,7 @@ fn config_dir_from_env_or_home(
     Ok(path)
 }
 
-fn opencode_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn opencode_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     Ok(
         shepr_core::env::xdg_config_home_with(|variable| environment.path(variable))?
             .join("opencode"),
@@ -288,26 +247,26 @@ fn opencode_state_dir(environment: &IntegrationEnvironment) -> io::Result<PathBu
     )
 }
 
-fn kilo_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn kilo_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     Ok(shepr_core::env::xdg_config_home_with(|variable| environment.path(variable))?.join("kilo"))
 }
 
-fn cursor_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn cursor_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     config_dir_from_env_or_home(environment, Agent::Cursor, &[".cursor"])
 }
 
-fn mastracode_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn mastracode_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     Ok(environment.home_dir()?.join(".mastracode"))
 }
 
-fn antigravity_cli_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn antigravity_cli_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     // Antigravity CLI discovers global customizations (hooks.json included)
     // from ~/.gemini/config; ~/.gemini/antigravity-cli holds runtime data and
     // is never read for hooks.
     config_dir_from_env_or_home(environment, Agent::Antigravity, &[".gemini", "config"])
 }
 
-fn grok_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn grok_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     // The grok CLI honors GROK_HOME as its config home (config.toml,
     // auth.json, hooks/); mirror it so hook installs land where grok looks.
     config_dir_from_env_or_home(environment, Agent::Grok, &[".grok"])
@@ -343,8 +302,8 @@ mod tests {
         })
     }
 
-    fn directory(paths: &AgentIntegrationPaths, key: DirectoryKey) -> io::Result<PathBuf> {
-        paths.directory(key)
+    fn directory(paths: &AgentIntegrationPaths, target: IntegrationTarget) -> io::Result<PathBuf> {
+        paths.directory(target)
     }
 
     #[test]
@@ -354,13 +313,13 @@ mod tests {
             (EnvVar::CursorConfigDir, "~/cursor-home"),
         ]);
         assert_eq!(
-            directory(&env, DirectoryKey::Cursor).expect("test precondition"),
+            directory(&env, IntegrationTarget::Cursor).expect("test precondition"),
             PathBuf::from("/test/home/cursor-home")
         );
         // Empty is unset; padding is refused naming the variable.
         let env = paths_with(&[(EnvVar::Home, "/test/home"), (EnvVar::CursorConfigDir, "")]);
         assert_eq!(
-            directory(&env, DirectoryKey::Cursor).expect("test precondition"),
+            directory(&env, IntegrationTarget::Cursor).expect("test precondition"),
             PathBuf::from("/test/home/.cursor")
         );
         let env = paths_with(&[
@@ -368,7 +327,7 @@ mod tests {
             (EnvVar::CursorConfigDir, "~/cursor-home "),
         ]);
         let error =
-            directory(&env, DirectoryKey::Cursor).expect_err("a padded override is refused");
+            directory(&env, IntegrationTarget::Cursor).expect_err("a padded override is refused");
         assert!(error.to_string().contains("CURSOR_CONFIG_DIR"), "{error}");
     }
 
@@ -418,7 +377,7 @@ mod tests {
             (EnvVar::PiConfigDir, "~/.omp2"),
         ]);
         assert_eq!(
-            directory(&env, DirectoryKey::OmpExtension).expect("test precondition"),
+            directory(&env, IntegrationTarget::Omp).expect("test precondition"),
             PathBuf::from("/test/home/.omp2/agent/extensions")
         );
     }
@@ -427,7 +386,7 @@ mod tests {
     fn opencode_state_dir_defaults_to_local_state() {
         let env = paths_with(&[(EnvVar::Home, "/test/home")]);
         assert_eq!(
-            directory(&env, DirectoryKey::OpencodeState).expect("test precondition"),
+            env.opencode_state_directory().expect("test precondition"),
             PathBuf::from("/test/home/.local/state/opencode")
         );
     }
@@ -437,7 +396,7 @@ mod tests {
         let xdg = "/test/state";
         let env = paths_with(&[(EnvVar::Home, "/test/home"), (EnvVar::XdgStateHome, xdg)]);
         assert_eq!(
-            directory(&env, DirectoryKey::OpencodeState).expect("test precondition"),
+            env.opencode_state_directory().expect("test precondition"),
             PathBuf::from(xdg).join("opencode")
         );
     }
@@ -446,21 +405,21 @@ mod tests {
     fn devin_dir_ignores_empty_and_refuses_relative_xdg_config_home() {
         let env = paths_with(&[(EnvVar::Home, "/test/home"), (EnvVar::XdgConfigHome, "")]);
         assert_eq!(
-            directory(&env, DirectoryKey::Devin).expect("home fallback"),
+            directory(&env, IntegrationTarget::Devin).expect("home fallback"),
             PathBuf::from("/test/home/.config/devin")
         );
         let env = paths_with(&[
             (EnvVar::Home, "/test/home"),
             (EnvVar::XdgConfigHome, "relative/config"),
         ]);
-        let error = directory(&env, DirectoryKey::Devin)
+        let error = directory(&env, IntegrationTarget::Devin)
             .expect_err("a relative XDG config home is refused");
         assert!(error.to_string().contains("XDG_CONFIG_HOME"), "{error}");
 
         let xdg = "/test/config";
         let env = paths_with(&[(EnvVar::Home, "/test/home"), (EnvVar::XdgConfigHome, xdg)]);
         assert_eq!(
-            directory(&env, DirectoryKey::Devin).expect("absolute XDG path"),
+            directory(&env, IntegrationTarget::Devin).expect("absolute XDG path"),
             PathBuf::from(xdg).join("devin")
         );
     }
@@ -469,7 +428,7 @@ mod tests {
     fn opencode_and_kilo_dirs_honor_absolute_xdg_config_home() {
         let env = paths_with(&[(EnvVar::Home, "/test/home")]);
         assert_eq!(
-            directory(&env, DirectoryKey::Opencode).expect("home fallback"),
+            directory(&env, IntegrationTarget::Opencode).expect("home fallback"),
             PathBuf::from("/test/home/.config/opencode")
         );
         let env = paths_with(&[
@@ -477,18 +436,18 @@ mod tests {
             (EnvVar::XdgConfigHome, "relative/config"),
         ]);
         assert!(
-            directory(&env, DirectoryKey::Kilo).is_err(),
+            directory(&env, IntegrationTarget::Kilo).is_err(),
             "a relative XDG config home is refused"
         );
 
         let xdg = "/test/config";
         let env = paths_with(&[(EnvVar::Home, "/test/home"), (EnvVar::XdgConfigHome, xdg)]);
         assert_eq!(
-            directory(&env, DirectoryKey::Opencode).expect("absolute XDG path"),
+            directory(&env, IntegrationTarget::Opencode).expect("absolute XDG path"),
             PathBuf::from(xdg).join("opencode")
         );
         assert_eq!(
-            directory(&env, DirectoryKey::Kilo).expect("absolute XDG path"),
+            directory(&env, IntegrationTarget::Kilo).expect("absolute XDG path"),
             PathBuf::from(xdg).join("kilo")
         );
     }
@@ -497,7 +456,7 @@ mod tests {
     fn opencode_state_dir_ignores_empty_and_refuses_relative_xdg_state_home() {
         let env = paths_with(&[(EnvVar::Home, "/test/home"), (EnvVar::XdgStateHome, "")]);
         assert_eq!(
-            directory(&env, DirectoryKey::OpencodeState).expect("home fallback"),
+            env.opencode_state_directory().expect("home fallback"),
             PathBuf::from("/test/home/.local/state/opencode")
         );
         let env = paths_with(&[
@@ -505,7 +464,7 @@ mod tests {
             (EnvVar::XdgStateHome, "relative/state"),
         ]);
         assert!(
-            directory(&env, DirectoryKey::OpencodeState).is_err(),
+            env.opencode_state_directory().is_err(),
             "a relative XDG state home is refused"
         );
     }
@@ -528,13 +487,20 @@ mod tests {
             .chain(
                 shepr_agent::AGENTS
                     .iter()
-                    .filter_map(|agent| agent.config_dir_override),
+                    // Only agents with an integration target have a directory
+                    // to install into; another agent's override is never read.
+                    .filter_map(|descriptor| {
+                        descriptor.integration.and(descriptor.config_dir_override)
+                    }),
             )
         {
             assert_eq!(reads.borrow().get(&variable), Some(&1), "{variable}");
         }
+        for unused in [EnvVar::QoderConfigDir, EnvVar::QwenHome] {
+            assert!(!reads.borrow().contains_key(&unused), "{unused}");
+        }
         assert_eq!(
-            directory(&paths, DirectoryKey::Grok).expect("captured Grok path"),
+            directory(&paths, IntegrationTarget::Grok).expect("captured Grok path"),
             PathBuf::from("/test/grok")
         );
     }

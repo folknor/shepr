@@ -13,14 +13,15 @@ use super::config_edit::{build_codex_config_with_hooks, build_kimi_config_with_t
 use super::config_file::{
     ConfigUpdateLock, check_config_target, lock_config_for_update, write_config_for_update,
 };
-use super::env::{AgentIntegrationPaths, DirectoryKey};
+use super::env::AgentIntegrationPaths;
 use super::file_ops::{read_if_file, write_managed_asset};
 use super::opencode_config::{
     PluginConfigEdit, prepare_cli_plugin, prepare_tui_plugin, validate_tui_plugin_config,
 };
-use super::registration::{HooksRoot, JsonShape, Registration};
+use super::registration::{HookEventPolicy, HooksRoot, JsonShape, Registration, RequiredJsonField};
 use super::registry::{
-    action_label, agent_present, managed_assets, registration, target_directory, target_path,
+    action_label, agent_directory, agent_present, directory_must_differ_from, managed_assets,
+    registration, target_directory, target_path,
 };
 use super::types::{ArtifactRole, InstallErrorKind, InstallIssue, InstallOutcome};
 
@@ -70,14 +71,21 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
         check_config_target(&path)?;
     }
     if !agent_present(paths, target)? {
-        return Err(missing_agent_directory(target, &dir));
+        return Err(missing_agent_directory(
+            target,
+            &agent_directory(paths, target)?,
+        ));
     }
-    if target == Target::Omp && dir == target_directory(paths, Target::Pi)? {
+    if let Some(peer) = directory_must_differ_from(target)
+        && dir == target_directory(paths, peer)?
+    {
         return Err(InstallIssue::io_error(
             InstallErrorKind::ConfigShape,
             format!(
-                "Pi and OMP resolve to the same extension directory at {}; configure separate agent directories before installing OMP",
-                dir.display()
+                "{} and {} share integration directory {}; set separate agent directories",
+                action_label(peer),
+                action_label(target),
+                dir.display(),
             ),
         ));
     }
@@ -87,12 +95,15 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
     let mut plugin_edits = Vec::new();
     match registration {
         Registration::DirectoryLoaded => {}
-        Registration::Json { file, root, shape } => {
-            let role = match target {
-                Target::Claude | Target::Copilot | Target::Devin => ArtifactRole::Settings,
-                Target::Cursor => ArtifactRole::UpdatedHooks,
-                _ => ArtifactRole::Hooks,
-            };
+        Registration::Json {
+            file,
+            root,
+            shape,
+            artifact_role,
+            document_description,
+            required_fields,
+            event_policy,
+        } => {
             let path = dir.join(file);
             edits.push(prepare_json(
                 path.clone(),
@@ -100,14 +111,22 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
                 target,
                 root,
                 shape,
+                document_description,
+                required_fields,
+                event_policy,
                 &hook_path,
             )?);
-            outcome = outcome.with_artifact(role, path);
+            outcome = outcome.with_artifact(artifact_role, path);
         }
         Registration::Codex {
             hooks,
             config,
             timeout,
+            hooks_artifact_role,
+            config_artifact_role,
+            document_description,
+            required_fields,
+            event_policy,
         } => {
             let hooks_path = dir.join(hooks);
             edits.push(prepare_json(
@@ -116,6 +135,9 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
                 target,
                 HooksRoot::HooksKey,
                 JsonShape::Nested(timeout),
+                document_description,
+                required_fields,
+                event_policy,
                 &hook_path,
             )?);
             let config_path = dir.join(config);
@@ -126,8 +148,8 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
                 |content, _| build_codex_config_with_hooks(content),
             )?);
             outcome = outcome
-                .with_artifact(ArtifactRole::Hooks, hooks_path)
-                .with_artifact(ArtifactRole::Config, config_path);
+                .with_artifact(hooks_artifact_role, hooks_path)
+                .with_artifact(config_artifact_role, config_path);
         }
         Registration::Kimi { file, timeout } => {
             let path = dir.join(file);
@@ -172,7 +194,7 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
             let tui = prepare_tui_plugin(&dir, super::OPENCODE_TUI_PLUGIN_SPEC, paths)?;
             let cli = prepare_cli_plugin(
                 &dir,
-                &paths.directory(DirectoryKey::OpencodeState)?,
+                &paths.opencode_state_directory()?,
                 super::OPENCODE_V2_TUI_PLUGIN_SPEC,
                 paths,
             )?;
@@ -222,6 +244,9 @@ fn prepare_json(
     target: Target,
     root: HooksRoot,
     shape: JsonShape,
+    document_description: &'static str,
+    required_fields: &'static [RequiredJsonField],
+    event_policy: HookEventPolicy,
     hook_path: &Path,
 ) -> io::Result<ConfigEdit> {
     ConfigEdit::prepare(path, paths, "{}", |content, path| {
@@ -230,39 +255,19 @@ fn prepare_json(
             path,
             hook_path,
             root,
-            shape.expected_events(target, hook_path)?,
-            target == Target::Cursor,
+            shape.expected_events(target, hook_path, event_policy)?,
+            required_fields,
+            document_description,
         )
     })
 }
 
 fn missing_agent_directory(target: Target, dir: &Path) -> io::Error {
-    let (name, install_name) = match target {
-        Target::Claude => ("claude", "claude code"),
-        Target::Copilot => ("copilot config", "github copilot cli"),
-        Target::Devin => ("devin config", "devin cli"),
-        Target::Kimi => ("kimi code config", "kimi code"),
-        Target::Cursor => ("cursor config", "cursor agent cli"),
-        Target::AntigravityCli => ("antigravity cli config", "antigravity cli"),
-        Target::Grok => ("grok config", "grok cli"),
-        Target::Pi => ("pi extension", "pi"),
-        Target::Omp => ("omp extension", "omp"),
-        _ => {
-            return InstallIssue::io_error(
-                InstallErrorKind::AgentDirMissing,
-                format!(
-                    "{} config directory not found at {}. install {} first",
-                    target.label(),
-                    dir.display(),
-                    action_label(target)
-                ),
-            );
-        }
-    };
     InstallIssue::io_error(
         InstallErrorKind::AgentDirMissing,
         format!(
-            "{name} directory not found at {}. install {install_name} first",
+            "{} agent config directory not found at {}",
+            action_label(target),
             dir.display()
         ),
     )
@@ -292,11 +297,6 @@ pub(super) fn antigravity_cli_hook_block_with_timeout(
     Ok(Value::Object(block))
 }
 
-/// Grok's hook asset uses the same POSIX shell command as the other targets.
-fn grok_hook_command(hook_path: &Path, action: Option<IntegrationHookAction>) -> String {
-    hook_command(hook_path, action.map(IntegrationHookAction::as_str))
-}
-
 /// The complete Shepr-owned Grok hook config, generated from its declared
 /// events. Installation and status share this value so config drift is outdated.
 pub(super) fn grok_hook_config_with_timeout(
@@ -306,7 +306,7 @@ pub(super) fn grok_hook_config_with_timeout(
     let mut event_groups = BTreeMap::<&'static str, Vec<Value>>::new();
     let timeout_seconds = timeout.as_secs();
     for event in Target::Grok.hook_events() {
-        let command = grok_hook_command(hook_path, event.action);
+        let command = hook_command(hook_path, event.action.map(IntegrationHookAction::as_str));
         let hook = json!({
             "type": "command",
             "command": command,
@@ -328,76 +328,6 @@ pub(super) fn grok_hook_config_with_timeout(
 }
 
 #[cfg(test)]
-pub(crate) fn install_pi(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Pi)
-}
-
-#[cfg(test)]
-pub(crate) fn install_omp(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Omp)
-}
-
-#[cfg(test)]
-pub(crate) fn install_claude(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Claude)
-}
-
-#[cfg(test)]
-pub(crate) fn install_codex(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Codex)
-}
-
-#[cfg(test)]
-pub(crate) fn install_copilot(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Copilot)
-}
-
-#[cfg(test)]
-pub(crate) fn install_devin(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Devin)
-}
-
-#[cfg(test)]
-pub(crate) fn install_droid(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Droid)
-}
-
-#[cfg(test)]
-pub(crate) fn install_kimi(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Kimi)
-}
-
-#[cfg(test)]
-pub(crate) fn install_opencode(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Opencode)
-}
-
-#[cfg(test)]
-pub(crate) fn install_kilo(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Kilo)
-}
-
-#[cfg(test)]
-pub(crate) fn install_cursor(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Cursor)
-}
-
-#[cfg(test)]
-pub(crate) fn install_mastracode(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Mastracode)
-}
-
-#[cfg(test)]
-pub(crate) fn install_antigravity_cli(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::AntigravityCli)
-}
-
-#[cfg(test)]
-pub(crate) fn install_grok(paths: &AgentIntegrationPaths) -> io::Result<InstallOutcome> {
-    install(paths, Target::Grok)
-}
-
-#[cfg(test)]
 pub(crate) fn grok_hook_config(hook_path: &Path) -> io::Result<Value> {
     grok_hook_config_with_timeout(hook_path, super::HOOK_TIMEOUT)
 }
@@ -408,7 +338,8 @@ mod grok_tests {
 
     use serde_json::Value;
 
-    use super::{Target, grok_hook_command, grok_hook_config};
+    use super::{Target, grok_hook_config};
+    use crate::command::hook_command;
     use shepr_agent::IntegrationHookAction;
 
     #[test]
@@ -426,7 +357,7 @@ mod grok_tests {
                 .get(event.event)
                 .and_then(Value::as_array)
                 .expect("declared Grok hook event");
-            let command = grok_hook_command(hook_path, event.action);
+            let command = hook_command(hook_path, event.action.map(IntegrationHookAction::as_str));
             assert!(
                 groups.iter().any(|group| {
                     group["matcher"].as_str() == event.matcher

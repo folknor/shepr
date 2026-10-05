@@ -279,6 +279,8 @@ mod tests {
     use crate::limits::AGENT_STARTUP_GRACE_WINDOW;
     use crate::pane::detect::DetectorGateDiagnostics;
     use crate::pane::launch::LaunchKind;
+    use std::future::Future;
+    use std::task::Poll;
     use std::time::{Duration, Instant};
     use tokio::sync::mpsc;
 
@@ -368,31 +370,16 @@ mod tests {
         );
         tokio::pin!(publish);
 
-        let blocked = tokio::time::timeout(Duration::from_millis(20), async {
-            (&mut publish).await;
-        })
-        .await;
-        assert!(
-            blocked.is_err(),
-            "publisher should wait for queue space instead of dropping StateChanged"
-        );
+        let pending =
+            std::future::poll_fn(|cx| Poll::Ready(publish.as_mut().poll(cx).is_pending())).await;
+        assert!(pending, "publisher should wait for queue space");
 
-        let first = tokio::time::timeout(Duration::from_millis(50), rx.recv())
-            .await
-            .expect("queue should yield first event")
-            .expect("sender still alive");
+        let first = rx.recv().await.expect("sender still alive");
         assert!(matches!(first, AppEvent::GitStatusRefreshed { .. }));
 
-        tokio::time::timeout(Duration::from_millis(50), async {
-            (&mut publish).await;
-        })
-        .await
-        .expect("publisher should complete once queue space is available");
+        (&mut publish).await;
 
-        let second = tokio::time::timeout(Duration::from_millis(50), rx.recv())
-            .await
-            .expect("queue should yield second event")
-            .expect("sender still alive");
+        let second = rx.recv().await.expect("sender still alive");
         let AppEvent::Runtime { event, .. } = second else {
             panic!("runtime envelope required");
         };

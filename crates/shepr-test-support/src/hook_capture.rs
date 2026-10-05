@@ -82,9 +82,12 @@ pub fn capture_hook(
     let server = thread::spawn(move || capture_requests(&listener, &stopped));
 
     command
-        .env("SHEPR_ENV", "1")
-        .env("SHEPR_SOCKET_PATH", socket_path)
-        .env("SHEPR_PANE_ID", pane_id)
+        .env(
+            shepr_core::env::EnvVar::SheprEnv.name(),
+            shepr_core::env::SHEPR_ENV_IN_PANE,
+        )
+        .env(shepr_core::env::EnvVar::SheprSocketPath.name(), socket_path)
+        .env(shepr_core::env::EnvVar::SheprPaneId.name(), pane_id)
         .env("TMPDIR", scratch_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

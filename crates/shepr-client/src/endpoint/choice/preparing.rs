@@ -339,6 +339,7 @@ mod tests {
             revision: shepr_test_fixtures::counter_at(revision),
             restore_notice: None,
             session_saves_stopped: false,
+            session_saves_blocked_on_backup: false,
             focused_workspace_id: None,
             focused_pane_id: None,
             workspaces: vec![],

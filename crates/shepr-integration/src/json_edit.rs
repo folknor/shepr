@@ -16,23 +16,24 @@ use jsonc_parser::{CollectOptions, ParseOptions, parse_to_ast};
 use serde_json::{Map, Value};
 
 use super::command::{hook_command_prefix, is_hook_command_for_path};
-use super::registration::HooksRoot;
+use super::registration::{HooksRoot, RequiredJsonField};
 use super::types::{InstallErrorKind, InstallIssue};
 
 /// Replace shepr's hook entries in a JSON agent config. An entry already equal
 /// to an expected one is kept where it is; every other entry naming this
 /// managed hook file and one of its descriptor commands is removed, including
 /// entries left by another host's path spelling.
-/// `cursor_version` adds Cursor's required top-level `"version": 1` when absent.
-/// Parsing and duplicate validation precede even a no-op, so an ambiguous user
-/// document is never accepted.
+/// Required top-level fields are added from the target's registration row when
+/// absent. Parsing and duplicate validation precede even a no-op, so an
+/// ambiguous user document is never accepted.
 pub(super) fn install_json(
     content: &str,
     path: &Path,
     hook_path: &Path,
     location: HooksRoot,
     mut expected: Map<String, Value>,
-    cursor_version: bool,
+    required_fields: &[RequiredJsonField],
+    document_description: &str,
 ) -> io::Result<String> {
     let mut root = parse_root(content, path)?;
     let mut object = root
@@ -40,19 +41,22 @@ pub(super) fn install_json(
         .and_then(|value| value.as_object())
         .ok_or_else(|| {
             shape_error(&format!(
-                "agent config at {} must be a JSON object",
+                "{document_description} at {} must be a JSON object",
                 path.display()
             ))
         })?;
     let mut desired = parse_value(content, path)?;
-    if cursor_version && object.get("version").is_none() {
-        desired["version"] = Value::from(1);
-        let updated = append_property(&root, &object, path, false, "version", &Value::from(1))?;
-        root = parse_root(&updated, path)?;
-        object = root
-            .value()
-            .and_then(|value| value.as_object())
-            .ok_or_else(|| shape_error("missing root"))?;
+    for field in required_fields {
+        if object.get(field.key).is_none() {
+            let value = field.value();
+            desired[field.key] = value.clone();
+            let updated = append_property(&root, &object, path, false, field.key, &value)?;
+            root = parse_root(&updated, path)?;
+            object = root
+                .value()
+                .and_then(|value| value.as_object())
+                .ok_or_else(|| shape_error("missing root"))?;
+        }
     }
     let hooks = match location {
         HooksRoot::Document => object,
@@ -591,9 +595,13 @@ pub(crate) fn install_claude_settings(
         settings_path,
         hook_path,
         HooksRoot::HooksKey,
-        super::registration::JsonShape::NestedClaude(timeout)
-            .expected_events(shepr_agent::IntegrationTarget::Claude, hook_path)?,
-        false,
+        super::registration::JsonShape::Nested(timeout).expected_events(
+            shepr_agent::IntegrationTarget::Claude,
+            hook_path,
+            super::registration::HookEventPolicy::CLAUDE,
+        )?,
+        &[],
+        "Claude settings",
     )
 }
 
@@ -635,7 +643,6 @@ mod tests {
     use super::*;
     use shepr_agent::Agent;
     use shepr_agent::resume::{AgentSessionStartSource, ReportedSessionStart};
-    use std::time::Duration;
 
     fn install_for_test(
         content: &str,
@@ -676,22 +683,49 @@ mod tests {
             Target::Mastracode,
             Target::AntigravityCli,
         ] {
-            let (location, events) = match registration(target) {
-                Registration::Json { root, shape, .. } => (
-                    root,
-                    Some(shape.expected_events(target, hook).expect("events")),
-                ),
-                Registration::Codex { timeout, .. } => (
-                    HooksRoot::HooksKey,
-                    Some(
-                        JsonShape::Nested(timeout)
-                            .expected_events(target, hook)
-                            .expect("events"),
+            let (location, events, required_fields, document_description) =
+                match registration(target) {
+                    Registration::Json {
+                        root,
+                        shape,
+                        required_fields,
+                        document_description,
+                        event_policy,
+                        ..
+                    } => (
+                        root,
+                        Some(
+                            shape
+                                .expected_events(target, hook, event_policy)
+                                .expect("events"),
+                        ),
+                        required_fields,
+                        document_description,
                     ),
-                ),
-                Registration::AntigravityCli { .. } => (HooksRoot::Document, None),
-                _ => panic!("JSON target"),
-            };
+                    Registration::Codex {
+                        timeout,
+                        event_policy,
+                        required_fields,
+                        document_description,
+                        ..
+                    } => (
+                        HooksRoot::HooksKey,
+                        Some(
+                            JsonShape::Nested(timeout)
+                                .expected_events(target, hook, event_policy)
+                                .expect("events"),
+                        ),
+                        required_fields,
+                        document_description,
+                    ),
+                    Registration::AntigravityCli { .. } => (
+                        HooksRoot::Document,
+                        None,
+                        <&[RequiredJsonField]>::default(),
+                        "Antigravity hooks file",
+                    ),
+                    _ => panic!("JSON target"),
+                };
             let unrelated = match location {
                 HooksRoot::HooksKey => {
                     format!("\"zeta\" : {user},\r\n    \"hooks\" : {{\"Unrelated\":[{user}]}}")
@@ -709,7 +743,8 @@ mod tests {
                         hook,
                         location,
                         events.clone(),
-                        target == Target::Cursor,
+                        required_fields,
+                        document_description,
                     ),
                     None => install_block(
                         text,
@@ -717,12 +752,16 @@ mod tests {
                         super::super::ANTIGRAVITY_CLI_HOOK_BLOCK_NAME,
                         &super::super::targets::antigravity_cli_hook_block_with_timeout(
                             hook,
-                            Duration::from_secs(10),
+                            super::super::HOOK_TIMEOUT,
                         )
                         .expect("block"),
                     ),
                 };
                 let updated = edit(&input).expect("edit JSON");
+                if target == Target::Cursor {
+                    let value: Value = serde_json::from_str(&updated).expect("Cursor JSON");
+                    assert_eq!(value.get("version"), Some(&Value::from(1)));
+                }
                 // Every edit lands after the user's last entry, so the whole
                 // text up to it is kept byte for byte.
                 let kept = &input[..=input.rfind(']').expect("test precondition")];
@@ -875,8 +914,9 @@ mod tests {
         let matcher = claude_session_start_matcher();
         let command = serde_json::to_string(&hook_command(hook_path, Some("session")))
             .expect("test precondition");
+        let timeout = super::super::HOOK_TIMEOUT.as_secs();
         let input = format!(
-            "{{\"hooks\":{{\"SessionStart\":[{{\"hooks\":[{{\"timeout\":10,\"command\":{command},\"type\":\"command\"}}],\"matcher\":\"{matcher}\"}}]}},\"escaped\":\"\\u0061\"}}  \r\n\r\n"
+            "{{\"hooks\":{{\"SessionStart\":[{{\"hooks\":[{{\"timeout\":{timeout},\"command\":{command},\"type\":\"command\"}}],\"matcher\":\"{matcher}\"}}]}},\"escaped\":\"\\u0061\"}}  \r\n\r\n"
         );
 
         let updated =
@@ -892,8 +932,9 @@ mod tests {
         let command = serde_json::to_string(&hook_command(hook_path, Some("session")))
             .expect("test precondition");
         let user_hook = r#"{ "type" : "command", "command" : "echo keep", "timeout" : 3 }"#;
+        let timeout = super::super::HOOK_TIMEOUT.as_secs();
         let input = format!(
-            "{{\n  \"hooks\": {{\n    \"SessionStart\": [{{\"matcher\":\"*\",\"hooks\":[{{\"type\":\"command\",\"command\":{command},\"timeout\":10}},{user_hook}]}}]\n  }}\n}}\n\n"
+            "{{\n  \"hooks\": {{\n    \"SessionStart\": [{{\"matcher\":\"*\",\"hooks\":[{{\"type\":\"command\",\"command\":{command},\"timeout\":{timeout}}},{user_hook}]}}]\n  }}\n}}\n\n"
         );
         let installed =
             install_for_test(&input, settings_path, hook_path).expect("test precondition");

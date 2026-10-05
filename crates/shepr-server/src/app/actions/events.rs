@@ -121,7 +121,70 @@ impl AppState {
                 .apply_git_status(result.status, resolved_identity_cwd.as_deref())
                 .is_changed();
         }
+        if changed {
+            self.mark_shell_projection_dirty();
+        }
         changed
+    }
+
+    /// Stores the deferred command with the resume plan. Launching is part of
+    /// the shell projection even before the child confirms its cwd.
+    pub(crate) fn begin_agent_resume_launch(&mut self, pane_id: PaneId, command: bytes::Bytes) {
+        let Some(record) = self.workspaces.pane_mut(pane_id) else {
+            return;
+        };
+        record.terminal_mut().begin_agent_resume_launch(command);
+        self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
+    }
+
+    /// Claims only the deferred command; the projected plan stays until the
+    /// send succeeds or the launch is abandoned.
+    pub(crate) fn take_agent_resume_command(&mut self, pane_id: PaneId) -> Option<bytes::Bytes> {
+        self.workspaces
+            .pane_mut(pane_id)?
+            .terminal_mut()
+            .take_agent_resume_command()
+    }
+
+    pub(crate) fn finish_agent_resume_launch(&mut self, pane_id: PaneId) {
+        let Some(record) = self.workspaces.pane_mut(pane_id) else {
+            return;
+        };
+        record.terminal_mut().clear_agent_resume();
+        self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
+    }
+
+    pub(crate) fn record_pane_start_failure(
+        &mut self,
+        pane_id: PaneId,
+        failure: shepr_mux::terminal::PaneStartFailure,
+    ) {
+        let Some(record) = self.workspaces.pane_mut(pane_id) else {
+            return;
+        };
+        record.terminal_mut().record_start_failure(failure);
+        self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
+    }
+
+    /// Abandonment changes the resume placeholder even when its agent's
+    /// effective state stays idle. Ownership bookkeeping alone cannot see it.
+    pub(crate) fn abandon_pane_agent_resume(
+        &mut self,
+        pane_id: PaneId,
+        failure: shepr_mux::terminal::PaneStartFailure,
+        now: std::time::Instant,
+    ) {
+        if self.terminal(pane_id).is_none() {
+            return;
+        }
+        self.update_terminal_state(pane_id, |terminal| {
+            Some(terminal.abandon_agent_resume(failure, now))
+        });
+        self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
     }
 
     /// Applies one state-level event and reports what it did to the terminal's
@@ -323,6 +386,7 @@ impl AppState {
                 .adopt_checkpoint_candidate_for_shutdown(signaled_at);
         }
         if adopted {
+            self.mark_shell_projection_dirty();
             self.mark_session_dirty();
         }
     }

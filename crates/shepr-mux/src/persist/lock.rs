@@ -11,10 +11,9 @@ pub struct DataDirLease {
 impl DataDirLease {
     pub fn acquire(directory: &Path) -> Result<Self, shepr_platform::LeaseAcquireError> {
         Ok(Self {
-            inner: shepr_platform::DataDirectoryLease::acquire(
+            inner: shepr_platform::DataDirectoryLease::acquire(&shepr_paths::data_dir_lease_path(
                 directory,
-                shepr_paths::DATA_DIR_LEASE_FILE_NAME,
-            )?,
+            ))?,
         })
     }
 
@@ -53,9 +52,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let scratch = crate::test_support::ScratchDir::new("lease-private");
         let lease = DataDirLease::acquire(&scratch.join("data")).expect("lease");
-        let lock_path = lease
-            .directory()
-            .join(shepr_paths::DATA_DIR_LEASE_FILE_NAME);
+        let lock_path = shepr_paths::data_dir_lease_path(lease.directory());
         let mode = std::fs::metadata(lock_path)
             .expect("lock file")
             .permissions()

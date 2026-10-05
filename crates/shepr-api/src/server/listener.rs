@@ -495,9 +495,12 @@ mod tests {
             listener,
             file: socket_file,
             lock,
-        } = shepr_platform::ipc::bind_owned_private_socket(&socket_path)
-            .expect("bind")
-            .into_parts();
+        } = shepr_platform::ipc::bind_owned_private_socket(
+            &socket_path,
+            &shepr_paths::socket_startup_lock_path(&path),
+        )
+        .expect("bind")
+        .into_parts();
         let running = Arc::new(AtomicBool::new(true));
         let gate = dispatch.gate.clone();
         let thread = start_listener_with_dispatch(

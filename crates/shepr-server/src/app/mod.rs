@@ -195,7 +195,7 @@ impl App {
             git_refresh,
             resume_schedule: resume_schedule::ResumeSchedule::new(
                 PENDING_AGENT_RESUME_THEME_WAIT,
-                config.session().startup_per_agent_delay,
+                config.session().agent_resume_spacing,
             ),
             session_saver: session::SessionSaver::new(persister),
             pending_pane_resizes: pane_resize::PendingPaneResizes::default(),
