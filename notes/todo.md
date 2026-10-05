@@ -15,18 +15,11 @@ persistence, the server save and checkpoint paths, and
 `server.toml` setting rather than an experimental one, or remove it along with
 the history file and its restore path.
 
-## A palette preview tool
+## Judge the UI contrast targets by eye
 
-Write a small dev-only CLI bin that shows the colours the client derives
-(`shepr_term::host_tint::UiPalette` and `HostPillPalette`), so the derivation
-can be judged by eye instead of only by its contrast tests. It should query
-the running terminal's background, foreground and ANSI colours (or take them
-as arguments, so other themes can be tried without switching terminals), then
-print every palette token and every host hue as swatches with sample text on
-the surfaces they are used on: panel, active and selected rows, the sidebar
-tints and accents, the state colours, and a focused and unfocused pane border.
 The contrast targets in `shepr-term/src/limits.rs` (`UI_*_CONTRAST`) are first
-guesses waiting on exactly this check.
+guesses. Run `brokkr run shepr-palette-preview` in a few terminals (and with
+`--background`/`--foreground`/`--ansi` for themes not at hand) and tune them.
 
 # Gaps and smells
 

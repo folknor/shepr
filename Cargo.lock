@@ -1469,6 +1469,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "shepr-palette-preview"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "shepr-term",
+ "shepr-termio",
+]
+
+[[package]]
 name = "shepr-paths"
 version = "0.1.0"
 dependencies = [

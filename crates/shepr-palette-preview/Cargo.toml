@@ -1,0 +1,14 @@
+[package]
+name = "shepr-palette-preview"
+version = "0.1.0"
+edition = "2024"
+description = "dev-only preview of the colours the shepr client derives from a terminal theme"
+publish = false
+
+[dependencies]
+crossterm = { workspace = true }
+shepr-term = { path = "../shepr-term" }
+shepr-termio = { path = "../shepr-termio" }
+
+[lints]
+workspace = true

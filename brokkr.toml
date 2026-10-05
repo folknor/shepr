@@ -260,14 +260,16 @@ message = "a new clippy seal escape; use the sanctioned alternative the seal's r
 # reaches no log file (a client-launched server daemon's stderr is only its
 # boot log, which a print after startup would fill). The CLI in
 # `src/` resets SIGPIPE before printing and is not held by this rule, nor is the
-# `shepr-daemon` executable's `main`, which reports its own boot failures. The
-# test-code excludes and `skip_after` spare tests; `check_skip_after_scopes.py`
-# re-checks the production items under a file's first `#[cfg(test)]`.
+# `shepr-daemon` executable's `main`, which reports its own boot failures, nor
+# the `shepr-palette-preview` development tool, whose output is the preview it
+# prints. The test-code excludes and `skip_after` spare tests;
+# `check_skip_after_scopes.py` re-checks the production items under a file's
+# first `#[cfg(test)]`.
 [[textlint]]
 name = "library-crates-do-not-print"
 pattern = '\b(?:print|println|eprint|eprintln)!\s*[\(\[\{]'
 paths = ["crates/*/src/**/*.rs"]
-exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**", "crates/shepr-daemon/**"]
+exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**", "crates/shepr-daemon/**", "crates/shepr-palette-preview/**"]
 skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 message = "a print macro panics on a closed pipe and reaches no log file; log through tracing, or return the text to the CLI to print"
@@ -294,12 +296,14 @@ message = "library code does not write to stderr; log through tracing or return 
 # nobody. The library's legitimate uses take fd 1 over as a whole rather than
 # write text to it: the client's host terminal writer and the SSH bridge's
 # stdio relay each duplicate the descriptor and own the copy. Those carry the
-# marker; the pattern matches as the stderr rule's does.
+# marker; the pattern matches as the stderr rule's does. The
+# `shepr-palette-preview` development tool writes its terminal colour queries
+# to stdout and is not held by this rule.
 [[textlint]]
 name = "library-crates-do-not-write-stdout"
 pattern = '(?:^|[^.\w])(?:(?:std::)?io::)?stdout\s*\(\s*\)'
 paths = ["crates/*/src/**/*.rs"]
-exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**"]
+exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**", "crates/shepr-palette-preview/**"]
 skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "stdout-handoff-ok"
@@ -733,6 +737,7 @@ packages = [
     "shepr-integration",
     "shepr-launch",
     "shepr-mux",
+    "shepr-palette-preview",
     "shepr-paths",
     "shepr-platform",
     "shepr-pty",
@@ -1008,6 +1013,14 @@ kinds = ["normal"]
 name = "shepr-daemon-layer"
 from = "shepr-daemon"
 allow = ["shepr-config", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-server"]
+kinds = ["normal"]
+
+# A development tool, never installed: it derives the client's colours from a
+# terminal theme and asks the terminal for its colours the way the client does.
+[[dependency_rule]]
+name = "shepr-palette-preview-layer"
+from = "shepr-palette-preview"
+allow = ["crossterm", "shepr-term", "shepr-termio"]
 kinds = ["normal"]
 
 # Only the server watches logind and owns the checkpoint policy. The monitor's

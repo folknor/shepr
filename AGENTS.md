@@ -300,6 +300,12 @@ orientation, and nothing checks them:
 `shepr-test-fixtures` (dev-only) sits above config, protocol, pty and termio,
 so only crates above those can take it.
 
+`shepr-palette-preview` is a development tool, not part of an installation:
+it prints the colours `shepr_term::host_tint` derives (the UI palette and each
+host hue's sidebar colours) on the surfaces they are used on, with their
+contrasts, for the terminal it runs in or a theme given as arguments. Run it
+with `brokkr run shepr-palette-preview -- --help`.
+
 ## Build and test
 
 `brokkr` is the only entry point. Never run raw `cargo`.
