@@ -45,19 +45,12 @@ pub fn terminal_cwd(
         CwdPurpose::FollowForNewPane => runtime.and_then(crate::pane::PaneRuntime::follow_cwd),
         CwdPurpose::Save => runtime.and_then(crate::pane::PaneRuntime::remembered_cwd),
     };
-    // Each source is filtered on its own, so an unusable observation falls
-    // back to the stored report instead of hiding it.
-    let usable = |path: &AbsolutePath| !process_cwd_is_deleted(path);
+    // The runtime classifies `/proc` cwd links at the observation boundary.
+    // OSC 7 and saved paths are user paths and may legitimately end with the
+    // same text the kernel appends to an unlinked link target.
     observed
         .and_then(|path| AbsolutePath::new(path).ok())
-        .filter(usable)
-        .or_else(|| stored.filter(usable))
-}
-
-pub(crate) fn process_cwd_is_deleted(path: &Path) -> bool {
-    // The kernel adds this marker to a /proc cwd link after its directory is
-    // removed. Reject it without statting the path on the event loop.
-    path.as_os_str().as_encoded_bytes().ends_with(b" (deleted)")
+        .or(stored)
 }
 
 mod aggregate;
@@ -326,9 +319,7 @@ impl Workspace {
         &self,
         root_pane_cwd: Option<AbsolutePath>,
     ) -> AbsolutePath {
-        root_pane_cwd
-            .filter(|cwd| !process_cwd_is_deleted(cwd))
-            .unwrap_or_else(|| self.identity_cwd.clone())
+        root_pane_cwd.unwrap_or_else(|| self.identity_cwd.clone())
     }
 
     /// The cwd of `pane`: its runtime's observation, else its stored report.
@@ -630,21 +621,13 @@ mod tests {
     }
 
     #[test]
-    fn resolved_identity_cwd_falls_back_to_the_construction_cwd() {
+    fn resolved_identity_cwd_keeps_a_stored_path_ending_with_deleted_text() {
         let registry = PaneRuntimeRegistry::new();
         let identity = Path::new("/shepr-test/construction");
+        let stored = Path::new("/shepr-test/real (deleted)");
 
-        // A root pane that reports no usable directory. A relative stored
-        // cwd cannot occur: the terminal state holds an `AbsolutePath`.
-        let ws = workspace_at(identity, "/gone (deleted)");
-        assert_eq!(ws.resolved_identity_cwd(&registry), identity);
-
-        // A usable stored report wins.
-        let ws = workspace_at(identity, "/shepr-test/pion");
-        assert_eq!(
-            ws.resolved_identity_cwd(&registry),
-            PathBuf::from("/shepr-test/pion")
-        );
+        let ws = workspace_at(identity, stored.to_str().expect("UTF-8 test path"));
+        assert_eq!(ws.resolved_identity_cwd(&registry), stored.to_path_buf());
     }
 
     #[test]
@@ -764,31 +747,34 @@ mod tests {
     }
 
     #[test]
-    fn every_purpose_filters_an_unusable_observation_and_keeps_the_stored_report() {
+    fn every_purpose_keeps_paths_ending_with_deleted_text_as_stored_state() {
         let terminal = terminal_at("/stored");
-        // A deleted directory and a relative path are both observations the
-        // stored report must outlive, for every purpose.
-        for observed in ["/gone (deleted)", "relative/cwd"] {
-            let runtime = runtime_with_cwd_state(Some((observed, None)), Some(observed));
-            for purpose in [
-                CwdPurpose::Identity,
-                CwdPurpose::FollowForNewPane,
-                CwdPurpose::Save,
-            ] {
-                assert_eq!(
-                    cwd_for(&runtime, &terminal, purpose),
-                    PathBuf::from("/stored"),
-                    "{observed:?}"
-                );
-            }
+        let path = "/gone (deleted)";
+        let runtime = runtime_with_cwd_state(Some((path, None)), Some(path));
+        for purpose in [
+            CwdPurpose::Identity,
+            CwdPurpose::FollowForNewPane,
+            CwdPurpose::Save,
+        ] {
+            assert_eq!(cwd_for(&runtime, &terminal, purpose), PathBuf::from(path));
         }
 
-        // With the stored report deleted too, nothing is usable.
-        let runtime = runtime_with_cwd_state(Some(("/gone (deleted)", None)), None);
-        let deleted = terminal_at("/old (deleted)");
+        let relative = runtime_with_cwd_state(Some(("relative/cwd", None)), Some("relative/cwd"));
+        for purpose in [
+            CwdPurpose::Identity,
+            CwdPurpose::FollowForNewPane,
+            CwdPurpose::Save,
+        ] {
+            assert_eq!(
+                cwd_for(&relative, &terminal, purpose),
+                PathBuf::from("/stored")
+            );
+        }
+
+        let stored = terminal_at(path);
         assert_eq!(
-            terminal_cwd(Some(&runtime), Some(&deleted), CwdPurpose::Identity),
-            None
+            terminal_cwd(None, Some(&stored), CwdPurpose::Save),
+            Some(stored.cwd().clone())
         );
     }
 
@@ -810,11 +796,11 @@ mod tests {
     }
 
     #[test]
-    fn cwd_query_rejects_deleted_state() {
+    fn cwd_query_keeps_deleted_text_in_stored_state() {
         let terminal = terminal_at("/gone (deleted)");
         assert_eq!(
             super::terminal_cwd(None, Some(&terminal), super::CwdPurpose::Save),
-            None,
+            Some(terminal.cwd().clone()),
         );
     }
 
@@ -850,6 +836,12 @@ mod tests {
         assert_eq!(
             ws.resolved_identity_cwd_from_root_pane(None),
             PathBuf::from("/saved/workspace")
+        );
+        assert_eq!(
+            ws.resolved_identity_cwd_from_root_pane(Some(
+                AbsolutePath::new("/saved/workspace/real (deleted)").expect("absolute")
+            )),
+            PathBuf::from("/saved/workspace/real (deleted)")
         );
     }
 

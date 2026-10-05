@@ -38,7 +38,7 @@ priority = 200
 region = "bottom_non_empty_lines(20)"
 visible_working = true
 any = [
-  { line_regex = ['^\s*[\x{2801}-\x{28FF}]\s+\S'] },
+  { line_regex = ['^\s*{spinner}\s+\S'] },
   { contains = ["Thinking... (esc to cancel)"] },
 ]
 

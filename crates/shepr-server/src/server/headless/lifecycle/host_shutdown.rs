@@ -135,7 +135,7 @@ impl Shared {
         }
     }
 
-    /// Whether the server has checkpointed for the warning now pending.
+    /// The identity of the shutdown warning currently pending.
     fn warning_generation(&self) -> Option<WarningGeneration> {
         self.requested
             .load(Ordering::Acquire)

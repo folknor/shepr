@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use shepr_agent::IntegrationTarget as Target;
 
-use super::command::is_hook_command_for_path;
 use super::config_edit::HOOK_COMMAND_FIELDS;
 use super::env::{AgentIntegrationPaths, DirectoryKey};
 use super::registration::{HooksRoot, JsonShape, Registration};
@@ -461,10 +460,20 @@ fn json_hook_commands_registered(
     let mut installed = Vec::new();
     let mut commands = Vec::new();
     for (event, entries) in events {
-        collect_hook_path_commands(entries, hook_path, event, &mut installed);
+        let expected_commands = expected
+            .get(event)
+            .map_or_else(Default::default, super::json_edit::expected_hook_commands);
+        collect_hook_path_commands(
+            entries,
+            hook_path,
+            event,
+            &expected_commands,
+            &mut installed,
+        );
     }
     for (event, entries) in expected {
-        collect_hook_path_commands(entries, hook_path, event, &mut commands);
+        let expected_commands = super::json_edit::expected_hook_commands(entries);
+        collect_hook_path_commands(entries, hook_path, event, &expected_commands, &mut commands);
     }
     installed.sort();
     commands.sort();
@@ -475,24 +484,29 @@ fn collect_hook_path_commands(
     value: &serde_json::Value,
     hook_path: &Path,
     event: &str,
+    expected_commands: &[String],
     output: &mut Vec<(String, String)>,
 ) {
     match value {
         serde_json::Value::Array(values) => {
             for value in values {
-                collect_hook_path_commands(value, hook_path, event, output);
+                collect_hook_path_commands(value, hook_path, event, expected_commands, output);
             }
         }
         serde_json::Value::Object(object) => {
             for &field in HOOK_COMMAND_FIELDS {
                 if let Some(command) = object.get(field).and_then(serde_json::Value::as_str)
-                    && is_hook_command_for_path(command, hook_path)
+                    && super::json_edit::is_managed_hook_command(
+                        command,
+                        hook_path,
+                        expected_commands,
+                    )
                 {
                     output.push((event.to_string(), command.to_string()));
                 }
             }
             if let Some(hooks) = object.get("hooks") {
-                collect_hook_path_commands(hooks, hook_path, event, output);
+                collect_hook_path_commands(hooks, hook_path, event, expected_commands, output);
             }
         }
         _ => {}

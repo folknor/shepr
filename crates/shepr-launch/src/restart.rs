@@ -18,28 +18,6 @@ pub enum StopOutcome {
     BootChanged,
 }
 
-/// A restart retains the stop failure until the operator notice is rendered.
-#[derive(Debug)]
-pub enum RestartFailure {
-    Local(ServerStopError),
-}
-
-impl std::fmt::Display for RestartFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Local(error) => error.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for RestartFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Local(error) => Some(error),
-        }
-    }
-}
-
 /// How one offer to restart a server of another build ended.
 #[derive(Debug)]
 pub enum RestartResult {
@@ -56,8 +34,9 @@ pub enum RestartResult {
     /// A different boot answered the stop or appeared while the observed
     /// instance was shutting down; it was not stopped as part of this offer.
     OccupantChanged,
-    /// The stop failed; the server may still be running.
-    Failed(RestartFailure),
+    /// The stop failed; the server may still be running. The failure is kept
+    /// until the operator notice is rendered.
+    Failed(ServerStopError),
 }
 
 impl RestartResult {
@@ -73,7 +52,7 @@ impl RestartResult {
         decide: Option<&mut dyn FnMut(&S) -> RestartDecision>,
         mut observe: impl FnMut() -> Option<S>,
         mut restartable: impl FnMut(&S) -> bool,
-        mut stop: impl FnMut(&S) -> Result<StopOutcome, RestartFailure>,
+        mut stop: impl FnMut(&S) -> Result<StopOutcome, ServerStopError>,
     ) -> Self {
         let Some(mut server) = observe().filter(|server| restartable(server)) else {
             return Self::NotNeeded;

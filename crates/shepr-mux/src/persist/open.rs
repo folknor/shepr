@@ -18,17 +18,8 @@ use super::lock::DataDirLease;
 use super::recovery::SessionBackupPolicy;
 use super::restore::{RestoredSession, plan_restore};
 
-/// Whether a server restores and saves the session, or only holds its
-/// directory lease while running without persistence.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SessionOpenPolicy {
-    Never,
-    Persist,
-}
-
 /// Runtime inputs needed to restore saved panes.
 pub struct SessionOpenOptions<'a> {
-    pub policy: SessionOpenPolicy,
     pub geometry: WorkspaceChrome,
     pub launcher: &'a PaneLauncher,
     pub resume_agents_on_restore: bool,
@@ -45,9 +36,7 @@ pub struct OpenedSession {
     pub terminal_runtimes: HashMap<PaneId, PaneRuntime>,
     /// The saved host theme; the default when no session was loaded.
     pub host_theme: shepr_term::host::TerminalTheme,
-    /// The owner of the session's files from here on, holding the lease: a
-    /// writing persister for [`SessionOpenPolicy::Persist`], a lease-only one
-    /// for [`SessionOpenPolicy::Never`].
+    /// The owner of the session's files from here on, holding the lease.
     pub persister: SessionPersister,
     /// Set when the saved session did not come back in full.
     pub restore_notice: Option<shepr_protocol::SessionRestoreNotice>,
@@ -82,12 +71,11 @@ struct SessionRestoreSummary {
     outcome: SessionRestoreOutcome,
 }
 
-/// Opens the session in the data directory `lease` guards. Under
-/// [`SessionOpenPolicy::Persist`] it reads the saved layout, restores it
-/// through the launcher, decides whether the saved file needs a recovery copy
-/// before the first write and
-/// whether clients must be told of a loss, and logs how the restore went.
-/// Either way the lease moves to the returned persister, which fires
+/// Opens the session in the data directory `lease` guards: it reads the saved
+/// layout, restores it through the launcher, decides whether the saved file
+/// needs a recovery copy before the first write and whether clients must be
+/// told of a loss, and logs how the restore went. The lease moves to the
+/// returned persister, which fires
 /// `save_finished` each time a submitted save ends.
 pub fn open_session(
     lease: DataDirLease,
@@ -129,7 +117,8 @@ fn open_and_summarize(
     // saved ID before it issues any, and the workspace set then owns it.
     let mut workspace_ids = WorkspaceIdAllocator::new();
 
-    if options.policy == SessionOpenPolicy::Persist {
+    // The closure borrows the lease, which the persister takes below.
+    {
         let backup_dir =
             || shepr_protocol::RemotePath::from(session_backup_directory(lease.directory()));
         match load(&lease) {
@@ -163,6 +152,7 @@ fn open_and_summarize(
                     tracing::warn!(
                         dropped_workspaces = damage.dropped_workspaces,
                         renamed_workspaces = damage.renamed_workspaces,
+                        repaired_bookmarks = damage.repaired_bookmarks,
                         dropped_agent_sessions = damage.dropped_agent_sessions.len(),
                         "session restore dropped or repaired saved data; the saved session is backed up to session-backups before the first save"
                     );
@@ -187,10 +177,7 @@ fn open_and_summarize(
         }
     }
 
-    let persister = match options.policy {
-        SessionOpenPolicy::Never => SessionPersister::lease_only(lease, save_finished),
-        SessionOpenPolicy::Persist => SessionPersister::spawn(lease, backup_policy, save_finished),
-    };
+    let persister = SessionPersister::spawn(lease, backup_policy, save_finished);
     // Nothing restored: an empty set with no bookmark and no runtimes.
     let (workspaces, terminal_runtimes, active) = restored.unwrap_or_default();
 
@@ -215,7 +202,7 @@ mod tests {
         DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SNAPSHOT_VERSION, SessionSnapshot,
         WorkspaceSnapshot,
     };
-    use crate::persist::{SaveError, SaveRefusal, capture_job};
+    use crate::persist::{SaveError, capture_job};
     use shepr_protocol::PanePublicNumber;
 
     /// A launcher whose shell can never start: every restored pane comes back
@@ -284,15 +271,11 @@ mod tests {
         }
     }
 
-    fn open(
-        lease: DataDirLease,
-        policy: SessionOpenPolicy,
-    ) -> (OpenedSession, Option<SessionRestoreSummary>) {
+    fn open(lease: DataDirLease) -> (OpenedSession, Option<SessionRestoreSummary>) {
         let launcher = refusing_launcher();
         open_and_summarize(
             lease,
             &SessionOpenOptions {
-                policy,
                 geometry: geometry(),
                 launcher: &launcher,
                 resume_agents_on_restore: false,
@@ -374,36 +357,11 @@ mod tests {
     #[test]
     fn a_fresh_start_has_nothing_to_report() {
         let (_dir, lease) = DataDir::new("open-fresh-start");
-        let (opened, summary) = open(lease, SessionOpenPolicy::Persist);
+        let (opened, summary) = open(lease);
         assert!(opened.workspaces.is_empty());
         assert!(opened.terminal_runtimes.is_empty());
         assert_eq!(opened.restore_notice, None);
         assert_eq!(summary, None);
-    }
-
-    #[test]
-    fn a_never_policy_reads_nothing_and_only_holds_the_lease() {
-        let (dir, lease) = DataDir::new("open-never");
-        let original = dir.write_session(&session(
-            vec![workspace("w1", "saved", LayoutSnapshot::Pane(pane(1)), 2)],
-            Some(0),
-        ));
-        let (mut opened, summary) = open(lease, SessionOpenPolicy::Never);
-        assert!(opened.workspaces.is_empty(), "nothing is restored");
-        assert_eq!(opened.restore_notice, None);
-        assert_eq!(summary, None);
-        assert!(matches!(
-            save(&mut opened),
-            Err(SaveError::Refused(SaveRefusal::LeaseOnly))
-        ));
-        assert_eq!(
-            std::fs::read(dir.session_file()).expect("the saved session is untouched"),
-            original
-        );
-        assert!(
-            DataDirLease::acquire(&dir.path).is_err(),
-            "the persister holds the lease"
-        );
     }
 
     #[test]
@@ -416,7 +374,7 @@ mod tests {
             ],
             Some(1),
         ));
-        let (mut opened, summary) = open(lease, SessionOpenPolicy::Persist);
+        let (mut opened, summary) = open(lease);
         assert_eq!(names(&opened), vec!["first", "second"]);
         assert_eq!(
             opened.workspaces.bookmark(),
@@ -441,7 +399,7 @@ mod tests {
     fn a_saved_session_without_workspaces_restores_as_empty() {
         let (dir, lease) = DataDir::new("open-empty");
         dir.write_session(&session(Vec::new(), None));
-        let (opened, summary) = open(lease, SessionOpenPolicy::Persist);
+        let (opened, summary) = open(lease);
         assert!(opened.workspaces.is_empty());
         assert_eq!(opened.restore_notice, None);
         assert_eq!(
@@ -462,13 +420,9 @@ mod tests {
         let original = b"{ this is not a session".to_vec();
         std::fs::write(dir.session_file(), &original).expect("test precondition");
 
-        let (mut opened, summary) = open(lease, SessionOpenPolicy::Persist);
+        let (mut opened, summary) = open(lease);
         let Some(shepr_protocol::SessionRestoreNotice {
-            loss:
-                shepr_protocol::SessionRestoreLoss::Unusable {
-                    failure:
-                        shepr_protocol::SessionRestoreFailure::Unparseable { line, category, .. },
-                },
+            loss: shepr_protocol::SessionRestoreLoss::Unusable { failure },
             backup_dir,
         }) = opened.restore_notice.clone()
         else {
@@ -477,8 +431,13 @@ mod tests {
                 opened.restore_notice
             );
         };
-        assert_eq!(line, 1);
-        assert_eq!(category, shepr_protocol::SessionParseCategory::Syntax);
+        assert_eq!(failure.path.as_path(), dir.session_file().as_path());
+        assert!(
+            failure.detail.starts_with("it could not be parsed:")
+                && failure.detail.contains("line 1"),
+            "{}",
+            failure.detail
+        );
         assert_eq!(backup_dir.as_path(), dir.backups());
         assert_eq!(summary, None, "only a loaded session is summarised");
 
@@ -514,7 +473,7 @@ mod tests {
             Some(0),
         ));
 
-        let (mut opened, summary) = open(lease, SessionOpenPolicy::Persist);
+        let (mut opened, summary) = open(lease);
         assert_eq!(
             names(&opened),
             vec!["healthy"],
@@ -578,7 +537,7 @@ mod tests {
             Some(0),
         ));
 
-        let (mut opened, summary) = open(lease, SessionOpenPolicy::Persist);
+        let (mut opened, summary) = open(lease);
         assert_eq!(opened.workspaces.len(), 2);
         assert_eq!(opened.workspaces.records().count(), 2);
         assert_eq!(
@@ -622,7 +581,7 @@ mod tests {
         let original = serde_json::to_vec(&json).expect("encode damaged snapshot");
         std::fs::write(dir.session_file(), &original).expect("write damaged snapshot");
 
-        let (mut opened, summary) = open(lease, SessionOpenPolicy::Persist);
+        let (mut opened, summary) = open(lease);
 
         assert_eq!(names(&opened), vec!["saved", "other"]);
         let w1 = "w1".parse().expect("workspace ID");
@@ -663,7 +622,7 @@ mod tests {
                 ],
                 Some(0),
             ));
-            let (mut opened, _) = open(lease, SessionOpenPolicy::Persist);
+            let (mut opened, _) = open(lease);
             assert_eq!(names(&opened), vec!["healthy"]);
             assert_eq!(
                 opened
@@ -696,7 +655,7 @@ mod tests {
             ],
             Some(1),
         ));
-        let (mut opened, _) = open(lease, SessionOpenPolicy::Persist);
+        let (mut opened, _) = open(lease);
         assert_eq!(names(&opened), vec!["first"]);
         assert_eq!(
             opened
@@ -721,7 +680,7 @@ mod tests {
             vec![workspace("w1", "kept", LayoutSnapshot::Pane(pane(1)), 2)],
             Some(0),
         ));
-        let (opened, summary) = open(lease, SessionOpenPolicy::Persist);
+        let (opened, summary) = open(lease);
         assert_eq!(names(&opened), vec!["kept"]);
         assert!(opened.terminal_runtimes.is_empty());
         assert_eq!(opened.restore_notice, None, "a launch failure is no loss");

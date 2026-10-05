@@ -114,46 +114,6 @@ impl std::fmt::Display for SessionFileTooLarge {
 
 impl std::error::Error for SessionFileTooLarge {}
 
-fn session_file_kind(error: &std::io::Error) -> Option<shepr_protocol::SessionFileKind> {
-    let file = error.get_ref()?.downcast_ref::<NotRegularFile>()?;
-    Some(match file.kind {
-        NotRegularKind::Directory => shepr_protocol::SessionFileKind::Directory,
-        NotRegularKind::Fifo => shepr_protocol::SessionFileKind::Fifo,
-        NotRegularKind::Socket => shepr_protocol::SessionFileKind::Socket,
-        NotRegularKind::CharacterDevice => shepr_protocol::SessionFileKind::CharacterDevice,
-        NotRegularKind::BlockDevice => shepr_protocol::SessionFileKind::BlockDevice,
-        NotRegularKind::Other => shepr_protocol::SessionFileKind::Other,
-    })
-}
-
-fn session_io_error_kind(kind: std::io::ErrorKind) -> shepr_protocol::SessionIoErrorKind {
-    use shepr_protocol::SessionIoErrorKind;
-
-    match kind {
-        std::io::ErrorKind::NotFound => SessionIoErrorKind::NotFound,
-        std::io::ErrorKind::PermissionDenied => SessionIoErrorKind::PermissionDenied,
-        std::io::ErrorKind::AlreadyExists => SessionIoErrorKind::AlreadyExists,
-        std::io::ErrorKind::ConnectionRefused => SessionIoErrorKind::ConnectionRefused,
-        std::io::ErrorKind::ConnectionReset => SessionIoErrorKind::ConnectionReset,
-        std::io::ErrorKind::ConnectionAborted => SessionIoErrorKind::ConnectionAborted,
-        std::io::ErrorKind::NotConnected => SessionIoErrorKind::NotConnected,
-        std::io::ErrorKind::AddrInUse => SessionIoErrorKind::AddrInUse,
-        std::io::ErrorKind::AddrNotAvailable => SessionIoErrorKind::AddrNotAvailable,
-        std::io::ErrorKind::BrokenPipe => SessionIoErrorKind::BrokenPipe,
-        std::io::ErrorKind::WouldBlock => SessionIoErrorKind::WouldBlock,
-        std::io::ErrorKind::InvalidInput => SessionIoErrorKind::InvalidInput,
-        std::io::ErrorKind::InvalidData => SessionIoErrorKind::InvalidData,
-        std::io::ErrorKind::ResourceBusy => SessionIoErrorKind::ResourceBusy,
-        std::io::ErrorKind::TimedOut => SessionIoErrorKind::TimedOut,
-        std::io::ErrorKind::Interrupted => SessionIoErrorKind::Interrupted,
-        std::io::ErrorKind::Unsupported => SessionIoErrorKind::Unsupported,
-        std::io::ErrorKind::UnexpectedEof => SessionIoErrorKind::UnexpectedEof,
-        std::io::ErrorKind::OutOfMemory => SessionIoErrorKind::OutOfMemory,
-        std::io::ErrorKind::WriteZero => SessionIoErrorKind::WriteZero,
-        _ => SessionIoErrorKind::Other,
-    }
-}
-
 fn session_file_size_limit(error: &std::io::Error) -> Option<usize> {
     error
         .get_ref()?
@@ -595,18 +555,14 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
             return SessionLoad::Missing;
         }
         Err(err) => {
-            let failure = if let Some(kind) = session_file_kind(&err) {
-                shepr_protocol::SessionRestoreFailure::NotRegularFile {
-                    kind,
-                    detail: err.to_string(),
-                }
-            } else if let Some(limit_bytes) = session_file_size_limit(&err) {
-                shepr_protocol::SessionRestoreFailure::TooLarge { limit_bytes }
+            let detail = if let Some(limit_bytes) = session_file_size_limit(&err) {
+                format!("it exceeds the {limit_bytes}-byte session file limit")
             } else {
-                shepr_protocol::SessionRestoreFailure::Unreadable {
-                    kind: session_io_error_kind(err.kind()),
-                    detail: err.to_string(),
-                }
+                format!("it could not be read: {err}")
+            };
+            let failure = shepr_protocol::SessionRestoreFailure {
+                path: shepr_protocol::RemotePath::from(path.as_path()),
+                detail,
             };
             warn!(
                 event = "persist.restore", subsystem = "persist", outcome = "read_error",
@@ -622,25 +578,11 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
                 event = "persist.restore", subsystem = "persist", outcome = "parse_error",
                 path = %path.display(), error = %err, "failed to parse session file, ignoring"
             );
-            SessionLoad::Unusable(session_parse_failure(&err))
+            SessionLoad::Unusable(shepr_protocol::SessionRestoreFailure {
+                path: shepr_protocol::RemotePath::from(path.as_path()),
+                detail: format!("it could not be parsed: {err}"),
+            })
         }
-    }
-}
-
-fn session_parse_failure(error: &serde_json::Error) -> shepr_protocol::SessionRestoreFailure {
-    use shepr_protocol::SessionParseCategory;
-
-    let category = match error.classify() {
-        serde_json::error::Category::Io => SessionParseCategory::Io,
-        serde_json::error::Category::Syntax => SessionParseCategory::Syntax,
-        serde_json::error::Category::Data => SessionParseCategory::Data,
-        serde_json::error::Category::Eof => SessionParseCategory::Eof,
-    };
-    shepr_protocol::SessionRestoreFailure::Unparseable {
-        line: error.line(),
-        column: error.column(),
-        category,
-        detail: error.to_string(),
     }
 }
 
@@ -775,10 +717,11 @@ mod tests {
         let SessionLoad::Unusable(failure) = load(&lease) else {
             panic!("a damaged session file is unusable");
         };
-        assert!(matches!(
-            failure,
-            shepr_protocol::SessionRestoreFailure::Unparseable { .. }
-        ));
+        assert_eq!(
+            failure.path.as_path(),
+            session_path(lease.directory()).as_path()
+        );
+        assert!(failure.detail.contains("it could not be parsed"));
     }
 
     #[test]

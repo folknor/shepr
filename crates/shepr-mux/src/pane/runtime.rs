@@ -368,7 +368,7 @@ impl Drop for PaneRuntime {
         if backing == shepr_pty::ChildBacking::Process {
             super::teardown::shutdown_pane_processes(
                 self.pane_id,
-                Arc::clone(&self.child_liveness),
+                &self.child_liveness,
                 &self.teardown_tracker,
             );
         }
@@ -1112,7 +1112,7 @@ mod tests {
         let started = std::time::Instant::now();
         shutdown_pane_processes(
             shepr_test_fixtures::fixed_pane_id(1),
-            child_liveness,
+            &child_liveness,
             &tracker,
         );
         assert!(
@@ -1297,7 +1297,7 @@ mod tests {
         let tracker = Arc::new(PaneTeardownTracker::default());
         shutdown_pane_processes(
             shepr_test_fixtures::fixed_pane_id(1),
-            Arc::new(ChildLiveness::absent()),
+            &Arc::new(ChildLiveness::absent()),
             &tracker,
         );
         assert!(tracker.wait(std::time::Duration::ZERO));
@@ -1440,7 +1440,7 @@ mod tests {
         )
         .expect("the fork does not wait for exec");
         let status = spawned.child.wait().expect("reap the failed launch");
-        assert_eq!(status.code(), Some(127));
+        assert_eq!(status.code(), Some(shepr_pty::backend::EXIT_LAUNCH_FAILED));
     }
 
     /// The child's command line once it exec'd a program whose argv0 is
@@ -1534,8 +1534,10 @@ mod tests {
             shepr_platform::ProcessHandle::open(pid).expect("fixture process handle"),
         )));
         std::fs::remove_dir(&deleted).expect("unlink process cwd");
-        let deleted_link = shepr_platform::process_cwd(pid).expect("read unlinked cwd");
-        assert!(deleted_link.to_string_lossy().ends_with(" (deleted)"));
+        assert!(
+            shepr_platform::process_cwd(pid).is_none(),
+            "an unlinked process cwd is not an observation"
+        );
 
         *shepr_core::locks::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
             path: remembered.clone(),

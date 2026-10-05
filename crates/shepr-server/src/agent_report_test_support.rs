@@ -22,7 +22,8 @@ use shepr_mux::workspace::Workspace;
 use crate::app::{App, AppClock, AppOutputs};
 
 /// An `App` with one workspace whose single pane has a terminal but no
-/// spawned process, which persists nothing.
+/// spawned process. Its persister owns the data directory under the root, but
+/// no event loop runs to start a save.
 pub(crate) struct AgentReportHarness {
     app: App,
     /// Held so the app's event channel stays open; nothing waits on it.
@@ -56,13 +57,7 @@ impl AgentReportHarness {
         let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
             .map_err(|error| error.to_string())?;
         // Requests are applied directly with `apply_request`.
-        let (mut app, outputs) = App::open(
-            &config,
-            &paths,
-            lease,
-            shepr_mux::persist::SessionOpenPolicy::Never,
-            app_clock(at),
-        );
+        let (mut app, outputs) = App::open(&config, &paths, lease, app_clock(at));
 
         let pane = shepr_core::layout::PaneId::alloc();
         let root_path = shepr_core::absolute_path::AbsolutePath::new(root)

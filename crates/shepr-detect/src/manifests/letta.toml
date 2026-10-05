@@ -33,7 +33,7 @@ state = "working"
 priority = 900
 region = "osc_title"
 visible_working = true
-regex = ['(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)']
+regex = ['(?:^| ){dots_spinner}(?: |$)']
 
 [[rules]]
 id = "active_status"

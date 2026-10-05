@@ -14,4 +14,4 @@ state = "working"
 priority = 100
 region = "bottom_non_empty_lines(12)"
 visible_working = true
-line_regex = ['^── [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Working ─+$']
+line_regex = ['^── {dots_spinner} Working ─+$']

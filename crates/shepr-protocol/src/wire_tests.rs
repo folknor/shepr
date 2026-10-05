@@ -457,6 +457,7 @@ mod tests {
                 loss: crate::SessionRestoreLoss::Damaged(crate::SessionRestoreDamage {
                     dropped_workspaces: 2,
                     renamed_workspaces: 1,
+                    repaired_bookmarks: 1,
                     dropped_agent_sessions: vec![crate::PublicPaneId::new(
                         &crate::WorkspaceId::from_number(1).ok_or("nonzero workspace number")?,
                         crate::PanePublicNumber::new(3).ok_or("nonzero pane number")?,
@@ -497,6 +498,22 @@ mod tests {
         };
         let decoded: ClientShellSnapshot = roundtrip(&msg)?;
         assert_eq!(msg, decoded);
+        Ok(())
+    }
+
+    #[test]
+    fn unusable_session_notice_roundtrip_carries_the_source_path() -> TestResult {
+        let notice = SessionRestoreNotice {
+            loss: crate::SessionRestoreLoss::Unusable {
+                failure: crate::SessionRestoreFailure {
+                    path: "/state/session.json".into(),
+                    detail: "it could not be parsed: expected value".into(),
+                },
+            },
+            backup_dir: "/state/session-backups".into(),
+        };
+
+        assert_eq!(roundtrip(&notice)?, notice);
         Ok(())
     }
 

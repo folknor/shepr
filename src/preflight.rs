@@ -19,7 +19,7 @@ use std::io::{self, IsTerminal, Write as _};
 use std::os::fd::AsRawFd as _;
 
 use shepr_config::MachineConfig;
-use shepr_launch::restart::{RestartDecision, RestartFailure, RestartResult, StopOutcome};
+use shepr_launch::restart::{RestartDecision, RestartResult, StopOutcome};
 use shepr_launch::status::RuntimeStatus;
 use shepr_launch::stop::ServerStopError;
 
@@ -180,7 +180,7 @@ fn restart_local(
             Ok(()) => Ok(StopOutcome::Stopped),
             Err(ServerStopError::NotRunning { .. }) => Ok(StopOutcome::NoServer),
             Err(error) if error.is_boot_mismatch() => Ok(StopOutcome::BootChanged),
-            Err(error) => Err(RestartFailure::Local(error)),
+            Err(error) => Err(error),
         },
     )
 }
@@ -705,10 +705,10 @@ mod tests {
             vec![true],
         );
         assert!(
-            matches!(script.run(true), RestartResult::Failed(RestartFailure::Local(ServerStopError::Protocol(detail))) if detail == "refused")
+            matches!(script.run(true), RestartResult::Failed(ServerStopError::Protocol(detail)) if detail == "refused")
         );
-        let notice = local_notice(&RestartResult::Failed(RestartFailure::Local(
-            ServerStopError::Protocol("refused".into()),
+        let notice = local_notice(&RestartResult::Failed(ServerStopError::Protocol(
+            "refused".into(),
         )))
         .expect("a notice");
         assert!(notice.contains("refused"), "{notice}");

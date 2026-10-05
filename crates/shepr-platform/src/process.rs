@@ -459,7 +459,7 @@ pub fn session_members(wanted: SessionId, leader_reaped: impl Fn() -> bool) -> V
     handles
 }
 
-fn numeric_file_name(entry: &std::fs::DirEntry) -> Option<Pid> {
+pub(crate) fn numeric_file_name(entry: &std::fs::DirEntry) -> Option<Pid> {
     let file_name = entry.file_name();
     let value = file_name.to_str()?;
     if !value.bytes().all(|byte| byte.is_ascii_digit()) {

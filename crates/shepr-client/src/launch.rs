@@ -762,8 +762,8 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("launch-admission");
         // Size the root so `root/runtime/shepr.sock` is exactly the longest
-        // path Linux accepts: the server socket fits, and any SSH bridge
-        // socket name beside it (longer than `shepr.sock`) cannot.
+        // path Linux accepts: the server socket fits, but OpenSSH
+        // control socket staging needs more space.
         let server_socket_tail = "/runtime/shepr.sock";
         let scratch_len = scratch.as_os_str().as_bytes().len();
         let root_len = shepr_core::socket_path::UNIX_SOCKET_PATH_MAX - server_socket_tail.len();
@@ -780,15 +780,6 @@ mod tests {
         assert!(
             shepr_paths::AppPaths::rooted_at(&root, None, None).is_ok(),
             "the server socket path fits"
-        );
-        assert!(
-            shepr_remote::validate_remote_bridge_endpoint_path(
-                &root.join("runtime"),
-                "bridge.sock",
-                "b.sock"
-            )
-            .is_err(),
-            "bridge socket paths do not fit"
         );
         let paths = shepr_paths::AppPaths::test_at(&root);
         let config = shepr_config::ValidatedClientConfig::test_from_config_with_paths(

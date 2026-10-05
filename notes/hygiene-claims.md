@@ -121,19 +121,6 @@ arguably the subject; then say so, and give the others
 `shepr_test_support::fixture::resolved_shell` or `idle_shell`. A textlint on
 `"/bin/sh"` literals in fixture crates would close the gap.
 
-## CLAIM-006 - Host-shutdown tests run under a policy production never uses
-
-Reported by: save-shutdown.
-
-- `host_shutdown_freeze_waits_for_monitor_cancellation` (lifecycle.rs) and
-  `host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on_cancel`
-  (tests/shutdown.rs) build `App::new`, whose saver is `Never`. The freeze takes the
-  `!session_persists()` shortcut, so neither exercises request, result, freeze or
-  release; `assert!(!app.session_persists())` after the thaw cannot fail under
-  `Never`; the first test's name says it waits for monitor cancellation with no
-  monitor running, its last assertion (`!lifecycle.has_monitor()`) checks something
-  no code path could do, and its second and third syncs assert the same thing.
-
 ## CLAIM-007 - Save tests use test-only twins of the production paths and mix two clocks
 
 Reported by: save-shutdown.
@@ -439,9 +426,6 @@ Reported by: integrations, server-lifecycle, remote.
   shell.endpoints.choice; c.commit()` or a direct field assignment (which test code
   already does) passes. Make the transition methods `pub(in crate::endpoint)` and the
   field private behind an accessor, and the compiler is the guard.
-- "Bridge socket names must stay clear of the `shepr-ssh-` prefix" (`ssh_paths.rs`,
-  `machine_ssh.rs`) is true and checked by nothing; moot if the bridge socket goes
-  (DEAD).
 
 ## Claims nothing enforces
 
@@ -516,12 +500,6 @@ Reported by: restore-resume, agent-state, workspace-model.
 
 Reported by: save-shutdown.
 
-- `ShutdownLifecycle::freeze`'s field doc says folding the freeze into the phase
-  "would make `ShutdownPhase` carry data and lose the `Copy` that `UnexpectedPhase`
-  relies on". `HostShutdownFreeze` holds only `Option<WarningGeneration>`, which is
-  `Copy`, so `ShutdownPhase::Frozen { generation }` stays `Copy`. The parallel
-  `Option` field and its "Some only in Frozen or Stopping, readers check the phase
-  first" invariant rest on a false premise; fold it into the phase.
 - `Shared::warning_generation`'s doc ("Whether the server has checkpointed for the
   warning now pending.") was copied from `checkpointed`; the function returns the
   pending warning's generation.
@@ -598,7 +576,6 @@ Reported by: integrations.
   reconstructs a second interpretation of the descriptor." Claude's install is a
   second, CST implementation, and Cursor's install inserts `"version": 1` that status
   never checks.
-- `AgentIntegrationPaths`' "never consults the process environment" (BUG-043).
 - `bundle.rs` `EMPTY_OBJECT`: "every exit path emits an empty object" still fails for a
   `set -e` abort on an unguarded failing command, which exits without `finish`; the
   template guards most commands with `|| true`, not all.

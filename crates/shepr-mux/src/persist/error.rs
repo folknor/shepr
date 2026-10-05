@@ -4,7 +4,6 @@ use std::io;
 /// on the same persister.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaveRefusal {
-    LeaseOnly,
     StoppedAfterPanic,
     Retired,
 }
@@ -43,9 +42,6 @@ impl std::fmt::Display for SaveError {
                 write!(f, "session was published but may not be durable: {error}")
             }
             Self::Abandoned => f.write_str("session persister ended before finishing the save"),
-            Self::Refused(SaveRefusal::LeaseOnly) => f.write_str(
-                "this session persister only holds the data directory lease; it runs no saves",
-            ),
             Self::Refused(SaveRefusal::StoppedAfterPanic) => {
                 f.write_str("session persister stopped after a save panicked; no further saves run")
             }

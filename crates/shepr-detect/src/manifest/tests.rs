@@ -1,4 +1,5 @@
 use super::*;
+use shepr_vt::{Progress, ProgressState};
 
 // Synthetic manifests use the Codex label; behavior tests supply their own rules.
 fn local_manifest(state: &str, contains: &str) -> String {
@@ -265,6 +266,144 @@ fn bundled_loaded(agent: Agent) -> CompiledManifest {
     bundled_manifest(agent).expect("test precondition")
 }
 
+fn named_class_matches(matcher: &str, class: &str, text: &str) -> bool {
+    let source = format!(
+        "id = \"codex\"\n\n[[rules]]\nid = \"named_class\"\nstate = \"working\"\n{matcher} = ['^{class}$']\n"
+    );
+    TestManifests::new(&source).detect(text).state() == AgentState::Working
+}
+
+#[test]
+fn named_manifest_regex_classes_preserve_their_intended_glyph_sets() {
+    for matcher in ["regex", "line_regex"] {
+        assert!(named_class_matches(matcher, "{spinner}", "\u{2801}"));
+        assert!(named_class_matches(matcher, "{spinner}", "\u{28FF}"));
+        assert!(!named_class_matches(matcher, "{spinner}", "\u{2800}"));
+        assert!(named_class_matches(
+            matcher,
+            "{spinner_run}",
+            "\u{2800}\u{2801}"
+        ));
+        assert!(named_class_matches(matcher, "{spinner_run}", "\u{28FF}"));
+        assert!(!named_class_matches(
+            matcher,
+            "{spinner_run}",
+            "\u{2800}\u{2800}"
+        ));
+    }
+    for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏".chars() {
+        assert!(named_class_matches(
+            "regex",
+            "{dots_spinner}",
+            &frame.to_string()
+        ));
+    }
+    assert!(!named_class_matches("regex", "{dots_spinner}", "\u{2801}"));
+
+    assert!(named_class_matches(
+        "regex",
+        "{claude_live_glyph}",
+        "\u{2733}"
+    ));
+    assert!(named_class_matches("regex", "{claude_live_glyph}", "*"));
+    assert!(!named_class_matches("regex", "{claude_live_glyph}", "◐"));
+    assert!(named_class_matches(
+        "regex",
+        "{claude_background_glyph}",
+        "*"
+    ));
+    assert!(!named_class_matches(
+        "regex",
+        "{claude_background_glyph}",
+        "\u{2733}"
+    ));
+}
+
+#[test]
+fn bundled_manifests_do_not_spell_braille_ranges_directly() {
+    // One Braille codepoint in any spelling a manifest pattern can carry: a
+    // regex `\x{28..}`, `\u{28..}` or `\u28..` escape, or the literal glyph.
+    let braille = r"(?:\\x\{28[0-9A-Fa-f]{2}\}|\\u\{28[0-9A-Fa-f]{2}\}|\\u28[0-9A-Fa-f]{2}|[\x{2800}-\x{28FF}])";
+    let raw_braille_range =
+        Regex::new(&format!(r"{braille}\s*-\s*{braille}")).expect("lint expression compiles");
+    for spelling in [
+        r"[\x{2800}-\x{28FF}]",
+        r"[\x{2801}-\x{28ff}]",
+        concat!("[", "\\", "u2800-", "\\", "u28FF]"),
+        r"[\u{2800}-\u{28FF}]",
+        "[\u{2801}-\u{28FF}]",
+    ] {
+        assert!(raw_braille_range.is_match(spelling), "{spelling}");
+    }
+
+    for agent in Agent::all() {
+        let Some(source) = bundled_manifest_source(agent) else {
+            continue;
+        };
+        assert!(
+            !raw_braille_range.is_match(source),
+            "{} manifest contains a raw Braille range",
+            agent.label()
+        );
+    }
+}
+
+fn collect_osc_progress_regexes<'a>(
+    gate: &'a CompiledGate,
+    regions: &[CompiledRegion],
+    patterns: &mut Vec<(&'a str, &'a Regex)>,
+) {
+    if regions[gate.region].spec == RegionSpec::OscProgress {
+        patterns.extend(gate.regex.iter().map(|regex| ("regex", regex)));
+        patterns.extend(gate.line_regex.iter().map(|regex| ("line_regex", regex)));
+    }
+    for nested in gate.all.iter().chain(&gate.any).chain(&gate.not_gate) {
+        collect_osc_progress_regexes(nested, regions, patterns);
+    }
+}
+
+#[test]
+fn bundled_osc_progress_regexes_match_progress_display_output() {
+    let mut progress_spellings = Vec::new();
+    for state in [
+        ProgressState::Remove,
+        ProgressState::Normal,
+        ProgressState::Error,
+        ProgressState::Indeterminate,
+        ProgressState::Paused,
+    ] {
+        for percent in [None, Some(0)] {
+            progress_spellings.push(Progress { state, percent }.to_string());
+        }
+    }
+
+    let mut checked = 0;
+    for agent in Agent::all() {
+        let Some(source) = bundled_manifest_source(agent) else {
+            continue;
+        };
+        let manifest = parse_bundled_manifest(agent.label(), source)
+            .unwrap_or_else(|error| panic!("bundled {} manifest: {error}", agent.label()));
+        for rule in &manifest.rules {
+            let mut patterns = Vec::new();
+            collect_osc_progress_regexes(&rule.gate, &manifest.regions, &mut patterns);
+            for (kind, regex) in patterns {
+                checked += 1;
+                assert!(
+                    progress_spellings
+                        .iter()
+                        .any(|spelling| regex.is_match(spelling)),
+                    "{} rule {} {kind} {:?} matches no shepr-vt Progress display output",
+                    agent.label(),
+                    rule.id,
+                    regex.as_str()
+                );
+            }
+        }
+    }
+    assert!(checked > 0, "bundled OSC progress matchers are present");
+}
+
 #[test]
 fn claude_title_spinner_stands_down_while_a_permission_dialog_is_live() {
     let claude = bundled_loaded(Agent::Claude);
@@ -409,7 +548,7 @@ fn explain_for_label_evaluates_the_bundled_manifest_and_names_an_unknown_label()
     let screen =
         "Bash command\n  rm -rf build\nDo you want to proceed?\n 1. Yes\n  2. No\nEsc to cancel\n";
     let by_label = explain_for_label("claude", screen_input(screen));
-    let direct = explain(Agent::Claude, screen);
+    let direct = explain_with_input(Agent::Claude, screen_input(screen));
     assert_eq!(by_label, direct);
     assert_eq!(by_label.verdict.state(), AgentState::Blocked);
 

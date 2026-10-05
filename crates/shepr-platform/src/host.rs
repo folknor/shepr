@@ -100,7 +100,7 @@ pub fn detach_server_daemon_command(command: &mut Command) {
 /// The path to run to start this program again. Use this, never raw
 /// `current_exe()`, for anything that re-executes shepr or hands its path to
 /// another process: once an install replaces the binary, Linux reports the
-/// running one as "/…/shepr (deleted)", a path nothing can execute.
+/// running inode as an unlinked path that nothing can execute.
 pub fn launch_executable() -> std::io::Result<PathBuf> {
     resolve_launch_executable(std::env::current_exe()?, is_regular_file)
 }
@@ -119,19 +119,12 @@ pub(super) fn resolve_launch_executable(
     executable: PathBuf,
     is_file: impl Fn(&Path) -> std::io::Result<bool>,
 ) -> std::io::Result<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-
     if !is_file(&executable)? {
         // Linux marks the old inode as deleted after an update replaces the binary.
-        if let Some(path) = executable
-            .as_os_str()
-            .as_bytes()
-            .strip_suffix(b" (deleted)")
+        if let Some(replacement) = super::proc_tree::strip_proc_deleted_suffix(&executable)
+            && is_file(&replacement)?
         {
-            let replacement = PathBuf::from(std::ffi::OsStr::from_bytes(path));
-            if is_file(&replacement)? {
-                return Ok(replacement);
-            }
+            return Ok(replacement);
         }
     }
     Ok(executable)

@@ -2,12 +2,8 @@
 //! so the crate-visible module declaration exposes no helper API to other
 //! crate modules.
 
-use shepr_api::error::ApiError;
-
-pub(super) fn pane_not_found(pane_id: &str) -> ApiError {
-    ApiError::pane_not_found(pane_id)
-}
-
+/// Hook reports cannot send `unknown`; it remains a distinct detector state in
+/// `AgentState`, so the API vocabulary needs this explicit conversion.
 pub(super) fn detect_state_from_api(
     state: shepr_api::schema::PaneReportAgentState,
 ) -> shepr_agent::AgentState {
@@ -19,13 +15,7 @@ pub(super) fn detect_state_from_api(
 }
 
 pub(super) fn pane_agent_status(state: shepr_agent::AgentState) -> shepr_api::schema::AgentStatus {
-    presented_agent_status(state.presentation_state())
-}
-
-pub(super) fn presented_agent_status(
-    state: shepr_agent::PresentedAgentState,
-) -> shepr_api::schema::AgentStatus {
-    state
+    state.presentation_state()
 }
 
 /// A user-given pane label as the server stores it: trimmed, and `None` when
@@ -45,18 +35,5 @@ mod agent_status_tests {
     #[test]
     fn unknown_agent_state_presents_as_idle() {
         assert_eq!(pane_agent_status(AgentState::Unknown), AgentStatus::Idle);
-    }
-}
-
-#[cfg(test)]
-mod not_found_tests {
-    use super::pane_not_found;
-    use shepr_api::error::ApiErrorCode;
-
-    #[test]
-    fn pane_not_found_keeps_the_subject_and_code_together() {
-        let error = pane_not_found("w1:p2");
-        assert_eq!(error.code, ApiErrorCode::PaneNotFound);
-        assert_eq!(error.into_message(), "pane w1:p2 not found");
     }
 }

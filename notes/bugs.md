@@ -21,18 +21,6 @@ entry says which.
 
 ---
 
-## BUG-003 - The restore notice never names the session file that failed
-
-Reported by: persistence.
-
-`files::load` builds `SessionRestoreFailure` from `err.to_string()` or the serde
-error. For `Unreadable`, `TooLarge` and `Unparseable` the detail has no file
-path (serde says "expected value at line 1 column 1"). The client's notice names
-the backup directory but not the file that failed; only the server log has the
-path. Fix: carry the session path in `SessionRestoreNotice` beside `backup_dir`.
-A protocol test can assert the rendered notice contains it. Related:
-DEAD (the machine-readable failure taxonomy nothing reads).
-
 ## BUG-004 - A capture inconsistency silently drops a workspace from disk
 
 Reported by: persistence.
@@ -99,22 +87,6 @@ operator who stopped it learns of a failed final save only from the server log.
 Consider giving the final save the checkpoint's retries, and carrying its
 outcome to the stopping client (or the stop's exit status).
 
-## BUG-015 - The restart offer's stop budget is shorter than an unbounded final save
-
-Reported by: save-shutdown, server-lifecycle.
-
-`shepr-launch` `STOP_WAIT_TIMEOUT` (15 s) and `STOP_LEASE_WAIT_TIMEOUT` (10 s)
-must outlast the server's worst stop: `SHUTDOWN_FLUSH_TIMEOUT` (1 s) plus the
-final save (unbounded by design; see the "no forced stop" comment in `run`) plus
-`PANE_TEARDOWN_WAIT` (3 s). A large session or slow filesystem makes the restart
-offer report "did not stop within 15000ms ... kill with SIGKILL" while the save
-is healthy, and following that advice loses the final save.
-
-Fix: the stop guidance must not advise SIGKILL while a save may be running, or
-the stop waits for a server that reports it is still saving. A `const` assert in
-`shepr-daemon` (which links both crates) can hold the bounded part; say beside it
-that the save term is unbounded.
-
 ## BUG-022 - `SHEPR_BIN_PATH` names the server binary, is set inconsistently, and nothing reads it
 
 Reported by: pane-lifecycle, server-lifecycle.
@@ -133,23 +105,6 @@ server binary.
 Fix: given that shepr offers panes no way to drive it, remove
 `ChildEnv::SheprBinPath`, mux's `launch_executable()` and the init step; or point
 it at `shepr` (`with_file_name(PROGRAM_NAME)`) and say what it is for. Also DEAD.
-
-## BUG-023 - A directory whose name ends in " (deleted)" is treated as deleted
-
-Reported by: pane-lifecycle, workspace-model.
-
-`workspace::process_cwd_is_deleted` decides by the byte suffix ` (deleted)`, the
-kernel's marker on a `/proc/<pid>/cwd` readlink. It is also applied to paths that
-never came from `/proc`: `terminal_cwd` filters the stored cwd (an OSC 7 report
-or a saved path), and `resolved_identity_cwd_from_root_pane` filters whatever it
-is handed. A shell in a real directory named `x (deleted)` reads as `Deleted`:
-its cwd is never used for saves, splits or the Git identity, and a workspace
-rooted there falls back to its construction cwd. Nothing documents such
-directories as unsupported.
-
-Fix: apply the check only to the `/proc` observation (in
-`PaneRuntime::cwd` / `follow_cwd` / `remembered_cwd`), not to stored state. See
-VAL (the marker spelled in two crates).
 
 ## BUG-027 - The pane-exit checkpoint gate on an intact terminal core is a pane-history leftover that now loses agent sessions
 
@@ -226,44 +181,18 @@ read the same indeterminate state as Working. One may be right for its agent,
 but nothing records why Letta's indeterminate progress means a blocker. Needs a
 capture.
 
-## BUG-039 - Every shell-hook integration is silently inert on a host without `python3`
+## BUG-044 - An agent config shared by hosts with different home paths runs a missing hook on all but one
 
 Reported by: integrations.
 
-All ten shell hooks end with `command -v python3 >/dev/null 2>&1 || finish`. On a
-host (or pane `PATH`) without `python3`, Claude, Codex, Copilot, Cursor, Devin,
-Droid, Grok, Kimi, MastraCode and Antigravity never report, the installer reports
-success, status reads Current, and nothing says so; session resume silently stops
-for every one of them. AGENTS.md: integrations "report state and session IDs back
-to shepr". At minimum, warn when installing a python-dependent hook and `python3`
-does not resolve on the server's `PATH` (imperfect, since the pane `PATH` can
-differ). Related: the todo item "Report a missing hook interpreter".
-
-## BUG-043 - Relative agent config-dir overrides resolve against the server's cwd, except OMP's
-
-Reported by: integrations.
-
-`env::config_dir_from_env_or_home` returns a relative `CLAUDE_CONFIG_DIR`,
-`CODEX_HOME`, `COPILOT_HOME`, `CURSOR_CONFIG_DIR`, `KIMI_CODE_HOME`, `GROK_HOME`,
-`PI_CODING_AGENT_DIR` or `ANTIGRAVITY_CLI_CONFIG_DIR` unchanged (`EnvKind::Path`
-accepts relative values), so every later `fs` call resolves it against the server
-process's cwd; the agent resolves it against the pane's. `omp_extension_dir`
-joins a relative `PI_CONFIG_DIR` onto `HOME` instead. `AgentIntegrationPaths`
-claims install and status "never consult the process environment while choosing
-files"; the cwd is process environment. Fix: one rule for every override (refuse
-relative, or join `HOME`), in `config_dir_from_env_or_home`.
-
-## BUG-044 - Stale hook registrations for an old hook path are never removed
-
-Reported by: integrations.
-
-Removal matches only commands for the current `hook_path`. If `HOME`, a
-`*_CONFIG_DIR` / `*_HOME` override, or the symlink spelling of the home directory
-changes between launches, the old entries stay registered and keep running the
-old hook file, which is never updated again. An agent config shared across hosts
-through a dotfiles symlink, where the hosts' home paths differ, gets one entry per
-host, and on each other host that entry runs `sh '<missing path>'`, a failing hook
-the agent may show.
+Install now removes earlier shepr-generated commands at an old hook path, so a
+changed `HOME`, override or symlink spelling is repaired. What remains: a config
+shared across hosts (a dotfiles symlink) stores one absolute hook path, so each
+host's server launch replaces the other's entry, and on every other host the
+agent runs `sh '<missing path>'`, a failing hook it may show, until that host's
+server launches again. The limit is commented in `json_edit.rs`. Fix: a command
+that resolves the hook path on the host at run time (for example through `$HOME`
+or the agent config directory variable) instead of an absolute path.
 
 ## BUG-049 - A launched pane's cwd change does not advance the shell projection
 
@@ -326,33 +255,3 @@ is refused each time. On a host with fail2ban or `MaxAuthTries` accounting this
 can ban the client's address, turning an auth problem into Offline for every
 client on it. Consider not retrying authentication refusals automatically (only
 on operator action or a key-agent change), or a much longer interval.
-
-## BUG-072 - Restore silently repairs an out-of-range saved bookmark
-
-Reported by: the restore damage fix.
-
-Every other discard or repair of saved data now backs up the file and reports
-it. `restore.rs` `remap_saved_index` still quietly repairs a saved bookmark
-index that is out of range, so the first save rewrites a corrupt value with no
-backup and no notice. Fix: count it as restore damage like the others.
-
-## BUG-073 - A failed actor start whose teardown thread cannot spawn leaves the leader alive
-
-Reported by: the wave review.
-
-The inline teardown fallback and the extra SIGKILL on the actor-startup failure
-path are gone (a pane never stalls the loop). When the actor fails to start and
-the teardown thread also cannot spawn (thread exhaustion), the leader gets only
-SIGHUP; a child ignoring SIGHUP lives on and its detached reaper waits forever.
-Fix: without a teardown thread, send SIGKILL to the leader directly (one syscall,
-no wait) before handing it to the reaper.
-
-## BUG-074 - Two descriptor entries for one event with different matchers collapse into one hook group
-
-Reported by: the wave review.
-
-`ensure_command_hook`'s duplicate check keys on event plus command only, so two
-descriptor entries for the same event that differ only in matcher would install
-as one group and lose the second matcher. No current descriptor does this, so
-latent. Fix: key the check on the matcher too, or refuse such a descriptor in a
-test over every spec.

@@ -28,9 +28,9 @@ use crate::launch::{self, Registration, StatusDelivery};
 use crate::limits::{GETDENTS_READ_BUFFER_BYTES, LAUNCH_STATUS_RECORD_BYTES, MAX_SIGNAL_NUMBER};
 
 // limits-exempt: process exit status protocol, as shells report a failed setup.
-const EXIT_SETUP_FAILED: libc::c_int = 126;
+pub const EXIT_SETUP_FAILED: libc::c_int = 126;
 // limits-exempt: process exit status protocol, as shells report a failed command.
-const EXIT_LAUNCH_FAILED: libc::c_int = 127;
+pub const EXIT_LAUNCH_FAILED: libc::c_int = 127;
 
 unsafe extern "C" {
     /// glibc's and musl's fork without the `pthread_atfork` handlers, whose

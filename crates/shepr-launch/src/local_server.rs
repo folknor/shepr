@@ -58,31 +58,25 @@ pub enum LaunchError {
         message: String,
     },
     DifferentBuild {
-        status: RuntimeStatus,
         message: String,
     },
     OverrideMissing {
         message: String,
     },
     TransitionTimeout {
-        timeout: Duration,
         message: String,
     },
     DaemonFailed {
         class: DaemonExit,
-        status: ExitStatus,
         message: String,
     },
     BootLogOverflow {
         message: String,
     },
     BootTimeout {
-        timeout: Duration,
-        occupant_only: bool,
         message: String,
     },
     SiblingBuildMismatch {
-        status: RuntimeStatus,
         message: String,
     },
     Executable(io::Error),
@@ -151,13 +145,13 @@ impl std::fmt::Display for LaunchError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unresponsive { message }
-            | Self::DifferentBuild { message, .. }
+            | Self::DifferentBuild { message }
             | Self::OverrideMissing { message }
-            | Self::TransitionTimeout { message, .. }
+            | Self::TransitionTimeout { message }
             | Self::DaemonFailed { message, .. }
             | Self::BootLogOverflow { message }
-            | Self::BootTimeout { message, .. }
-            | Self::SiblingBuildMismatch { message, .. } => f.write_str(message),
+            | Self::BootTimeout { message }
+            | Self::SiblingBuildMismatch { message } => f.write_str(message),
             Self::Executable(error) | Self::LaunchLock(error) | Self::Io(error) => error.fmt(f),
         }
     }
@@ -237,7 +231,8 @@ pub fn ensure_running(
                     return Err(server_transition_timeout(paths, timeout));
                 }
                 probed =
-                    wait_for_server_socket_to_settle_until(paths, transition_deadline, timeout)?;
+                    wait_for_server_socket_to_settle_until(paths, transition_deadline, timeout)?
+                        .into();
             }
         }
     }
@@ -271,7 +266,7 @@ pub fn running_server_status(
             // launch that follows waits for it under its own budget.
             // clock-io-ok: bounds a wait on another process's real socket.
             let deadline = Instant::now() + SERVER_READY_TIMEOUT;
-            wait_for_server_socket_to_settle_until(paths, deadline, SERVER_READY_TIMEOUT)?
+            wait_for_server_socket_to_settle_until(paths, deadline, SERVER_READY_TIMEOUT)?.into()
         }
         probed => probed,
     };
@@ -309,7 +304,16 @@ enum Probed {
 }
 
 fn probe_server(paths: &shepr_paths::AppPaths) -> io::Result<Probed> {
-    probe_server_at(paths.server_address().socket())
+    probe_server_at(paths.server_address().socket()).map_err(|error| {
+        if error.kind() == io::ErrorKind::InvalidData {
+            io::Error::new(
+                error.kind(),
+                format!("{error}\n\n{}", build_mismatch_guidance(paths)),
+            )
+        } else {
+            error
+        }
+    })
 }
 
 /// Probes the server socket, and follows a live one with a bounded status
@@ -330,6 +334,24 @@ fn probe_server_at(socket: &Path) -> io::Result<Probed> {
     )
 }
 
+/// What a transition wait settles on: never a socket still in transition.
+#[derive(Debug)]
+enum SettledServer {
+    NoServer,
+    Running(RuntimeStatus),
+    Unresponsive,
+}
+
+impl From<SettledServer> for Probed {
+    fn from(settled: SettledServer) -> Self {
+        match settled {
+            SettledServer::NoServer => Self::NoServer,
+            SettledServer::Running(status) => Self::Running(status),
+            SettledServer::Unresponsive => Self::Unresponsive,
+        }
+    }
+}
+
 /// Waits through a server transition until the server socket disappears or
 /// a different stable probe result appears. Launch callers hold their profile
 /// lock while waiting, so another client cannot start a competing successor
@@ -338,13 +360,13 @@ fn wait_for_server_socket_to_settle_until(
     paths: &shepr_paths::AppPaths,
     deadline: Instant,
     timeout: Duration,
-) -> Result<Probed, LaunchError> {
+) -> Result<SettledServer, LaunchError> {
     // clock-io-ok: bounds a wait on another process's real socket.
     loop {
         match probe_server(paths)? {
-            stable @ (Probed::NoServer | Probed::Running(_) | Probed::Unresponsive) => {
-                return Ok(stable);
-            }
+            Probed::NoServer => return Ok(SettledServer::NoServer),
+            Probed::Running(status) => return Ok(SettledServer::Running(status)),
+            Probed::Unresponsive => return Ok(SettledServer::Unresponsive),
             Probed::Starting | Probed::Stopping => {}
         }
         // clock-io-ok: the same real-socket wait.
@@ -358,7 +380,6 @@ fn wait_for_server_socket_to_settle_until(
 
 fn server_transition_timeout(paths: &shepr_paths::AppPaths, timeout: Duration) -> LaunchError {
     LaunchError::TransitionTimeout {
-        timeout,
         message: format!(
             "the shepr server at {} did not finish starting or release its socket within {}ms",
             paths.server_address().socket().display(),
@@ -377,18 +398,10 @@ fn wait_for_overridden_server(
 ) -> Result<RuntimeStatus, LaunchError> {
     // clock-io-ok: the launch budget measures real elapsed waiting on the socket
     let deadline = Instant::now() + timeout;
-    let mut settled = wait_for_server_socket_to_settle_until(paths, deadline, timeout)?;
-    loop {
-        match settled {
-            Probed::Running(status) => return accept_running(paths, status, build_check),
-            Probed::NoServer => return Err(no_server_at_override(paths)),
-            Probed::Unresponsive => return Err(unresponsive_error(paths)),
-            Probed::Starting | Probed::Stopping => {
-                // The shared wait returns only settled states; should that
-                // change, wait again within the original deadline.
-                settled = wait_for_server_socket_to_settle_until(paths, deadline, timeout)?;
-            }
-        }
+    match wait_for_server_socket_to_settle_until(paths, deadline, timeout)? {
+        SettledServer::Running(status) => accept_running(paths, status, build_check),
+        SettledServer::NoServer => Err(no_server_at_override(paths)),
+        SettledServer::Unresponsive => Err(unresponsive_error(paths)),
     }
 }
 
@@ -424,7 +437,6 @@ fn running_build_mismatch(paths: &shepr_paths::AppPaths, status: &RuntimeStatus)
         "the running shepr server is a different build, and this client cannot start a replacement at the selected socket override."
     };
     LaunchError::DifferentBuild {
-        status: status.clone(),
         message: format!(
             "{summary}\n\nserver: v{} build {}\nclient: v{} build {}\n\n{}",
             status.version,
@@ -562,6 +574,17 @@ pub fn sibling_server_status() -> SiblingServerJson {
     }
 }
 
+/// Kills and reaps a version probe being abandoned. The caller returns the
+/// probe's own failure; a cleanup failure is only logged beside it.
+fn reap_version_child(child: &mut Child, server: &Path) {
+    if let Err(error) = child.kill() {
+        tracing::warn!(%error, server = %server.display(), "could not kill server version probe");
+    }
+    if let Err(error) = child.wait() {
+        tracing::warn!(%error, server = %server.display(), "could not reap server version probe");
+    }
+}
+
 /// Runs `server --version` under a deadline and returns its first output line.
 /// A child that outlives the deadline is killed and reaped.
 fn read_server_version_line(server: &Path, timeout: Duration) -> io::Result<String> {
@@ -585,14 +608,12 @@ fn read_server_version_line(server: &Path, timeout: Duration) -> io::Result<Stri
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(error) => {
-                drop(child.kill());
-                drop(child.wait());
+                reap_version_child(&mut child, server);
                 return Err(error);
             }
         }
         if real_now() >= deadline {
-            drop(child.kill());
-            drop(child.wait());
+            reap_version_child(&mut child, server);
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
@@ -737,7 +758,6 @@ fn launch_daemon(
                 paths
                     .current_dir()
                     .map(shepr_core::absolute_path::AbsolutePath::as_path),
-                paths,
             );
             command.stderr(stderr);
             command.spawn()
@@ -922,11 +942,7 @@ fn boot_failure(files: &LaunchFiles<'_>, status: ExitStatus) -> LaunchError {
         class.describe_boot_end()
     );
     append_boot_log(&mut message, files);
-    LaunchError::DaemonFailed {
-        class,
-        status,
-        message,
-    }
+    LaunchError::DaemonFailed { class, message }
 }
 
 /// The daemon printed more than [`BOOT_LOG_MAX_BYTES`] while booting; the
@@ -953,11 +969,7 @@ fn boot_timeout(files: &LaunchFiles<'_>, timeout: Duration, occupant_only: bool)
         )
     };
     append_boot_log(&mut message, files);
-    LaunchError::BootTimeout {
-        timeout,
-        occupant_only,
-        message,
-    }
+    LaunchError::BootTimeout { message }
 }
 
 fn append_boot_log(message: &mut String, files: &LaunchFiles<'_>) {
@@ -985,7 +997,6 @@ fn append_boot_log(message: &mut String, files: &LaunchFiles<'_>) {
 /// installed pair is inconsistent.
 fn sibling_build_mismatch(files: &LaunchFiles<'_>, status: &RuntimeStatus) -> LaunchError {
     LaunchError::SiblingBuildMismatch {
-        status: status.clone(),
         message: format!(
             "{} is a different build than this shepr and was stopped; install shepr and {SERVER_BINARY_NAME} together (`brokkr install`).\n\nserver: v{} build {}\nclient: v{} build {}",
             files.server.display(),
@@ -1025,7 +1036,6 @@ fn build_server_daemon_command(
     exe: &Path,
     working_dir: &Path,
     startup_cwd: Option<&Path>,
-    paths: &shepr_paths::AppPaths,
 ) -> Command {
     let mut command = shepr_platform::child_command(exe, working_dir);
     command
@@ -1048,7 +1058,7 @@ fn build_server_daemon_command(
         command.env_remove(EnvVar::SheprStartupCwd);
     }
 
-    paths.server_address().apply_to_child_command(&mut command);
+    shepr_paths::ServerAddress::apply_to_child_command(&mut command);
 
     command
 }

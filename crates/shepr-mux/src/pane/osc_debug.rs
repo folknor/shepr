@@ -19,8 +19,6 @@ pub(super) enum OscDebugCommand {
     Title,
     /// OSC 9: notifications and ConEmu subcommands, progress among them.
     Notification,
-    /// OSC 21337: agent status.
-    Status,
 }
 
 impl OscDebugCommand {
@@ -29,7 +27,6 @@ impl OscDebugCommand {
             b"0" => Self::IconAndTitle,
             b"2" => Self::Title,
             b"9" => Self::Notification,
-            b"21337" => Self::Status,
             _ => return None,
         })
     }
@@ -39,7 +36,6 @@ impl OscDebugCommand {
             Self::IconAndTitle => "0",
             Self::Title => "2",
             Self::Notification => "9",
-            Self::Status => "21337",
         }
     }
 }
@@ -165,20 +161,22 @@ mod tests {
     }
 
     #[test]
-    fn detects_split_status_sequences() {
+    fn detects_split_notification_sequences() {
         assert!(collected(&[b"\x1b]9;4;3"]).is_empty());
         assert_eq!(
             collected(&[b"\x1b]9;4;3", b"\x07\x1b]21337;status=working\x1b\\"]),
-            vec![
-                event(OscDebugCommand::Notification, "4;3"),
-                event(OscDebugCommand::Status, "status=working"),
-            ]
+            vec![event(OscDebugCommand::Notification, "4;3")]
         );
     }
 
     #[test]
     fn ignores_untracked_osc_commands() {
-        assert!(collected(&[b"\x1b]52;c;SGVsbG8=\x07\x1b]7;file:///tmp\x07"]).is_empty());
+        assert!(
+            collected(&[
+                b"\x1b]52;c;SGVsbG8=\x07\x1b]7;file:///tmp\x07\x1b]21337;status=working\x07"
+            ])
+            .is_empty()
+        );
     }
 
     #[test]

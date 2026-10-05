@@ -358,9 +358,6 @@ fn resolve_paths_from_env_with_marker(
                 server_address,
             })
         }
-        _ if problems.is_empty() => Err(PathsError::one(
-            "paths could not be resolved; no path-specific error was reported",
-        )),
         _ => Err(PathsError::new(problems)),
     }
 }

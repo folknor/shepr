@@ -254,9 +254,17 @@ pub(super) fn plan_restore(
             restored_index.push(None);
         }
     }
-    let active = snapshot
-        .active
-        .and_then(|active| remap_saved_index(active, &restored_index));
+    let active = snapshot.active.and_then(|active| {
+        if active >= restored_index.len() {
+            damage.repaired_bookmarks += 1;
+            warn!(
+                saved_index = active,
+                saved_workspaces = restored_index.len(),
+                "repairing out-of-range saved workspace bookmark"
+            );
+        }
+        remap_saved_index(active, &restored_index)
+    });
     SessionRestorePlan {
         workspaces,
         active,
@@ -1096,6 +1104,29 @@ mod tests {
         assert_eq!(remap_saved_index(9, &restored), Some(1));
         assert_eq!(remap_saved_index(0, &[None, None]), None);
         assert_eq!(remap_saved_index(0, &[]), None);
+    }
+
+    #[test]
+    fn an_out_of_range_saved_bookmark_is_reported_as_restore_damage() {
+        let snapshot = session(
+            vec![
+                one_pane_workspace("w1", "first", 1),
+                one_pane_workspace("w2", "last", 2),
+            ],
+            Some(9),
+        );
+
+        let plan = plan_restore(
+            &snapshot,
+            test_geometry(5, 40),
+            false,
+            test_restore_now(),
+            &mut crate::workspace::WorkspaceIdAllocator::new(),
+        );
+
+        assert_eq!(plan.active, Some(1));
+        assert_eq!(plan.damage.repaired_bookmarks, 1);
+        assert!(!plan.damage.loses_data());
     }
 
     #[test]

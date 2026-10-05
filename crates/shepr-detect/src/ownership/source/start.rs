@@ -40,7 +40,7 @@ impl AgentOwnership {
             authority.origin == *origin && authority.session_ref.is_some()
         }) || self.persisted_agent_session_matches(origin);
         let unsequenced_selection =
-            Self::is_unsequenced_opencode_selection(origin, session_start_source, seq);
+            Self::is_unsequenced_selection(origin, session_start_source, seq);
         let selection_can_reconcile = unsequenced_selection && process_present;
         let start_route = if full_lifecycle_source {
             let empty_source = HookSourceState::default();

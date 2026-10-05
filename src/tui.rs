@@ -118,14 +118,7 @@ mod tests {
             None,
         )
         .expect("valid test socket path");
-        let status = shepr_launch::status::RuntimeStatus {
-            version: "0.0.0-test".into(),
-            build_id: "ffffffffffffffff".parse().expect("build identity"),
-            boot_id: "17-23".parse().expect("boot identity"),
-            lifecycle: shepr_launch::status::RuntimeLifecycle::Running,
-        };
         let error = shepr_launch::local_server::LaunchError::DifferentBuild {
-            status,
             message: format!(
                 "the running shepr server is a different build; restart it before attaching.\n\n{}",
                 shepr_launch::guidance::build_mismatch_guidance(&address)

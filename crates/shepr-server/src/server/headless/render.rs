@@ -865,7 +865,7 @@ impl HeadlessServer {
             .iter()
             .map(|agent| shepr_protocol::ClientShellAgent {
                 pane_id: agent.pane_id,
-                agent: agent.agent,
+                agent: Some(agent.agent),
                 terminal_title: agent.terminal_title.clone(),
                 terminal_title_stripped: agent.terminal_title_stripped.clone(),
                 agent_status: agent.agent_status,

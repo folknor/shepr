@@ -1,4 +1,4 @@
-//! Private, single-use runtime artifacts and conservative dead-owner cleanup.
+//! Private runtime directories and conservative dead-owner cleanup.
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -76,12 +76,6 @@ impl DirectoryKind {
     }
 }
 
-#[derive(Clone, Copy)]
-enum RuntimeKind {
-    Directory(DirectoryKind),
-    SocketSidecar,
-}
-
 /// Why an owned directory could not be created.
 #[derive(Debug)]
 pub enum RuntimeCreateError {
@@ -100,9 +94,9 @@ impl From<io::Error> for RuntimeCreateError {
 /// collision tokens; every artifact uses the same identity and lock checks.
 pub(crate) struct OwnedRuntimeEntry {
     path: PathBuf,
-    kind: RuntimeKind,
+    kind: DirectoryKind,
     owner: Option<ProcessIdentity>,
-    hold: File,
+    _hold: File,
 }
 
 impl OwnedRuntimeEntry {
@@ -122,7 +116,7 @@ impl OwnedRuntimeEntry {
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error.into()),
             }
-            match Self::create_marker(path.clone(), RuntimeKind::Directory(kind)) {
+            match Self::create_marker(path.clone(), kind) {
                 Ok(entry) => return Ok(entry),
                 Err(error) => {
                     remove_file(&path.join(OWNER_MARKER));
@@ -140,12 +134,8 @@ impl OwnedRuntimeEntry {
         .into())
     }
 
-    pub(crate) fn create_socket(path: &Path) -> io::Result<Self> {
-        Self::create_marker(path.to_path_buf(), RuntimeKind::SocketSidecar)
-    }
-
-    fn create_marker(path: PathBuf, kind: RuntimeKind) -> io::Result<Self> {
-        let marker = marker_path(&path, kind);
+    fn create_marker(path: PathBuf, kind: DirectoryKind) -> io::Result<Self> {
+        let marker = marker_path(&path);
         let hold = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -168,7 +158,7 @@ impl OwnedRuntimeEntry {
                 path,
                 kind,
                 owner,
-                hold,
+                _hold: hold,
             }),
             Err(error) => {
                 remove_file(&marker);
@@ -181,11 +171,6 @@ impl OwnedRuntimeEntry {
         &self.path
     }
 
-    /// Transfers the held marker to a socket lifetime guard.
-    pub(crate) fn into_hold(self) -> File {
-        self.hold
-    }
-
     /// Transfers directory cleanup to an external lifetime or exit registry.
     pub(crate) fn into_path(self) -> PathBuf {
         self.path
@@ -196,14 +181,10 @@ impl OwnedRuntimeEntry {
     }
 
     pub(crate) fn sweep_directory(parent: &Path, kind: DirectoryKind) {
-        Self::sweep(parent, RuntimeKind::Directory(kind));
+        Self::sweep(parent, kind);
     }
 
-    pub(crate) fn sweep_socket_sidecars(parent: &Path) {
-        Self::sweep(parent, RuntimeKind::SocketSidecar);
-    }
-
-    fn sweep(parent: &Path, kind: RuntimeKind) {
+    fn sweep(parent: &Path, kind: DirectoryKind) {
         let uid = crate::effective_uid();
         if !private_directory(parent, uid) {
             return;
@@ -215,25 +196,14 @@ impl OwnedRuntimeEntry {
             let Ok(entry) = entry else { continue };
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
-            let path = match kind {
-                RuntimeKind::SocketSidecar => {
-                    let Some(socket) = name.strip_suffix(".lock").filter(|name| !name.is_empty())
-                    else {
-                        continue;
-                    };
-                    parent.join(socket)
-                }
-                RuntimeKind::Directory(directory_kind) => {
-                    if !directory_kind.has_valid_name(name) {
-                        continue;
-                    }
-                    entry.path()
-                }
-            };
-            if !matches!(kind, RuntimeKind::SocketSidecar) && !private_directory(&path, uid) {
+            if !kind.has_valid_name(name) {
                 continue;
             }
-            let marker = marker_path(&path, kind);
+            let path = entry.path();
+            if !private_directory(&path, uid) {
+                continue;
+            }
+            let marker = marker_path(&path);
             let Ok(mut hold) = fs::OpenOptions::new()
                 .read(true)
                 .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -284,27 +254,15 @@ impl OwnedRuntimeEntry {
     }
 }
 
-fn marker_path(path: &Path, kind: RuntimeKind) -> PathBuf {
-    match kind {
-        RuntimeKind::SocketSidecar => crate::ipc::socket_startup_lock_path(path),
-        RuntimeKind::Directory(_) => path.join(OWNER_MARKER),
-    }
+fn marker_path(path: &Path) -> PathBuf {
+    path.join(OWNER_MARKER)
 }
 
 fn private_directory(path: &Path, uid: u32) -> bool {
     crate::private_file::PrivateDir::is_private(path, uid)
 }
 
-fn contents_owned(path: &Path, kind: RuntimeKind, uid: u32) -> bool {
-    let directory_kind = match kind {
-        RuntimeKind::SocketSidecar => {
-            return match fs::symlink_metadata(path) {
-                Ok(metadata) => metadata.uid() == uid && metadata.file_type().is_socket(),
-                Err(error) => error.kind() == io::ErrorKind::NotFound,
-            };
-        }
-        RuntimeKind::Directory(directory_kind) => directory_kind,
-    };
+fn contents_owned(path: &Path, kind: DirectoryKind, uid: u32) -> bool {
     let Ok(entries) = fs::read_dir(path) else {
         return false;
     };
@@ -321,7 +279,7 @@ fn contents_owned(path: &Path, kind: RuntimeKind, uid: u32) -> bool {
         if name == OWNER_MARKER && metadata.is_file() {
             marker_seen = true;
         } else {
-            if !directory_kind.content_is_owned(&name, &metadata) {
+            if !kind.content_is_owned(&name, &metadata) {
                 return false;
             }
         }
@@ -340,20 +298,11 @@ pub(crate) fn remove_file(path: &Path) -> bool {
     }
 }
 
-fn release(path: &Path, kind: RuntimeKind, owner: Option<ProcessIdentity>) {
-    let directory_kind = match kind {
-        RuntimeKind::SocketSidecar => {
-            if remove_file(path) {
-                remove_file(&marker_path(path, kind));
-            }
-            return;
-        }
-        RuntimeKind::Directory(directory_kind) => directory_kind,
-    };
-    if !remove_file(&directory_kind.content_path(path)) {
+fn release(path: &Path, kind: DirectoryKind, owner: Option<ProcessIdentity>) {
+    if !remove_file(&kind.content_path(path)) {
         return;
     }
-    let marker = marker_path(path, kind);
+    let marker = marker_path(path);
     if !remove_file(&marker) {
         return;
     }
@@ -396,17 +345,7 @@ pub fn create_owned_directory(
 
 /// Releases a directory [`create_owned_directory`] created in this process.
 pub fn release_owned_directory(path: &Path, kind: DirectoryKind) {
-    release(
-        path,
-        RuntimeKind::Directory(kind),
-        ProcessIdentity::current().ok(),
-    );
-}
-
-/// Removes a single-use socket sidecar while its owner still holds the lock.
-/// Shared socket sidecars must remain in place so binders lock one inode.
-pub fn release_single_use_socket_lock(path: &Path) {
-    remove_file(&marker_path(path, RuntimeKind::SocketSidecar));
+    release(path, kind, ProcessIdentity::current().ok());
 }
 
 #[cfg(test)]

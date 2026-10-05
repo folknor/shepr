@@ -1,24 +1,26 @@
 //! How a server daemon that ended during startup is told apart by the client
 //! that launched it.
 //!
-//! The server executable exits with one of these codes and prints the reason
+//! A serving daemon exits with one of these codes and prints the reason
 //! on its stderr; the client reads the code to word its own failure. The
 //! printed error stays authoritative: this only names a class, so a server
 //! that predates a code, or a daemon killed by a signal, is simply
 //! [`DaemonExit::Failed`].
 
+use crate::process_status::ProcessStatus;
+
 /// Exit status of a server that found another server already running: a live
 /// listener on a socket, or the data directory lease held.
 // limits-exempt: process exit status shared by the server and client executables.
-pub const ALREADY_RUNNING_EXIT_CODE: i32 = 10;
+pub const ALREADY_RUNNING_EXIT_CODE: i32 = ProcessStatus::AlreadyRunning as i32;
 
 /// Exit status of a server whose configuration or paths were refused.
 // limits-exempt: process exit status shared by the server and client executables.
-pub const CONFIG_REFUSED_EXIT_CODE: i32 = 11;
+pub const CONFIG_REFUSED_EXIT_CODE: i32 = ProcessStatus::ConfigRefused as i32;
 
 /// Exit status of any other startup or runtime failure.
 // limits-exempt: process exit status shared by the server and client executables.
-pub const FAILED_EXIT_CODE: i32 = 1;
+pub const FAILED_EXIT_CODE: i32 = ProcessStatus::Failed as i32;
 
 /// The class of a server daemon's end.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,7 +40,7 @@ impl DaemonExit {
     /// [`DaemonExit::Failed`].
     pub fn from_code(code: Option<i32>) -> Self {
         match code {
-            Some(0) => Self::Clean,
+            Some(code) if code == ProcessStatus::Success as i32 => Self::Clean,
             Some(ALREADY_RUNNING_EXIT_CODE) => Self::AlreadyRunning,
             Some(CONFIG_REFUSED_EXIT_CODE) => Self::ConfigRefused,
             Some(_) | None => Self::Failed,
@@ -48,11 +50,15 @@ impl DaemonExit {
     /// The exit code a server ends with for this class, shared with clients
     /// that classify a daemon which ends during startup.
     pub fn code(self) -> i32 {
+        i32::from(self.process_status().code())
+    }
+
+    pub const fn process_status(self) -> ProcessStatus {
         match self {
-            Self::Clean => 0,
-            Self::AlreadyRunning => ALREADY_RUNNING_EXIT_CODE,
-            Self::ConfigRefused => CONFIG_REFUSED_EXIT_CODE,
-            Self::Failed => FAILED_EXIT_CODE,
+            Self::Clean => ProcessStatus::Success,
+            Self::AlreadyRunning => ProcessStatus::AlreadyRunning,
+            Self::ConfigRefused => ProcessStatus::ConfigRefused,
+            Self::Failed => ProcessStatus::Failed,
         }
     }
 

@@ -10,9 +10,11 @@ mod title_activity;
 
 pub use limits::PARKED_START_LIFETIME;
 
-use shepr_agent::{Agent, AgentState, normalized_agent_lookup_name, parse_agent_label};
+use shepr_agent::{
+    AGENT_EXECUTABLE_SUFFIXES, Agent, AgentState, normalized_agent_lookup_name, parse_agent_label,
+};
 use shepr_platform::{ForegroundJob, ForegroundProcess, Pid, is_pane_shell_process_name};
-pub use title_activity::{TITLE_ACTIVITY_GLYPHS, TitleActivityGlyphs};
+pub use title_activity::is_title_activity_glyph;
 
 /// A screen state with evidence that can only belong to that state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,12 +99,6 @@ impl AgentDetection {
     pub const fn visible_working(self) -> bool {
         matches!(self, Self::State(Detection::Working { visible: true }))
     }
-}
-
-/// Identify which agent is running from the process name.
-/// Returns `None` for plain shells or unrecognized programs.
-pub fn identify_agent(process_name: &str) -> Option<Agent> {
-    parse_agent_label(process_name)
 }
 
 /// Blocking: path-shaped argv tokens are resolved on the filesystem (through
@@ -197,7 +193,6 @@ enum Runtime {
     Bun,
     Python,
     Shell,
-    Tmux,
 }
 
 impl Runtime {
@@ -205,8 +200,9 @@ impl Runtime {
         let name = path_basename(name).trim();
         // Runtime spelling uses the same executable suffixes as agent lookup,
         // but classification borrows the name instead of allocating per probe.
-        let name = [".exe", ".js"]
-            .into_iter()
+        let name = AGENT_EXECUTABLE_SUFFIXES
+            .iter()
+            .copied()
             .find_map(|suffix| {
                 let end = name.len().checked_sub(suffix.len())?;
                 name.get(end..)
@@ -218,8 +214,6 @@ impl Runtime {
             Some(Self::Node)
         } else if name.eq_ignore_ascii_case("bun") {
             Some(Self::Bun)
-        } else if name.eq_ignore_ascii_case("tmux") {
-            Some(Self::Tmux)
         } else if is_python_runtime(name) {
             Some(Self::Python)
         } else if is_pane_shell_process_name(name) {
@@ -254,7 +248,7 @@ fn process_identity(process: &ForegroundProcess) -> Option<Identified> {
         return Some(identified);
     }
 
-    if let Some(agent) = identify_agent(&process.name) {
+    if let Some(agent) = parse_agent_label(&process.name) {
         return Some(Identified {
             agent,
             via: IdentifiedVia::Comm,
@@ -320,7 +314,6 @@ fn wrapped_agent_from_runtime_argv(
         }
         Runtime::Python => script_arg_agent(argv, &["-c"], &["-m"], PYTHON_VALUE_FLAGS, cwd_pid),
         Runtime::Shell => shell_agent_from_runtime_argv(argv, cwd_pid),
-        Runtime::Tmux => None,
     }?;
     identified.via = IdentifiedVia::WrappedScript { runtime };
     Some(identified)
@@ -484,7 +477,7 @@ fn agent_from_path_token(token: &str, cwd_pid: Option<Pid>) -> Option<Identified
         return None;
     }
 
-    agent_from_basename(path_basename(trimmed))
+    parse_agent_label(path_basename(trimmed))
         .map(|agent| Identified {
             agent,
             via: IdentifiedVia::Argv0,
@@ -673,14 +666,10 @@ fn resolved_agent_from_path_token(token: &str, cwd_pid: Option<Pid>) -> Option<I
         std::fs::canonicalize(std::path::Path::new(&format!("/proc/{pid}/cwd")).join(path)).ok()?
     };
     let basename = resolved.file_name()?.to_str()?;
-    agent_from_basename(basename).map(|agent| Identified {
+    parse_agent_label(basename).map(|agent| Identified {
         agent,
         via: IdentifiedVia::ResolvedSymlink,
     })
-}
-
-fn agent_from_basename(basename: &str) -> Option<Agent> {
-    parse_agent_label(basename)
 }
 
 fn path_basename(path: &str) -> &str {
@@ -739,11 +728,6 @@ mod tests {
     use shepr_test_support::fixture::{self, Held, Step};
     use std::time::Duration;
 
-    #[test]
-    fn title_activity_glyphs_cover_claude_animation() {
-        assert!(TITLE_ACTIVITY_GLYPHS.contains('◐'));
-    }
-
     fn foreground_process(pid: u32, name: &str, argv: &[&str]) -> ForegroundProcess {
         ForegroundProcess {
             pid: Pid::new(pid).expect("test process id"),
@@ -764,52 +748,58 @@ mod tests {
     // ---- Agent identification ----
 
     #[test]
-    fn identify_known_agents() {
+    fn parse_known_agent_labels() {
         for agent in Agent::all() {
-            assert_eq!(identify_agent(agent.executable()), Some(agent));
+            assert_eq!(parse_agent_label(agent.executable()), Some(agent));
         }
 
-        assert_eq!(identify_agent("pi"), Some(Agent::Pi));
-        assert_eq!(identify_agent("claude"), Some(Agent::Claude));
-        assert_eq!(identify_agent("claude-code"), Some(Agent::Claude));
-        assert_eq!(identify_agent("codex"), Some(Agent::Codex));
-        assert_eq!(identify_agent("gemini"), Some(Agent::Gemini));
-        assert_eq!(identify_agent("cursor"), Some(Agent::Cursor));
-        assert_eq!(identify_agent("cursor-agent"), Some(Agent::Cursor));
-        assert_eq!(identify_agent("devin"), Some(Agent::Devin));
-        assert_eq!(identify_agent("devin-cli"), Some(Agent::Devin));
-        assert_eq!(identify_agent("agy"), Some(Agent::Antigravity));
-        assert_eq!(identify_agent("antigravity-cli"), Some(Agent::Antigravity));
-        assert_eq!(identify_agent("cline"), Some(Agent::Cline));
-        assert_eq!(identify_agent("omp"), Some(Agent::Omp));
-        assert_eq!(identify_agent("mastracode"), Some(Agent::Mastracode));
-        assert_eq!(identify_agent("mastra-code"), Some(Agent::Mastracode));
-        assert_eq!(identify_agent("opencode"), Some(Agent::OpenCode));
-        assert_eq!(identify_agent("opencode.exe"), Some(Agent::OpenCode));
-        assert_eq!(identify_agent("opencode2"), Some(Agent::OpenCode));
-        assert_eq!(identify_agent("opencode2.exe"), Some(Agent::OpenCode));
-        assert_eq!(identify_agent("kimi"), Some(Agent::Kimi));
-        assert_eq!(identify_agent("Kimi Code"), Some(Agent::Kimi));
-        assert_eq!(identify_agent("kiro"), Some(Agent::Kiro));
-        assert_eq!(identify_agent("kiro-cli"), Some(Agent::Kiro));
-        assert_eq!(identify_agent("copilot"), Some(Agent::GithubCopilot));
-        assert_eq!(identify_agent("ghcs"), Some(Agent::GithubCopilot));
-        assert_eq!(identify_agent("grok"), Some(Agent::Grok));
-        assert_eq!(identify_agent("grok-build"), Some(Agent::Grok));
-        assert_eq!(identify_agent("kilo"), Some(Agent::Kilo));
-        assert_eq!(identify_agent("kilo-code"), Some(Agent::Kilo));
-        assert_eq!(identify_agent("qwen"), Some(Agent::Qwen));
-        assert_eq!(identify_agent("Qwen Code"), Some(Agent::Qwen));
-        assert_eq!(identify_agent("letta"), Some(Agent::Letta));
-        assert_eq!(identify_agent("Letta Code"), Some(Agent::Letta));
-        assert_eq!(identify_agent("maki"), Some(Agent::Maki));
-        assert_eq!(identify_agent("muse"), Some(Agent::Muse));
-        assert_eq!(identify_agent("muse-code"), Some(Agent::Muse));
-        assert_eq!(identify_agent("muse-cli"), Some(Agent::Muse));
-        assert_eq!(identify_agent("muse-bin-0.1.0-R708.1"), Some(Agent::Muse));
-        assert_eq!(identify_agent("muse-bin-1.2.3"), Some(Agent::Muse));
+        assert_eq!(parse_agent_label("pi"), Some(Agent::Pi));
+        assert_eq!(parse_agent_label("claude"), Some(Agent::Claude));
+        assert_eq!(parse_agent_label("claude-code"), Some(Agent::Claude));
+        assert_eq!(parse_agent_label("codex"), Some(Agent::Codex));
+        assert_eq!(parse_agent_label("gemini"), Some(Agent::Gemini));
+        assert_eq!(parse_agent_label("cursor"), Some(Agent::Cursor));
+        assert_eq!(parse_agent_label("cursor-agent"), Some(Agent::Cursor));
+        assert_eq!(parse_agent_label("devin"), Some(Agent::Devin));
+        assert_eq!(parse_agent_label("devin-cli"), Some(Agent::Devin));
+        assert_eq!(parse_agent_label("agy"), Some(Agent::Antigravity));
         assert_eq!(
-            identify_agent("/home/user/.local/bin/muse-bin-0.2.1-R1215.1"),
+            parse_agent_label("antigravity-cli"),
+            Some(Agent::Antigravity)
+        );
+        assert_eq!(parse_agent_label("cline"), Some(Agent::Cline));
+        assert_eq!(parse_agent_label("omp"), Some(Agent::Omp));
+        assert_eq!(parse_agent_label("mastracode"), Some(Agent::Mastracode));
+        assert_eq!(parse_agent_label("mastra-code"), Some(Agent::Mastracode));
+        assert_eq!(parse_agent_label("opencode"), Some(Agent::OpenCode));
+        assert_eq!(parse_agent_label("opencode.exe"), Some(Agent::OpenCode));
+        assert_eq!(parse_agent_label("opencode2"), Some(Agent::OpenCode));
+        assert_eq!(parse_agent_label("opencode2.exe"), Some(Agent::OpenCode));
+        assert_eq!(parse_agent_label("kimi"), Some(Agent::Kimi));
+        assert_eq!(parse_agent_label("Kimi Code"), Some(Agent::Kimi));
+        assert_eq!(parse_agent_label("kiro"), Some(Agent::Kiro));
+        assert_eq!(parse_agent_label("kiro-cli"), Some(Agent::Kiro));
+        assert_eq!(parse_agent_label("copilot"), Some(Agent::GithubCopilot));
+        assert_eq!(parse_agent_label("ghcs"), Some(Agent::GithubCopilot));
+        assert_eq!(parse_agent_label("grok"), Some(Agent::Grok));
+        assert_eq!(parse_agent_label("grok-build"), Some(Agent::Grok));
+        assert_eq!(parse_agent_label("kilo"), Some(Agent::Kilo));
+        assert_eq!(parse_agent_label("kilo-code"), Some(Agent::Kilo));
+        assert_eq!(parse_agent_label("qwen"), Some(Agent::Qwen));
+        assert_eq!(parse_agent_label("Qwen Code"), Some(Agent::Qwen));
+        assert_eq!(parse_agent_label("letta"), Some(Agent::Letta));
+        assert_eq!(parse_agent_label("Letta Code"), Some(Agent::Letta));
+        assert_eq!(parse_agent_label("maki"), Some(Agent::Maki));
+        assert_eq!(parse_agent_label("muse"), Some(Agent::Muse));
+        assert_eq!(parse_agent_label("muse-code"), Some(Agent::Muse));
+        assert_eq!(parse_agent_label("muse-cli"), Some(Agent::Muse));
+        assert_eq!(
+            parse_agent_label("muse-bin-0.1.0-R708.1"),
+            Some(Agent::Muse)
+        );
+        assert_eq!(parse_agent_label("muse-bin-1.2.3"), Some(Agent::Muse));
+        assert_eq!(
+            parse_agent_label("/home/user/.local/bin/muse-bin-0.2.1-R1215.1"),
             Some(Agent::Muse)
         );
     }
@@ -837,26 +827,26 @@ mod tests {
     }
 
     #[test]
-    fn identify_unknown_processes() {
-        assert_eq!(identify_agent("bash"), None);
-        assert_eq!(identify_agent("zsh"), None);
-        assert_eq!(identify_agent("vim"), None);
-        assert_eq!(identify_agent("node"), None);
-        assert_eq!(identify_agent("museum"), None);
-        assert_eq!(identify_agent("muse-helper"), None);
-        assert_eq!(identify_agent("muser"), None);
-        assert_eq!(identify_agent("musescore"), None);
-        assert_eq!(identify_agent("muse-bin"), None);
-        assert_eq!(identify_agent("muse-bin-"), None);
-        assert_eq!(identify_agent("muse-binary"), None);
+    fn parse_unknown_process_labels() {
+        assert_eq!(parse_agent_label("bash"), None);
+        assert_eq!(parse_agent_label("zsh"), None);
+        assert_eq!(parse_agent_label("vim"), None);
+        assert_eq!(parse_agent_label("node"), None);
+        assert_eq!(parse_agent_label("museum"), None);
+        assert_eq!(parse_agent_label("muse-helper"), None);
+        assert_eq!(parse_agent_label("muser"), None);
+        assert_eq!(parse_agent_label("musescore"), None);
+        assert_eq!(parse_agent_label("muse-bin"), None);
+        assert_eq!(parse_agent_label("muse-bin-"), None);
+        assert_eq!(parse_agent_label("muse-binary"), None);
     }
 
     #[test]
-    fn identify_case_insensitive() {
-        assert_eq!(identify_agent("Pi"), Some(Agent::Pi));
-        assert_eq!(identify_agent("CLAUDE"), Some(Agent::Claude));
-        assert_eq!(identify_agent("Codex"), Some(Agent::Codex));
-        assert_eq!(identify_agent("Devin"), Some(Agent::Devin));
+    fn parse_agent_labels_case_insensitively() {
+        assert_eq!(parse_agent_label("Pi"), Some(Agent::Pi));
+        assert_eq!(parse_agent_label("CLAUDE"), Some(Agent::Claude));
+        assert_eq!(parse_agent_label("Codex"), Some(Agent::Codex));
+        assert_eq!(parse_agent_label("Devin"), Some(Agent::Devin));
     }
 
     #[test]
@@ -961,7 +951,7 @@ mod tests {
 
             assert_eq!(identify_agent_in_job(&job), None);
         }
-        assert_eq!(identify_agent("MainThread"), None);
+        assert_eq!(parse_agent_label("MainThread"), None);
     }
 
     #[test]
@@ -1367,7 +1357,6 @@ mod tests {
             ("bun", Runtime::Bun),
             ("Python3.12", Runtime::Python),
             ("-bash", Runtime::Shell),
-            ("tmux", Runtime::Tmux),
         ] {
             assert_eq!(Runtime::classify(name), Some(expected));
         }
@@ -1377,6 +1366,7 @@ mod tests {
             "python3.x",
             "pythonista",
             "codex",
+            "tmux",
         ] {
             assert_eq!(Runtime::classify(name), None);
         }

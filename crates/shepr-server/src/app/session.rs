@@ -100,96 +100,53 @@ pub(crate) struct SessionSaver {
     persister: shepr_mux::persist::SessionPersister,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SaveMode {
-    Never,
     Persisting,
+    /// The persister refused work permanently for this boot.
     Stopped,
 }
 
-/// The one runtime decision that admits a session save. The persisted mode is
-/// retained across a host-shutdown freeze and restored only by `thaw`.
+/// Save admission and host-shutdown freezing are independent: stopping a
+/// frozen writer must survive cancellation of the host shutdown warning.
 #[derive(Clone, Copy)]
-enum SavePolicy {
-    Never,
-    Persisting,
-    /// The persister refused a job it can never run; no save starts again
-    /// this boot.
-    Stopped,
-    Frozen {
-        resume_to: SaveMode,
-    },
+struct SavePolicy {
+    mode: SaveMode,
+    frozen: bool,
 }
 
 impl SavePolicy {
-    fn new(policy: shepr_mux::persist::SessionOpenPolicy) -> Self {
-        match policy {
-            shepr_mux::persist::SessionOpenPolicy::Persist => Self::Persisting,
-            shepr_mux::persist::SessionOpenPolicy::Never => Self::Never,
+    fn new() -> Self {
+        Self {
+            mode: SaveMode::Persisting,
+            frozen: false,
         }
-    }
-
-    /// Persisting or stopped, now or before a freeze.
-    fn persists_this_boot(self) -> bool {
-        matches!(
-            self,
-            Self::Persisting
-                | Self::Stopped
-                | Self::Frozen {
-                    resume_to: SaveMode::Persisting | SaveMode::Stopped
-                }
-        )
     }
 
     fn allows_saves(self) -> bool {
-        matches!(self, Self::Persisting)
+        self.mode == SaveMode::Persisting && !self.frozen
     }
 
-    /// Whether a host-shutdown checkpoint request is taken: a stopped saver
-    /// takes it only to fail it at once, so the lifecycle stops waiting.
-    /// Never-persisting and frozen savers ignore it.
+    /// A stopped saver takes the request to fail it immediately, so the
+    /// lifecycle stops waiting. Frozen savers ignore new requests.
     fn takes_host_checkpoint(self) -> bool {
-        matches!(self, Self::Persisting | Self::Stopped)
+        !self.frozen
     }
 
     fn is_stopped(self) -> bool {
-        matches!(
-            self,
-            Self::Stopped
-                | Self::Frozen {
-                    resume_to: SaveMode::Stopped
-                }
-        )
+        self.mode == SaveMode::Stopped
     }
 
     fn freeze(&mut self) {
-        let resume_to = match self {
-            Self::Never => SaveMode::Never,
-            Self::Persisting => SaveMode::Persisting,
-            Self::Stopped => SaveMode::Stopped,
-            Self::Frozen { .. } => return,
-        };
-        *self = Self::Frozen { resume_to };
+        self.frozen = true;
     }
 
     fn thaw(&mut self) {
-        let resume_to = match self {
-            Self::Frozen { resume_to } => *resume_to,
-            Self::Never | Self::Persisting | Self::Stopped => return,
-        };
-        *self = match resume_to {
-            SaveMode::Never => Self::Never,
-            SaveMode::Persisting => Self::Persisting,
-            SaveMode::Stopped => Self::Stopped,
-        };
+        self.frozen = false;
     }
 
     fn stop(&mut self) {
-        if let Self::Frozen { resume_to } = self {
-            *resume_to = SaveMode::Stopped;
-        } else {
-            *self = Self::Stopped;
-        }
+        self.mode = SaveMode::Stopped;
     }
 }
 
@@ -204,23 +161,15 @@ fn checkpoint_retry_delay(failures_before: u8) -> Duration {
 impl SessionSaver {
     /// The persister fires its own completion signal, which the app's outputs
     /// own; the saver keeps no copy.
-    pub(crate) fn new(
-        persister: shepr_mux::persist::SessionPersister,
-        policy: shepr_mux::persist::SessionOpenPolicy,
-    ) -> Self {
+    pub(crate) fn new(persister: shepr_mux::persist::SessionPersister) -> Self {
         Self {
-            policy: SavePolicy::new(policy),
+            policy: SavePolicy::new(),
             autosave: Autosave::new(),
             exit: PaneExitCheckpoint::new(),
             host: HostShutdownCheckpoint::new(),
             in_flight: None,
             persister,
         }
-    }
-
-    /// Whether this boot persists the session, frozen or not.
-    pub(crate) fn persists_this_boot(&self) -> bool {
-        self.policy.persists_this_boot()
     }
 
     /// Whether nothing may start now whatever is requested or due: a save is
@@ -259,10 +208,10 @@ impl SessionSaver {
     }
 
     pub(crate) fn is_due(&self, now: Instant) -> bool {
-        self.deadline().is_some_and(|d| now >= d)
+        self.next_save(now).is_some()
     }
 
-    /// The save to start now, by the same rule as [`Self::deadline`].
+    /// The save to start now, including a checkpoint with no retry delay.
     fn next_save(&self, now: Instant) -> Option<NextSave> {
         if self.blocked() {
             None
@@ -374,11 +323,6 @@ impl App {
     pub(crate) fn resume_session_saves_after_cancel(&mut self) {
         self.thaw_session_saves();
         self.state.mark_session_dirty();
-    }
-
-    /// Whether this boot persists the session, frozen or not.
-    pub(crate) fn session_persists(&self) -> bool {
-        self.session_saver.persists_this_boot()
     }
 
     /// The current AppState dirty bit is the authority for a saved exit layout;
@@ -671,6 +615,8 @@ impl App {
         result: Result<(), std::io::Error>,
     ) -> Result<(), std::io::Error> {
         // No autosave retry or projection is useful once the loop has ended.
+        // Clear the deadline here even if retirement is delayed by teardown;
+        // callers of the final save observe the same terminal scheduling state.
         // Keep the previous atomic save on failure and report an unclean exit.
         self.session_saver.autosave.clear();
         if let Err(error) = &result {
@@ -683,7 +629,7 @@ impl App {
         result
     }
 
-    /// The final save of this boot, when the boot persists. During a host
+    /// The final save of this boot. During a host
     /// shutdown saving is frozen, so this writes nothing and the checkpoint
     /// taken on the warning stands. A signal quit's instant adopts checkpoint
     /// candidates first: after a signal the panes' deaths were left
@@ -693,9 +639,6 @@ impl App {
         &mut self,
         signal_quit_at: Option<Instant>,
     ) -> Result<(), std::io::Error> {
-        if !self.session_saver.persists_this_boot() {
-            return Ok(());
-        }
         if let Some(signaled_at) = signal_quit_at {
             self.state
                 .adopt_checkpoint_candidates_for_shutdown(signaled_at);
@@ -767,12 +710,6 @@ impl SessionSaver {
         self.autosave.set_deadline(deadline);
     }
 
-    /// Admits saves without a running persister, for tests of the saver's
-    /// scheduling alone.
-    pub(crate) fn admit_saves_for_test(&mut self) {
-        self.policy = SavePolicy::Persisting;
-    }
-
     /// Whether a save is in flight.
     pub(crate) fn save_in_flight(&self) -> bool {
         self.in_flight.is_some()
@@ -823,11 +760,12 @@ impl SessionSaver {
 
 #[cfg(test)]
 impl App {
-    /// Turns a test app into a persisting one, as production boots: the
-    /// lease-only persister gives way to a threaded one on the same data
-    /// directory, and the saver's policy becomes Persisting. Tests set up
-    /// their state first, so that setup schedules no saves. `save_finished` is
-    /// the signal whoever owns this app's outputs waits on (`TestApp::persist`,
+    /// Retires the persister and starts a fresh one on the same scratch data
+    /// directory, firing `save_finished`, with saves admitted again. Test
+    /// apps already persist through their outputs' signal from `App::new`;
+    /// this only matters to a test that stopped or retired the saver.
+    /// `save_finished` is the signal
+    /// whoever owns this app's outputs waits on (`TestApp::persist`,
     /// `HeadlessServer::persist_for_test`).
     pub(crate) fn persist_with_signal(
         &mut self,
@@ -841,7 +779,7 @@ impl App {
             shepr_mux::persist::SessionBackupPolicy::NoBackupNeeded,
             save_finished,
         );
-        self.session_saver.policy = SavePolicy::Persisting;
+        self.session_saver.policy.mode = SaveMode::Persisting;
     }
 
     /// Blocks until the save in flight, if any, has finished, records its
@@ -900,41 +838,32 @@ mod tests {
         App::new(&shepr_config::ServerConfig::default())
     }
 
-    /// An app whose saver admits saves, for tests of the saver's scheduling
-    /// alone: no persister runs, so only what the saver decides is observed.
-    fn saving_test_app() -> crate::app::TestApp {
-        let mut app = test_app();
-        app.session_saver.admit_saves_for_test();
-        app
-    }
-
     #[tokio::test]
     async fn a_final_save_failure_is_returned_without_arming_an_autosave_retry() {
-        let mut app = saving_test_app();
-        // This saver admits jobs but owns only a lease; the persister refuses
-        // the real final job rather than running a synthetic completion.
+        let mut app = test_app();
+        // Retirement is a real permanent refusal, without a test-only mode.
+        app.session_saver.persister.retire();
         let error = app
             .save_session_before_teardown_async()
             .await
-            .expect_err("the lease-only persister cannot save");
+            .expect_err("the retired persister cannot save");
         assert!(error.get_ref().is_some());
         assert!(app.session_saver.autosave_deadline().is_none());
         assert!(!app.session_saver.policy.is_stopped());
     }
 
     #[test]
-    fn persists_this_boot_survives_freeze_and_stop() {
-        for (mode, persists) in [
-            (SaveMode::Persisting, true),
-            (SaveMode::Stopped, true),
-            (SaveMode::Never, false),
-        ] {
-            let frozen = SavePolicy::Frozen { resume_to: mode };
-            assert_eq!(frozen.persists_this_boot(), persists);
-        }
-        assert!(SavePolicy::Persisting.persists_this_boot());
-        assert!(SavePolicy::Stopped.persists_this_boot());
-        assert!(!SavePolicy::Never.persists_this_boot());
+    fn stopping_a_frozen_saver_survives_thaw() {
+        let mut policy = SavePolicy::new();
+        assert!(policy.allows_saves());
+        policy.freeze();
+        assert!(!policy.allows_saves());
+        assert!(!policy.takes_host_checkpoint());
+        policy.stop();
+        policy.thaw();
+        assert!(policy.is_stopped());
+        assert!(!policy.allows_saves());
+        assert!(policy.takes_host_checkpoint());
     }
 
     /// A production-policy app with one workspace of two panes, returning the
@@ -1167,8 +1096,22 @@ mod tests {
     }
 
     #[test]
+    fn a_checkpoint_without_a_retry_is_due_without_an_autosave_deadline() {
+        let mut app = test_app();
+        let now = app.clock.now;
+        assert!(!app.session_saver.is_due(now));
+        app.session_saver.host.request();
+        assert_eq!(app.session_saver.deadline(), None);
+        assert!(app.session_saver.is_due(now));
+        app.service_session_saves(now);
+        assert!(app.session_saver.save_in_flight());
+        assert!(!app.session_saver.is_due(now));
+        app.wait_for_session_save();
+    }
+
+    #[test]
     fn a_requested_checkpoint_is_chosen_over_a_due_autosave() {
-        let mut app = saving_test_app();
+        let mut app = test_app();
         let now = app.clock.now;
         let saver = &mut app.session_saver;
         saver.set_autosave_deadline(Some(now));
@@ -1195,7 +1138,7 @@ mod tests {
 
     #[test]
     fn a_checkpoint_waits_for_the_later_of_the_two_retry_deadlines() {
-        let mut app = saving_test_app();
+        let mut app = test_app();
         let now = app.clock.now;
         let generation = app.session_saver.exit.request(false).expect("exit");
         app.session_saver.host.request();
@@ -1229,7 +1172,7 @@ mod tests {
 
     #[test]
     fn a_host_request_expedites_a_pending_exit_retry() {
-        let mut app = saving_test_app();
+        let mut app = test_app();
         let now = app.clock.now;
         let generation = app.session_saver.exit.request(false).expect("exit");
         app.session_saver.exit.failed(generation, now);
@@ -1282,7 +1225,7 @@ mod tests {
 
     #[test]
     fn a_mutation_after_the_capture_voids_the_in_flight_layout() {
-        let mut app = saving_test_app();
+        let mut app = test_app();
         let generation = app.session_saver.exit.request(false).expect("held");
         let layout = Box::new(CapturedLayout::new(
             shepr_mux::persist::schema::SessionSnapshot {
@@ -1583,13 +1526,8 @@ mod tests {
         std::fs::write(shepr_mux::persist::session_path(&data_dir), &original)
             .expect("test precondition");
 
-        let (mut app, _outputs) = App::open(
-            &config,
-            &paths,
-            lease,
-            shepr_mux::persist::SessionOpenPolicy::Persist,
-            super::super::tests::test_clock(),
-        );
+        let (mut app, _outputs) =
+            App::open(&config, &paths, lease, super::super::tests::test_clock());
         assert_eq!(
             app.state
                 .workspaces

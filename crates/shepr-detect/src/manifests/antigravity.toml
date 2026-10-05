@@ -18,7 +18,7 @@ state = "working"
 priority = 100
 region = "whole_recent"
 visible_working = true
-line_regex = ['^\s*[\u2800-\u28FF]+\s+\p{Alphabetic}+\w*ing\b']
+line_regex = ['^\s*{spinner_run}\s+\p{Alphabetic}+\w*ing\b']
 
 [[rules]]
 id = "background_tasks_working"

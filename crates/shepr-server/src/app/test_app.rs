@@ -56,10 +56,9 @@ impl TestApp {
         self.outputs.no_queued_events()
     }
 
-    /// Turns the test app into a persisting one, as production boots: a
-    /// threaded persister on the same data directory, fired through this
-    /// harness's `save_finished`. Tests set up their state first, so that
-    /// setup schedules no saves.
+    /// Restarts the production writer on this harness's completion signal
+    /// (see `App::persist_with_signal`). Test apps already persist in a fresh
+    /// scratch data directory without it.
     pub(crate) fn persist(&mut self) {
         let save_finished = self.outputs.save_finished_signal();
         self.app.persist_with_signal(save_finished);

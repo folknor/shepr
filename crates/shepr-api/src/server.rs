@@ -64,7 +64,7 @@ impl ServerHandle {
         self.gate.clone()
     }
 
-    pub fn remove_socket_file_if_owned(&self) -> std::io::Result<()> {
+    fn remove_socket_file_if_owned(&self) -> std::io::Result<()> {
         self.socket_file.remove_if_still_ours()
     }
 

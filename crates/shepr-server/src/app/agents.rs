@@ -21,18 +21,16 @@ impl App {
         pane: &shepr_mux::workspace::PaneRef<'_>,
     ) -> Option<SnapshotAgent> {
         let terminal = pane.terminal();
-        if !terminal.is_agent_terminal() {
-            return None;
-        }
+        let ownership = terminal.ownership();
+        let agent = ownership.effective_agent()?;
         Some(SnapshotAgent {
             pane_id: pane.public_id(),
             workspace_id: pane.workspace().id(),
-            agent: terminal.ownership().effective_agent(),
+            agent,
             terminal_title: terminal.terminal_title().map(str::to_owned),
             terminal_title_stripped: terminal.terminal_title_stripped(),
-            agent_status: super::api_helpers::pane_agent_status(terminal.ownership().state()),
-            state_change_seq: terminal
-                .ownership()
+            agent_status: super::api_helpers::pane_agent_status(ownership.state()),
+            state_change_seq: ownership
                 .last_agent_state_change_seq()
                 .unwrap_or(shepr_agent::StateChangeSeq::NEVER),
         })

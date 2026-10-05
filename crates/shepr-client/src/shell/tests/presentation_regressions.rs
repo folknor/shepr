@@ -285,6 +285,35 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
 }
 
 #[test]
+fn bookmark_repair_has_a_restore_card_without_claiming_data_loss() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let boot = crate::tests::test_boot_id("bookmark-repaired");
+    let notice = shepr_protocol::SessionRestoreNotice {
+        loss: shepr_protocol::SessionRestoreLoss::Damaged(shepr_protocol::SessionRestoreDamage {
+            repaired_bookmarks: 1,
+            ..Default::default()
+        }),
+        backup_dir: "/state/session-backups".into(),
+    };
+
+    assert!(state.receive_restore_notice(&ClientEndpointId::Local, &boot, &notice));
+    state.compose(106, 20).expect("restore notice frame");
+    let card = state.notices.visible().expect("bookmark repair card");
+
+    assert!(
+        card.title.ends_with(": saved session repaired"),
+        "{}",
+        card.title
+    );
+    assert!(
+        card.body
+            .contains("bookmark was out of range and was repaired")
+    );
+    assert!(card.body.contains("copied to /state/session-backups"));
+}
+
+#[test]
 fn a_saves_stopped_card_shows_once_per_boot_beside_the_restore_card() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));

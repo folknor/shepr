@@ -22,13 +22,13 @@ use crate::limits::{
 /// the address, so a caller that ran it over SSH can tell "the server already
 /// exited" from any other failure without parsing stderr.
 // limits-exempt: process exit status shared by the stop command and its SSH caller.
-const NO_SERVER_EXIT_CODE: i32 = 4;
+const NO_SERVER_EXIT_CODE: i32 = crate::process_status::ProcessStatus::NoServer as i32;
 
 /// The exit status `shepr stop --expect-boot` ends with when a different
 /// boot is found, either at the stop request or while the named boot shuts
 /// down, so an SSH caller can identify a changed occupant without parsing stderr.
 // limits-exempt: process exit status shared by the stop command and its SSH caller.
-const BOOT_MISMATCH_EXIT_CODE: i32 = 3;
+const BOOT_MISMATCH_EXIT_CODE: i32 = crate::process_status::ProcessStatus::BootMismatch as i32;
 
 /// A server-stop outcome that a caller can distinguish by process exit code.
 /// The CLI uses this to encode the outcome; SSH callers use it to decode it.
@@ -43,6 +43,13 @@ impl ServerStopExit {
     /// The process exit status for this stop outcome.
     pub const fn code(self) -> i32 {
         self as i32
+    }
+
+    pub const fn process_status(self) -> crate::process_status::ProcessStatus {
+        match self {
+            Self::NoServer => crate::process_status::ProcessStatus::NoServer,
+            Self::BootMismatch => crate::process_status::ProcessStatus::BootMismatch,
+        }
     }
 
     /// Decodes a process exit status emitted by `shepr stop`.
@@ -150,6 +157,8 @@ impl std::fmt::Display for ServerStopError {
                     path.display()
                 )
             }
+            // The final save has no bounded duration. A caller's expired wait
+            // budget is not evidence that the saving server is wedged.
             Self::TimedOut {
                 label,
                 timeout,
@@ -157,9 +166,9 @@ impl std::fmt::Display for ServerStopError {
             } => write!(
                 f,
                 "{label} did not stop within {}ms; the socket at {} is still reachable. \
-                 If it stays wedged, kill the shepr-server process with SIGKILL: the data \
-                 directory lease and the socket recover on their own, and the next start \
-                 restores the last autosaved layout",
+                 The server may still be saving its layout; wait for shutdown to finish and \
+                 inspect the server log before retrying. Forcing the process to exit can lose \
+                 the final save",
                 timeout.as_millis(),
                 socket.display()
             ),
@@ -201,15 +210,6 @@ impl std::error::Error for ServerStopError {
             | Self::Unreachable { source, .. }
             | Self::Io { source, .. } => Some(source),
             _ => None,
-        }
-    }
-}
-
-impl From<io::Error> for ServerStopError {
-    fn from(source: io::Error) -> Self {
-        Self::Io {
-            context: "server operation failed".into(),
-            source,
         }
     }
 }
@@ -665,7 +665,15 @@ fn send_stop_request(
         {
             Ok(())
         }
-        Err(ApiClientDeadlineError::Request(ApiClientError::Io(error))) => Err(error.into()),
+        Err(ApiClientDeadlineError::Request(ApiClientError::Io(source))) => {
+            Err(ServerStopError::Io {
+                context: format!(
+                    "could not send the stop request to {label} at {}",
+                    socket_path.display()
+                ),
+                source,
+            })
+        }
         Err(ApiClientDeadlineError::Request(ApiClientError::Json(error))) => {
             Err(ServerStopError::Protocol(error.to_string()))
         }
@@ -694,10 +702,17 @@ fn stop_socket_io_error(socket_path: &Path, label: &str, error: io::Error) -> Se
             path: socket_path.into(),
             source: error,
         },
-        Ok(true) | Err(_) => ServerStopError::Unreachable {
+        Ok(true) => ServerStopError::Unreachable {
             label: label.into(),
             path: socket_path.into(),
             source: error,
+        },
+        Err(probe_error) => ServerStopError::Io {
+            context: format!(
+                "could not connect to {label} at {} ({error}); could not determine socket liveness",
+                socket_path.display()
+            ),
+            source: probe_error,
         },
     }
 }
@@ -759,6 +774,24 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_liveness_probe_preserves_both_errors() {
+        let scratch = ScratchDir::new("stop-probe-error");
+        let socket = scratch.join("loop.sock");
+        std::os::unix::fs::symlink(&socket, &socket).expect("symlink loop");
+        let error = stop_socket_io_error(
+            &socket,
+            "server",
+            io::Error::other("original connect failure"),
+        );
+        assert!(matches!(error, ServerStopError::Io { .. }));
+        let message = error.to_string();
+        assert!(message.contains("original connect failure"));
+        assert!(message.contains("could not determine socket liveness"));
+        assert!(message.contains(&socket.display().to_string()));
+        assert!(std::error::Error::source(&error).is_some());
+    }
+
+    #[test]
     fn stop_error_display_names_the_one_reachable_socket() {
         let error = ServerStopError::TimedOut {
             label: "test server".into(),
@@ -768,9 +801,9 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "test server did not stop within 75ms; the socket at /run/test.sock is still \
-             reachable. If it stays wedged, kill the shepr-server process with SIGKILL: the \
-             data directory lease and the socket recover on their own, and the next start \
-             restores the last autosaved layout"
+             reachable. The server may still be saving its layout; wait for shutdown to finish and \
+             inspect the server log before retrying. Forcing the process to exit can lose \
+             the final save"
         );
     }
 

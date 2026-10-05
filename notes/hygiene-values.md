@@ -264,17 +264,6 @@ tests a fixture child.
 
 Reported by: pane-lifecycle.
 
-- Exit codes 126 and 127: `backend.rs` defines `EXIT_SETUP_FAILED` and
-  `EXIT_LAUNCH_FAILED` privately; the mux test
-  `a_missing_configured_shell_fails_in_the_child_not_at_the_fork` asserts the
-  literal `127`. Make them `pub` and reference them.
-- The kernel's ` (deleted)` marker is spelled in
-  `shepr-mux/src/workspace.rs` `process_cwd_is_deleted` and in
-  `shepr-platform/src/host.rs` `resolve_launch_executable`
-  (`strip_suffix(b" (deleted)")`). One platform helper; a textlint for the literal
-  outside it. See BUG-023.
-- `numeric_file_name` is defined twice in platform (`process.rs`, `proc_tree.rs`),
-  identical.
 - `ACTOR_IDLE_POLL` is restated as "at least once a second" in
   `PtyIoActorConfig::core_broken`'s doc and assumed by two tests (see the claims document).
 - "The user's home" has two resolution moments: `PtyCommand::interactive_shell`
@@ -303,30 +292,6 @@ The values sit in three limits modules (`shepr-pty`: `LAUNCH_HELLO_TIMEOUT`,
 - `PANE_TEARDOWN_STEPS`: `pane_teardown_reaches_background_jobs_after_the_leader_is_reaped`
   waits through real grace periods.
 
-## VAL-027 - The braille spinner class is spelled per manifest, and the copies have diverged
-
-Reported by: agent-state.
-
-`[\x{2800}-\x{28FF}]` (claude, amp, maki), the same range as backslash-u escapes
-(antigravity, cursor, kimi, qodercli, droid), `[\x{2801}-\x{28FF}]` (cline, grok),
-the literal U+2801 to U+28FF range (qwen), a ten-glyph subset of the dots spinner
-(codex, pi, letta), and `TITLE_ACTIVITY_GLYPHS`' own range. U+2800 is the blank
-braille cell, rendered as a space: copies that include it let a blank leading cell
-count as a spinner, the others do not. Fix: named matcher classes in the manifest
-schema (`{spinner}` expanded at compile) or a shared include, and a lint test that
-no manifest spells a raw braille range.
-
-## VAL-028 - Claude's activity glyph class differs between rules of one manifest and the title glyphs
-
-Reported by: agent-state.
-
-`live_turn_working` uses `[\x{002A}\x{00B7}\x{2722}\x{2733}\x{2736}\x{273B}\x{273D}]`;
-`background_agents_working` and `background_mcp_task_working` drop `\x{2733}`.
-`TitleActivityGlyphs::CLAUDE_ANIMATION_GLYPHS` is a third copy with different
-membership (adds the half circles, lacks `*`). If omitting U+2733 is deliberate
-(it is the idle title marker), nothing says so. The `title_activity_glyphs_cover_claude_animation`
-test checks one glyph.
-
 ## VAL-029 - Manifest rule bodies are duplicated because the schema cannot reference a rule or matcher
 
 Reported by: agent-state.
@@ -348,14 +313,6 @@ Reported by: agent-state, restore-resume.
 - `AGENT_ABSENCE_STARTUP_HOLD` is an alias of a private
   `AGENT_RESUME_DETECTION_HOLD` used nowhere else; fold it.
 
-## VAL-031 - The executable suffix list is spelled in two crates
-
-Reported by: agent-state.
-
-`Runtime::classify` (detect `lib.rs`) and `normalized_agent_lookup_name`
-(shepr-agent) both spell `[".exe", ".js"]`, and the comment admits the copy. Export
-one const from shepr-agent.
-
 ## VAL-032 - Limits and cadences copied into tests as literals
 
 Reported by: agent-state, workspace-model.
@@ -369,17 +326,6 @@ of `PROCESS_RECHECK_NO_AGENT`. `copy_search_bounds_returned_matches_but_keeps_ex
 asserts `1024` (`MAX_RETURNED_MATCHES`); `pane_resize_changes_target_ratio_without_changing_focus_or_navigating`
 asserts `0.55` (`EVEN_SPLIT + DEFAULT_PANE_RESIZE_AMOUNT`); several core layout tests
 assert `0.45` / `0.55`. Reference the constants.
-
-## VAL-033 - The OSC progress spelling the manifests match is never tested against its owner
-
-Reported by: agent-state.
-
-`Progress`' `Display` in shepr-vt owns `4;state[;percent]`, restated in the docs of
-`DetectionInput`, `AgentDetectionInputs`, `agent_osc.rs` and a grok comment. The
-manifests' `osc_progress` regexes (`^4;0`, `^4;0;0$`, `^4;1$`, `^4;3;?$`,
-`^4;3(?:;|$)`) are never tested against `Display` output. A test that every
-`osc_progress` regex matches at least one `Progress::to_string()` over the five
-states with and without percent would catch a spelling change.
 
 ## VAL-034 - The detection tunables are split three ways
 
@@ -590,23 +536,6 @@ cadence borrows `GIT_REMOTE_STATUS_REFRESH_INTERVAL` (`refresh_deadline_after` i
 used for the next refresh and for `lost_refresh_check_at`): two meanings, one
 constant.
 
-## VAL-054 - Process exit codes have three owners
-
-Reported by: server-lifecycle.
-
-`shepr_launch::daemon_exit` (0 inline, `FAILED_EXIT_CODE` 1,
-`ALREADY_RUNNING_EXIT_CODE` 10, `CONFIG_REFUSED_EXIT_CODE` 11);
-`shepr_launch::stop` (`NO_SERVER_EXIT_CODE` 4, `BOOT_MISMATCH_EXIT_CODE` 3, private
-behind `ServerStopExit`); `src/main.rs` `ProcessExit` (literals 0, 1, 2 in `code()`
-and `from_cli_code`), `cli.rs` `parse_launch`'s literal `Err(2)`, and
-`shepr-daemon/src/main.rs` `ServerProcessExit::Usage` (literal 2) with a literal
-`unwrap_or(1)` fallback, also in `ProcessExit`. Usage 2 and failure 1 are spelled
-five times in two binaries, and `DaemonExit`'s doc ("the server executable exits
-with one of these codes") is false for the daemon's usage exit. Fix: one `u8`-typed
-`ProcessStatus` enum in `shepr-launch` for every status either executable ends with.
-Enforceable by the type, or a textlint banning numeric `ExitCode::from(` / `Err(2)`
-literals in the two mains and `cli.rs`.
-
 ## VAL-055 - Executable names are re-spelled in operator text
 
 Reported by: server-lifecycle, remote.
@@ -675,9 +604,6 @@ Reported by: remote.
   (`MachineSshConnector::validate_local_setup` via `shared_ssh_control_path`, and
   `write_managed_ssh_config` via `ssh_control_path_under`); have the managed config
   return the path it validated.
-- Bridge socket names are restated in `shepr-client/src/launch.rs`
-  `impossible_connector_paths_fail_in_the_preterminal_phase` (`"bridge.sock"`,
-  `"b.sock"`); moot if the bridge socket goes (DEAD).
 - The SSH metadata cache is per-profile by its own `ssh-metadata-{profile.marker()}`
   suffix under the shared client state dir, while `AppPaths::data_dir()` already is
   per-profile: two rules for where dev keeps its own state.

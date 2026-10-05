@@ -6,7 +6,6 @@ use shepr_api::schema::{
 
 use crate::app::App;
 
-use super::super::api_helpers::pane_not_found;
 use super::responses::{failure, success};
 
 /// One locked read of the detector's input, the same read the live detection
@@ -68,7 +67,7 @@ impl App {
     pub(super) fn handle_detect_explain(&mut self, target: &PaneTarget) -> ApiResult {
         let pane_id = self.json_pane(&target.pane_id)?;
         let Some(terminal) = self.state.terminal(pane_id) else {
-            return Err(pane_not_found(&target.pane_id));
+            return Err(ApiError::pane_not_found(&target.pane_id));
         };
         // Keep detect explain's runtime requirement even when hook authority
         // can describe the state; failed restores keep the same

@@ -115,7 +115,7 @@ pub(crate) fn parse_launch(args: &[String]) -> Result<Launch, i32> {
                         eprintln!(
                             "error: command '{name}' does not match a typed parser; run with --help for usage"
                         );
-                        return Err(2);
+                        return Err(shepr_launch::process_status::ProcessStatus::Usage as i32);
                     }
                 },
             };
@@ -280,14 +280,6 @@ fn ensure_server_build_matches(
     Err(CliError::Response(response))
 }
 
-/// Whether the local server socket is definitely absent or stale. Other probe
-/// failures remain transport errors because they do not establish liveness.
-pub(super) fn server_not_running_error(socket_path: &std::path::Path) -> CliResult<bool> {
-    shepr_platform::ipc::socket_is_live(socket_path)
-        .map(|live| !live)
-        .map_err(Into::into)
-}
-
 /// Classify a socket failure before it reaches the CLI printer.
 fn map_server_not_running_or_io(
     paths: &shepr_paths::AppPaths,
@@ -295,21 +287,31 @@ fn map_server_not_running_or_io(
     request_id: &str,
     client: &ApiClient,
 ) -> CliError {
-    match err {
-        ApiClientError::Io(_)
-            if server_not_running_error(&client.socket_path()).unwrap_or(false) =>
-        {
-            let socket_path = client.socket_path();
-            let attach_command = shepr_launch::guidance::attach_command(paths.server_address());
-            let message = shepr_launch::guidance::server_not_running(&socket_path, &attach_command);
-            CliError::Response(shepr_api::schema::ErrorResponse {
-                id: Some(request_id.to_owned()),
-                error: shepr_api::schema::ErrorBody::new(
-                    &shepr_api::error::ApiErrorCode::ServerNotRunning,
-                    message,
-                ),
-            })
+    if let ApiClientError::Io(original) = &err {
+        match shepr_platform::ipc::socket_is_live(&client.socket_path()).map(|live| !live) {
+            Ok(true) => {
+                let socket_path = client.socket_path();
+                let attach_command = shepr_launch::guidance::attach_command(paths.server_address());
+                let message =
+                    shepr_launch::guidance::server_not_running(&socket_path, &attach_command);
+                return CliError::Response(shepr_api::schema::ErrorResponse {
+                    id: Some(request_id.to_owned()),
+                    error: shepr_api::schema::ErrorBody::new(
+                        &shepr_api::error::ApiErrorCode::ServerNotRunning,
+                        message,
+                    ),
+                });
+            }
+            Ok(false) => {}
+            Err(probe_error) => {
+                return std::io::Error::new(
+                    probe_error.kind(),
+                    format!("server request at {} failed ({original}); could not determine socket liveness: {probe_error}", client.socket_path().display()),
+                ).into();
+            }
         }
+    }
+    match err {
         ApiClientError::ErrorResponse(response) => CliError::Response(response),
         ApiClientError::Io(err) => err.into(),
         err @ (ApiClientError::Json(_) | ApiClientError::EmptyResponse) => {
@@ -598,6 +600,28 @@ mod tests {
         ] {
             assert_eq!(parse_error(args).exit_code(), 2, "{args:?}");
         }
+    }
+
+    #[test]
+    fn a_failed_liveness_probe_is_reported_with_the_request_error() {
+        use shepr_api::client::{ApiClient, ApiClientError};
+
+        let scratch = crate::test_support::ScratchDir::new("cli-probe-error");
+        let paths = shepr_paths::AppPaths::test_at(scratch.path());
+        std::fs::create_dir_all(paths.runtime_dir()).expect("runtime directory");
+        let client = ApiClient::local(&paths);
+        let socket = client.socket_path();
+        std::os::unix::fs::symlink(&socket, &socket).expect("symlink loop");
+        let mapped = super::map_server_not_running_or_io(
+            &paths,
+            ApiClientError::Io(std::io::Error::other("original request failure")),
+            shepr_api::schema::RequestId::DetectCapture.as_str(),
+            &client,
+        );
+        let message = mapped.to_string();
+        assert!(message.contains("original request failure"));
+        assert!(message.contains("could not determine socket liveness"));
+        assert!(message.contains(&socket.display().to_string()));
     }
 
     #[test]

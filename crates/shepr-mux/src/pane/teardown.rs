@@ -249,32 +249,43 @@ impl Drop for PaneTeardownInFlight {
 /// its process handle; finding the other members (a `/proc` scan) and the
 /// SIGHUP/SIGTERM/SIGKILL escalation with its grace periods run on a
 /// background thread, so closing a workspace never stalls the caller for
-/// them. Every signal goes through a pidfd-backed `platform::ProcessHandle`,
-/// so a pid the kernel has handed to an unrelated process is not signalled.
+/// them. If that thread cannot start, the leader gets SIGKILL immediately.
+/// Every signal goes through a pidfd-backed `platform::ProcessHandle`, so a
+/// pid the kernel has handed to an unrelated process is not signalled.
 pub(super) fn shutdown_pane_processes(
     pane_id: PaneId,
-    child_liveness: Arc<ChildLiveness>,
+    child_liveness: &Arc<ChildLiveness>,
     tracker: &Arc<PaneTeardownTracker>,
 ) {
     if child_liveness.process_id().is_none() {
         return;
     }
-    if let Some(leader) = child_liveness.leader()
+    let leader = child_liveness.leader();
+    if let Some(leader) = &leader
         && !child_liveness.has_exited()
     {
         leader.signal(shepr_platform::Signal::Hangup);
     }
     let in_flight = tracker.start();
+    let worker_child_liveness = Arc::clone(child_liveness);
+    let task = Box::new(move || {
+        run_pane_teardown(pane_id, in_flight, &worker_child_liveness);
+    });
     let spawned = std::thread::Builder::new()
         .name(format!("shepr-pane-{pane_id}-teardown"))
-        .spawn(move || run_pane_teardown(pane_id, in_flight, &child_liveness));
+        .spawn(task);
     if let Err(err) = spawned {
         // Closing a pane must not run sleeps or /proc scans on the event loop,
-        // even under thread exhaustion. The leader already received SIGHUP;
-        // its watcher still owns reaping. Dropping the closure retires the ticket.
+        // even under thread exhaustion. With no worker to escalate, kill the
+        // leader through its pidfd in one syscall and leave reaping to its
+        // watcher. Dropping the task retires the in-flight ticket.
+        let leader_killed = leader
+            .as_ref()
+            .is_some_and(|leader| leader.signal(shepr_platform::Signal::Kill));
         warn!(
             pane = %pane_id,
             error = %err,
+            leader_killed,
             "could not start pane teardown thread; session escalation skipped"
         );
     }

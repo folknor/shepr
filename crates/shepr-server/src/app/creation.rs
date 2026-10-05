@@ -1,6 +1,6 @@
 use shepr_core::absolute_path::AbsolutePath;
 
-use super::{App, SpawnGeometry, api_helpers::presented_agent_status};
+use super::{App, SpawnGeometry};
 use shepr_config::NewTerminalCwd;
 
 /// `home_dir` and `fallback_cwd` are the launch's `AppPaths`
@@ -168,7 +168,7 @@ impl App {
             workspace_id: ws.id(),
             label: ws.name().to_owned(),
             pane_count: ws.tree().len(),
-            agent_status: presented_agent_status(agg_state),
+            agent_status: agg_state,
         })
     }
 }

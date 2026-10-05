@@ -15,21 +15,23 @@ use host_shutdown::HostShutdownMonitor;
 pub(super) enum ShutdownPhase {
     Running,
     HostShutdownWarning,
-    Frozen,
+    Frozen {
+        /// The warning answered by the checkpoint. Refreshing it requires
+        /// another checkpoint even if cancellation was not observed.
+        generation: Option<WarningGeneration>,
+    },
     Stopping,
 }
 
 /// Lifecycle operation names kept typed until an error is presented.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ShutdownStep {
-    FreezeForHostShutdown,
     CompleteShutdown,
 }
 
 impl std::fmt::Display for ShutdownStep {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::FreezeForHostShutdown => f.write_str("freezing for host shutdown"),
             Self::CompleteShutdown => f.write_str("completing shutdown"),
         }
     }
@@ -67,28 +69,12 @@ impl WarningGeneration {
     }
 }
 
-/// Session-save freeze held from a host shutdown warning until shutdown
-/// completes or is cancelled.
-pub(super) struct HostShutdownFreeze {
-    /// The warning this checkpoint answered. A cancellation followed quickly
-    /// by another warning may never expose `requested = false` to the loop.
-    generation: Option<WarningGeneration>,
-}
-
 /// Owns the server's lifecycle phase and the asynchronous request latches that
 /// feed it. The latches are written by signal, API and logind threads; the
 /// event loop is the sole owner of phase transitions and session policy.
 pub(super) struct ShutdownLifecycle {
     phase: ShutdownPhase,
     monitor: Option<HostShutdownMonitor>,
-    /// Set on entering `Frozen` and taken when that freeze is cancelled or a
-    /// new warning restarts it. Stopping from `Frozen` does not take it, so it
-    /// is `Some` only in `Frozen` or `Stopping`, and readers check the phase
-    /// first. Only the
-    /// transition methods below write it. Folding it into the phase would make
-    /// `ShutdownPhase` carry data and lose the `Copy` that `UnexpectedPhase`
-    /// relies on.
-    freeze: Option<HostShutdownFreeze>,
     /// The warning the current host checkpoint answers: set when a warning
     /// starts or refreshes the checkpoint, cleared when the shutdown is called
     /// off. A warning whose generation no longer matches gets a fresh
@@ -106,7 +92,6 @@ impl ShutdownLifecycle {
         Self {
             phase: ShutdownPhase::Running,
             monitor: None,
-            freeze: None,
             checkpoint_generation: None,
             stop_signal,
             host_shutdown_request: Arc::new(AtomicBool::new(false)),
@@ -174,52 +159,36 @@ impl ShutdownLifecycle {
         }
     }
 
-    /// Moves a checkpointed warning to `Frozen`. Only a warning can freeze;
-    /// from any other phase the freeze is refused and nothing changes.
-    pub(super) fn finish_host_shutdown_freeze(
-        &mut self,
-        freeze: HostShutdownFreeze,
-    ) -> Result<(), UnexpectedPhase> {
-        self.require_phase(
-            ShutdownStep::FreezeForHostShutdown,
-            ShutdownPhase::HostShutdownWarning,
-        )?;
-        self.freeze = Some(freeze);
-        self.phase = ShutdownPhase::Frozen;
-        Ok(())
-    }
-
     /// Cancels either a warning not yet checkpointed or a completed freeze.
-    /// A returned freeze means the saver is frozen and the caller thaws it.
-    pub(super) fn cancel_host_shutdown(&mut self) -> Option<HostShutdownFreeze> {
+    /// Returns whether the saver was frozen and the caller must thaw it.
+    pub(super) fn cancel_host_shutdown(&mut self) -> bool {
         match self.phase {
             ShutdownPhase::HostShutdownWarning => {
                 self.phase = ShutdownPhase::Running;
-                None
+                false
             }
-            ShutdownPhase::Frozen => {
+            ShutdownPhase::Frozen { .. } => {
                 self.phase = ShutdownPhase::Running;
-                self.freeze.take()
+                true
             }
-            ShutdownPhase::Running | ShutdownPhase::Stopping => None,
+            ShutdownPhase::Running | ShutdownPhase::Stopping => false,
         }
     }
 
     /// Starts a fresh checkpoint after logind issued another warning before
     /// the loop observed cancellation of the previous one.
-    pub(super) fn restart_host_shutdown_warning(&mut self) -> Option<HostShutdownFreeze> {
-        if self.phase != ShutdownPhase::Frozen {
-            return None;
+    pub(super) fn restart_host_shutdown_warning(&mut self) -> bool {
+        if !matches!(self.phase, ShutdownPhase::Frozen { .. }) {
+            return false;
         }
         self.phase = ShutdownPhase::HostShutdownWarning;
-        self.freeze.take()
+        true
     }
 
     pub(super) fn frozen_warning_generation(&self) -> Option<WarningGeneration> {
-        if self.phase == ShutdownPhase::Frozen {
-            self.freeze.as_ref().and_then(|freeze| freeze.generation)
-        } else {
-            None
+        match self.phase {
+            ShutdownPhase::Frozen { generation } => generation,
+            _ => None,
         }
     }
 
@@ -236,7 +205,10 @@ impl ShutdownLifecycle {
     /// server entered its terminal stopping phase. An endpoint command gets
     /// `EndpointError::ShuttingDown` instead.
     pub(super) fn shutdown_error(&self) -> shepr_api::error::ApiError {
-        assert_eq!(self.phase, ShutdownPhase::Stopping);
+        // This is a fixed refusal response, with no phase-dependent data.
+        // Constructing it must not panic while the server drains requests.
+        // A stopping proof token would only police callers of this pure value
+        // constructor; transition validation belongs to the lifecycle steps.
         shepr_api::error::ApiError::new(
             shepr_api::error::ApiErrorCode::ServerUnavailable,
             shepr_protocol::ShutdownReason::Stopping.to_string(),
@@ -275,7 +247,7 @@ impl ShutdownLifecycle {
         if !self.host_shutdown_requested() {
             self.checkpoint_generation = None;
             let was_warning = self.phase() == ShutdownPhase::HostShutdownWarning;
-            if self.cancel_host_shutdown().is_some() {
+            if self.cancel_host_shutdown() {
                 app.cancel_host_shutdown_checkpoint();
                 self.thaw_after_host_shutdown(app);
             } else if was_warning {
@@ -298,13 +270,13 @@ impl ShutdownLifecycle {
                     app.cancel_host_shutdown_checkpoint();
                     self.checkpoint_generation = generation;
                     self.freeze_for_host_shutdown(app);
-                } else if !app.session_persists() || app.host_shutdown_checkpoint_result_ready() {
+                } else if app.host_shutdown_checkpoint_result_ready() {
                     self.freeze_for_host_shutdown(app);
                 }
             }
-            ShutdownPhase::Frozen => {
+            ShutdownPhase::Frozen { .. } => {
                 if self.frozen_warning_generation() != generation
-                    && self.restart_host_shutdown_warning().is_some()
+                    && self.restart_host_shutdown_warning()
                 {
                     app.thaw_session_saves();
                     self.checkpoint_generation = generation;
@@ -316,36 +288,25 @@ impl ShutdownLifecycle {
     }
 
     fn freeze_for_host_shutdown(&mut self, app: &mut app::App) {
-        // Checked before any side effect: a refused freeze must leave the save
-        // policy and logind's delay lock as they were.
-        if let Err(error) = self.require_phase(
-            ShutdownStep::FreezeForHostShutdown,
-            ShutdownPhase::HostShutdownWarning,
-        ) {
-            tracing::error!(%error, "refusing the host shutdown freeze");
-            return;
-        }
+        // Only the warning arms of sync_host_shutdown_freeze enter here;
+        // the checkpoint result below is the prerequisite for freezing.
         info!("host shutdown announced; checkpointing the session and freezing saves");
         let generation = self.checkpoint_generation;
-        if app.session_persists() {
-            if !app.host_shutdown_checkpoint_result_ready() {
-                app.request_host_shutdown_checkpoint();
-            }
-            // Stopped persistence completes synchronously and sends no wake.
-            let Some(outcome) = app.take_host_shutdown_checkpoint_result() else {
-                return;
-            };
-            if outcome == app::HostCheckpointOutcome::Unsaved {
-                warn!("host shutdown checkpoint failed repeatedly; releasing the delay lock");
-            }
+        if !app.host_shutdown_checkpoint_result_ready() {
+            app.request_host_shutdown_checkpoint();
+        }
+        // Stopped persistence completes synchronously and sends no wake.
+        let Some(outcome) = app.take_host_shutdown_checkpoint_result() else {
+            return;
+        };
+        if outcome == app::HostCheckpointOutcome::Unsaved {
+            warn!("host shutdown checkpoint failed repeatedly; releasing the delay lock");
         }
         app.freeze_session_saves();
         if let (Some(monitor), Some(generation)) = (self.monitor.as_ref(), generation) {
             monitor.release_delay_lock(generation);
         }
-        if let Err(error) = self.finish_host_shutdown_freeze(HostShutdownFreeze { generation }) {
-            tracing::error!(%error, "host shutdown freeze did not land");
-        }
+        self.phase = ShutdownPhase::Frozen { generation };
     }
 
     fn thaw_after_host_shutdown(&mut self, app: &mut app::App) {
@@ -382,7 +343,8 @@ impl HeadlessServer {
     /// the startup timeout.
     pub(super) async fn complete_shutdown(&mut self) -> Result<(), UnexpectedPhase> {
         // Completing is only legal once `initiate_shutdown` marked the server
-        // stopping; this step settles queued requests before notifying clients.
+        // stopping. The run loop checks the phase before calling; this guard
+        // refuses a premature completion before any transport is closed.
         self.lifecycle
             .require_phase(ShutdownStep::CompleteShutdown, ShutdownPhase::Stopping)?;
         info!("completing server shutdown");
@@ -480,71 +442,83 @@ impl ShutdownLifecycle {
             .expect("test monitor")
             .test_refresh_warning();
     }
-
-    pub(super) fn has_monitor(&self) -> bool {
-        self.monitor.is_some()
-    }
 }
 
 #[cfg(test)]
 mod phase_tests {
     use super::*;
+    use crate::test_support::WorkspaceFixture as _;
     use tokio::sync::mpsc;
 
-    fn freeze() -> HostShutdownFreeze {
-        HostShutdownFreeze { generation: None }
-    }
-
     #[tokio::test]
-    async fn host_shutdown_freeze_waits_for_monitor_cancellation() {
+    async fn host_shutdown_checkpoint_freezes_and_cancellation_thaws() {
         let config = shepr_config::ServerConfig::default();
-        let mut app = crate::app::App::new(&config);
+        let mut harness = crate::app::App::new(&config);
+        harness.test_state_mut().test_set_workspaces(vec![
+            shepr_mux::workspace::Workspace::test_new("host-checkpoint"),
+        ]);
+        let (mut app, outputs) = harness.into_parts();
         let mut lifecycle = ShutdownLifecycle::new(Arc::default());
+        let completed = outputs.save_finished_signal();
         lifecycle
             .host_shutdown_request_flag()
             .store(true, Ordering::Release);
         lifecycle.sync_host_shutdown_freeze(&mut app);
-        assert_eq!(lifecycle.phase(), ShutdownPhase::Frozen);
-        assert!(!app.session_persists());
-
+        assert_eq!(lifecycle.phase(), ShutdownPhase::HostShutdownWarning);
+        tokio::time::timeout(std::time::Duration::from_secs(5), completed.notified())
+            .await
+            .expect("checkpoint completed");
+        app.reap_finished_session_save();
         lifecycle.sync_host_shutdown_freeze(&mut app);
-        assert_eq!(lifecycle.phase(), ShutdownPhase::Frozen);
-        assert!(lifecycle.host_shutdown_requested());
-
-        lifecycle.sync_host_shutdown_freeze(&mut app);
-        assert_eq!(lifecycle.phase(), ShutdownPhase::Frozen);
+        assert_eq!(
+            lifecycle.phase(),
+            ShutdownPhase::Frozen { generation: None }
+        );
+        assert!(
+            shepr_mux::persist::session_path(app.test_paths().data_dir())
+                .try_exists()
+                .expect("stat the session file")
+        );
         lifecycle
             .host_shutdown_request_flag()
             .store(false, Ordering::Release);
         lifecycle.sync_host_shutdown_freeze(&mut app);
         assert_eq!(lifecycle.phase(), ShutdownPhase::Running);
-        assert!(!lifecycle.host_shutdown_requested());
-        // No monitor ran before the warning, so none was started by the thaw.
-        assert!(!lifecycle.has_monitor());
+        assert!(app.state().session_dirty());
     }
 
     #[test]
-    fn freeze_is_refused_outside_a_warning_and_leaves_the_phase() {
-        let mut lifecycle = ShutdownLifecycle::new(Arc::default());
-        let refused = lifecycle
-            .finish_host_shutdown_freeze(freeze())
-            .expect_err("a running server cannot freeze");
-        assert_eq!(refused.actual, ShutdownPhase::Running);
-        assert_eq!(lifecycle.phase(), ShutdownPhase::Running);
-
-        assert!(lifecycle.begin_stopping());
-        assert!(lifecycle.finish_host_shutdown_freeze(freeze()).is_err());
-        assert_eq!(lifecycle.phase(), ShutdownPhase::Stopping);
-    }
-
-    #[test]
-    fn freeze_lands_from_a_warning() {
+    fn cancelling_a_warning_only_thaws_a_completed_checkpoint() {
         let mut lifecycle = ShutdownLifecycle::new(Arc::default());
         assert!(lifecycle.begin_host_shutdown_warning());
-        lifecycle
-            .finish_host_shutdown_freeze(freeze())
-            .expect("a warning freezes");
-        assert_eq!(lifecycle.phase(), ShutdownPhase::Frozen);
+        assert!(!lifecycle.cancel_host_shutdown());
+        assert_eq!(lifecycle.phase(), ShutdownPhase::Running);
+        let generation = Some(WarningGeneration(7));
+        lifecycle.phase = ShutdownPhase::Frozen { generation };
+        assert_eq!(lifecycle.frozen_warning_generation(), generation);
+        assert!(lifecycle.cancel_host_shutdown());
+        assert_eq!(lifecycle.phase(), ShutdownPhase::Running);
+        assert!(!lifecycle.cancel_host_shutdown());
+    }
+
+    #[test]
+    fn restarting_a_frozen_warning_discards_its_generation() {
+        let mut lifecycle = ShutdownLifecycle::new(Arc::default());
+        lifecycle.phase = ShutdownPhase::Frozen {
+            generation: Some(WarningGeneration(7)),
+        };
+        assert!(lifecycle.restart_host_shutdown_warning());
+        assert_eq!(lifecycle.phase(), ShutdownPhase::HostShutdownWarning);
+        assert_eq!(lifecycle.frozen_warning_generation(), None);
+        assert!(!lifecycle.restart_host_shutdown_warning());
+    }
+
+    #[test]
+    fn shutdown_refusal_is_safe_to_construct_before_the_stopping_transition() {
+        let mut lifecycle = ShutdownLifecycle::new(Arc::default());
+        let before = lifecycle.shutdown_error();
+        assert!(lifecycle.begin_stopping());
+        assert_eq!(before, lifecycle.shutdown_error());
     }
 
     #[test]

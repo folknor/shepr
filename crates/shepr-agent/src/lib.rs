@@ -898,6 +898,9 @@ impl Agent {
     }
 }
 
+/// Shared suffixes accepted by agent lookup and runtime classification.
+pub const AGENT_EXECUTABLE_SUFFIXES: &[&str] = &[".exe", ".js"];
+
 /// The agent a label, alias or executable name names, ignoring case,
 /// surrounding whitespace, leading path components and an `.exe` or `.js`
 /// suffix. [`Agent::parse_canonical_label`] accepts canonical labels only.
@@ -911,7 +914,7 @@ pub fn parse_agent_label(agent: &str) -> Option<Agent> {
 pub fn normalized_agent_lookup_name(name: &str) -> String {
     let mut name = name.trim().to_lowercase();
     // opencode's npm package names its native binary `opencode.exe` on every platform.
-    for suffix in [".exe", ".js"] {
+    for suffix in AGENT_EXECUTABLE_SUFFIXES.iter().copied() {
         if name.ends_with(suffix) {
             name.truncate(name.len() - suffix.len());
             break;

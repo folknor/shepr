@@ -30,17 +30,21 @@ pub(crate) fn ensure_command_hook(
             )
         })?;
 
-    // Two descriptor events sharing a command collapse to one group.
+    // Identical registrations collapse, while a distinct matcher gets its own
+    // group even when it calls the same command for the same event.
+    // The matcher sits on the group (see `command_hook_group`), the command on
+    // the group's hook entries.
     let already_installed = entries.iter().any(|entry| {
-        entry
-            .get("hooks")
-            .and_then(Value::as_array)
-            .is_some_and(|hook_entries| {
-                hook_entries.iter().any(|hook| {
-                    hook.get("type").and_then(Value::as_str) == Some("command")
-                        && hook.get("command").and_then(Value::as_str) == Some(command)
+        entry.get("matcher").and_then(Value::as_str) == matcher
+            && entry
+                .get("hooks")
+                .and_then(Value::as_array)
+                .is_some_and(|hook_entries| {
+                    hook_entries.iter().any(|hook| {
+                        hook.get("type").and_then(Value::as_str) == Some("command")
+                            && hook.get("command").and_then(Value::as_str) == Some(command)
+                    })
                 })
-            })
     });
     if already_installed {
         return Ok(());
@@ -558,5 +562,21 @@ mod tests {
 
         assert!(updated.contains("codex_hooks = true"));
         assert!(updated.contains("hooks = true"));
+    }
+
+    #[test]
+    fn same_event_and_command_keep_distinct_matchers() {
+        let mut hooks = Map::<String, Value>::new();
+        let command = "sh '/hooks/shepr-agent-state.sh'";
+        for matcher in [Some("Bash"), Some("Edit"), Some("Bash"), None, None] {
+            ensure_command_hook(&mut hooks, "PreToolUse", command, 10, matcher)
+                .expect("register the hook");
+        }
+
+        let entries = hooks["PreToolUse"].as_array().expect("event groups");
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        assert_eq!(entries[0]["matcher"], "Bash");
+        assert_eq!(entries[1]["matcher"], "Edit");
+        assert!(entries[2].get("matcher").is_none());
     }
 }

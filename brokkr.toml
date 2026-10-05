@@ -99,6 +99,25 @@ allow_marker = "clock-io-ok"
 allow_marker_above = 3
 message = "take the clock as a parameter; mark the entry point that supplies the real one"
 
+# The kernel suffix is meaningful only on a path read from `/proc`; preserve
+# ordinary paths with the same spelling and keep the literal in one helper.
+[[textlint]]
+name = "proc-deleted-suffix-is-centralized"
+pattern = '\(deleted\)'
+paths = [
+    "crates/shepr-platform/src/host.rs",
+    "crates/shepr-platform/src/proc_tree.rs",
+    "crates/shepr-platform/src/proc_tree_tests.rs",
+    "crates/shepr-platform/src/tests.rs",
+    "crates/shepr-mux/src/workspace.rs",
+    "crates/shepr-mux/src/pane/process_probe.rs",
+    "crates/shepr-mux/src/pane/runtime.rs",
+]
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+allow_marker = "proc-deleted-suffix-ok"
+allow_marker_above = 1
+message = "classify the /proc deleted marker through the shared platform helper"
+
 [[textlint]]
 name = "client-clock-is-injected"
 pattern = '\b(?:Instant|SystemTime)::now\b'

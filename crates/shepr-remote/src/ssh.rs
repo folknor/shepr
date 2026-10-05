@@ -106,31 +106,14 @@ fn remove_managed_config_directory(path: &Path) {
     release_remote_ssh_config_dir(path);
 }
 
-/// Files the SSH machinery leaves in the private profile runtime directory while it runs:
-/// bridge sockets with their lock sidecars, and temporary ssh config
-/// directories.
+/// Temporary SSH config directories awaiting owner or process-exit cleanup.
 pub(crate) enum TeardownResource {
-    Socket(shepr_platform::ipc::OwnedSocketFile),
     Directory(PathBuf),
 }
 
 impl TeardownResource {
     fn remove(&self) {
         match self {
-            Self::Socket(file) => {
-                let path = file.path();
-                // Absent or replaced by another owner's socket already count as
-                // done inside `remove_socket_file_if_owned`.
-                if let Err(error) = file.remove_if_still_ours() {
-                    tracing::warn!(
-                        %error,
-                        socket = %path.display(),
-                        "could not remove ssh bridge socket at exit"
-                    );
-                    return;
-                }
-                shepr_platform::release_single_use_socket_lock(path);
-            }
             Self::Directory(path) => remove_managed_config_directory(path),
         }
     }
@@ -142,7 +125,7 @@ impl TeardownResource {
 /// Their owners normally remove them on drop, but in a client those owners live on
 /// endpoint writer threads and in connection attempts on blocking tasks. Both are
 /// still unwinding when the main thread returns from the client loop, and process
-/// exit does not wait for them, which leaked sockets and config directories.
+/// exit does not wait for them, which leaked config directories.
 pub(crate) struct TeardownRegistry {
     pending: std::sync::Mutex<Vec<(u64, TeardownResource)>>,
     changed: std::sync::Condvar,
@@ -213,7 +196,7 @@ impl Drop for TeardownRegistration {
     }
 }
 
-/// Removes the SSH bridge sockets and temporary ssh config directories this process
+/// Removes the temporary SSH config directories this process
 /// still owns. Call it once, after the client loop has returned and immediately
 /// before the process exits (including through `std::process::exit`).
 ///
@@ -568,7 +551,7 @@ impl<'a> SshControlDir<'a> {
 /// then checks the resulting directory before SSH names sockets or config files
 /// under it.
 pub(crate) fn ensure_ssh_runtime_dir(app_paths: &shepr_paths::AppPaths) -> io::Result<&Path> {
-    // Keep bridge sockets, SSH control sockets and managed configs under the
+    // Keep SSH control sockets and managed configs under the
     // same validated XDG runtime root. A missing root returns its local setup
     // error, which the connector reports as Attention and retries; do not move
     // private SSH state to a fallback with a different lifetime or socket policy.

@@ -25,6 +25,8 @@ impl Autosave {
         self.deadline
     }
 
+    /// The autosave's single deadline comparison, shared by scheduling and
+    /// its boundary tests; checkpoint readiness belongs to SessionSaver.
     pub(super) fn is_due(&self, now: Instant) -> bool {
         self.deadline.is_some_and(|d| now >= d)
     }
@@ -43,7 +45,9 @@ impl Autosave {
     /// future deadline and a delay doubling from `SESSION_SAVE_RETRY_MIN` per
     /// consecutive failure, capped at `SESSION_SAVE_RETRY_MAX`, so a
     /// persistent failure (a full disk, an unwritable data directory) does
-    /// not re-capture and rewrite the whole session four times a second. Returns the failure count and the delay.
+    /// not re-capture and rewrite the whole session at the minimum delay over
+    /// and over.
+    /// Returns the failure count and the delay.
     pub(super) fn record_failure(&mut self, now: Instant) -> (u32, Duration) {
         let failures_before = self.failures;
         self.failures = self.failures.saturating_add(1);

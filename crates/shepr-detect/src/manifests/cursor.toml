@@ -50,4 +50,4 @@ state = "working"
 priority = 90
 region = "bottom_non_empty_lines(8)"
 visible_working = true
-line_regex = ['^\s*(⬡|⬢|[\u2800-\u28FF]+)\s+\p{Alphabetic}+\w*ing\b']
+line_regex = ['^\s*(⬡|⬢|{spinner_run})\s+\p{Alphabetic}+\w*ing\b']

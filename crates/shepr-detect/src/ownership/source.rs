@@ -1290,7 +1290,7 @@ impl AgentOwnership {
         matches!(session_start_source, ReportedSessionStart::Known(_))
     }
 
-    fn is_unsequenced_opencode_selection(
+    fn is_unsequenced_selection(
         origin: &ReportOrigin,
         session_start_source: ReportedSessionStart,
         seq: Option<u64>,
@@ -2354,7 +2354,7 @@ impl AgentOwnership {
         agent: Option<Agent>,
         fallback_state: AgentState,
     ) -> Option<EffectiveStateChange> {
-        self.set_detected_state_with_visible_blocker(agent, fallback_state, false, false, false)
+        self.set_detected_state_with_visible_blocker(agent, fallback_state, false, false)
     }
 
     pub fn set_detected_state_with_mutation(
@@ -2376,7 +2376,6 @@ impl AgentOwnership {
         agent: Option<Agent>,
         fallback_state: AgentState,
         visible_blocker: bool,
-        _ignored_screen_idle: bool,
         process_exited: bool,
     ) -> Option<EffectiveStateChange> {
         self.confirmed_detection_for_test(

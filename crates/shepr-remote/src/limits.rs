@@ -77,27 +77,14 @@ pub(crate) const SSH_PIPE_DONE_CHANNEL_CAPACITY: usize = 1;
 /// lets EOF and buffered output settle while bounding teardown.
 pub(crate) const BRIDGE_CONNECTION_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 
-/// Poll interval while accepting a bridge socket or checking its SSH child.
+/// Poll interval while checking the bridge's SSH child.
 /// The interval keeps bridge startup and teardown responsive without a
 /// busy loop.
-pub(crate) const BRIDGE_ACCEPT_POLL: Duration = Duration::from_millis(50);
+pub(crate) const BRIDGE_CHILD_POLL: Duration = Duration::from_millis(50);
 
 /// Delay after a bridge socket write would block. A short pause lets the
 /// local reader catch up without spinning continuously.
 pub(crate) const BRIDGE_IO_POLL: Duration = Duration::from_millis(1);
-
-/// Time a local caller waits for the SSH worker to report a failure after EOF.
-/// The timeout is enough for child reaping and diagnostic capture, and bounds
-/// the caller's wait if the worker cannot report.
-pub(crate) const BRIDGE_FAILURE_REPORT_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// Poll interval while waiting for an SSH worker failure report. It keeps the
-/// error prompt without holding the receiver lock.
-pub(crate) const BRIDGE_FAILURE_REPORT_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-/// Capacity for a pending bridge failure report. The slot preserves the
-/// most recent request's error without allowing reports to queue unboundedly.
-pub(crate) const BRIDGE_FAILURE_CHANNEL_CAPACITY: usize = 1;
 
 /// Buffer used by each bridge transfer direction. The chunk amortizes IO
 /// calls while keeping temporary memory for each worker bounded.
@@ -232,9 +219,6 @@ pub(crate) const SSH_KEEPALIVE: SshKeepalive = SshKeepalive {
     interval_secs: 15,
     count_max: 4,
 };
-
-/// Maximum label characters retained in a bridge socket file name.
-pub(crate) const BRIDGE_NAME_LABEL_CHARS: usize = 24;
 
 // A cold connection and the full remote status overview must complete before
 // SSH's command timeout can be mistaken for an authentication wait, with room

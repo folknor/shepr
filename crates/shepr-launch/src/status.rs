@@ -77,6 +77,9 @@ pub(crate) fn read_runtime_status_at(
             ApiClientDeadlineError::Connect(error)
             | ApiClientDeadlineError::Request(ApiClientError::Io(error)),
         ) => Err(error),
+        Err(ApiClientDeadlineError::Request(error @ ApiClientError::Json(_))) => {
+            Err(io::Error::new(io::ErrorKind::InvalidData, error))
+        }
         Err(ApiClientDeadlineError::Request(error)) => Err(io::Error::other(error)),
     }
 }

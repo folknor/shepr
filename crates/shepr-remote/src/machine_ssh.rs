@@ -1,5 +1,4 @@
 use std::io;
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,9 +12,7 @@ use crate::failure::{
     attempt_deadline_passed, failure_evidence, local_setup_error, ssh_runtime_error,
 };
 use crate::host::BridgeMode;
-use crate::limits::{
-    BRIDGE_NAME_LABEL_CHARS, PIPE_DRAIN_GRACE, SERVER_WATCH_POLL_INTERVAL, SSH_STDERR_CAPTURE_LIMIT,
-};
+use crate::limits::{PIPE_DRAIN_GRACE, SERVER_WATCH_POLL_INTERVAL, SSH_STDERR_CAPTURE_LIMIT};
 use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
 use crate::process::{PipeCapture, kill_and_reap};
 use crate::server_lifecycle::{remote_server_status, stop_server_of_another_build};
@@ -23,10 +20,7 @@ use crate::ssh::{
     RemoteSsh, apply_batch_ssh_options, apply_managed_ssh_options, ensure_ssh_runtime_dir,
     ssh_command,
 };
-use crate::ssh_paths::{
-    SshControlKey, remote_bridge_endpoint_path, shared_ssh_control_path,
-    validate_remote_bridge_endpoint_path,
-};
+use crate::ssh_paths::{SshControlKey, shared_ssh_control_path};
 
 /// Rebuilds `ssh`'s managed config when there is none or its file has gone
 /// (a removed temporary directory while the client stayed open), keeping a
@@ -212,7 +206,7 @@ pub struct MachineSshBridge {
 
 impl MachineSshBridge {
     /// The SSH failure behind a connection that closed early, if the bridge reported one
-    /// (waits briefly for the bridge thread). SSH stderr otherwise only reaches the log,
+    /// (joins its connection worker after EOF). SSH stderr otherwise only reaches the log,
     /// and the caller would see a bare end of stream.
     pub fn reported_failure(&self) -> Option<io::Error> {
         self.bridge.reported_failure()
@@ -384,12 +378,11 @@ impl MachineSshConnector {
     }
 
     fn validate_local_setup(&self) -> io::Result<()> {
-        // Validate both paths at launch so a runtime directory that can never hold the
-        // local bridge socket or the shared control socket fails before the
+        // Validate the shared control socket path at launch so an impossible
+        // runtime directory fails before the
         // endpoint's first scheduled connection attempt.
         let result = (|| {
             let runtime_dir = ensure_ssh_runtime_dir(&self.paths)?;
-            validate_machine_bridge_path(runtime_dir, &self.label)?;
             shared_ssh_control_path(
                 runtime_dir,
                 &self.paths.client_config_file(),
@@ -449,8 +442,6 @@ impl MachineSshConnector {
         mut establish: impl FnMut(MachineSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
         let metadata_cache = SshMetadataCache::new(&self.paths, &self.target);
-        let paths = self.paths.clone();
-        let label = self.label.clone();
         let target = self.target.clone();
         let (ssh, probe) = self.transport(deadline)?;
 
@@ -461,34 +452,16 @@ impl MachineSshConnector {
             })?;
         }
         let bridge_mode = mode.bridge_mode();
-        match Self::attempt(
-            &paths,
-            &label,
-            ssh,
-            &target,
-            &remote,
-            bridge_mode,
-            deadline,
-            &mut establish,
-        ) {
+        match Self::attempt(ssh, &target, &remote, bridge_mode, deadline, &mut establish) {
             Ok(connected) => Ok(connected),
             Err(error) if probe.observe_failure(&metadata_cache, &error) => {
                 // The remote command proved the path stale after probing. Resolve
                 // once more within the same deadline, through the same state machine.
                 let remote = probe.resolve_remote(ssh, &metadata_cache)?;
-                Self::attempt(
-                    &paths,
-                    &label,
-                    ssh,
-                    &target,
-                    &remote,
-                    bridge_mode,
-                    deadline,
-                    &mut establish,
-                )
-                .inspect_err(|error| {
-                    probe.observe_failure(&metadata_cache, error);
-                })
+                Self::attempt(ssh, &target, &remote, bridge_mode, deadline, &mut establish)
+                    .inspect_err(|error| {
+                        probe.observe_failure(&metadata_cache, error);
+                    })
             }
             Err(error) => Err(error),
         }
@@ -557,8 +530,6 @@ impl MachineSshConnector {
     }
 
     fn attempt<T>(
-        paths: &shepr_paths::AppPaths,
-        label: &MachineLabel,
         ssh: &RemoteSsh,
         target: &SshTarget,
         remote_shepr: &RemoteExecutable,
@@ -570,30 +541,13 @@ impl MachineSshConnector {
         if std::time::Instant::now() >= deadline {
             return Err(attempt_deadline_passed());
         }
-        let path = machine_bridge_path(paths.runtime_dir(), label)
-            .map_err(|error| local_setup_error("could not prepare local SSH bridge", error))?;
-        let bridge = SshStdioBridge::start(
-            target.clone(),
-            remote_shepr,
-            mode,
-            path.clone(),
-            Some(ssh.options()),
-        )
-        .map_err(|error| match error {
-            shepr_platform::ipc::BindError::Busy(busy) => {
-                io::Error::new(io::ErrorKind::AddrInUse, busy.to_string())
-            }
-            shepr_platform::ipc::BindError::Io(error) => {
-                local_setup_error("could not start local SSH bridge", error)
-            }
-        })?;
-        // clock-io-ok: starting the bridge spent real time; what is left bounds the connect.
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
+        let (bridge, stream) =
+            SshStdioBridge::start(target.clone(), remote_shepr, mode, Some(ssh.options()))
+                .map_err(|error| local_setup_error("could not start local SSH bridge", error))?;
+        // clock-io-ok: starting the bridge spent real time; establishment has its own bound.
+        if std::time::Instant::now() >= deadline {
             return Err(attempt_deadline_passed());
         }
-        let stream = shepr_platform::ipc::connect_trusted_local_stream_within(&path, remaining)?
-            .into_local_stream();
         establish(MachineSshStream {
             stream,
             bridge: MachineSshBridge { bridge },
@@ -601,57 +555,9 @@ impl MachineSshConnector {
     }
 }
 
-// The label only makes these names readable; it is not what keeps bridges
-// apart. `remote_bridge_endpoint_path` inserts a fresh random token into every
-// name it hands out, so each bridge (every client attached to one configured
-// machine, every connect attempt) binds a
-// socket of its own and removes it on drop. Two bridges for one machine never
-// contend for a path, so the busy-socket `AddrInUse` cannot arise between them.
-
-/// The label reduced to a file name fragment: ASCII letters, digits, `-` and `_`
-/// only, at most `BRIDGE_NAME_LABEL_CHARS` of them. Other characters become
-/// `_`, so a label can never inject a path separator.
-fn bridge_name_fragment(label: &MachineLabel) -> String {
-    label
-        .as_str()
-        .chars()
-        .take(BRIDGE_NAME_LABEL_CHARS)
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-/// A fresh socket path for one configured-machine attach bridge. The prefix is
-/// distinct from the `shepr-ssh-` SSH config directories, whose sweep matches
-/// on that prefix.
-fn machine_bridge_path(runtime_dir: &std::path::Path, label: &MachineLabel) -> io::Result<PathBuf> {
-    let (readable, short) = machine_bridge_names(label);
-    remote_bridge_endpoint_path(runtime_dir, &readable, short).map_err(ssh_runtime_error)
-}
-
-fn validate_machine_bridge_path(
-    runtime_dir: &std::path::Path,
-    label: &MachineLabel,
-) -> io::Result<()> {
-    let (readable, short) = machine_bridge_names(label);
-    validate_remote_bridge_endpoint_path(runtime_dir, &readable, short).map_err(ssh_runtime_error)
-}
-
-fn machine_bridge_names(label: &MachineLabel) -> (String, &'static str) {
-    (
-        format!("shepr-bridge-{}.sock", bridge_name_fragment(label)),
-        "shepr-b.sock",
-    )
-}
-
 fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
     // Whether a local setup failure can never succeed on retry. Only the
-    // bridge socket path and ssh config setup are classified here; discovery
+    // shared control socket path and ssh config setup are classified here; discovery
     // errors never reach it. This is launch admission, not the endpoint attention
     // policy: an actionable filesystem failure may still recover while the client
     // runs, whereas an impossible path must reject launch before taking the terminal.
@@ -673,7 +579,6 @@ mod tests {
         SSH_OWN_FAILURE_EXIT_CODE, SshFailureDiagnostic, remote_candidate_mismatch_error,
         remote_compatibility_error,
     };
-    use crate::shell_command::AccountShellCommand;
 
     fn remote_executable_must_be_rediscovered(error: &io::Error) -> bool {
         failure_evidence(error).invalidates_executable()
@@ -1124,80 +1029,6 @@ mod tests {
         assert_eq!(ConnectMode::Attach.bridge_mode(), BridgeMode::Attach);
         assert_eq!(ConnectMode::Start.bridge_mode(), BridgeMode::Start);
         assert_eq!(ConnectMode::Restart.bridge_mode(), BridgeMode::Start);
-    }
-
-    #[test]
-    fn bridge_paths_use_the_label_not_the_target() {
-        let runtime_dir = shepr_test_support::ScratchDir::new("machine-bridge-paths");
-        let label = |value: &str| MachineLabel::parse(value).expect("test precondition");
-        let first =
-            machine_bridge_path(runtime_dir.path(), &label("build")).expect("test precondition");
-        let second =
-            machine_bridge_path(runtime_dir.path(), &label("laptop")).expect("test precondition");
-        assert_ne!(first, second);
-        assert!(first.to_string_lossy().contains("shepr-bridge-build"));
-        assert!(!first.to_string_lossy().contains("example.com"));
-    }
-
-    /// Labels are free text; only a bounded, path-safe fragment reaches the
-    /// socket name.
-    #[test]
-    fn bridge_names_sanitize_and_bound_the_label() {
-        let label = MachineLabel::parse("../etc/pass wd \u{e9}").expect("test precondition");
-        assert_eq!(bridge_name_fragment(&label), "___etc_pass_wd__");
-        let long = MachineLabel::parse("x".repeat(500)).expect("test precondition");
-        assert_eq!(bridge_name_fragment(&long).len(), BRIDGE_NAME_LABEL_CHARS);
-        let runtime_dir = shepr_test_support::ScratchDir::new("machine-bridge-sanitized");
-        let path = machine_bridge_path(runtime_dir.path(), &label).expect("test precondition");
-        assert_eq!(path.parent(), Some(runtime_dir.path()));
-    }
-
-    /// Two clients attached to one configured machine each bind a bridge socket of
-    /// their own at the same time, and dropping them leaves the runtime
-    /// directory empty.
-    #[test]
-    fn concurrent_bridges_for_one_machine_each_bind_their_own_socket() {
-        let runtime_dir = shepr_test_support::ScratchDir::new("machine-bridge-concurrent");
-        let label = MachineLabel::parse("build").expect("test precondition");
-        let paths = [
-            machine_bridge_path(runtime_dir.path(), &label),
-            machine_bridge_path(runtime_dir.path(), &label),
-        ]
-        .map(|path| path.expect("test precondition"));
-        let bridges: Vec<_> = paths
-            .iter()
-            .map(|path| {
-                SshStdioBridge::start_command(
-                    SshTarget::parse("example").expect("test precondition"),
-                    AccountShellCommand::from_account_shell_text("true"),
-                    path.clone(),
-                    None,
-                )
-                .expect("every concurrent bridge binds its own socket")
-            })
-            .collect();
-        for (index, path) in paths.iter().enumerate() {
-            assert!(path.starts_with(runtime_dir.path()), "{}", path.display());
-            assert!(
-                !paths[index + 1..].contains(path),
-                "{} handed out twice",
-                path.display()
-            );
-            // Not connected to: an accepted stream would start a real ssh.
-            let metadata = std::fs::symlink_metadata(path).expect("bridge socket is bound");
-            assert!(
-                std::os::unix::fs::FileTypeExt::is_socket(&metadata.file_type()),
-                "{}",
-                path.display()
-            );
-        }
-
-        drop(bridges);
-        let left: Vec<_> = std::fs::read_dir(runtime_dir.path())
-            .expect("test precondition")
-            .map(|entry| entry.expect("test precondition").file_name())
-            .collect();
-        assert!(left.is_empty(), "bridges left files behind: {left:?}");
     }
 
     #[test]

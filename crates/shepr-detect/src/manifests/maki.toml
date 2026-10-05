@@ -38,7 +38,7 @@ state = "working"
 priority = 900
 region = "bottom_non_empty_lines(1)"
 visible_working = true
-line_regex = ['^( [\x{2800}-\x{28FF}]){1,2} \[(BUILD|PLAN|BASH)\]']
+line_regex = ['^( {spinner}){1,2} \[(BUILD|PLAN|BASH)\]']
 
 [[rules]]
 id = "status_bar_idle"
@@ -61,5 +61,5 @@ visible_idle = true
 line_regex = ['^❯ ']
 not = [
   { contains = ["queue another prompt"] },
-  { line_regex = ['^( [\x{2800}-\x{28FF}]){1,2} '] },
+  { line_regex = ['^( {spinner}){1,2} '] },
 ]

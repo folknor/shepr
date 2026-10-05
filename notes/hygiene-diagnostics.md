@@ -167,17 +167,6 @@ Reported by: save-shutdown.
   but a cancelled shutdown that never thaws (BUG-012 delays freeze and cancel
   alike) would be invisible.
 
-## DIAG-009 - `ShutdownLifecycle::shutdown_error` panics the event loop on a call-order slip
-
-Reported by: save-shutdown.
-
-It does `assert_eq!(self.phase, ShutdownPhase::Stopping)`, panicking the loop if a
-caller rejects a request outside Stopping. All three callers come after
-`initiate_shutdown` today (call-order safety). A `Stopping` proof token returned by
-`begin_stopping` / `initiate_shutdown` and required by
-`reject_api_request_for_shutdown` makes it structural. See DEAD (unreachable phase
-guards that go with the same change).
-
 ## DIAG-010 - The product is spelled "Shepr" in operator-facing text, and the local server is called "Local"
 
 Reported by: save-shutdown, server-lifecycle.
@@ -312,7 +301,6 @@ Reported by: integrations.
   `install_present_integrations` at warn with the error.
 - An info "integration action finished" status line is logged per present agent per
   launch even when nothing is done.
-- Nothing is logged when a shell hook will be inert for lack of `python3` (BUG-039).
 - `targets.rs` names a binary spelling inline in the OpenCode V2 notice ("start
   opencode2 once and the next shepr server launch registers it").
 
@@ -374,21 +362,13 @@ Reported by: server-lifecycle.
 
 Reported by: server-lifecycle.
 
-- `stop.rs`: `impl From<io::Error> for ServerStopError` attaches "server operation
-  failed", and `send_stop_request` uses it for a request IO error, so the operator
-  sees "server operation failed: ..." instead of "could not send the stop request to
-  server at <socket>".
-- `stop_socket_io_error` drops the `socket_is_live` error (`Ok(true) | Err(_)` both
-  become `Unreachable` with the original connect error).
-- `cli.rs` `map_server_not_running_or_io` swallows the liveness probe error with
-  `unwrap_or(false)`.
 - `preflight::local_server_status` reduces every probe failure to a warn and no
   offer, relying on the launch to report it next, which holds only with no machines
   configured (with machines, `tui.rs` prints a notice and continues).
-- A pong that fails to decode (a far older build without `boot_id`) is an error,
-  not "a different build", so the launch fails with "did not give a usable status
-  answer" and no stop guidance (that is attached only to `Probed::Unresponsive`).
-- `read_server_version_line` drops `child.kill()` / `wait()` errors on timeout.
+- `read_server_version_line` now logs a failed `kill()` on timeout, but then calls a
+  blocking `wait()`, so its cleanup can run past the probe deadline.
+- `SshStdioBridge::start_command` uses `thread::spawn`, which panics if the thread
+  cannot start; `Builder::spawn` mapped to a local setup error would refuse instead.
 
 ## DIAG-024 - Remote supervision logs routine events at warn and leaves failures silent
 

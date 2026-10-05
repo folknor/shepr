@@ -346,7 +346,7 @@ fn repeated_socket_transitions_share_one_wait_deadline() {
     assert!(matches!(
         wait_for_server_socket_to_settle_until(&paths, deadline, timeout)
             .expect("first transition ends"),
-        Probed::NoServer
+        SettledServer::NoServer
     ));
     releaser.join().expect("release");
     std::fs::remove_file(&socket).expect("remove stale socket");
@@ -1122,12 +1122,10 @@ fn ensure_running_hands_back_a_running_mismatch_for_the_bridge() {
 
 #[test]
 fn server_daemon_command_marks_the_client_spawn_and_nothing_else() {
-    let paths = shepr_paths::AppPaths::test_default();
     let command = build_server_daemon_command(
         &PathBuf::from("/tmp/shepr-server-test"),
         Path::new("/"),
         None,
-        &paths,
     );
     let args: Vec<_> = command.get_args().collect();
     assert_eq!(args, [OsStr::new(crate::invocation::CLIENT_SPAWNED_FLAG)]);
@@ -1136,12 +1134,10 @@ fn server_daemon_command_marks_the_client_spawn_and_nothing_else() {
 #[test]
 fn server_daemon_command_passes_current_dir_as_startup_cwd() {
     let expected = Path::new("/home/test");
-    let paths = shepr_paths::AppPaths::test_default();
     let command = build_server_daemon_command(
         &PathBuf::from("/tmp/shepr-test"),
         Path::new("/"),
         Some(expected),
-        &paths,
     );
     let envs: Vec<_> = command.get_envs().collect();
 
@@ -1168,7 +1164,6 @@ fn server_daemon_runs_in_home_not_the_launch_directory() {
         &PathBuf::from("/tmp/shepr-test"),
         &working_dir,
         Some(&launch_dir),
-        &paths,
     );
     assert_eq!(command.get_current_dir(), Some(working_dir.as_path()));
     assert_ne!(command.get_current_dir(), Some(launch_dir.as_path()));
@@ -1204,58 +1199,24 @@ fn a_vanished_server_reads_as_gone_not_unresponsive() {
 #[test]
 fn every_launch_failure_reaches_a_remote_client_with_its_operator_action() {
     use RemoteFailureClass::{Repair, Retry};
-    use std::os::unix::process::ExitStatusExt as _;
-
     let daemon_failed = |class: DaemonExit| LaunchError::DaemonFailed {
         class,
-        status: ExitStatus::from_raw(class.code() << 8),
         message: format!("shepr-server {}", class.describe_boot_end()),
     };
     let message = || "detail".to_owned();
-    let timeout = Duration::from_secs(1);
     for (error, class) in [
         (LaunchError::Unresponsive { message: message() }, Repair),
-        (
-            LaunchError::DifferentBuild {
-                status: other_build(),
-                message: message(),
-            },
-            Repair,
-        ),
+        (LaunchError::DifferentBuild { message: message() }, Repair),
         (LaunchError::OverrideMissing { message: message() }, Repair),
-        (
-            LaunchError::TransitionTimeout {
-                timeout,
-                message: message(),
-            },
-            Retry,
-        ),
+        (LaunchError::TransitionTimeout { message: message() }, Retry),
         (daemon_failed(DaemonExit::ConfigRefused), Repair),
         (daemon_failed(DaemonExit::Failed), Repair),
         (daemon_failed(DaemonExit::Clean), Retry),
         (daemon_failed(DaemonExit::AlreadyRunning), Retry),
         (LaunchError::BootLogOverflow { message: message() }, Repair),
+        (LaunchError::BootTimeout { message: message() }, Retry),
         (
-            LaunchError::BootTimeout {
-                timeout,
-                occupant_only: false,
-                message: message(),
-            },
-            Retry,
-        ),
-        (
-            LaunchError::BootTimeout {
-                timeout,
-                occupant_only: true,
-                message: message(),
-            },
-            Retry,
-        ),
-        (
-            LaunchError::SiblingBuildMismatch {
-                status: other_build(),
-                message: message(),
-            },
+            LaunchError::SiblingBuildMismatch { message: message() },
             Repair,
         ),
         (
@@ -1301,4 +1262,39 @@ fn every_launch_failure_reaches_a_remote_client_with_its_operator_action() {
     ] {
         assert_eq!(error.remote_failure_class(), class, "{error:?}");
     }
+}
+
+#[test]
+fn an_undecodable_older_status_keeps_stop_guidance() {
+    let scratch = ScratchDir::new("launch-old-pong");
+    let paths = shepr_paths::AppPaths::test_at(scratch.path());
+    std::fs::create_dir_all(paths.runtime_dir()).expect("runtime directory");
+    let socket = paths.server_address().socket().to_path_buf();
+    let listener = shepr_platform::ipc::bind_private_local_listener(&socket).expect("bind");
+    let server = std::thread::spawn(move || {
+        loop {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut line = String::new();
+            BufReader::new(stream.try_clone().expect("clone"))
+                .read_line(&mut line)
+                .expect("request");
+            if line.is_empty() {
+                continue;
+            }
+            // Older status answers have no boot identity and cannot be used
+            // for a conditional restart, but operators still need stop guidance.
+            let response = serde_json::json!({
+                "id": shepr_api::schema::RequestId::StatusPing.as_str(),
+                "result": {"type": "pong", "version": "0.0.0", "build_id": "0123456789abcdef"}
+            });
+            writeln!(stream, "{response}").expect("response");
+            break;
+        }
+    });
+    let error = probe_server(&paths).expect_err("boot identity required");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    let message = error.to_string();
+    assert!(message.contains("did not give a usable status answer"));
+    assert!(message.contains(&guidance::build_mismatch_guidance(paths.server_address())));
+    server.join().expect("server");
 }

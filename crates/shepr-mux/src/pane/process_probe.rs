@@ -6,34 +6,9 @@ use crate::UsableCwd;
 use shepr_agent::Agent;
 use shepr_platform::{Pgid, Pid};
 
-/// A readlink observation, without traversing the directory's filesystem.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum ProcessCwd {
-    Live(std::path::PathBuf),
-    Deleted,
-    Unavailable,
-}
-
-impl ProcessCwd {
-    pub(super) fn read(pid: Pid) -> Self {
-        match shepr_platform::process_cwd(pid) {
-            Some(path) if crate::workspace::process_cwd_is_deleted(&path) => Self::Deleted,
-            Some(path) if path.is_absolute() => Self::Live(path),
-            _ => Self::Unavailable,
-        }
-    }
-
-    fn live(self) -> Option<std::path::PathBuf> {
-        match self {
-            Self::Live(path) => Some(path),
-            Self::Deleted | Self::Unavailable => None,
-        }
-    }
-}
-
 /// Event-loop reads never stat: a hung mount must not stall other panes.
 pub(super) fn readlink_process_cwd(pid: Pid) -> Option<std::path::PathBuf> {
-    ProcessCwd::read(pid).live()
+    shepr_platform::process_cwd(pid).filter(|path| path.is_absolute())
 }
 
 /// Only background save work checks directory usability.

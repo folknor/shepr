@@ -15,13 +15,14 @@ use jsonc_parser::cst::{CstInputValue, CstNode, CstObject, CstRootNode};
 use jsonc_parser::{CollectOptions, ParseOptions, parse_to_ast};
 use serde_json::{Map, Value};
 
-use super::command::is_hook_command_for_path;
+use super::command::{hook_command_prefix, is_hook_command_for_path};
 use super::registration::HooksRoot;
 use super::types::{InstallErrorKind, InstallIssue};
 
 /// Replace shepr's hook entries in a JSON agent config. An entry already equal
-/// to an expected one is kept where it is; every other entry naming
-/// `hook_path` is removed, and the expected entries still missing are appended.
+/// to an expected one is kept where it is; every other entry naming this
+/// managed hook file and one of its descriptor commands is removed, including
+/// entries left by another host's path spelling.
 /// `cursor_version` adds Cursor's required top-level `"version": 1` when absent.
 /// Parsing and duplicate validation precede even a no-op, so an ambiguous user
 /// document is never accepted.
@@ -76,7 +77,7 @@ pub(super) fn install_json(
             }
         },
     };
-    remove_hook_path_commands(&hooks, hook_path, &mut expected)?;
+    remove_managed_hook_commands(&hooks, hook_path, &mut expected)?;
     // The removal has one implementation. Its decoded result is the baseline
     // for verifying subsequent insertions, rather than a second removal model.
     desired = parse_value(&root.to_string(), path)?;
@@ -241,7 +242,7 @@ pub(super) fn install_block(
     verify_updated(updated, path, &desired)
 }
 
-fn remove_hook_path_commands(
+fn remove_managed_hook_commands(
     hooks: &CstObject,
     hook_path: &Path,
     expected: &mut Map<String, Value>,
@@ -258,6 +259,9 @@ fn remove_hook_path_commands(
                 "hook entries for {property_event} must be an array"
             )));
         };
+        let expected_commands = expected
+            .get(&property_event)
+            .map_or_else(Default::default, expected_hook_commands);
         let mut removed_in_event = false;
         for entry in entries.elements() {
             if let Some(canonicals) = expected
@@ -275,7 +279,7 @@ fn remove_hook_path_commands(
                 .and_then(|object| object.get("hooks"))
                 .and_then(|property| property.array_value())
             else {
-                if cst_value_uses_hook_path(&entry, hook_path) {
+                if cst_value_uses_managed_hook_command(&entry, hook_path, &expected_commands) {
                     removed_in_event = true;
                     entry.remove();
                 }
@@ -283,7 +287,11 @@ fn remove_hook_path_commands(
             };
             let mut removed_in_group = false;
             for command_entry in command_entries.elements() {
-                if cst_value_uses_hook_path(&command_entry, hook_path) {
+                if cst_value_uses_managed_hook_command(
+                    &command_entry,
+                    hook_path,
+                    &expected_commands,
+                ) {
                     removed_in_group = true;
                     removed_in_event = true;
                     command_entry.remove();
@@ -294,7 +302,7 @@ fn remove_hook_path_commands(
                 entry.remove();
                 continue;
             }
-            if cst_value_uses_hook_path(&entry, hook_path) {
+            if cst_value_uses_managed_hook_command(&entry, hook_path, &expected_commands) {
                 removed_in_event = true;
                 entry.remove();
             }
@@ -307,15 +315,80 @@ fn remove_hook_path_commands(
     Ok(())
 }
 
-fn cst_value_uses_hook_path(value: &CstNode, hook_path: &Path) -> bool {
+fn cst_value_uses_managed_hook_command(
+    value: &CstNode,
+    hook_path: &Path,
+    expected_commands: &[String],
+) -> bool {
     value.to_serde_value().is_some_and(|value| {
         super::config_edit::HOOK_COMMAND_FIELDS.iter().any(|field| {
             value
                 .get(*field)
                 .and_then(Value::as_str)
-                .is_some_and(|command| is_hook_command_for_path(command, hook_path))
+                .is_some_and(|command| {
+                    is_managed_hook_command(command, hook_path, expected_commands)
+                })
         })
     })
+}
+
+pub(super) fn is_managed_hook_command(
+    command: &str,
+    hook_path: &Path,
+    expected_commands: &[String],
+) -> bool {
+    if is_hook_command_for_path(command, hook_path) {
+        return true;
+    }
+    // This repairs stale absolute registrations as each host starts. A shared
+    // config still stores one host's path at a time; making it portable across
+    // simultaneous hosts needs per-agent runtime path expressions, which are
+    // not inferred from the server's captured paths.
+    // A command counts only when it is `sh '<dir>/<managed file name>'` with
+    // exactly one expected command's arguments, so a user hook that runs a
+    // differently named script, or the same script with other arguments, is
+    // never removed.
+    let Some(file_name) = hook_path.file_name().map(|name| name.to_string_lossy()) else {
+        return false;
+    };
+    let current_prefix = hook_command_prefix(hook_path);
+    expected_commands.iter().any(|expected| {
+        let Some(arguments) = expected.strip_prefix(&current_prefix) else {
+            return false;
+        };
+        let suffix = format!("{file_name}'{arguments}");
+        let Some(path_prefix) = command.strip_suffix(&suffix) else {
+            return false;
+        };
+        command.starts_with("sh '") && (path_prefix == "sh '" || path_prefix.ends_with('/'))
+    })
+}
+
+pub(super) fn expected_hook_commands(value: &Value) -> Vec<String> {
+    fn collect(value: &Value, output: &mut Vec<String>) {
+        match value {
+            Value::Array(values) => {
+                for value in values {
+                    collect(value, output);
+                }
+            }
+            Value::Object(object) => {
+                for field in super::config_edit::HOOK_COMMAND_FIELDS {
+                    if let Some(command) = object.get(*field).and_then(Value::as_str) {
+                        output.push(command.to_string());
+                    }
+                }
+                for value in object.values() {
+                    collect(value, output);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut commands = Vec::new();
+    collect(value, &mut commands);
+    commands
 }
 
 fn parse_ast_root_object<'a>(content: &'a str, settings_path: &Path) -> io::Result<AstObject<'a>> {

@@ -21,6 +21,16 @@
 //! selection. See [`AgentManifest`], [`ManifestRule`], [`ManifestGate`],
 //! [`RegionSpec`] and the `MAX_*` constants for schema details and limits.
 //!
+//! `regex` and `line_regex` patterns may use named character classes, expanded
+//! before the pattern compiles. `{spinner}` matches one nonblank Braille cell
+//! (U+2801 through U+28FF): the blank cell U+2800 renders as a space and never
+//! counts as activity. `{spinner_run}` matches a run of Braille cells holding
+//! at least one nonblank cell, for spinners several cells wide. `{dots_spinner}`
+//! matches only the ten frames of the common dots spinner. Claude's
+//! `{claude_live_glyph}` and `{claude_background_glyph}` classes share its
+//! working glyph sets; the latter omits U+2733, Claude's idle title marker. A
+//! manifest spells no Braille range of its own.
+//!
 //! A rule matches only when its conditions hold. The highest-priority match
 //! wins, with manifest order breaking ties. No match uses the manifest's
 //! fallback (`Idle` when omitted). Evidence flags describe visible state;
@@ -40,6 +50,36 @@ use crate::limits::{
     MAX_TOTAL_MATCHERS, MIN_REGION_LINE_COUNT,
 };
 use crate::{AgentDetection, Detection};
+
+/// The named classes a manifest pattern may use (see the module docs). No
+/// expansion contains another name.
+const NAMED_REGEX_CLASSES: &[(&str, &str)] = &[
+    ("{spinner}", r"[\x{2801}-\x{28FF}]"),
+    (
+        "{spinner_run}",
+        r"[\x{2800}-\x{28FF}]*[\x{2801}-\x{28FF}][\x{2800}-\x{28FF}]*",
+    ),
+    (
+        "{dots_spinner}",
+        r"[\x{280B}\x{2819}\x{2839}\x{2838}\x{283C}\x{2834}\x{2826}\x{2827}\x{2807}\x{280F}]",
+    ),
+    (
+        "{claude_live_glyph}",
+        r"[\x{002A}\x{00B7}\x{2722}\x{2733}\x{2736}\x{273B}\x{273D}]",
+    ),
+    (
+        "{claude_background_glyph}",
+        r"[\x{002A}\x{00B7}\x{2722}\x{2736}\x{273B}\x{273D}]",
+    ),
+];
+
+fn expand_named_regex_classes(pattern: &str) -> String {
+    NAMED_REGEX_CLASSES
+        .iter()
+        .fold(pattern.to_string(), |expanded, (name, class)| {
+            expanded.replace(name, class)
+        })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -623,17 +663,6 @@ pub fn screen_unknown_is_stable(agent: Agent) -> bool {
     loaded(agent).is_none_or(|manifest| manifest.unknown_is_stable)
 }
 
-pub fn explain(agent: Agent, screen_content: &str) -> DetectionExplain {
-    explain_with_input(
-        agent,
-        DetectionInput {
-            screen: screen_content,
-            osc_title: None,
-            osc_progress: None,
-        },
-    )
-}
-
 pub fn explain_with_input(agent: Agent, input: DetectionInput<'_>) -> DetectionExplain {
     explain_with_manifest(agent, input, loaded(agent))
 }
@@ -1083,14 +1112,16 @@ fn compile_gate(
         .regex
         .iter()
         .map(|pattern| {
-            Regex::new(pattern).map_err(|err| format!("invalid regex pattern {pattern:?}: {err}"))
+            let expanded = expand_named_regex_classes(pattern);
+            Regex::new(&expanded).map_err(|err| format!("invalid regex pattern {pattern:?}: {err}"))
         })
         .collect::<Result<_, _>>()?;
     let line_regex = gate
         .line_regex
         .iter()
         .map(|pattern| {
-            Regex::new(pattern)
+            let expanded = expand_named_regex_classes(pattern);
+            Regex::new(&expanded)
                 .map_err(|err| format!("invalid line_regex pattern {pattern:?}: {err}"))
         })
         .collect::<Result<_, _>>()?;

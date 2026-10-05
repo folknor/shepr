@@ -3,6 +3,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::{collections::HashMap, io::ErrorKind};
 
+use super::types::{InstallErrorKind, InstallIssue};
 use shepr_agent::Agent;
 use shepr_core::env::EnvVar;
 
@@ -100,7 +101,9 @@ pub(crate) enum DirectoryKey {
 /// Agent-owned config locations, resolved once by the caller that starts an
 /// install (the server, at launch). Install and status code receives this
 /// value and never consults the process environment while it is choosing
-/// files to read or write.
+/// files to read or write. Agent-specific overrides expand `~` and must be
+/// absolute: relative config paths would resolve against the server's cwd here
+/// and the pane's cwd in the agent.
 ///
 /// The environment read is the server's, not that of the agents in its panes.
 /// A server started over SSH runs under a non-interactive shell, which reads
@@ -199,7 +202,6 @@ fn pi_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf>
 fn omp_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     let config_dir =
         agent_config_override(environment, Agent::Omp)?.unwrap_or_else(|| ".omp".into());
-    let config_dir = expand_tilde_path_with_environment(config_dir, environment)?;
     let config_dir = if config_dir.is_absolute() {
         config_dir
     } else {
@@ -237,7 +239,21 @@ fn agent_config_override(
     agent: Agent,
 ) -> io::Result<Option<PathBuf>> {
     match agent.descriptor().config_dir_override {
-        Some(variable) => environment.path(variable),
+        Some(variable) => environment
+            .path(variable)?
+            .map(|value| {
+                let path = expand_tilde_path_with_environment(value, environment)?;
+                if !path.is_absolute() {
+                    return Err(InstallIssue::io_error(
+                        InstallErrorKind::ConfigShape,
+                        format!(
+                            "{variable} must be an absolute path; use an absolute path or ~/..."
+                        ),
+                    ));
+                }
+                Ok(path)
+            })
+            .transpose(),
         None => Ok(None),
     }
 }
@@ -248,7 +264,7 @@ fn config_dir_from_env_or_home(
     home_relative_segments: &[&str],
 ) -> io::Result<PathBuf> {
     if let Some(value) = agent_config_override(environment, agent)? {
-        return expand_tilde_path_with_environment(value, environment);
+        return Ok(value);
     }
 
     let mut path = environment.home_dir()?;
@@ -354,6 +370,45 @@ mod tests {
         let error =
             directory(&env, DirectoryKey::Cursor).expect_err("a padded override is refused");
         assert!(error.to_string().contains("CURSOR_CONFIG_DIR"), "{error}");
+    }
+
+    #[test]
+    fn relative_agent_config_overrides_are_refused() {
+        let values = HashMap::from([
+            (EnvVar::Home, OsString::from("/test/home")),
+            (EnvVar::ClaudeConfigDir, OsString::from("relative/config")),
+            (EnvVar::CodexHome, OsString::from("relative/config")),
+            (EnvVar::CopilotHome, OsString::from("relative/config")),
+            (EnvVar::CursorConfigDir, OsString::from("relative/config")),
+            (EnvVar::KimiCodeHome, OsString::from("relative/config")),
+            (EnvVar::GrokHome, OsString::from("relative/config")),
+            (EnvVar::PiCodingAgentDir, OsString::from("relative/config")),
+            (
+                EnvVar::AntigravityCliConfigDir,
+                OsString::from("relative/config"),
+            ),
+            (EnvVar::PiConfigDir, OsString::from("relative/config")),
+        ]);
+        let environment = IntegrationEnvironment::capture(|variable| {
+            shepr_core::env::resolve_path(variable, values.get(&variable).map(OsString::as_os_str))
+                .map_err(io::Error::from)
+        });
+
+        for (agent, variable) in [
+            (Agent::Claude, EnvVar::ClaudeConfigDir),
+            (Agent::Codex, EnvVar::CodexHome),
+            (Agent::GithubCopilot, EnvVar::CopilotHome),
+            (Agent::Cursor, EnvVar::CursorConfigDir),
+            (Agent::Kimi, EnvVar::KimiCodeHome),
+            (Agent::Grok, EnvVar::GrokHome),
+            (Agent::Pi, EnvVar::PiCodingAgentDir),
+            (Agent::Antigravity, EnvVar::AntigravityCliConfigDir),
+            (Agent::Omp, EnvVar::PiConfigDir),
+        ] {
+            let error = agent_config_override(&environment, agent)
+                .expect_err("a relative agent config override is refused");
+            assert!(error.to_string().contains(&variable.to_string()), "{error}");
+        }
     }
 
     #[test]

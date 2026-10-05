@@ -398,10 +398,6 @@ pub fn bind_owned_private_socket(path: &SocketPath) -> Result<BoundSocket, BindE
     bind_private_socket(path.as_path())
 }
 
-pub fn bind_owned_single_use_private_socket(path: &SocketPath) -> Result<BoundSocket, BindError> {
-    bind_single_use_private_socket(path.as_path())
-}
-
 /// What a socket startup lock attempt did, as logged in `ipc.socket_lock`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SocketLockOutcome {
@@ -424,8 +420,7 @@ impl SocketLockOutcome {
 ///
 /// [`bind_private_socket`] takes it before preparing the path; keep it until
 /// the listener has stopped. The regular sidecar file stays beside the socket after the
-/// guard drops so later processes always lock the same inode. The exception
-/// is [`bind_single_use_private_socket`], whose owner removes the sidecar.
+/// guard drops so later processes always lock the same inode.
 pub struct SocketStartupLock {
     _lock: FlockLock,
     socket_path: SocketPath,
@@ -595,95 +590,8 @@ fn bind_private_socket_with_lock(
     })
 }
 
-/// [`bind_private_socket`] for a path no other process will ever bind, such
-/// as a randomly named SSH bridge socket.
-///
-/// The lock sidecar is created fresh, so one that already exists means the
-/// path is taken and is refused as [`SocketBusy`] without touching it. Once
-/// locked, the sidecar records this process's identity, which lets
-/// [`sweep_abandoned_single_use_sockets`] reclaim the socket and sidecar of
-/// an owner killed before its teardown ran. A bind that fails after the
-/// sidecar exists removes it, and the socket if one was linked: no later
-/// binder can race a single-use path for that inode, which is what makes the
-/// removal safe here and unsafe for [`bind_private_socket`]. The caller
-/// removes both when it is done, while still holding the returned lock.
-fn bind_single_use_private_socket(path: &Path) -> Result<BoundSocket, BindError> {
-    let startup_lock = acquire_single_use_socket_lock(path)?;
-    let mut listener_bound = false;
-    let bound = prepare_socket_path(path)
-        .and_then(|()| bind_private_local_listener(path))
-        .and_then(|listener| {
-            listener_bound = true;
-            let identity = socket_file_identity(path)?;
-            Ok((listener, identity))
-        });
-    match bound {
-        Ok((listener, identity)) => Ok(BoundSocket {
-            listener,
-            file: OwnedSocketFile {
-                path: startup_lock.socket_path.clone(),
-                identity,
-            },
-            lock: startup_lock,
-        }),
-        Err(error) => {
-            // A socket that could not be removed keeps its sidecar: the
-            // dead-owner sweep needs both artifacts to validate and reclaim
-            // this single-use path.
-            if !listener_bound || super::owned_runtime::remove_file(path) {
-                super::release_single_use_socket_lock(path);
-            }
-            drop(startup_lock);
-            Err(error)
-        }
-    }
-}
-
-/// Creates, locks and owner-marks the sidecar of a single-use socket path.
-/// A sidecar created here and then not locked is removed again.
-fn acquire_single_use_socket_lock(socket_path: &Path) -> Result<SocketStartupLock, BindError> {
-    let checked_socket_path = SocketPath::new(socket_path.to_path_buf())?;
-    let parent = socket_parent(socket_path)?;
-    super::create_private_directory_all(parent)?;
-    let entry = match super::owned_runtime::OwnedRuntimeEntry::create_socket(socket_path) {
-        Ok(entry) => entry,
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            return Err(SocketBusy::error(socket_path));
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let file = entry.into_hold();
-    tracing::info!(
-        event = "ipc.socket_lock",
-        subsystem = "ipc",
-        outcome = SocketLockOutcome::Acquired.as_str(),
-        path = %socket_path.display(),
-        "single-use socket lock acquired"
-    );
-    Ok(SocketStartupLock {
-        _lock: FlockLock { _file: file },
-        socket_path: checked_socket_path,
-    })
-}
-
-/// Removes the sockets and lock sidecars that [`bind_single_use_private_socket`]
-/// owners left in `dir` when they were killed before their teardown ran.
-///
-/// Only a sidecar that is a current-uid regular file recording a process
-/// `/proc` proves has exited, and whose lock nobody holds, is reclaimed,
-/// together with a current-uid socket at its socket path. An unmarked sidecar
-/// (its owner's identity was unreadable, or not yet written) is retained
-/// because its owner cannot be established. Sidecars of shared socket paths
-/// are never written to, so they never qualify.
-pub fn sweep_abandoned_single_use_sockets(dir: &Path) {
-    super::owned_runtime::OwnedRuntimeEntry::sweep_socket_sidecars(dir);
-}
-
 /// The sidecar file [`bind_private_socket`] locks for `socket_path`.
-/// It normally outlives the lock (see [`SocketStartupLock`]); only an owner
-/// whose socket path is single-use, such as a randomly named SSH bridge
-/// socket bound with [`bind_single_use_private_socket`], may remove it, since
-/// no later binder can race it for that path.
+/// It outlives the lock so later binders always lock the same inode.
 pub fn socket_startup_lock_path(socket_path: &Path) -> PathBuf {
     let mut name = socket_path.as_os_str().to_os_string();
     name.push(".lock");
@@ -1449,50 +1357,6 @@ mod tests {
         assert_busy_at(&refused, &live);
     }
 
-    /// A failed single-use bind removes the lock sidecar it created, while a
-    /// failed shared bind keeps its sidecar so racing binders keep locking one
-    /// inode. A sidecar that already existed is someone else's: the
-    /// single-use bind refuses it as busy and leaves it untouched.
-    #[test]
-    fn failed_single_use_bind_removes_only_the_lock_it_created() {
-        let exists = |path: &Path| path.try_exists().expect("stat");
-        let dir = shepr_test_support::ScratchDir::new("bind-single-use-failure");
-
-        let live = dir.join("live.sock");
-        let _foreign = std::os::unix::net::UnixListener::bind(&live).expect("bind live");
-        let refused = bind_single_use_private_socket(&live)
-            .err()
-            .expect("a live socket is never replaced");
-        assert_busy_at(&refused, &live);
-        assert!(
-            !exists(&socket_startup_lock_path(&live)),
-            "a failed single-use bind removes its lock"
-        );
-        assert!(exists(&live), "the foreign socket is left alone");
-
-        let shared = bind_private_socket(&live)
-            .err()
-            .expect("a live socket is never replaced");
-        assert_busy_at(&shared, &live);
-        assert!(
-            exists(&socket_startup_lock_path(&live)),
-            "a failed shared bind keeps its lock"
-        );
-
-        let taken = dir.join("taken.sock");
-        let taken_lock = socket_startup_lock_path(&taken);
-        fs::write(&taken_lock, b"another binder").expect("test precondition");
-        let refused = bind_single_use_private_socket(&taken)
-            .err()
-            .expect("an existing lock means the path is taken");
-        assert_busy_at(&refused, &taken);
-        assert_eq!(
-            fs::read(&taken_lock).expect("the existing lock is kept"),
-            b"another binder"
-        );
-        assert!(!exists(&taken));
-    }
-
     #[test]
     fn held_socket_reservation_binds_without_releasing_its_lock() {
         let scratch = shepr_test_support::ScratchDir::new("socket-reservation-handoff");
@@ -1536,109 +1400,6 @@ mod tests {
         assert_eq!(
             socket_file_identity(&path).expect("racer retained"),
             identity
-        );
-    }
-
-    /// The runtime-directory sweep reclaims the socket and lock of a single-use
-    /// bind whose owner is provably gone, and nothing else: not a live owner's,
-    /// not an unmarked sidecar, not a dead-marked one whose lock is still
-    /// held, and not a shared socket's sidecar. Allocating a bridge path runs
-    /// the sweep.
-    #[test]
-    fn abandoned_single_use_sockets_of_dead_owners_are_swept() {
-        let exists = |path: &Path| path.try_exists().expect("stat");
-        let runtime = shepr_test_support::ScratchDir::new("single-use-sweep");
-        fs::set_permissions(
-            runtime.path(),
-            fs::Permissions::from_mode(crate::limits::PRIVATE_DIRECTORY_MODE),
-        )
-        .expect("test precondition");
-        let live_tag = super::super::process_identity::ProcessIdentity::current()
-            .expect("current process identity")
-            .tag();
-        let (_, rest) = live_tag.split_once('-').expect("serialized identity");
-        let dead_tag = format!("{:08x}-{rest}", i32::MAX);
-
-        let stale_socket = |name: &str, marker: &[u8]| {
-            let socket = runtime.join(name);
-            drop(std::os::unix::net::UnixListener::bind(&socket).expect("bind"));
-            fs::write(socket_startup_lock_path(&socket), marker).expect("test precondition");
-            fs::set_permissions(
-                socket_startup_lock_path(&socket),
-                fs::Permissions::from_mode(crate::limits::PRIVATE_FILE_MODE),
-            )
-            .expect("private marker");
-            socket
-        };
-        let dead = stale_socket("shepr-s-a.0000000000000001.sock", dead_tag.as_bytes());
-        let dead_no_socket = runtime.join("shepr-s-b.0000000000000002.sock");
-        fs::write(
-            socket_startup_lock_path(&dead_no_socket),
-            dead_tag.as_bytes(),
-        )
-        .expect("test precondition");
-        fs::set_permissions(
-            socket_startup_lock_path(&dead_no_socket),
-            fs::Permissions::from_mode(crate::limits::PRIVATE_FILE_MODE),
-        )
-        .expect("private marker");
-        let live_without_lock = stale_socket("live-unlocked.sock", live_tag.as_bytes());
-        let malformed = stale_socket("malformed.sock", b"invalid");
-        let oversized = stale_socket(
-            "oversized.sock",
-            &vec![
-                b'x';
-                usize::try_from(super::super::limits::RUNTIME_OWNER_MAX_BYTES)
-                    .expect("limit fits usize")
-                    + 1
-            ],
-        );
-        let unexpected = stale_socket("unexpected.sock", dead_tag.as_bytes());
-        fs::remove_file(&unexpected).expect("remove fixture socket");
-        fs::write(&unexpected, b"regular file").expect("unexpected socket content");
-        let unmarked = stale_socket("shepr-s-c.0000000000000003.sock", b"");
-        let held = stale_socket("shepr-s-d.0000000000000004.sock", dead_tag.as_bytes());
-        let _held_lock = acquire_flock_lock(&socket_startup_lock_path(&held), LockWait::FailIfHeld)
-            .expect("hold lock");
-        let shared = runtime.join("server.sock");
-        drop(bind_private_socket(&shared).expect("bind"));
-        let live = runtime.join("shepr-s-e.0000000000000005.sock");
-        let _live = bind_single_use_private_socket(&live).expect("bind single-use");
-        assert_eq!(
-            fs::read_to_string(socket_startup_lock_path(&live)).expect("read marker"),
-            live_tag,
-            "a single-use lock records its owner"
-        );
-
-        sweep_abandoned_single_use_sockets(runtime.path());
-
-        for path in [&dead, &dead_no_socket] {
-            assert!(!exists(path), "{} swept", path.display());
-            assert!(
-                !exists(&socket_startup_lock_path(path)),
-                "{} lock swept",
-                path.display()
-            );
-        }
-        for path in [
-            &unmarked,
-            &held,
-            &live,
-            &live_without_lock,
-            &malformed,
-            &oversized,
-            &unexpected,
-        ] {
-            assert!(exists(path), "{} retained", path.display());
-            assert!(
-                exists(&socket_startup_lock_path(path)),
-                "{} lock retained",
-                path.display()
-            );
-        }
-        assert!(
-            exists(&socket_startup_lock_path(&shared)),
-            "a shared socket's lock is retained"
         );
     }
 

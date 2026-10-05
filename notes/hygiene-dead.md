@@ -51,23 +51,6 @@ dependency rule then catches a reintroduction). The `Option` plumbing through
 cannot fail on 64-bit Linux) and the `SavedLayout::Unknown` result of a failed
 fingerprint go with it.
 
-## DEAD-003 - The machine-readable restore failure taxonomy has no reader
-
-Reported by: persistence. See BUG-003.
-
-`SessionRestoreFailure::{Unreadable.kind, NotRegularFile.kind, Unparseable.{line,
-column, category}}`, `SessionIoErrorKind` (21 variants, including `ConnectionRefused`,
-`AddrInUse`, `NotConnected` and others that cannot come from reading a file),
-`SessionFileKind`, `SessionParseCategory`, and `files::session_io_error_kind`,
-`session_file_kind` and `session_parse_failure`'s mapping exist so "the variant and parse
-coordinates keep the outcome machine-readable". Nothing reads them: the client renders
-only `Display`, which uses `detail`, and `Unreadable` and `NotRegularFile` display
-identically; the one consumer is an assertion in `open.rs`'s tests. Collapse to
-`{ detail, path }` or a two-variant enum. Also, `load`'s `NotRegularFile` arm is
-reachable only if the path changes type between `check_session_target` (which refuses a
-non-regular path at startup) and `load`, a window of microseconds, yet it costs a wire
-variant and a mapping table.
-
 ## DEAD-004 - Recovery copy sequence numbers and a defensive publish branch are almost never used
 
 Reported by: persistence, restore-resume.
@@ -89,8 +72,7 @@ Reported by: persistence.
 
 - `SessionWriter::retire(self) { drop(self) }` and `DataDirLease::release(self)` are
   names for `drop`.
-- `actor::abandoned()` and `actor::lease_only()` are one-line wrappers around enum
-  constructors (the second goes with POL-001).
+- `actor::abandoned()` is a one-line wrapper around an enum constructor.
 
 ## DEAD-006 - Restore re-validates an already validated session through an alias
 
@@ -133,27 +115,6 @@ Reported by: restore-resume.
 - `restore_error` is the field for every start failure, fresh launches included
   (`PaneStartFailure`'s own doc says so); the name misleads.
 
-## DEAD-009 - Save and shutdown values and guards nothing reads
-
-Reported by: save-shutdown.
-
-- `finish_final_session_save`'s returned bool is read by neither caller, and its
-  `autosave.clear()` on success duplicates `retire_session_writer`'s unconditional clear
-  a few lines later; on failure, `record_failure` arms a deadline nothing will service.
-- `cancel_host_shutdown()` and `restart_host_shutdown_warning()` return
-  `Option<HostShutdownFreeze>`, but both callers use only `.is_some()`; the struct's doc
-  ("held ... until shutdown completes") describes a token, not the generation record it
-  is.
-- Unreachable phase guards: `RunServerError::Shutdown(UnexpectedPhase)` and
-  `ShutdownStep::CompleteShutdown` exist for `complete_shutdown`'s `require_phase`, which
-  the loop calls only after checking `phase() == Stopping`; `freeze_for_host_shutdown`'s
-  `require_phase` and `finish_host_shutdown_freeze`'s second one are likewise
-  unreachable. With the phase fold (CLAIM-023) and a `Stopping` token (DIAG-009),
-  transitions can take the phase by value and these go.
-- `Autosave::is_due` is used only by `next_save` and its tests; `SessionSaver::is_due`
-  is never true for a due checkpoint with no retry, which works only because
-  `service_session_saves` also starts on `save_reaped` (CLAIM-023).
-
 ## DEAD-010 - Small pane lifecycle leftovers
 
 Reported by: pane-lifecycle.
@@ -182,25 +143,10 @@ Reported by: pane-lifecycle.
 Reported by: agent-state, workspace-model.
 
 - `visible_working` end to end (BUG-031).
-- `manifest::explain(agent, screen)`: used only by a manifest test.
-- `Runtime::Tmux`: classified only so `wrapped_agent_from_runtime_argv` can return
-  `None` for it, which an unclassified name gets anyway.
-- `identify_agent` and `agent_from_basename` are both `parse_agent_label` under another
-  name.
-- `TitleActivityGlyphs`: a unit struct plus a const instance for one `contains` function
-  with one caller.
-- `api_helpers.rs`: `detect_state_from_api` and `presented_agent_status` return their
-  argument (`AgentStatus` is a re-export alias of `PresentedAgentState`), and
-  `pane_not_found` wraps `ApiError::pane_not_found` unchanged: indirection from when the
-  API and internal types differed.
-- `SnapshotAgent.agent: Option<Agent>` is always `Some` (`agent_info` filters on
-  `effective_agent().is_some()`).
-- OSC 21337 ("agent status") in `osc_debug`: captured as manifest evidence, but no
-  region, manifest or detector reads it; a herdr protocol leftover.
-- `set_detected_state_with_visible_blocker`'s `_ignored_screen_idle` parameter, a
-  leftover of a removed screen-idle signal.
-- `is_unsequenced_opencode_selection` is driven by
-  `HookSessionPolicy::unsequenced_selection`, not OpenCode-specific; the name is stale.
+- `ClientShellAgent.agent` on the wire is still an `Option`, though the server now
+  always sends `Some` (`SnapshotAgent.agent` became required).
+- `SessionRestoreDamage.repaired_bookmarks` is a count that can only be 0 or 1 (there
+  is one bookmark); a `bool` says that.
 
 ## DEAD-012 - Pane-history read helpers survived the feature
 
@@ -276,24 +222,11 @@ Reported by: workspace-model.
 
 Reported by: server-lifecycle.
 
-- `restart.rs` `RestartFailure` has one variant, `Local`; the remote variant is gone.
-  Use `ServerStopError` directly.
-- `LaunchError` payloads never read after construction: `DifferentBuild.status`,
-  `SiblingBuildMismatch.status`, `TransitionTimeout.timeout`, `BootTimeout.timeout` and
-  `.occupant_only`, `DaemonFailed.status`. Only the messages and `DaemonFailed.class` are
-  consumed.
-- `wait_for_overridden_server`'s `Starting | Stopping` arm: the comment admits the wait
-  it calls returns only settled states.
-- `app_paths.rs` `resolve_paths_from_env_with_marker`: the "paths could not be resolved;
-  no path-specific error was reported" arm is unreachable (every `None` pushes a
-  problem).
-- `ServerAddress::apply_to_child_command` takes `&self` and ignores it.
-- `ServerHandle::remove_socket_file_if_owned` is `pub` but only `Drop` calls it;
-  `ApiClient::request_value_with_timeout` is `pub` with no caller outside the crate's
-  tests.
 - `connection_health.rs` exists only to re-export `HEARTBEAT_INTERVAL` from `limits`.
 - `stop.rs`: the `label` parameter of `stop_socket_with_timeout` and of every
   `ServerStopError` variant has one value, `"server"`.
+
+And:
 - The removed-method and removed-command test lists (`schema/tests.rs`
   `removed_methods_are_rejected`, `removed_uncalled_methods_are_rejected`, `cli.rs`
   `unknown_commands_and_launch_flags_are_rejected` with `--session`, `machine`,
@@ -303,31 +236,6 @@ Reported by: server-lifecycle.
 - Not dead, listed so they are not mistaken for leftovers: the `#[serde(default)]` on
   `Pong.stopping` / `starting` and `StatusOverviewJson.summary`, which AGENTS.md keeps for
   `status --all` against older hosts.
-
-## DEAD-016 - The remote bridge's filesystem socket and multi-stream accept loop
-
-Reported by: remote.
-
-Each connection attempt binds a fresh, randomly named, single-use Unix socket in the
-runtime directory (`SshStdioBridge::start_command`), and the same thread immediately
-connects to it (`MachineSshConnector::attempt` -> `connect_trusted_local_stream_within`).
-Nothing else ever connects: the path is random, 0600, and handed to no other process. Yet
-the bridge carries an accept loop that serves stream after stream, a failure channel with
-"discard unclaimed failures of an earlier stream" logic
-(`discard_unclaimed_bridge_failure`, the generation-slot comment),
-`PeerAdmission::OwnerOrRoot`, and a comment ("Each local API request has its own stream
-and SSH stdio process") inherited from upstream, where the bridge carried API requests.
-
-A `UnixStream::pair()` given to `bridge_connection` directly deletes: the socket file,
-its lock sidecar and `release_single_use_socket_lock`, the per-attempt dead-owner sweep
-and random token, `remote_bridge_endpoint_path`, `validate_remote_bridge_endpoint_path`
-and its export, `validate_machine_bridge_path`, the "bridge socket path does not fit"
-launch-fatal setup error (a whole class of `is_launch_fatal_setup_error`),
-`BRIDGE_NAME_LABEL_CHARS` and `bridge_name_fragment`, `TeardownResource::Socket`,
-`BridgeSocketStartupCleanup`, `BRIDGE_ACCEPT_POLL`'s accept role, the failure-channel
-generation problem and the prefix-collision claim (CLAIM-019), and the only producer of
-`AddrInUse` as a link failure (DIAG-026). It also replaces the 1 s `reported_failure`
-wait with joining the one connection's worker.
 
 ## DEAD-017 - Remote options with one production value, a namespace that distinguishes nothing, and dead exports
 

@@ -17,6 +17,7 @@ tracing = { workspace = true }
 libc = { workspace = true }
 shepr-pty = { path = "../shepr-pty" }
 shepr-test-support = { path = "../shepr-test-support" }
+shepr-vt = { path = "../shepr-vt" }
 
 [lints]
 workspace = true

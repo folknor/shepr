@@ -67,7 +67,7 @@ impl ServerAddress {
     /// local launcher requires its runtime address before it spawns the
     /// daemon, so a child must never inherit a selector for an existing
     /// server.
-    pub fn apply_to_child_command(&self, command: &mut Command) {
+    pub fn apply_to_child_command(command: &mut Command) {
         command.env_remove(EnvVar::SheprSocketPath);
     }
 }
@@ -140,7 +140,7 @@ mod tests {
         assert_eq!(address.socket(), socket);
         assert_eq!(address.command("shepr stop"), "shepr stop");
         let mut command = shepr_test_support::command_in_scratch("shepr", "address-env");
-        address.apply_to_child_command(&mut command);
+        ServerAddress::apply_to_child_command(&mut command);
         assert!(
             command
                 .get_envs()

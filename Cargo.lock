@@ -1389,6 +1389,7 @@ dependencies = [
  "shepr-platform",
  "shepr-pty",
  "shepr-test-support",
+ "shepr-vt",
  "toml",
  "tracing",
 ]

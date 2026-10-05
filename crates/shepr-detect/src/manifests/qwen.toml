@@ -82,7 +82,7 @@ state = "working"
 priority = 900
 region = "bottom_non_empty_lines(8)"
 visible_working = true
-line_regex = ['^\s*(?:[⠁-⣿]|\.{1,2})\s+.*\(\d+(?:m(?:\s+\d+s)?|s).*\s·\sesc to cancel\)\s*$']
+line_regex = ['^\s*(?:{spinner}|\.{1,2})\s+.*\(\d+(?:m(?:\s+\d+s)?|s).*\s·\sesc to cancel\)\s*$']
 
 [[rules]]
 id = "narrow_cancel_hint_working"

@@ -7,7 +7,7 @@ use std::time::Duration;
 
 #[test]
 fn bridge_download_drain_timeout_does_not_join_and_shuts_down_the_stream() {
-    let (mut client, bridge) = upload_test_streams("download-drain");
+    let (mut client, bridge) = upload_test_streams();
     let connection_stop = AtomicBool::new(false);
     let (release_tx, release_rx) = mpsc::channel();
     let download = BridgeDownload::spawn(move || {
@@ -135,21 +135,12 @@ fn failed_before_remote_result(error: &io::Error) -> bool {
     SshFailureDiagnostic::from_error(error).failed_before_remote_result()
 }
 
-fn upload_test_streams(
-    name: &str,
-) -> (
+fn upload_test_streams() -> (
     shepr_platform::ipc::LocalStream,
     shepr_platform::ipc::LocalStream,
 ) {
-    let scratch = shepr_test_support::ScratchDir::new(name);
-    let socket = scratch.join("upload.sock");
-    let listener =
-        shepr_platform::ipc::bind_private_local_listener(&socket).expect("test precondition");
-    let client = shepr_platform::ipc::connect_local_stream(&socket).expect("test precondition");
-    let server = listener.accept().expect("test precondition").0;
+    let (client, server) = shepr_platform::ipc::LocalStream::pair().expect("test precondition");
     server.set_nonblocking(true).expect("test precondition");
-    drop(listener);
-    std::fs::remove_file(socket).expect("test precondition");
     (client, server)
 }
 
@@ -177,7 +168,7 @@ fn bridge_upload_idle_waits_without_repeated_reads_and_cancels() {
         }
     }
 
-    let (mut client, stream) = upload_test_streams("idle");
+    let (mut client, stream) = upload_test_streams();
     let attempts = Arc::new(AtomicUsize::new(0));
     let worker_attempts = Arc::clone(&attempts);
     let stop = Arc::new(BridgeUploadStop::new().expect("test precondition"));
@@ -237,7 +228,7 @@ fn bridge_upload_idle_waits_without_repeated_reads_and_cancels() {
 fn bridge_upload_cancel_before_wait_preserves_download() {
     use std::io::Read as _;
 
-    let (mut client, stream) = upload_test_streams("cancel-before-wait");
+    let (mut client, stream) = upload_test_streams();
     let mut download = stream.try_clone().expect("test precondition");
     let stop = BridgeUploadStop::new().expect("test precondition");
     stop.cancel();
@@ -263,7 +254,7 @@ fn bridge_upload_cancel_before_wait_preserves_download() {
 
 #[test]
 fn bridge_upload_cancel_between_stop_check_and_wait_is_retained() {
-    let (_client, stream) = upload_test_streams("cancel-before-poll");
+    let (_client, stream) = upload_test_streams();
     let stop = BridgeUploadStop::new().expect("test precondition");
     assert!(!stop.is_stopped());
     stop.cancel();
@@ -282,7 +273,7 @@ fn bridge_upload_cancel_between_stop_check_and_wait_is_retained() {
 
 #[test]
 fn bridge_upload_drains_input_before_peer_eof() {
-    let (mut client, stream) = upload_test_streams("drain");
+    let (mut client, stream) = upload_test_streams();
     let payload = vec![b'x'; 1024 * 1024];
     let expected = payload.clone();
     let worker = thread::spawn(move || {
@@ -307,130 +298,115 @@ fn bridge_upload_drains_input_before_peer_eof() {
 }
 
 #[test]
-fn bridge_socket_is_user_only() {
-    use std::os::unix::fs::PermissionsExt;
+fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
+    use shepr_test_support::fixture::{self, Step};
 
-    let scratch = shepr_test_support::ScratchDir::new("bridge-mode");
-    let socket = scratch.join("bridge.sock");
-    let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
-    let bridge = SshStdioBridge::start(
-        SshTarget::parse("example").expect("test precondition"),
-        &remote_shepr,
-        BridgeMode::Attach,
-        socket.clone(),
+    let env = shepr_test_support::IsolatedEnv::new();
+    let scratch = shepr_test_support::ScratchDir::new("bridge-pair");
+    let echoing_dir = scratch.join("echoing");
+    std::fs::create_dir(&echoing_dir).expect("echoing fake SSH directory");
+    let failing_dir = scratch.join("failing");
+    std::fs::create_dir(&failing_dir).expect("failing fake SSH directory");
+    let _echoing = fixture::stand_in(
+        &echoing_dir,
+        "ssh",
+        &[
+            Step::Print("shepr-remote-output-ready\n".into()),
+            Step::Cat,
+            Step::PrintErr("Connection refused\n".into()),
+            Step::Exit(255),
+        ],
+    );
+    let _failing = fixture::stand_in(
+        &failing_dir,
+        "ssh",
+        &[
+            Step::Print("shepr-remote-output-ready\n".into()),
+            Step::PrintErr("Connection refused\n".into()),
+            Step::Exit(255),
+        ],
+    );
+    env.set("PATH", &echoing_dir);
+
+    let (bridge, mut stream) = SshStdioBridge::start_command(
+        SshTarget::parse("example").expect("target"),
+        AccountShellCommand::from_account_shell_text("unused"),
         None,
     )
-    .expect("start bridge listener");
-
-    let mode = std::fs::metadata(&socket)
-        .expect("test precondition")
-        .permissions()
-        .mode()
-        & 0o777;
-    assert_eq!(mode, 0o600);
-
+    .expect("socket pair bridge");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("read timeout");
+    stream.write_all(b"one connection").expect("upload");
+    let mut echoed = [0_u8; 14];
+    stream.read_exact(&mut echoed).expect("download");
+    assert_eq!(&echoed, b"one connection");
+    // Ending uploads lets fake SSH publish its diagnostic while downloads drain.
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .expect("end upload");
+    let mut remainder = Vec::new();
+    stream.read_to_end(&mut remainder).expect("EOF");
+    assert!(remainder.is_empty());
+    // A local write EOF is deliberately classified as client closure, so the
+    // worker completes normally rather than presenting its exit as a link fault.
+    assert!(bridge.reported_failure().is_none());
     drop(bridge);
-    // Dropping the bridge removes the socket it owns.
-    assert_eq!(
-        std::fs::symlink_metadata(&socket)
-            .expect_err("dropped bridge left its socket behind")
-            .kind(),
-        io::ErrorKind::NotFound
-    );
-}
-
-/// A second bridge on a path a live bridge holds is refused as `AddrInUse`
-/// (still a link failure to the retry policy) with the path in its message.
-#[test]
-fn bridge_on_a_held_socket_names_the_path() {
-    let scratch = shepr_test_support::ScratchDir::new("bridge-busy");
-    let socket = scratch.join("bridge.sock");
-    let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
-    let start = || {
-        SshStdioBridge::start(
-            SshTarget::parse("example").expect("test precondition"),
-            &remote_shepr,
-            BridgeMode::Attach,
-            socket.clone(),
-            None,
-        )
-    };
-    let first = start().expect("start first bridge listener");
-
-    let error = start().err().expect("the first bridge holds the path");
-    assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
-    let shepr_platform::ipc::BindError::Busy(busy) = &error else {
-        panic!("a busy refusal carries its path: {error:?}")
-    };
-    assert_eq!(busy.path(), socket);
-    assert!(
-        error.to_string().contains(&socket.display().to_string()),
-        "{error}"
-    );
-    let presented = io::Error::new(error.kind(), error.to_string());
-    assert!(failed_before_remote_result(&presented));
-    // The refused start must leave the holder's socket and lock alone.
-    let lock = shepr_platform::ipc::socket_startup_lock_path(&socket);
-    assert!(socket.try_exists().expect("stat bridge socket"));
-    assert!(lock.try_exists().expect("stat bridge socket lock"));
-
-    drop(first);
-    assert!(!socket.try_exists().expect("stat bridge socket"));
-    assert!(!lock.try_exists().expect("stat bridge socket lock"));
-}
-
-#[test]
-fn accepted_bridge_stream_is_reset_to_blocking() {
-    use std::os::fd::AsRawFd as _;
-
-    fn is_nonblocking(stream: &shepr_platform::ipc::LocalStream) -> bool {
-        let fd = stream.as_raw_fd();
-        // SAFETY: F_GETFL only reads flags from the live descriptor owned by `stream`.
-        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        assert!(flags >= 0, "fcntl(F_GETFL): {}", io::Error::last_os_error());
-        flags & libc::O_NONBLOCK != 0
-    }
-
-    let scratch = shepr_test_support::ScratchDir::new("bridge-blocking");
-    let socket = scratch.join("bridge.sock");
-    let listener =
-        shepr_platform::ipc::bind_private_local_listener(&socket).expect("bind listener");
-    let client = shepr_platform::ipc::connect_local_stream(&socket).expect("connect client");
-    let server = listener.accept().expect("accept client").0;
-
-    server
-        .set_nonblocking(true)
-        .expect("force a nonblocking accepted stream");
-    assert!(is_nonblocking(&server));
-    let server = prepare_remote_bridge_stream(server).expect("prepare bridge stream");
-    assert!(!is_nonblocking(&server));
-
-    // The socket file stays in the test's own scratch directory, which the
-    // next hand-out clears.
-    drop(server);
-    drop(client);
-    drop(listener);
-}
-
-#[test]
-fn bridge_drop_while_waiting_for_client_is_bounded() {
-    let scratch = shepr_test_support::ScratchDir::new("bridge-drop");
-    let socket = scratch.join("bridge.sock");
-    let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
-    let bridge = SshStdioBridge::start(
-        SshTarget::parse("example").expect("test precondition"),
-        &remote_shepr,
-        BridgeMode::Attach,
-        socket.clone(),
+    // Dropping a live bridge stops its one worker while the endpoint is still
+    // open.
+    let (idle_bridge, idle_stream) = SshStdioBridge::start_command(
+        SshTarget::parse("example").expect("target"),
+        AccountShellCommand::from_account_shell_text("unused"),
         None,
     )
-    .expect("start bridge listener");
+    .expect("idle socket pair bridge");
     let started = Instant::now();
+    drop(idle_bridge);
+    assert!(started.elapsed() < Duration::from_secs(3));
+    drop(idle_stream);
 
+    // The next connection fails without a client close. Its own worker must
+    // return the typed SSH diagnostic after EOF.
+    env.set("PATH", &failing_dir);
+    let (bridge, mut stream) = SshStdioBridge::start_command(
+        SshTarget::parse("example").expect("target"),
+        AccountShellCommand::from_account_shell_text("unused"),
+        None,
+    )
+    .expect("second socket pair bridge");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .expect("read timeout");
+    stream.read_to_end(&mut Vec::new()).expect("failed SSH EOF");
+    let failure = bridge.reported_failure().expect("SSH diagnostic");
+    assert!(failure.to_string().contains("Connection refused"));
+    assert!(failed_before_remote_result(&failure));
     drop(bridge);
+    assert_eq!(
+        std::fs::read_dir(scratch.path())
+            .expect("scratch entries")
+            .count(),
+        2
+    );
+}
 
-    assert!(started.elapsed() < Duration::from_secs(1));
-    assert!(!socket.try_exists().expect("stat bridge socket"));
+#[test]
+fn bridge_worker_failure_is_returned_once_and_drop_is_safe() {
+    let should_stop = Arc::new(AtomicBool::new(false));
+    let bridge = SshStdioBridge {
+        should_stop,
+        worker: std::sync::Mutex::new(Some(thread::spawn(move || {
+            Err(local_setup_error(
+                "test SSH setup",
+                io::Error::other("test failure"),
+            ))
+        }))),
+    };
+    let error = bridge.reported_failure().expect("worker diagnostic");
+    assert!(SshFailureDiagnostic::from_error(&error).is_local_setup_failure());
+    assert!(error.to_string().contains("test failure"));
+    assert!(bridge.reported_failure().is_none());
+    drop(bridge);
 }
 
 fn exit_status(code: i32) -> std::process::ExitStatus {

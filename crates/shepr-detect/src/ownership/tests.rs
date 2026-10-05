@@ -190,7 +190,6 @@ fn omp_hook_authority_overrides_detected_fallback() {
         AgentState::Blocked,
         true,
         false,
-        false,
     );
 
     assert_eq!(terminal.fallback_state, AgentState::Idle);
@@ -1341,7 +1340,6 @@ fn visible_blocker_overrides_non_blocked_hook_for_same_agent() {
         AgentState::Blocked,
         true,
         false,
-        false,
     );
 
     assert_eq!(terminal.fallback_state, AgentState::Blocked);
@@ -1377,7 +1375,6 @@ fn visible_blocker_does_not_override_full_lifecycle_hook_authority() {
         AgentState::Blocked,
         true,
         false,
-        false,
     );
 
     assert_eq!(terminal.fallback_state, AgentState::Idle);
@@ -1394,7 +1391,6 @@ fn weak_blocked_fallback_does_not_override_hook_authority() {
     let change = terminal.set_detected_state_with_visible_blocker(
         Some(Agent::Codex),
         AgentState::Blocked,
-        false,
         false,
         false,
     );
@@ -1414,7 +1410,6 @@ fn hook_blocked_wins_over_visible_blocker() {
         Some(Agent::Codex),
         AgentState::Blocked,
         true,
-        false,
         false,
     );
 
@@ -1652,7 +1647,6 @@ fn fallback_idle_does_not_override_other_agent_hook_working() {
         Some(Agent::Codex),
         AgentState::Idle,
         false,
-        true,
         false,
     );
 
@@ -1769,7 +1763,6 @@ fn process_exit_clears_matching_hook_authority_before_reporting_idle() {
     terminal.set_detected_state_with_visible_blocker(
         Some(Agent::Codex),
         AgentState::Idle,
-        false,
         false,
         true,
     );

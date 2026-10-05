@@ -106,11 +106,22 @@ fn proc_stat_yields_session_and_controlling_tty() {
 
 #[test]
 fn launch_executable_follows_a_replaced_binary_to_its_new_install() {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    fn with_proc_deleted_suffix(path: &Path) -> PathBuf {
+        let mut bytes = path.as_os_str().as_bytes().to_vec();
+        bytes.extend_from_slice(crate::proc_tree::PROC_DELETED_SUFFIX);
+        PathBuf::from(std::ffi::OsString::from_vec(bytes))
+    }
+
     let installed = |path: &Path| Ok(path == Path::new("/usr/bin/shepr"));
     // A running binary that an install replaced.
     assert_eq!(
-        resolve_launch_executable(PathBuf::from("/usr/bin/shepr (deleted)"), installed)
-            .expect("test precondition"),
+        resolve_launch_executable(
+            with_proc_deleted_suffix(Path::new("/usr/bin/shepr")),
+            installed,
+        )
+        .expect("test precondition"),
         PathBuf::from("/usr/bin/shepr")
     );
     // The normal case: the path is there, nothing is rewritten.
@@ -121,17 +132,17 @@ fn launch_executable_follows_a_replaced_binary_to_its_new_install() {
     );
     // Removed with no replacement: keep the reported path, there is nothing
     // better to offer.
+    let missing = with_proc_deleted_suffix(Path::new("/opt/shepr"));
     assert_eq!(
-        resolve_launch_executable(PathBuf::from("/opt/shepr (deleted)"), installed)
-            .expect("test precondition"),
-        PathBuf::from("/opt/shepr (deleted)")
+        resolve_launch_executable(missing.clone(), installed).expect("test precondition"),
+        missing
     );
     // A binary whose real name ends in the suffix is left alone.
-    let literal = |path: &Path| Ok(path == Path::new("/opt/shepr (deleted)"));
+    let literal_path = with_proc_deleted_suffix(Path::new("/opt/shepr"));
+    let literal = |path: &Path| Ok(path == literal_path.as_path());
     assert_eq!(
-        resolve_launch_executable(PathBuf::from("/opt/shepr (deleted)"), literal)
-            .expect("test precondition"),
-        PathBuf::from("/opt/shepr (deleted)")
+        resolve_launch_executable(literal_path.clone(), literal).expect("test precondition"),
+        literal_path
     );
     // A stat failure other than absence is reported, not read as absence.
     let denied = |_: &Path| Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));

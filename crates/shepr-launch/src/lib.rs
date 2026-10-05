@@ -26,6 +26,7 @@ pub mod guidance;
 pub mod invocation;
 pub mod limits;
 pub mod local_server;
+pub mod process_status;
 pub mod restart;
 pub mod status;
 pub mod stop;

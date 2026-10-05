@@ -22,22 +22,15 @@ reported it and says how the fixed form could be enforced.
 
 ---
 
-## POL-001 - A whole "hold the lease, persist nothing" runtime mode exists only for tests
+## POL-001 - Leftovers of the removed lease-only save mode
 
 Reported by: persistence, save-shutdown.
 
-`SessionOpenPolicy::Never`, `SessionPersister::lease_only`, `Worker::LeaseOnly`,
-`SaveRefusal::LeaseOnly`, the server's `SavePolicy::Never` / `SaveMode::Never`,
-`persists_this_boot`'s false case, `session_persists()` in the lifecycle and the
-`!app.session_persists()` branch of `sync_host_shutdown_freeze` form one mode no
-config selects and no production path uses: `bootstrap.rs` is the only production
-`App::open` and passes `Persist`; only `App::new` (test constructor) and
-`agent_report_test_support` (`cfg(test)`) pass `Never`. It adds a branch to every
-`SavePolicy` match, and it is why the host-shutdown tests test a path production
-never runs (CLAIM-006). Fix: tests open `Persist` on a scratch data directory (most
-already have one, via `persist()`), then delete the variants, the lease-only worker
-and the refusal; with that, `SaveMode` becomes `Persisting | Stopped` (POL-007).
-Enforceable by deleting the variant.
+The test-only "hold the lease, persist nothing" mode is gone. Remnants:
+`complete_shutdown` still returns a `Result` behind `RunServerError::Shutdown` for a
+phase guard the loop has already checked; and `TestApp::persist` /
+`HeadlessServer::persist_for_test` (18 call sites) are now nearly no-ops, since
+`App::new` already persists on the outputs' signal; they only restart the persister.
 
 ## POL-002 - The snapshot cadence mixes the injected clock with filesystem time and re-derives what the writer already knows
 
@@ -137,16 +130,6 @@ comment's argument that no other mutation can interleave, and calls
 fix: a mutation epoch counter that `CapturedLayout` records at capture, so a preserved
 layout is authoritative iff the epoch is unchanged; it replaces the dirty bit's double
 duty and the direct field write.
-
-## POL-007 - `SavePolicy` and `SaveMode` encode (mode, frozen) twice
-
-Reported by: save-shutdown.
-
-`SavePolicy` has four variants, one being `Frozen { resume_to: SaveMode }`, and
-`SaveMode` mirrors the other three, with hand-written mappings in `freeze`, `thaw` and
-`stop` and four predicates over them. `struct SavePolicy { mode: SaveMode, frozen:
-bool }` removes the mapping; after POL-001, `mode` is `Persisting | Stopped` and
-`persists_this_boot` goes away.
 
 ## POL-008 - Session writer retirement blocks the runtime thread where the save path is async
 
@@ -364,13 +347,11 @@ making `ssh_command()` private to the builder.
 
 Reported by: remote.
 
-- `remote_bridge_endpoint_path` draws `unpredictable_token()` and sweeps the runtime
-  directory on every connect attempt; `SSH_TEARDOWN` is a process-global registry whose
-  correctness rests on calling `release_ssh_resources_before_exit` once, after the loop,
-  before exit (documented call order, not structural). DEAD's bridge-socket removal
-  takes the socket half of both away.
+- `SSH_TEARDOWN` is a process-global registry (now only for the temporary SSH config
+  directories) whose correctness rests on calling `release_ssh_resources_before_exit`
+  once, after the loop, before exit (documented call order, not structural).
 - `server_wait` watches the whole runtime directory; on a host that is also a client,
-  every bridge socket, lock sidecar and managed config directory created there wakes
+  every lock sidecar and managed config directory created there wakes
   the wait for a pointless presence check. Filter inotify events by the server socket's
   name.
 - `MachineSshPreflight::check` holds a machine's probe mutex for the whole bounded SSH

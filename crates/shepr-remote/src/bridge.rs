@@ -1,5 +1,4 @@
 use std::io::{self, Write as _};
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{
     Arc,
@@ -15,31 +14,19 @@ use crate::failure::{
 };
 use crate::host::{BRIDGE_FAILURE_MARKER, BridgeMode};
 use crate::limits::{
-    BRIDGE_ACCEPT_POLL, BRIDGE_CONNECTION_SHUTDOWN_GRACE, BRIDGE_FAILURE_CHANNEL_CAPACITY,
-    BRIDGE_FAILURE_REPORT_POLL_INTERVAL, BRIDGE_FAILURE_REPORT_TIMEOUT, BRIDGE_IO_BUFFER_BYTES,
-    BRIDGE_IO_POLL, BRIDGE_WRITE_CHUNK_BYTES, PIPE_DRAIN_GRACE, SSH_STDERR_CAPTURE_LIMIT,
+    BRIDGE_CHILD_POLL, BRIDGE_CONNECTION_SHUTDOWN_GRACE, BRIDGE_IO_BUFFER_BYTES, BRIDGE_IO_POLL,
+    BRIDGE_WRITE_CHUNK_BYTES, PIPE_DRAIN_GRACE, SSH_STDERR_CAPTURE_LIMIT,
 };
 use crate::machine::{RemoteExecutable, SshTarget};
 use crate::process::{PipeCapture, kill_and_reap, kill_child};
 use crate::shell_command::{AccountShellCommand, REMOTE_OUTPUT_READY_MARKER};
 use crate::ssh::{
-    ManagedSshOptions, SSH_TEARDOWN, TeardownRegistration, TeardownResource,
-    apply_batch_ssh_options, apply_managed_ssh_options, ssh_command,
+    ManagedSshOptions, apply_batch_ssh_options, apply_managed_ssh_options, ssh_command,
 };
 
 pub(crate) struct SshStdioBridge {
-    local_socket: PathBuf,
-    socket_file: shepr_platform::ipc::OwnedSocketFile,
-    _socket_startup_lock: shepr_platform::ipc::SocketStartupLock,
     should_stop: Arc<AtomicBool>,
-    // The accept thread clears a previous report before each accepted stream.
-    // A generation slot would also need the caller to pass the stream's
-    // generation into reported_failure; the current MachineSshStream handle
-    // carries no such identity.
-    failure_rx: Arc<std::sync::Mutex<mpsc::Receiver<io::Error>>>,
-    thread: Option<JoinHandle<()>>,
-    // Dropped after `Drop::drop` has removed the socket; see `TeardownRegistry`.
-    _teardown: TeardownRegistration,
+    worker: std::sync::Mutex<Option<JoinHandle<io::Result<()>>>>,
 }
 
 impl SshStdioBridge {
@@ -47,256 +34,69 @@ impl SshStdioBridge {
         target: SshTarget,
         remote_shepr: &RemoteExecutable,
         mode: BridgeMode,
-        local_socket: PathBuf,
         ssh_options: Option<&ManagedSshOptions>,
-    ) -> Result<Self, shepr_platform::ipc::BindError> {
-        let target_id = target.as_str().to_owned();
-        let executable_path = remote_shepr.as_str().to_owned();
-        let bridge = Self::start_command(
-            target,
-            remote_shepr.bridge_command(mode),
-            local_socket,
-            ssh_options,
-        )?;
-        tracing::info!(
-            target = %target_id,
-            executable = %executable_path,
-            ?mode,
-            socket = %bridge.local_socket.display(),
-            "remote SSH stdio bridge listening"
-        );
-        Ok(bridge)
+    ) -> io::Result<(Self, shepr_platform::ipc::LocalStream)> {
+        Self::start_command(target, remote_shepr.bridge_command(mode), ssh_options)
     }
 
     pub(crate) fn start_command(
         target: SshTarget,
         remote_command: AccountShellCommand,
-        local_socket: PathBuf,
         ssh_options: Option<&ManagedSshOptions>,
-    ) -> Result<Self, shepr_platform::ipc::BindError> {
-        // A busy bind retains its path until the machine boundary chooses
-        // whether to retry or report local setup failure.
-        let socket_path = shepr_core::socket_path::SocketPath::new(local_socket.clone())?;
-        let shepr_platform::ipc::BoundSocketParts {
-            listener,
-            file: socket_file,
-            lock: socket_startup_lock,
-        } = shepr_platform::ipc::bind_owned_single_use_private_socket(&socket_path)?.into_parts();
-        let teardown = SSH_TEARDOWN.register(TeardownResource::Socket(socket_file.clone()));
-        let mut socket_cleanup = BridgeSocketStartupCleanup::new(&socket_file);
-        listener.set_nonblocking(true)?;
-
+    ) -> io::Result<(Self, shepr_platform::ipc::LocalStream)> {
+        let (client, stream) = shepr_platform::ipc::LocalStream::pair()?;
         let should_stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&should_stop);
-        let thread_ssh_options = ssh_options.cloned();
-        // A failure belongs to the last accepted stream. Before accepting a later
-        // stream, discard any unclaimed report so a slow earlier SSH exit cannot
-        // be shown as the later request's failure. Keep send nonblocking so the SSH
-        // worker can finish even if its caller is already unwinding.
-        let (failure_tx, failure_rx) = mpsc::sync_channel(BRIDGE_FAILURE_CHANNEL_CAPACITY);
-        let failure_rx = Arc::new(std::sync::Mutex::new(failure_rx));
-        let thread_failure_rx = Arc::clone(&failure_rx);
-        let thread_socket = local_socket.clone();
-        let thread = thread::spawn(move || {
-            use shepr_platform::ipc::{Accepted, PeerAdmission};
-            use std::os::fd::AsRawFd;
-            // Warn once per spell of resource exhaustion, not on every poll.
-            let mut backing_off = false;
-            while !thread_stop.load(Ordering::Acquire) {
-                match shepr_platform::ipc::accept_peer(
-                    listener.as_raw_fd(),
-                    PeerAdmission::OwnerOrRoot,
-                ) {
-                    Accepted::Peer(peer) => {
-                        backing_off = false;
-                        let stream = shepr_platform::ipc::LocalStream::from(peer.fd);
-                        discard_unclaimed_bridge_failure(&thread_failure_rx);
-                        let stream = match prepare_remote_bridge_stream(stream) {
-                            Ok(stream) => stream,
-                            Err(err) => {
-                                // This local setup failure drops the accepted request; the
-                                // bridge remains available for later connections.
-                                tracing::error!(
-                                    error = %err,
-                                    target = %target.as_str(),
-                                    socket = %thread_socket.display(),
-                                    "remote bridge failed to prepare the accepted stream"
-                                );
-                                continue;
-                            }
-                        };
-                        // Each local API request has its own stream and SSH stdio
-                        // process. Keep `bridge_connection` inline in this accept loop:
-                        // a second stream waits until this one returns because one SSH
-                        // process can carry only one local stream.
-                        if let Err(err) = bridge_connection(
-                            stream,
-                            &target,
-                            &remote_command,
-                            thread_ssh_options.as_ref(),
-                            &thread_stop,
-                        ) {
-                            // The owner reads the error back through `reported_failure`
-                            // and presents it; this event only logs it.
-                            tracing::warn!(
-                                error = %err,
-                                target = %target.as_str(),
-                                socket = %thread_socket.display(),
-                                "remote SSH bridge failed"
-                            );
-                            // The original error, so its typed SSH failure survives.
-                            // Already logged above. This thread shares the receiver,
-                            // so it never disconnects, and the slot was emptied before
-                            // this stream was served with only this thread filling
-                            // it: the send has no way to fail.
-                            drop(failure_tx.try_send(err));
-                        }
-                    }
-                    Accepted::RetryNow => {
-                        thread::sleep(BRIDGE_ACCEPT_POLL);
-                    }
-                    Accepted::Backoff(err) => {
-                        if !backing_off {
-                            tracing::warn!(
-                                error = %err,
-                                target = %target.as_str(),
-                                socket = %thread_socket.display(),
-                                "remote bridge accept failed; retrying"
-                            );
-                        }
-                        backing_off = true;
-                        thread::sleep(BRIDGE_ACCEPT_POLL);
-                    }
-                    Accepted::Fatal(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            target = %target.as_str(),
-                            socket = %thread_socket.display(),
-                            "remote SSH bridge listener failed"
-                        );
-                        // Already logged above. The send fails only when the last
-                        // stream's failure is still unclaimed; the owner then reads
-                        // that one, which is the failure its request actually saw.
-                        drop(failure_tx.try_send(io::Error::new(
-                            err.kind(),
-                            format!("remote bridge listener failed: {err}"),
-                        )));
-                        break;
-                    }
-                }
-            }
+        let ssh_options = ssh_options.cloned();
+        let worker = thread::spawn(move || {
+            bridge_connection(
+                stream,
+                &target,
+                &remote_command,
+                ssh_options.as_ref(),
+                &thread_stop,
+            )
+            .inspect_err(|error| {
+                tracing::warn!(%error, target = %target.as_str(), "remote SSH bridge failed");
+            })
         });
-
-        let bridge = Self {
-            local_socket,
-            socket_file,
-            _socket_startup_lock: socket_startup_lock,
-            should_stop,
-            failure_rx,
-            thread: Some(thread),
-            _teardown: teardown,
-        };
-        socket_cleanup.disarm();
-        Ok(bridge)
+        Ok((
+            Self {
+                should_stop,
+                worker: std::sync::Mutex::new(Some(worker)),
+            },
+            client,
+        ))
     }
 
+    /// The connection's failure, joining its worker; `None` once taken. Call
+    /// it only after the stream reached EOF: the worker has then ended the
+    /// connection and only reaps ssh and drains its pipes, each bounded. Called
+    /// earlier, it waits for the connection itself to end.
     pub(crate) fn reported_failure(&self) -> Option<io::Error> {
-        // A local client can observe EOF before this worker has reaped ssh and
-        // sent its exit diagnostic. Polling keeps the receiver mutex available
-        // to the accept thread while it discards an unclaimed earlier failure.
-        // clock-io-ok: allow the SSH worker time to report after stream EOF.
-        let deadline = Instant::now() + BRIDGE_FAILURE_REPORT_TIMEOUT;
-        loop {
-            let received = self
-                .failure_rx
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .try_recv();
-            match received {
-                Ok(error) => return Some(error),
-                Err(mpsc::TryRecvError::Disconnected) => return None,
-                Err(mpsc::TryRecvError::Empty) => {}
-            }
+        self.finish().err()
+    }
 
-            // clock-io-ok: the worker runs concurrently while the caller polls.
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return None;
-            }
-            thread::sleep(remaining.min(BRIDGE_FAILURE_REPORT_POLL_INTERVAL));
+    fn finish(&self) -> io::Result<()> {
+        let worker = self
+            .worker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        match worker {
+            Some(worker) => worker
+                .join()
+                .map_err(|_| io::Error::other("remote bridge worker panicked"))?,
+            None => Ok(()),
         }
     }
-}
-
-fn discard_unclaimed_bridge_failure(failure_rx: &std::sync::Mutex<mpsc::Receiver<io::Error>>) {
-    let failure_rx = failure_rx
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    while failure_rx.try_recv().is_ok() {}
-}
-
-fn prepare_remote_bridge_stream(
-    stream: shepr_platform::ipc::LocalStream,
-) -> io::Result<shepr_platform::ipc::LocalStream> {
-    stream.set_nonblocking(false)?;
-    Ok(stream)
 }
 
 impl Drop for SshStdioBridge {
     fn drop(&mut self) {
         self.should_stop.store(true, Ordering::Release);
-        remove_bridge_socket(&self.socket_file);
-        if let Some(thread) = self.thread.take()
-            && thread.join().is_err()
-        {
-            // The panic itself went to the panic hook; this ties it to the bridge.
-            tracing::error!(
-                socket = %self.local_socket.display(),
-                "remote bridge accept thread panicked"
-            );
-        }
-    }
-}
-
-/// Removes a bridge's own socket on a failed start or on drop. The caller has
-/// nothing better to do with a failure, but a socket file left behind in the
-/// runtime directory is worth a line naming it.
-fn remove_bridge_socket(file: &shepr_platform::ipc::OwnedSocketFile) {
-    let path = file.path();
-    if let Err(error) = file.remove_if_still_ours() {
-        tracing::warn!(%error, socket = %path.display(), "could not remove remote bridge socket");
-        return;
-    }
-    // Bridge socket paths carry a random token, so no later binder ever locks
-    // this path and the sidecar would otherwise pile up, one per bridge ever
-    // started. The bridge still holds the lock here. A bridge killed before
-    // this runs is reclaimed by the platform's dead-owner sweep.
-    shepr_platform::release_single_use_socket_lock(path);
-}
-
-/// Owns the newly bound socket until the bridge itself is ready to own cleanup.
-struct BridgeSocketStartupCleanup {
-    file: shepr_platform::ipc::OwnedSocketFile,
-    armed: bool,
-}
-
-impl BridgeSocketStartupCleanup {
-    fn new(file: &shepr_platform::ipc::OwnedSocketFile) -> Self {
-        Self {
-            file: file.clone(),
-            armed: true,
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for BridgeSocketStartupCleanup {
-    fn drop(&mut self) {
-        if self.armed {
-            remove_bridge_socket(&self.file);
+        if let Err(error) = self.finish() {
+            tracing::debug!(%error, "remote bridge ended during teardown");
         }
     }
 }
@@ -566,7 +366,7 @@ fn bridge_connection(
                 break (child.wait(), false);
             }
         }
-        thread::sleep(BRIDGE_ACCEPT_POLL);
+        thread::sleep(BRIDGE_CHILD_POLL);
     };
     upload_stop.cancel();
     if !child_exited {

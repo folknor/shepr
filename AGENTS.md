@@ -283,7 +283,7 @@ orientation, and nothing checks them:
   server through `shepr-launch`), and the remote wait for a server
   (`crates/shepr-remote/src/server_wait.rs`) with the client side that runs
   it. It owns the SSH path policy (OpenSSH `%C` expansion, control
-  path naming, bridge socket naming; `crates/shepr-remote/src/ssh_paths.rs`). It classifies OpenSSH output into launch's failure
+  path naming; `crates/shepr-remote/src/ssh_paths.rs`). It classifies OpenSSH output into launch's failure
   vocabulary at its boundary and keeps discovery evidence to itself.
 - `shepr-git`: Git status as one subsystem: checkout discovery, the Git
   command runner with its environment and deadline policy, config dependency

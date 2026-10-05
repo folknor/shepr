@@ -116,6 +116,9 @@ pub struct SessionRestoreDamage {
     pub dropped_workspaces: usize,
     /// Saved workspaces restored under a fresh ID, their saved one repeated.
     pub renamed_workspaces: usize,
+    /// Saved workspace bookmarks beyond the saved workspace list, redirected
+    /// to the last restored workspace (or cleared when none survived).
+    pub repaired_bookmarks: usize,
     /// Restored panes whose saved agent session this build cannot use: each
     /// came back as a plain shell, without its session.
     pub dropped_agent_sessions: Vec<crate::PublicPaneId>,
@@ -125,6 +128,7 @@ impl SessionRestoreDamage {
     pub fn is_empty(&self) -> bool {
         self.dropped_workspaces == 0
             && self.renamed_workspaces == 0
+            && self.repaired_bookmarks == 0
             && self.dropped_agent_sessions.is_empty()
     }
 
@@ -177,93 +181,26 @@ impl std::fmt::Display for SessionRestoreDamage {
                 self.renamed_workspaces
             ));
         }
+        if self.repaired_bookmarks > 0 {
+            sentences
+                .push("The saved workspace bookmark was out of range and was repaired.".to_owned());
+        }
         f.write_str(&sentences.join(" "))
     }
 }
 
-/// Why a saved session file could not be used. `detail` preserves the
-/// filesystem or schema diagnostic shown to the user; the variant and parse
-/// coordinates keep the outcome machine-readable.
+/// Why a saved session file could not be used. Keep the diagnostic and source
+/// path; clients render both, so a machine-readable error taxonomy adds no
+/// information at this boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionRestoreFailure {
-    /// Reading the file failed for this operating-system reason.
-    Unreadable {
-        kind: SessionIoErrorKind,
-        detail: String,
-    },
-    /// The path resolved to a directory, special file or other non-regular object.
-    NotRegularFile {
-        kind: SessionFileKind,
-        detail: String,
-    },
-    /// The file exceeded the reader's byte limit.
-    TooLarge { limit_bytes: usize },
-    /// JSON decoding or schema validation failed at this location.
-    Unparseable {
-        line: usize,
-        column: usize,
-        category: SessionParseCategory,
-        detail: String,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionIoErrorKind {
-    NotFound,
-    PermissionDenied,
-    AlreadyExists,
-    ConnectionRefused,
-    ConnectionReset,
-    ConnectionAborted,
-    NotConnected,
-    AddrInUse,
-    AddrNotAvailable,
-    BrokenPipe,
-    WouldBlock,
-    InvalidInput,
-    InvalidData,
-    ResourceBusy,
-    TimedOut,
-    Interrupted,
-    Unsupported,
-    UnexpectedEof,
-    OutOfMemory,
-    WriteZero,
-    Other,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionFileKind {
-    Directory,
-    Fifo,
-    Socket,
-    CharacterDevice,
-    BlockDevice,
-    Other,
-}
-
-/// serde_json's high-level category for a session parse failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SessionParseCategory {
-    Io,
-    Syntax,
-    Data,
-    Eof,
+pub struct SessionRestoreFailure {
+    pub path: crate::RemotePath,
+    pub detail: String,
 }
 
 impl std::fmt::Display for SessionRestoreFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Unreadable { detail, .. } | Self::NotRegularFile { detail, .. } => {
-                write!(f, "it could not be read: {detail}")
-            }
-            Self::TooLarge { limit_bytes } => {
-                write!(f, "it exceeds the {limit_bytes}-byte session file limit")
-            }
-            Self::Unparseable { detail, .. } => {
-                write!(f, "it could not be parsed: {detail}")
-            }
-        }
+        f.write_str(&self.detail)
     }
 }
 
@@ -272,7 +209,11 @@ impl std::fmt::Display for SessionRestoreNotice {
         let Self { loss, backup_dir } = self;
         match loss {
             SessionRestoreLoss::Unusable { failure } => {
-                write!(f, "The saved session was not restored: {failure}.")?;
+                write!(
+                    f,
+                    "The saved session file {} was not restored: {failure}.",
+                    failure.path
+                )?;
             }
             SessionRestoreLoss::Damaged(damage) => write!(f, "{damage}")?,
         }
@@ -403,6 +344,7 @@ mod tests {
             rendered(SessionRestoreLoss::Damaged(SessionRestoreDamage {
                 dropped_workspaces,
                 renamed_workspaces,
+                repaired_bookmarks: 0,
                 dropped_agent_sessions,
             }))
         };
@@ -414,6 +356,14 @@ mod tests {
         assert!(partial(0, 2, vec![]).starts_with(
             "The saved session needed repair: 2 duplicate workspace IDs were reassigned."
         ));
+        assert!(
+            SessionRestoreDamage {
+                repaired_bookmarks: 1,
+                ..Default::default()
+            }
+            .to_string()
+            .contains("bookmark was out of range")
+        );
         assert!(!partial(0, 2, vec![]).contains("pane"));
         let sessions = partial(0, 0, vec![pane(1), pane(2)]);
         assert!(
@@ -426,16 +376,14 @@ mod tests {
         );
         assert!(partial(0, 0, vec![pane(1)]).contains(&format!("of pane {} could", pane(1))));
         let unusable = rendered(SessionRestoreLoss::Unusable {
-            failure: SessionRestoreFailure::Unparseable {
-                line: 1,
-                column: 2,
-                category: SessionParseCategory::Syntax,
-                detail: "expected a value at line 1 column 2".into(),
+            failure: SessionRestoreFailure {
+                path: "/state/session.json".into(),
+                detail: "it could not be parsed: expected a value at line 1 column 2".into(),
             },
         });
         assert!(
             unusable.starts_with(
-                "The saved session was not restored: it could not be parsed: expected a value at line 1 column 2."
+                "The saved session file /state/session.json was not restored: it could not be parsed: expected a value at line 1 column 2."
             ),
             "{unusable}"
         );

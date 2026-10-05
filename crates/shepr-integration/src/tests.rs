@@ -174,7 +174,7 @@ fn install_omp_uses_omp_config_dir_env() {
     let ext_dir = home.join("custom-omp/agent/extensions");
     fs::create_dir_all(&ext_dir).expect("test precondition");
     env.set("HOME", &home);
-    env.set(EnvVar::PiConfigDir, "custom-omp");
+    env.set(EnvVar::PiConfigDir, "~/custom-omp");
 
     let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -198,7 +198,7 @@ fn install_omp_uses_its_own_config_when_pi_agent_dir_is_set() {
     fs::create_dir_all(&omp_dir).expect("test precondition");
     env.set("HOME", &home);
     env.set(EnvVar::PiCodingAgentDir, &agent_dir);
-    env.set(EnvVar::PiConfigDir, "ignored-omp-config");
+    env.set(EnvVar::PiConfigDir, "~/ignored-omp-config");
 
     let installed = install_omp(&AgentIntegrationPaths::resolve()).expect("test precondition");
 
@@ -462,6 +462,52 @@ fn install_claude_uses_claude_config_dir_env() {
     assert_eq!(
         install_path(&installed, ArtifactRole::Hook),
         claude_dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME)
+    );
+}
+
+#[test]
+fn claude_install_replaces_registrations_from_an_old_config_path_alias() {
+    use std::os::unix::fs::symlink;
+
+    use shepr_agent::IntegrationTarget as Target;
+
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    let shared_dir = base.join("shared-claude");
+    let first_alias = base.join("host-a/claude");
+    let second_alias = base.join("host-b/claude");
+    fs::create_dir_all(&shared_dir).expect("test precondition");
+    fs::create_dir_all(first_alias.parent().expect("test precondition"))
+        .expect("test precondition");
+    fs::create_dir_all(second_alias.parent().expect("test precondition"))
+        .expect("test precondition");
+    symlink(&shared_dir, &first_alias).expect("test precondition");
+    symlink(&shared_dir, &second_alias).expect("test precondition");
+
+    env.set(EnvVar::ClaudeConfigDir, &first_alias);
+    install_claude(&AgentIntegrationPaths::resolve()).expect("first host install");
+    assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
+
+    env.set(EnvVar::ClaudeConfigDir, &second_alias);
+    assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Outdated);
+    install_claude(&AgentIntegrationPaths::resolve()).expect("second host install");
+    assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
+
+    let settings: Value = serde_json::from_str(
+        &fs::read_to_string(shared_dir.join("settings.json")).expect("test precondition"),
+    )
+    .expect("test precondition");
+    let session_start = settings["hooks"]["SessionStart"]
+        .as_array()
+        .expect("SessionStart registrations");
+    assert_eq!(session_start.len(), 1);
+    let expected_command = hook_command(
+        &second_alias.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME),
+        Some("session"),
+    );
+    assert_eq!(
+        session_start[0]["hooks"][0]["command"].as_str(),
+        Some(expected_command.as_str())
     );
 }
 

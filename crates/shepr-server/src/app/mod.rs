@@ -127,7 +127,6 @@ impl App {
         config: &shepr_config::ValidatedServerConfig,
         paths: &shepr_paths::AppPaths,
         lease: shepr_mux::persist::DataDirLease,
-        persistence: shepr_mux::persist::SessionOpenPolicy,
         clock: AppClock,
     ) -> (Self, AppOutputs) {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
@@ -169,7 +168,6 @@ impl App {
         } = shepr_mux::persist::open_session(
             lease,
             &shepr_mux::persist::SessionOpenOptions {
-                policy: persistence,
                 geometry: settings.pane_geometry_in(settings.headless_rect()),
                 launcher: &pane_launcher,
                 resume_agents_on_restore: config.session().resume_agents_on_restore,
@@ -199,7 +197,7 @@ impl App {
                 PENDING_AGENT_RESUME_THEME_WAIT,
                 config.session().startup_per_agent_delay,
             ),
-            session_saver: session::SessionSaver::new(persister, persistence),
+            session_saver: session::SessionSaver::new(persister),
             pending_pane_resizes: pane_resize::PendingPaneResizes::default(),
             pane_teardowns,
             pane_launcher,
@@ -435,13 +433,7 @@ mod tests {
             );
             let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
                 .expect("test session lease");
-            let (app, outputs) = Self::open(
-                &config,
-                &paths,
-                lease,
-                shepr_mux::persist::SessionOpenPolicy::Never,
-                test_clock(),
-            );
+            let (app, outputs) = Self::open(&config, &paths, lease, test_clock());
             TestApp::new(app, outputs)
         }
 
@@ -598,7 +590,6 @@ mod tests {
     #[test]
     fn app_deadline_is_the_save_deadline() {
         let mut app = test_app();
-        app.session_saver.admit_saves_for_test();
         let now = Instant::now();
         app.session_saver
             .set_autosave_deadline(Some(now + Duration::from_secs(2)));

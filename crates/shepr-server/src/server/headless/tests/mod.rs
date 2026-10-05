@@ -172,9 +172,8 @@ impl HeadlessServer {
         self.outputs = outputs;
     }
 
-    /// Turns the server's app into a persisting one, fired through the
-    /// server's own `save_finished` signal (`TestApp::persist` for an app
-    /// held outside a server).
+    /// Restarts the production writer on the server's completion signal
+    /// (`TestApp::persist` for an app held outside a server).
     pub(crate) fn persist_for_test(&mut self) {
         let save_finished = self.outputs.save_finished_signal();
         self.app.persist_with_signal(save_finished);

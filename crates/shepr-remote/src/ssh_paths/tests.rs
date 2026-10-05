@@ -16,37 +16,6 @@ fn ssh_control_path_rejects_percent_tokens_in_runtime_directory() {
 }
 
 #[test]
-fn bridge_socket_names_carry_a_random_token_before_the_extension() {
-    assert_eq!(
-        with_name_token("shepr-r-42-dev.sock", 0xab),
-        "shepr-r-42-dev.00000000000000ab.sock"
-    );
-    assert_eq!(with_name_token("bridge", 1), "bridge.0000000000000001");
-    assert_eq!(with_name_token(".sock", 1), ".sock.0000000000000001");
-
-    let runtime_dir = shepr_test_support::ScratchDir::new("bridge-endpoints");
-    let first =
-        remote_bridge_endpoint_path(runtime_dir.path(), "shepr-t-1-a.sock", "shepr-t-1.sock")
-            .expect("test precondition");
-    let second =
-        remote_bridge_endpoint_path(runtime_dir.path(), "shepr-t-1-a.sock", "shepr-t-1.sock")
-            .expect("test precondition");
-    assert_ne!(
-        first, second,
-        "concurrent bridges must receive distinct socket paths"
-    );
-    for path in [&first, &second] {
-        assert!(fits_unix_socket_path(path), "{}", path.display());
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default();
-        assert!(name.starts_with("shepr-t-1"), "{name}");
-        assert!(name.ends_with(".sock"), "{name}");
-    }
-}
-
-#[test]
 fn remote_ssh_config_dir_is_private_and_under_the_runtime_directory() {
     use std::os::unix::fs::PermissionsExt;
 

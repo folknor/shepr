@@ -306,11 +306,23 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
         .lifecycle
         .host_shutdown_request_flag()
         .store(true, Ordering::Release);
-    // The test policy never saves, so the checkpoint writes nothing and the
-    // real session file is untouched.
+    // Every test app uses the production writer on a scratch data directory.
+    // Wait for the warning's checkpoint before applying pane deaths.
     server.lifecycle.sync_host_shutdown_freeze(&mut server.app);
-    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
-    assert!(!server.app.session_persists());
+    assert_eq!(server.lifecycle.phase(), ShutdownPhase::HostShutdownWarning);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        server.outputs.save_finished_signal().notified(),
+    )
+    .await
+    .expect("checkpoint writer completed");
+    server.handle_scheduled_tasks_headless(server.app.clock().now);
+    let session_file = shepr_mux::persist::session_path(server.app.test_paths().data_dir());
+    let checkpoint = std::fs::read(&session_file).expect("warning checkpoint");
+    assert_eq!(
+        server.lifecycle.phase(),
+        ShutdownPhase::Frozen { generation: None }
+    );
     assert!(server.app.test_saver().autosave_deadline().is_none());
 
     // The server keeps running and applies pane deaths; only the disk is frozen.
@@ -324,7 +336,11 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
     );
     assert!(server.handle_internal_event_with_forwarding(died));
     assert!(server.app.state().pane(pane_id).is_none());
-    assert!(!server.app.session_persists());
+
+    assert_eq!(
+        std::fs::read(&session_file).expect("frozen checkpoint"),
+        checkpoint
+    );
 
     // Cancellation reported through the flag thaws and re-saves current state.
     server.app.test_state_mut().test_clear_session_dirty();
@@ -334,8 +350,16 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
         .store(false, Ordering::Release);
     server.lifecycle.sync_host_shutdown_freeze(&mut server.app);
     assert_eq!(server.lifecycle.phase(), ShutdownPhase::Running);
-    assert!(!server.app.session_persists());
     assert!(server.app.state().session_dirty());
+    server
+        .app
+        .save_session_before_teardown_async()
+        .await
+        .expect("save after thaw");
+    assert!(
+        !session_file.try_exists().expect("stat the session file"),
+        "the empty live session replaces the checkpoint"
+    );
     // Not stopping: the warning alone never ends the server.
     assert!(!server.lifecycle.stop_requested());
     shutdown_test_runtimes(&mut server);
@@ -368,8 +392,10 @@ async fn a_frozen_persisting_server_runs_the_final_save_and_writes_nothing() {
     .await
     .expect("checkpoint writer completed");
     server.handle_scheduled_tasks_headless(server.app.clock().now);
-    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
-    assert!(server.app.session_persists());
+    assert_eq!(
+        server.lifecycle.phase(),
+        ShutdownPhase::Frozen { generation: None }
+    );
 
     let session_file = shepr_mux::persist::session_path(server.app.test_paths().data_dir());
     let written_by_the_warning = std::fs::read(&session_file).expect("the warning's checkpoint");
@@ -455,7 +481,10 @@ async fn refreshed_warning_requires_a_new_checkpoint_before_releasing_the_lock()
         .expect("refreshed checkpoint completed");
     server.handle_scheduled_tasks_headless(server.app.clock().now);
     checkpoints.changed().await.expect("delay lock released");
-    assert_eq!(server.lifecycle.phase(), ShutdownPhase::Frozen);
+    assert!(matches!(
+        server.lifecycle.phase(),
+        ShutdownPhase::Frozen { .. }
+    ));
     assert_eq!(
         *checkpoints.borrow(),
         server.lifecycle.frozen_warning_generation()

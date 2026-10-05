@@ -1,28 +1,27 @@
-//! OpenSSH path policy: where the managed SSH config directory, the shared
-//! control socket and the bridge sockets live, and how their names are made.
+//! OpenSSH path policy: where the managed SSH config directory and the shared
+//! control socket live, and how their names are made.
 //! The generic owned runtime directory, private directory check and
 //! dead-owner sweeps are `shepr-platform`'s; the OpenSSH `%C` expansion, the
 //! control socket naming and the socket path budgets are SSH policy and live
 //! here.
-use shepr_core::socket_path::{UNIX_SOCKET_PATH_MAX, fits_unix_socket_path};
-use shepr_platform::{DirectoryKind, PrivateDirError, RuntimeCreateError, unpredictable_token};
+use shepr_core::socket_path::UNIX_SOCKET_PATH_MAX;
+use shepr_platform::{DirectoryKind, PrivateDirError, RuntimeCreateError};
 use std::path::{Path, PathBuf};
 
 /// The managed SSH config directories: `shepr-ssh-` and a token, each holding
-/// one regular file named `config`. The bridge socket names must stay clear of
-/// this prefix, because the sweep of these directories matches on it.
+/// one regular file named `config`.
 const SSH_CONFIG_DIRECTORY: DirectoryKind = DirectoryKind::regular_file("shepr-ssh-", "config");
 
 /// SSH runtime setup separates policy refusals from operational failures.
 #[derive(Debug)]
-pub enum SshRuntimeError {
+pub(crate) enum SshRuntimeError {
     UnsafeDirectory(UnsafeSshRuntimeDirectory),
     RandomSource(std::io::Error),
     Io(std::io::Error),
 }
 
 impl SshRuntimeError {
-    pub fn kind(&self) -> std::io::ErrorKind {
+    pub(crate) fn kind(&self) -> std::io::ErrorKind {
         match self {
             Self::UnsafeDirectory(_) => std::io::ErrorKind::PermissionDenied,
             Self::RandomSource(error) | Self::Io(error) => error.kind(),
@@ -96,89 +95,6 @@ pub(crate) fn release_remote_ssh_config_dir(path: &Path) {
 /// creation, cleanup, and dead-owner sweeping use one layout rule.
 pub(crate) fn remote_ssh_config_file_path(directory: &Path) -> PathBuf {
     SSH_CONFIG_DIRECTORY.content_path(directory)
-}
-
-/// Choose an endpoint socket path in shepr's private runtime directory. The
-/// token avoids collisions between concurrent bridges; the shorter name is
-/// used when the readable one would exceed Linux's socket path limit. The
-/// path is single-use, so bind it with
-/// `shepr_platform::ipc::bind_owned_single_use_private_socket`. After confirming a path
-/// fits, allocation sweeps sockets and locks such binds left behind in
-/// `runtime_dir` when their owner was killed; the owner is recorded in the lock
-/// sidecar rather than the name, so the name spends none of the socket path
-/// limit on it.
-pub(crate) fn remote_bridge_endpoint_path(
-    runtime_dir: &Path,
-    readable_name: &str,
-    short_name: &str,
-) -> Result<PathBuf, SshRuntimeError> {
-    validate_ssh_runtime_dir(runtime_dir)?;
-    // Token zero measures the name: `with_name_token` always formats 16 hex
-    // digits, so any token gives the same length, and a path that cannot fit
-    // is refused before the sweep runs or randomness is drawn.
-    bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, 0)?;
-    shepr_platform::ipc::sweep_abandoned_single_use_sockets(runtime_dir);
-    let token = unpredictable_token().map_err(SshRuntimeError::RandomSource)?;
-    bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, token)
-        .map_err(SshRuntimeError::Io)
-}
-
-/// Checks that a fresh endpoint socket path can fit without sweeping the
-/// runtime directory or consuming a random token.
-pub fn validate_remote_bridge_endpoint_path(
-    runtime_dir: &Path,
-    readable_name: &str,
-    short_name: &str,
-) -> Result<(), SshRuntimeError> {
-    validate_ssh_runtime_dir(runtime_dir)?;
-    // Token zero stands in for the real one; every token formats to the
-    // same length.
-    bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, 0)
-        .map(|_| ())
-        .map_err(SshRuntimeError::Io)
-}
-
-fn bridge_endpoint_path_with_token(
-    runtime_dir: &Path,
-    readable_name: &str,
-    short_name: &str,
-    token: u64,
-) -> std::io::Result<PathBuf> {
-    let readable_name = with_name_token(readable_name, token);
-    let short_name = with_name_token(short_name, token);
-    let readable = runtime_dir.join(&readable_name);
-    if fits_unix_socket_path(&readable) {
-        return Ok(readable);
-    }
-    let short = runtime_dir.join(&short_name);
-    if fits_unix_socket_path(&short) {
-        return Ok(short);
-    }
-    let readable_len = unix_socket_path_len(&readable);
-    let short_len = unix_socket_path_len(&short);
-    Err(std::io::Error::new(
-        std::io::ErrorKind::InvalidInput,
-        format!(
-            "SSH bridge socket paths do not fit Linux's Unix socket limit of {UNIX_SOCKET_PATH_MAX} bytes: readable path {} is {readable_len} bytes and compact path {} is {short_len} bytes; shorten XDG_RUNTIME_DIR",
-            readable.display(),
-            short.display(),
-        ),
-    ))
-}
-
-fn unix_socket_path_len(path: &Path) -> usize {
-    use std::os::unix::ffi::OsStrExt;
-
-    path.as_os_str().as_bytes().len()
-}
-
-/// `name` with `.{token:016x}` inserted before its extension, or appended
-/// when it has none.
-fn with_name_token(name: &str, token: u64) -> String {
-    match name.rsplit_once('.') {
-        Some((stem, extension)) if !stem.is_empty() => format!("{stem}.{token:016x}.{extension}"),
-        _ => format!("{name}.{token:016x}"),
-    }
 }
 
 /// An opaque destination identity used only to scope an SSH control socket.
@@ -305,13 +221,13 @@ fn validate_shared_ssh_dir(dir: &Path) -> Result<(), SshRuntimeError> {
 
 /// A deterministic policy failure, distinct from filesystem permission errors.
 #[derive(Debug)]
-pub struct UnsafeSshRuntimeDirectory {
+pub(crate) struct UnsafeSshRuntimeDirectory {
     path: PathBuf,
 }
 
 impl UnsafeSshRuntimeDirectory {
     /// Builds the typed policy error while preserving the path that failed validation.
-    pub fn new(path: &Path) -> Self {
+    pub(crate) fn new(path: &Path) -> Self {
         Self {
             path: path.to_path_buf(),
         }

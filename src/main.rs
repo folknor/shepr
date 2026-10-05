@@ -1,6 +1,7 @@
 use std::io;
 
 use cli::{CliError, CliResult};
+use shepr_launch::process_status::ProcessStatus;
 
 /// Exit contracts decoded at the CLI process boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -14,27 +15,28 @@ pub(crate) enum ProcessExit {
 impl ProcessExit {
     pub(crate) fn code(self) -> u8 {
         match self {
-            Self::Success => 0,
-            Self::Failed => 1,
-            Self::Usage => 2,
-            // ServerStopExit encodes a closed set of process exit bytes, so the
-            // fallback to a plain failure is unreachable.
-            Self::Stop(exit) => u8::try_from(exit.code()).unwrap_or(1),
+            Self::Success => ProcessStatus::Success.code(),
+            Self::Failed => ProcessStatus::Failed.code(),
+            Self::Usage => ProcessStatus::Usage.code(),
+            Self::Stop(exit) => exit.process_status().code(),
         }
     }
 
     pub(crate) fn from_cli_code(code: i32) -> Self {
-        match code {
-            0 => Self::Success,
-            1 => Self::Failed,
-            2 => Self::Usage,
-            code => match shepr_launch::stop::ServerStopExit::from_code(code) {
-                Some(exit) => Self::Stop(exit),
-                None => {
-                    tracing::error!(code, "CLI returned an invalid process exit status");
-                    Self::Failed
-                }
-            },
+        match ProcessStatus::from_code(code) {
+            Some(ProcessStatus::Success) => Self::Success,
+            Some(ProcessStatus::Failed) => Self::Failed,
+            Some(ProcessStatus::Usage) => Self::Usage,
+            Some(ProcessStatus::NoServer) => {
+                Self::Stop(shepr_launch::stop::ServerStopExit::NoServer)
+            }
+            Some(ProcessStatus::BootMismatch) => {
+                Self::Stop(shepr_launch::stop::ServerStopExit::BootMismatch)
+            }
+            Some(ProcessStatus::AlreadyRunning | ProcessStatus::ConfigRefused) | None => {
+                tracing::error!(code, "CLI returned an invalid process exit status");
+                Self::Failed
+            }
         }
     }
 }

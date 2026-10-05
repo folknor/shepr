@@ -172,11 +172,7 @@ impl PtySetup<'_> {
                     // failure, but the child and any session members still
                     // need the pane teardown sequence. Keep its grace periods:
                     // killing the leader here would preempt session escalation.
-                    shutdown_pane_processes(
-                        pane_id,
-                        Arc::clone(&startup_child_liveness),
-                        teardown_tracker,
-                    );
+                    shutdown_pane_processes(pane_id, &startup_child_liveness, teardown_tracker);
                     // Startup is synchronous on its caller. Keep a delayed
                     // child exit from stalling the server loop by handing it
                     // to the child watcher's detached reaper.

@@ -340,7 +340,6 @@ pub fn is_link_error_kind(kind: io::ErrorKind) -> bool {
         io::ErrorKind::TimedOut
             | io::ErrorKind::ConnectionRefused
             | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::AddrInUse
             | io::ErrorKind::HostUnreachable
             | io::ErrorKind::NetworkUnreachable
             | io::ErrorKind::NetworkDown

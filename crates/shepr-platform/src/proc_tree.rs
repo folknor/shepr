@@ -5,8 +5,24 @@ use crate::{Pgid, Pid, ProcStat, ProcState};
 use std::{
     collections::{HashSet, VecDeque},
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
+
+// proc-deleted-suffix-ok: keep Linux's `/proc` spelling in one shared helper.
+pub(super) const PROC_DELETED_SUFFIX: &[u8] = b" (deleted)";
+
+/// Remove the suffix Linux adds to a `/proc` symlink target when its inode
+/// has been unlinked. Callers must use this only on values read from `/proc`;
+/// the same spelling is valid in an ordinary filesystem path.
+pub(super) fn strip_proc_deleted_suffix(path: &Path) -> Option<PathBuf> {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    let bytes = path
+        .as_os_str()
+        .as_bytes()
+        .strip_suffix(PROC_DELETED_SUFFIX)?;
+    Some(PathBuf::from(std::ffi::OsString::from_vec(bytes.to_vec())))
+}
 
 use crate::limits::{
     FOREGROUND_CHILD_BYTE_LIMIT, FOREGROUND_CHILD_PID_LIMIT, FOREGROUND_TASK_ENTRY_LIMIT,
@@ -213,7 +229,7 @@ fn process_task_ids(pid: Pid, budget: &mut ForegroundScanBudget) -> Vec<Pid> {
             break;
         }
         budget.task_entries -= 1;
-        if let Some(tid) = numeric_file_name(&entry) {
+        if let Some(tid) = crate::process::numeric_file_name(&entry) {
             ids.push(tid);
         }
     }
@@ -284,15 +300,6 @@ fn push_pid_token(pids: &mut Vec<Pid>, token: &mut Vec<u8>, budget: &mut Foregro
     token.clear();
 }
 
-fn numeric_file_name(entry: &std::fs::DirEntry) -> Option<Pid> {
-    let file_name = entry.file_name();
-    let value = file_name.to_str()?;
-    if !value.bytes().all(|byte| byte.is_ascii_digit()) {
-        return None;
-    }
-    value.parse().ok().and_then(Pid::new)
-}
-
 fn live_process_group_member(process_group_id: Pgid, pid: Pid) -> Option<ProcGroupMember> {
     let (pgrp, comm, state) = process_pgrp_comm_and_state(pid)?;
     (pgrp == process_group_id).then_some(ProcGroupMember { pid, comm, state })
@@ -357,9 +364,10 @@ fn parse_process_argv(bytes: &[u8]) -> Option<Vec<String>> {
 }
 
 /// Get the current working directory of a process.
-/// Uses the `/proc/<pid>/cwd` symlink.
+/// Uses the `/proc/<pid>/cwd` symlink. An unlinked cwd is unavailable.
 pub fn process_cwd(pid: Pid) -> Option<PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+    let path = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+    strip_proc_deleted_suffix(&path).is_none().then_some(path)
 }
 
 #[cfg(test)]

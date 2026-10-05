@@ -14,7 +14,7 @@ state = "working"
 priority = 1050
 region = "osc_title"
 visible_working = true
-regex = ['^[\x{2800}-\x{28FF}] ']
+regex = ['^{spinner} ']
 
 [[rules]]
 id = "approval_footer"
@@ -56,6 +56,6 @@ region = "osc_title"
 visible_idle = true
 contains = [" - amp - "]
 not = [
-  { regex = ['^[\x{2800}-\x{28FF}] '] },
+  { regex = ['^{spinner} '] },
   { contains = ["Plugin confirmation needed"] },
 ]

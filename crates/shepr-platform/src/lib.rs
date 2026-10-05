@@ -53,7 +53,6 @@ pub use host::{
 };
 pub use owned_runtime::{
     DirectoryKind, RuntimeCreateError, create_owned_directory, release_owned_directory,
-    release_single_use_socket_lock,
 };
 pub use private_file::{
     PrivateDirError, create_private_file, open_regular_file, require_private_directory,

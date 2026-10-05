@@ -34,4 +34,3 @@ pub use relay::RemoteBridgeOutcome;
 pub use server_wait::{ServerWaitEnd, wait_for_server};
 pub use shell_command::shell_quote;
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command, ssh_check_command};
-pub use ssh_paths::validate_remote_bridge_endpoint_path;

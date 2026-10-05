@@ -34,5 +34,5 @@ pub use self::capture::{
 pub use self::error::{SaveError, SaveRefusal};
 pub use self::files::{SessionLoad, check_session_target, load, session_path};
 pub use self::lock::DataDirLease;
-pub use self::open::{OpenedSession, SessionOpenOptions, SessionOpenPolicy, open_session};
+pub use self::open::{OpenedSession, SessionOpenOptions, open_session};
 pub use self::recovery::SessionBackupPolicy;

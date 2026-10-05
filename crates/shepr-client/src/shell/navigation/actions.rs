@@ -216,8 +216,13 @@ impl ClientShellState {
         notice: &shepr_protocol::SessionRestoreNotice,
     ) -> bool {
         let title = match &notice.loss {
-            shepr_protocol::SessionRestoreLoss::Damaged(damage) if !damage.loses_data() => {
+            shepr_protocol::SessionRestoreLoss::Damaged(damage)
+                if !damage.loses_data() && damage.repaired_bookmarks == 0 =>
+            {
                 "saved session IDs repaired"
+            }
+            shepr_protocol::SessionRestoreLoss::Damaged(damage) if !damage.loses_data() => {
+                "saved session repaired"
             }
             _ => "saved session not fully restored",
         };

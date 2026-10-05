@@ -75,7 +75,7 @@ impl ApiClient {
     /// send timeout for writing and one overall deadline for reading. A timeout
     /// surfaces as `ErrorKind::TimedOut`, even if the server trickles out a
     /// partial response.
-    pub fn request_value_with_timeout(
+    fn request_value_with_timeout(
         &self,
         request: &Request,
         timeout: Duration,

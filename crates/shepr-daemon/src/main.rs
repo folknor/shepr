@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use shepr_launch::daemon_exit::DaemonExit;
 use shepr_launch::guidance::server_ready_hint;
 use shepr_launch::invocation::{ServerInvocation, server_usage, server_version_line};
+use shepr_launch::process_status::ProcessStatus;
 use shepr_server::{RunServerError, ServerReady, run_server};
 
 fn main() -> ExitCode {
@@ -37,7 +38,7 @@ fn main() -> ExitCode {
 fn usage_error(message: &str) -> ExitCode {
     eprintln!("error: {message}");
     eprintln!("{}", server_usage());
-    ServerProcessExit::Usage.into_exit_code()
+    ExitCode::from(ProcessStatus::Usage.code())
 }
 
 /// Validates the config for the serving host and runs the server until it
@@ -75,25 +76,8 @@ fn serve(client_spawned: bool) -> ExitCode {
     }
 }
 
-enum ServerProcessExit {
-    Usage,
-    Server(DaemonExit),
-}
-
-impl ServerProcessExit {
-    fn into_exit_code(self) -> ExitCode {
-        let code = match self {
-            Self::Usage => 2,
-            // DaemonExit encodes a closed set of process exit bytes, so the
-            // fallback to a plain failure is unreachable.
-            Self::Server(class) => u8::try_from(class.code()).unwrap_or(1),
-        };
-        ExitCode::from(code)
-    }
-}
-
 fn exit_with(class: DaemonExit) -> ExitCode {
-    ServerProcessExit::Server(class).into_exit_code()
+    ExitCode::from(class.process_status().code())
 }
 
 fn config_error<I, D>(diagnostics: I) -> ExitCode
