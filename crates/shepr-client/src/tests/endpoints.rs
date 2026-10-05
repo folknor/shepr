@@ -86,6 +86,7 @@ pub(crate) fn snapshot(id: &ClientEndpointId, revision: u64) -> Box<ClientShellS
             branch: None,
             git_ahead_behind: None,
             agent_status: shepr_protocol::AgentStatus::Idle,
+            zoomed: false,
         }],
         panes: vec![shepr_protocol::ClientShellPane {
             pane_id: test_pane_id("w1:p1"),

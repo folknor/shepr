@@ -498,9 +498,18 @@ impl ClientShellState {
                 }
                 Some(EndpointCommand::PaneFocus(PaneTarget { pane_id: *pane_id }))
             }
-            KeybindAction::Zoom => Some(EndpointCommand::PaneZoom(PaneZoomParams {
-                pane_id: focused_pane?,
-            })),
+            KeybindAction::Zoom => {
+                let pane_id = focused_pane?;
+                // A workspace of one pane has nothing to zoom over, as the
+                // context menu's disabled item says.
+                let panes_in_workspace = snapshot
+                    .panes
+                    .iter()
+                    .filter(|pane| pane.pane_id.workspace_id() == pane_id.workspace_id())
+                    .count();
+                (panes_in_workspace > 1)
+                    .then_some(EndpointCommand::PaneZoom(PaneZoomParams { pane_id }))
+            }
             KeybindAction::ClearPane => Some(EndpointCommand::PaneClear(PaneTarget {
                 pane_id: focused_pane?,
             })),

@@ -72,6 +72,7 @@ impl GlobalMenuOverlay {
             view,
             self.highlighted,
             |index| items.get(index).map(|(label, _)| format!(" {label}")),
+            |_| true,
             ctx.palette,
         )
     }

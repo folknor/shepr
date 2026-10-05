@@ -166,7 +166,9 @@ impl From<&crate::app::actions::PaneRemovalOutcome> for EndpointEffects {
 impl From<crate::app::actions::PaneZoomOutcome> for EndpointEffects {
     fn from(outcome: crate::app::actions::PaneZoomOutcome) -> Self {
         Self {
-            shell_projection_changed: outcome.focus_changed,
+            // The projection carries each workspace's zoom, so a zoom change
+            // moves it as well as a focus change.
+            shell_projection_changed: outcome.changed || outcome.focus_changed,
             pane_surface_changed: outcome.changed || outcome.focus_changed,
             focus_changed: outcome.focus_changed,
             layout_changed: outcome.changed,

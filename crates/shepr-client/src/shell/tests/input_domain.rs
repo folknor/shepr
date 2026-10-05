@@ -38,7 +38,8 @@ fn cycle_pane_uses_snapshot_order_in_prefix_mode_and_is_ignored_in_navigate_mode
         projection.panes.extend([second, third]);
         state.set_snapshot(Box::new(projection));
 
-        // A zoomed pane view can omit panes from the workspace snapshot.
+        // A pane surface can leave out panes the snapshot lists, as a zoomed
+        // workspace's does; cycling still follows the snapshot.
         let mut pane_surface = surface();
         let mut third_surface_pane = pane_surface.panes[0].clone();
         third_surface_pane.pane_id = test_pane_id("w1:p3");

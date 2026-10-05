@@ -404,12 +404,16 @@ fn draw_menu(
     view: &MenuView,
     highlighted_index: usize,
     label: impl Fn(usize) -> Option<String>,
+    enabled: impl Fn(usize) -> bool,
     palette: &Palette,
 ) -> OverlayPaint {
     panel(buffer, view.rect, palette.accent, palette.panel_bg);
     for (row, index) in &view.rows {
         let highlighted = *index == highlighted_index;
-        let style = if highlighted {
+        let style = if !enabled(*index) {
+            // A disabled item is muted and never drawn as the selection.
+            Style::default().fg(palette.overlay0).bg(palette.panel_bg)
+        } else if highlighted {
             Style::default()
                 .fg(panel_contrast_fg(palette))
                 .bg(palette.accent)

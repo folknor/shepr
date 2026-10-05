@@ -272,6 +272,65 @@ async fn workspace_rename_reprojects_without_copying_connection_config() {
 }
 
 #[tokio::test]
+async fn a_zoom_reprojects_the_workspace_zoom_and_a_lone_pane_zoom_does_nothing() {
+    let mut server = test_headless_server();
+    let workspace = shepr_mux::workspace::Workspace::test_new("zoom-projection");
+    let first_pane = workspace.tree().root();
+    server
+        .app
+        .test_state_mut()
+        .test_set_workspaces(vec![workspace]);
+    server.app.insert_test_runtime(
+        first_pane,
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+    );
+    server.app.test_state_mut().seed_bookmark_index(Some(0));
+    let first_public = server
+        .app
+        .state()
+        .pane(first_pane)
+        .expect("test pane")
+        .public_id();
+    let (control, _render) = connect_matching_test_shell(&mut server, 7);
+    let mut previous = client_shell_snapshot(&control).revision;
+    server.render_now();
+    assert!(control.try_recv().is_err());
+
+    // A lone pane has nothing to zoom over: the command changes and sends nothing.
+    let zoom =
+        |pane_id| EndpointCommand::PaneZoom(shepr_protocol::command::PaneZoomParams { pane_id });
+    assert!(!command_through_server(&mut server, 7, zoom(first_public)));
+    assert!(!server.app.state().ws(0).tree().zoomed());
+    server.render_now();
+    assert!(control.try_recv().is_err());
+
+    let second_pane = server
+        .app
+        .test_state_mut()
+        .ws_mut(0)
+        .test_split(shepr_core::layout::Direction::Horizontal);
+    server.app.insert_test_runtime(
+        second_pane,
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+    );
+    server.app.test_state_mut().mark_shell_projection_dirty();
+    let split = next_projection(&mut server, &control, &mut previous);
+    assert!(!split.workspaces[0].zoomed);
+    assert_eq!(split.panes.len(), 2);
+
+    assert!(command_through_server(&mut server, 7, zoom(first_public)));
+    let zoomed = next_projection(&mut server, &control, &mut previous);
+    assert!(zoomed.workspaces[0].zoomed);
+    // Zoom hides panes from the surface, not from the projection.
+    assert_eq!(zoomed.panes.len(), 2);
+
+    assert!(command_through_server(&mut server, 7, zoom(first_public)));
+    let unzoomed = next_projection(&mut server, &control, &mut previous);
+    assert!(!unzoomed.workspaces[0].zoomed);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn cwd_report_and_slow_probe_refresh_shell_projection() {
     let mut server = test_headless_server();
     let _input = install_focused_test_runtime(&mut server, b"BASE");

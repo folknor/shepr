@@ -82,10 +82,18 @@ impl App {
     }
 
     /// Toggles the zoom of the pane's workspace, focusing the pane first, and
-    /// moves the requester onto that workspace even when the toggle changes
-    /// nothing (a workspace of one pane has nothing to zoom over).
+    /// moves the requester onto that workspace. A workspace of one pane has
+    /// nothing to zoom over: the request is acknowledged and does nothing at
+    /// all (no focus, no navigation).
     pub(crate) fn handle_pane_zoom(&mut self, params: &PaneZoomParams) -> HandlerResult {
         let (_, pane_id) = self.endpoint_pane(&params.pane_id)?;
+        let lone = self
+            .state
+            .workspace(params.pane_id.workspace_id())
+            .is_some_and(|workspace| workspace.tree().len() <= 1);
+        if lone {
+            return Handled::done();
+        }
         let Some(outcome) = self.state.toggle_pane_zoom(pane_id) else {
             // toggle_pane_zoom returns None only when the pane is absent. Its
             // one-pane zoom no-op is handled before set_zoomed can refuse it.

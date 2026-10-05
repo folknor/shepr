@@ -47,6 +47,7 @@ pub(in crate::shell) fn snapshot() -> ClientShellSnapshot {
             branch: Some("main".into()),
             git_ahead_behind: None,
             agent_status: AgentStatus::Idle,
+            zoomed: false,
         }],
         panes: vec![ClientShellPane {
             pane_id: test_pane_id("w1:p1"),

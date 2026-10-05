@@ -471,6 +471,7 @@ mod tests {
                 branch: Some("main".into()),
                 git_ahead_behind: None,
                 agent_status: crate::AgentStatus::Idle,
+                zoomed: true,
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),

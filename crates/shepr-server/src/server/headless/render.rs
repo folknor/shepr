@@ -839,6 +839,7 @@ impl HeadlessServer {
                         .and_then(shepr_mux::workspace::Workspace::git_ahead_behind)
                         .map(|counts| (counts.ahead, counts.behind)),
                     agent_status: workspace.agent_status,
+                    zoomed: state.is_some_and(|ws| ws.tree().zoomed()),
                 }
             })
             .collect();

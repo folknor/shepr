@@ -36,6 +36,10 @@ pub struct ClientShellWorkspace {
     /// The pair stays compact at the projection boundary; the sidebar is the only reader.
     pub git_ahead_behind: Option<(usize, usize)>,
     pub agent_status: AgentStatus,
+    /// Whether the workspace shows only its focused pane. Panes are listed in
+    /// `ClientShellSnapshot::panes` whatever the zoom, so the client counts a
+    /// workspace's panes there.
+    pub zoomed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -755,7 +755,7 @@ fn pane_zoom_toggles_zoom_and_navigates() {
 }
 
 #[test]
-fn pane_zoom_of_a_single_pane_changes_nothing_but_still_navigates() {
+fn pane_zoom_of_a_single_pane_is_a_no_op() {
     let mut app = app_with_workspace();
     let root = app.state.ws(0).tree().root();
     let root_public = app.state.pane(root).expect("test precondition").public_id();
@@ -767,7 +767,8 @@ fn pane_zoom_of_a_single_pane_changes_nothing_but_still_navigates() {
         .expect("a lone pane is a valid target");
 
     assert_eq!(handled.reply, EndpointReply::Done);
-    assert_eq!(handled.navigate, Some(app.state.ws(0).id()));
+    assert_eq!(handled.navigate, None);
+    assert_eq!(handled.effects, EndpointEffects::default());
     assert!(!app.state.ws(0).tree().zoomed());
 }
 
