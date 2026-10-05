@@ -55,7 +55,6 @@ pub(super) struct ClientState {
     pub(super) repaint_pending: bool,
     pub(super) presentation_dirty: PresentationDirty,
     pub(super) pending_surface_patch: Option<shell::ClientComposedSurfacePatch>,
-    pub(super) draw_host_cursor: bool,
     /// Frame and pane surface patch writes, which repeat on every presented frame.
     pub(super) frame_write_failure: HostWriteFailure,
     /// A transient mode write is retried after the next client event.
@@ -246,21 +245,8 @@ impl ClientState {
         if self.repaint_pending {
             return Ok(SurfacePatchPresentation::FullFrameRequired);
         }
-        let rows = if self.draw_host_cursor {
-            let Some(rows) = self
-                .blit_encoder
-                .patch_rows_with_drawn_cursor(&patch.rows, patch.cursor.as_ref())
-            else {
-                return Ok(SurfacePatchPresentation::FullFrameRequired);
-            };
-            rows
-        } else {
-            patch.rows
-        };
-        let Some(encoded) =
-            self.blit_encoder
-                .encode_patch(&rows, patch.cursor.as_ref(), self.draw_host_cursor)
-        else {
+        let rows = patch.rows;
+        let Some(encoded) = self.blit_encoder.encode_patch(&rows, patch.cursor.as_ref()) else {
             return Ok(SurfacePatchPresentation::FullFrameRequired);
         };
         if !encoded.bytes.is_empty() {
@@ -351,17 +337,7 @@ impl ClientState {
     /// Callers have no separate recovery action, so the write result stays owned by this state;
     /// the returned flag only says whether the host took the frame.
     fn write_frame(&mut self, frame_data: shepr_protocol::FrameData) -> bool {
-        let frame_data = if self.draw_host_cursor {
-            render_ansi::frame_with_drawn_cursor(frame_data)
-        } else {
-            frame_data
-        };
-        let encoded = if self.draw_host_cursor {
-            self.blit_encoder
-                .encode_with_suppressed_visible_cursor(&frame_data, self.repaint_pending)
-        } else {
-            self.blit_encoder.encode(&frame_data, self.repaint_pending)
-        };
+        let encoded = self.blit_encoder.encode(&frame_data, self.repaint_pending);
         let written = self.write_composed_output(&encoded.bytes);
         // Built only for a failed write: every frame passes through here.
         let context = written
@@ -515,7 +491,6 @@ impl ClientState {
             repaint_pending: false,
             presentation_dirty: PresentationDirty::Clean,
             pending_surface_patch: None,
-            draw_host_cursor: false,
             frame_write_failure: HostWriteFailure::default(),
             mode_write_failure: HostWriteFailure::default(),
             retry_host_modes: false,

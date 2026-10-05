@@ -64,23 +64,6 @@ impl BlitEncoder {
     }
 
     pub fn encode(&self, frame: &FrameData, repaint: bool) -> EncodedBlit {
-        self.encode_inner(frame, repaint, false)
-    }
-
-    pub fn encode_with_suppressed_visible_cursor(
-        &self,
-        frame: &FrameData,
-        repaint: bool,
-    ) -> EncodedBlit {
-        self.encode_inner(frame, repaint, true)
-    }
-
-    fn encode_inner(
-        &self,
-        frame: &FrameData,
-        repaint: bool,
-        suppress_visible_cursor: bool,
-    ) -> EncodedBlit {
         let previous_frame = self.last_frame.as_ref();
         let prev = if repaint { None } else { previous_frame };
         let clear_before_full_redraw = previous_frame.is_none();
@@ -96,7 +79,6 @@ impl BlitEncoder {
             &mut next_last_visible_cursor,
             &mut next_last_cursor_shape,
             clear_before_full_redraw,
-            suppress_visible_cursor,
         ) {
             tracing::warn!(
                 event = "blit.frame_encode_failed",
@@ -130,14 +112,13 @@ impl BlitEncoder {
         &self,
         rows: &[PaneSurfacePatchRow],
         cursor: Option<&CursorState>,
-        suppress_visible_cursor: bool,
     ) -> Option<EncodedBlit> {
         let frame = self.last_frame.as_ref()?;
         if !patch_rows_fit(frame, rows) {
             return None;
         }
-        // Metadata revisions need no terminal output. Keep visible cursors on
-        // the normal path because their suppression policy can change.
+        // Metadata revisions need no terminal output. A visible cursor always
+        // takes the normal path, which re-asserts its position and visibility.
         if rows.is_empty()
             && cursor == frame.cursor()
             && cursor.is_none_or(|cursor| !cursor.visible)
@@ -160,57 +141,12 @@ impl BlitEncoder {
             cursor,
             &mut next_last_visible_cursor,
             &mut next_last_cursor_shape,
-            suppress_visible_cursor,
         ));
         Some(EncodedBlit {
             bytes,
             next_last_visible_cursor,
             next_last_cursor_shape,
         })
-    }
-
-    pub fn patch_rows_with_drawn_cursor(
-        &self,
-        rows: &[PaneSurfacePatchRow],
-        cursor: Option<&CursorState>,
-    ) -> Option<Vec<PaneSurfacePatchRow>> {
-        let frame = self.last_frame.as_ref()?;
-        let mut rows = rows.to_vec();
-        let previous = frame
-            .cursor()
-            .filter(|cursor| cursor.visible)
-            .map(|cursor| clamp_cursor_position(frame_size(frame), cursor.x, cursor.y));
-        let next = cursor
-            .filter(|cursor| cursor.visible)
-            .map(|cursor| clamp_cursor_position(frame_size(frame), cursor.x, cursor.y));
-
-        if let Some((x, y)) = previous.filter(|position| Some(*position) != next)
-            && patch_cell_mut(&mut rows, x, y).is_none()
-        {
-            let mut cell = frame.cells().get(frame_cell_index(frame, x, y)?)?.clone();
-            cell.style.flags.toggle(WireStyleFlags::REVERSED);
-            rows.push(PaneSurfacePatchRow {
-                x,
-                y,
-                cells: vec![cell],
-            });
-        }
-        if let Some((x, y)) = next {
-            if let Some(cell) = patch_cell_mut(&mut rows, x, y) {
-                cell.style.flags.toggle(WireStyleFlags::REVERSED);
-            } else if previous != next {
-                let mut cell = frame.cells().get(frame_cell_index(frame, x, y)?)?.clone();
-                cell.style.flags.toggle(WireStyleFlags::REVERSED);
-                rows.push(PaneSurfacePatchRow {
-                    x,
-                    y,
-                    cells: vec![cell],
-                });
-            }
-        }
-        // Cursor cells were appended; restore the row-major order spans require.
-        shepr_protocol::sort_patch_rows(&mut rows);
-        Some(rows)
     }
 
     pub fn commit_patch(
@@ -242,19 +178,6 @@ impl BlitEncoder {
         self.last_cursor_shape = encoded.next_last_cursor_shape;
         true
     }
-}
-
-pub fn frame_with_drawn_cursor(mut frame: FrameData) -> FrameData {
-    if let Some(cursor) = frame.cursor().filter(|cursor| cursor.visible) {
-        let (x, y) = clamp_cursor_position(frame_size(&frame), cursor.x, cursor.y);
-        let idx = (y as usize)
-            .saturating_mul(frame.width() as usize)
-            .saturating_add(x as usize);
-        if let Some(cell) = frame.cells_mut().get_mut(idx) {
-            cell.style.flags.toggle(WireStyleFlags::REVERSED);
-        }
-    }
-    frame
 }
 
 // ---------------------------------------------------------------------------
@@ -345,15 +268,6 @@ fn frame_cell_index(frame: &FrameData, x: u16, y: u16) -> Option<usize> {
         .then(|| usize::from(y) * usize::from(frame.width()) + usize::from(x))
 }
 
-fn patch_cell_mut(rows: &mut [PaneSurfacePatchRow], x: u16, y: u16) -> Option<&mut CellData> {
-    rows.iter_mut().rev().find_map(|row| {
-        if row.y != y || x < row.x {
-            return None;
-        }
-        row.cells.get_mut(usize::from(x - row.x))
-    })
-}
-
 fn patch_cell_at(rows: &[PaneSurfacePatchRow], x: u16, y: u16) -> Option<&CellData> {
     rows.iter().find_map(|row| {
         if row.y != y || x < row.x {
@@ -391,7 +305,6 @@ fn blit_patch_to(
     cursor: Option<&CursorState>,
     last_visible_cursor: &mut Option<(u16, u16)>,
     last_cursor_shape: &mut u8,
-    suppress_visible_cursor: bool,
 ) -> io::Result<()> {
     write!(
         writer,
@@ -417,10 +330,7 @@ fn blit_patch_to(
         writer.write_all(b"\x1b[0m")?;
     }
 
-    let mut host_cursor = resolve_host_cursor_state(frame_size(frame), cursor, last_visible_cursor);
-    if suppress_visible_cursor && host_cursor.visible {
-        host_cursor.visible = false;
-    }
+    let host_cursor = resolve_host_cursor_state(frame_size(frame), cursor, last_visible_cursor);
     write_host_cursor_state(&mut writer, host_cursor, last_cursor_shape)?;
     write!(
         writer,
@@ -438,7 +348,6 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     last_visible_cursor: &mut Option<(u16, u16)>,
     last_cursor_shape: &mut u8,
     clear_before_full_redraw: bool,
-    suppress_visible_cursor: bool,
 ) -> io::Result<()> {
     // On first frame or size change, do a full redraw; otherwise diff against
     // the previous frame.
@@ -477,11 +386,8 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     // cell rather than the focused pane's input position. When the focused pane
     // hides its cursor, still park the host cursor intentionally so IMEs do not
     // anchor to whichever cell happened to be painted last.
-    let mut host_cursor =
+    let host_cursor =
         resolve_host_cursor_state(frame_size(frame), frame.cursor(), last_visible_cursor);
-    if suppress_visible_cursor && host_cursor.visible {
-        host_cursor.visible = false;
-    }
     write_host_cursor_state(&mut writer, host_cursor, last_cursor_shape)?;
 
     // End the synchronized output block immediately after the final cursor
@@ -924,7 +830,6 @@ mod tests {
             prev,
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            false,
         );
     }
 
@@ -934,7 +839,6 @@ mod tests {
         prev: Option<&FrameData>,
         last_visible_cursor: &mut Option<(u16, u16)>,
         last_cursor_shape: &mut u8,
-        suppress_visible_cursor: bool,
     ) {
         blit_frame_to_with_cursor_memory_and_clear_policy(
             writer,
@@ -943,7 +847,6 @@ mod tests {
             last_visible_cursor,
             last_cursor_shape,
             true,
-            suppress_visible_cursor,
         )
         .expect("tests blit into a Vec, which cannot fail to write");
     }
@@ -1044,7 +947,7 @@ mod tests {
             cells: vec![pane_cell("\u{26a0}\u{fe0f}", GridCellWidth::One)],
         }];
         let patch = encoder
-            .encode_patch(&rows, None, false)
+            .encode_patch(&rows, None)
             .expect("single-cell pane patch is valid");
         assert_eq!(patch.bytes, diff.bytes);
     }
@@ -1343,7 +1246,6 @@ mod tests {
             None,
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            false,
         );
 
         let mut second_output = Vec::new();
@@ -1353,7 +1255,6 @@ mod tests {
             Some(&visible),
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            false,
         );
 
         let second_output_str = std::str::from_utf8(&second_output).expect("test precondition");
@@ -1404,7 +1305,6 @@ mod tests {
             None,
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            false,
         );
 
         let output_str = String::from_utf8(output).expect("test precondition");
@@ -1416,68 +1316,6 @@ mod tests {
             trailing_cursor, "\x1b[2;3H\x1b[?25h",
             "should expose only the final cursor state after synchronized output"
         );
-    }
-
-    #[test]
-    fn drawn_cursor_reverses_visible_cursor_cell() {
-        let frame = make_frame_with_cursor(
-            3,
-            3,
-            vec![default_cell("A"); 9],
-            Some(CursorState {
-                x: 2,
-                y: 1,
-                visible: true,
-                shape: shepr_protocol::CursorShapeParam::SteadyBar,
-            }),
-        );
-        let drawn = frame_with_drawn_cursor(frame.clone());
-
-        assert!(
-            drawn.cells()[5]
-                .style
-                .flags
-                .contains(WireStyleFlags::REVERSED)
-        );
-        assert!(
-            !frame.cells()[5]
-                .style
-                .flags
-                .contains(WireStyleFlags::REVERSED)
-        );
-
-        let encoded = BlitEncoder::new().encode_with_suppressed_visible_cursor(&drawn, false);
-        let output_str = String::from_utf8(encoded.bytes).expect("test precondition");
-
-        assert!(
-            output_str.contains("\x1b[2;3H\x1b[6 q\x1b[?25l"),
-            "drawn cursor mode should park the host cursor hidden at the focused cursor position"
-        );
-        assert!(
-            !output_str.contains("\x1b[?25h"),
-            "drawn cursor mode should not show the host cursor"
-        );
-        assert!(
-            output_str.contains("\x1b[0;7;39;49mA"),
-            "drawn cursor should be emitted as reverse-video cell content"
-        );
-    }
-
-    #[test]
-    fn drawn_cursor_ignores_hidden_cursor() {
-        let frame = make_frame_with_cursor(
-            1,
-            1,
-            vec![default_cell("A")],
-            Some(CursorState {
-                x: 0,
-                y: 0,
-                visible: false,
-                shape: shepr_protocol::CursorShapeParam::Default,
-            }),
-        );
-
-        assert_eq!(frame_with_drawn_cursor(frame.clone()), frame);
     }
 
     #[test]
@@ -1503,7 +1341,6 @@ mod tests {
             None,
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            false,
         );
 
         let output_str = String::from_utf8(output).expect("test precondition");
@@ -1558,7 +1395,6 @@ mod tests {
             None,
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            false,
         );
         output.clear();
         blit_frame_to_with_cursor_memory(
@@ -1567,7 +1403,6 @@ mod tests {
             Some(&visible),
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            false,
         );
 
         let output_str = String::from_utf8(output).expect("test precondition");
@@ -1772,7 +1607,7 @@ mod tests {
     #[test]
     fn encoder_without_a_committed_frame_has_no_patch() {
         let encoder = BlitEncoder::new();
-        assert!(encoder.encode_patch(&[], None, false).is_none());
+        assert!(encoder.encode_patch(&[], None).is_none());
     }
 
     #[test]
@@ -1817,7 +1652,7 @@ mod tests {
 
         let full_diff = encoder.encode(&expected, false);
         let patch = encoder
-            .encode_patch(&rows, cursor.as_ref(), false)
+            .encode_patch(&rows, cursor.as_ref())
             .expect("valid retained patch");
         assert_eq!(patch.bytes, full_diff.bytes);
         assert!(encoder.commit_patch(&rows, cursor, &patch));
@@ -1845,7 +1680,7 @@ mod tests {
 
         let full_diff = encoder.encode(&expected, false);
         let patch = encoder
-            .encode_patch(&rows, None, false)
+            .encode_patch(&rows, None)
             .expect("valid retained patch");
         assert_eq!(patch.bytes, full_diff.bytes);
     }
@@ -1873,10 +1708,10 @@ mod tests {
             },
         ];
 
-        assert!(encoder.encode_patch(&rows, None, false).is_none());
+        assert!(encoder.encode_patch(&rows, None).is_none());
         let mut reversed = rows.clone();
         reversed.reverse();
-        assert!(encoder.encode_patch(&reversed, None, false).is_none());
+        assert!(encoder.encode_patch(&reversed, None).is_none());
 
         // Disjoint runs are still rejected out of row-major order.
         let tail = PaneSurfacePatchRow {
@@ -1885,17 +1720,17 @@ mod tests {
             cells: vec![default_cell("Z")],
         };
         let unsorted = vec![tail.clone(), rows[0].clone()];
-        assert!(encoder.encode_patch(&unsorted, None, false).is_none());
+        assert!(encoder.encode_patch(&unsorted, None).is_none());
         let empty = vec![PaneSurfacePatchRow {
             x: 0,
             y: 0,
             cells: Vec::new(),
         }];
-        assert!(encoder.encode_patch(&empty, None, false).is_none());
+        assert!(encoder.encode_patch(&empty, None).is_none());
 
         // Touching runs in row-major order are disjoint.
         let sorted = vec![rows[0].clone(), tail];
-        assert!(encoder.encode_patch(&sorted, None, false).is_some());
+        assert!(encoder.encode_patch(&sorted, None).is_some());
     }
 
     #[test]
@@ -1915,7 +1750,7 @@ mod tests {
             let initial = encoder.encode(&frame, false);
             encoder.commit(frame.clone(), &initial);
             let encoded = encoder
-                .encode_patch(&[], cursor.as_ref(), false)
+                .encode_patch(&[], cursor.as_ref())
                 .expect("test precondition");
             assert!(encoded.bytes.is_empty());
             assert!(encoder.commit_patch(&[], cursor, &encoded));
@@ -1936,70 +1771,11 @@ mod tests {
             },
         ] {
             let encoded = encoder
-                .encode_patch(&[], Some(&cursor), false)
+                .encode_patch(&[], Some(&cursor))
                 .expect("test precondition");
             assert!(String::from_utf8_lossy(&encoded.bytes).contains("\x1b[1;3H"));
             assert!(encoder.commit_patch(&[], Some(cursor), &encoded));
         }
-        // Switching to a client-drawn cursor must still hide the visible host cursor.
-        let encoded = encoder
-            .encode_patch(
-                &[],
-                encoder
-                    .last_frame
-                    .as_ref()
-                    .expect("test precondition")
-                    .cursor(),
-                true,
-            )
-            .expect("test precondition");
-        assert!(String::from_utf8_lossy(&encoded.bytes).contains("\x1b[?25l"));
-    }
-
-    #[test]
-    fn retained_patch_preserves_the_client_drawn_cursor_overlay() {
-        let mut previous = make_frame(
-            3,
-            1,
-            vec![default_cell("a"), default_cell("b"), default_cell("c")],
-        );
-        previous.set_cursor(Some(CursorState {
-            x: 0,
-            y: 0,
-            visible: true,
-            shape: shepr_protocol::CursorShapeParam::Default,
-        }));
-        let previous_drawn = frame_with_drawn_cursor(previous.clone());
-        let mut encoder = BlitEncoder::new();
-        let initial = encoder.encode_with_suppressed_visible_cursor(&previous_drawn, false);
-        encoder.commit(previous_drawn, &initial);
-
-        let rows = vec![PaneSurfacePatchRow {
-            x: 0,
-            y: 0,
-            cells: vec![default_cell("A"), default_cell("b"), default_cell("c")],
-        }];
-        let cursor = Some(CursorState {
-            x: 1,
-            y: 0,
-            visible: true,
-            shape: shepr_protocol::CursorShapeParam::Default,
-        });
-        let drawn_rows = encoder
-            .patch_rows_with_drawn_cursor(&rows, cursor.as_ref())
-            .expect("drawn cursor patch rows");
-        let mut expected = previous;
-        expected.cells_mut()[0..3].clone_from_slice(&rows[0].cells);
-        expected.set_cursor(cursor.clone());
-        let expected = frame_with_drawn_cursor(expected);
-
-        let full_diff = encoder.encode_with_suppressed_visible_cursor(&expected, false);
-        let patch = encoder
-            .encode_patch(&drawn_rows, cursor.as_ref(), true)
-            .expect("valid drawn cursor patch");
-        assert_eq!(patch.bytes, full_diff.bytes);
-        assert!(encoder.commit_patch(&drawn_rows, cursor, &patch));
-        assert!(encoder.is_current(&expected));
     }
 
     #[test]
@@ -2176,7 +1952,6 @@ mod tests {
             None,
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            false,
         );
         output.clear();
         blit_frame_to_with_cursor_memory(
@@ -2185,7 +1960,6 @@ mod tests {
             Some(&visible),
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            false,
         );
 
         let output_str = String::from_utf8(output).expect("test precondition");
@@ -2211,7 +1985,6 @@ mod tests {
             None,
             &mut last_visible_cursor,
             &mut last_cursor_shape,
-            false,
         );
 
         let output_str = String::from_utf8(output).expect("test precondition");

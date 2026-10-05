@@ -15,7 +15,7 @@ use crate::terminal_geometry::{
     query_host_cell_size, query_host_terminal_appearance, query_host_terminal_theme,
     resize_poll_loop,
 };
-use crate::terminal_setup::{TerminalGuard, setup_terminal, should_draw_host_cursor};
+use crate::terminal_setup::{TerminalGuard, setup_terminal};
 use crate::{endpoint, fatal_panic, input, shell, state, terminal_geometry, terminal_setup};
 use shepr_protocol::ClientMessage;
 use shepr_termio::blit as render_ansi;
@@ -281,7 +281,6 @@ impl Launched {
             ),
         };
         let host_geometry = SharedHostGeometry::new(initial_host_geometry);
-        let draw_host_cursor = should_draw_host_cursor(settings.host_cursor());
 
         let host_modes = terminal_guard.host_modes();
         let mut state = ClientState {
@@ -295,7 +294,6 @@ impl Launched {
             repaint_pending: false,
             presentation_dirty: state::PresentationDirty::Clean,
             pending_surface_patch: None,
-            draw_host_cursor,
             frame_write_failure: HostWriteFailure::default(),
             mode_write_failure: HostWriteFailure::default(),
             retry_host_modes: false,

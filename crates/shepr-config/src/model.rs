@@ -23,14 +23,6 @@ pub enum StatusIndicatorStyle {
     Symbols,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum HostCursorModeConfig {
-    #[default]
-    Native,
-    Drawn,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RightClickPassthroughModifierConfig(Option<KeyModifiers>);
 
@@ -304,8 +296,6 @@ pub struct ClientUiConfig {
     pub mouse_capture: bool,
     /// Copy text selected with the mouse. Default: true.
     pub copy_on_select: bool,
-    /// Host cursor policy. Default: native.
-    pub host_cursor: HostCursorModeConfig,
     /// Modifier that lets right-click gestures pass through to pane apps. Empty disables it.
     pub right_click_passthrough_modifier: RightClickPassthroughModifierConfig,
     /// Force a full host-terminal redraw when the outer terminal regains focus. Default: true.
@@ -460,7 +450,6 @@ impl Default for ClientUiConfig {
             sidebar_start_collapsed: None,
             mouse_capture: true,
             copy_on_select: true,
-            host_cursor: HostCursorModeConfig::Native,
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,

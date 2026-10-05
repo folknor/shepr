@@ -224,13 +224,6 @@ fn write_dec_mode(
     writer.flush()
 }
 
-pub(super) fn should_draw_host_cursor(mode: shepr_config::HostCursorModeConfig) -> bool {
-    match mode {
-        shepr_config::HostCursorModeConfig::Native => false,
-        shepr_config::HostCursorModeConfig::Drawn => true,
-    }
-}
-
 /// Whether applying the mouse mode writes only a change or repeats the mode
 /// the host already has (after a host event that may have reset it).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1266,19 +1259,6 @@ mod tests {
         assert_eq!(mode.desired(), HostMouseCapture::Pixels);
         mode.clear_endpoint_request();
         assert_eq!(mode.desired(), HostMouseCapture::Cells);
-    }
-
-    #[test]
-    fn host_cursor_policy_native_and_drawn_ignore_the_terminal() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        env.set("TERM_PROGRAM", "WezTerm");
-
-        assert!(!should_draw_host_cursor(
-            shepr_config::HostCursorModeConfig::Native
-        ));
-        assert!(should_draw_host_cursor(
-            shepr_config::HostCursorModeConfig::Drawn
-        ));
     }
 
     #[test]

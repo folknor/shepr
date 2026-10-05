@@ -32,7 +32,7 @@ pub use self::{
         format_key_chord, parse_key_chord,
     },
     model::{
-        AgentPanelSortConfig, HostCursorModeConfig, NewTerminalCwdConfig, PaneBordersConfig,
+        AgentPanelSortConfig, NewTerminalCwdConfig, PaneBordersConfig,
         RightClickPassthroughModifierConfig, SidebarBounds, SidebarWidth, StatusIndicatorStyle,
     },
     sidebar::{
@@ -375,7 +375,6 @@ mod tests {
             sidebar_start_collapsed => _,
             mouse_capture => _,
             copy_on_select => _,
-            host_cursor => _,
             right_click_passthrough_modifier => _,
             redraw_on_focus_gained => _,
             mouse_scroll_lines => _,
@@ -596,21 +595,5 @@ mod tests {
             diag.key()
                 .is_some_and(|key| key.to_string() == "keys.prefix")
         }));
-    }
-
-    #[test]
-    fn ui_host_cursor_defaults_to_native_and_parses_overrides() {
-        let default_config = ClientConfig::default();
-        assert_eq!(default_config.ui.host_cursor, HostCursorModeConfig::Native);
-
-        let native: ClientConfig =
-            toml::from_str("[ui]\nhost_cursor = 'native'\n").expect("test precondition");
-        assert_eq!(native.ui.host_cursor, HostCursorModeConfig::Native);
-
-        let drawn: ClientConfig =
-            toml::from_str("[ui]\nhost_cursor = 'drawn'\n").expect("test precondition");
-        assert_eq!(drawn.ui.host_cursor, HostCursorModeConfig::Drawn);
-
-        assert!(toml::from_str::<ClientConfig>("[ui]\nhost_cursor = 'auto'\n").is_err());
     }
 }

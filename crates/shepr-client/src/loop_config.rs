@@ -1,7 +1,6 @@
 /// Client behavior resolved once from the launch config.
 #[derive(Clone, Copy)]
 pub(super) struct ClientSettings {
-    host_cursor: shepr_config::HostCursorModeConfig,
     mouse_capture_active: bool,
     modify_other_keys_mode: Option<shepr_term::ModifyOtherKeysLevel>,
     clipboard_route: shepr_platform::ClipboardRoute,
@@ -26,15 +25,10 @@ impl ClientSettings {
     ) -> Self {
         let ui = config.ui();
         Self {
-            host_cursor: ui.host_cursor,
             mouse_capture_active: ui.mouse_capture,
             modify_other_keys_mode,
             clipboard_route,
         }
-    }
-
-    pub(super) fn host_cursor(&self) -> shepr_config::HostCursorModeConfig {
-        self.host_cursor
     }
 
     pub(super) fn mouse_capture_active(&self) -> bool {
