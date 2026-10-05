@@ -238,7 +238,7 @@ fn render_pane_borders(
         }
     }
 
-    render_pane_border_titles(app, ws, pane_infos, frame);
+    render_pane_border_titles(ws, pane_infos, frame);
 }
 
 fn add_split_border_cells(
@@ -377,7 +377,6 @@ fn mark_focused_pane_cells(cells: &mut BorderGrid, info: &PaneSurface, pane_gaps
 }
 
 fn render_pane_border_titles(
-    app: &AppState,
     ws: &shepr_mux::workspace::Workspace,
     pane_infos: &[PaneSurface],
     frame: &mut FrameData,
@@ -390,12 +389,8 @@ fn render_pane_border_titles(
         let Some(title) = ws
             .tree()
             .pane(info.id)
-            .and_then(|record| {
-                record
-                    .terminal()
-                    .border_label(app.settings().show_agent_labels_on_pane_borders)
-            })
-            .and_then(|label| pane_border_title(&label, info.rect.width))
+            .and_then(|record| record.terminal().manual_label_value())
+            .and_then(|label| pane_border_title(label, info.rect.width))
         else {
             continue;
         };
@@ -677,7 +672,6 @@ mod tests {
     /// takes its border's role once it is in the frame.
     #[test]
     fn a_pane_title_takes_its_border_role() {
-        let app = AppState::test_new();
         let mut ws = Workspace::test_new("test");
         let pane = ws.tree().root();
         ws.pane_mut(pane)
@@ -698,7 +692,7 @@ mod tests {
             (false, ChromeRole::Border),
         ] {
             let mut frame = FrameData::blank(12, 3).expect("test frame size is valid");
-            render_pane_border_titles(&app, &ws, &[surface(is_focused)], &mut frame);
+            render_pane_border_titles(&ws, &[surface(is_focused)], &mut frame);
             let top: String = frame.cells()[..12]
                 .iter()
                 .map(|cell| cell.symbol.as_str())

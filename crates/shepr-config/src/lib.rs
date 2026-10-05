@@ -411,7 +411,6 @@ mod tests {
         record_config_fields!(fields, ui, "ui", ServerUiConfig {
             pane_scrollbars => _,
             pane_gaps => _,
-            show_agent_labels_on_pane_borders => _,
         });
         record_config_fields!(fields, advanced, "advanced", AdvancedConfig {
             scrollback_limit_bytes => _,

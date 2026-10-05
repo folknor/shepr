@@ -355,7 +355,6 @@ mod tests {
             "[experimental]\ncjk_ime_cursor_shape = 'bar'\n",
             "[ui]\npane_scrollbars = true\n",
             "[ui]\npane_gaps = true\n",
-            "[ui]\nshow_agent_labels_on_pane_borders = true\n",
         ] {
             assert!(server_from_str(source).is_ok(), "{source}");
             let errors = client_from_str(source).expect_err("server setting in client file");
@@ -386,6 +385,7 @@ mod tests {
             "[experimental]\npane_history = true\n",
             "[ui]\naccent = 'cyan'\n",
             "[ui]\nwindow_title = 'shepr'\n",
+            "[ui]\nshow_agent_labels_on_pane_borders = true\n",
             "[theme]\nname = 'nord'\n",
             "[retired]\nanything = 1\n",
         ] {

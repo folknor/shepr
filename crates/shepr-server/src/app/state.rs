@@ -87,7 +87,6 @@ pub(crate) struct AppSettings {
     pub(crate) headless_size: shepr_core::geometry::GridSize,
     pub(crate) pane_scrollbars: bool,
     pub(crate) pane_gaps: bool,
-    pub(crate) show_agent_labels_on_pane_borders: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`.
     pub(crate) reveal_hidden_cursor_for_cjk_ime: bool,
@@ -107,7 +106,6 @@ impl AppSettings {
             headless_size: config.headless_size(),
             pane_scrollbars: ui.pane_scrollbars,
             pane_gaps: ui.pane_gaps,
-            show_agent_labels_on_pane_borders: ui.show_agent_labels_on_pane_borders,
             reveal_hidden_cursor_for_cjk_ime: experimental.reveal_hidden_cursor_for_cjk_ime,
             cjk_ime_agents: AgentFilter::from_config(&experimental.cjk_ime_agents),
             cjk_ime_cursor_shape: shepr_protocol::CursorShapeParam::from_decscusr(

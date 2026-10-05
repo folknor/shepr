@@ -572,7 +572,6 @@ greater than zero, each at most 4096, and together at most 4194304 cells.
 |---|---|---|---|
 | `pane_scrollbars` | boolean | `true` | Draw interactive scrollbars beside panes. Turn off to reclaim the column and keep it out of selections the terminal makes itself. |
 | `pane_gaps` | boolean | `true` | Keep split panes visually apart instead of sharing divider borders. |
-| `show_agent_labels_on_pane_borders` | boolean | `false` | Show the detected agent's name in a split pane's border when the pane has no name of its own. |
 
 ## [experimental]
 

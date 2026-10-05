@@ -189,8 +189,6 @@ pub struct ServerUiConfig {
     pub pane_scrollbars: bool,
     /// Keep split panes visually separated instead of sharing divider borders. Default: true.
     pub pane_gaps: bool,
-    /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
-    pub show_agent_labels_on_pane_borders: bool,
 }
 
 /// Cursor shape (DECSCUSR) used for the forced IME anchor.
@@ -318,7 +316,6 @@ impl Default for ServerUiConfig {
         Self {
             pane_scrollbars: true,
             pane_gaps: true,
-            show_agent_labels_on_pane_borders: false,
         }
     }
 }
@@ -431,18 +428,15 @@ startup_per_agent_delay_ms = 0
         let default_config = ServerConfig::default();
         assert!(default_config.ui.pane_scrollbars);
         assert!(default_config.ui.pane_gaps);
-        assert!(!default_config.ui.show_agent_labels_on_pane_borders);
 
         let toml = r#"
 [ui]
 pane_scrollbars = false
 pane_gaps = true
-show_agent_labels_on_pane_borders = true
 "#;
         let config: ServerConfig = toml::from_str(toml).expect("test precondition");
         assert!(!config.ui.pane_scrollbars);
         assert!(config.ui.pane_gaps);
-        assert!(config.ui.show_agent_labels_on_pane_borders);
     }
 
     #[test]

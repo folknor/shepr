@@ -240,7 +240,6 @@ mod detection;
 mod hooks;
 mod init;
 mod names;
-mod presentation;
 mod sessions;
 
 #[cfg(test)]
