@@ -315,33 +315,30 @@ fn navigate_mode_ignores_every_key_but_its_own() {
         &[0x02],
         b"w",
     ];
-    for config in [ClientConfig::default(), {
-        let mut config = ClientConfig::default();
-        config.ui.confirm_close = false;
-        config
-    }] {
-        let (mut state, remote) = navigation_state(with_agents(workspaces(2), &["w1"]), &config);
-        state.compose(100, 28).expect("test precondition");
-        enter_navigation(&mut state);
-        // The presented machine's workspace, the other machine's, then an agent.
-        for steps in [0, 3, 1] {
-            for _ in 0..steps {
-                preview_key(&mut state, b"\x1b[B");
-            }
-            if steps == 3 {
-                assert_selected(&state, &remote, "w2");
-            }
-            for key in ignored {
-                ignored_navigate_key(&mut state, key);
-            }
-            assert!(state.notices.visible().is_none());
+    let (mut state, remote) = navigation_state(
+        with_agents(workspaces(2), &["w1"]),
+        &ClientConfig::default(),
+    );
+    state.compose(100, 28).expect("test precondition");
+    enter_navigation(&mut state);
+    // The presented machine's workspace, the other machine's, then an agent.
+    for steps in [0, 3, 1] {
+        for _ in 0..steps {
+            preview_key(&mut state, b"\x1b[B");
         }
-        let selection = state.mode.preview().expect("an agent is selected");
-        assert!(selection.location.pane_id().is_some());
-        // Its own keys still work.
-        preview_key(&mut state, b"\x1b");
-        assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
+        if steps == 3 {
+            assert_selected(&state, &remote, "w2");
+        }
+        for key in ignored {
+            ignored_navigate_key(&mut state, key);
+        }
+        assert!(state.notices.visible().is_none());
     }
+    let selection = state.mode.preview().expect("an agent is selected");
+    assert!(selection.location.pane_id().is_some());
+    // Its own keys still work.
+    preview_key(&mut state, b"\x1b");
+    assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
 }
 
 /// Workspace actions apply to the focused workspace, never a navigate selection: the

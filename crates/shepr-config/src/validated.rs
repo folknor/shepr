@@ -95,7 +95,6 @@ pub struct ValidatedClientUiConfig {
     pub sidebar_start_collapsed: Setting<bool>,
     pub mouse_capture: bool,
     pub copy_on_select: bool,
-    pub confirm_close: bool,
     pub sidebar: super::SidebarConfig,
 }
 
@@ -367,7 +366,6 @@ impl ValidatedClientUiConfig {
                 .map_or(Setting::Default(false), Setting::Explicit),
             mouse_capture: config.mouse_capture,
             copy_on_select: config.copy_on_select,
-            confirm_close: config.confirm_close,
             sidebar: config.sidebar.clone(),
         }
     }

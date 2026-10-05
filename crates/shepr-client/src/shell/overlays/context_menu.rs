@@ -268,7 +268,7 @@ impl ClientShellState {
     ) {
         match *target {
             ContextMenuTarget::Workspace { workspace_id, .. } => {
-                self.activate_workspace_context_action(workspace_id, action, outcome);
+                self.activate_workspace_context_action(workspace_id, action);
             }
             ContextMenuTarget::Pane {
                 pane_id,
@@ -290,7 +290,6 @@ impl ClientShellState {
         &mut self,
         workspace_id: shepr_protocol::WorkspaceId,
         action: ContextMenuAction,
-        outcome: &mut ClientShellInput,
     ) {
         match action {
             ContextMenuAction::Rename => {
@@ -313,16 +312,7 @@ impl ClientShellState {
                 }
             }
             ContextMenuAction::Close => {
-                if self.config.confirm_close {
-                    self.open_confirm_close_overlay(workspace_id);
-                } else {
-                    self.push_endpoint_command(
-                        shepr_protocol::command::EndpointCommand::WorkspaceClose(
-                            shepr_protocol::command::WorkspaceCloseParams { workspace_id },
-                        ),
-                        outcome,
-                    );
-                }
+                self.open_confirm_close_overlay(workspace_id);
             }
             _ => {}
         }

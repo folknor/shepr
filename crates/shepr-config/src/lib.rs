@@ -360,7 +360,6 @@ mod tests {
             sidebar_start_collapsed => _,
             mouse_capture => _,
             copy_on_select => _,
-            confirm_close => _,
             sidebar => sidebar,
         });
         record_config_fields!(fields, sidebar, "ui.sidebar", SidebarConfig {

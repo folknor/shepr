@@ -68,16 +68,7 @@ impl ClientShellState {
                 }
                 if action == shepr_termio::input::KeybindAction::CloseWorkspace {
                     if let Some(workspace_id) = self.workspace_action_id() {
-                        if self.config.confirm_close {
-                            self.open_confirm_close_overlay(workspace_id);
-                        } else {
-                            self.push_endpoint_command(
-                                EndpointCommand::WorkspaceClose(
-                                    shepr_protocol::command::WorkspaceCloseParams { workspace_id },
-                                ),
-                                outcome,
-                            );
-                        }
+                        self.open_confirm_close_overlay(workspace_id);
                     }
                     outcome.repaint = true;
                     return;

@@ -182,8 +182,6 @@ pub struct ClientUiConfig {
     pub mouse_capture: bool,
     /// Copy text selected with the mouse. Default: true.
     pub copy_on_select: bool,
-    /// Ask for confirmation before closing a workspace. Default: true.
-    pub confirm_close: bool,
     /// Expanded sidebar row composition.
     pub sidebar: SidebarConfig,
 }
@@ -321,7 +319,6 @@ impl Default for ClientUiConfig {
             sidebar_start_collapsed: None,
             mouse_capture: true,
             copy_on_select: true,
-            confirm_close: true,
             sidebar: SidebarConfig::default(),
         }
     }

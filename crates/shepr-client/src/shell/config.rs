@@ -19,7 +19,6 @@ pub(crate) struct ClientShellConfig {
     /// The hue of each endpoint; the local server's is the palette's accent.
     pub(in crate::shell) host_hues: HostHues,
     pub(in crate::shell) keybinds: LiveKeybindConfig,
-    pub(in crate::shell) confirm_close: bool,
     pub(in crate::shell) mouse_capture: bool,
     pub(in crate::shell) preferences_path: Option<std::path::PathBuf>,
     pub(in crate::shell) preferences: preferences::ClientChromePreferences,
@@ -60,7 +59,6 @@ impl ClientShellConfig {
             host_hues,
             // One validation pass; the launch already rejected invalid bindings.
             keybinds,
-            confirm_close: config.confirm_close,
             mouse_capture: config.mouse_capture,
             preferences_path: None,
             preferences: preferences::ClientChromePreferences::default()
