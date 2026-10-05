@@ -5,12 +5,12 @@
 //! input content must stay out of logs and error messages here (log lengths or content-free
 //! kinds instead).
 
+use crate::shell::palette::Palette;
 use crossterm::event::MouseEvent;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use shepr_config::LiveKeybindConfig;
-use shepr_config::theme::Palette;
 use shepr_term::key::TerminalKey;
 use shepr_term::scroll::ListScroll;
 

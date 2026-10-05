@@ -39,6 +39,7 @@ pub(super) fn sidebar_inputs<'a>(
         presented: state.endpoints.presented(),
         model: &state.endpoints.agent_panel_model,
         config: &state.config,
+        palette: &state.palette,
         agent_panel_sort: state.agent_panel_sort_chrome.value(),
         machine_diagnostics: &state.machine_diagnostics,
         active_snapshot: state.endpoints.active.snapshot(),
@@ -57,7 +58,7 @@ pub(in crate::shell) fn overlay_context(state: &ClientShellState) -> OverlayCont
         navigator_index: &state.endpoints.navigator_index,
         active_endpoint_id: state.endpoints.presented(),
         keybinds: &state.config.keybinds,
-        palette: &state.config.palette,
+        palette: &state.palette,
         global_launcher: (!launcher.is_empty()).then_some(launcher),
     }
 }
@@ -67,7 +68,7 @@ pub(in crate::shell) fn overlay_context(state: &ClientShellState) -> OverlayCont
 pub(super) fn resolve_frame(state: &ClientShellState, cols: u16, rows: u16) -> ResolvedFrame {
     let size = (cols, rows);
     let screen = Rect::new(0, 0, cols, rows);
-    let palette = &state.config.palette;
+    let palette = &state.palette;
     // A size change while navigating reveals the selection once the sidebar can show it.
     let implied_selected_reveal = state.presentation.view().map(|view| view.size) != Some(size)
         && state.mode.is(ClientShellMode::Navigate);

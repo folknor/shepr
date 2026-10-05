@@ -294,7 +294,7 @@ mod tests {
         let machine = shepr_config::MachineConfig {
             label: shepr_config::MachineLabel::parse("build").expect("test label"),
             ssh: shepr_config::SshTarget::parse("build.example").expect("test target"),
-            palette: None,
+            palette: shepr_config::DEFAULT_LOCAL_HUE,
         };
         let id = ClientEndpointId::Ssh(machine.label.clone());
         let mut state = ClientShellState::new(ClientShellConfig::from_config(

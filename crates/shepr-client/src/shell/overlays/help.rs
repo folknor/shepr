@@ -2,6 +2,7 @@
 //! text land in its search editor; input content must stay out of logs and error messages
 //! here.
 
+use crate::shell::palette::Palette;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -9,7 +10,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Widget, Wrap};
 use shepr_config::LiveKeybindConfig;
-use shepr_config::theme::Palette;
 use shepr_term::key::TerminalKey;
 use shepr_term::scroll::ListScroll;
 use shepr_termio::input::fixed_keys::{FixedKey, KeyBinding, ModifierMatch, command_for};

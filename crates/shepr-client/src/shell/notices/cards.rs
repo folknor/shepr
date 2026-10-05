@@ -7,8 +7,8 @@ use ratatui::style::{Modifier, Style};
 
 use crate::endpoint::ClientEndpointId;
 use crate::shell::endpoints::endpoint_status_presentation;
+use crate::shell::palette::Palette;
 use ratatui::layout::Rect;
-use shepr_config::theme::Palette;
 
 use ratatui::{
     style::Color,

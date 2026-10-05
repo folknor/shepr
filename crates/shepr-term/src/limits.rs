@@ -77,6 +77,23 @@ pub(crate) const HOST_SLOT_HUE_MAX_DEVIATION: f64 = 40.0;
 /// The least chroma a host terminal's ANSI colour needs to give a hue; a
 /// greyer slot has no hue worth taking.
 pub(crate) const HOST_SLOT_MIN_CHROMA: f64 = 0.03;
+/// WCAG contrast against the terminal background of each neutral the client
+/// draws with (`host_tint::UiPalette`). Surfaces sit just off the background,
+/// stepping up from panels to hovered surfaces; the text tones reach readable
+/// levels, the muted ones at the non-text level.
+pub(crate) const UI_PANEL_CONTRAST: f32 = 1.12;
+pub(crate) const UI_ACTIVE_ROW_CONTRAST: f32 = 1.25;
+pub(crate) const UI_SURFACE_DIM_CONTRAST: f32 = 1.25;
+pub(crate) const UI_SURFACE0_CONTRAST: f32 = 1.4;
+pub(crate) const UI_SELECTION_CONTRAST: f32 = 1.6;
+pub(crate) const UI_SURFACE1_CONTRAST: f32 = 1.8;
+pub(crate) const UI_OVERLAY0_CONTRAST: f32 = 3.0;
+pub(crate) const UI_OVERLAY1_CONTRAST: f32 = 3.8;
+pub(crate) const UI_SUBTEXT_CONTRAST: f32 = 4.5;
+/// The most chroma a neutral keeps of the background's tint, so a coloured
+/// background gives surfaces of its own cast without turning them into a
+/// colour.
+pub(crate) const UI_NEUTRAL_MAX_CHROMA: f64 = 0.03;
 /// Halvings of the chroma search that maps a colour into the sRGB gamut. Each
 /// halves the error; 24 put it far below one 8-bit step.
 pub(crate) const HOST_GAMUT_BISECTION_STEPS: u32 = 24;

@@ -10,8 +10,8 @@ pub(in crate::shell::sidebar) use super::token_definitions::{
 };
 
 use crate::limits::MIN_EXPANDED_SIDEBAR_SECTION_ROWS;
+use crate::shell::palette::Palette;
 use crate::shell::presentation::text::{rendered_text_width, truncate_end};
-use shepr_config::theme::Palette;
 
 /// Workspace share of the expanded sidebar, constrained before rendering.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -105,9 +105,9 @@ pub(in crate::shell::sidebar) struct TokenStyles {
 }
 
 impl TokenStyles {
-    /// Styles whose machine token and separator take the theme's defaults: the
-    /// secondary style, and the theme's separator colour.
-    pub(in crate::shell::sidebar) fn themed(
+    /// Styles whose machine token and separator take the plain defaults: the
+    /// secondary style, and the palette's separator colour.
+    pub(in crate::shell::sidebar) fn plain(
         state_text: Style,
         primary: Style,
         secondary: Style,
@@ -355,14 +355,14 @@ mod split_tests {
             kind: super::ResolvedTokenKind::TerminalTitle(title.to_owned()),
             style: shepr_config::SidebarTokenStyle::default(),
         };
-        let palette = super::Palette::default();
+        let palette = super::Palette::test_dark();
         let spans = super::resolved_token_spans(
             &[token],
             crate::shell::presentation::status::StatusGlyph {
                 text: "●",
                 style: ratatui::style::Style::default(),
             },
-            super::TokenStyles::themed(
+            super::TokenStyles::plain(
                 ratatui::style::Style::default(),
                 ratatui::style::Style::default(),
                 ratatui::style::Style::default(),

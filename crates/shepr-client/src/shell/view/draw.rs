@@ -2,11 +2,11 @@
 //! reference for content (labels, palette, cells) and returning the frame with its effects on
 //! pane output. Nothing here writes shell state.
 
+use crate::shell::palette::Palette;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use shepr_config::LiveKeybindConfig;
-use shepr_config::theme::Palette;
 use shepr_protocol::WireColor;
 use shepr_surface::compose::{Canvas, ChromePalette, StylePatch};
 use shepr_surface::ratatui_conversion::WireColorExt as _;
@@ -44,7 +44,7 @@ fn chrome_palette(palette: &Palette) -> ChromePalette {
 pub(super) fn draw_frame(state: &ClientShellState, view: &ShellView) -> Option<DrawnFrame> {
     let (cols, rows) = view.size;
     let screen = Rect::new(0, 0, cols, rows);
-    let palette = &state.config.palette;
+    let palette = &state.palette;
     let mut effects = LastComposition::default();
     let mut buffer = Buffer::empty(screen);
     if !view.has_surface {
@@ -640,10 +640,10 @@ fn render_mode_bar(
 
 #[cfg(test)]
 mod tests {
+    use crate::shell::palette::Palette;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use shepr_config::ClientConfig;
-    use shepr_config::theme::Palette;
     use shepr_protocol::{FrameData, SurfaceRect};
     use shepr_surface::ratatui_conversion::{FrameDataExt as _, WireColorExt as _};
     use shepr_test_fixtures::ValidatedClientConfigFixture as _;
@@ -742,7 +742,7 @@ mod tests {
                 col: 0,
             }
         );
-        let palette = Palette::catppuccin();
+        let palette = Palette::test_dark();
         let mut frame =
             shepr_surface::compose::Canvas::from_buffer(&Buffer::empty(Rect::new(0, 0, 6, 3)))
                 .expect("a fresh buffer is a valid canvas");
@@ -783,7 +783,7 @@ mod tests {
             None,
             None,
             validated.live_keybinds(),
-            validated.palette(),
+            &Palette::test_dark(),
         );
 
         let row = (0..area.width)

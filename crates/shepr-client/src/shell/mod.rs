@@ -4,6 +4,7 @@ mod input;
 mod navigation;
 mod notices;
 mod overlays;
+mod palette;
 mod presentation;
 mod sidebar;
 mod view;

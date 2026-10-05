@@ -2,8 +2,8 @@
 //! endpoints, the stored scroll state and the area it is given. Drawing reads the
 //! resulting view and writes only to the buffer; nothing here mutates the shell.
 
+use crate::shell::palette::Palette;
 use ratatui::layout::Rect;
-use shepr_config::theme::Palette;
 use shepr_protocol::ClientShellSnapshot;
 
 use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
@@ -126,6 +126,8 @@ pub(in crate::shell) struct SidebarInputs<'a> {
     pub(in crate::shell) presented: &'a ClientEndpointId,
     pub(in crate::shell) model: &'a AgentPanelModel,
     pub(in crate::shell) config: &'a ClientShellConfig,
+    /// The colours the sidebar is drawn with.
+    pub(in crate::shell) palette: &'a Palette,
     /// The live agent panel sort, which the header labels.
     pub(in crate::shell) agent_panel_sort: shepr_config::AgentPanelSortConfig,
     pub(in crate::shell) machine_diagnostics: &'a MachineDiagnostics,
@@ -345,7 +347,7 @@ fn resolve_collapsed(
     scroll: &SidebarScroll,
     implied_selected_reveal: bool,
 ) -> (CollapsedSidebarView, SidebarScrollResolution) {
-    let palette = &inputs.config.palette;
+    let palette = inputs.palette;
     let (workspace_area, divider_y, detail_area) =
         crate::shell::sidebar::collapsed_sidebar_sections(area);
     let rows = flattened_rows(inputs, EntryRows::Hidden);
@@ -565,7 +567,7 @@ fn resolve_expanded(
                     }
                     let endpoint = &inputs.endpoints[endpoint_index];
                     let rect = Rect::new(body.x, y, content_width, 1);
-                    let (signal, _) = endpoint_signal(endpoint, &config.palette);
+                    let (signal, _) = endpoint_signal(endpoint, inputs.palette);
                     let signal_width = display_width(&signal).min(rect.width);
                     slots.push(ExpandedSlot::Machine {
                         hit: MachineHit {
@@ -828,7 +830,7 @@ mod tests {
         let machine = shepr_config::MachineConfig {
             label: shepr_config::MachineLabel::parse("Build").expect("test precondition"),
             ssh: shepr_config::SshTarget::parse("dev@build.example").expect("test precondition"),
-            palette: None,
+            palette: shepr_config::DEFAULT_LOCAL_HUE,
         };
         let remote = ClientEndpointId::Ssh(machine.label.clone());
         let mut state = ClientShellState::new(ClientShellConfig::from_config(
@@ -858,6 +860,7 @@ mod tests {
             presented: state.endpoints.presented(),
             model: &state.endpoints.agent_panel_model,
             config: &state.config,
+            palette: &state.palette,
             agent_panel_sort: state.agent_panel_sort_chrome.value(),
             machine_diagnostics: &state.machine_diagnostics,
             active_snapshot: state.endpoints.active.snapshot(),

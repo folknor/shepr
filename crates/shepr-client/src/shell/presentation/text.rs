@@ -1,7 +1,7 @@
+use crate::shell::palette::Palette;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use shepr_config::theme::Palette;
 
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -10,7 +10,8 @@ pub(in crate::shell) fn render_sidebar_background(
     area: Rect,
     palette: &Palette,
 ) {
-    buffer.set_style(area, Style::default().bg(palette.sidebar_bg));
+    // The sidebar sits on the terminal's own background.
+    buffer.set_style(area, Style::default().bg(ratatui::style::Color::Reset));
     let separator_x = area.right().saturating_sub(1);
     for y in area.y..area.bottom() {
         if let Some(cell) = buffer.cell_mut((separator_x, y)) {

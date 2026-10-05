@@ -369,10 +369,9 @@ mod tests {
             );
         }
         for source in [
-            "[[machines]]\nlabel = 'build'\nssh = 'build'\n",
+            "[[machines]]\nlabel = 'build'\nssh = 'build'\npalette = 'green'\n",
             "[keys]\nprefix = 'ctrl+b'\n",
             "[local]\nlabel = 'desk'\n",
-            "[theme]\nname = 'nord'\n",
             "[ui]\nmouse_capture = false\n",
             "[ui]\nsidebar_width = 26\n",
             "[ui.sidebar.spaces]\nrows = [['workspace']]\n",
@@ -389,6 +388,7 @@ mod tests {
             "[experimental]\nallow_nested = true\n",
             "[ui]\naccent = 'cyan'\n",
             "[ui]\nwindow_title = 'shepr'\n",
+            "[theme]\nname = 'nord'\n",
             "[retired]\nanything = 1\n",
         ] {
             let errors = client_from_str(source).expect_err("retired in client file");
@@ -534,12 +534,6 @@ mod tests {
         for (content, message) in [
             ("[keys]\nprefix = \"ctrl+\"\n", "keys.prefix"),
             ("[keys]\nzoom = \"prefix+nonsense\"\n", "keys.zoom"),
-            ("[theme]\nname = \"not-a-theme\"\n", "theme.name"),
-            (
-                "[theme.custom]\nred = \"not-a-color\"\n",
-                "theme.custom.red",
-            ),
-            ("[theme]\naccent = \"not-a-color\"\n", "theme.accent"),
             (
                 "[ui]\nwindow_title = \"shepr\"\n",
                 "unknown config key ui.window_title",
@@ -596,10 +590,12 @@ mod tests {
 [[machines]]
 label = "build"
 ssh = "dev@build"
+palette = "green"
 
 [[machines]]
 label = "gpu"
 ssh = "ssh://gpu.example"
+palette = "cyan"
 "#,
         )
         .expect("valid machines load");
@@ -615,7 +611,7 @@ ssh = "ssh://gpu.example"
 
         let none = client_from_str("").expect("no machines is valid");
         assert!(none.machines().is_empty());
-        assert_eq!(none.local().palette, None);
+        assert_eq!(none.local_hue(), crate::DEFAULT_LOCAL_HUE);
     }
 
     /// The local server is named by `local.label`, or by this host's short
@@ -632,10 +628,10 @@ ssh = "ssh://gpu.example"
         assert_eq!(unset.local_label().as_str(), hostname.short());
 
         // One file listing every host: this host's own entry is skipped and
-        // lends the local server its palette.
+        // gives the local server its hue.
         let shared = client_from_str(&format!(
             "[[machines]]\nlabel = \"{}\"\nssh = \"h\"\npalette = \"green\"\n\
-             [[machines]]\nlabel = \"other\"\nssh = \"o\"\n",
+             [[machines]]\nlabel = \"other\"\nssh = \"o\"\npalette = \"red\"\n",
             hostname.short().to_ascii_uppercase()
         ))
         .expect("this host's own entry is skipped");
@@ -645,37 +641,22 @@ ssh = "ssh://gpu.example"
             .map(|machine| machine.label.as_str())
             .collect();
         assert_eq!(labels, ["other"]);
-        assert_eq!(
-            shared.local().palette,
-            Some(shepr_term::host_tint::HostHue::Green)
-        );
-        let own_palette_wins = client_from_str(
-            "[local]\nlabel = \"desk\"\npalette = \"blue\"\n\
-             [[machines]]\nlabel = \"Desk\"\nssh = \"h\"\npalette = \"green\"\n",
-        )
-        .expect("this host's own entry is skipped");
-        assert!(own_palette_wins.machines().is_empty());
-        assert_eq!(
-            own_palette_wins.local().palette,
-            Some(shepr_term::host_tint::HostHue::Blue)
-        );
+        assert_eq!(shared.local_hue(), shepr_term::host_tint::HostHue::Green);
 
         client_from_str(
-            "[local]\nlabel = \"desk\"\n[[machines]]\nlabel = \"Local\"\nssh = \"h\"\n",
+            "[local]\nlabel = \"desk\"\n\
+             [[machines]]\nlabel = \"Local\"\nssh = \"h\"\npalette = \"red\"\n",
         )
         .expect("Local is not reserved");
     }
 
     #[test]
-    fn machines_and_the_local_server_take_an_optional_palette() {
+    fn every_machine_takes_a_palette() {
         use shepr_term::host_tint::HostHue;
 
         let _env = shepr_test_support::IsolatedEnv::new();
         let validated = client_from_str(
             r#"
-[local]
-palette = "purple"
-
 [[machines]]
 label = "build"
 ssh = "dev@build"
@@ -684,22 +665,34 @@ palette = "green"
 [[machines]]
 label = "gpu"
 ssh = "gpu"
+palette = "purple"
 "#,
         )
         .expect("palettes load");
-        assert_eq!(validated.local().palette, Some(HostHue::Purple));
         let palettes: Vec<_> = validated
             .machines()
             .iter()
             .map(|machine| machine.palette)
             .collect();
-        assert_eq!(palettes, [Some(HostHue::Green), None]);
+        assert_eq!(palettes, [HostHue::Green, HostHue::Purple]);
 
         for hue in HostHue::ALL {
-            let source = format!("[local]\npalette = \"{}\"\n", hue.name());
+            let source = format!(
+                "[[machines]]\nlabel = \"a\"\nssh = \"h\"\npalette = \"{}\"\n",
+                hue.name()
+            );
             let validated = client_from_str(&source).expect("every hue name loads");
-            assert_eq!(validated.local().palette, Some(hue), "{source}");
+            assert_eq!(validated.machines()[0].palette, hue, "{source}");
         }
+
+        let errors = client_from_str("[[machines]]\nlabel = \"a\"\nssh = \"h\"\n")
+            .expect_err("a machine without a palette");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("palette")),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -710,8 +703,18 @@ ssh = "gpu"
                 "[[machines]]\nlabel = \"a\"\nssh = \"h\"\npalette = \"pink\"\n",
                 "pink",
             ),
-            ("[local]\npalette = \"Green\"\n", "Green"),
-            ("[local]\npalette = 3\n", "invalid type"),
+            (
+                "[[machines]]\nlabel = \"a\"\nssh = \"h\"\npalette = \"Green\"\n",
+                "Green",
+            ),
+            (
+                "[[machines]]\nlabel = \"a\"\nssh = \"h\"\npalette = 3\n",
+                "invalid type",
+            ),
+            (
+                "[local]\npalette = \"green\"\n",
+                "unknown config key local.palette",
+            ),
             (
                 "[local]\nname = \"desk\"\n",
                 "unknown config key local.name",
@@ -725,7 +728,7 @@ ssh = "gpu"
                 "expected {message:?} in {errors:?}"
             );
         }
-        let errors = server_from_str("[local]\npalette = \"green\"\n")
+        let errors = server_from_str("[local]\nlabel = \"desk\"\n")
             .expect_err("the server file has no local table");
         assert_eq!(
             belongs_in(&errors),
@@ -738,11 +741,12 @@ ssh = "gpu"
         let _env = shepr_test_support::IsolatedEnv::new();
         for (content, message) in [
             (
-                "[[machines]]\nlabel = \"a\"\nssh = \"h1\"\n[[machines]]\nlabel = \"a\"\nssh = \"h2\"\n",
+                "[[machines]]\nlabel = \"a\"\nssh = \"h1\"\npalette = \"red\"\n\
+                 [[machines]]\nlabel = \"a\"\nssh = \"h2\"\npalette = \"red\"\n",
                 "duplicates an earlier machine (related: machines[0].label)",
             ),
             (
-                "[[machines]]\nlabel = \"  \"\nssh = \"h\"\n",
+                "[[machines]]\nlabel = \"  \"\nssh = \"h\"\npalette = \"red\"\n",
                 "machine label must not be blank",
             ),
             (
@@ -750,20 +754,20 @@ ssh = "gpu"
                 "machine label must not start or end with whitespace",
             ),
             (
-                "[[machines]]\nlabel = \"a\"\nssh = \"-oProxyCommand=x\"\n",
+                "[[machines]]\nlabel = \"a\"\nssh = \"-oProxyCommand=x\"\npalette = \"red\"\n",
                 "must not start with",
             ),
             (
-                "[[machines]]\nlabel = \"a\"\nssh = \"\"\n",
+                "[[machines]]\nlabel = \"a\"\nssh = \"\"\npalette = \"red\"\n",
                 "SSH target must not be empty",
             ),
             (
-                "[[machines]]\nlabel = \"a\"\nssh = \"u:p@h\"\n",
+                "[[machines]]\nlabel = \"a\"\nssh = \"u:p@h\"\npalette = \"red\"\n",
                 "must not contain a password",
             ),
-            ("[[machines]]\nlabel = \"a\"\n", "ssh"),
+            ("[[machines]]\nlabel = \"a\"\npalette = \"red\"\n", "ssh"),
             (
-                "[[machines]]\nlabel = \"a\"\nssh = \"h\"\nhost = \"x\"\n",
+                "[[machines]]\nlabel = \"a\"\nssh = \"h\"\npalette = \"red\"\nhost = \"x\"\n",
                 "unknown config key machines[0].host",
             ),
         ] {
@@ -786,10 +790,6 @@ ssh = "gpu"
         std::fs::write(
             paths.client_config_file(),
             r#"
-[theme]
-name = "not-a-theme"
-[theme.custom]
-red = "not-a-color"
 [keys]
 prefix = "ctrl+"
 zoom = "prefix+not-a-key"
@@ -806,13 +806,7 @@ sidebar_max_width = 36
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        for expected in [
-            "theme.name",
-            "theme.custom.red",
-            "keys.prefix",
-            "keys.zoom",
-            "ui.sidebar_width",
-        ] {
+        for expected in ["keys.prefix", "keys.zoom", "ui.sidebar_width"] {
             assert!(
                 messages.iter().any(|message| message.contains(expected)),
                 "missing {expected:?} from {messages:?}"
@@ -834,15 +828,7 @@ sidebar_max_width = 36
         std::fs::remove_file(&path).expect("remove config fixture");
         let defaults = load_client_validated(&paths).expect("missing config uses defaults");
         assert!(defaults.validated_live_keybinds().is_ok());
-        assert_eq!(defaults.palette(), &crate::theme::Palette::catppuccin());
-
-        std::fs::write(
-            &path,
-            "[theme]\nname = \"nord\"\n[theme.custom]\naccent = \"#010203\"\n",
-        )
-        .expect("write valid themed config");
-        let themed = load_client_validated(&paths).expect("valid theme loads");
-        assert_eq!(themed.palette().accent, ratatui::style::Color::Rgb(1, 2, 3));
+        assert_eq!(defaults.local_hue(), crate::DEFAULT_LOCAL_HUE);
     }
 
     #[test]
@@ -912,8 +898,8 @@ sidebar_max_width = 36
             r##"
 plugin = []
 
-[theme.custom]
-accentt = "#ffffff"
+[ui.sidebar.spaces]
+row_gapp = 1
 
 [keys]
 zoom = "prefix+z"
@@ -938,9 +924,9 @@ mouse_captur = true
             vec![
                 "unknown config key keys.new_workspacee",
                 "unknown config key plugin",
-                "unknown config key theme.custom.accentt",
                 "unknown config key ui.\"foo.bar\"",
                 "unknown config key ui.mouse_captur",
+                "unknown config key ui.sidebar.spaces.row_gapp",
             ]
         );
     }

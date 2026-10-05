@@ -30,14 +30,14 @@ pub(in crate::shell) fn draw_collapsed(
             buffer.set_style(
                 rect,
                 Style::default().bg(crate::shell::sidebar::workspace_selection_background(
-                    &config.palette,
+                    inputs.palette,
                 )),
             );
         } else if focused {
             buffer.set_style(
                 rect,
                 Style::default().bg(crate::shell::sidebar::workspace_active_background(
-                    &config.palette,
+                    inputs.palette,
                     inputs.selected.is_some(),
                 )),
             );
@@ -45,7 +45,7 @@ pub(in crate::shell) fn draw_collapsed(
         let glyph = status_glyph(
             row.agent.status,
             config.status_indicators,
-            &config.palette,
+            inputs.palette,
             row.stale,
         );
         if inputs.single_endpoint() {
@@ -56,9 +56,9 @@ pub(in crate::shell) fn draw_collapsed(
                 rect.width.min(2),
                 &format!("{:<2}", slot.row + 1),
                 Style::default().fg(if focused {
-                    config.palette.text
+                    inputs.palette.text
                 } else {
-                    config.palette.overlay0
+                    inputs.palette.overlay0
                 }),
             );
             put_text(
@@ -93,7 +93,7 @@ pub(super) fn draw_agent_panel(
     crate::shell::sidebar::agent_sidebar::draw_agent_panel_header(
         buffer,
         panel,
-        config,
+        inputs.palette,
         inputs.agent_panel_sort,
     );
     let Some(list) = &panel.list else {
@@ -124,22 +124,18 @@ pub(super) fn draw_agent_panel(
                 look,
             },
             config,
+            inputs.palette,
         );
         if row.stale {
             buffer.set_style(
                 rect,
                 Style::default()
-                    .fg(config.palette.overlay0)
+                    .fg(inputs.palette.overlay0)
                     .add_modifier(Modifier::DIM),
             );
         }
     }
     if let Some(track) = list.scrollbar {
-        crate::shell::view::list::render_list_scrollbar(
-            buffer,
-            track,
-            list.scroll,
-            &config.palette,
-        );
+        crate::shell::view::list::render_list_scrollbar(buffer, track, list.scroll, inputs.palette);
     }
 }

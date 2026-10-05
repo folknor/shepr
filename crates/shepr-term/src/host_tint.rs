@@ -1,4 +1,7 @@
-//! Per-host sidebar colours, derived from the host terminal's own colours.
+//! The client's colours, derived from the host terminal's own colours: the
+//! per-host sidebar colours ([`HostPillPalette`]) and the palette of everything
+//! else it draws ([`UiPalette`]). There is no theme to pick; both follow the
+//! terminal.
 //!
 //! A configured machine (or the local server) names a hue (`palette = "green"`
 //! in `client.toml`), and the sidebar draws that host's entries in colours
@@ -49,7 +52,9 @@ use crate::limits::{
     HOST_FOCUSED_TINT_LIGHTNESS_STEP, HOST_GAMUT_BISECTION_STEPS,
     HOST_LIGHT_BACKGROUND_MIN_LIGHTNESS, HOST_SLOT_HUE_MAX_DEVIATION, HOST_SLOT_MIN_CHROMA,
     HOST_TEXT_CHROMA, HOST_TEXT_MIN_CONTRAST, HOST_TINT_CHROMA_DARK, HOST_TINT_CHROMA_LIGHT,
-    HOST_TINT_LIGHTNESS_STEP,
+    HOST_TINT_LIGHTNESS_STEP, UI_ACTIVE_ROW_CONTRAST, UI_NEUTRAL_MAX_CHROMA, UI_OVERLAY0_CONTRAST,
+    UI_OVERLAY1_CONTRAST, UI_PANEL_CONTRAST, UI_SELECTION_CONTRAST, UI_SUBTEXT_CONTRAST,
+    UI_SURFACE_DIM_CONTRAST, UI_SURFACE0_CONTRAST, UI_SURFACE1_CONTRAST,
 };
 
 /// A hue name a host can be given in `client.toml` (`palette = "green"`).
@@ -240,45 +245,18 @@ impl HostPillPalette {
     /// reported no background: a tint chosen blind could clash with it, so the
     /// caller falls back to the terminal's own ANSI colours.
     pub fn derive(theme: &TerminalTheme, hues: &[HostHue]) -> Option<Self> {
-        let background = Oklch::from_rgb(theme.background?);
-        let foreground = theme.foreground.map(Oklch::from_rgb);
-        let dark = foreground.map_or(
-            background.l < HOST_LIGHT_BACKGROUND_MIN_LIGHTNESS,
-            |foreground| background.l < foreground.l,
-        );
-        let away = if dark { 1.0 } else { -1.0 };
-        let text_l = foreground.map_or(
-            if dark {
-                HOST_DEFAULT_TEXT_LIGHTNESS_DARK
-            } else {
-                HOST_DEFAULT_TEXT_LIGHTNESS_LIGHT
-            },
-            |foreground| foreground.l,
-        );
-        let accent_l = if dark {
-            HOST_ACCENT_LIGHTNESS_DARK
-        } else {
-            HOST_ACCENT_LIGHTNESS_LIGHT
-        };
+        let polarity = Polarity::of(theme)?;
+        let away = polarity.away();
         let angles = hues
             .iter()
             .map(|hue| (*hue, hue.angle_in(theme)))
             .collect::<Vec<_>>();
-        // Beyond any chroma sRGB can show, so the search starts above every
-        // hue's gamut edge.
-        let chroma_ceiling = 0.4;
-        let accent_c = (angles
-            .iter()
-            .map(|(_, angle)| max_in_gamut_chroma(accent_l, *angle, chroma_ceiling))
-            .fold(f64::INFINITY, f64::min)
-            * HOST_ACCENT_CHROMA_HEADROOM)
-            .min(HOST_ACCENT_CHROMA_MAX);
         let shared = SharedTargets {
-            background_l: background.l,
-            dark,
-            text_l,
-            accent_l,
-            accent_c,
+            background_l: polarity.background.l,
+            dark: polarity.dark,
+            text_l: polarity.text.l,
+            accent_l: polarity.accent_l(),
+            accent_c: polarity.accent_chroma(&angles),
         };
 
         // The tints normally move toward the foreground. On a mid-tone
@@ -308,6 +286,213 @@ impl HostPillPalette {
             .iter()
             .find(|(entry, _)| *entry == hue)
             .map(|(_, colors)| *colors)
+    }
+}
+
+/// Which side of the terminal's colours is the background, read from what it
+/// reported: the ground both the host colours and the UI palette are derived on.
+struct Polarity {
+    background: Oklch,
+    /// The reported foreground, or a default text lightness of the theme's
+    /// polarity in grey.
+    text: Oklch,
+    /// The theme is dark: the background is darker than the foreground (or,
+    /// with no foreground, darker than [`HOST_LIGHT_BACKGROUND_MIN_LIGHTNESS`]).
+    dark: bool,
+}
+
+impl Polarity {
+    /// `None` when the terminal reported no background.
+    fn of(theme: &TerminalTheme) -> Option<Self> {
+        let background = Oklch::from_rgb(theme.background?);
+        let foreground = theme.foreground.map(Oklch::from_rgb);
+        let dark = foreground.map_or(
+            background.l < HOST_LIGHT_BACKGROUND_MIN_LIGHTNESS,
+            |foreground| background.l < foreground.l,
+        );
+        let text = foreground.unwrap_or(Oklch::new(
+            if dark {
+                HOST_DEFAULT_TEXT_LIGHTNESS_DARK
+            } else {
+                HOST_DEFAULT_TEXT_LIGHTNESS_LIGHT
+            },
+            0.0,
+            0.0,
+        ));
+        Some(Self {
+            background,
+            text,
+            dark,
+        })
+    }
+
+    /// +1 when colours move lighter away from the background, -1 darker.
+    fn away(&self) -> f64 {
+        if self.dark { 1.0 } else { -1.0 }
+    }
+
+    fn accent_l(&self) -> f64 {
+        if self.dark {
+            HOST_ACCENT_LIGHTNESS_DARK
+        } else {
+            HOST_ACCENT_LIGHTNESS_LIGHT
+        }
+    }
+
+    /// The one chroma every accent of `angles` takes: the smallest the hues
+    /// can all show at the accent lightness, with some headroom.
+    fn accent_chroma(&self, angles: &[(HostHue, f64)]) -> f64 {
+        // Beyond any chroma sRGB can show, so the search starts above every
+        // hue's gamut edge.
+        let chroma_ceiling = 0.4;
+        let accent_l = self.accent_l();
+        (angles
+            .iter()
+            .map(|(_, angle)| max_in_gamut_chroma(accent_l, *angle, chroma_ceiling))
+            .fold(f64::INFINITY, f64::min)
+            * HOST_ACCENT_CHROMA_HEADROOM)
+            .min(HOST_ACCENT_CHROMA_MAX)
+    }
+}
+
+/// The colours of everything the client draws, derived from the host
+/// terminal's own colours: neutrals for surfaces and text, and the accent and
+/// state hues. A host's configured hue is its accent here too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiPalette {
+    /// Floating panels, overlays and menus.
+    pub panel_bg: RgbColor,
+    /// The active workspace and focused agent rows.
+    pub active_row_bg: RgbColor,
+    /// The navigate-mode cursor row.
+    pub selection_bg: RgbColor,
+    /// Selected and focused surfaces.
+    pub surface0: RgbColor,
+    /// Hovered and active surfaces.
+    pub surface1: RgbColor,
+    /// Separators and unfocused scrollbar tracks.
+    pub surface_dim: RgbColor,
+    /// Muted text.
+    pub overlay0: RgbColor,
+    /// Secondary text, a step brighter than `overlay0`.
+    pub overlay1: RgbColor,
+    /// Subdued text.
+    pub subtext0: RgbColor,
+    /// Main text.
+    pub text: RgbColor,
+    /// Highlights and the focused pane's border.
+    pub accent: RgbColor,
+    /// Branch names and special labels.
+    pub mauve: RgbColor,
+    /// Idle.
+    pub green: RgbColor,
+    /// Working.
+    pub yellow: RgbColor,
+    /// Blocked and errors.
+    pub red: RgbColor,
+}
+
+impl UiPalette {
+    /// The palette for `theme` with `accent` as its accent hue. `None` when the
+    /// terminal reported no background: neutrals chosen blind could vanish
+    /// into it, so the caller falls back to the terminal's own ANSI colours.
+    ///
+    /// Each neutral starts at the background's lightness, keeps a little of
+    /// its tint, and moves toward the foreground until it reaches its WCAG
+    /// contrast against the background, or the other way where lightness runs
+    /// out (a near-white background under dark text). Text and the hues then
+    /// keep their contrast against every surface they are drawn on. The hues
+    /// share one lightness and chroma, as host accents do.
+    ///
+    /// On a mid-tone background (grey #5a5a5a under white text) surfaces moved
+    /// toward the foreground can leave the text no room to reach its contrast
+    /// against all of them; surfaces moved the other way put everything on
+    /// one side of the middle, where black or white text always does.
+    pub fn derive(theme: &TerminalTheme, accent: HostHue) -> Option<Self> {
+        let polarity = Polarity::of(theme)?;
+        let toward_foreground = Self::derive_toward(theme, accent, &polarity, polarity.away())?;
+        if toward_foreground.1 {
+            return Some(toward_foreground.0);
+        }
+        let toward_background = Self::derive_toward(theme, accent, &polarity, -polarity.away())?;
+        Some(if toward_background.1 {
+            toward_background.0
+        } else {
+            toward_foreground.0
+        })
+    }
+
+    /// The palette with its surfaces moved in `surface_direction` (+1 lighter,
+    /// -1 darker) from the background, and whether every text colour and hue
+    /// reached its contrast against them.
+    fn derive_toward(
+        theme: &TerminalTheme,
+        accent: HostHue,
+        polarity: &Polarity,
+        surface_direction: f64,
+    ) -> Option<(Self, bool)> {
+        let away = polarity.away();
+        let background = theme.background?;
+        let base = Oklch::new(
+            polarity.background.l,
+            polarity.background.c.min(UI_NEUTRAL_MAX_CHROMA),
+            polarity.background.h,
+        );
+        let neutral =
+            |contrast: f32| with_contrast(base, &[background], contrast, surface_direction).0;
+        let panel_bg = neutral(UI_PANEL_CONTRAST);
+        let active_row_bg = neutral(UI_ACTIVE_ROW_CONTRAST);
+        let selection_bg = neutral(UI_SELECTION_CONTRAST);
+        let surface0 = neutral(UI_SURFACE0_CONTRAST);
+        let surfaces = [background, panel_bg, active_row_bg, selection_bg, surface0];
+        let mut readable = true;
+        let mut on_surfaces = |color: Oklch, contrast: f32| {
+            let (rgb, met) = with_contrast(color, &surfaces, contrast, away);
+            readable &= met;
+            rgb
+        };
+        let text = on_surfaces(polarity.text, HOST_TEXT_MIN_CONTRAST);
+        let overlay0 = on_surfaces(base, UI_OVERLAY0_CONTRAST);
+        let overlay1 = on_surfaces(base, UI_OVERLAY1_CONTRAST);
+        let subtext0 = on_surfaces(base, UI_SUBTEXT_CONTRAST);
+
+        let angles = [
+            accent,
+            HostHue::Purple,
+            HostHue::Green,
+            HostHue::Yellow,
+            HostHue::Red,
+        ]
+        .map(|hue| (hue, hue.angle_in(theme)));
+        let accent_l = polarity.accent_l();
+        let accent_c = polarity.accent_chroma(&angles);
+        let [accent, mauve, green, yellow, red] = angles.map(|(_, angle)| {
+            on_surfaces(
+                Oklch::new(accent_l, accent_c, angle),
+                HOST_ACCENT_MIN_CONTRAST,
+            )
+        });
+
+        Some((
+            Self {
+                panel_bg,
+                active_row_bg,
+                selection_bg,
+                surface0,
+                surface1: neutral(UI_SURFACE1_CONTRAST),
+                surface_dim: neutral(UI_SURFACE_DIM_CONTRAST),
+                overlay0,
+                overlay1,
+                subtext0,
+                text,
+                accent,
+                mauve,
+                green,
+                yellow,
+                red,
+            },
+            readable,
+        ))
     }
 }
 
@@ -773,6 +958,82 @@ mod tests {
         assert!(hue_distance(accent_hue(&theme), HostHue::Green.named_angle()) < 3.0);
         theme.palette[2] = Some(rgb(0x808080));
         assert!(hue_distance(accent_hue(&theme), HostHue::Green.named_angle()) < 3.0);
+    }
+
+    #[test]
+    fn no_ui_palette_is_derived_without_a_reported_background() {
+        assert_eq!(
+            UiPalette::derive(&theme(None, Some(0xcdd6f4)), HostHue::Blue),
+            None
+        );
+    }
+
+    /// Every grey background, under white, black or no reported foreground,
+    /// gives surfaces off the background, readable text and hues on every
+    /// surface, and distinct steps.
+    #[test]
+    fn every_grey_background_gives_a_readable_ui_palette() {
+        for level in (0..=0xff_u32).step_by(0x0f) {
+            let background = (level << 16) | (level << 8) | level;
+            for foreground in [Some(0xffffff), Some(0x000000), None] {
+                let context = format!("background {background:06x}, foreground {foreground:?}");
+                let ui = UiPalette::derive(&theme(Some(background), foreground), HostHue::Blue)
+                    .expect("background known");
+                let bg = rgb(background);
+                for (surface, minimum) in [
+                    (ui.panel_bg, UI_PANEL_CONTRAST),
+                    (ui.active_row_bg, UI_ACTIVE_ROW_CONTRAST),
+                    (ui.selection_bg, UI_SELECTION_CONTRAST),
+                    (ui.surface1, UI_SURFACE1_CONTRAST),
+                ] {
+                    assert!(surface.contrast_with(bg) >= minimum, "{context}: {ui:?}");
+                }
+                assert_ne!(ui.active_row_bg, ui.selection_bg, "{context}");
+                let surfaces = [bg, ui.panel_bg, ui.active_row_bg, ui.selection_bg];
+                for (color, minimum) in [
+                    (ui.text, HOST_TEXT_MIN_CONTRAST),
+                    (ui.subtext0, UI_SUBTEXT_CONTRAST),
+                    (ui.overlay0, UI_OVERLAY0_CONTRAST),
+                    (ui.accent, HOST_ACCENT_MIN_CONTRAST),
+                    (ui.green, HOST_ACCENT_MIN_CONTRAST),
+                    (ui.yellow, HOST_ACCENT_MIN_CONTRAST),
+                    (ui.red, HOST_ACCENT_MIN_CONTRAST),
+                    (ui.mauve, HOST_ACCENT_MIN_CONTRAST),
+                ] {
+                    assert!(
+                        worst_contrast(color, &surfaces) >= minimum,
+                        "{context}: {color:?} in {ui:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_ui_palette_follows_the_theme_polarity_and_hue() {
+        let dark = UiPalette::derive(&theme(Some(0x1e1e2e), Some(0xcdd6f4)), HostHue::Green)
+            .expect("background known");
+        let background = Oklch::from_rgb(rgb(0x1e1e2e));
+        assert!(Oklch::from_rgb(dark.panel_bg).l > background.l, "{dark:?}");
+        assert!(
+            Oklch::from_rgb(dark.surface1).l > Oklch::from_rgb(dark.surface0).l,
+            "{dark:?}"
+        );
+        // The foreground the terminal reported is the text when it reads.
+        assert_eq!(dark.text, rgb(0xcdd6f4));
+        assert!(hue_distance(Oklch::from_rgb(dark.accent).h, HostHue::Green.named_angle()) < 3.0);
+
+        let light = UiPalette::derive(&theme(Some(0xfafafa), Some(0x383a42)), HostHue::Blue)
+            .expect("background known");
+        let background = Oklch::from_rgb(rgb(0xfafafa));
+        assert!(
+            Oklch::from_rgb(light.panel_bg).l < background.l,
+            "{light:?}"
+        );
+        assert!(
+            Oklch::from_rgb(light.overlay0).l < Oklch::from_rgb(light.surface1).l,
+            "{light:?}"
+        );
     }
 
     #[test]

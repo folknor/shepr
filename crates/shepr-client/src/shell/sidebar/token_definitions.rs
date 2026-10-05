@@ -255,7 +255,7 @@ rows = [["state_icon", { token = "machine", fg = "#fff", bold = true, dim = true
     }
 
     #[test]
-    fn conditional_style_survives_truncation_and_removes_theme_modifiers() {
+    fn conditional_style_survives_truncation_and_removes_default_modifiers() {
         let config: AgentsSidebarConfig = toml::from_str(r##"
 rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = "#f00", bold = false, dim = false }] }]]
 "##).expect("test precondition");
@@ -271,17 +271,17 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
                 crate::shell::presentation::status::status_glyph(
                     shepr_protocol::AgentStatus::Working,
                     shepr_config::StatusIndicatorStyle::Dots,
-                    &shepr_config::theme::Palette::catppuccin(),
+                    &crate::shell::palette::Palette::test_dark(),
                     false,
                 ),
-                crate::shell::sidebar::sidebar_tokens::TokenStyles::themed(
+                crate::shell::sidebar::sidebar_tokens::TokenStyles::plain(
                     theme,
                     theme,
                     theme,
                     theme,
-                    &shepr_config::theme::Palette::catppuccin(),
+                    &crate::shell::palette::Palette::test_dark(),
                 ),
-                &shepr_config::theme::Palette::catppuccin(),
+                &crate::shell::palette::Palette::test_dark(),
                 width,
             );
             assert_eq!(spans.len(), 1);

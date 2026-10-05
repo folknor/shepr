@@ -53,7 +53,7 @@ fn multi_machine_sidebar_draws_the_workspace_drop_marker() {
         .expect("the drop marker is drawn");
     assert_eq!(
         marker.fg,
-        shepr_protocol::WireColor::from_ratatui(state.config.palette.accent)
+        shepr_protocol::WireColor::from_ratatui(state.palette.accent)
     );
     let drawn = cells
         .iter()
@@ -377,7 +377,7 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
     );
     assert_eq!(
         cell_fg(&frame, (remote.right() - 1, remote.y)),
-        state.config.palette.green
+        state.palette.green
     );
 
     state.chrome.set_collapsed(true);
@@ -644,11 +644,11 @@ fn active_workspace_is_the_only_highlight_on_its_machine() {
         .rect;
     assert_ne!(
         cell_bg(&frame, (machine.x, machine.y)),
-        state.config.palette.active_row_bg
+        state.palette.active_row_bg
     );
     assert_eq!(
         cell_bg(&frame, (workspace.x + 2, workspace.y)),
-        state.config.palette.active_row_bg
+        state.palette.active_row_bg
     );
 }
 
@@ -716,7 +716,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
         frame
             .cells()
             .iter()
-            .any(|cell| cell.symbol == "×" && cell.fg.to_ratatui() == state.config.palette.red)
+            .any(|cell| cell.symbol == "×" && cell.fg.to_ratatui() == state.palette.red)
     );
 }
 
@@ -1127,6 +1127,6 @@ fn collapsed_aggregate_workspace_status_uses_its_status_color() {
         .rect;
     assert_eq!(
         cell_fg(&frame, (workspace.x.saturating_add(2), workspace.y)),
-        state.config.palette.red
+        state.palette.red
     );
 }

@@ -6,6 +6,7 @@ use crate::shell::config::ClientShellConfig;
 use crate::shell::input::pointer::{ClientChromeDrag, Throttle};
 use crate::shell::overlays::Overlay;
 use crate::shell::overlays::context_menu::ContextMenuOverlay;
+use crate::shell::palette::Palette;
 use crate::shell::state::{
     ClientShellAction, ClientShellEndpointError, ClientShellInput, ClientShellRequest,
     ClientShellState,
@@ -17,7 +18,6 @@ use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEven
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use shepr_config::ClientConfig;
-use shepr_config::theme::Palette;
 use shepr_core::layout::SplitBranch;
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
 use shepr_protocol::{
@@ -1680,11 +1680,13 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
     use shepr_term::host::RgbColor;
 
     for explicit_appearance in [false, true] {
-        let mut values = ClientConfig::default();
-        values.theme.name = Some("terminal".into());
-        let config = ClientShellConfig::from_config(&values);
-        assert_eq!(config.palette, Palette::terminal());
-        let mut state = ClientShellState::new(config);
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        // No background reported yet: the terminal's own colours.
+        assert_eq!(
+            state.palette,
+            Palette::terminal(shepr_config::DEFAULT_LOCAL_HUE)
+        );
         state.set_snapshot(Box::new(snapshot()));
         state.receive_pane_surface_from(
             surface(),

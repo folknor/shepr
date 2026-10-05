@@ -1,8 +1,8 @@
+use crate::shell::palette::Palette;
 use ratatui::{
     layout::Rect,
     style::{Color, Style},
 };
-use shepr_config::theme::Palette;
 use shepr_term::host::TerminalTheme;
 use shepr_term::{ColorScheme, RgbColor};
 
@@ -181,9 +181,9 @@ fn rgb_color((r, g, b): Rgb) -> RgbColor {
 
 #[cfg(test)]
 mod tests {
+    use crate::shell::palette::Palette;
     use ratatui::buffer::Buffer;
     use ratatui::style::{Color, Modifier, Style};
-    use shepr_config::theme::Palette;
     use shepr_term::selection::Selection;
 
     use super::{
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn selection_highlight_uses_one_uniform_style() {
-        let palette = Palette::catppuccin();
+        let palette = Palette::test_dark();
         let host_theme = TerminalTheme {
             foreground: None,
             background: Some(RgbColor {
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn selection_highlight_clips_pane_rect_larger_than_buffer() {
-        let palette = Palette::catppuccin();
+        let palette = Palette::test_dark();
         let host_theme = TerminalTheme::default();
         let expected = automatic_selection_style(&palette, host_theme);
         let pane_id = 1_u8;
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn automatic_selection_background_uses_host_background() {
         let bg = automatic_selection_bg(
-            &Palette::terminal(),
+            &Palette::terminal(shepr_config::DEFAULT_LOCAL_HUE),
             TerminalTheme {
                 foreground: Some(RgbColor {
                     r: 230,
@@ -357,7 +357,7 @@ mod tests {
             ((26, 27, 38), (90, 91, 99), (255, 255, 255)),
             ((45, 53, 59), (104, 110, 114), (255, 255, 255)),
         ] {
-            let mut palette = Palette::catppuccin();
+            let mut palette = Palette::test_dark();
             let (r, g, b) = background;
             palette.panel_bg = Color::Rgb(r, g, b);
             let expected = Style::reset()
@@ -370,7 +370,7 @@ mod tests {
             );
             assert_eq!(
                 automatic_selection_style(
-                    &Palette::terminal(),
+                    &Palette::terminal(shepr_config::DEFAULT_LOCAL_HUE),
                     TerminalTheme {
                         background: Some(RgbColor { r, g, b }),
                         ..Default::default()
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn automatic_selection_preserves_symbolic_palette_fallbacks() {
-        let mut palette = Palette::terminal();
+        let mut palette = Palette::terminal(shepr_config::DEFAULT_LOCAL_HUE);
         assert_eq!(
             automatic_selection_style(&palette, Default::default()),
             Style::reset().fg(Color::White).bg(Color::DarkGray)

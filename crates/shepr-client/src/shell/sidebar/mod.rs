@@ -14,13 +14,13 @@ use ratatui::buffer::Buffer;
 use shepr_protocol::ClientShellWorkspace;
 
 use crate::limits::MIN_COLLAPSED_SIDEBAR_SPLIT_ROWS;
+use crate::shell::palette::Palette;
 use crate::shell::presentation::text::{display_width, put_text};
 use crate::shell::sidebar::sidebar_tokens::{
     ResolvedToken, SpaceTokenContext, TokenStyles, resolved_token_spans, sidebar_space_rows,
 };
 use ratatui::layout::Rect;
 use shepr_config::SpacesSidebarConfig;
-use shepr_config::theme::Palette;
 
 use crate::shell::presentation::status::{status_glyph, status_text};
 
@@ -35,7 +35,7 @@ fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
 fn workspace_active_background(palette: &Palette, navigating: bool) -> ratatui::style::Color {
     // The fallback cursor shares the active-row color; only fill the cursor while navigating.
     if navigating && palette.selection_bg == ratatui::style::Color::Reset {
-        palette.sidebar_bg
+        ratatui::style::Color::Reset
     } else {
         palette.active_row_bg
     }
@@ -85,7 +85,7 @@ pub(in crate::shell::sidebar) struct WorkspaceEntryState {
     pub(in crate::shell::sidebar) dragged: bool,
     /// The machine's sidebar colours. The navigation cursor and a drag keep
     /// their own highlight, so a selected or dragged entry is drawn in the
-    /// theme's plain look; a focused one takes the stronger tint.
+    /// palette's plain look; a focused one takes the stronger tint.
     pub(in crate::shell::sidebar) look: Option<host_colors::PillLook>,
 }
 
@@ -153,7 +153,7 @@ pub(in crate::shell::sidebar) fn render_workspace_rows(
             palette.overlay0
         });
         let glyph = status_glyph(status, indicators, palette, false);
-        let themed = TokenStyles::themed(
+        let themed = TokenStyles::plain(
             glyph.style,
             workspace_style,
             secondary_style,

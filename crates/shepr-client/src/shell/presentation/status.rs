@@ -1,6 +1,6 @@
+use crate::shell::palette::Palette;
 use ratatui::style::Modifier;
 use ratatui::style::Style;
-use shepr_config::theme::Palette;
 
 #[derive(Clone, Copy)]
 pub(in crate::shell) struct StatusGlyph {

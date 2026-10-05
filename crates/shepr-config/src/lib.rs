@@ -8,8 +8,6 @@ mod machine;
 mod model;
 mod shell;
 mod sidebar;
-pub mod theme;
-mod theme_config;
 mod validated;
 
 pub use self::agent::ConfigAgent;
@@ -18,13 +16,13 @@ pub use self::limits::{
     DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 pub use self::machine::{
-    LocalConfig, MachineConfig, MachineLabel, MachineLabelError, SshTarget, SshTargetError,
+    DEFAULT_LOCAL_HUE, LocalConfig, MachineConfig, MachineLabel, MachineLabelError, SshTarget,
+    SshTargetError,
 };
 /// Role-specific raw values. Runtime code receives a [`ValidatedClientConfig`]
 /// or [`ValidatedServerConfig`], constructed through validation at launch or
 /// through that role's `validate`.
 pub use self::model::{ClientConfig, ServerConfig};
-pub use self::theme_config::CustomThemeColors;
 pub use self::{
     diagnostic::{ConfigDiagnostic, ConfigDiagnosticKind, ConfigKeyPath, ConfigKeyPathSegment},
     io::{load_client_validated, load_server_validated},
@@ -42,7 +40,6 @@ pub use self::{
         SidebarTokenRendering, SidebarTokenRule, SidebarTokenSpec, SidebarTokenStyle,
         SpaceSidebarToken, SpaceSidebarTokenKind, SpacesSidebarConfig,
     },
-    theme_config::ThemeConfig,
     validated::{
         ConfigProvenance, NewTerminalCwd, Setting, ValidatedClientConfig, ValidatedClientUiConfig,
         ValidatedExperimentalConfig, ValidatedServerConfig, ValidatedServerUiConfig,
@@ -52,12 +49,6 @@ pub use self::{
 
 pub const DEFAULT_CLIENT_CONFIG: &str = include_str!("default-client.toml");
 pub const DEFAULT_SERVER_CONFIG: &str = include_str!("default-server.toml");
-
-impl ClientConfig {
-    pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<ConfigDiagnostic>> {
-        theme_config::resolve_palette(&self.theme)
-    }
-}
 
 /// Absolute like resolved launch paths, and identical across calls, so two
 /// test configs compare equal.
@@ -119,15 +110,11 @@ mod tests {
             let content = line.strip_prefix("# ").unwrap_or(line);
             if content.starts_with('[') && content.ends_with(']') {
                 section = content.to_owned();
-                // The theme, machine and local sections hold examples, not the
-                // unset defaults.
+                // The machine and local sections hold examples, not the unset
+                // defaults.
                 if !matches!(
                     section.as_str(),
-                    "[theme]"
-                        | "[theme.custom]"
-                        | "[ui.sidebar.agents.rows_by_agent]"
-                        | "[local]"
-                        | "[[machines]]"
+                    "[ui.sidebar.agents.rows_by_agent]" | "[local]" | "[[machines]]"
                 ) {
                     document.push_str(content);
                     document.push('\n');
@@ -136,11 +123,7 @@ mod tests {
             }
             if matches!(
                 section.as_str(),
-                "[theme]"
-                    | "[theme.custom]"
-                    | "[ui.sidebar.agents.rows_by_agent]"
-                    | "[local]"
-                    | "[[machines]]"
+                "[ui.sidebar.agents.rows_by_agent]" | "[local]" | "[[machines]]"
             ) {
                 continue;
             }
@@ -195,20 +178,12 @@ mod tests {
     #[test]
     fn server_default_template_documented_values_match_defaults() {
         let mut document = String::new();
-        let mut section = String::new();
         for line in DEFAULT_SERVER_CONFIG.lines() {
             let line = line.trim();
             let content = line.strip_prefix("# ").unwrap_or(line);
             if content.starts_with('[') && content.ends_with(']') {
-                section = content.to_owned();
-                // The theme sections hold examples, not the unset defaults.
-                if !matches!(section.as_str(), "[theme]" | "[theme.custom]") {
-                    document.push_str(content);
-                    document.push('\n');
-                }
-                continue;
-            }
-            if matches!(section.as_str(), "[theme]" | "[theme.custom]") {
+                document.push_str(content);
+                document.push('\n');
                 continue;
             }
             let Some(setting) = line.strip_prefix("# ") else {
@@ -238,11 +213,10 @@ mod tests {
     #[test]
     fn default_template_documents_every_config_field() {
         let mut config = ClientConfig::default();
-        config.theme.custom = Some(CustomThemeColors::default());
         config.machines.push(MachineConfig {
             label: MachineLabel::parse("schema example").expect("valid test label"),
             ssh: SshTarget::parse("example.invalid").expect("valid test target"),
-            palette: None,
+            palette: DEFAULT_LOCAL_HUE,
         });
         let fields = config_field_paths(config);
 
@@ -385,7 +359,6 @@ mod tests {
     fn config_field_paths(config: ClientConfig) -> BTreeSet<String> {
         let mut fields = BTreeSet::new();
         record_config_fields!(fields, config, "", ClientConfig {
-            theme => theme,
             keys => keys,
             ui => ui,
             local => local,
@@ -393,36 +366,7 @@ mod tests {
         });
         record_config_fields!(fields, local, "local", LocalConfig {
             label => _,
-            palette => _,
         });
-        record_config_fields!(fields, theme, "theme", ThemeConfig {
-            name => _,
-            accent => _,
-            custom => custom,
-        });
-        if let Some(custom) = custom {
-            record_config_fields!(fields, custom, "theme.custom", CustomThemeColors {
-                accent => _,
-                panel_bg => _,
-                sidebar_bg => _,
-                active_row_bg => _,
-                selection_bg => _,
-                surface0 => _,
-                surface1 => _,
-                surface_dim => _,
-                overlay0 => _,
-                overlay1 => _,
-                text => _,
-                subtext0 => _,
-                mauve => _,
-                green => _,
-                yellow => _,
-                red => _,
-                blue => _,
-                teal => _,
-                peach => _,
-            });
-        }
         record_key_config_fields(&mut fields, keys);
         record_config_fields!(fields, ui, "ui", ClientUiConfig {
             sidebar_width => _,
@@ -522,25 +466,6 @@ mod tests {
                 panic!("active setting on {name} line {line_number}: {line}");
             }
         }
-    }
-
-    /// The template names every built-in theme, and its commented `name`
-    /// setting is the real default.
-    #[test]
-    fn default_template_lists_every_theme_and_the_default() {
-        let words: Vec<&str> = DEFAULT_CLIENT_CONFIG
-            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-            .collect();
-        for name in theme::THEME_NAMES {
-            assert!(words.contains(name), "config template does not list {name}");
-        }
-        let default_line = format!("# name = \"{}\"", theme::DEFAULT_THEME);
-        assert!(
-            DEFAULT_CLIENT_CONFIG
-                .lines()
-                .any(|line| line.trim() == default_line),
-            "config template must show {default_line}"
-        );
     }
 
     /// The commented `[keys]` settings in the template, uncommented, are

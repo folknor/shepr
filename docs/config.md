@@ -44,7 +44,7 @@ Any problem in a file stops its program from starting. There are no
 fallbacks and no partially applied files. Problems include:
 
 - TOML syntax errors and values of the wrong type,
-- values outside what a setting allows (an unknown theme name, a colour that
+- values outside what a setting allows (an unknown palette name, a colour that
   does not parse, a keybinding conflict, a shell that does not exist),
 - unknown keys and unknown sections, including misspellings.
 
@@ -79,8 +79,8 @@ terminal's previous title where the terminal keeps a title stack, and leaves
 Each server runs the panes and renders what goes inside the pane area: the
 pane contents and the borders and scrollbars around them. Those settings live
 in `server.toml`. Every colour is the client's, the pane chrome included:
-a server draws the borders and scrollbars, and your client colours them from
-its own `[theme]`, on every machine it shows.
+a server draws the borders and scrollbars, and your client colours them, on
+every machine it shows (see [Colours](#colours)).
 
 Config never crosses hosts. When the client shows a machine over SSH, that
 machine's server uses its own `server.toml`, on that machine, and nothing from
@@ -196,7 +196,7 @@ that one occurrence:
 - `fg` is a foreground colour, strictly `#rgb` or `#rrggbb`. Colour names and
   `rgb(...)` are not accepted here.
 - `bold` and `dim` turn those attributes on or off. `false` removes the
-  attribute even where the theme would add it.
+  attribute even where the sidebar would add it.
 - A field you leave out keeps the look the sidebar would otherwise give the
   token, including a machine's palette colours.
 
@@ -381,7 +381,7 @@ each machine.
 |---|---|---|
 | `label` | yes | the name shepr shows for the machine |
 | `ssh` | yes | how to reach it: an ssh host alias, `user@host`, or an `ssh://` URL |
-| `palette` | no | the machine's hue in the sidebar (see [Host colours](#host-colours)) |
+| `palette` | yes | the machine's hue (see [Host colours](#host-colours)) |
 
 Rules:
 
@@ -430,7 +430,6 @@ runtime directory and OpenSSH's own suffix, that machine's setup fails.
 | Field | Default | What it is |
 |---|---|---|
 | `label` | this host's short hostname | the name shepr shows for the local server, and in the terminal's title (`shepr: <label>`) |
-| `palette` | none | the local server's hue in the sidebar |
 
 The short hostname is the part of the hostname before the first dot. A
 `label` follows the same rules as a machine label. If the hostname cannot be
@@ -441,8 +440,8 @@ read, or is not a valid label, the launch fails until `label` is set.
 An entry whose label is the local server's label, ignoring ASCII case, is
 this host's own entry: the client skips it rather than connecting to itself.
 That lets one `client.toml` that lists every host be copied unchanged to all
-of them. The skipped entry's `palette` colours the local server, unless
-`[local]` sets a palette of its own.
+of them. The skipped entry's `palette` is the local server's hue. A host
+with no entry of its own gets `blue`.
 
 ```toml
 # The same client.toml on desk, build and gpu. Each host's short hostname
@@ -471,15 +470,13 @@ file there.
 
 ## Host colours
 
-`palette` (on a machine, or under `[local]`) takes one of `red`, `orange`,
-`yellow`, `green`, `cyan`, `blue`, `purple` or `magenta`, written in
-lowercase. Any other value fails the launch. Without a palette, a machine's
-entries keep the theme's plain look.
+`palette` takes one of `red`, `orange`, `yellow`, `green`, `cyan`, `blue`,
+`purple` or `magenta`, written in lowercase. A missing or unknown value fails
+the launch.
 
-With a palette, the expanded sidebar draws that machine's workspace and agent
-entries in its hue. The colours are derived from the background and
-foreground your terminal reports, so they fit whatever theme your terminal
-uses:
+The expanded sidebar draws each machine's workspace and agent entries in its
+hue. The colours are derived from the background and foreground your terminal
+reports, so they fit whatever theme your terminal uses:
 
 - the entry gets a tinted background, stronger on the focused entry;
 - the first line is drawn in a main text colour and later lines in a dimmer
@@ -493,13 +490,25 @@ terminal's own ANSI colour and later lines are drawn dim. The local server's
 entries lose the colour while it reconnects. Token styles from
 [`[ui.sidebar]`](#token-styles) still win over the palette.
 
-## [theme] in client.toml
+## Colours
 
-The client's `[theme]` colours everything on screen: the sidebar, overlays,
-menus, prompts, navigate mode and copy mode, and the pane borders and
-scrollbars each server draws, on every machine shown. The focused pane's
-border takes `accent`, other borders `overlay0`, and the scrollbars
-`overlay0`, `overlay1` and `surface_dim`. See [Themes](#themes).
+There is no colour theme to choose. The client derives every colour it
+draws (the sidebar, overlays, menus, prompts, navigate mode and copy mode,
+and the pane borders and scrollbars each server draws, on every machine
+shown) from the background, foreground and ANSI colours your terminal
+reports, so shepr matches the terminal's own theme and follows it when the
+terminal switches between light and dark:
+
+- surfaces (panels, the active and selected rows, separators) sit a little
+  off the terminal's background, toward its foreground;
+- text and muted text keep a readable contrast against every surface;
+- the accent (highlights, the focused pane's border) is the local server's
+  hue, and the agent state colours (green for Idle, yellow for Working, red
+  for Blocked) and branch names share its brightness. Where your terminal
+  reports its own colour of a hue, that hue is used.
+
+Until the terminal reports a background, and on a terminal that never does,
+shepr draws with the terminal's own default and ANSI colours.
 
 # server.toml
 
@@ -584,66 +593,3 @@ greater than zero, each at most 4096, and together at most 4194304 cells.
 The budget is not a hard cap: any nonzero value keeps at least 1000 lines,
 and a pane that is widened keeps the history it already has rather than
 dropping it.
-
-# Themes
-
-`[theme]` is a `client.toml` table; `server.toml` has none.
-
-| Setting | Default | What it does |
-|---|---|---|
-| `name` | `"catppuccin"` | the built-in theme to start from |
-| `accent` | the theme's accent | the accent colour; an empty string means unset |
-| `[theme.custom]` | none | per-token overrides on top of the theme |
-
-The built-in themes are `catppuccin`, `catppuccin-latte`, `terminal`,
-`tokyo-night`, `tokyo-night-day`, `dracula`, `nord`, `gruvbox`,
-`gruvbox-light`, `one-dark`, `one-light`, `solarized`, `solarized-light`,
-`kanagawa`, `kanagawa-lotus`, `rose-pine`, `rose-pine-dawn` and `vesper`.
-Names are case-insensitive, spaces and underscores count as hyphens, and a
-few aliases are accepted, such as `tokyonight`, `gruvbox-dark`, `latte` or
-`dawn`. The `terminal` theme uses your terminal's own 16 colours.
-
-`[theme.custom]` can override any of these tokens:
-
-| Token | Used for |
-|---|---|
-| `accent` | highlights and active borders |
-| `panel_bg` | floating panels, overlays and menus |
-| `sidebar_bg` | the sidebar background; unset in every built-in theme, which keeps your terminal's background |
-| `active_row_bg` | the active workspace and focused agent rows |
-| `selection_bg` | the navigate-mode cursor row in the sidebar |
-| `surface0`, `surface1`, `surface_dim` | selected and hovered surfaces, and separators |
-| `overlay0`, `overlay1` | muted and secondary text |
-| `text`, `subtext0` | main text and subdued text |
-| `mauve` | branch names and special labels |
-| `green` | Idle |
-| `yellow` | Working |
-| `red` | Blocked |
-| `peach` | warnings and interrupted states |
-| `blue`, `teal` | further accents |
-
-An unknown token is an unknown key.
-
-Colours, for `accent` and every `[theme.custom]` token, may be written as:
-
-- hex, `#rrggbb` or `#rgb`;
-- `rgb(r, g, b)` with each part from 0 to 255;
-- a terminal colour name: `black`, `red`, `green`, `yellow`, `blue`,
-  `magenta` (or `purple`), `cyan`, `white`, `gray` (or `grey`), `darkgray`
-  (or `darkgrey`), `lightred`, `lightgreen`, `lightyellow`, `lightblue`,
-  `lightmagenta`, `lightcyan`;
-- `reset` (or `default`, `none`, `transparent`) for the terminal's default
-  colour, such as `panel_bg = "reset"`.
-
-When both are set, `theme.custom.accent` takes precedence over
-`theme.accent`.
-
-```toml
-[theme]
-name = "tokyo-night"
-accent = "#f5c2e7"
-
-[theme.custom]
-panel_bg = "reset"
-red = "rgb(255, 97, 136)"
-```

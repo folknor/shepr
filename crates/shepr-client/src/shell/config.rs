@@ -1,7 +1,6 @@
 use ratatui::layout::Rect;
 use shepr_config::LiveKeybindConfig;
 use shepr_config::SpacesSidebarConfig;
-use shepr_config::theme::Palette;
 
 use shepr_protocol::ClientSurfaceSize;
 
@@ -21,10 +20,9 @@ pub(crate) struct ClientShellConfig {
     pub(in crate::shell) agent_panel_sort: shepr_config::AgentPanelSortConfig,
     pub(in crate::shell) status_indicators: shepr_config::StatusIndicatorStyle,
     pub(in crate::shell) copy_on_select: bool,
-    pub(in crate::shell) palette: Palette,
     /// The name shown for the local server (`ClientEndpointId::display_label`).
     pub(in crate::shell) local_label: shepr_config::MachineLabel,
-    /// The hue each endpoint's sidebar entries are drawn in, if any.
+    /// The hue of each endpoint; the local server's is the palette's accent.
     pub(in crate::shell) host_hues: HostHues,
     pub(in crate::shell) keybinds: LiveKeybindConfig,
     pub(in crate::shell) prompt_new_workspace_name: bool,
@@ -48,7 +46,6 @@ impl ClientShellConfig {
         Self::from_config_with_configured(
             config.ui(),
             preferences::ConfiguredChrome::from_validated_config(config),
-            config.palette().clone(),
             config.local_label().clone(),
             HostHues::from_validated_config(config),
             config.live_keybinds().clone(),
@@ -58,7 +55,6 @@ impl ClientShellConfig {
     fn from_config_with_configured(
         config: &shepr_config::ValidatedClientUiConfig,
         configured: preferences::ConfiguredChrome,
-        palette: shepr_config::theme::Palette,
         local_label: shepr_config::MachineLabel,
         host_hues: HostHues,
         keybinds: LiveKeybindConfig,
@@ -72,7 +68,6 @@ impl ClientShellConfig {
             agent_panel_sort: *config.agent_panel_sort.value(),
             status_indicators: config.status_indicators,
             copy_on_select: config.copy_on_select,
-            palette,
             local_label,
             host_hues,
             // One validation pass; the launch already rejected invalid bindings.
@@ -164,7 +159,6 @@ impl ClientShellConfig {
         Self::from_config_with_configured(
             validated.ui(),
             preferences::ConfiguredChrome::from_validated_config(&validated),
-            validated.palette().clone(),
             validated.local_label().clone(),
             HostHues::from_validated_config(&validated),
             validated.live_keybinds().clone(),

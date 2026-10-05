@@ -2,6 +2,7 @@ use crate::endpoint::EndpointFailureStatus;
 use crate::shell::config::ClientShellConfig;
 use crate::shell::ledger::DropReason;
 use crate::shell::navigation::location::{Location, LocationTarget};
+use crate::shell::palette::Palette;
 use crate::shell::state::{
     ClientShellAction, ClientShellEndpointError, ClientShellInput, ClientShellMode,
 };
@@ -26,11 +27,14 @@ use ratatui::layout::Rect;
 
 use crate::tests::test_workspace_id;
 
-/// A client config on the terminal 16-color theme.
-fn terminal_theme() -> ClientConfig {
-    let mut config = ClientConfig::default();
-    config.theme.name = Some("terminal".into());
-    config
+/// The palette a terminal gets before (or without) reporting its background:
+/// its own 16 colours, or the derived truecolour one.
+fn palette(terminal: bool) -> Palette {
+    if terminal {
+        Palette::terminal(shepr_config::DEFAULT_LOCAL_HUE)
+    } else {
+        Palette::test_dark()
+    }
 }
 
 fn workspaces(count: usize) -> ClientShellSnapshot {
@@ -132,20 +136,15 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
 
     for compact in [false, true] {
         for selection_bg in [Color::Reset, Color::Rgb(70, 63, 93)] {
-            let mut values = terminal_theme();
-            if let Color::Rgb(r, g, b) = selection_bg {
-                values.theme.custom = Some(shepr_config::CustomThemeColors {
-                    selection_bg: Some(format!("#{r:02x}{g:02x}{b:02x}")),
-                    ..Default::default()
-                });
-            }
-            let config = ClientShellConfig::from_config(&values);
+            let mut state =
+                ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+            state.palette = palette(true);
+            state.palette.selection_bg = selection_bg;
             let expected_bg = if selection_bg == Color::Reset {
-                config.palette.active_row_bg
+                state.palette.active_row_bg
             } else {
                 selection_bg
             };
-            let mut state = ClientShellState::new(config);
             state.set_snapshot(Box::new(workspaces(3)));
             state.receive_pane_surface_from(
                 surface(),
@@ -179,9 +178,9 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
                     assert_eq!(
                         cell_bg(&frame, (focused.x, focused.y)),
                         if selection_bg == Color::Reset {
-                            state.config.palette.sidebar_bg
+                            Color::Reset
                         } else {
-                            state.config.palette.active_row_bg
+                            state.palette.active_row_bg
                         }
                     );
                     assert_ne!(cell_bg(&frame, (focused.x, focused.y)), expected_bg);
@@ -203,13 +202,10 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
             let focused = workspace_rect(&state, &ClientEndpointId::Local, "w1");
             assert_eq!(
                 cell_bg(&frame, (focused.x, focused.y)),
-                state.config.palette.active_row_bg
+                state.palette.active_row_bg
             );
             let cancelled = workspace_rect(&state, &ClientEndpointId::Local, "w3");
-            assert_eq!(
-                cell_bg(&frame, (cancelled.x, cancelled.y)),
-                state.config.palette.sidebar_bg
-            );
+            assert_eq!(cell_bg(&frame, (cancelled.x, cancelled.y)), Color::Reset);
         }
     }
 }
@@ -218,12 +214,8 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
 fn navigation_highlights_only_the_preview_and_activates_on_enter() {
     for (compact, cols) in [(true, 100), (false, 100), (false, 44)] {
         for terminal_theme in [false, true] {
-            let config = if terminal_theme {
-                self::terminal_theme()
-            } else {
-                ClientConfig::default()
-            };
-            let (mut state, remote) = navigation_state(workspaces(2), &config);
+            let (mut state, remote) = navigation_state(workspaces(2), &ClientConfig::default());
+            state.palette = palette(terminal_theme);
             state.chrome.set_collapsed(compact);
             state.compose(cols, 28).expect("test precondition");
             enter_navigation(&mut state);
@@ -239,16 +231,11 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                 let selected = workspace_rect(&state, endpoint, "w2");
                 let other = workspace_rect(&state, collision, "w2");
                 let focused = workspace_rect(&state, &ClientEndpointId::Local, "w1");
-                let palette = &state.config.palette;
-                let color = if cols == 44 {
-                    palette.surface0
-                } else {
-                    palette.selection_bg
-                };
-                let color = if color == ratatui::style::Color::Reset {
+                let palette = &state.palette;
+                let color = if palette.selection_bg == ratatui::style::Color::Reset {
                     palette.active_row_bg
                 } else {
-                    color
+                    palette.selection_bg
                 };
                 assert_eq!(cell_bg(&frame, (selected.x + 2, selected.y)), color);
                 assert_ne!(cell_bg(&frame, (other.x + 2, other.y)), color);
@@ -258,7 +245,7 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                         if cols == 44 {
                             palette.panel_bg
                         } else {
-                            palette.sidebar_bg
+                            ratatui::style::Color::Reset
                         }
                     } else if cols == 44 {
                         palette.surface_dim
@@ -654,14 +641,14 @@ fn workspace_numbers_and_switching_follow_list_position_not_the_id() {
 }
 
 fn local_navigation_state(compact: bool) -> ClientShellState {
-    local_navigation_state_with(compact, ClientConfig::default())
+    local_navigation_state_with(compact, &ClientConfig::default())
 }
 
-/// A local shell on `config`, which also gets the terminal theme, with three workspaces
+/// A local shell on `config` and the terminal's own colours, with three workspaces
 /// drawn once.
-fn local_navigation_state_with(compact: bool, mut config: ClientConfig) -> ClientShellState {
-    config.theme = terminal_theme().theme;
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+fn local_navigation_state_with(compact: bool, config: &ClientConfig) -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
+    state.palette = palette(true);
     state.chrome.set_collapsed(compact);
     state.set_snapshot(Box::new(workspaces(3)));
     state.receive_pane_surface_from(
@@ -711,7 +698,7 @@ fn assert_local_highlight(state: &mut ClientShellState, selected_id: &str) {
         let rect = workspace_rect(state, &ClientEndpointId::Local, workspace_id);
         assert_eq!(
             (rect.x..rect.right())
-                .any(|x| cell_bg(&frame, (x, rect.y)) == state.config.palette.active_row_bg),
+                .any(|x| cell_bg(&frame, (x, rect.y)) == state.palette.active_row_bg),
             workspace_id == selected_id,
             "expected only {selected_id} highlighted, checking {workspace_id}"
         );
@@ -1004,7 +991,7 @@ fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
     projected.agents.push(agent(AgentStatus::Idle, 1));
 
     for pending in [false, true] {
-        let mut state = local_navigation_state_with(false, config.clone());
+        let mut state = local_navigation_state_with(false, &config);
         state.set_snapshot(Box::new(projected.clone()));
         state.compose(100, 28).expect("test precondition");
         if pending {
@@ -1187,7 +1174,7 @@ fn navigation_continues_from_the_last_workspace_into_the_agents_and_back() {
 
         // The selected agent takes the selected-workspace look, and only it.
         let frame = state.compose(100, 28).expect("test precondition");
-        let palette = &state.config.palette;
+        let palette = &state.palette;
         let selection = if palette.selection_bg == ratatui::style::Color::Reset {
             palette.active_row_bg
         } else {
@@ -1346,7 +1333,7 @@ fn navigate_mode_selects_and_opens_a_connect_entry() {
     assert!(state.navigation_target_valid(&selected));
 
     let frame = state.compose(100, 28).expect("selected entry");
-    let palette = &state.config.palette;
+    let palette = &state.palette;
     let selection = if palette.selection_bg == ratatui::style::Color::Reset {
         palette.active_row_bg
     } else {

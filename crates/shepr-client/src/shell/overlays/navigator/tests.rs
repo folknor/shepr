@@ -11,6 +11,7 @@ use crate::shell::config::ClientShellConfig;
 use crate::shell::navigation::aggregate_navigation::navigator_rows;
 use crate::shell::navigation::location::{Location, LocationTarget};
 use crate::shell::overlays::Overlay;
+use crate::shell::palette::Palette;
 use crate::shell::state::{ClientShellAction, ClientShellInput, ClientShellState};
 use crate::shell::tests::{
     cell_fg, cell_is_bold, cell_symbol_position, snapshot, state_with_remote, surface,
@@ -18,7 +19,6 @@ use crate::shell::tests::{
 use crate::tests::{test_pane_id, test_workspace_id};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use shepr_config::ClientConfig;
-use shepr_config::theme::Palette;
 use shepr_protocol::command::EndpointCommand;
 use shepr_protocol::{AgentStatus, ClientShellAgent, ClientShellSnapshot};
 use shepr_term::key::TerminalKey;
@@ -116,16 +116,14 @@ fn up_after_scrolling_moves_the_selection_not_the_view() {
 }
 
 #[test]
-fn navigator_workspace_headings_use_the_active_themes_primary_text() {
-    for (theme, palette) in [
-        ("catppuccin", Palette::catppuccin()),
-        ("catppuccin-latte", Palette::catppuccin_latte()),
-        ("terminal", Palette::terminal()),
+fn navigator_workspace_headings_use_the_palettes_primary_text() {
+    for palette in [
+        Palette::test_dark(),
+        Palette::terminal(shepr_config::DEFAULT_LOCAL_HUE),
     ] {
-        let mut config = ClientConfig::default();
-        config.theme.name = Some(theme.into());
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-        assert_eq!(state.config.palette, palette);
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        state.palette = palette;
         state.set_snapshot(Box::new(snapshot()));
         state.receive_pane_surface_from(
             surface(),
@@ -143,7 +141,7 @@ fn navigator_workspace_headings_use_the_active_themes_primary_text() {
             .find(|(_, target)| matches!(target.target, LocationTarget::Workspace(_)))
             .expect("workspace heading");
         let position = cell_symbol_position(&frame, rect, "client-shell");
-        assert_eq!(cell_fg(&frame, position), state.config.palette.text);
+        assert_eq!(cell_fg(&frame, position), state.palette.text);
         assert!(cell_is_bold(&frame, position));
     }
 }
@@ -597,13 +595,10 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .navigator_rows()
             .all(|(rect, _)| rect.right() == track.x)
     );
-    assert_eq!(
-        cell_fg(&frame, (track.x, track.y)),
-        state.config.palette.overlay1
-    );
+    assert_eq!(cell_fg(&frame, (track.x, track.y)), state.palette.overlay1);
     assert_eq!(
         cell_fg(&frame, (track.x, track.bottom() - 1)),
-        state.config.palette.overlay0
+        state.palette.overlay0
     );
     let mouse = |state: &mut ClientShellState, kind, row| {
         let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
@@ -875,7 +870,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
     let remote = shepr_config::MachineConfig {
         label: shepr_config::MachineLabel::parse("Remote").expect("test precondition"),
         ssh: shepr_config::SshTarget::parse("dev@example.invalid").expect("test precondition"),
-        palette: None,
+        palette: shepr_config::DEFAULT_LOCAL_HUE,
     };
     let remote_id = ClientEndpointId::Ssh(remote.label.clone());
     state.set_machines(&[remote]);

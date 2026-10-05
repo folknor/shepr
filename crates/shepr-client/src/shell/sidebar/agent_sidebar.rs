@@ -7,6 +7,7 @@ use ratatui::{
 use shepr_protocol::{ClientShellAgent, ClientShellPane, PublicPaneId};
 
 use crate::shell::config::ClientShellConfig;
+use crate::shell::palette::Palette;
 use crate::shell::presentation::status::{status_glyph, status_text};
 use crate::shell::presentation::text::{put_spans, put_text};
 use crate::shell::sidebar::host_colors::PillLook;
@@ -29,7 +30,7 @@ pub(in crate::shell) struct AgentRow {
 pub(super) fn draw_agent_panel_header(
     buffer: &mut Buffer,
     panel: &AgentPanelView,
-    config: &ClientShellConfig,
+    palette: &Palette,
     sort: shepr_config::AgentPanelSortConfig,
 ) {
     let area = panel.area;
@@ -42,7 +43,7 @@ pub(super) fn draw_agent_panel_header(
         area.y,
         area.width,
         &"─".repeat(area.width as usize),
-        Style::default().fg(config.palette.surface_dim),
+        Style::default().fg(palette.surface_dim),
     );
     let Some(sort_rect) = panel.sort_toggle else {
         return;
@@ -54,7 +55,7 @@ pub(super) fn draw_agent_panel_header(
         area.width,
         " agents",
         Style::default()
-            .fg(config.palette.overlay0)
+            .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
     put_text(
@@ -64,7 +65,7 @@ pub(super) fn draw_agent_panel_header(
         sort_rect.width,
         crate::shell::sidebar::layout::agent_sort_label(sort),
         Style::default()
-            .fg(config.palette.overlay0)
+            .fg(palette.overlay0)
             .add_modifier(Modifier::BOLD),
     );
 }
@@ -168,7 +169,7 @@ pub(super) struct AgentEntryState {
     /// The sidebar highlights a selection somewhere.
     pub(super) navigating: bool,
     /// The machine's sidebar colours. The navigation cursor keeps its own
-    /// highlight, so a selected entry is drawn in the theme's plain look.
+    /// highlight, so a selected entry is drawn in the palette's plain look.
     pub(super) look: Option<PillLook>,
 }
 
@@ -182,6 +183,7 @@ pub(super) fn render_agent_row(
     row: &AgentRow,
     state: AgentEntryState,
     config: &ClientShellConfig,
+    palette: &Palette,
 ) {
     let AgentEntryState {
         focused,
@@ -190,7 +192,6 @@ pub(super) fn render_agent_row(
         look,
     } = state;
     let look = look.filter(|_| !selected);
-    let palette = &config.palette;
     let tint = look.and_then(|look| look.background(focused));
     let row_style = match tint {
         Some(tint) => Style::default().bg(tint),
@@ -236,7 +237,7 @@ pub(super) fn render_agent_row(
                 terminal_title: look.text(secondary, index),
                 separator: look.separator(palette, index),
             },
-            None => TokenStyles::themed(status_style, name_style, secondary, secondary, palette),
+            None => TokenStyles::plain(status_style, name_style, secondary, secondary, palette),
         };
         spans.extend(resolved_token_spans(
             tokens,

@@ -163,28 +163,28 @@ impl<'de> Deserialize<'de> for MachineLabel {
 }
 
 /// One `[[machines]]` entry: a label, the SSH target it reaches and the hue
-/// its sidebar entries are drawn in, if any.
+/// it is drawn in.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct MachineConfig {
     pub label: MachineLabel,
     pub ssh: SshTarget,
-    /// The hue the sidebar derives this machine's colours from. Unset keeps
-    /// the theme's plain sidebar look. An unknown name fails the parse.
-    #[serde(default)]
-    pub palette: Option<shepr_term::host_tint::HostHue>,
+    /// The hue the client derives this machine's colours from. Required; an
+    /// unknown name fails the parse.
+    pub palette: shepr_term::host_tint::HostHue,
 }
 
-/// The `[local]` table: settings for the local server, which has no
-/// `[[machines]]` entry of its own.
+/// The hue of a local server that has no `[[machines]]` entry of its own.
+pub const DEFAULT_LOCAL_HUE: shepr_term::host_tint::HostHue = shepr_term::host_tint::HostHue::Blue;
+
+/// The `[local]` table: settings for the local server.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct LocalConfig {
     /// The name the client shows for the local server, under a machine
-    /// label's rules. Unset, the client uses this host's short hostname.
+    /// label's rules. Unset, the client uses this host's short hostname. A
+    /// `[[machines]]` entry of this name is this host's own: it is not
+    /// connected to, and its `palette` is the local server's hue.
     pub label: Option<MachineLabel>,
-    /// The hue the sidebar derives the local server's colours from, like a
-    /// machine's `palette`.
-    pub palette: Option<shepr_term::host_tint::HostHue>,
 }
 
 #[cfg(test)]

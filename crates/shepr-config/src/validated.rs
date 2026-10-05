@@ -478,7 +478,6 @@ pub(crate) fn validate_client(
     let keybind_validation = config.compute_keybind_validation(|field| {
         provenance.key_is_configured(&super::ConfigKeyPath::root().key("keys").key(field))
     });
-    let palette = config.resolve_palette();
     let sidebar_bounds = super::model::validated_sidebar_bounds(
         config.ui.sidebar_min_width,
         config.ui.sidebar_max_width,
@@ -496,9 +495,6 @@ pub(crate) fn validate_client(
         .and_then(std::num::NonZeroU16::new);
 
     let mut diagnostics = keybind_validation.diagnostics;
-    if let Err(errors) = &palette {
-        diagnostics.extend(errors.iter().cloned());
-    }
     if sidebar_bounds.is_none() {
         diagnostics.push(super::ConfigDiagnostic::validation_related(
             super::ConfigKeyPath::root()
@@ -553,7 +549,6 @@ pub(crate) fn validate_client(
 
     match (
         keybind_validation.live,
-        palette,
         sidebar_bounds,
         validated_sidebar_width,
         mouse_scroll_lines,
@@ -561,26 +556,23 @@ pub(crate) fn validate_client(
     ) {
         (
             Some(live_keybinds),
-            Ok(palette),
             Some(sidebar_bounds),
             Some(sidebar_width),
             Some(mouse_scroll_lines),
             Ok(local_label),
         ) => {
-            // This host's own entry is dropped; its palette colours the local
-            // server unless the local table sets one.
+            // This host's own entry is dropped; its palette is the local
+            // server's hue.
             let (own, machines): (Vec<_>, Vec<_>) = config
                 .machines
                 .iter()
                 .cloned()
                 .partition(|machine| is_local_entry(machine, &local_label));
-            let mut local = config.local.clone();
-            if local.palette.is_none() {
-                local.palette = own.iter().find_map(|machine| machine.palette);
-            }
+            let local_hue = own
+                .first()
+                .map_or(super::DEFAULT_LOCAL_HUE, |machine| machine.palette);
             Ok(ValidatedClientConfig {
                 paths,
-                palette,
                 live_keybinds,
                 ui: ValidatedClientUiConfig::from_config(
                     &config.ui,
@@ -588,7 +580,7 @@ pub(crate) fn validate_client(
                     sidebar_width,
                     mouse_scroll_lines,
                 ),
-                local,
+                local_hue,
                 local_label,
                 machines,
             })
@@ -604,11 +596,11 @@ pub(crate) fn validate_client(
 #[derive(Debug, Clone)]
 pub struct ValidatedClientConfig {
     paths: AppPaths,
-    palette: crate::theme::Palette,
     live_keybinds: super::LiveKeybindConfig,
     ui: ValidatedClientUiConfig,
-    /// The local server's own settings.
-    local: super::LocalConfig,
+    /// The local server's hue: this host's own machine entry's palette, or
+    /// the default.
+    local_hue: shepr_term::host_tint::HostHue,
     /// The name the client shows for the local server, resolved at launch.
     local_label: super::MachineLabel,
     /// In config order, with unique labels, this host's own entry dropped.
@@ -642,17 +634,14 @@ impl ValidatedClientConfig {
         &self.paths
     }
 
-    pub fn palette(&self) -> &crate::theme::Palette {
-        &self.palette
-    }
-
     pub fn ui(&self) -> &ValidatedClientUiConfig {
         &self.ui
     }
 
-    /// The `[local]` settings, for the local server.
-    pub fn local(&self) -> &super::LocalConfig {
-        &self.local
+    /// The local server's hue: the `palette` of this host's own
+    /// `[[machines]]` entry, or [`super::DEFAULT_LOCAL_HUE`] without one.
+    pub fn local_hue(&self) -> shepr_term::host_tint::HostHue {
+        self.local_hue
     }
 
     /// The name the client shows for the local server: `local.label`, or
@@ -856,25 +845,6 @@ mod tests {
         assert!(configured.ui().sidebar_width_is_explicit());
         assert!(configured.ui().sidebar_start_collapsed_is_explicit());
         assert!(configured.ui().agent_panel_sort_is_explicit());
-    }
-
-    #[test]
-    fn accent_value_applies_without_an_explicit_document() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let scratch = shepr_test_support::ScratchDir::new("accent-value");
-        let mut config = ClientConfig::default();
-        config.theme.accent = Some("#123456".into());
-        let validated = ValidatedClientConfig::validate(
-            &config,
-            None,
-            AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None)
-                .expect("scratch roots fit a socket"),
-        )
-        .expect("valid accent");
-        assert_eq!(
-            validated.palette().accent,
-            ratatui::style::Color::Rgb(0x12, 0x34, 0x56)
-        );
     }
 
     #[test]

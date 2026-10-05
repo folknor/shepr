@@ -10,9 +10,9 @@ use crate::endpoint::ClientEndpointId;
 use crate::shell::endpoints::ClientShellEndpoint;
 use crate::shell::input::hit_test::contains;
 use crate::shell::notices::{ClientEndpointNoticeKey, ClientVisibleEndpointNotice};
+use crate::shell::palette::Palette;
 use crate::shell::state::{ClientShellInput, ClientShellState};
 use ratatui::style::Style;
-use shepr_config::theme::Palette;
 use std::collections::HashMap;
 
 use crate::limits::MAX_MACHINE_DIAGNOSTIC_CHARS;

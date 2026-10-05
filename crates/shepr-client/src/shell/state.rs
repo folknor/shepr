@@ -227,11 +227,14 @@ pub(crate) struct ClientShellState {
     pub(in crate::shell) notices: crate::shell::notices::Notices,
     pub(in crate::shell) outer_focused: Option<bool>,
     /// The host terminal's default and ANSI colours as last reported, which
-    /// the selection highlight (its background) and the per-host sidebar
-    /// colours are derived from.
+    /// the palette, the selection highlight (its background) and the per-host
+    /// sidebar colours are derived from.
     pub(in crate::shell) host_theme: shepr_term::host::TerminalTheme,
+    /// The colours everything is drawn with, derived from `host_theme` with
+    /// the local server's hue as accent.
+    pub(in crate::shell) palette: crate::shell::palette::Palette,
     /// The per-host sidebar colours derived from `host_theme`; `None` while
-    /// no hue is configured or the terminal has reported no background.
+    /// the terminal has reported no background.
     pub(in crate::shell) host_pills: Option<shepr_term::host_tint::HostPillPalette>,
     pub(in crate::shell) endpoint_error: crate::shell::notices::transient_error::TransientError,
     /// The host terminal's cell as the client last observed it. A pixel mouse
@@ -266,6 +269,8 @@ impl ClientShellState {
         let agent_panel_sort_chrome =
             crate::shell::sidebar::chrome::Chrome::new(agent_panel_sort, sort_origin);
         let endpoints = Endpoints::new(vec![local_endpoint()], &config, agent_panel_sort);
+        let host_theme = shepr_term::host::TerminalTheme::default();
+        let palette = crate::shell::palette::Palette::derive(&host_theme, config.host_hues.local());
         Self {
             now,
             machine_diagnostics: Default::default(),
@@ -287,7 +292,8 @@ impl ClientShellState {
             host_reports_all_keys: false,
             notices: Default::default(),
             outer_focused: None,
-            host_theme: shepr_term::host::TerminalTheme::default(),
+            host_theme,
+            palette,
             host_pills: None,
             endpoint_error: Default::default(),
             host_cell: shepr_core::geometry::HostCell::Unknown,

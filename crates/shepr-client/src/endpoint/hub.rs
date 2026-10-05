@@ -1088,7 +1088,7 @@ mod tests {
         shepr_config::MachineConfig {
             label: shepr_config::MachineLabel::parse("build").expect("machine label"),
             ssh: shepr_config::SshTarget::parse("build.example").expect("ssh target"),
-            palette: None,
+            palette: shepr_config::DEFAULT_LOCAL_HUE,
         }
     }
 

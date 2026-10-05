@@ -466,7 +466,7 @@ pub(in crate::shell) fn machine_named(label: &str, ssh: &str) -> shepr_config::M
     shepr_config::MachineConfig {
         label: shepr_config::MachineLabel::parse(label).expect("test precondition"),
         ssh: shepr_config::SshTarget::parse(ssh).expect("test precondition"),
-        palette: None,
+        palette: shepr_config::DEFAULT_LOCAL_HUE,
     }
 }
 

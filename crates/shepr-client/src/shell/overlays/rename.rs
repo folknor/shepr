@@ -1,11 +1,11 @@
 //! The name prompt: new workspace, rename workspace, rename pane. Typed and pasted text land
 //! in its editor; input content must stay out of logs and error messages here.
 
+use crate::shell::palette::Palette;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use shepr_config::theme::Palette;
 use shepr_term::key::TerminalKey;
 use shepr_termio::text_editor::TextEditor;
 
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn the_drawn_heading_names_the_machine_inside_the_prompt() {
-        let palette = shepr_config::theme::Palette::default();
+        let palette = crate::shell::palette::Palette::test_dark();
         let screen = Rect::new(0, 0, 80, 24);
         let view = RenameOverlay::layout(screen).expect("the prompt fits");
         let new = RenameOverlay::new_workspace(None, "", &"long-machine-name-".repeat(6));

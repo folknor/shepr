@@ -1,10 +1,10 @@
 //! The close-workspace confirmation.
 
+use crate::shell::palette::Palette;
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
-use shepr_config::theme::Palette;
 use shepr_term::key::TerminalKey;
 
 use super::widgets::{button, panel, panel_inner, popup, row};

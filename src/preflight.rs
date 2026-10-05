@@ -199,7 +199,7 @@ mod tests {
             label: MachineLabel::parse(label).expect("test precondition"),
             ssh: shepr_config::SshTarget::parse(format!("{label}.example"))
                 .expect("test precondition"),
-            palette: None,
+            palette: shepr_config::DEFAULT_LOCAL_HUE,
         }
     }
 

@@ -731,7 +731,7 @@ mod tests {
         let machine = shepr_config::MachineConfig {
             label: MachineLabel::parse("build").expect("test label"),
             ssh: SshTarget::parse("build.example").expect("test target"),
-            palette: None,
+            palette: shepr_config::DEFAULT_LOCAL_HUE,
         };
         let executable = executable("/usr/bin/shepr");
         let probe = MachineProbe {

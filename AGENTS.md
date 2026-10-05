@@ -104,28 +104,30 @@ machine is being presented, and the per-host sidebar colours derived from each
 machine's `palette` and the host terminal's theme. Every colour is the
 client's: the pane chrome a server draws (borders, their titles, scrollbars)
 names each cell's role (`shepr_protocol::ChromeRole`) instead of a colour, and
-the client colours the roles as it composes the surface. `client.toml` holds those
-`[ui]` settings, `[theme]`, `[keys]`, `[local]` (the local server's own `label` and `palette`) and
+the client colours the roles as it composes the surface. There is no colour
+theme and no colour setting besides the hues: the client derives its whole
+palette from the colours the host terminal reports (`host_tint::UiPalette`),
+with the local server's hue as its accent, and uses the terminal's own ANSI
+colours until a background is reported. `client.toml` holds those
+`[ui]` settings, `[keys]`, `[local]` (the local server's `label`) and
 `[[machines]]`. Each server applies its own config to what it
 runs and to what it renders into pane cells: shell and working directory,
 session, whether panes have borders, gaps and scrollbars, and the cursor it
 reveals for CJK input methods.
 `server.toml` holds those `[ui]` settings, `[terminal]`, `[session]`,
-`[server]`, `[advanced]` and `[experimental]`. In `client.toml`,
-`theme.custom.accent` takes precedence over `theme.accent`, and an empty
-`theme.accent` means unset. A server always
+`[server]`, `[advanced]` and `[experimental]`. A server always
 computes a workspace's Git branch and ahead/behind, whatever any sidebar
 shows.
 
 Agent states are Working, Blocked and Idle. Unknown presents as Idle.
 
 Machines are configured in `client.toml` as `[[machines]]` entries (a `label`, an
-`ssh` target and an optional `palette`), read once at launch like the rest of the config; there are no
+`ssh` target and a required `palette` hue), read once at launch like the rest of the config; there are no
 commands to add, remove or list them. The client names the local server by
 the `[local]` table's `label`, or this host's short hostname when it is unset,
 never as "Local", and no name is reserved. A machine entry whose label equals
 it in any ASCII case is this host's own entry: it is skipped, and its
-`palette` colours the local server unless `[local]` sets one, so one
+`palette` is the local server's hue (blue without such an entry), so one
 `client.toml` listing every host can be shared by all of them. The TUI connects to them without
 prompting (BatchMode), so at startup, before it takes the terminal, `shepr`
 checks every machine and runs interactive ssh for each one that needs

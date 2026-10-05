@@ -1,48 +1,17 @@
 # shepr client configuration
 # Place this file at ~/.config/shepr/client.toml
 # Only the shepr client reads this file, on the host it runs on. It decides
-# keys, the sidebar, prompts, mouse and copy behaviour, the machines shown, and
-# every colour on screen, the pane borders and scrollbars each server draws
-# included. Pane shells, sessions, and whether panes have borders belong in
-# server.toml, which only shepr-server reads. An unknown or misplaced setting
-# fails the launch.
-
-[theme]
-# Built-in themes: catppuccin, catppuccin-latte, terminal, tokyo-night,
-#                  tokyo-night-day, dracula, nord, gruvbox, gruvbox-light,
-#                  one-dark, one-light, solarized, solarized-light, kanagawa,
-#                  kanagawa-lotus, rose-pine, rose-pine-dawn, vesper
-# name = "catppuccin"
-
-# Accent color for highlights, borders, and navigation UI.
-# Unset or empty uses the theme accent.
-# Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)
-# This is an example override; theme.custom.accent takes precedence.
-# accent = "#89b4fa"
-
-# Override individual color tokens on top of the base theme.
-# Accepts: hex (#rgb or #rrggbb), named colors, rgb(r,g,b), or "reset" (also
-# "default", "none", "transparent") for the terminal's own colour.
-# [theme.custom]
-# sidebar_bg = "#181825"
-# active_row_bg = "#1e1e2e"
-# selection_bg = "#313244"
-# panel_bg = "reset"
-# accent = "#f5c2e7"
-# surface0 = "#313244"
-# surface1 = "#45475a"
-# surface_dim = "#181825"
-# overlay0 = "#6c7086"
-# overlay1 = "#7f849c"
-# text = "#cdd6f4"
-# subtext0 = "#a6adc8"
-# mauve = "#cba6f7"
-# red = "#ff6188"
-# green = "#a6e3a1"
-# yellow = "#f9e2af"
-# blue = "#89b4fa"
-# teal = "#94e2d5"
-# peach = "#fab387"
+# keys, the sidebar, prompts, mouse and copy behaviour and the machines shown.
+# Pane shells, sessions, and whether panes have borders belong in server.toml,
+# which only shepr-server reads. An unknown or misplaced setting fails the
+# launch.
+#
+# There is no colour theme. Every colour shepr draws, the pane borders and
+# scrollbars each server draws included, is derived from the background,
+# foreground and ANSI colours your terminal reports, so shepr matches whatever
+# theme the terminal has. Until the terminal reports a background, and on one
+# that never does, shepr uses the terminal's own ANSI colours. The accent is
+# the local server's palette hue (see [[machines]] below).
 
 [keys]
 # Prefix key to enter prefix mode (default: "ctrl+b")
@@ -196,12 +165,14 @@
 
 # Machines whose shepr servers this client shows next to the local one. Each
 # entry needs a unique label (how shepr names the machine: nonblank, no control
-# characters, no leading or trailing whitespace) and an ssh target (a host
-# alias, user@host or ssh:// URL, never with a password).
-# Read once at launch; a duplicate label or a malformed target fails the launch.
+# characters, no leading or trailing whitespace), an ssh target (a host alias,
+# user@host or ssh:// URL, never with a password) and a palette.
+# Read once at launch; a duplicate label, a malformed target or a missing or
+# unknown palette fails the launch.
 # An entry whose label is the local server's label (in any case) is this host's
 # own entry and is skipped, so one client.toml listing every host can be copied
-# to all of them; its palette colours the local server unless [local] sets one.
+# to all of them; its palette is the local server's hue, the accent of
+# everything shepr draws. Without such an entry the local server's hue is blue.
 # Shepr runs ssh for a machine through a generated config that includes your
 # ~/.ssh/config first and adds ServerAliveInterval/ServerAliveCountMax as
 # fallbacks (values you set yourself win), and reuses the first authenticated
@@ -209,31 +180,29 @@
 # limit applies to the private control socket. If XDG_RUNTIME_DIR is too long
 # to leave room for the profile runtime directory and generated OpenSSH staging
 # suffix, that machine's setup fails.
-# palette is optional: a hue name (red, orange, yellow, green, cyan, blue,
-# purple or magenta) the expanded sidebar draws this machine's workspace and
-# agent entries in. Shepr derives the colours from the background and
-# foreground your terminal reports, so they fit its theme: a tinted background
-# (stronger on the focused entry), first-line text, dimmer second-line text and
-# an accent (the workspace number, the machine name in agent entries), each
-# kept readable against the tint, with every host's accent equally bright.
-# Where your terminal reports its own colour of that name, its hue is used.
-# Without a reported background there is no tint: the accent is the terminal's
-# own ANSI colour and the second line is drawn dim. Entries of an unreachable
-# machine lose the colour. Token styles set in [ui.sidebar] still win. Unset,
-# the entries keep the theme's plain look. An unknown name fails the launch.
+# palette is a hue name (red, orange, yellow, green, cyan, blue, purple or
+# magenta) the expanded sidebar draws this machine's workspace and agent
+# entries in. Shepr derives the colours from the background and foreground your
+# terminal reports, so they fit its theme: a tinted background (stronger on the
+# focused entry), first-line text, dimmer second-line text and an accent (the
+# workspace number, the machine name in agent entries), each kept readable
+# against the tint, with every host's accent equally bright. Where your
+# terminal reports its own colour of that name, its hue is used. Without a
+# reported background there is no tint: the accent is the terminal's own ANSI
+# colour and the second line is drawn dim. Entries of an unreachable machine
+# lose the colour. Token styles set in [ui.sidebar] still win.
 # [[machines]]
 # label = "build"
 # ssh = "dev@build"
 # palette = "green"
 
-# Settings for the local server, which has no [[machines]] entry.
+# Settings for the local server.
 # label is the name shepr shows for the local server, under the rules for a
-# machine label above. Unset, it is this host's short hostname (the part before
-# the first dot); a hostname that cannot be read fails the launch until a label
-# is set. The client titles the terminal it runs in "shepr: <label>", whichever
-# machine it shows; on exit it restores the terminal's previous title where the
-# terminal keeps a title stack, and leaves "shepr" elsewhere.
-# palette is the local server's hue, as for a machine above.
+# machine label above, and names this host's own [[machines]] entry. Unset, it
+# is this host's short hostname (the part before the first dot); a hostname
+# that cannot be read fails the launch until a label is set. The client titles
+# the terminal it runs in "shepr: <label>", whichever machine it shows; on exit
+# it restores the terminal's previous title where the terminal keeps a title
+# stack, and leaves "shepr" elsewhere.
 # [local]
 # label = "desk"
-# palette = "blue"

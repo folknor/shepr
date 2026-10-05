@@ -12,8 +12,8 @@ use crate::shell::sidebar::layout::{
     endpoint_signal,
 };
 
+use crate::shell::palette::Palette;
 use ratatui::layout::Rect;
-use shepr_config::theme::Palette;
 
 pub(in crate::shell) fn draw_collapsed(
     buffer: &mut Buffer,
@@ -21,7 +21,7 @@ pub(in crate::shell) fn draw_collapsed(
     inputs: &SidebarInputs<'_>,
 ) {
     let config = inputs.config;
-    let palette = &config.palette;
+    let palette = inputs.palette;
     let single_endpoint = inputs.single_endpoint();
     crate::shell::presentation::text::render_sidebar_background(buffer, view.area, palette);
     let workspace_area = view.workspaces.body;
@@ -183,7 +183,7 @@ pub(in crate::shell) fn draw_expanded(
     inputs: &SidebarInputs<'_>,
 ) {
     let config = inputs.config;
-    let palette = &config.palette;
+    let palette = inputs.palette;
     let single_endpoint = inputs.single_endpoint();
     let workspace_area = view.workspace_area;
     crate::shell::presentation::text::render_sidebar_background(buffer, view.area, palette);
@@ -335,7 +335,7 @@ fn draw_machine_slot(buffer: &mut Buffer, rect: Rect, endpoint: usize, inputs: &
         endpoint,
         inputs.endpoint_label(&endpoint.endpoint_id),
         inputs.machine_diagnostics,
-        &inputs.config.palette,
+        inputs.palette,
     );
 }
 
@@ -352,7 +352,7 @@ fn draw_machine_entry(
     let Some(entry) = endpoint.machine_entry() else {
         return;
     };
-    let palette = &inputs.config.palette;
+    let palette = inputs.palette;
     let selected = inputs.selected.is_some_and(|selected| {
         selected.is_machine_entry() && selected.location.endpoint == endpoint.endpoint_id
     });

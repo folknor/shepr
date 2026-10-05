@@ -364,8 +364,8 @@ impl ClientShellState {
                 if self.host_theme.background != Some(color) {
                     self.host_theme.background = Some(color);
                     // The selection highlight follows the background, and so do
-                    // the per-host sidebar colours.
-                    self.refresh_host_pills();
+                    // the palette and the per-host sidebar colours.
+                    self.refresh_host_colors();
                     outcome.repaint = true;
                 }
             }
@@ -375,12 +375,12 @@ impl ClientShellState {
             } => {
                 if self.host_theme.foreground != Some(color) {
                     self.host_theme.foreground = Some(color);
-                    outcome.repaint |= self.refresh_host_pills();
+                    outcome.repaint |= self.refresh_host_colors();
                 }
             }
             RawInputEvent::HostPaletteColors { colors } => {
-                // The per-host colours read only the named ANSI slots, so the
-                // rest of the 256 replies do not rederive them.
+                // The palette and the per-host colours read only the named ANSI
+                // slots, so the rest of the 256 replies do not rederive them.
                 let mut named_slot_changed = false;
                 for (index, color) in colors {
                     let Some(slot) = self.host_theme.palette.get_mut(usize::from(index)) else {
@@ -392,14 +392,14 @@ impl ClientShellState {
                     }
                 }
                 if named_slot_changed {
-                    outcome.repaint |= self.refresh_host_pills();
+                    outcome.repaint |= self.refresh_host_colors();
                 }
             }
             RawInputEvent::HostColorSchemeChanged(_) => {
                 // A dark/light switch changes the host's default and palette
-                // colours too. Re-query them so panes, the selection highlight
-                // and the per-host sidebar colours (both from `host_theme`)
-                // follow. The stdin framer arms itself for the replies
+                // colours too. Re-query them so panes, the palette, the
+                // selection highlight and the per-host sidebar colours (all
+                // from `host_theme`) follow. The stdin framer arms itself for the replies
                 // whenever it tracks scheme changes.
                 outcome.query_host_theme = true;
             }

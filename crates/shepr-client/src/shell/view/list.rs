@@ -2,7 +2,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
-use shepr_config::theme::Palette;
+use crate::shell::palette::Palette;
 use shepr_term::scroll::{
     ListScroll, ScrollTrack, ScrollbarMetrics, ScrollbarPart, scrollbar_rows,
 };

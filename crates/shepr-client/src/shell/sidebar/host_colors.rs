@@ -1,24 +1,24 @@
 //! Per-host colours of the expanded sidebar's workspace and agent entries.
 //!
-//! Each endpoint may name a hue in `client.toml` (a machine's `palette`, or
-//! `[local] palette`). The colours are derived in `shepr_term::host_tint` from
-//! the colours the host terminal reported, and rederived whenever it reports
-//! new ones.
+//! Every machine names a hue in `client.toml` (its `palette`); the local
+//! server takes the hue of this host's own machine entry, or the default. The
+//! colours are derived in `shepr_term::host_tint` from the colours the host
+//! terminal reported, and rederived whenever it reports new ones.
 
 use std::collections::HashMap;
 
 use ratatui::style::{Color, Modifier, Style};
-use shepr_config::theme::Palette;
 use shepr_term::host_tint::{HostHue, HostPillColors, HostPillPalette};
 
 use crate::endpoint::ClientEndpointId;
+use crate::shell::palette::Palette;
 use crate::shell::state::ClientShellState;
 
-/// The hue each endpoint was given in `client.toml`, fixed for the life of the
-/// client like the machines themselves.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// The hue of each endpoint, fixed for the life of the client like the
+/// machines themselves.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::shell) struct HostHues {
-    local: Option<HostHue>,
+    local: HostHue,
     machines: HashMap<shepr_config::MachineLabel, HostHue>,
 }
 
@@ -27,45 +27,47 @@ impl HostHues {
         config: &shepr_config::ValidatedClientConfig,
     ) -> Self {
         Self {
-            local: config.local().palette,
+            local: config.local_hue(),
             machines: config
                 .machines()
                 .iter()
-                .filter_map(|machine| Some((machine.label.clone(), machine.palette?)))
+                .map(|machine| (machine.label.clone(), machine.palette))
                 .collect(),
         }
     }
 
+    /// The local server's hue, the accent of everything the client draws.
+    pub(in crate::shell) fn local(&self) -> HostHue {
+        self.local
+    }
+
+    /// `endpoint`'s hue; `None` only for a machine the config does not name.
     pub(in crate::shell) fn hue_for(&self, endpoint: &ClientEndpointId) -> Option<HostHue> {
         match endpoint {
-            ClientEndpointId::Local => self.local,
+            ClientEndpointId::Local => Some(self.local),
             ClientEndpointId::Ssh(label) => self.machines.get(label).copied(),
         }
     }
 
-    /// Every configured hue once, in a fixed order, for deriving them together.
+    /// Every hue in use once, in a fixed order, for deriving them together.
     fn configured(&self) -> Vec<HostHue> {
         HostHue::ALL
             .into_iter()
-            .filter(|hue| {
-                self.local == Some(*hue) || self.machines.values().any(|other| other == hue)
-            })
+            .filter(|hue| self.local == *hue || self.machines.values().any(|other| other == hue))
             .collect()
     }
 }
 
 impl ClientShellState {
-    /// Rederives the per-host colours from the host terminal's colours as last
-    /// reported. Returns whether they changed, so the caller repaints.
-    pub(in crate::shell) fn refresh_host_pills(&mut self) -> bool {
-        let hues = self.config.host_hues.configured();
-        let pills = if hues.is_empty() {
-            None
-        } else {
-            HostPillPalette::derive(&self.host_theme, &hues)
-        };
-        let changed = pills != self.host_pills;
+    /// Rederives the palette and the per-host colours from the host
+    /// terminal's colours as last reported. Returns whether they changed, so
+    /// the caller repaints.
+    pub(in crate::shell) fn refresh_host_colors(&mut self) -> bool {
+        let palette = Palette::derive(&self.host_theme, self.config.host_hues.local());
+        let pills = HostPillPalette::derive(&self.host_theme, &self.config.host_hues.configured());
+        let changed = pills != self.host_pills || palette != self.palette;
         self.host_pills = pills;
+        self.palette = palette;
         changed
     }
 }
@@ -85,7 +87,8 @@ pub(in crate::shell::sidebar) enum PillLook {
 }
 
 impl PillLook {
-    /// The look of `endpoint`'s entries, or `None` for the theme's plain look.
+    /// The look of `endpoint`'s entries, or `None`, the palette's plain look,
+    /// for a machine the config does not name.
     pub(in crate::shell::sidebar) fn for_endpoint(
         hues: &HostHues,
         pills: Option<&HostPillPalette>,
@@ -123,7 +126,7 @@ impl PillLook {
 
     /// `style` for text on line `row` of an entry: the derived main colour on
     /// the first line and the dim colour below it, or, without a tint, the
-    /// theme's colour with the second line dimmed. Modifiers such as bold are
+    /// palette's colour with the second line dimmed. Modifiers such as bold are
     /// kept.
     pub(in crate::shell::sidebar) fn text(self, style: Style, row: usize) -> Style {
         match (self, row) {
@@ -135,7 +138,7 @@ impl PillLook {
     }
 
     /// The separator between tokens on line `row`: dim text on a tint, the
-    /// theme's separator colour otherwise.
+    /// palette's separator colour otherwise.
     pub(in crate::shell::sidebar) fn separator(self, palette: &Palette, row: usize) -> Style {
         match self {
             Self::Tinted(colors) => Style::default().fg(rgb(colors.dim)),
@@ -152,7 +155,7 @@ fn rgb(color: shepr_term::RgbColor) -> Color {
 mod tests {
     use super::*;
 
-    fn machine(label: &str, palette: Option<HostHue>) -> shepr_config::MachineConfig {
+    fn machine(label: &str, palette: HostHue) -> shepr_config::MachineConfig {
         shepr_config::MachineConfig {
             label: shepr_config::MachineLabel::parse(label).expect("test label"),
             ssh: shepr_config::SshTarget::parse(label).expect("test target"),
@@ -160,20 +163,23 @@ mod tests {
         }
     }
 
+    fn local_desk(machines: Vec<shepr_config::MachineConfig>) -> shepr_config::ClientConfig {
+        shepr_config::ClientConfig {
+            local: shepr_config::LocalConfig {
+                label: Some(shepr_config::MachineLabel::parse("desk").expect("test label")),
+            },
+            machines,
+            ..Default::default()
+        }
+    }
+
     fn hues() -> HostHues {
         use shepr_test_fixtures::ValidatedClientConfigFixture as _;
-        let config = shepr_config::ClientConfig {
-            local: shepr_config::LocalConfig {
-                palette: Some(HostHue::Blue),
-                ..Default::default()
-            },
-            machines: vec![
-                machine("build", Some(HostHue::Green)),
-                machine("gpu", None),
-                machine("ci", Some(HostHue::Blue)),
-            ],
-            ..Default::default()
-        };
+        let config = local_desk(vec![
+            machine("desk", HostHue::Purple),
+            machine("build", HostHue::Green),
+            machine("ci", HostHue::Green),
+        ]);
         HostHues::from_validated_config(&shepr_config::ValidatedClientConfig::test_from_config(
             config, None,
         ))
@@ -186,21 +192,36 @@ mod tests {
     #[test]
     fn each_endpoint_gets_the_hue_it_was_configured_with() {
         let hues = hues();
-        assert_eq!(hues.hue_for(&ClientEndpointId::Local), Some(HostHue::Blue));
+        // The local server takes this host's own entry's hue.
+        assert_eq!(hues.local(), HostHue::Purple);
+        assert_eq!(
+            hues.hue_for(&ClientEndpointId::Local),
+            Some(HostHue::Purple)
+        );
         assert_eq!(hues.hue_for(&ssh("build")), Some(HostHue::Green));
-        assert_eq!(hues.hue_for(&ssh("gpu")), None);
         assert_eq!(hues.hue_for(&ssh("unknown")), None);
-        assert_eq!(hues.configured(), [HostHue::Green, HostHue::Blue]);
+        assert_eq!(hues.configured(), [HostHue::Green, HostHue::Purple]);
     }
 
     #[test]
-    fn without_derived_colours_a_configured_endpoint_falls_back_to_its_ansi_colour() {
+    fn a_local_server_without_its_own_entry_takes_the_default_hue() {
+        use shepr_test_fixtures::ValidatedClientConfigFixture as _;
+        let hues = HostHues::from_validated_config(
+            &shepr_config::ValidatedClientConfig::test_from_config(
+                local_desk(vec![machine("build", HostHue::Green)]),
+                None,
+            ),
+        );
+        assert_eq!(hues.local(), shepr_config::DEFAULT_LOCAL_HUE);
+    }
+
+    #[test]
+    fn without_derived_colours_an_endpoint_falls_back_to_its_ansi_colour() {
         let hues = hues();
         assert_eq!(
             PillLook::for_endpoint(&hues, None, &ssh("build")),
             Some(PillLook::Indexed { accent: 2 })
         );
-        assert_eq!(PillLook::for_endpoint(&hues, None, &ssh("gpu")), None);
 
         let look = PillLook::Indexed { accent: 2 };
         assert_eq!(look.background(true), None);
@@ -214,17 +235,12 @@ mod tests {
     fn host_colour_reports_rederive_the_colours_and_repaint() {
         use shepr_termio::input::raw_input::RawInputEvent;
 
-        let config = shepr_config::ClientConfig {
-            local: shepr_config::LocalConfig {
-                palette: Some(HostHue::Green),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
+        let config = local_desk(vec![machine("desk", HostHue::Green)]);
         let mut state = ClientShellState::new(
             crate::shell::config::ClientShellConfig::from_config(&config),
         );
         assert_eq!(state.host_pills, None);
+        assert_eq!(state.palette, Palette::terminal(HostHue::Green));
 
         let foreground = state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
             kind: shepr_term::host::DefaultColorKind::Foreground,
@@ -253,6 +269,11 @@ mod tests {
             .as_ref()
             .and_then(|pills| pills.colors(HostHue::Green))
             .expect("a reported background derives the configured hue");
+        let dark_palette = state.palette.clone();
+        assert!(
+            matches!(dark_palette.panel_bg, Color::Rgb(..)),
+            "{dark_palette:?}"
+        );
 
         // A palette reply outside the named slots changes nothing.
         let unrelated = state.handle_raw_events(vec![RawInputEvent::HostPaletteColors {
@@ -286,6 +307,7 @@ mod tests {
             .and_then(|pills| pills.colors(HostHue::Green))
             .expect("still derived");
         assert_ne!(dark, light);
+        assert_ne!(dark_palette, state.palette);
     }
 
     #[test]
@@ -324,7 +346,7 @@ mod tests {
         focused: bool,
         selected: bool,
     ) -> ratatui::buffer::Buffer {
-        let palette = Palette::catppuccin();
+        let palette = Palette::test_dark();
         let area = ratatui::layout::Rect::new(0, 0, 20, 2);
         let mut buffer = ratatui::buffer::Buffer::empty(area);
         crate::shell::sidebar::render_workspace_rows(
@@ -376,14 +398,14 @@ mod tests {
             assert_eq!(cell.bg, rgb(colors.tint_focused));
         }
 
-        // The navigation cursor keeps the theme's own highlight and colours.
+        // The navigation cursor keeps the palette's own highlight and colours.
         let selected = draw_workspace_entry(look, false, true);
         let untinted = draw_workspace_entry(None, false, true);
         assert_eq!(selected, untinted);
     }
 
     #[test]
-    fn an_indexed_workspace_entry_keeps_the_theme_background() {
+    fn an_indexed_workspace_entry_keeps_the_plain_background() {
         let indexed = draw_workspace_entry(Some(PillLook::Indexed { accent: 2 }), true, false);
         let plain = draw_workspace_entry(None, true, false);
         assert_eq!(indexed[(5, 0)].bg, plain[(5, 0)].bg);

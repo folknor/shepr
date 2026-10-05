@@ -5,7 +5,6 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 
 use super::{
     BindingConfig, DEFAULT_MOUSE_SCROLL_LINES, DEFAULT_SCROLLBACK_LIMIT_BYTES, SidebarConfig,
-    ThemeConfig,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default, Serialize)]
@@ -236,7 +235,6 @@ pub(crate) fn validated_sidebar_bounds(min: u16, max: u16) -> Option<SidebarBoun
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ClientConfig {
-    pub theme: ThemeConfig,
     pub keys: KeysConfig,
     pub ui: ClientUiConfig,
     pub local: super::LocalConfig,
@@ -345,13 +343,6 @@ pub struct ServerUiConfig {
     pub pane_gaps: bool,
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
-}
-
-pub(crate) fn deserialize_theme_accent<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Ok(Option::<String>::deserialize(deserializer)?.filter(|accent| !accent.is_empty()))
 }
 
 /// Cursor shape (DECSCUSR) used for the forced IME anchor.

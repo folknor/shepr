@@ -58,12 +58,34 @@ impl<'de> Deserialize<'de> for SidebarTokenColor {
         D: serde::Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        let Some((r, g, b)) = crate::theme_config::try_parse_hex_rgb(&value) else {
+        let Some((r, g, b)) = try_parse_hex_rgb(&value) else {
             return Err(serde::de::Error::custom(
                 "sidebar token fg must be #RGB or #RRGGBB",
             ));
         };
         Ok(Self { r, g, b })
+    }
+}
+
+/// Parse a strict `#RGB` or `#RRGGBB` string without trimming or normalization.
+fn try_parse_hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let hex = s.strip_prefix('#')?;
+    if !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return None;
+    }
+
+    let digit = |byte: u8| match byte {
+        b'0'..=b'9' => byte - b'0',
+        _ => byte.to_ascii_lowercase() - b'a' + 10,
+    };
+    match *hex.as_bytes() {
+        [r1, r2, g1, g2, b1, b2] => Some((
+            digit(r1) * 16 + digit(r2),
+            digit(g1) * 16 + digit(g2),
+            digit(b1) * 16 + digit(b2),
+        )),
+        [r, g, b] => Some((digit(r) * 17, digit(g) * 17, digit(b) * 17)),
+        _ => None,
     }
 }
 
@@ -495,6 +517,19 @@ pub struct SidebarConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_colours_parse_strictly_without_panicking_on_non_ascii() {
+        assert_eq!(try_parse_hex_rgb("#1E1e2E"), Some((0x1e, 0x1e, 0x2e)));
+        assert_eq!(try_parse_hex_rgb("#0a9"), Some((0x00, 0xaa, 0x99)));
+        // Six and three bytes long, but not six or three hex digits: slicing
+        // by byte offset would split a multi-byte character.
+        for value in [
+            "#12345", "#12345g", " #fff", "#aééb", "#é\u{1}", "#ab€", "#+f+f+f", "#+ff",
+        ] {
+            assert_eq!(try_parse_hex_rgb(value), None, "value: {value:?}");
+        }
+    }
 
     #[test]
     fn defaults_match_the_compact_agent_and_existing_space_layouts() {
