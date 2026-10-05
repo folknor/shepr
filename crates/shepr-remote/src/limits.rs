@@ -137,6 +137,12 @@ pub const SSH_RESTART_ATTEMPT_BUDGET: Duration =
 /// machine. It is the client's per-attempt connection budget.
 pub(crate) const PREFLIGHT_CHECK_BUDGET: Duration = SSH_CONNECTION_ATTEMPT_BUDGET;
 
+/// How long `shepr status --all` or `shepr stop --all` may spend finding a
+/// configured machine's `shepr` and reading its status: the same budget as one
+/// connection attempt. Machines are handled concurrently, so this bounds the
+/// whole status. A stop then gives its stop command [`REMOTE_STOP_SSH_TIMEOUT`].
+pub(crate) const FLEET_STATUS_BUDGET: Duration = SSH_CONNECTION_ATTEMPT_BUDGET;
+
 /// An SSH bridge must outlive several client heartbeat cycles while idle.
 /// This gives a healthy bridge multiple chances to answer endpoint probes;
 /// its minimum cycle ratio is checked below.

@@ -38,6 +38,7 @@ macro_rules! println {
 
 mod detect;
 mod error;
+mod fleet;
 mod man;
 mod matches;
 mod spec;
@@ -461,12 +462,43 @@ mod tests {
             assert!(
                 matches!(
                     &*command,
-                    CliCommand::Stop(super::stop::Command { expected_boot })
+                    CliCommand::Stop(super::stop::Command { expected_boot, all: false })
                         if expected_boot.as_deref() == expected
                 ),
                 "{args:?}"
             );
         }
+    }
+
+    /// `--all` reaches every configured machine; it never combines with the
+    /// conditional stop shepr runs over SSH.
+    #[test]
+    fn all_parses_on_status_and_stop() {
+        let Launch::Cli(command) = parse(&["status", "--all"]) else {
+            panic!("status --all is a CLI command");
+        };
+        assert!(matches!(
+            *command,
+            CliCommand::Status(super::status::Command::Overview {
+                json: false,
+                all: true
+            })
+        ));
+        let Launch::Cli(command) = parse(&["stop", "--all"]) else {
+            panic!("stop --all is a CLI command");
+        };
+        assert!(matches!(
+            *command,
+            CliCommand::Stop(super::stop::Command {
+                expected_boot: None,
+                all: true
+            })
+        ));
+        let expect_boot = shepr_launch::invocation::FLAG_EXPECT_BOOT;
+        assert_eq!(
+            parse_error(&["stop", "--all", expect_boot, "4242-17"]).exit_code(),
+            2
+        );
     }
 
     #[test]

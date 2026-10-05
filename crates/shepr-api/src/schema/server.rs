@@ -244,9 +244,44 @@ impl From<ServerStatusJson> for ServerStatusFields {
     }
 }
 
+/// The session counts a server of the reporting build answered `server.summary`
+/// with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServerSummaryJson {
+    pub workspaces: usize,
+    pub panes: usize,
+    pub agents: usize,
+    pub blocked_agents: usize,
+}
+
+/// JSON emitted by `shepr status --json`, which `shepr status --all` also
+/// reads from every configured machine's own `shepr`, whatever its build.
+/// `summary` is present only when that host's server is of the reporting
+/// build, is running, and answered; a build that predates the field omits it,
+/// and it reads as absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusOverviewJson {
+    pub local_client: ClientStatusJson,
+    pub server: ServerStatusJson,
+    #[serde(default)]
+    pub summary: Option<ServerSummaryJson>,
+}
+
 #[cfg(test)]
 mod status_tests {
     use super::*;
+
+    #[test]
+    fn an_overview_without_counts_reads_as_one_without_a_summary() {
+        let value = serde_json::json!({
+            "local_client": {"version": "1.0", "build_id": "0123456789abcdef", "binary": null, "server": null},
+            "server": {"presence": "gone", "version": null, "build_id": null, "boot_id": null, "socket": "s"},
+        });
+        let overview: StatusOverviewJson =
+            serde_json::from_value(value).expect("an older overview reads");
+        assert_eq!(overview.summary, None);
+        assert_eq!(overview.server.presence(), ServerPresenceJson::Gone);
+    }
 
     #[test]
     fn status_requires_an_identity_exactly_when_the_server_answered() {

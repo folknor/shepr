@@ -4,16 +4,27 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::Serialize;
 
 use shepr_api::client::{ApiClient, ServerSummary};
-use shepr_api::schema::{ClientStatusJson, ServerStatusJson, SiblingServerJson};
-use shepr_launch::invocation::{COMMAND_CLIENT, COMMAND_SERVER, FLAG_JSON, option_name_from_flag};
+use shepr_api::schema::{
+    ClientStatusJson, ServerStatusJson, ServerSummaryJson, SiblingServerJson, StatusOverviewJson,
+};
+use shepr_launch::invocation::{
+    COMMAND_CLIENT, COMMAND_SERVER, FLAG_ALL, FLAG_JSON, option_name_from_flag,
+};
 use shepr_launch::status::{RuntimeStatus, ServerPresence};
 use shepr_paths::{BuildProfile, ServerAddress};
 use shepr_protocol::BuildIdentity;
+use shepr_remote::fleet::MachineStatus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Command {
-    Overview { json: bool },
-    Server { json: bool },
+    /// `all` adds the server of every machine configured in `client.toml`.
+    Overview {
+        json: bool,
+        all: bool,
+    },
+    Server {
+        json: bool,
+    },
 }
 
 pub(super) enum ParsedCommand {
@@ -23,8 +34,12 @@ pub(super) enum ParsedCommand {
 
 pub(super) fn parse(matches: &clap::ArgMatches) -> Option<ParsedCommand> {
     let root_json = super::matches::try_flag(matches, option_name_from_flag(FLAG_JSON)).ok()?;
+    let all = super::matches::try_flag(matches, option_name_from_flag(FLAG_ALL)).ok()?;
     match matches.subcommand() {
-        None => Some(ParsedCommand::Local(Command::Overview { json: root_json })),
+        None => Some(ParsedCommand::Local(Command::Overview {
+            json: root_json,
+            all,
+        })),
         Some((COMMAND_SERVER, scope)) => {
             let command_json =
                 super::matches::try_flag(scope, option_name_from_flag(FLAG_JSON)).ok()?;
@@ -48,19 +63,59 @@ pub(super) fn run_status_command(
     paths: &shepr_paths::AppPaths,
 ) -> super::CliResult<i32> {
     match command {
-        Command::Overview { json } => print_full_status(paths, json),
+        Command::Overview { json, all } => print_full_status(paths, json, all),
         Command::Server { json } => print_server_status(paths, json),
     }
 }
 
-fn print_full_status(paths: &shepr_paths::AppPaths, json: bool) -> super::CliResult<i32> {
+/// `shepr status`, and with `all` every configured machine after it. The
+/// machines are read first, so a `client.toml` the TUI would refuse fails the
+/// command before any SSH runs; they then answer concurrently.
+fn print_full_status(
+    paths: &shepr_paths::AppPaths,
+    json: bool,
+    all: bool,
+) -> super::CliResult<i32> {
+    let fleet = if all {
+        Some(super::fleet::load(paths)?)
+    } else {
+        None
+    };
+    let machines = fleet.as_ref().map(|fleet| {
+        let statuses = shepr_remote::fleet::on_every_machine(&fleet.machines, |machine| {
+            shepr_remote::fleet::machine_status(paths, machine)
+        });
+        fleet.machines.iter().zip(statuses).collect::<Vec<_>>()
+    });
     let server = read_server_runtime_status(paths)?;
+    let address = paths.server_address();
+    // Only a running server of this build is asked for its counts: another
+    // build may not know the method, and a starting one is still restoring.
+    let summary = match &server {
+        ServerPresence::Running(status)
+            if BuildIdentity::for_this_build().matches(status.build_id) =>
+        {
+            Some(read_server_summary(address.socket()))
+        }
+        _ => None,
+    };
 
     if json {
-        print_json(&FullStatusJson {
+        let local = StatusOverviewJson {
             local_client: client_status_json(),
             server: server_status_json(paths, &server),
-        })?;
+            summary: summary.and_then(Result::ok).map(summary_json),
+        };
+        match machines {
+            None => print_json(&local)?,
+            Some(machines) => print_json(&FleetStatusJson {
+                local,
+                machines: machines
+                    .into_iter()
+                    .map(|(machine, status)| MachineStatusJson::new(machine, status))
+                    .collect(),
+            })?,
+        }
         return Ok(0);
     }
 
@@ -71,15 +126,6 @@ fn print_full_status(paths: &shepr_paths::AppPaths, json: bool) -> super::CliRes
         binary: current_exe_label(),
         sibling: shepr_launch::local_server::sibling_server_status(),
     };
-    let address = paths.server_address();
-    // Only a running server of this build is asked for its counts: another
-    // build may not know the method, and a starting one is still restoring.
-    let summary = match &server {
-        ServerPresence::Running(status) if installation.build_id.matches(status.build_id) => {
-            Some(read_server_summary(address.socket()))
-        }
-        _ => None,
-    };
     let overview = Overview {
         installation: &installation,
         server: &server,
@@ -89,7 +135,137 @@ fn print_full_status(paths: &shepr_paths::AppPaths, json: bool) -> super::CliRes
         now: SystemTime::now(),
     };
     print!("{}", render_overview(&overview));
+    if let Some(machines) = machines {
+        print!("{}", render_machines(&machines, paths, SystemTime::now()));
+    }
     Ok(0)
+}
+
+/// The machines section of `status --all`: one line per configured machine.
+fn render_machines(
+    machines: &[(&shepr_config::MachineConfig, std::io::Result<MachineStatus>)],
+    paths: &shepr_paths::AppPaths,
+    now: SystemTime,
+) -> String {
+    let mut out = String::from("\n");
+    if machines.is_empty() {
+        push_line(
+            &mut out,
+            &format!(
+                "machines: none configured in {}",
+                paths.client_config_file().display()
+            ),
+        );
+        return out;
+    }
+    push_line(&mut out, "machines");
+    let rows = machines
+        .iter()
+        .map(|(machine, status)| {
+            let text = match status {
+                Ok(status) => machine_line(&status.overview, now),
+                Err(error) => super::fleet::failure_label(error),
+            };
+            (machine.label.to_string(), text)
+        })
+        .collect::<Vec<_>>();
+    out.push_str(&super::fleet::render_rows(&rows));
+    out
+}
+
+/// One machine's server as its own `shepr` reported it: its state, pid and
+/// uptime, its counts when it is of that host's build, then the builds when
+/// they disagree. A server that is not the build installed beside it was
+/// started before an update, and a restart brings the installed one up; an
+/// install that is not this `shepr`'s build is one this client cannot use.
+fn machine_line(overview: &StatusOverviewJson, now: SystemTime) -> String {
+    use shepr_api::schema::ServerStatus;
+    let mut line = match &overview.server.state {
+        ServerStatus::Gone => "not running".to_owned(),
+        ServerStatus::Unresponsive => "not answering".to_owned(),
+        ServerStatus::Stopping(identity) => {
+            format!("stopping{}", process_facts(&identity.boot_id, None))
+        }
+        ServerStatus::Starting(identity) => format!(
+            "starting{}, restoring panes",
+            process_facts(&identity.boot_id, Some(now))
+        ),
+        ServerStatus::Running(identity) => {
+            let mut running = format!("running{}", process_facts(&identity.boot_id, Some(now)));
+            if let Some(summary) = overview.summary {
+                running.push_str(&format!(
+                    "   {}",
+                    counts_label(&ServerSummary {
+                        workspaces: summary.workspaces,
+                        panes: summary.panes,
+                        agents: summary.agents,
+                        blocked_agents: summary.blocked_agents,
+                    })
+                ));
+            }
+            running
+        }
+    };
+    let installed = overview
+        .local_client
+        .identity
+        .as_ref()
+        .map(|identity| identity.build_id);
+    let server = overview.server.identity().map(|identity| identity.build_id);
+    match (server, installed) {
+        (Some(server), Some(installed)) if !server.matches(installed) => {
+            line.push_str(&format!(
+                "; the server is not the installed build (server {}, installed {}): restart it to update",
+                short_build(server),
+                short_build(installed)
+            ));
+        }
+        (_, Some(installed)) if !BuildIdentity::for_this_build().matches(installed) => {
+            line.push_str(&format!(
+                "; installed build {} is not this shepr's",
+                short_build(installed)
+            ));
+        }
+        _ => {}
+    }
+    line
+}
+
+/// `status --all --json`: this host's overview, then each configured machine.
+#[derive(Serialize)]
+struct FleetStatusJson {
+    local: StatusOverviewJson,
+    machines: Vec<MachineStatusJson>,
+}
+
+/// One machine's answer, or why it gave none.
+#[derive(Serialize)]
+struct MachineStatusJson {
+    label: String,
+    /// The path of the `shepr` that answered there.
+    executable: Option<String>,
+    status: Option<StatusOverviewJson>,
+    error: Option<String>,
+}
+
+impl MachineStatusJson {
+    fn new(machine: &shepr_config::MachineConfig, status: std::io::Result<MachineStatus>) -> Self {
+        let label = machine.label.to_string();
+        match status {
+            Ok(status) => Self {
+                label,
+                executable: Some(status.executable),
+                status: Some(status.overview),
+                error: None,
+            },
+            Err(error) => Self {
+                label,
+                executable: None,
+                status: None,
+                error: Some(super::fleet::failure_label(&error)),
+            },
+        }
+    }
 }
 
 fn print_server_status(paths: &shepr_paths::AppPaths, json: bool) -> super::CliResult<i32> {
@@ -284,7 +460,7 @@ fn render_server(out: &mut String, overview: &Overview<'_>) {
         ),
         ServerPresence::Stopping(status) => push_line(
             out,
-            &format!("server: stopping{}", process_facts(status, None)),
+            &format!("server: stopping{}", process_facts(&status.boot_id, None)),
         ),
         ServerPresence::Starting(status) | ServerPresence::Running(status)
             if !this_build.matches(status.build_id) =>
@@ -313,7 +489,7 @@ fn render_server(out: &mut String, overview: &Overview<'_>) {
             out,
             &format!(
                 "server: starting{}, restoring panes",
-                process_facts(status, Some(overview.now))
+                process_facts(&status.boot_id, Some(overview.now))
             ),
         ),
         ServerPresence::Running(status) => {
@@ -321,7 +497,7 @@ fn render_server(out: &mut String, overview: &Overview<'_>) {
                 out,
                 &format!(
                     "server: running{}",
-                    process_facts(status, Some(overview.now))
+                    process_facts(&status.boot_id, Some(overview.now))
                 ),
             );
             match &overview.summary {
@@ -347,13 +523,12 @@ fn render_server(out: &mut String, overview: &Overview<'_>) {
 
 /// `, pid N` and, given the time now, `, up 3h12m`, from what the boot
 /// identity records: the server's pid and the wall clock at its start.
-fn process_facts(status: &RuntimeStatus, now: Option<SystemTime>) -> String {
-    let pid = status
-        .boot_id
+fn process_facts(boot_id: &shepr_protocol::BootId, now: Option<SystemTime>) -> String {
+    let pid = boot_id
         .process_id()
         .map_or_else(String::new, |pid| format!(", pid {pid}"));
     let up = now
-        .and_then(|now| uptime(&status.boot_id, now))
+        .and_then(|now| uptime(boot_id, now))
         .map_or_else(String::new, |uptime| {
             format!(", up {}", uptime_label(uptime))
         });
@@ -421,10 +596,13 @@ fn push_line(out: &mut String, line: &str) {
     out.push('\n');
 }
 
-#[derive(Serialize)]
-struct FullStatusJson {
-    local_client: ClientStatusJson,
-    server: ServerStatusJson,
+fn summary_json(summary: ServerSummary) -> ServerSummaryJson {
+    ServerSummaryJson {
+        workspaces: summary.workspaces,
+        panes: summary.panes,
+        agents: summary.agents,
+        blocked_agents: summary.blocked_agents,
+    }
 }
 
 fn client_status_json() -> ClientStatusJson {
@@ -784,6 +962,126 @@ mod tests {
         assert_eq!(json.presence(), ServerPresenceJson::Unresponsive);
         assert_eq!(json.identity(), None);
         assert_eq!(build_compatible(&server), None);
+    }
+
+    /// What a machine's own `shepr` reported: `installed` is its build, the
+    /// server is `server` (or none), with `summary` counts.
+    fn remote_overview(
+        installed: &str,
+        server: Option<(&str, &str)>,
+        summary: Option<ServerSummaryJson>,
+    ) -> StatusOverviewJson {
+        use shepr_api::schema::{ServerIdentity, ServerStatus};
+        StatusOverviewJson {
+            local_client: ClientStatusJson {
+                identity: Some(shepr_protocol::BuildVersion {
+                    version: "0.1.0".into(),
+                    build_id: installed.parse().expect("build identity"),
+                }),
+                binary: None,
+                server: None,
+            },
+            server: ServerStatusJson {
+                state: server.map_or(ServerStatus::Gone, |(presence, build)| {
+                    let identity = ServerIdentity {
+                        version: "0.1.0".into(),
+                        build_id: build.parse().expect("build identity"),
+                        boot_id: shepr_protocol::BootId::from_process_clock(
+                            41233,
+                            Ok(Duration::from_secs(BOOTED_AT)),
+                        ),
+                    };
+                    match presence {
+                        "starting" => ServerStatus::Starting(identity),
+                        "stopping" => ServerStatus::Stopping(identity),
+                        _ => ServerStatus::Running(identity),
+                    }
+                }),
+                socket: "/run/user/1000/shepr/shepr.sock".into(),
+            },
+            summary,
+        }
+    }
+
+    #[test]
+    fn a_machine_line_judges_the_remote_server_against_this_build() {
+        let this = shepr_protocol::BUILD_ID;
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(BOOTED_AT + 3 * 3600 + 12 * 60);
+        let counts = ServerSummaryJson {
+            workspaces: 3,
+            panes: 7,
+            agents: 4,
+            blocked_agents: 1,
+        };
+        assert_eq!(
+            machine_line(
+                &remote_overview(this, Some(("running", this)), Some(counts)),
+                now
+            ),
+            "running, pid 41233, up 3h12m   workspaces 3   panes 7   agents 4 (1 blocked)"
+        );
+        assert_eq!(
+            machine_line(&remote_overview(this, None, None), now),
+            "not running"
+        );
+        // A server older than the install beside it.
+        assert_eq!(
+            machine_line(
+                &remote_overview(this, Some(("running", OTHER_BUILD)), None),
+                now
+            ),
+            "running, pid 41233, up 3h12m; the server is not the installed build (server 5a1c09e2..., installed 38df64ce...): restart it to update"
+                .replace("38df64ce...", &short_build(this.parse().expect("build")))
+        );
+        // A host whose install and server agree, but on another build.
+        assert_eq!(
+            machine_line(&remote_overview(OTHER_BUILD, None, None), now),
+            "not running; installed build 5a1c09e2... is not this shepr's"
+        );
+        assert_eq!(
+            machine_line(&remote_overview(this, Some(("stopping", this)), None), now),
+            "stopping, pid 41233"
+        );
+    }
+
+    #[test]
+    fn the_machines_section_lists_answers_and_failures_and_names_an_empty_fleet() {
+        let paths = test_paths();
+        let machine = |label: &str| shepr_config::MachineConfig {
+            label: shepr_config::MachineLabel::parse(label).expect("label"),
+            ssh: shepr_config::SshTarget::parse(label).expect("target"),
+            palette: shepr_config::DEFAULT_LOCAL_HUE,
+        };
+        let (dm6, speilegg) = (machine("dm6"), machine("speilegg"));
+        let rendered = render_machines(
+            &[
+                (
+                    &dm6,
+                    Ok(MachineStatus {
+                        executable: "/home/u/.cargo/bin/shepr".into(),
+                        overview: remote_overview(shepr_protocol::BUILD_ID, None, None),
+                    }),
+                ),
+                (
+                    &speilegg,
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "connect timed out",
+                    )),
+                ),
+            ],
+            &paths,
+            SystemTime::UNIX_EPOCH,
+        );
+        assert_eq!(
+            rendered,
+            "\nmachines\n  dm6       not running\n  speilegg  unreachable: connect timed out\n"
+        );
+        let empty = render_machines(&[], &paths, SystemTime::UNIX_EPOCH);
+        assert!(
+            empty.starts_with("\nmachines: none configured in "),
+            "{empty}"
+        );
     }
 
     #[test]

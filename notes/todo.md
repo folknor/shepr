@@ -15,6 +15,19 @@ persistence, the server save and checkpoint paths, and
 `server.toml` setting rather than an experimental one, or remove it along with
 the history file and its restore path.
 
+## A palette preview tool
+
+Write a small dev-only CLI bin that shows the colours the client derives
+(`shepr_term::host_tint::UiPalette` and `HostPillPalette`), so the derivation
+can be judged by eye instead of only by its contrast tests. It should query
+the running terminal's background, foreground and ANSI colours (or take them
+as arguments, so other themes can be tried without switching terminals), then
+print every palette token and every host hue as swatches with sample text on
+the surfaces they are used on: panel, active and selected rows, the sidebar
+tints and accents, the state colours, and a focused and unfocused pane border.
+The contrast targets in `shepr-term/src/limits.rs` (`UI_*_CONTRAST`) are first
+guesses waiting on exactly this check.
+
 # Gaps and smells
 
 Not defects: paths with no test, and code that works but reads worse than it
@@ -52,18 +65,6 @@ host every integration installs as current and never reports; its panes read
 as idle agents. A status signal ("hook interpreter missing") would make that
 visible. Nothing claims hooks work without `python3` or that a broken hook is
 reported.
-
-## Shut down the fleet from one host
-
-Stopping every server means running `shepr stop` on each host by hand. Add a
-way to stop all of them from one place: the local server and every configured
-machine's server, with the stop of each remote one going over SSH as the
-conditional stop already does (`stop --expect-boot`). Decide where it lives:
-the CLI is local-only by design (no command can be aimed at a configured
-machine, and the CLI reads no `client.toml`), so either that rule gets an
-exception or the action belongs in the TUI (a global menu entry with a
-confirmation that says every host's pane processes end). Unreachable hosts
-are reported, not waited on.
 
 ## Welcome panel on boot
 

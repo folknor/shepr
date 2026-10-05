@@ -94,6 +94,10 @@ pub const FLAG_EXPECT_BOOT: &str = "--expect-boot";
 /// explicit operator action in the client (Connect or Restart) passes it.
 pub const FLAG_START: &str = "--start";
 
+/// The `status` and `stop` option that takes in every configured machine as
+/// well as this host: the one place the CLI reaches beyond its own host.
+pub const FLAG_ALL: &str = "--all";
+
 /// The clap argument name of a `--flag`: the flag without its dashes.
 pub fn option_name_from_flag(flag: &'static str) -> &'static str {
     flag.strip_prefix("--").unwrap_or(flag)

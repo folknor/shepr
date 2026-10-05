@@ -2,6 +2,7 @@ mod args;
 mod bridge;
 mod discovery;
 mod failure;
+pub mod fleet;
 mod host;
 mod limits;
 pub mod machine;

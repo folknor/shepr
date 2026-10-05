@@ -42,11 +42,12 @@ Kept:
 - The JSON API over the server socket. The TUI does not act on workspaces
   or panes through it: it sends typed commands on the TUI's connection to
   the server socket (`shepr_protocol::command::EndpointCommand`), none of
-  which is an API method. The CLI is local-only: every
-  subcommand acts on this host's server or state, and none can be aimed at a
-  configured machine. `status`, `stop`, `detect capture` and `detect explain
-  <PANE>` talk to the local server over its socket; `detect explain --file`
-  runs in the CLI process
+  which is an API method. The CLI acts on this host's server or state, with
+  one exception: `status --all` and `stop --all` also take in every machine
+  configured in `client.toml`, over BatchMode SSH (`shepr_remote::fleet`).
+  No command can be aimed at a single machine. `status`, `stop`, `detect
+  capture` and `detect explain <PANE>` talk to the local server over its
+  socket; `detect explain --file` runs in the CLI process
 
 shepr is for overseeing agents across machines, not for driving them.
 Launching or steering agents through shepr is deliberately not kept, and
@@ -78,12 +79,24 @@ the `server.summary` API method), stopping, not answering, or running a
 different build, the last with stop and restart guidance spelt like the other
 operator guidance. `status --json`, `status server [--json]` and `status
 client [--json]` keep their machine-readable `key: value` and JSON forms, which
-the SSH discovery and conditional stop read.
+the SSH discovery, the conditional stop and `--all` read; `status --json` adds
+the server's counts when that server is of the reporting build.
+`status --all` then prints one line per configured machine: its server's
+state, pid, uptime and counts as that machine's own `shepr` reports them,
+whatever its build, and a note when the server is not the build installed
+there (a restart brings the installed one up) or the install is not this
+build. `stop --all` stops every configured machine's server concurrently,
+each by the boot its status named, then the local one, prints a line per
+host, and exits 0 only when every host ended with no server. A machine that
+needs an SSH login, is unreachable or has no `shepr` gets a line saying so;
+nothing prompts.
 
 Configuration is two files in the XDG config directory: `client.toml`, read
 only by the TUI (and its internal `client` launch), and `server.toml`, read
 only by `shepr-server`. CLI subcommands and the internal
-`remote-client-bridge` and `remote-wait-for-server` launches read neither. Each file is read and validated
+`remote-client-bridge` and `remote-wait-for-server` launches read neither,
+except that `status --all` and `stop --all` read `client.toml` for its
+machines, validated as the TUI validates it. Each file is read and validated
 once at launch, and a missing file means that program's defaults. There is no
 reload and no config path override. Any config problem fails the launch; no
 fallbacks. An unknown key is a config problem, so a setting placed in the

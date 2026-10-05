@@ -31,12 +31,17 @@ reload and no option to point at another file.
   stops the local server, ending every pane process in it; the next `shepr`
   starts a new server, which restores the saved layout with fresh shells and
   resumes agents (see `[session]`). For a machine reached over SSH, run
-  `shepr stop` on that machine. It stays stopped: a client showing it lists
+  `shepr stop` on that machine, or `shepr stop --all` to stop every host's
+  server at once. A stopped machine stays stopped: a client showing it lists
   it with a Connect entry, which starts its server again when you choose it,
   and so does running `shepr` on that machine.
 
 The CLI subcommands (`shepr status`, `shepr stop`, `shepr detect ...`) read
-neither file.
+neither file, except that `shepr status --all` and `shepr stop --all` read
+`client.toml` for its `[[machines]]`. They reach each machine over SSH
+without prompting, use whatever build of `shepr` is installed there, and
+report a machine that needs a login or does not answer instead of waiting on
+it.
 
 ## Errors fail the launch
 

@@ -14,8 +14,8 @@ use clap::{Arg, ArgAction, Command, ValueHint};
 
 use shepr_launch::invocation::{
     COMMAND_CLIENT, COMMAND_DETECT, COMMAND_MAN, COMMAND_REMOTE_CLIENT_BRIDGE,
-    COMMAND_REMOTE_WAIT_FOR_SERVER, COMMAND_SERVER, COMMAND_STATUS, COMMAND_STOP, FLAG_EXPECT_BOOT,
-    FLAG_JSON, FLAG_START, PROGRAM_NAME, option_name_from_flag,
+    COMMAND_REMOTE_WAIT_FOR_SERVER, COMMAND_SERVER, COMMAND_STATUS, COMMAND_STOP, FLAG_ALL,
+    FLAG_EXPECT_BOOT, FLAG_JSON, FLAG_START, PROGRAM_NAME, option_name_from_flag,
 };
 
 pub(super) fn command() -> Command {
@@ -97,6 +97,10 @@ fn status_command() -> Command {
     Command::new(COMMAND_STATUS)
         .about("Show this installation and the state of its server")
         .arg(flag(option_name_from_flag(FLAG_JSON)))
+        .arg(
+            flag(option_name_from_flag(FLAG_ALL))
+                .help("Also show the server of every machine in client.toml, over SSH"),
+        )
         .subcommand(
             Command::new(COMMAND_SERVER)
                 .about("Show running server status")
@@ -113,6 +117,11 @@ fn stop_command() -> Command {
     Command::new(COMMAND_STOP)
         .about("Stop the running server and every pane in it, whatever its build")
         .arg(expect_boot_option())
+        .arg(
+            flag(option_name_from_flag(FLAG_ALL))
+                .conflicts_with(option_name_from_flag(FLAG_EXPECT_BOOT))
+                .help("Also stop the server of every machine in client.toml, over SSH"),
+        )
 }
 
 fn man_command() -> Command {
@@ -403,6 +412,16 @@ mod tests {
                 .unwrap_or_else(|code| panic!("{command:?} should parse, exit code {code}"))
         }
 
+        let invocation = parse(RemoteCliCommand::Overview);
+        assert!(matches!(
+            &invocation,
+            Launch::Cli(command)
+                if matches!(
+                    **command,
+                    CliCommand::Status(status::Command::Overview { json: true, all: false })
+                )
+        ));
+
         let invocation = parse(RemoteCliCommand::ClientStatus);
         assert!(matches!(
             &invocation,
@@ -438,7 +457,7 @@ mod tests {
             Launch::Cli(command)
                 if matches!(
                     &**command,
-                    CliCommand::Stop(stop::Command { expected_boot: Some(boot) })
+                    CliCommand::Stop(stop::Command { expected_boot: Some(boot), all: false })
                         if boot == "4242-1700000000"
                 )
         ));

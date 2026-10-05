@@ -11,6 +11,9 @@ use crate::limits::REMOTE_COMMAND_ARGS_INITIAL_CAPACITY;
 /// the CLI parser also spells its commands from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteCliCommand<'a> {
+    /// `status --json`: the host's installation, server and, for a running
+    /// server of that build, its counts.
+    Overview,
     ClientStatus,
     ServerStatus,
     /// The stdio bridge that only attaches to the host's running server.
@@ -43,6 +46,7 @@ impl<'a> RemoteCliCommand<'a> {
     pub fn args(self) -> Vec<&'a str> {
         let mut args = Vec::with_capacity(REMOTE_COMMAND_ARGS_INITIAL_CAPACITY);
         match self {
+            Self::Overview => args.extend([COMMAND_STATUS, FLAG_JSON]),
             Self::ClientStatus => args.extend([COMMAND_STATUS, COMMAND_CLIENT, FLAG_JSON]),
             Self::ServerStatus => {
                 args.extend([COMMAND_STATUS, COMMAND_SERVER, FLAG_JSON]);

@@ -261,6 +261,27 @@ pub(crate) fn resume_installed_remote_shepr_discovery(
     })
 }
 
+/// Every `shepr` installed on the host, whatever its build, in discovery's
+/// order: the account shell's PATH first, then the known install directories.
+/// Discovery itself keeps only a candidate of this build; the CLI's `--all`
+/// talks to whichever build is there.
+pub(crate) fn installed_remote_shepr_candidates(
+    ssh: &RemoteSsh,
+) -> io::Result<Vec<RemoteExecutable>> {
+    let mut steps = SshDiscovery {
+        ssh,
+        rejected_shell_unsafe_candidate: None,
+    };
+    let mut candidates = Vec::new();
+    if let Some(candidate) = steps.path_via_account_shell()? {
+        push_if_new_remote_binary_candidate(&mut candidates, candidate);
+    }
+    for candidate in steps.known_locations()? {
+        push_if_new_remote_binary_candidate(&mut candidates, candidate);
+    }
+    Ok(candidates)
+}
+
 fn push_if_new_remote_binary_candidate(
     candidates: &mut Vec<RemoteExecutable>,
     candidate: RemoteExecutable,
