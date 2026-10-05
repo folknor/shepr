@@ -213,10 +213,6 @@ mod tests {
                 label: Some("x".into()),
             }),
             EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
-                source: WorkspaceCreateSource::Follow(workspace),
-                label: None,
-            }),
-            EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
                 source: WorkspaceCreateSource::Default,
                 label: None,
             }),

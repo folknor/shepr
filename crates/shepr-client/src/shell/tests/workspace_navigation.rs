@@ -318,7 +318,6 @@ fn navigate_mode_ignores_every_key_but_its_own() {
     for config in [ClientConfig::default(), {
         let mut config = ClientConfig::default();
         config.ui.confirm_close = false;
-        config.ui.prompt_new_workspace_name = false;
         config
     }] {
         let (mut state, remote) = navigation_state(with_agents(workspaces(2), &["w1"]), &config);
@@ -350,9 +349,7 @@ fn navigate_mode_ignores_every_key_but_its_own() {
 /// workspace.
 #[test]
 fn workspace_actions_follow_the_focused_workspace_while_navigating() {
-    let mut config = ClientConfig::default();
-    config.ui.prompt_new_workspace_name = false;
-    let (mut state, remote) = state_with_remote_config(&config);
+    let (mut state, remote) = state_with_remote_config(&ClientConfig::default());
     state.compose(100, 28).expect("test precondition");
     enter_navigation(&mut state);
     preview_key(&mut state, b"\x1b[B");
@@ -366,9 +363,20 @@ fn workspace_actions_follow_the_focused_workspace_while_navigating() {
         &shepr_termio::input::KeybindAction::NewWorkspace,
         &mut create,
     );
+    // The name prompt opens for the focused workspace's directory, not the selection's.
+    assert!(create.actions.is_empty());
+    // The selected remote workspace has its own directory, "/remote-repo".
+    let focused_cwd: shepr_protocol::RemotePath = "/repo".into();
+    assert!(matches!(
+        crate::shell::tests::rename_target(&state),
+        Some(crate::shell::overlays::rename::RenameTarget::NewWorkspace { cwd: Some(cwd), .. })
+            if *cwd == focused_cwd
+    ));
+    let submitted = state.handle_input_bytes(b"\r");
     assert!(
-        matches!(create.actions.as_slice(), [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
-        if matches!(&request.command, EndpointCommand::WorkspaceCreate(params) if matches!(&params.source, shepr_protocol::command::WorkspaceCreateSource::Follow(id) if id == &test_workspace_id("w1"))))
+        matches!(submitted.actions.as_slice(), [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
+        if matches!(&request.command, EndpointCommand::WorkspaceCreate(params)
+            if matches!(&params.source, shepr_protocol::command::WorkspaceCreateSource::Cwd(cwd) if *cwd == focused_cwd)))
     );
 }
 

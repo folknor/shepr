@@ -107,7 +107,6 @@ captures the mouse, from its own `ui.mouse_capture`.)
 | `mouse_capture` | boolean | `true` | Capture the mouse for shepr's own mouse UI (selection, sidebar, menus). Set `false` to let the terminal handle normal clicks, such as clicking URLs. Programs in panes that ask for the mouse still get it. |
 | `copy_on_select` | boolean | `true` | Copy mouse selections as soon as the button is released. With `false` the selection stays until `ctrl+c` copies and clears it. See [Clipboard](clipboard.md). |
 | `confirm_close` | boolean | `true` | Ask for confirmation before closing a workspace. |
-| `prompt_new_workspace_name` | boolean | `true` | Ask for a name when you create a workspace. The prompt names the machine the workspace is created on (the one shown) and starts with the name of the new workspace's directory, and a blank answer keeps that name. With `false`, workspaces are created at once and named after their directory. |
 | `agent_panel_sort` | `"spaces"` or `"priority"` | `"spaces"` | Order of the agent panel: `spaces` groups agents by workspace, `priority` orders them as an attention queue. |
 | `status_indicators` | `"dots"` or `"symbols"` | `"dots"` | How agent states are marked: compact coloured dots, or a distinct glyph for each of Working, Blocked and Idle. |
 

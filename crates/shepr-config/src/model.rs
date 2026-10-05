@@ -200,8 +200,6 @@ pub struct ClientUiConfig {
     pub copy_on_select: bool,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
-    /// Ask for a workspace name before interactive creation. Default: true.
-    pub prompt_new_workspace_name: bool,
     /// Agent sidebar ordering: "spaces" or "priority". Default: "spaces".
     /// While unset, the client shell remembers the last toggle of the agent
     /// panel's sort control; once set, it wins at every launch.
@@ -346,7 +344,6 @@ impl Default for ClientUiConfig {
             mouse_capture: true,
             copy_on_select: true,
             confirm_close: true,
-            prompt_new_workspace_name: true,
             agent_panel_sort: None,
             status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),
@@ -538,19 +535,6 @@ show_agent_labels_on_pane_borders = true
         assert!(!config.ui.pane_scrollbars);
         assert!(config.ui.pane_gaps);
         assert!(config.ui.show_agent_labels_on_pane_borders);
-    }
-
-    #[test]
-    fn prompt_new_workspace_name_defaults_on_and_parses() {
-        let default_config = ClientConfig::default();
-        assert!(default_config.ui.prompt_new_workspace_name);
-
-        let toml = r#"
-[ui]
-prompt_new_workspace_name = false
-"#;
-        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
-        assert!(!config.ui.prompt_new_workspace_name);
     }
 
     #[test]

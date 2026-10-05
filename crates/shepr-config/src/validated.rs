@@ -96,7 +96,6 @@ pub struct ValidatedClientUiConfig {
     pub mouse_capture: bool,
     pub copy_on_select: bool,
     pub confirm_close: bool,
-    pub prompt_new_workspace_name: bool,
     pub agent_panel_sort: Setting<super::AgentPanelSortConfig>,
     pub status_indicators: super::StatusIndicatorStyle,
     pub sidebar: super::SidebarConfig,
@@ -375,7 +374,6 @@ impl ValidatedClientUiConfig {
             mouse_capture: config.mouse_capture,
             copy_on_select: config.copy_on_select,
             confirm_close: config.confirm_close,
-            prompt_new_workspace_name: config.prompt_new_workspace_name,
             agent_panel_sort: config.agent_panel_sort.map_or(
                 Setting::Default(super::AgentPanelSortConfig::Spaces),
                 Setting::Explicit,

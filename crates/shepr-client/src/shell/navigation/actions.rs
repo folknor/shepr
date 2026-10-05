@@ -57,28 +57,7 @@ impl ClientShellState {
                     return;
                 }
                 if action == shepr_termio::input::KeybindAction::NewWorkspace {
-                    if self.config.prompt_new_workspace_name {
-                        self.open_new_workspace_overlay();
-                    } else {
-                        self.push_endpoint_command(
-                            EndpointCommand::WorkspaceCreate(
-                                shepr_protocol::command::WorkspaceCreateParams {
-                                    source: match self.workspace_action_id() {
-                                        Some(workspace_id) => {
-                                            shepr_protocol::command::WorkspaceCreateSource::Follow(
-                                                workspace_id,
-                                            )
-                                        }
-                                        None => {
-                                            shepr_protocol::command::WorkspaceCreateSource::Default
-                                        }
-                                    },
-                                    label: None,
-                                },
-                            ),
-                            outcome,
-                        );
-                    }
+                    self.open_new_workspace_overlay();
                     outcome.repaint = true;
                     return;
                 }

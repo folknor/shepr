@@ -21,14 +21,6 @@ impl App {
     ) -> HandlerResult {
         let cwd = match &params.source {
             WorkspaceCreateSource::Cwd(raw) => super::cwd::launch_cwd(raw)?,
-            // A workspace that vanished since the client chose it falls back to
-            // the default, like the client with none to follow.
-            WorkspaceCreateSource::Follow(workspace_id) => {
-                match self.state.workspace(workspace_id) {
-                    Some(_) => self.resolved_new_workspace_cwd(workspace_id),
-                    None => self.resolve_new_terminal_cwd(None),
-                }
-            }
             WorkspaceCreateSource::Default => self.resolve_new_terminal_cwd(None),
         };
         let geometry = ctx
@@ -157,16 +149,17 @@ mod tests {
         std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
     }
 
-    // `new_cwd = follow` must anchor on the focused pane for a creation that
-    // follows a workspace: the focused pane's cwd, not the root pane's.
+    // A new workspace spawned from a workspace starts in the focused pane's
+    // cwd, not the root pane's. `resolved_new_workspace_cwd` feeds the
+    // projection's `new_workspace_cwd`, which the client's name prompt uses.
     #[tokio::test]
-    async fn workspace_create_follows_the_focused_pane_cwd_not_the_root_pane() {
+    async fn resolved_new_workspace_cwd_is_the_focused_pane_cwd_not_the_root_pane() {
         use super::super::test_support::shutdown_test_runtimes;
 
         let mut app = app();
         app.state
             .test_set_workspaces(vec![Workspace::test_new("spaces")]);
-        let followed = app.state.ws(0).id();
+        let workspace_id = app.state.ws(0).id();
 
         // The split pane becomes the focused pane, away from the root pane.
         let root_public = app
@@ -195,73 +188,38 @@ mod tests {
             .terminal_mut(focused_pane)
             .set_cwd(shepr_mux::UsableCwd::new(focused_cwd.clone()).expect("test cwd is usable"));
 
-        let handled = app
-            .handle_workspace_create(
-                create(WorkspaceCreateSource::Follow(followed)),
-                &EndpointContext::without_geometry(),
-            )
-            .expect("the workspace is created");
+        let resolved = app.resolved_new_workspace_cwd(&workspace_id);
 
-        assert_eq!(handled.reply, EndpointReply::Done);
-        let created_cwd = app.state.ws(1).identity_cwd();
-        assert_eq!(canonical(created_cwd), canonical(&focused_cwd));
-        assert_ne!(canonical(created_cwd), canonical(&root_cwd));
+        assert_eq!(canonical(resolved.as_path()), canonical(&focused_cwd));
+        assert_ne!(canonical(resolved.as_path()), canonical(&root_cwd));
         shutdown_test_runtimes(&mut app);
     }
 
     #[tokio::test]
-    async fn workspace_create_sources_pick_the_cwd_and_a_vanished_follow_falls_back() {
+    async fn workspace_create_sources_pick_the_cwd() {
         use super::super::test_support::shutdown_test_runtimes;
 
         let mut app = app();
-        app.state.test_set_workspaces(vec![
-            Workspace::test_new("first"),
-            Workspace::test_new("source"),
-        ]);
-        // The bookmark is on another workspace: creation follows the named one.
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("first")]);
         app.state.seed_bookmark_index(Some(0));
         shutdown_test_runtimes(&mut app);
 
         let source_scratch = crate::test_support::ScratchDir::new("ws-source");
         let source_cwd = source_scratch.to_path_buf();
-        let pane_id = app.state.ws(1).tree().focused();
-        app.state
-            .terminal_mut(pane_id)
-            .set_cwd(shepr_mux::UsableCwd::new(source_cwd.clone()).expect("test cwd is usable"));
-        let source_workspace_id = app.state.ws(1).id();
         let ctx = EndpointContext::without_geometry();
+        let default_cwd = app.resolve_new_terminal_cwd(None);
 
-        let followed = app
-            .handle_workspace_create(
-                create(WorkspaceCreateSource::Follow(source_workspace_id)),
-                &ctx,
-            )
-            .expect("follow creates");
+        let defaulted = app
+            .handle_workspace_create(create(WorkspaceCreateSource::Default), &ctx)
+            .expect("default creates");
         assert_eq!(
-            followed.navigate,
-            Some(app.state.ws(2).id()),
+            defaulted.navigate,
+            Some(app.state.ws(1).id()),
             "creation navigates the requester to the new workspace"
         );
         assert_eq!(
-            canonical(app.state.ws(2).identity_cwd()),
-            canonical(&source_cwd)
-        );
-
-        // A workspace that vanished falls back to the default cwd rather than
-        // failing the creation.
-        let vanished = WorkspaceId::from_number(999).expect("nonzero number");
-        let default_cwd = app.resolve_new_terminal_cwd(None);
-        app.handle_workspace_create(create(WorkspaceCreateSource::Follow(vanished)), &ctx)
-            .expect("a vanished follow falls back to the default");
-        assert_eq!(
-            canonical(app.state.ws(3).identity_cwd()),
-            canonical(&default_cwd)
-        );
-
-        app.handle_workspace_create(create(WorkspaceCreateSource::Default), &ctx)
-            .expect("default creates");
-        assert_eq!(
-            canonical(app.state.ws(4).identity_cwd()),
+            canonical(app.state.ws(1).identity_cwd()),
             canonical(&default_cwd)
         );
 
@@ -273,7 +231,7 @@ mod tests {
             .expect("an explicit cwd creates");
         assert_eq!(captured.reply, EndpointReply::Done);
         assert_eq!(
-            canonical(app.state.ws(5).identity_cwd()),
+            canonical(app.state.ws(2).identity_cwd()),
             canonical(&source_cwd)
         );
         shutdown_test_runtimes(&mut app);

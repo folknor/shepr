@@ -541,6 +541,7 @@ fn state_with_machines_config(
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.workspaces[0].label = "remote-workspace".into();
+    remote.workspaces[0].new_workspace_cwd = Some("/remote-repo".into());
     state.connect_endpoint_with_snapshot(&endpoint_id, 1, Box::new(remote));
     (state, endpoint_id)
 }

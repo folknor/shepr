@@ -110,11 +110,6 @@
 # Ask for confirmation before closing a workspace
 # confirm_close = true
 
-# Ask for a workspace name before interactive creation. The prompt starts with
-# the name of the new workspace's directory; a blank name keeps that name.
-# Set false to create workspaces immediately, named after their directory.
-# prompt_new_workspace_name = true
-
 # Agent panel ordering: "spaces" (grouped by space) or "priority" (attention queue).
 # agent_panel_sort = "spaces"
 # While unset, mouse or key changes to panel order are remembered by the client.

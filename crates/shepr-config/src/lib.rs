@@ -369,7 +369,6 @@ mod tests {
             mouse_capture => _,
             copy_on_select => _,
             confirm_close => _,
-            prompt_new_workspace_name => _,
             agent_panel_sort => _,
             status_indicators => _,
             sidebar => sidebar,

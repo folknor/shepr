@@ -37,10 +37,6 @@ pub enum SplitDirection {
 pub enum WorkspaceCreateSource {
     /// An explicit working directory.
     Cwd(crate::RemotePath),
-    /// The focused pane of this workspace supplies the cwd policy
-    /// (`terminal.new_cwd`); a workspace that no longer exists falls back to
-    /// [`Self::Default`].
-    Follow(WorkspaceId),
     /// The server's default working directory.
     Default,
 }
