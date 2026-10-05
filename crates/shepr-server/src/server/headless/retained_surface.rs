@@ -4,7 +4,6 @@ use crate::server::clients::ClientPaneIdentity;
 use crate::server::committed_baseline::CommittedPane;
 use crate::server::pane_surface::PaneSurfaceMetadata;
 use shepr_mux::pane::PatchRow;
-use shepr_surface::ratatui_conversion::CellDataExt as _;
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -118,37 +117,45 @@ fn changed_rows(
 /// says it looks like with `metrics`, and the committed pane's track updated
 /// to match. `look` is the pane as laid out against the baseline.
 fn retained_scrollbar_patch(
-    app: &app::App,
     frame: &FrameData,
     pane: &mut shepr_protocol::PaneSurfacePane,
     look: &crate::ui::PaneSurface,
     metrics: Option<shepr_mux::pane::ScrollMetrics>,
 ) -> Option<Vec<shepr_protocol::PaneSurfacePatchRow>> {
     let look = look.clone().with_scroll(metrics);
-    let paint = look.scrollbar_paint(pane.scrollbar_rect, app.state(), metrics);
+    let paint = look.scrollbar_paint(pane.scrollbar_rect, metrics);
     pane.scrollbar_rect = look
         .scrollbar_rect
         .map(shepr_surface::ratatui_conversion::surface_rect);
-    let Some((rect, track)) = paint else {
+    let Some(paint) = paint else {
         return Some(Vec::new());
     };
-    // Each track cell is compared with the baseline in its ratatui form; only
-    // a changed one is converted into a patch row. This runs per scrolled pane
-    // per recipient on every retained pass, and a settled track changes no
-    // row, so the steady state allocates nothing here.
+    // Only a track cell that differs from the baseline becomes a patch row.
+    // This runs per scrolled pane per recipient on every retained pass, and a
+    // settled track changes no row, so the steady state allocates nothing
+    // here. A column the frame does not reach yields no patch.
+    let rect = paint.rect;
     let mut rows = Vec::new();
-    for (offset, source) in track.content.iter().enumerate() {
-        let y = rect.y.checked_add(u16::try_from(offset).ok()?)?;
-        let existing = frame_cell(frame, rect.x, y)?;
-        if !existing.matches_ratatui_cell(source) {
+    let mut reached = true;
+    paint.visit(|offset, cell| {
+        let Some(existing) = rect
+            .y
+            .checked_add(offset)
+            .and_then(|y| Some((y, frame_cell(frame, rect.x, y)?)))
+        else {
+            reached = false;
+            return;
+        };
+        let (y, existing) = existing;
+        if *existing != cell {
             rows.push(shepr_protocol::PaneSurfacePatchRow {
                 x: rect.x,
                 y,
-                cells: vec![shepr_protocol::CellData::from_ratatui_cell(source)],
+                cells: vec![cell],
             });
         }
-    }
-    Some(rows)
+    });
+    reached.then_some(rows)
 }
 
 /// The frame cell at `(x, y)`, or `None` when the frame does not reach it.
@@ -394,7 +401,6 @@ impl HeadlessServer {
                 };
                 patch_rows.extend(rows);
                 let Some(scrollbar_rows) = retained_scrollbar_patch(
-                    &self.app,
                     &surface.frame,
                     pane,
                     &recipient.panes[pane_index].look,
@@ -630,14 +636,9 @@ mod tests {
         assert_eq!(resolved[0].look.scrollbar_gutter, None);
         let metrics = shepr_mux::pane::ScrollMetrics::new(1, 4, 3, shepr_vt::AbsRow(1));
 
-        let rows = retained_scrollbar_patch(
-            &app,
-            &surface.frame,
-            &mut pane,
-            &resolved[0].look,
-            Some(metrics),
-        )
-        .expect("a pane without a reserved gutter needs no scrollbar patch");
+        let rows =
+            retained_scrollbar_patch(&surface.frame, &mut pane, &resolved[0].look, Some(metrics))
+                .expect("a pane without a reserved gutter needs no scrollbar patch");
 
         assert!(rows.is_empty());
         assert_eq!(pane.scrollbar_rect, None);
@@ -698,7 +699,7 @@ mod tests {
 
         // The first pass draws the track over the blank baseline.
         let mut frame = surface.frame;
-        let drawn = retained_scrollbar_patch(&app, &frame, &mut pane, look, Some(metrics))
+        let drawn = retained_scrollbar_patch(&frame, &mut pane, look, Some(metrics))
             .expect("a valid scrollbar patch");
         assert!(!drawn.is_empty(), "test precondition: the track draws");
         let track = pane.scrollbar_rect;
@@ -709,7 +710,7 @@ mod tests {
         }
 
         // With the track committed, the same scroll position changes no row.
-        let settled = retained_scrollbar_patch(&app, &frame, &mut pane, look, Some(metrics))
+        let settled = retained_scrollbar_patch(&frame, &mut pane, look, Some(metrics))
             .expect("a valid scrollbar patch");
         assert!(settled.is_empty());
         assert_eq!(pane.scrollbar_rect, track);

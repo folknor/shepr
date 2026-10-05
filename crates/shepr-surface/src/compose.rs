@@ -9,15 +9,47 @@
 //! in their wire form. Pane cells carry their terminal grid width; chrome
 //! cells keep the grapheme rule in `shepr_term::width::text_width`.
 //!
-//! Styles and colours arrive resolved, as ratatui `Style` values: nothing here
-//! knows a theme.
+//! Styles and colours arrive resolved, as ratatui `Style` values, and the
+//! chrome roles of a pane surface are coloured from the [`ChromePalette`] the
+//! caller hands `compose_pane`: nothing here knows a theme. A canvas therefore
+//! only ever holds colours a terminal can draw.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use shepr_protocol::{
-    CellData, CursorState, FrameData, FrameGridError, GridCellWidth, WireColor, WireStyleFlags,
+    CellData, ChromeRole, CursorState, FrameData, FrameGridError, GridCellWidth, WireColor,
+    WireStyleFlags,
 };
+
+/// The colour each pane chrome role takes on this client's canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChromePalette {
+    pub border: WireColor,
+    pub border_focused: WireColor,
+    pub scroll_track: WireColor,
+    pub scroll_track_focused: WireColor,
+    pub scroll_thumb: WireColor,
+    pub scroll_thumb_focused: WireColor,
+}
+
+impl ChromePalette {
+    /// `color` as drawn: a chrome role takes its colour here, any other
+    /// colour is returned as it is.
+    pub fn resolve(&self, color: WireColor) -> WireColor {
+        let WireColor::Chrome(role) = color else {
+            return color;
+        };
+        match role {
+            ChromeRole::Border => self.border,
+            ChromeRole::BorderFocused => self.border_focused,
+            ChromeRole::ScrollTrack => self.scroll_track,
+            ChromeRole::ScrollTrackFocused => self.scroll_track_focused,
+            ChromeRole::ScrollThumb => self.scroll_thumb,
+            ChromeRole::ScrollThumbFocused => self.scroll_thumb_focused,
+        }
+    }
+}
 
 use crate::glyph_repair::{blank, split_glyph_cells};
 use crate::ratatui_conversion::{CellDataExt as _, FrameDataExt as _, WireColorExt as _};
@@ -276,7 +308,8 @@ impl Canvas {
     /// [`Self::overwrite`]: a canvas glyph split by the pasted region loses its uncovered
     /// part, and a source glyph cut by the clip becomes a blank. The cursor becomes
     /// `source`'s, moved to `area`, when it falls in the copied part, and none otherwise.
-    pub fn compose_pane(&mut self, source: &FrameData, area: Rect) {
+    /// Every chrome role in a copied cell takes its colour from `chrome`.
+    pub fn compose_pane(&mut self, source: &FrameData, area: Rect, chrome: &ChromePalette) {
         let target = &mut self.frame;
         let (target_cols, target_rows) = (target.width(), target.height());
         let target_width = usize::from(target_cols);
@@ -329,6 +362,8 @@ impl Canvas {
                 };
                 for (col, source_cell) in source_row[..usize::from(copy_width)].iter().enumerate() {
                     let mut cell = source_cell.clone();
+                    cell.fg = chrome.resolve(cell.fg);
+                    cell.bg = chrome.resolve(cell.bg);
                     cell.hyperlink = source_cell.hyperlink.and_then(|index| {
                         usize::try_from(index)
                             .ok()
@@ -364,16 +399,26 @@ impl Canvas {
 
 #[cfg(test)]
 mod tests {
-    use super::{Canvas, StylePatch, patch_style};
+    use super::{Canvas, ChromePalette, StylePatch, patch_style};
     use crate::ratatui_conversion::{WireColorExt as _, WireStyleExt as _};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
     use shepr_protocol::{
-        CellData, CursorShapeParam, CursorState, FrameData, FrameGridError, GridCellWidth,
-        WireColor, WireStyle, WireStyleFlags,
+        CellData, ChromeRole, CursorShapeParam, CursorState, FrameData, FrameGridError,
+        GridCellWidth, WireColor, WireStyle, WireStyleFlags,
     };
     use shepr_term::UnderlineStyle;
+
+    /// A distinct colour for every role.
+    const CHROME: ChromePalette = ChromePalette {
+        border: WireColor::Indexed(1),
+        border_focused: WireColor::Indexed(2),
+        scroll_track: WireColor::Indexed(3),
+        scroll_track_focused: WireColor::Indexed(4),
+        scroll_thumb: WireColor::Indexed(5),
+        scroll_thumb_focused: WireColor::Indexed(6),
+    };
 
     const SHAPES: [UnderlineStyle; 5] = [
         UnderlineStyle::Single,
@@ -830,7 +875,7 @@ mod tests {
             .set_hyperlinks(vec!["https://new.example".into()])
             .expect("no cell links yet");
         source.cells_mut()[0].hyperlink = Some(0);
-        target.compose_pane(&source, Rect::new(0, 0, 1, 1));
+        target.compose_pane(&source, Rect::new(0, 0, 1, 1), &CHROME);
         assert_eq!(text(&target), "X.");
         assert_eq!(target.cells()[0].hyperlink, None);
         assert_eq!(
@@ -855,14 +900,14 @@ mod tests {
         source.cells_mut()[1].style.underline = UnderlineStyle::Dotted;
         source.cells_mut()[1].hyperlink = Some(7);
         // Pasting over the tail only must not leave the target's lead as half a glyph.
-        target.compose_pane(&source, Rect::new(2, 0, 1, 1));
+        target.compose_pane(&source, Rect::new(2, 0, 1, 1), &CHROME);
         assert_eq!(text(&target), "| X|");
         assert_eq!(target.hyperlinks().len(), 2);
         assert_eq!(target.cells()[2].hyperlink, Some(1));
         assert_eq!(target.cells()[3].hyperlink, Some(0));
 
         let mut target = canvas(frame("...."));
-        target.compose_pane(&source, Rect::new(1, 0, 2, 1));
+        target.compose_pane(&source, Rect::new(1, 0, 2, 1), &CHROME);
         assert_eq!(target.cells()[2].style.underline, UnderlineStyle::Dotted);
         assert_eq!(
             target.cells()[2].hyperlink,
@@ -872,10 +917,35 @@ mod tests {
     }
 
     #[test]
+    fn compose_colours_every_chrome_role_from_the_palette_and_keeps_other_colours() {
+        let roles = [
+            (ChromeRole::Border, CHROME.border),
+            (ChromeRole::BorderFocused, CHROME.border_focused),
+            (ChromeRole::ScrollTrack, CHROME.scroll_track),
+            (ChromeRole::ScrollTrackFocused, CHROME.scroll_track_focused),
+            (ChromeRole::ScrollThumb, CHROME.scroll_thumb),
+            (ChromeRole::ScrollThumbFocused, CHROME.scroll_thumb_focused),
+        ];
+        let mut source = frame("abcdefg");
+        for (cell, (role, _)) in source.cells_mut().iter_mut().zip(roles) {
+            cell.fg = WireColor::Chrome(role);
+            cell.bg = WireColor::Chrome(role);
+        }
+        source.cells_mut()[6].fg = WireColor::Rgb(1, 2, 3);
+        let mut target = canvas(frame("......."));
+        target.compose_pane(&source, Rect::new(0, 0, 7, 1), &CHROME);
+        for (cell, (_, color)) in target.cells().iter().zip(roles) {
+            assert_eq!((cell.fg, cell.bg), (color, color));
+        }
+        assert_eq!(target.cells()[6].fg, WireColor::Rgb(1, 2, 3));
+        assert_eq!(target.cells()[6].bg, WireColor::Reset);
+    }
+
+    #[test]
     fn compose_blanks_a_source_glyph_cut_by_the_clip() {
         let mut target = canvas(frame("...."));
         let source = frame("a漢~");
-        target.compose_pane(&source, Rect::new(0, 0, 2, 1));
+        target.compose_pane(&source, Rect::new(0, 0, 2, 1), &CHROME);
         assert_eq!(text(&target), "a ..");
     }
 
@@ -887,7 +957,7 @@ mod tests {
         source.cells_mut()[1].grid_width = GridCellWidth::WideLead;
         source.cells_mut()[2].grid_width = GridCellWidth::WideTail;
         source.cells_mut()[1].style.underline = UnderlineStyle::Single;
-        target.compose_pane(&source, Rect::new(0, 0, 2, 1));
+        target.compose_pane(&source, Rect::new(0, 0, 2, 1), &CHROME);
         assert_eq!(text(&target), "a ..");
         assert_eq!(target.cells()[1].grid_width, GridCellWidth::One);
         assert_eq!(target.cells()[1].style.underline, UnderlineStyle::None);
@@ -901,7 +971,7 @@ mod tests {
         source.cells_mut()[0].grid_width = GridCellWidth::One;
         source.cells_mut()[1].grid_width = GridCellWidth::One;
 
-        target.compose_pane(&source, Rect::new(0, 0, 1, 1));
+        target.compose_pane(&source, Rect::new(0, 0, 1, 1), &CHROME);
 
         assert_eq!(target.cells()[0].symbol, "\u{26a0}\u{fe0f}");
         assert_eq!(target.cells()[0].grid_width, GridCellWidth::One);
@@ -918,7 +988,7 @@ mod tests {
             visible: true,
             shape: CursorShapeParam::Default,
         }));
-        target.compose_pane(&source, Rect::new(3, 0, 4, 1));
+        target.compose_pane(&source, Rect::new(3, 0, 4, 1), &CHROME);
         assert_eq!(text(&target), "...a");
         assert_eq!(target.cursor(), None);
     }

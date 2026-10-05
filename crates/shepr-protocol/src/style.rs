@@ -26,6 +26,27 @@ pub enum WireColor {
     White,
     Indexed(u8),
     Rgb(u8, u8, u8),
+    /// Pane chrome the server draws, named by what it is. The server owns no
+    /// colours: each client picks the colour of every role when it composes
+    /// the surface, so no role reaches a host terminal.
+    Chrome(ChromeRole),
+}
+
+/// What a cell of server-drawn pane chrome is, for the client to colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ChromeRole {
+    /// An unfocused pane's border stroke and title.
+    Border,
+    /// The focused pane's border stroke and title.
+    BorderFocused,
+    /// An unfocused pane's scrollbar track.
+    ScrollTrack,
+    /// The focused pane's scrollbar track.
+    ScrollTrackFocused,
+    /// An unfocused pane's scrollbar thumb.
+    ScrollThumb,
+    /// The focused pane's scrollbar thumb.
+    ScrollThumbFocused,
 }
 
 /// Cell style flags sent with a rendered frame.

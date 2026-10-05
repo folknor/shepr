@@ -246,7 +246,6 @@ pub struct ClientConfig {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ServerConfig {
-    pub theme: ThemeConfig,
     pub terminal: TerminalConfig,
     pub session: SessionConfig,
     pub server: HeadlessConfig,

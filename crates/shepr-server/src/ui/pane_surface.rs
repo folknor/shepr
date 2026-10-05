@@ -5,16 +5,15 @@
 //! draws, its cells and the cursor. The full render and the server's retained
 //! patch diff both consume it, so neither re-derives any of them.
 
-use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::widgets::Borders;
 use shepr_core::chrome::{PaneChrome, PaneContent};
 use shepr_core::layout::PaneId;
 use shepr_mux::pane::{PaneRuntime, ScrollMetrics};
-use shepr_protocol::{CursorState, PaneSurfacePane, SurfaceRect};
+use shepr_protocol::{CellData, CursorState, PaneSurfacePane, SurfaceRect};
 use shepr_surface::ratatui_conversion::surface_rect;
 
-use super::scrollbar::scrollbar_track_buffer;
+use super::scrollbar::visit_scrollbar_track;
 use crate::app::AppState;
 
 /// The layout model's rect as the one ratatui draws into. Both are plain
@@ -49,6 +48,21 @@ fn ratatui_borders(borders: shepr_core::chrome::Borders) -> Borders {
         }
     }
     out
+}
+
+/// One pane's scrollbar column as a retained patch rewrites it.
+pub(crate) struct ScrollbarPaint {
+    /// The column to rewrite.
+    pub(crate) rect: SurfaceRect,
+    metrics: Option<ScrollMetrics>,
+    focused: bool,
+}
+
+impl ScrollbarPaint {
+    /// Hands `visit` each cell of the column with its row from the top.
+    pub(crate) fn visit(&self, visit: impl FnMut(u16, CellData)) {
+        visit_scrollbar_track(self.rect.height, self.metrics, self.focused, visit);
+    }
 }
 
 /// A pane with its content settled for its screen mode, in ratatui terms:
@@ -127,27 +141,19 @@ impl PaneSurface {
     }
 
     /// What the scrollbar column holds for a client whose committed track was
-    /// `previous`: the column to rewrite and a one-column buffer of its cells
-    /// top to bottom, the track when it draws and blanks when it was just
-    /// taken away. `None` when the pane has no track now and had none. The
-    /// cells stay in ratatui form so the retained patch can compare them with
-    /// its baseline and convert only the rows that changed.
+    /// `previous`: the track when it draws and blanks when it was just taken
+    /// away. `None` when the pane has no track now and had none.
     pub(crate) fn scrollbar_paint(
         &self,
         previous: Option<SurfaceRect>,
-        state: &AppState,
         metrics: Option<ScrollMetrics>,
-    ) -> Option<(SurfaceRect, Buffer)> {
+    ) -> Option<ScrollbarPaint> {
         let now = self.scrollbar_rect.map(surface_rect);
-        let rect = now.or(previous)?;
-        let track = Rect::new(0, 0, 1, rect.height);
-        let buffer = scrollbar_track_buffer(
-            track,
-            now.and(metrics),
-            &state.settings().palette,
-            self.is_focused,
-        );
-        Some((rect, buffer))
+        Some(ScrollbarPaint {
+            rect: now.or(previous)?,
+            metrics: now.and(metrics),
+            focused: self.is_focused,
+        })
     }
 
     /// The cursor the pane shows: geometry belongs to the viewing client,

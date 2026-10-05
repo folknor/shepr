@@ -709,16 +709,12 @@ pub(crate) fn validate_server(
     config: &super::ServerConfig,
     paths: AppPaths,
 ) -> Result<ValidatedServerConfig, Vec<super::ConfigDiagnostic>> {
-    let palette = config.resolve_palette();
     let headless_size =
         BoundedGridSize::new(config.server.headless_cols, config.server.headless_rows)
             .ok()
             .map(BoundedGridSize::grid);
     let terminal = ValidatedTerminalConfig::parse(&config.terminal, &paths);
     let mut diagnostics = Vec::new();
-    if let Err(errors) = &palette {
-        diagnostics.extend(errors.iter().cloned());
-    }
     if headless_size.is_none() {
         diagnostics.push(super::ConfigDiagnostic::validation_related(
             super::ConfigKeyPath::root().key("server").key("headless_cols"),
@@ -739,10 +735,9 @@ pub(crate) fn validate_server(
         return Err(diagnostics);
     }
 
-    match (palette, headless_size, terminal) {
-        (Ok(palette), Some(headless_size), Ok(terminal)) => Ok(ValidatedServerConfig {
+    match (headless_size, terminal) {
+        (Some(headless_size), Ok(terminal)) => Ok(ValidatedServerConfig {
             paths,
-            palette,
             headless_size,
             terminal,
             ui: ValidatedServerUiConfig {
@@ -778,7 +773,6 @@ pub(crate) fn validate_server(
 #[derive(Debug, Clone)]
 pub struct ValidatedServerConfig {
     paths: AppPaths,
-    palette: crate::theme::Palette,
     headless_size: shepr_core::geometry::GridSize,
     ui: ValidatedServerUiConfig,
     terminal: ValidatedTerminalConfig,
@@ -799,9 +793,6 @@ impl ValidatedServerConfig {
     }
     pub fn paths(&self) -> &AppPaths {
         &self.paths
-    }
-    pub fn palette(&self) -> &crate::theme::Palette {
-        &self.palette
     }
     pub fn headless_size(&self) -> shepr_core::geometry::GridSize {
         self.headless_size

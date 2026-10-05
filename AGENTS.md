@@ -101,17 +101,19 @@ that program's file. The client applies its own config to everything it draws
 and interprets: keys, the sidebar, agent panel order, status indicators,
 prompts, mouse and copy behaviour and their colours, the same whichever
 machine is being presented, and the per-host sidebar colours derived from each
-machine's `palette` and the host terminal's theme. `client.toml` holds those
-`[ui]` settings, `[keys]`, `[local]` (the local server's own `label` and `palette`) and
+machine's `palette` and the host terminal's theme. Every colour is the
+client's: the pane chrome a server draws (borders, their titles, scrollbars)
+names each cell's role (`shepr_protocol::ChromeRole`) instead of a colour, and
+the client colours the roles as it composes the surface. `client.toml` holds those
+`[ui]` settings, `[theme]`, `[keys]`, `[local]` (the local server's own `label` and `palette`) and
 `[[machines]]`. Each server applies its own config to what it
 runs and to what it renders into pane cells: shell and working directory,
-session, pane borders, gaps and scrollbars, the colours of that pane chrome,
-and the cursor it reveals for CJK input methods.
+session, whether panes have borders, gaps and scrollbars, and the cursor it
+reveals for CJK input methods.
 `server.toml` holds those `[ui]` settings, `[terminal]`, `[session]`,
-`[server]`, `[advanced]` and `[experimental]`. `[theme]` is in both files, so
-a machine whose theme differs from the local one draws its pane chrome in its
-own colours; in either file `theme.custom.accent` takes precedence over
-`theme.accent`, and an empty `theme.accent` means unset. A server always
+`[server]`, `[advanced]` and `[experimental]`. In `client.toml`,
+`theme.custom.accent` takes precedence over `theme.accent`, and an empty
+`theme.accent` means unset. A server always
 computes a workspace's Git branch and ahead/behind, whatever any sidebar
 shows.
 

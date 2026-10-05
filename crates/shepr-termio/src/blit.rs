@@ -265,7 +265,9 @@ pub fn frame_with_drawn_cursor(mut frame: FrameData) -> FrameData {
 fn sgr_color(color: WireColor) -> shepr_term::seq::SgrColor {
     use shepr_term::seq::SgrColor;
     match color {
-        WireColor::Reset => SgrColor::Default,
+        // Composition resolves every chrome role; one that slipped through
+        // draws in the terminal's default rather than a guessed colour.
+        WireColor::Reset | WireColor::Chrome(_) => SgrColor::Default,
         WireColor::Indexed(index) => SgrColor::Indexed(index),
         WireColor::Rgb(r, g, b) => SgrColor::Rgb(shepr_term::RgbColor { r, g, b }),
         named => SgrColor::Named(match named {

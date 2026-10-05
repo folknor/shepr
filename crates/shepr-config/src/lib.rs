@@ -59,12 +59,6 @@ impl ClientConfig {
     }
 }
 
-impl ServerConfig {
-    pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<ConfigDiagnostic>> {
-        theme_config::resolve_palette(&self.theme)
-    }
-}
-
 /// Absolute like resolved launch paths, and identical across calls, so two
 /// test configs compare equal.
 /// The root cannot be created by an unprivileged user: a test that writes
@@ -298,9 +292,7 @@ mod tests {
 
     #[test]
     fn server_default_template_documents_every_config_field() {
-        let mut config = ServerConfig::default();
-        config.theme.custom = Some(CustomThemeColors::default());
-        let fields = server_config_field_paths(config);
+        let fields = server_config_field_paths(ServerConfig::default());
 
         let mut documented = BTreeSet::new();
         let mut section = String::new();
@@ -475,7 +467,6 @@ mod tests {
     fn server_config_field_paths(config: ServerConfig) -> BTreeSet<String> {
         let mut fields = BTreeSet::new();
         record_config_fields!(fields, config, "", ServerConfig {
-            theme => theme,
             terminal => terminal,
             session => session,
             server => server,
@@ -483,34 +474,6 @@ mod tests {
             advanced => advanced,
             experimental => experimental,
         });
-        record_config_fields!(fields, theme, "theme", ThemeConfig {
-            name => _,
-            accent => _,
-            custom => custom,
-        });
-        if let Some(custom) = custom {
-            record_config_fields!(fields, custom, "theme.custom", CustomThemeColors {
-                accent => _,
-                panel_bg => _,
-                sidebar_bg => _,
-                active_row_bg => _,
-                selection_bg => _,
-                surface0 => _,
-                surface1 => _,
-                surface_dim => _,
-                overlay0 => _,
-                overlay1 => _,
-                text => _,
-                subtext0 => _,
-                mauve => _,
-                green => _,
-                yellow => _,
-                red => _,
-                blue => _,
-                teal => _,
-                peach => _,
-            });
-        }
         record_config_fields!(fields, terminal, "terminal", TerminalConfig {
             default_shell => _,
             login_shell => _,
@@ -565,19 +528,19 @@ mod tests {
     /// setting is the real default.
     #[test]
     fn default_template_lists_every_theme_and_the_default() {
-        for template in [DEFAULT_CLIENT_CONFIG, DEFAULT_SERVER_CONFIG] {
-            let words: Vec<&str> = template
-                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-                .collect();
-            for name in theme::THEME_NAMES {
-                assert!(words.contains(name), "config template does not list {name}");
-            }
-            let default_line = format!("# name = \"{}\"", theme::DEFAULT_THEME);
-            assert!(
-                template.lines().any(|line| line.trim() == default_line),
-                "config template must show {default_line}"
-            );
+        let words: Vec<&str> = DEFAULT_CLIENT_CONFIG
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+            .collect();
+        for name in theme::THEME_NAMES {
+            assert!(words.contains(name), "config template does not list {name}");
         }
+        let default_line = format!("# name = \"{}\"", theme::DEFAULT_THEME);
+        assert!(
+            DEFAULT_CLIENT_CONFIG
+                .lines()
+                .any(|line| line.trim() == default_line),
+            "config template must show {default_line}"
+        );
     }
 
     /// The commented `[keys]` settings in the template, uncommented, are

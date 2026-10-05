@@ -5,8 +5,6 @@ use shepr_protocol::WorkspaceId;
 use shepr_mux::workspace::{PaneRef, SpawnGeometry, Workspace, WorkspaceSet};
 use shepr_term::host::{HostAppearance, TerminalTheme};
 
-pub(crate) use shepr_config::theme::Palette;
-
 /// What a host terminal has told the server about its light or dark
 /// appearance, and how it was learned.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -100,7 +98,6 @@ pub(crate) struct AppSettings {
     /// Resolved once to the protocol cursor shape used by surface rendering.
     pub(crate) cjk_ime_cursor_shape: shepr_protocol::CursorShapeParam,
     pub(crate) new_terminal_cwd: NewTerminalCwd,
-    pub(crate) palette: Palette,
 }
 
 impl AppSettings {
@@ -121,7 +118,6 @@ impl AppSettings {
                 experimental.cjk_ime_cursor_shape.to_decscusr(),
             ),
             new_terminal_cwd: terminal.new_cwd.clone(),
-            palette: config.palette().clone(),
         }
     }
 

@@ -1,73 +1,52 @@
-use ratatui::{buffer::Buffer, layout::Rect, style::Style};
-use shepr_term::scroll::{ScrollTrack, ScrollbarMetrics, ScrollbarPart, scrollbar_rows};
+use shepr_protocol::{CellData, ChromeRole, CompactString, FrameData, WireColor};
+use shepr_term::scroll::{ScrollTrack, ScrollbarPart, scrollbar_rows};
 
 use super::PaneSurface;
-use super::chrome::overlay_buffer;
-use crate::app::AppState;
-use shepr_protocol::FrameData;
+use super::chrome::put_run;
 
-fn render_scrollbar_buffer(
-    buffer: &mut Buffer,
-    metrics: impl ScrollbarMetrics,
-    track: Rect,
-    track_symbol: &str,
-    track_style: Style,
-    thumb_symbol: &str,
-    thumb_style: Style,
-) {
-    for (y, part) in scrollbar_rows(metrics, ScrollTrack::new(track.y, track.height)) {
-        let (symbol, style) = match part {
-            ScrollbarPart::Track => (track_symbol, track_style),
-            ScrollbarPart::Thumb => (thumb_symbol, thumb_style),
-        };
-        if let Some(cell) = buffer.cell_mut((track.x, y)) {
-            cell.set_symbol(symbol);
-            cell.set_style(track_style);
-            cell.set_style(style);
-        }
-    }
-}
-
-fn render_pane_scrollbar_buffer(
-    buffer: &mut Buffer,
-    metrics: shepr_mux::pane::ScrollMetrics,
-    track: Rect,
-    palette: &shepr_config::theme::Palette,
-    focused: bool,
-) {
-    let (track_color, thumb_color, thumb_symbol) = if focused {
-        (palette.overlay0, palette.overlay1, "▐")
-    } else {
-        (palette.surface_dim, palette.overlay0, "▕")
-    };
-    render_scrollbar_buffer(
-        buffer,
-        metrics,
-        track,
-        "▕",
-        ratatui::style::Style::default().fg(track_color),
-        thumb_symbol,
-        ratatui::style::Style::default().fg(thumb_color),
-    );
-}
-
-/// A buffer over `track` holding the scrollbar for `metrics`, or blank cells
-/// when there is none.
-pub(super) fn scrollbar_track_buffer(
-    track: Rect,
+/// Hands `visit` each cell of a one-column scrollbar track `height` rows
+/// tall, with its row from the top: the track for `metrics`, or blanks when
+/// there is none. Each cell names its chrome role and the client colours it.
+/// Symbols are held inline, so nothing here allocates: the retained patch
+/// runs this per scrolled pane per recipient on every pass.
+pub(super) fn visit_scrollbar_track(
+    height: u16,
     metrics: Option<shepr_mux::pane::ScrollMetrics>,
-    palette: &shepr_config::theme::Palette,
     focused: bool,
-) -> Buffer {
-    let mut buffer = Buffer::empty(track);
-    if let Some(metrics) = metrics {
-        render_pane_scrollbar_buffer(&mut buffer, metrics, track, palette, focused);
+    mut visit: impl FnMut(u16, CellData),
+) {
+    let Some(metrics) = metrics else {
+        for y in 0..height {
+            visit(y, CellData::blank());
+        }
+        return;
+    };
+    let (track, thumb, thumb_symbol) = if focused {
+        (
+            ChromeRole::ScrollTrackFocused,
+            ChromeRole::ScrollThumbFocused,
+            "▐",
+        )
+    } else {
+        (ChromeRole::ScrollTrack, ChromeRole::ScrollThumb, "▕")
+    };
+    for (y, part) in scrollbar_rows(metrics, ScrollTrack::new(0, height)) {
+        let (symbol, role) = match part {
+            ScrollbarPart::Track => ("▕", track),
+            ScrollbarPart::Thumb => (thumb_symbol, thumb),
+        };
+        visit(
+            y,
+            CellData {
+                symbol: CompactString::const_new(symbol),
+                fg: WireColor::Chrome(role),
+                ..CellData::blank()
+            },
+        );
     }
-    buffer
 }
 
 pub(super) fn render_pane_scrollbar(
-    app: &AppState,
     frame: &mut FrameData,
     info: &PaneSurface,
     rt: &shepr_mux::pane::PaneRuntime,
@@ -78,12 +57,13 @@ pub(super) fn render_pane_scrollbar(
     let Some(track) = info.scrollbar_rect else {
         return;
     };
-    let scratch = scrollbar_track_buffer(
-        track,
-        Some(metrics),
-        &app.settings().palette,
-        info.is_focused,
-    );
     // The scrollbar draws its whole track.
-    overlay_buffer(frame, &scratch, track);
+    visit_scrollbar_track(track.height, Some(metrics), info.is_focused, |y, cell| {
+        put_run(
+            frame,
+            track.x,
+            track.y.saturating_add(y),
+            std::slice::from_ref(&cell),
+        );
+    });
 }

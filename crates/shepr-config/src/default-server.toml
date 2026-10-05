@@ -1,47 +1,11 @@
 # shepr server configuration
 # Place this file at ~/.config/shepr/server.toml
 # Only shepr-server reads this file, on the host it runs on. It decides the
-# panes' shell and working directory, the session, pane borders, gaps and
-# scrollbars, and their colours. Keys, the sidebar, mouse and copy behaviour and
-# the machines belong in client.toml, which only the shepr client reads. An
-# unknown or misplaced setting fails the launch.
-
-[theme]
-# Built-in themes: catppuccin, catppuccin-latte, terminal, tokyo-night,
-#                  tokyo-night-day, dracula, nord, gruvbox, gruvbox-light,
-#                  one-dark, one-light, solarized, solarized-light, kanagawa,
-#                  kanagawa-lotus, rose-pine, rose-pine-dawn, vesper
-# name = "catppuccin"
-
-# Accent color for pane chrome.
-# Unset or empty uses the theme accent.
-# Accepts: hex (#89b4fa), named colors (cyan, blue, magenta), or rgb(r,g,b)
-# This is an example override; theme.custom.accent takes precedence.
-# accent = "#89b4fa"
-
-# Override individual color tokens on top of the base theme.
-# Accepts: hex (#rgb or #rrggbb), named colors, rgb(r,g,b), or "reset" (also
-# "default", "none", "transparent") for the terminal's own colour.
-# [theme.custom]
-# sidebar_bg = "#181825"
-# active_row_bg = "#1e1e2e"
-# selection_bg = "#313244"
-# panel_bg = "reset"
-# accent = "#f5c2e7"
-# surface0 = "#313244"
-# surface1 = "#45475a"
-# surface_dim = "#181825"
-# overlay0 = "#6c7086"
-# overlay1 = "#7f849c"
-# text = "#cdd6f4"
-# subtext0 = "#a6adc8"
-# mauve = "#cba6f7"
-# red = "#ff6188"
-# green = "#a6e3a1"
-# yellow = "#f9e2af"
-# blue = "#89b4fa"
-# teal = "#94e2d5"
-# peach = "#fab387"
+# panes' shell and working directory, the session, and whether panes have
+# borders, gaps and scrollbars. Colours, keys, the sidebar, mouse and copy
+# behaviour and the machines belong in client.toml, which only the shepr client
+# reads: the client colours the pane chrome every server draws. An unknown or
+# misplaced setting fails the launch.
 
 [terminal]
 # Executable used for new interactive panes.

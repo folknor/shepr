@@ -78,16 +78,16 @@ terminal's previous title where the terminal keeps a title stack, and leaves
 
 Each server runs the panes and renders what goes inside the pane area: the
 pane contents and the borders and scrollbars around them. Those settings live
-in `server.toml`.
+in `server.toml`. Every colour is the client's, the pane chrome included:
+a server draws the borders and scrollbars, and your client colours them from
+its own `[theme]`, on every machine it shows.
 
 Config never crosses hosts. When the client shows a machine over SSH, that
 machine's server uses its own `server.toml`, on that machine, and nothing from
-your local files. So a remote machine's panes use the shell, borders and pane
-chrome colours set on that machine. Nothing is sent from one
+your local files. So a remote machine's panes use the shell, borders and
+scrollbars set on that machine. Nothing is sent from one
 host's config to another. (The client does tell each server whether it
 captures the mouse, from its own `ui.mouse_capture`.)
-
-`[theme]` appears in both files; see [Themes](#themes) for how they combine.
 
 # client.toml
 
@@ -495,9 +495,11 @@ entries lose the colour while it reconnects. Token styles from
 
 ## [theme] in client.toml
 
-The client's `[theme]` colours everything the client draws: the sidebar,
-overlays, menus, prompts, navigate mode and copy mode, on every machine
-shown. See [Themes](#themes).
+The client's `[theme]` colours everything on screen: the sidebar, overlays,
+menus, prompts, navigate mode and copy mode, and the pane borders and
+scrollbars each server draws, on every machine shown. The focused pane's
+border takes `accent`, other borders `overlay0`, and the scrollbars
+`overlay0`, `overlay1` and `surface_dim`. See [Themes](#themes).
 
 # server.toml
 
@@ -583,16 +585,9 @@ The budget is not a hard cap: any nonzero value keeps at least 1000 lines,
 and a pane that is widened keeps the history it already has rather than
 dropping it.
 
-## [theme] in server.toml
-
-The server's `[theme]` colours the pane chrome it draws: the focused pane's
-border in `accent`, other borders in `overlay0`, and the scrollbars in
-`overlay0`, `overlay1` and `surface_dim`. The other colour tokens are accepted
-but have no effect in this file. See [Themes](#themes).
-
 # Themes
 
-`[theme]` has the same form in both files.
+`[theme]` is a `client.toml` table; `server.toml` has none.
 
 | Setting | Default | What it does |
 |---|---|---|
@@ -652,18 +647,3 @@ accent = "#f5c2e7"
 panel_bg = "reset"
 red = "rgb(255, 97, 136)"
 ```
-
-## How the two [theme] tables combine
-
-They do not. Each program uses only the `[theme]` in its own file, on its
-own host:
-
-- the client's `[theme]` colours the sidebar, overlays and everything else
-  the client draws, for every machine it shows;
-- each server's `[theme]` colours the pane borders and scrollbars it draws.
-
-A machine whose `server.toml` has a different theme from your local one
-draws its pane chrome in its own colours, inside your client's sidebar and
-overlays. For one consistent look, give the same `[theme]` to `client.toml`
-and to every host's `server.toml`. To tell machines apart at a glance, use
-[host colours](#host-colours) instead.

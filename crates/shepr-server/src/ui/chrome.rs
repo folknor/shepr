@@ -3,15 +3,18 @@
 //!
 //! Pane cells are written straight into the `FrameData`; they never pass
 //! through a ratatui `Buffer`. The chrome the server still draws with ratatui
-//! widgets goes into a scratch buffer of its own and is laid over the frame
-//! with `overlay_buffer`; border strokes are written as runs with
-//! `put_run_with`. All are `shepr_surface::glyph_repair`'s, whose one repair
-//! rule (the client compositor's) blanks the uncovered half of any glyph the
-//! written region splits, and an orphaned empty tail right after it. Chrome cells only ever carry what ratatui can express
-//! (colours, flags, a single underline), which `CellData::from_ratatui_cell`
-//! converts without loss.
+//! widgets (titles, restore-error text) goes into a scratch buffer of its own
+//! and is laid over the frame with `overlay_buffer`; border strokes and
+//! scrollbar tracks are written as wire cells with `put_run_with` and
+//! `put_run`. All are `shepr_surface::glyph_repair`'s, whose one repair rule
+//! (the client compositor's) blanks the uncovered half of any glyph the
+//! written region splits, and an orphaned empty tail right after it.
+//!
+//! The server owns no colours. Border strokes, titles and scrollbars name
+//! their `ChromeRole` in place of a colour, and each client colours them;
+//! restore-error text is drawn in the terminal's default colours.
 
-pub(super) use shepr_surface::glyph_repair::{overlay_buffer, put_run_with};
+pub(super) use shepr_surface::glyph_repair::{overlay_buffer, put_run, put_run_with};
 
 #[cfg(test)]
 mod tests {
@@ -20,7 +23,6 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
     use shepr_protocol::{CellData, FrameData, GridCellWidth, WireColor, WireStyleFlags};
-    use shepr_surface::glyph_repair::put_run;
 
     fn cell(symbol: &str) -> CellData {
         CellData {

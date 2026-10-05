@@ -2,9 +2,10 @@
 # Place this file at ~/.config/shepr/client.toml
 # Only the shepr client reads this file, on the host it runs on. It decides
 # keys, the sidebar, prompts, mouse and copy behaviour, the machines shown, and
-# the colours of everything the client draws. Pane shells, sessions, pane
-# borders and the pane chrome colours belong in server.toml, which only
-# shepr-server reads. An unknown or misplaced setting fails the launch.
+# every colour on screen, the pane borders and scrollbars each server draws
+# included. Pane shells, sessions, and whether panes have borders belong in
+# server.toml, which only shepr-server reads. An unknown or misplaced setting
+# fails the launch.
 
 [theme]
 # Built-in themes: catppuccin, catppuccin-latte, terminal, tokyo-night,

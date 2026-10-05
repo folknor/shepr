@@ -372,6 +372,7 @@ mod tests {
             "[[machines]]\nlabel = 'build'\nssh = 'build'\n",
             "[keys]\nprefix = 'ctrl+b'\n",
             "[local]\nlabel = 'desk'\n",
+            "[theme]\nname = 'nord'\n",
             "[ui]\nmouse_capture = false\n",
             "[ui]\nsidebar_width = 26\n",
             "[ui.sidebar.spaces]\nrows = [['workspace']]\n",
@@ -472,13 +473,12 @@ mod tests {
     }
 
     #[test]
-    fn server_launch_collects_chrome_grid_and_terminal_errors() {
+    fn server_launch_collects_grid_and_terminal_errors() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let errors = server_from_str("[server]\nheadless_cols = 0\n[theme]\naccent = 'not-a-color'\n[terminal]\ndefault_shell = '/missing/zsh'\nnew_cwd = 'missing'\n")
+        let errors = server_from_str("[server]\nheadless_cols = 0\n[terminal]\ndefault_shell = '/missing/zsh'\nnew_cwd = 'missing'\n")
             .expect_err("invalid server settings");
         for setting in [
             "server.headless_cols",
-            "theme.accent",
             "terminal.default_shell",
             "terminal.new_cwd",
         ] {

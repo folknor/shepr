@@ -518,64 +518,6 @@ mod tests {
         app
     }
 
-    #[test]
-    fn theme_uses_configured_name() {
-        let mut config = ServerConfig::default();
-        config.theme.name = Some("tokyo-night".to_string());
-
-        let app = App::new(&config);
-
-        assert_eq!(app.state.settings.palette, state::Palette::tokyo_night());
-    }
-
-    #[test]
-    fn theme_accent_applies_only_when_set_and_not_overridden_by_the_theme() {
-        use ratatui::style::Color;
-
-        let theme_accent = state::Palette::catppuccin().accent;
-        assert_ne!(theme_accent, Color::Cyan, "test precondition");
-
-        // Unset: the theme's accent.
-        let config = ServerConfig::default();
-        assert_eq!(
-            config
-                .resolve_palette()
-                .expect("valid default theme")
-                .accent,
-            theme_accent
-        );
-
-        // Set explicitly: it applies over the theme accent.
-        let mut config = ServerConfig::default();
-        config.theme.accent = Some("cyan".into());
-        assert_eq!(
-            config.resolve_palette().expect("valid cyan accent").accent,
-            Color::Cyan
-        );
-
-        config.theme.accent = Some("magenta".into());
-        assert_eq!(
-            config
-                .resolve_palette()
-                .expect("valid magenta accent")
-                .accent,
-            Color::Magenta
-        );
-
-        // `theme.custom.accent` wins over `theme.accent`.
-        config.theme.custom = Some(shepr_config::CustomThemeColors {
-            accent: Some("#010203".into()),
-            ..Default::default()
-        });
-        assert_eq!(
-            config
-                .resolve_palette()
-                .expect("valid custom accent")
-                .accent,
-            Color::Rgb(1, 2, 3)
-        );
-    }
-
     #[tokio::test]
     async fn create_default_workspace_creates_one_workspace_only_when_none_exist() {
         let mut app = test_app();

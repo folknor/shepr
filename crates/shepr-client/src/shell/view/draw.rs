@@ -7,7 +7,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use shepr_config::LiveKeybindConfig;
 use shepr_config::theme::Palette;
-use shepr_surface::compose::{Canvas, StylePatch};
+use shepr_protocol::WireColor;
+use shepr_surface::compose::{Canvas, ChromePalette, StylePatch};
+use shepr_surface::ratatui_conversion::WireColorExt as _;
 
 use crate::shell::copy::CopySession;
 use crate::shell::notices::cards;
@@ -22,6 +24,20 @@ use crate::shell::view::resolve::{
     client_copy_surface_coherent, overlay_context, sidebar_inputs, surface_overflows_area,
 };
 use crate::shell::view::{DrawnFrame, PaneHit, ShellView};
+
+/// The colours of the pane chrome a server draws, which names each cell's role and
+/// leaves the colour to the client.
+fn chrome_palette(palette: &Palette) -> ChromePalette {
+    let color = WireColor::from_ratatui;
+    ChromePalette {
+        border: color(palette.overlay0),
+        border_focused: color(palette.accent),
+        scroll_track: color(palette.surface_dim),
+        scroll_track_focused: color(palette.overlay0),
+        scroll_thumb: color(palette.overlay0),
+        scroll_thumb_focused: color(palette.overlay1),
+    }
+}
 
 /// Draws `view`. `None` only when the canvas refuses the drawn buffer, which keeps the last
 /// frame on screen.
@@ -76,7 +92,11 @@ pub(super) fn draw_frame(state: &ClientShellState, view: &ShellView) -> Option<D
         // Chrome is the only thing drawn through ratatui here; from this point the canvas's
         // wire cells are the composition target and every later stage patches or overwrites
         // them in place (see `shepr_surface::compose`).
-        frame.compose_pane(&surface.frame, view.layout.pane_surface);
+        frame.compose_pane(
+            &surface.frame,
+            view.layout.pane_surface,
+            &chrome_palette(palette),
+        );
         let has_selection = state
             .mouse_selection
             .selection

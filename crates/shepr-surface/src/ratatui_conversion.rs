@@ -13,7 +13,9 @@ use shepr_protocol::{
     WireColor, WireStyle, WireStyleFlags,
 };
 
-/// Conversion between a wire color and a ratatui color. Lossless both ways.
+/// Conversion between a wire color and a ratatui color. Lossless both ways,
+/// except that a chrome role has no ratatui form and reads as `Reset`:
+/// composition resolves roles before anything is drawn.
 pub trait WireColorExt: Sized {
     fn from_ratatui(color: ratatui::style::Color) -> Self;
     fn to_ratatui(self) -> ratatui::style::Color;
@@ -46,7 +48,7 @@ impl WireColorExt for WireColor {
 
     fn to_ratatui(self) -> ratatui::style::Color {
         match self {
-            Self::Reset => ratatui::style::Color::Reset,
+            Self::Reset | Self::Chrome(_) => ratatui::style::Color::Reset,
             Self::Black => ratatui::style::Color::Black,
             Self::Red => ratatui::style::Color::Red,
             Self::Green => ratatui::style::Color::Green,

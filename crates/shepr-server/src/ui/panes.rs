@@ -13,8 +13,7 @@ use super::text::truncate_end;
 use crate::app::AppState;
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
 use shepr_mux::terminal::{Label, PaneStartFailure};
-use shepr_protocol::{CellData, FrameData, WireColor};
-use shepr_surface::ratatui_conversion::WireColorExt as _;
+use shepr_protocol::{CellData, ChromeRole, FrameData, WireColor};
 
 pub(super) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
     rt.read()
@@ -83,7 +82,7 @@ pub(super) fn render_panes(
     for info in pane_infos {
         if let Some(rt) = workspace_runtime(ws, terminal_runtimes, info.id) {
             draws.push((info.id, rt.read().render_into(frame, info.inner_rect)));
-            render_pane_scrollbar(app, frame, info, rt);
+            render_pane_scrollbar(frame, info, rt);
         } else if let Some(reason) = ws
             .tree()
             .pane(info.id)
@@ -213,8 +212,6 @@ fn render_pane_borders(
     // whole row once per run, so a cell-at-a-time write would rescan it for
     // every cell of a horizontal border. Strokes are one column wide, so a run
     // repairs exactly what writing its cells one by one would.
-    let accent = WireColor::from_ratatui(app.settings().palette.accent);
-    let overlay0 = WireColor::from_ratatui(app.settings().palette.overlay0);
     let blank = CellData::blank();
     for y in 0..cells.height {
         let row_start = usize::from(y) * usize::from(cells.width);
@@ -238,11 +235,11 @@ fn render_pane_borders(
                 slot.clone_from(&blank);
                 slot.symbol.clear();
                 slot.symbol.push_str(line_cell_symbol(line));
-                slot.fg = if line.has_any(LineCell::FOCUSED) {
-                    accent
+                slot.fg = WireColor::Chrome(if line.has_any(LineCell::FOCUSED) {
+                    ChromeRole::BorderFocused
                 } else {
-                    overlay0
-                };
+                    ChromeRole::Border
+                });
             });
         }
     }
@@ -422,12 +419,7 @@ fn render_pane_border_titles(
         if start_x >= end_x {
             continue;
         }
-        let color = if info.is_focused {
-            app.settings().palette.accent
-        } else {
-            app.settings().palette.overlay0
-        };
-        let mut style = Style::default().fg(color);
+        let mut style = Style::default();
         if info.is_focused {
             style = style.add_modifier(Modifier::BOLD);
         }
@@ -436,11 +428,20 @@ fn render_pane_border_titles(
         // The title owns what it wrote, its padding spaces included; the
         // border stroke after it stays.
         let (end, _) = scratch.set_stringn(start_x, y, title, usize::from(width), style);
-        overlay_buffer(
-            frame,
-            &scratch,
-            Rect::new(start_x, y, end.saturating_sub(start_x), 1),
-        );
+        let written = Rect::new(start_x, y, end.saturating_sub(start_x), 1);
+        overlay_buffer(frame, &scratch, written);
+        // A ratatui colour cannot name a chrome role, so the title takes its
+        // role once it is in the frame.
+        let role = WireColor::Chrome(if info.is_focused {
+            ChromeRole::BorderFocused
+        } else {
+            ChromeRole::Border
+        });
+        let row_start = usize::from(y) * usize::from(frame.width());
+        let span = usize::from(written.x)..usize::from(written.right().min(frame.width()));
+        for cell in &mut frame.cells_mut()[row_start..][span] {
+            cell.fg = role;
+        }
     }
 }
 
@@ -697,6 +698,43 @@ mod tests {
         assert_eq!(buffer(6, 0).symbol, "块");
     }
 
+    /// A title is laid out through ratatui, which has no chrome roles, so it
+    /// takes its border's role once it is in the frame.
+    #[test]
+    fn a_pane_title_takes_its_border_role() {
+        let app = AppState::test_new();
+        let mut ws = Workspace::test_new("test");
+        let pane = ws.tree().root();
+        ws.pane_mut(pane)
+            .expect("root pane")
+            .terminal_mut()
+            .set_manual_label("build".to_owned());
+        let surface = |is_focused| PaneSurface {
+            id: pane,
+            rect: Rect::new(0, 0, 12, 3),
+            inner_rect: Rect::new(1, 1, 10, 1),
+            scrollbar_gutter: None,
+            scrollbar_rect: None,
+            borders: Borders::ALL,
+            is_focused,
+        };
+        for (is_focused, role) in [
+            (true, ChromeRole::BorderFocused),
+            (false, ChromeRole::Border),
+        ] {
+            let mut frame = FrameData::blank(12, 3).expect("test frame size is valid");
+            render_pane_border_titles(&app, &ws, &[surface(is_focused)], &mut frame);
+            let top: String = frame.cells()[..12]
+                .iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect();
+            let start = top.find("build").expect("the title is drawn");
+            for cell in &frame.cells()[start..start + "build".len()] {
+                assert_eq!(cell.fg, WireColor::Chrome(role), "{top:?}");
+            }
+        }
+    }
+
     #[test]
     fn global_pane_border_renderer_composes_junctions_and_focus_style() {
         let mut app = AppState::test_new();
@@ -759,7 +797,7 @@ mod tests {
         let mut frame = FrameData::blank(4, 4).expect("test frame size is valid");
         render_pane_borders(&app, &ws, &pane_infos, &split_borders, &mut frame);
         let buffer = |x: u16, y: u16| &frame.cells()[usize::from(y) * 4 + usize::from(x)];
-        let accent = WireColor::from_ratatui(app.settings().palette.accent);
+        let accent = WireColor::Chrome(ChromeRole::BorderFocused);
         assert_eq!(buffer(2, 2).symbol, "┼");
         assert_eq!(buffer(2, 2).fg, accent);
         assert_eq!(buffer(2, 1).symbol, "│");
@@ -796,12 +834,9 @@ mod tests {
         let buffer = |x: u16, y: u16| &frame.cells()[usize::from(y) * 4 + usize::from(x)];
         assert_eq!(
             buffer(1, 1).fg,
-            WireColor::from_ratatui(app.settings().palette.accent)
+            WireColor::Chrome(ChromeRole::BorderFocused)
         );
-        assert_eq!(
-            buffer(2, 1).fg,
-            WireColor::from_ratatui(app.settings().palette.overlay0)
-        );
+        assert_eq!(buffer(2, 1).fg, WireColor::Chrome(ChromeRole::Border));
     }
 
     #[tokio::test]
