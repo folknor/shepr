@@ -68,7 +68,8 @@ fn serve_pong_once(
             break stream;
         };
         let body = format!(
-            "{{\"id\":\"autodetect:server:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"{build_id}\",\"boot_id\":\"4242-1700000000\",\"stopping\":{stopping},\"starting\":{starting}}}}}\n"
+            "{{\"id\":\"{}\",\"result\":{{\"type\":\"pong\",\"version\":\"0.5.5\",\"build_id\":\"{build_id}\",\"boot_id\":\"4242-1700000000\",\"stopping\":{stopping},\"starting\":{starting}}}}}\n",
+            shepr_api::schema::RequestId::StatusPing.as_str(),
         );
         stream
             .write_all(body.as_bytes())
@@ -316,7 +317,7 @@ fn serve_starting_until_released(
                     if request.is_empty() {
                         continue;
                     }
-                    let body = serde_json::json!({"id":"api-client:status","result":{"type":"pong","version":"0.1.0","build_id":shepr_protocol::BUILD_ID,"boot_id":"17-23","starting":true}});
+                    let body = serde_json::json!({"id":shepr_api::schema::RequestId::StatusPing.as_str(),"result":{"type":"pong","version":"0.1.0","build_id":shepr_protocol::BUILD_ID,"boot_id":"17-23","starting":true}});
                     writeln!(stream, "{body}").expect("pong");
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {

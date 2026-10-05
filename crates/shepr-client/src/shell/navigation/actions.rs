@@ -215,11 +215,17 @@ impl ClientShellState {
         boot_id: &shepr_protocol::BootId,
         notice: &shepr_protocol::SessionRestoreNotice,
     ) -> bool {
+        let title = match &notice.loss {
+            shepr_protocol::SessionRestoreLoss::Damaged(damage) if !damage.loses_data() => {
+                "saved session IDs repaired"
+            }
+            _ => "saved session not fully restored",
+        };
         self.queue_boot_notice(
             endpoint_id,
             boot_id,
             BootNoticeCode::SessionRestoreIncomplete,
-            "saved session not fully restored",
+            title,
             notice.to_string(),
         )
     }

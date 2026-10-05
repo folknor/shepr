@@ -80,10 +80,12 @@ impl MachineState {
             FailureCause::ServerStopping | FailureCause::Shutdown(_) => Self::Stopping,
             FailureCause::DifferentBuild => Self::DifferentBuild,
             _ => match failure.disposition() {
-                FailureDisposition::Authentication | FailureDisposition::PossibleAuthentication => {
-                    Self::NeedsLogin
+                FailureDisposition::Authentication => Self::NeedsLogin,
+                // Only startup can test an ambiguous timeout interactively.
+                // At runtime a missing round trip is evidence of an offline host.
+                FailureDisposition::PossibleAuthentication | FailureDisposition::Offline => {
+                    Self::Offline
                 }
-                FailureDisposition::Offline => Self::Offline,
                 FailureDisposition::Retry => Self::Connecting,
                 FailureDisposition::HostKey
                 | FailureDisposition::Incompatible
@@ -1235,6 +1237,15 @@ mod tests {
                 MachineState::DifferentBuild,
                 "Restart (other build)",
                 Some(MachineAction::Restart),
+            ),
+            (
+                EndpointFailure::ssh(
+                    SshFailureClass::AuthenticationPending,
+                    "SSH round trip did not answer",
+                ),
+                MachineState::Offline,
+                "Offline",
+                None,
             ),
             (
                 EndpointFailure::ssh(SshFailureClass::Link, "Connection timed out"),

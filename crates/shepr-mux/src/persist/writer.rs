@@ -605,7 +605,7 @@ mod tests {
         let mut writer = writer(false);
         writer.save_for_test(&snapshot()).expect("save");
         let path = writer.path.clone();
-        let lock_path = path.with_file_name(super::super::lock::LOCK_FILE_NAME);
+        let lock_path = path.with_file_name(shepr_paths::DATA_DIR_LEASE_FILE_NAME);
         let lock = File::open(lock_path).expect("test precondition");
         assert!(matches!(
             lock.try_lock(),

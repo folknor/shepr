@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use super::App;
 use crate::backoff::Backoff;
-use crate::limits::{CHECKPOINT_MAX_FAILURES, CHECKPOINT_RETRY_MAX_DELAY, SESSION_SAVE_RETRY_MIN};
+use crate::limits::{CHECKPOINT_MAX_FAILURES, CHECKPOINT_RETRY_MIN};
 
 mod autosave;
 mod exit_checkpoint;
@@ -195,11 +195,10 @@ impl SavePolicy {
 
 /// Retry delay of a failed pane-exit or host-shutdown checkpoint after
 /// `failures_before` earlier failures of the same checkpoint: doubling from
-/// `SESSION_SAVE_RETRY_MIN`, capped at `CHECKPOINT_RETRY_MAX_DELAY`. Total for
+/// `CHECKPOINT_RETRY_MIN`. The attempt count bounds the schedule. Total for
 /// every `u8`, so raising `CHECKPOINT_MAX_FAILURES` cannot make it overflow.
 fn checkpoint_retry_delay(failures_before: u8) -> Duration {
-    Backoff::new(SESSION_SAVE_RETRY_MIN, CHECKPOINT_RETRY_MAX_DELAY)
-        .delay_after(u32::from(failures_before))
+    Backoff::new(CHECKPOINT_RETRY_MIN, Duration::MAX).delay_after(u32::from(failures_before))
 }
 
 impl SessionSaver {
@@ -669,14 +668,19 @@ impl App {
 
     fn finish_final_session_save(
         &mut self,
-        result: Result<(), shepr_mux::persist::SaveError>,
-    ) -> bool {
-        let saved = result.is_ok();
-        self.finish_session_save(SaveKind::Autosave, result);
-        if saved {
-            self.session_saver.autosave.clear();
+        result: Result<(), std::io::Error>,
+    ) -> Result<(), std::io::Error> {
+        // No autosave retry or projection is useful once the loop has ended.
+        // Keep the previous atomic save on failure and report an unclean exit.
+        self.session_saver.autosave.clear();
+        if let Err(error) = &result {
+            tracing::error!(
+                directory = %self.paths.data_dir().display(),
+                %error,
+                "final session save failed"
+            );
         }
-        saved
+        result
     }
 
     /// The final save of this boot, when the boot persists. During a host
@@ -685,28 +689,42 @@ impl App {
     /// candidates first: after a signal the panes' deaths were left
     /// unprocessed, so a pane whose agent died from the same kill just before
     /// it gets that identity back here.
-    pub(crate) async fn save_session_for_exit(&mut self, signal_quit_at: Option<Instant>) {
+    pub(crate) async fn save_session_for_exit(
+        &mut self,
+        signal_quit_at: Option<Instant>,
+    ) -> Result<(), std::io::Error> {
         if !self.session_saver.persists_this_boot() {
-            return;
+            return Ok(());
         }
         if let Some(signaled_at) = signal_quit_at {
             self.state
                 .adopt_checkpoint_candidates_for_shutdown(signaled_at);
         }
-        self.save_session_before_teardown_async().await;
+        self.save_session_before_teardown_async().await
     }
 
-    pub(crate) async fn save_session_before_teardown_async(&mut self) {
+    pub(crate) async fn save_session_before_teardown_async(
+        &mut self,
+    ) -> Result<(), std::io::Error> {
         if let Some(save) = self.session_saver.in_flight.take() {
             let result = wait_off_the_runtime(save.pending).await;
             self.finish_session_save(save.kind, result);
         }
 
         let Some(pending) = self.submit_final_session_save() else {
-            return;
+            if self.session_saver.policy.is_stopped() {
+                return self.finish_final_session_save(Err(std::io::Error::other(
+                    "session persistence stopped before the final save",
+                )));
+            }
+            return Ok(());
         };
-        let result = wait_off_the_runtime(pending).await;
-        self.finish_final_session_save(result);
+        // Keep a blocking task panic or cancellation as the error source.
+        let result = match tokio::task::spawn_blocking(move || pending.wait()).await {
+            Ok(result) => result.map_err(std::io::Error::other),
+            Err(error) => Err(std::io::Error::other(error)),
+        };
+        self.finish_final_session_save(result)
     }
 
     /// Ends persistence for this server: the save still in flight finishes
@@ -859,18 +877,24 @@ impl App {
 
     /// Save the session while runtimes still exist, keeping the directory
     /// claim until their processes have finished tearing down.
-    pub(crate) fn save_session_before_teardown(&mut self) {
+    pub(crate) fn save_session_before_teardown(&mut self) -> Result<(), std::io::Error> {
         self.wait_for_session_save();
         let Some(pending) = self.submit_final_session_save() else {
-            return;
+            if self.session_saver.policy.is_stopped() {
+                return self.finish_final_session_save(Err(std::io::Error::other(
+                    "session persistence stopped before the final save",
+                )));
+            }
+            return Ok(());
         };
-        self.finish_final_session_save(pending.wait());
+        self.finish_final_session_save(pending.wait().map_err(std::io::Error::other))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::SESSION_SAVE_RETRY_MIN;
 
     fn test_app() -> crate::app::TestApp {
         App::new(&shepr_config::ServerConfig::default())
@@ -882,6 +906,20 @@ mod tests {
         let mut app = test_app();
         app.session_saver.admit_saves_for_test();
         app
+    }
+
+    #[tokio::test]
+    async fn a_final_save_failure_is_returned_without_arming_an_autosave_retry() {
+        let mut app = saving_test_app();
+        // This saver admits jobs but owns only a lease; the persister refuses
+        // the real final job rather than running a synthetic completion.
+        let error = app
+            .save_session_before_teardown_async()
+            .await
+            .expect_err("the lease-only persister cannot save");
+        assert!(error.get_ref().is_some());
+        assert!(app.session_saver.autosave_deadline().is_none());
+        assert!(!app.session_saver.policy.is_stopped());
     }
 
     #[test]
@@ -1029,7 +1067,11 @@ mod tests {
         ))
         .expect("remove the checkpoint");
 
-        server.app.save_session_before_teardown_async().await;
+        server
+            .app
+            .save_session_before_teardown_async()
+            .await
+            .expect("final save");
 
         assert_eq!(
             saved_pane_counts(&server.app),
@@ -1052,7 +1094,11 @@ mod tests {
             .expect("saved checkpoint");
         *layout = CapturedLayout::new(layout.snapshot().clone(), std::collections::HashMap::new());
 
-        server.app.save_session_before_teardown_async().await;
+        server
+            .app
+            .save_session_before_teardown_async()
+            .await
+            .expect("final save");
 
         assert_eq!(saved_pane_counts(&server.app), vec![2]);
         assert!(server.app.preserves_pane_exit_checkpoint());
@@ -1164,10 +1210,10 @@ mod tests {
             }),
             disk_full(),
         );
-        let later = now + SESSION_SAVE_RETRY_MIN * 2;
+        let later = now + checkpoint_retry_delay(1);
         assert_eq!(
             app.session_saver.exit.retry_at(),
-            Some(now + SESSION_SAVE_RETRY_MIN)
+            Some(now + checkpoint_retry_delay(0))
         );
         assert_eq!(app.session_saver.host.retry_at(), Some(later));
         assert_eq!(app.session_saver.deadline(), Some(later));
@@ -1325,7 +1371,7 @@ mod tests {
         app.finish_session_save(exit_kind(generation), disk_full());
         assert_eq!(
             app.session_saver.exit.retry_at(),
-            Some(app.clock.now + SESSION_SAVE_RETRY_MIN)
+            Some(app.clock.now + checkpoint_retry_delay(0))
         );
         assert_eq!(
             app.session_saver.autosave_deadline(),
@@ -1447,7 +1493,9 @@ mod tests {
         // preserved pre-exit layout, not the live one.
         assert_eq!(app.state.ws(0).tree().len(), 1);
         app.sync_session_save_schedule();
-        app.save_session_before_teardown_async().await;
+        app.save_session_before_teardown_async()
+            .await
+            .expect("final save");
         assert_eq!(saved_pane_counts(&app), vec![3]);
         app.retire_session_writer();
     }
@@ -1494,6 +1542,7 @@ mod tests {
             public_number: number(public_number),
             label: None,
             agent_session: None,
+            unusable_agent_session: None,
         };
         let workspace = |id: &str, name: &str, layout: LayoutSnapshot, next: usize| {
             let first = layout.panes()[0].public_number;
@@ -1555,10 +1604,12 @@ mod tests {
         assert_eq!(
             app.restore_notice,
             Some(shepr_protocol::SessionRestoreNotice {
-                loss: shepr_protocol::SessionRestoreLoss::Workspaces {
-                    dropped: std::num::NonZeroUsize::MIN,
-                    panes_pruned: false,
-                },
+                loss: shepr_protocol::SessionRestoreLoss::Damaged(
+                    shepr_protocol::SessionRestoreDamage {
+                        dropped_workspaces: 1,
+                        ..Default::default()
+                    }
+                ),
                 backup_dir: backups.clone().into(),
             })
         );
@@ -1723,7 +1774,11 @@ mod tests {
                 crate::app::DefaultWorkspace::Created
             );
 
-            server.app.save_session_before_teardown_async().await;
+            server
+                .app
+                .save_session_before_teardown_async()
+                .await
+                .expect("final save");
             server.app.retire_session_writer();
 
             let lease = shepr_mux::persist::DataDirLease::acquire(server.app.paths.data_dir())
@@ -1807,7 +1862,11 @@ mod tests {
                 shepr_mux::pane::PaneEndReason::Signalled,
                 std::time::Instant::now(),
             ));
-            server.app.save_session_before_teardown_async().await;
+            server
+                .app
+                .save_session_before_teardown_async()
+                .await
+                .expect("final save");
             server.app.retire_session_writer();
             let lease = shepr_mux::persist::DataDirLease::acquire(server.app.paths.data_dir())
                 .expect("test lease");
@@ -1907,7 +1966,11 @@ mod tests {
                 shepr_mux::pane::PaneEndReason::Signalled,
                 server.app.clock.now + Duration::from_millis(100),
             ));
-            server.app.save_session_before_teardown_async().await;
+            server
+                .app
+                .save_session_before_teardown_async()
+                .await
+                .expect("final save");
             server.app.retire_session_writer();
             let saved = saved_agent_session(&server.app);
             assert_eq!(saved.session_ref(), session.session_ref());
@@ -1941,7 +2004,9 @@ mod tests {
                     .map(|identity| identity.session_ref().clone()),
                 Some(session.session_ref().clone())
             );
-            app.save_session_before_teardown_async().await;
+            app.save_session_before_teardown_async()
+                .await
+                .expect("final save");
             app.retire_session_writer();
             let saved = saved_agent_session(&app);
             assert_eq!(saved.session_ref(), session.session_ref());
@@ -1988,7 +2053,10 @@ mod tests {
             server.app.start_background_session_save();
             assert!(server.app.session_saver.save_in_flight());
             server.app.wait_for_session_save();
-            server.app.save_session_before_teardown();
+            server
+                .app
+                .save_session_before_teardown()
+                .expect("final save");
             server.app.retire_session_writer();
 
             assert!(
@@ -2066,7 +2134,10 @@ mod tests {
                         "the second exit was applied"
                     );
                 }
-                server.app.save_session_before_teardown();
+                server
+                    .app
+                    .save_session_before_teardown()
+                    .expect("final save");
                 server.app.retire_session_writer();
 
                 let lease = shepr_mux::persist::DataDirLease::acquire(server.app.paths.data_dir())

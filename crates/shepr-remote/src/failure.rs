@@ -34,21 +34,33 @@ pub(crate) enum RemoteExit {
     Code(i32),
 }
 
+/// The remote exits a code alone names, decoded through [`RemoteExit::code`],
+/// which spells each code once.
+const SPECIAL_REMOTE_EXITS: [RemoteExit; 3] = [
+    RemoteExit::CandidateMissing,
+    RemoteExit::NotExecutable,
+    RemoteExit::NotFound,
+];
+
 impl SshExit {
     pub(crate) fn from_code(code: Option<i32>) -> Self {
         match code {
             Some(SSH_OWN_FAILURE_EXIT_CODE) => Self::SshFailed,
-            Some(125) => Self::Remote(RemoteExit::CandidateMissing),
-            Some(126) => Self::Remote(RemoteExit::NotExecutable),
-            Some(127) => Self::Remote(RemoteExit::NotFound),
             Some(REMAPPED_REMOTE_255_EXIT_CODE) => Self::Remote(RemoteExit::Remapped255Or254),
-            Some(code) => Self::Remote(RemoteExit::Code(code)),
+            Some(code) => Self::Remote(
+                SPECIAL_REMOTE_EXITS
+                    .into_iter()
+                    .find(|exit| exit.code() == code)
+                    .unwrap_or(RemoteExit::Code(code)),
+            ),
             None => Self::Signalled,
         }
     }
 }
 
 impl RemoteExit {
+    /// The remote exit status this stands for: 125 is the probe script's
+    /// own "candidate missing", 126 and 127 are the shell's.
     pub(crate) const fn code(self) -> i32 {
         match self {
             Self::CandidateMissing => 125,
@@ -438,6 +450,20 @@ impl SshFailureDiagnostic {
 mod tests {
     use super::*;
     use crate::preflight::{MachineCheck, classify_check};
+
+    #[test]
+    fn special_remote_exit_codes_round_trip() {
+        for exit in SPECIAL_REMOTE_EXITS
+            .into_iter()
+            .chain([RemoteExit::Remapped255Or254])
+        {
+            assert_eq!(SshExit::from_code(Some(exit.code())), SshExit::Remote(exit));
+        }
+        assert_eq!(
+            SshExit::from_code(Some(3)),
+            SshExit::Remote(RemoteExit::Code(3))
+        );
+    }
 
     #[test]
     fn remote_host_key_error_matches_ssh_diagnostics() {

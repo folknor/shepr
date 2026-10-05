@@ -21,6 +21,25 @@ impl std::fmt::Display for ScreenDetectionSkipReason {
     }
 }
 
+/// A mux detector hold that is currently withholding a fresh screen verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreenDetectionGate {
+    PendingIdleConfirmation,
+    StartupGrace,
+    ResumeAbsenceHold,
+}
+
+impl std::fmt::Display for ScreenDetectionGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::PendingIdleConfirmation => "pending_idle_confirmation",
+            Self::StartupGrace => "startup_grace",
+            Self::ResumeAbsenceHold => "resume_absence_hold",
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DetectionStateSource {
@@ -42,6 +61,8 @@ pub struct DetectionExplanation {
     /// `state` and the rule evidence below describe the same response but
     /// answer different questions when a mux gate holds the published state.
     pub screen_state: Option<AgentState>,
+    /// The active mux hold, if one currently withholds the screen verdict.
+    pub detector_gate: Option<ScreenDetectionGate>,
     pub matched_rule: Option<DetectionMatchedRule>,
     pub visible_idle: bool,
     pub visible_blocker: bool,
@@ -255,6 +276,7 @@ impl From<DetectionExplain> for DetectionExplanation {
             state: explain.verdict.state(),
             state_source: DetectionStateSource::Screen,
             screen_state: None,
+            detector_gate: None,
             matched_rule: explain.matched_rule.map(|rule| DetectionMatchedRule {
                 id: rule.id,
                 priority: rule.priority,
@@ -307,30 +329,10 @@ impl DetectionExplanation {
         self
     }
 
-    pub fn hook_authority(
-        agent: &str,
-        state: AgentState,
-        hook_source: &str,
-        skip_reason: ScreenDetectionSkipReason,
-    ) -> Self {
-        Self {
-            agent: agent.to_owned(),
-            state,
-            state_source: DetectionStateSource::HookAuthority {
-                hook_source: hook_source.to_owned(),
-                skip_reason,
-            },
-            screen_state: None,
-            matched_rule: None,
-            visible_idle: false,
-            visible_blocker: false,
-            visible_working: false,
-            skip_state_update: false,
-            skipped_update_reason: None,
-            fallback_reason: None,
-            evaluated_rules: Vec::new(),
-            last_unapplied_hook_report: None,
-        }
+    /// Attaches the mux detector hold that currently withholds publication.
+    pub fn with_detector_gate(mut self, gate: Option<ScreenDetectionGate>) -> Self {
+        self.detector_gate = gate;
+        self
     }
 
     /// Attaches the pane's last unapplied hook report, if it has one.
@@ -344,6 +346,30 @@ impl DetectionExplanation {
 mod tests {
     use super::*;
 
+    fn hook_explanation(
+        agent: &str,
+        state: AgentState,
+        hook_source: &str,
+        skip_reason: ScreenDetectionSkipReason,
+    ) -> DetectionExplanation {
+        let explain: DetectionExplanation = shepr_detect::manifest::explain_for_label(
+            agent,
+            shepr_detect::manifest::DetectionInput {
+                screen: "",
+                osc_title: None,
+                osc_progress: None,
+            },
+        )
+        .into();
+        explain.with_pane_decision(
+            state,
+            DetectionStateSource::HookAuthority {
+                hook_source: hook_source.to_owned(),
+                skip_reason,
+            },
+        )
+    }
+
     #[test]
     fn screen_and_hook_explanations_round_trip_as_typed_payloads() {
         let screen: DetectionExplanation = shepr_detect::manifest::explain_for_label(
@@ -355,13 +381,20 @@ mod tests {
             },
         )
         .into();
-        let hook = DetectionExplanation::hook_authority(
+        let hook = hook_explanation(
             "omp",
             AgentState::Working,
             "shepr:omp",
             ScreenDetectionSkipReason::FullLifecycleHookAuthority,
         );
-        for explain in [screen, hook] {
+        let held = screen
+            .clone()
+            .with_detector_gate(Some(ScreenDetectionGate::PendingIdleConfirmation));
+        assert_eq!(
+            serde_json::to_value(&held).expect("encode held explanation")["detector_gate"],
+            "pending_idle_confirmation"
+        );
+        for explain in [screen, hook, held] {
             let json = serde_json::to_string(&explain).expect("encode explanation");
             let decoded: DetectionExplanation =
                 serde_json::from_str(&json).expect("decode explanation");
@@ -501,7 +534,7 @@ mod tests {
             }
         );
 
-        let explain = DetectionExplanation::hook_authority(
+        let explain = hook_explanation(
             "codex",
             AgentState::Working,
             "shepr:codex",

@@ -34,6 +34,7 @@ fn saved_pane(public_number: usize, cwd: &str) -> PaneSnapshot {
         public_number: number(public_number),
         label: None,
         agent_session: None,
+        unusable_agent_session: None,
     }
 }
 

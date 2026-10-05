@@ -86,7 +86,8 @@ pub enum NoticeKind {
     LimitExceeded(crate::LimitExceeded),
 }
 
-/// The server's saved session did not come back in full when it started.
+/// The server's saved session did not come back exactly as saved when it
+/// started: part of it was refused, dropped or repaired.
 /// Carried in every shell snapshot for that server boot, so inactive
 /// connections and reconnects retain the same restore diagnosis. It is not a
 /// `NoticeKind`: no direct server notice carries it.
@@ -97,21 +98,87 @@ pub struct SessionRestoreNotice {
     pub backup_dir: crate::RemotePath,
 }
 
-/// What a restore lost. Every variant loses something, so a notice can only
-/// exist for a session that did not come back in full.
+/// Saved data a restore refused, dropped or repaired. Every one of them keeps
+/// the source file (backed up before the first save) and is told to clients.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionRestoreLoss {
-    /// The session file could not be used at all.
+    /// The file could not be decoded or read; no workspace restored.
     Unusable { failure: SessionRestoreFailure },
-    /// The session file loaded, and these saved workspaces were dropped whole;
-    /// `panes_pruned` says whether workspaces that did restore lost panes too.
-    Workspaces {
-        dropped: std::num::NonZeroUsize,
-        panes_pruned: bool,
-    },
-    /// The session file loaded and every workspace restored, but panes or
-    /// layout leaves were pruned from some of them.
-    Panes,
+    /// The file loaded, and restore dropped or repaired parts of it.
+    Damaged(SessionRestoreDamage),
+}
+
+/// What a restore dropped or repaired in a session file that loaded. At
+/// least one part is nonempty (`is_empty` is false) wherever it is carried.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionRestoreDamage {
+    /// Saved workspaces dropped whole.
+    pub dropped_workspaces: usize,
+    /// Saved workspaces restored under a fresh ID, their saved one repeated.
+    pub renamed_workspaces: usize,
+    /// Restored panes whose saved agent session this build cannot use: each
+    /// came back as a plain shell, without its session.
+    pub dropped_agent_sessions: Vec<crate::PublicPaneId>,
+}
+
+impl SessionRestoreDamage {
+    pub fn is_empty(&self) -> bool {
+        self.dropped_workspaces == 0
+            && self.renamed_workspaces == 0
+            && self.dropped_agent_sessions.is_empty()
+    }
+
+    /// Whether saved data was lost, not only repaired.
+    pub fn loses_data(&self) -> bool {
+        self.dropped_workspaces > 0 || !self.dropped_agent_sessions.is_empty()
+    }
+}
+
+impl std::fmt::Display for SessionRestoreDamage {
+    /// One sentence per kind of damage, separated by spaces.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut sentences = Vec::new();
+        if self.dropped_workspaces > 0 {
+            let unit = if self.dropped_workspaces == 1 {
+                "workspace"
+            } else {
+                "workspaces"
+            };
+            sentences.push(format!(
+                "The saved session was restored in part: {} saved {unit} could not be restored.",
+                self.dropped_workspaces
+            ));
+        }
+        if !self.dropped_agent_sessions.is_empty() {
+            let panes = self
+                .dropped_agent_sessions
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            sentences.push(if self.dropped_agent_sessions.len() == 1 {
+                format!(
+                    "The saved agent session of pane {panes} could not be used, so the pane came back as a plain shell."
+                )
+            } else {
+                format!(
+                    "The saved agent sessions of panes {panes} could not be used, so those panes came back as plain shells."
+                )
+            });
+        }
+        if self.renamed_workspaces > 0 {
+            let unit = if self.renamed_workspaces == 1 {
+                "workspace ID was"
+            } else {
+                "workspace IDs were"
+            };
+            sentences.push(format!(
+                "The saved session needed repair: {} duplicate {unit} reassigned.",
+                self.renamed_workspaces
+            ));
+        }
+        f.write_str(&sentences.join(" "))
+    }
 }
 
 /// Why a saved session file could not be used. `detail` preserves the
@@ -203,34 +270,11 @@ impl std::fmt::Display for SessionRestoreFailure {
 impl std::fmt::Display for SessionRestoreNotice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self { loss, backup_dir } = self;
-        let lost = match loss {
+        match loss {
             SessionRestoreLoss::Unusable { failure } => {
                 write!(f, "The saved session was not restored: {failure}.")?;
-                None
             }
-            SessionRestoreLoss::Workspaces {
-                dropped,
-                panes_pruned,
-            } => {
-                let unit = if dropped.get() == 1 {
-                    "workspace"
-                } else {
-                    "workspaces"
-                };
-                let workspaces = format!("{dropped} saved {unit}");
-                Some(if *panes_pruned {
-                    format!("{workspaces} and some saved panes")
-                } else {
-                    workspaces
-                })
-            }
-            SessionRestoreLoss::Panes => Some("some saved panes".to_owned()),
-        };
-        if let Some(lost) = lost {
-            write!(
-                f,
-                "The saved session was restored in part: {lost} could not be restored."
-            )?;
+            SessionRestoreLoss::Damaged(damage) => write!(f, "{damage}")?,
         }
         write!(
             f,
@@ -349,31 +393,38 @@ mod tests {
 
     #[test]
     fn every_loss_names_what_was_lost() {
-        let partial = |dropped, pruned| {
-            let loss = match std::num::NonZeroUsize::new(dropped) {
-                Some(dropped) => SessionRestoreLoss::Workspaces {
-                    dropped,
-                    panes_pruned: pruned,
-                },
-                None => SessionRestoreLoss::Panes,
-            };
-            rendered(loss)
+        let pane = |number: usize| {
+            crate::PublicPaneId::new(
+                &crate::WorkspaceId::from_number(1).expect("nonzero workspace number"),
+                crate::PanePublicNumber::new(number).expect("nonzero"),
+            )
         };
+        let partial = |dropped_workspaces, renamed_workspaces, dropped_agent_sessions| {
+            rendered(SessionRestoreLoss::Damaged(SessionRestoreDamage {
+                dropped_workspaces,
+                renamed_workspaces,
+                dropped_agent_sessions,
+            }))
+        };
+        assert!(partial(1, 0, vec![]).contains("restored in part: 1 saved workspace could not"));
+        assert!(partial(2, 1, vec![]).contains("2 saved workspaces could not"));
+        assert!(partial(2, 1, vec![]).contains(
+            ". The saved session needed repair: 1 duplicate workspace ID was reassigned."
+        ));
+        assert!(partial(0, 2, vec![]).starts_with(
+            "The saved session needed repair: 2 duplicate workspace IDs were reassigned."
+        ));
+        assert!(!partial(0, 2, vec![]).contains("pane"));
+        let sessions = partial(0, 0, vec![pane(1), pane(2)]);
         assert!(
-            partial(1, false).contains("restored in part: 1 saved workspace could not"),
-            "{}",
-            partial(1, false)
+            sessions.starts_with(&format!(
+                "The saved agent sessions of panes {}, {} could not be used",
+                pane(1),
+                pane(2)
+            )),
+            "{sessions}"
         );
-        assert!(
-            partial(2, true).contains(": 2 saved workspaces and some saved panes could not"),
-            "{}",
-            partial(2, true)
-        );
-        assert!(
-            partial(0, true).contains(": some saved panes could not"),
-            "{}",
-            partial(0, true)
-        );
+        assert!(partial(0, 0, vec![pane(1)]).contains(&format!("of pane {} could", pane(1))));
         let unusable = rendered(SessionRestoreLoss::Unusable {
             failure: SessionRestoreFailure::Unparseable {
                 line: 1,

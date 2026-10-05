@@ -600,9 +600,13 @@ impl HeadlessServer {
         // this writes nothing and the checkpoint taken on the warning stands;
         // the writer is still retired.
         self.refresh_app_clock();
-        self.app
+        if let Err(error) = self
+            .app
             .save_session_for_exit(self.lifecycle.signal_quit_at())
-            .await;
+            .await
+        {
+            run_error.get_or_insert(RunServerError::Runtime(error));
+        }
         if !self.app.shut_down_pane_runtimes(PANE_TEARDOWN_WAIT) {
             warn!("pane session teardown did not finish before server exit");
         }
@@ -635,16 +639,15 @@ impl HeadlessServer {
             // Outbox progress, render completion, and host shutdown all wake
             // the loop through this coalescing state-change notification.
             () = self.outbox_wake.notified() => LoopEvent::Timer,
-            // The channel closes only if the API listener thread and every
-            // connection worker holding a sender died, which also means the
-            // socket is dead. Production keeps the sender in the listener
-            // until this loop ends. Stop selecting it rather than spin.
+            // Losing every API sender means ingress has ended. Stop the
+            // server so its unreachable socket and lease can be retired.
             maybe_api = self.api_request_rx.recv(), if api_open => match maybe_api {
                 Some(msg) => LoopEvent::Api(Box::new(msg)),
                 None => {
                     self.api_request_open = false;
+                    stop_signal.request();
                     tracing::error!(
-                        "API request channel closed; API requests are no longer served"
+                        "API request channel closed; stopping server"
                     );
                     LoopEvent::Timer
                 }

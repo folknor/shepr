@@ -227,6 +227,21 @@ pub(super) fn start_listener(
     start_listener_with_dispatch(listener, running, dispatch, unclassified)
 }
 
+/// A listener unwind must also wake the loop even while connection workers
+/// still hold API senders. Normal handle shutdown clears `running` first.
+struct ListenerExit {
+    running: Arc<AtomicBool>,
+    stop: Arc<crate::ServerStopSignal>,
+}
+
+impl Drop for ListenerExit {
+    fn drop(&mut self) {
+        if self.running.load(Ordering::Acquire) {
+            self.stop.request();
+        }
+    }
+}
+
 fn start_listener_with_dispatch(
     listener: std::os::unix::net::UnixListener,
     running: Arc<AtomicBool>,
@@ -237,6 +252,10 @@ fn start_listener_with_dispatch(
     std::thread::Builder::new()
         .name("shepr-listener".into())
         .spawn(move || {
+            let _exit = ListenerExit {
+                running: Arc::clone(&running),
+                stop: Arc::clone(&dispatch.stop),
+            };
             let mut backoff = AcceptBackoff::default();
             loop {
                 if !running.load(Ordering::Acquire) {
@@ -252,7 +271,8 @@ fn start_listener_with_dispatch(
                         continue;
                     }
                     Accepted::Fatal(error) => {
-                        error!(%error, "server listener cannot accept connections");
+                        error!(%error, "server listener cannot accept connections; stopping server");
+                        dispatch.stop.request();
                         break;
                     }
                 };
@@ -441,6 +461,27 @@ mod tests {
         (0..count)
             .map(|_| admission.try_acquire().expect("slot"))
             .collect()
+    }
+
+    #[test]
+    fn unexpected_listener_exit_requests_shutdown() {
+        let running = Arc::new(AtomicBool::new(true));
+        let stop = Arc::new(crate::ServerStopSignal::default());
+        drop(ListenerExit {
+            running: Arc::clone(&running),
+            stop: Arc::clone(&stop),
+        });
+        assert!(stop.is_requested());
+    }
+
+    #[test]
+    fn intentional_listener_retirement_does_not_request_shutdown() {
+        let stop = Arc::new(crate::ServerStopSignal::default());
+        drop(ListenerExit {
+            running: Arc::new(AtomicBool::new(false)),
+            stop: Arc::clone(&stop),
+        });
+        assert!(!stop.is_requested());
     }
 
     fn server(

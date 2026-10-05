@@ -100,8 +100,10 @@ mod path_bytes {
 // unusable-file path (backed up, then replaced), whole. Keeping a second,
 // hand-written schema in front of lenient types, or `Option`s and defaults
 // for damaged in-memory fixtures, lets the two drift; restore validates only
-// what a type cannot express. The one tolerance is a pane's agent session
-// (see `deserialize_agent_session`).
+// what a type cannot express. The one tolerance is a pane's agent session (see
+// `deserialize_agent_session`): one this build cannot use is kept aside as
+// `PaneSnapshot::unusable_agent_session`, and restore drops it as damage, which
+// backs the file up and is reported like every other discard.
 
 /// Serializable snapshot of the entire shepr session: the whole layout file.
 #[derive(Clone, Serialize, Deserialize)]
@@ -214,13 +216,11 @@ pub struct WorkspaceSnapshot {
     pub root_pane: PanePublicNumber,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// One saved pane. Decoded through `SavedPaneSnapshot`, which holds the
+/// on-disk schema's decoding rules.
+#[derive(Clone, Serialize)]
 pub struct PaneSnapshot {
-    #[serde(
-        serialize_with = "path_bytes::serialize",
-        deserialize_with = "deserialize_cwd"
-    )]
+    #[serde(serialize_with = "path_bytes::serialize")]
     // Absolute by type, checked when the file is parsed: shepr only ever saves
     // absolute cwds, so a relative one is a damaged file, refused whole like
     // any other schema violation. Whether the directory still exists is not a
@@ -229,14 +229,63 @@ pub struct PaneSnapshot {
     pub cwd: AbsolutePath,
     /// Decoding refuses zero; restore refuses repeats within a workspace.
     pub public_number: shepr_protocol::PanePublicNumber,
-    #[serde(deserialize_with = "required_nullable")]
     pub label: Option<Label>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_agent_session"
-    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<PaneAgentSessionSnapshot>,
+    /// A saved agent session this build cannot use (an agent it no longer
+    /// knows, a reference its resume support refuses), in place of
+    /// `agent_session`. Only decoding sets it, and it is never written.
+    #[serde(skip)]
+    pub unusable_agent_session: Option<UnusableAgentSession>,
+}
+
+/// What restore needs to report a saved agent session it drops.
+#[derive(Clone, Debug)]
+pub struct UnusableAgentSession {
+    /// The entry's `agent` text, when it has one.
+    pub agent: Option<String>,
+    /// Why it did not decode.
+    pub error: String,
+}
+
+/// The on-disk schema of a pane record: every key a save writes is required
+/// (an absent agent session is an omitted key), and nothing else is admitted.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SavedPaneSnapshot {
+    #[serde(deserialize_with = "deserialize_cwd")]
+    cwd: AbsolutePath,
+    public_number: shepr_protocol::PanePublicNumber,
+    #[serde(deserialize_with = "required_nullable")]
+    label: Option<Label>,
+    #[serde(default, deserialize_with = "deserialize_agent_session")]
+    agent_session: Option<Result<PaneAgentSessionSnapshot, UnusableAgentSession>>,
+}
+
+impl<'de> Deserialize<'de> for PaneSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let SavedPaneSnapshot {
+            cwd,
+            public_number,
+            label,
+            agent_session,
+        } = SavedPaneSnapshot::deserialize(deserializer)?;
+        let (agent_session, unusable_agent_session) = match agent_session {
+            None => (None, None),
+            Some(Ok(session)) => (Some(session), None),
+            Some(Err(unusable)) => (None, Some(unusable)),
+        };
+        Ok(Self {
+            cwd,
+            public_number,
+            label,
+            agent_session,
+            unusable_agent_session,
+        })
+    }
 }
 
 pub type PaneAgentSessionSnapshot = shepr_agent::resume::PersistedAgentSession;
@@ -249,21 +298,27 @@ where
     AbsolutePath::new(path).map_err(serde::de::Error::custom)
 }
 
-// Agent labels and session formats can disappear between builds. A bad saved
-// session must not discard the pane or unrelated workspaces.
+// Agent labels and session formats can disappear between builds. A saved
+// session this build cannot use must not cost the pane, its workspace or the
+// whole file, so it decodes as unusable and restore drops it as damage (backed
+// up, logged with its pane, and reported). Decoding itself logs nothing:
+// snapshot fingerprint reads decode files too.
 fn deserialize_agent_session<'de, D>(
     deserializer: D,
-) -> Result<Option<PaneAgentSessionSnapshot>, D::Error>
+) -> Result<Option<Result<PaneAgentSessionSnapshot, UnusableAgentSession>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
-    Ok(value.and_then(|value| match serde_json::from_value(value) {
-        Ok(session) => Some(session),
-        Err(error) => {
-            tracing::warn!(%error, "ignoring invalid saved agent session");
-            None
-        }
+    Ok(value.map(|value| {
+        let agent = value
+            .get("agent")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        serde_json::from_value(value).map_err(|error| UnusableAgentSession {
+            agent,
+            error: error.to_string(),
+        })
     }))
 }
 
@@ -395,6 +450,7 @@ mod tests {
             public_number: number(public_number),
             label: None,
             agent_session: None,
+            unusable_agent_session: None,
         }
     }
 
@@ -542,18 +598,37 @@ mod tests {
     }
 
     #[test]
-    fn invalid_saved_agent_sessions_do_not_reject_the_pane() {
-        for session in [
-            serde_json::json!({"source": "shepr:codex", "agent": "removed-agent", "session_ref": {"id": "session"}}),
-            serde_json::json!({"source": "invalid source", "agent": "codex", "session_ref": {"id": "session"}}),
-            serde_json::json!(42),
+    fn invalid_saved_agent_sessions_decode_as_unusable_and_keep_the_pane() {
+        for (session, agent) in [
+            (
+                serde_json::json!({"source": "shepr:codex", "agent": "removed-agent", "session_ref": {"id": "session"}}),
+                Some("removed-agent"),
+            ),
+            (
+                serde_json::json!({"source": "invalid source", "agent": "codex", "session_ref": {"id": "session"}}),
+                Some("codex"),
+            ),
+            (serde_json::json!(42), None),
         ] {
             let pane: super::PaneSnapshot = serde_json::from_value(serde_json::json!({
                 "cwd": "/", "public_number": 1, "label": null, "agent_session": session,
             }))
-            .expect("bad session stays local to this pane");
+            .expect("an unusable session stays local to its pane");
             assert!(pane.agent_session.is_none());
+            let unusable = pane
+                .unusable_agent_session
+                .expect("the unusable session is kept for restore to report");
+            assert_eq!(unusable.agent.as_deref(), agent);
         }
+        // A save never writes it back.
+        let mut pane = saved_pane(1);
+        pane.unusable_agent_session = Some(super::UnusableAgentSession {
+            agent: None,
+            error: "test".into(),
+        });
+        let written = serde_json::to_value(&pane).expect("serialize");
+        assert!(written.get("unusable_agent_session").is_none());
+        assert!(written.get("agent_session").is_none());
     }
 
     /// A pane's record lives in its layout leaf, so a file whose leaves name

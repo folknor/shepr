@@ -7,7 +7,7 @@ mod theme;
 
 pub use cwd::PaneCwdProbe;
 use cwd::*;
-pub use read::PaneRead;
+pub use read::{AgentDetectionReadError, PaneRead};
 
 use read_effects::*;
 pub use spawn::{LaunchPresentation, PaneLaunchRequest, PaneLauncher, PaneSpawnHandles};
@@ -24,6 +24,7 @@ use tokio::sync::{Notify, mpsc};
 use tracing::{debug, error, warn};
 
 use super::PaneClearError;
+use super::detect::DetectorGateDiagnostics;
 use super::exit_arbiter::{PaneExitArbiter, RecordedEnding};
 use super::launch::*;
 use super::process_probe::*;
@@ -75,6 +76,7 @@ pub struct PaneRuntime {
     cwd: Arc<PaneCwdState>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
+    detector_gate_diagnostics: DetectorGateDiagnostics,
     // Detection is aborted directly. The child watcher must reap, and a
     // synchronized-output timer's already-started blocking flush cannot be
     // cancelled here; it may tick a detached terminal, and its runtime events
@@ -207,6 +209,7 @@ impl PaneRuntime {
             cwd: Arc::default(),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: detection_reset,
+            detector_gate_diagnostics: DetectorGateDiagnostics::default(),
             detect_handle: None,
         }
     }
@@ -232,6 +235,12 @@ impl PaneRuntime {
     /// The full-lifecycle authority the detector task currently reads.
     pub fn full_lifecycle_authority_active(&self) -> bool {
         self.full_lifecycle_authority_active.load(Ordering::Acquire)
+    }
+
+    /// The active mux detector gate, if its latest observations are holding a
+    /// screen verdict back.
+    pub fn active_detector_gate(&self) -> Option<super::DetectorGate> {
+        self.detector_gate_diagnostics.active_gate()
     }
 
     pub fn grid_size(&self) -> shepr_core::geometry::GridSize {
@@ -1684,6 +1693,7 @@ mod tests {
             cwd: Arc::default(),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
+            detector_gate_diagnostics: DetectorGateDiagnostics::default(),
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 
@@ -1715,6 +1725,7 @@ mod tests {
             cwd: Arc::default(),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
+            detector_gate_diagnostics: DetectorGateDiagnostics::default(),
             detect_handle: Some(tokio::spawn(async {}).abort_handle()),
         };
 
@@ -1787,12 +1798,18 @@ mod tests {
         let runtime = PaneRuntime::test_with_screen_bytes(80, 24, b"");
         runtime.test_process_pty_bytes(b"\x1b]2;startup title\x1b\\\x1b]9;4;1;\x1b\\");
 
-        let inputs = runtime.read().agent_detection_inputs();
+        let inputs = runtime
+            .read()
+            .agent_detection_inputs()
+            .expect("test terminal screen is readable");
         assert_eq!(inputs.osc_title.as_deref(), Some("startup title"));
         assert_eq!(inputs.osc_progress.as_deref(), Some("4;1"));
 
         runtime.terminal.clear_agent_osc_state();
-        let inputs = runtime.read().agent_detection_inputs();
+        let inputs = runtime
+            .read()
+            .agent_detection_inputs()
+            .expect("test terminal screen is readable");
         assert_eq!(inputs.osc_title, None);
         assert_eq!(inputs.osc_progress, None);
     }

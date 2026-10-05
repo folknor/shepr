@@ -132,7 +132,6 @@ Reported by: restore-resume.
   launch installs one rather than replacing it.
 - `restore_error` is the field for every start failure, fresh launches included
   (`PaneStartFailure`'s own doc says so); the name misleads.
-- `RestoreLoss::Panes` and `panes_pruned` have no honest producer (BUG-006).
 
 ## DEAD-009 - Save and shutdown values and guards nothing reads
 
@@ -200,9 +199,6 @@ Reported by: agent-state, workspace-model.
   region, manifest or detector reads it; a herdr protocol leftover.
 - `set_detected_state_with_visible_blocker`'s `_ignored_screen_idle` parameter, a
   leftover of a removed screen-idle signal.
-- `DetectionExplanation::hook_authority` (`shepr-api/src/schema/detection.rs`) lost its
-  production caller when explain began reporting the effective state for every pane;
-  only two shepr-api tests use it.
 - `is_unsequenced_opencode_selection` is driven by
   `HookSessionPolicy::unsequenced_selection`, not OpenCode-specific; the name is stale.
 

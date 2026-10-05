@@ -194,7 +194,7 @@ mod tests {
                 if line.is_empty() {
                     continue;
                 }
-                let response = serde_json::json!({"id":"api-client:status","result":{"type":"pong","version":"0.1.0","build_id":"0123456789abcdef","boot_id":"17-23","stopping":stopping,"starting":starting}});
+                let response = serde_json::json!({"id":shepr_api::schema::RequestId::StatusPing.as_str(),"result":{"type":"pong","version":"0.1.0","build_id":"0123456789abcdef","boot_id":"17-23","stopping":stopping,"starting":starting}});
                 writeln!(stream, "{response}").expect("pong");
                 break;
             }

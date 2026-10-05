@@ -11,7 +11,36 @@ use super::config_edit::{
     ensure_command_hook, ensure_direct_command_hook, ensure_flat_command_hook,
     ensure_simple_command_hook,
 };
+use shepr_agent::Agent;
 use shepr_agent::IntegrationTarget as Target;
+use shepr_agent::resume::AgentSessionStartSource;
+
+/// Claude's SessionStart sources: `startup`, which replaces nothing, then the
+/// sources Claude's hook session policy treats as replacements. Deriving the
+/// matcher from the policy keeps the reported and replacing sources one list;
+/// the policy says why each source has its role.
+pub(super) fn claude_session_start_sources() -> impl Iterator<Item = AgentSessionStartSource> {
+    std::iter::once(AgentSessionStartSource::Startup).chain(
+        Agent::Claude
+            .descriptor()
+            .hook_session_policy()
+            .replacement_starts
+            .iter()
+            .copied(),
+    )
+}
+
+pub(super) fn claude_session_start_matcher() -> String {
+    let mut matcher = String::from("^(");
+    for (index, source) in claude_session_start_sources().enumerate() {
+        if index > 0 {
+            matcher.push('|');
+        }
+        matcher.push_str(source.as_str());
+    }
+    matcher.push_str(")$");
+    matcher
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum HooksRoot {
@@ -108,7 +137,7 @@ impl JsonShape {
                     hook.event,
                     &command,
                     timeout.as_secs(),
-                    Some(&super::claude_settings::claude_session_start_matcher()),
+                    Some(&claude_session_start_matcher()),
                 )?,
                 JsonShape::Flat(timeout) => ensure_flat_command_hook(
                     &mut entries,

@@ -158,15 +158,16 @@ fn open_and_summarize(
                     restore_loss,
                 } = restored_session;
                 let restore_was_partial = restore_loss.is_some();
-                if let Some(loss) = restore_loss {
+                if let Some(damage) = restore_loss {
                     backup_policy = SessionBackupPolicy::PreserveExisting;
                     tracing::warn!(
-                        dropped_workspaces = loss.dropped_workspaces(),
-                        restore_damage = loss.panes_pruned(),
-                        "session restore discarded saved data; the saved session is backed up to session-backups before the first save"
+                        dropped_workspaces = damage.dropped_workspaces,
+                        renamed_workspaces = damage.renamed_workspaces,
+                        dropped_agent_sessions = damage.dropped_agent_sessions.len(),
+                        "session restore dropped or repaired saved data; the saved session is backed up to session-backups before the first save"
                     );
                     restore_notice = Some(shepr_protocol::SessionRestoreNotice {
-                        loss: loss.into_notice_loss(),
+                        loss: shepr_protocol::SessionRestoreLoss::Damaged(damage),
                         backup_dir: backup_dir(),
                     });
                 }
@@ -336,6 +337,7 @@ mod tests {
             public_number: number(public_number),
             label: None,
             agent_session: None,
+            unusable_agent_session: None,
         }
     }
 
@@ -522,10 +524,12 @@ mod tests {
         assert_eq!(
             opened.restore_notice,
             Some(shepr_protocol::SessionRestoreNotice {
-                loss: shepr_protocol::SessionRestoreLoss::Workspaces {
-                    dropped: std::num::NonZeroUsize::MIN,
-                    panes_pruned: false,
-                },
+                loss: shepr_protocol::SessionRestoreLoss::Damaged(
+                    shepr_protocol::SessionRestoreDamage {
+                        dropped_workspaces: 1,
+                        ..Default::default()
+                    }
+                ),
                 backup_dir: dir.backups().into(),
             })
         );
@@ -582,13 +586,130 @@ mod tests {
                 .restore_notice
                 .as_ref()
                 .map(|notice| notice.loss.clone()),
-            Some(shepr_protocol::SessionRestoreLoss::Panes)
+            Some(shepr_protocol::SessionRestoreLoss::Damaged(
+                shepr_protocol::SessionRestoreDamage {
+                    renamed_workspaces: 1,
+                    ..Default::default()
+                }
+            ))
         );
         assert_eq!(
             summary.map(|summary| summary.outcome),
             Some(SessionRestoreOutcome::Partial)
         );
 
+        save(&mut opened).expect("first save");
+        assert_eq!(directory_files(&dir.backups()), vec![original]);
+    }
+
+    /// A saved agent session this build cannot use costs only itself: its pane
+    /// restores as a plain shell, the rest of the file comes back, and the
+    /// drop is reported naming the pane and backed up before the first save.
+    #[test]
+    fn an_unusable_agent_session_is_dropped_reported_and_backed_up_before_save() {
+        let (dir, lease) = DataDir::new("open-invalid-agent-session");
+        let snapshot = session(
+            vec![
+                workspace("w1", "saved", LayoutSnapshot::Pane(pane(1)), 2),
+                workspace("w2", "other", LayoutSnapshot::Pane(pane(1)), 2),
+            ],
+            Some(0),
+        );
+        let mut json = serde_json::to_value(snapshot).expect("encode snapshot");
+        json["workspaces"][0]["layout"]["Pane"]["agent_session"] = serde_json::json!({
+            "source": "shepr:codex", "agent": "removed-agent", "session_ref": {"id": "valuable-session"}
+        });
+        let original = serde_json::to_vec(&json).expect("encode damaged snapshot");
+        std::fs::write(dir.session_file(), &original).expect("write damaged snapshot");
+
+        let (mut opened, summary) = open(lease, SessionOpenPolicy::Persist);
+
+        assert_eq!(names(&opened), vec!["saved", "other"]);
+        let w1 = "w1".parse().expect("workspace ID");
+        assert_eq!(
+            opened
+                .restore_notice
+                .as_ref()
+                .map(|notice| notice.loss.clone()),
+            Some(shepr_protocol::SessionRestoreLoss::Damaged(
+                shepr_protocol::SessionRestoreDamage {
+                    dropped_agent_sessions: vec![shepr_protocol::PublicPaneId::new(&w1, number(1))],
+                    ..Default::default()
+                }
+            ))
+        );
+        assert_eq!(
+            summary.map(|summary| summary.outcome),
+            Some(SessionRestoreOutcome::Partial)
+        );
+        save(&mut opened).expect("first save");
+        assert_eq!(directory_files(&dir.backups()), vec![original]);
+    }
+
+    #[test]
+    fn invalid_saved_tree_state_drops_only_its_workspace_and_backs_up() {
+        for defect in ["focus", "root", "zoom"] {
+            let (dir, lease) = DataDir::new(defect);
+            let mut damaged = workspace("w2", "damaged", LayoutSnapshot::Pane(pane(1)), 2);
+            match defect {
+                "focus" => damaged.focused = number(9),
+                "root" => damaged.root_pane = number(9),
+                _ => damaged.zoomed = true,
+            }
+            let original = dir.write_session(&session(
+                vec![
+                    workspace("w1", "healthy", LayoutSnapshot::Pane(pane(1)), 2),
+                    damaged,
+                ],
+                Some(0),
+            ));
+            let (mut opened, _) = open(lease, SessionOpenPolicy::Persist);
+            assert_eq!(names(&opened), vec!["healthy"]);
+            assert_eq!(
+                opened
+                    .restore_notice
+                    .as_ref()
+                    .map(|notice| notice.loss.clone()),
+                Some(shepr_protocol::SessionRestoreLoss::Damaged(
+                    shepr_protocol::SessionRestoreDamage {
+                        dropped_workspaces: 1,
+                        ..Default::default()
+                    }
+                )),
+                "{defect}"
+            );
+            save(&mut opened).expect("first save");
+            assert_eq!(directory_files(&dir.backups()), vec![original]);
+        }
+    }
+
+    #[test]
+    fn an_exhausted_duplicate_id_reports_a_workspace_drop_without_a_rename() {
+        let (dir, lease) = DataDir::new("open-exhausted-duplicate");
+        let id = shepr_protocol::WorkspaceId::from_number(usize::MAX)
+            .expect("nonzero workspace ID")
+            .to_string();
+        let original = dir.write_session(&session(
+            vec![
+                workspace(&id, "first", LayoutSnapshot::Pane(pane(1)), 2),
+                workspace(&id, "repeat", LayoutSnapshot::Pane(pane(1)), 2),
+            ],
+            Some(1),
+        ));
+        let (mut opened, _) = open(lease, SessionOpenPolicy::Persist);
+        assert_eq!(names(&opened), vec!["first"]);
+        assert_eq!(
+            opened
+                .restore_notice
+                .as_ref()
+                .map(|notice| notice.loss.clone()),
+            Some(shepr_protocol::SessionRestoreLoss::Damaged(
+                shepr_protocol::SessionRestoreDamage {
+                    dropped_workspaces: 1,
+                    ..Default::default()
+                }
+            ))
+        );
         save(&mut opened).expect("first save");
         assert_eq!(directory_files(&dir.backups()), vec![original]);
     }

@@ -69,25 +69,21 @@ impl AppState {
 
     /// Toggles the zoom of the workspace that holds `pane_id` on it, focusing
     /// the pane first. `None` when no workspace holds the pane. A workspace of
-    /// one pane has nothing to zoom over, so its toggle changes nothing,
-    /// though the pane is still focused.
+    /// one pane has nothing to zoom over, so its toggle does nothing at all:
+    /// no zoom, no focus, nothing changed (the client offers no zoom there).
     pub(crate) fn toggle_pane_zoom(&mut self, pane_id: PaneId) -> Option<PaneZoomOutcome> {
-        self.workspaces.pane(pane_id)?;
-        let focus_changed = self.focus_pane(pane_id).changed();
-        let workspace = self.workspace_of_mut(pane_id)?;
-        if workspace.tree().len() <= 1 {
+        if self.workspaces.pane(pane_id)?.workspace().tree().is_lone() {
             return Some(PaneZoomOutcome {
                 changed: false,
-                focus_changed,
+                focus_changed: false,
             });
         }
-
+        let focus_changed = self.focus_pane(pane_id).changed();
+        let workspace = self.workspace_of_mut(pane_id)?;
         let desired = !workspace.tree().zoomed();
-        // set_zoomed rejects only zooming a one-pane workspace. The count
-        // check above already handles that case without reporting it missing;
-        // unzooming always succeeds. The focus change is already committed, so
-        // no path below may return None (which callers read as "pane not
-        // found"); a refusal would degrade to an unchanged zoom instead.
+        // The lone-pane case was handled above. The focus change is already
+        // committed, so no path below may return None (which callers read as
+        // "pane not found"); a refusal would degrade to an unchanged zoom.
         if !workspace.set_zoomed(desired) {
             return Some(PaneZoomOutcome {
                 changed: false,

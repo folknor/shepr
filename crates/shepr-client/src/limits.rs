@@ -166,9 +166,9 @@ pub(crate) const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
 /// waits on a fresh SSH connection, including key exchange and authentication,
 /// which needs more room on high-latency links (`REMOTE_HANDSHAKE_READ_TIMEOUT`).
 pub(crate) const LOCAL_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
-/// Allows a fresh remote SSH connection and its welcome reply to finish on
-/// high-latency links.
-pub(crate) const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(60);
+/// A starting bridge cannot reply until its daemon is ready. The enclosing
+/// attempt deadline still bounds ordinary attaches and time spent discovering.
+pub(crate) const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = shepr_remote::SSH_START_ATTEMPT_BUDGET;
 
 /// Timeout for a client request sent to an endpoint.
 ///
@@ -255,9 +255,11 @@ pub(crate) const ATTEMPT_BUDGET: Duration = shepr_remote::SSH_CONNECTION_ATTEMPT
 // An attempt, and so the retry that follows it, must fit the retry bound.
 const _: () = assert!(ATTEMPT_BUDGET.as_millis() < MAX_RETRY_DELAY.as_millis());
 
-/// The longest an operator's Restart of a configured machine may run: the conditional
-/// stop of its server of another build, then an attempt that starts this build's
-/// server. Only the operator starts one, so it is outside the automatic retry bound.
+/// Connect includes remote daemon startup, outside the automatic retry bound.
+pub(crate) const START_ATTEMPT_BUDGET: Duration = shepr_remote::SSH_START_ATTEMPT_BUDGET;
+
+/// Restart includes conditional stop and a connection that starts this build.
+/// Only the operator starts one, so it is outside the automatic retry bound.
 pub(crate) const RESTART_ATTEMPT_BUDGET: Duration = shepr_remote::SSH_RESTART_ATTEMPT_BUDGET;
 
 // Sidebar geometry.

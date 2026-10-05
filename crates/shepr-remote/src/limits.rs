@@ -15,7 +15,8 @@ pub(crate) const MAX_METADATA_BYTES: u64 = 16 * 1024;
 /// Time allowed for the SSH command that stops a remote server. The remote
 /// `shepr stop` itself waits up to its own stop deadline for the server to
 /// close its socket; this covers that plus the connection.
-pub(crate) const REMOTE_STOP_SSH_TIMEOUT: Duration = Duration::from_secs(45);
+pub(crate) const REMOTE_STOP_SSH_TIMEOUT: Duration =
+    shepr_launch::limits::STOP_WORST_CASE.saturating_add(SSH_COMMAND_TIMEOUT);
 
 /// How often a remote wait for a server checks the server while its runtime
 /// directory is watched and nothing is there. The directory watch ends the
@@ -113,7 +114,17 @@ pub(crate) const REMOTE_COMMAND_ARGS_INITIAL_CAPACITY: usize = 6;
 /// One cold SSH round trip, including a remote command or status probe: the
 /// budget of every bounded SSH command, retries and discovery alike. This
 /// bounds a slow startup without letting a hung host block the caller.
-pub(crate) const SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const SSH_COMMAND_TIMEOUT: Duration = SSH_CONNECT_TIMEOUT
+    .saturating_add(shepr_launch::limits::STATUS_OVERVIEW_TIMEOUT)
+    .saturating_add(SSH_STATUS_COMMAND_GRACE);
+
+/// OpenSSH's connection window, `SSH_CONNECT_TIMEOUT_OPTION` (a test holds the
+/// two together); the remote status needs its own window after a cold
+/// connection has used this one.
+const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Scheduling and command startup beyond connection and socket request time.
+const SSH_STATUS_COMMAND_GRACE: Duration = Duration::from_secs(1);
 
 /// What [`SSH_CONNECTION_ATTEMPT_BUDGET`] allows beyond one cold SSH round trip,
 /// for the remaining discovery commands, the bridge and the handshake.
@@ -126,11 +137,16 @@ pub(crate) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
 pub const SSH_CONNECTION_ATTEMPT_BUDGET: Duration =
     SSH_COMMAND_TIMEOUT.saturating_add(SSH_ATTEMPT_SLACK);
 
+/// An operator's Connect also allows the remote launch to finish before the
+/// bridge can relay the handshake. Automatic attaches never start a daemon.
+pub const SSH_START_ATTEMPT_BUDGET: Duration =
+    SSH_CONNECTION_ATTEMPT_BUDGET.saturating_add(shepr_launch::limits::START_WORST_CASE);
+
 /// The longest an operator's Restart of a configured machine may run: the
 /// conditional stop of the server of another build, with its own timeout, and
 /// then an ordinary connection attempt that starts this build's server.
 pub const SSH_RESTART_ATTEMPT_BUDGET: Duration =
-    SSH_CONNECTION_ATTEMPT_BUDGET.saturating_add(REMOTE_STOP_SSH_TIMEOUT);
+    SSH_START_ATTEMPT_BUDGET.saturating_add(REMOTE_STOP_SSH_TIMEOUT);
 
 /// How long the startup check of every configured machine may take in all. The
 /// checks run concurrently, so this is a bound on the whole phase, not per
@@ -219,3 +235,28 @@ pub(crate) const SSH_KEEPALIVE: SshKeepalive = SshKeepalive {
 
 /// Maximum label characters retained in a bridge socket file name.
 pub(crate) const BRIDGE_NAME_LABEL_CHARS: usize = 24;
+
+// A cold connection and the full remote status overview must complete before
+// SSH's command timeout can be mistaken for an authentication wait, with room
+// to spare. The stop and start budgets are derived from launch's worst cases
+// above, so they need no check of their own.
+const _: () = assert!(
+    SSH_COMMAND_TIMEOUT.as_millis()
+        > SSH_CONNECT_TIMEOUT
+            .saturating_add(shepr_launch::limits::STATUS_OVERVIEW_TIMEOUT)
+            .as_millis()
+);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The status budget counts the connection window that OpenSSH is told.
+    #[test]
+    fn the_connect_timeout_option_spells_the_budgeted_window() {
+        assert_eq!(
+            SSH_CONNECT_TIMEOUT_OPTION,
+            format!("ConnectTimeout={}", SSH_CONNECT_TIMEOUT.as_secs())
+        );
+    }
+}

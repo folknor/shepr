@@ -5,6 +5,30 @@ use shepr_launch::{EndpointFailure, FailureCause, FailureDisposition};
 use std::io::Read as _;
 use std::time::Duration;
 
+#[test]
+fn bridge_download_drain_timeout_does_not_join_and_shuts_down_the_stream() {
+    let (mut client, bridge) = upload_test_streams("download-drain");
+    let connection_stop = AtomicBool::new(false);
+    let (release_tx, release_rx) = mpsc::channel();
+    let download = BridgeDownload::spawn(move || {
+        release_rx
+            .recv()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(0)
+    });
+
+    let result = download
+        .finish(Duration::from_millis(1), &connection_stop, &bridge)
+        .expect("a drain timeout is an ordinary bounded end");
+    assert!(matches!(result, BridgeDownloadEnd::DrainTimedOut));
+    assert!(connection_stop.load(Ordering::Acquire));
+    let mut byte = [0_u8; 1];
+    release_tx
+        .send(())
+        .expect("download worker is still waiting");
+    assert_eq!(client.read(&mut byte).expect("shutdown reaches peer"), 0);
+}
+
 impl BridgeUpload {
     /// Stop copying. Bytes already read are still written.
     fn cancel(&self) {
@@ -487,6 +511,22 @@ fn remote_bridge_failures_need_attention_only_when_the_host_must_be_fixed() {
         assert!(
             !SshFailureDiagnostic::from_error(&error).is_local_setup_failure(),
             "{class:?}"
+        );
+    }
+
+    // CLI stderr prefixes are presentation. A future spelling change must
+    // leave the marker record recognizable to the local bridge.
+    let record = classified_bridge_failure(
+        RemoteFailureClass::Repair,
+        io::ErrorKind::Other,
+        &"shepr-server refused its configuration\n  invalid server.toml",
+    );
+    for prefix in ["error: ", "shepr: ", "remote command: "] {
+        let error = ssh_bridge_exit_error(exit_status(1), format!("{prefix}{record}").as_bytes());
+        assert_eq!(
+            EndpointFailure::from_error(&error).disposition(),
+            FailureDisposition::Repair,
+            "{prefix}"
         );
     }
 

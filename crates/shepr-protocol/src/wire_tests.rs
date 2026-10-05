@@ -454,10 +454,14 @@ mod tests {
         let msg = ClientShellSnapshot {
             boot_id: "1-1".into(),
             restore_notice: Some(SessionRestoreNotice {
-                loss: crate::SessionRestoreLoss::Workspaces {
-                    dropped: std::num::NonZeroUsize::new(2).ok_or("nonzero dropped count")?,
-                    panes_pruned: true,
-                },
+                loss: crate::SessionRestoreLoss::Damaged(crate::SessionRestoreDamage {
+                    dropped_workspaces: 2,
+                    renamed_workspaces: 1,
+                    dropped_agent_sessions: vec![crate::PublicPaneId::new(
+                        &crate::WorkspaceId::from_number(1).ok_or("nonzero workspace number")?,
+                        crate::PanePublicNumber::new(3).ok_or("nonzero pane number")?,
+                    )],
+                }),
                 backup_dir: "/state/session-backups".into(),
             }),
             session_saves_stopped: true,

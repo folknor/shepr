@@ -1,5 +1,23 @@
 use super::*;
 
+/// Why the detector could not read one coherent snapshot from the pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentDetectionReadError {
+    TerminalCorePoisoned,
+    ScreenReadFailed,
+}
+
+impl std::fmt::Display for AgentDetectionReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TerminalCorePoisoned => f.write_str("terminal core lock is poisoned"),
+            Self::ScreenReadFailed => f.write_str("terminal screen text could not be read"),
+        }
+    }
+}
+
+impl std::error::Error for AgentDetectionReadError {}
+
 #[derive(Clone, Copy)]
 pub struct PaneRead<'a> {
     pub(super) terminal: &'a Arc<PaneTerminal>,
@@ -145,11 +163,21 @@ impl PaneRead<'_> {
     }
 
     /// Snapshot of screen text, OSC title and OSC progress, read together
-    /// under one terminal lock. A failed read returns the empty default for
-    /// this capture view; live detection uses the fallible path and leaves its
-    /// state unchanged on a failed read.
-    pub fn agent_detection_inputs(&self) -> super::AgentDetectionInputs {
-        self.terminal.agent_detection_inputs().unwrap_or_default()
+    /// under one terminal lock. A failed read stays an error so on-demand
+    /// diagnostics cannot present fabricated empty-screen evidence.
+    pub fn agent_detection_inputs(
+        &self,
+    ) -> Result<super::AgentDetectionInputs, AgentDetectionReadError> {
+        // PaneTerminal has already collapsed lock poisoning and VT read errors
+        // into `None`; retain failure and classify the actionable poison case
+        // without inventing a more specific screen-read cause.
+        self.terminal.agent_detection_inputs().ok_or_else(|| {
+            if self.terminal.core_poisoned() {
+                AgentDetectionReadError::TerminalCorePoisoned
+            } else {
+                AgentDetectionReadError::ScreenReadFailed
+            }
+        })
     }
 
     pub fn extract_selection<P>(

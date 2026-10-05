@@ -8,8 +8,8 @@ use tokio::sync::Notify;
 use tracing::info;
 
 use super::detect::{
-    DetectorState, Step, Tick, TickContext, TickOutput, publish_agent_process_detected_event,
-    publish_state_changed_event,
+    DetectorGateDiagnostics, DetectorState, Step, Tick, TickContext, TickOutput,
+    publish_agent_process_detected_event, publish_state_changed_event,
 };
 use super::exit_arbiter::PaneExitArbiter;
 use super::launch::LaunchKind;
@@ -30,6 +30,7 @@ pub(super) struct DetectionHandles {
     pub(super) exit_arbiter: Arc<PaneExitArbiter>,
     pub(super) lifecycle_authority: Arc<AtomicBool>,
     pub(super) reset: Arc<Notify>,
+    pub(super) detector_gate_diagnostics: DetectorGateDiagnostics,
     pub(super) events: EventSender,
     pub(super) render_notify: Arc<Notify>,
     pub(super) render_dirty: Arc<RenderSignal>,
@@ -72,10 +73,12 @@ impl DetectionTask {
             if !launch.launched().await {
                 return;
             }
+            let detector = DetectorState::new(Instant::now(), launch_purpose);
+            handles.detector_gate_diagnostics.update(&detector);
             let task = Self {
                 pane_id,
                 handles,
-                detector: DetectorState::new(Instant::now(), launch_purpose),
+                detector,
                 next_wake: crate::limits::PROCESS_RECHECK_NO_AGENT,
                 cancelled: Arc::new(AtomicBool::new(false)),
             };
@@ -94,7 +97,10 @@ impl DetectionTask {
             }
             tokio::select! {
                 _ = tokio::time::sleep(self.next_wake) => {}
-                _ = self.handles.reset.notified() => self.detector.reset(),
+                _ = self.handles.reset.notified() => {
+                    self.detector.reset();
+                    self.handles.detector_gate_diagnostics.update(&self.detector);
+                },
                 () = self.handles.exit_arbiter.cancelled() => return,
             }
             let (task, output) = match self.blocking_tick().await {
@@ -128,6 +134,9 @@ impl DetectionTask {
         tokio::task::spawn_blocking(move || {
             let now = Instant::now();
             let output = self.tick(now).map(|output| (now, output));
+            self.handles
+                .detector_gate_diagnostics
+                .update(&self.detector);
             (self, output)
         })
         .await
@@ -268,6 +277,7 @@ mod tests {
                 exit_arbiter: Arc::default(),
                 lifecycle_authority: Arc::new(AtomicBool::new(false)),
                 reset: Arc::new(Notify::new()),
+                detector_gate_diagnostics: DetectorGateDiagnostics::default(),
                 events: EventSender::runtime(
                     events,
                     shepr_test_fixtures::fixed_pane_id(1),

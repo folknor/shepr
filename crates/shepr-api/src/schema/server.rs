@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PingParams {}
 
 /// Params of an unconditional `server.stop`.
@@ -15,6 +16,7 @@ pub struct ServerSummaryParams {}
 
 /// Params of `server.stop_if_boot`, the cross-build conditional stop.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ServerStopIfBootParams {
     /// Stop only the server process whose `ping` reported this boot identity.
     /// A server of any other boot refuses with `server_boot_mismatch` and keeps

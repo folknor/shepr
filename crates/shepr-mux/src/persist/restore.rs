@@ -34,8 +34,8 @@ struct RestorePlanContext {
 pub(super) struct SessionRestorePlan {
     workspaces: Vec<Workspace>,
     active: Option<usize>,
-    restore_damage: bool,
-    dropped_workspaces: usize,
+    /// Every saved part dropped or repaired so far.
+    damage: shepr_protocol::SessionRestoreDamage,
     launches: Vec<RestoredLaunch>,
     theme: shepr_term::host::TerminalTheme,
     now: std::time::Instant,
@@ -131,15 +131,16 @@ impl SessionRestorePlan {
             workspaces: self.workspaces,
             terminal_runtimes,
             active: self.active,
-            restore_loss: RestoreLoss::from_damage(self.dropped_workspaces, self.restore_damage),
+            restore_loss: (!self.damage.is_empty()).then_some(self.damage),
         }
     }
 }
 
 /// Everything a restore produces. Restore can drop saved workspaces (invalid
-/// layout, or no pane survived), so saved indices into that list no longer
-/// name the same item; `active` is already remapped onto `workspaces` and
-/// must be used as it is, not re-derived from the snapshot by clamping.
+/// pane tree, or an unassignable duplicate ID), so saved indices into that
+/// list no longer name the same item; `active` is already remapped onto
+/// `workspaces` and must be used as it is, not re-derived from the snapshot by
+/// clamping.
 pub(super) struct RestoredSession {
     pub(super) workspaces: Vec<Workspace>,
     pub(super) terminal_runtimes: HashMap<PaneId, PaneRuntime>,
@@ -147,60 +148,9 @@ pub(super) struct RestoredSession {
     /// dropped, its nearest surviving neighbour. `None` if nothing was
     /// bookmarked or nothing survived.
     pub(super) active: Option<usize>,
-    /// What saved data restore discarded, if anything. The caller preserves
-    /// the source session file whenever this value is present.
-    pub(super) restore_loss: Option<RestoreLoss>,
-}
-
-/// Saved workspace and pane data discarded while restoring a parsed session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum RestoreLoss {
-    /// Saved workspaces were dropped; some surviving workspaces may also have lost panes.
-    Workspaces {
-        dropped: std::num::NonZeroUsize,
-        panes_pruned: bool,
-    },
-    /// No workspace was dropped, but pane or layout data was pruned.
-    Panes,
-}
-
-impl RestoreLoss {
-    fn from_damage(dropped_workspaces: usize, panes_pruned: bool) -> Option<Self> {
-        match std::num::NonZeroUsize::new(dropped_workspaces) {
-            Some(dropped) => Some(Self::Workspaces {
-                dropped,
-                panes_pruned,
-            }),
-            None => panes_pruned.then_some(Self::Panes),
-        }
-    }
-
-    pub(super) fn dropped_workspaces(self) -> usize {
-        match self {
-            Self::Workspaces { dropped, .. } => dropped.get(),
-            Self::Panes => 0,
-        }
-    }
-
-    pub(super) fn panes_pruned(self) -> bool {
-        match self {
-            Self::Workspaces { panes_pruned, .. } => panes_pruned,
-            Self::Panes => true,
-        }
-    }
-
-    pub(super) fn into_notice_loss(self) -> shepr_protocol::SessionRestoreLoss {
-        match self {
-            Self::Workspaces {
-                dropped,
-                panes_pruned,
-            } => shepr_protocol::SessionRestoreLoss::Workspaces {
-                dropped,
-                panes_pruned,
-            },
-            Self::Panes => shepr_protocol::SessionRestoreLoss::Panes,
-        }
-    }
+    /// What saved data restore dropped or repaired, never empty when present.
+    /// The caller preserves the source session file whenever it is present.
+    pub(super) restore_loss: Option<shepr_protocol::SessionRestoreDamage>,
 }
 
 /// How a restored pane comes back. Every saved field is carried forward the
@@ -249,13 +199,11 @@ pub(super) fn plan_restore(
     // Where each saved workspace ended up, `None` for a dropped one.
     let mut restored_index = Vec::with_capacity(snapshot.workspaces.len());
     let plans: Vec<_> = snapshot.workspaces.iter().map(plan_workspace).collect();
-    let mut restore_damage = false;
+    let mut damage = shepr_protocol::SessionRestoreDamage::default();
     // Before any allocation below, so a fresh ID is never one a saved
     // workspace owns.
     workspace_ids.reserve(snapshot.workspaces.iter().map(|ws| &ws.id));
     let mut used_ids = HashSet::new();
-    let mut seen_saved_ids = HashSet::new();
-    let mut dropped_workspaces = 0;
     let plan_context = RestorePlanContext {
         chrome,
         now,
@@ -263,11 +211,8 @@ pub(super) fn plan_restore(
     };
     for (plan, saved) in plans.into_iter().zip(&snapshot.workspaces) {
         let saved_id = saved.id;
-        if !seen_saved_ids.insert(saved_id) {
-            restore_damage = true;
-        }
         let Some(plan) = plan else {
-            dropped_workspaces += 1;
+            damage.dropped_workspaces += 1;
             restored_index.push(None);
             continue;
         };
@@ -276,7 +221,11 @@ pub(super) fn plan_restore(
             // A duplicate at the end of the reserved number space has no
             // collision-free replacement. Keep the earlier workspace and drop
             // this one whole, counted like any other dropped workspace.
-            dropped_workspaces += 1;
+            warn!(
+                workspace = %saved_id,
+                "dropping saved workspace: duplicate ID has no available replacement"
+            );
+            damage.dropped_workspaces += 1;
             restored_index.push(None);
             continue;
         };
@@ -287,12 +236,21 @@ pub(super) fn plan_restore(
             &plan_context,
             &mut resumed_agent_sessions,
         );
-        if let Some((workspace, restored_launches)) = restored {
+        if let Some((workspace, restored_launches, dropped_sessions)) = restored {
+            if workspace_id != saved_id {
+                damage.renamed_workspaces += 1;
+                warn!(
+                    workspace = %saved_id,
+                    replacement = %workspace_id,
+                    "reassigned duplicate saved workspace ID"
+                );
+            }
+            damage.dropped_agent_sessions.extend(dropped_sessions);
             launches.extend(restored_launches);
             restored_index.push(Some(workspaces.len()));
             workspaces.push(workspace);
         } else {
-            dropped_workspaces += 1;
+            damage.dropped_workspaces += 1;
             restored_index.push(None);
         }
     }
@@ -302,8 +260,7 @@ pub(super) fn plan_restore(
     SessionRestorePlan {
         workspaces,
         active,
-        restore_damage,
-        dropped_workspaces,
+        damage,
         launches,
         theme: host_theme,
         now,
@@ -466,7 +423,7 @@ fn plan_workspace(snapshot: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan<'
             warn!(
                 workspace = %snapshot.id,
                 ?rejection,
-                "dropping saved workspace with invalid public pane numbers"
+                "dropping saved workspace with invalid saved pane tree"
             );
             return None;
         }
@@ -482,7 +439,9 @@ fn plan_workspace(snapshot: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan<'
 /// Builds the state of one planned workspace and the launches its shell panes
 /// need; nothing is launched here. Every saved-file defect was found while
 /// planning, before any agent session was reserved; what can still refuse
-/// the workspace guards internal invariants only.
+/// the workspace guards internal invariants only. Also returns the panes
+/// whose saved agent session this build cannot use: each is restored as a
+/// plain shell and its session dropped, logged here once.
 /// `workspace_index` is where the workspace will sit in the plan's list.
 fn restore_workspace(
     plan: WorkspaceRestorePlan<'_>,
@@ -490,14 +449,26 @@ fn restore_workspace(
     workspace_index: usize,
     plan_context: &RestorePlanContext,
     resumed_agent_sessions: &mut HashSet<shepr_agent::resume::AgentResumeKey>,
-) -> Option<(Workspace, Vec<RestoredLaunch>)> {
+) -> Option<(Workspace, Vec<RestoredLaunch>, Vec<PublicPaneId>)> {
     let WorkspaceRestorePlan {
         snapshot,
         identity_cwd,
         plan,
     } = plan;
     let mut launches = Vec::new();
+    let mut dropped_sessions = Vec::new();
     let built = plan.build(|pane_id, saved| {
+        if let Some(unusable) = &saved.unusable_agent_session {
+            let public_id = PublicPaneId::new(&workspace_id, saved.public_number);
+            warn!(
+                workspace = %workspace_id,
+                pane = %public_id,
+                agent = unusable.agent.as_deref().unwrap_or("unknown"),
+                error = %unusable.error,
+                "dropping saved agent session this build cannot use; the pane restores as a plain shell"
+            );
+            dropped_sessions.push(public_id);
+        }
         // Nothing here looks at the saved directory: restore runs on the
         // server's startup path, and a stat of a directory on a hung mount
         // would hold the server before it serves anyone. The pane's launch
@@ -583,7 +554,7 @@ fn restore_workspace(
         identity_cwd,
         tree,
     );
-    Some((workspace, launches))
+    Some((workspace, launches, dropped_sessions))
 }
 
 fn pane_restore_startup(
@@ -616,7 +587,7 @@ fn restore_plan_for_snapshot(
         return None;
     }
     let persisted = persisted_agent_session_from_snapshot(session)?;
-    shepr_agent::resume::plan(&persisted)
+    Some(persisted.resume_plan())
 }
 
 fn persisted_agent_session_from_snapshot(
@@ -775,6 +746,7 @@ mod tests {
             public_number: number(public_number),
             label: None,
             agent_session: None,
+            unusable_agent_session: None,
         }
     }
 
@@ -976,7 +948,7 @@ mod tests {
             &mut crate::workspace::WorkspaceIdAllocator::new(),
         );
 
-        assert!(!plan.restore_damage);
+        assert!(plan.damage.is_empty());
         assert_eq!(plan.active, Some(0));
         let restored = &plan.workspaces[0];
         assert_eq!(restored.id(), id);
@@ -1141,7 +1113,10 @@ mod tests {
         snap.next_public_pane_number = number(8);
         assert!(plan_workspace(&snap).is_none());
         // A healthy workspace plans.
+        // Focus and root name panes of the layout, which a plan now requires.
         snap.layout = split(leaf(3), leaf(4));
+        snap.focused = number(3);
+        snap.root_pane = number(3);
         assert!(plan_workspace(&snap).is_some());
     }
 
@@ -1201,7 +1176,7 @@ mod tests {
             restored
                 .restore_loss
                 .expect("a workspace was dropped")
-                .dropped_workspaces(),
+                .dropped_workspaces,
             1
         );
         let names: Vec<_> = restored.workspaces.iter().map(Workspace::name).collect();
@@ -1229,7 +1204,7 @@ mod tests {
             restored
                 .restore_loss
                 .expect("workspaces were dropped")
-                .dropped_workspaces(),
+                .dropped_workspaces,
             2
         );
         assert_eq!(restored.active, Some(1));
@@ -1253,11 +1228,12 @@ mod tests {
 
     #[test]
     fn a_saved_zoom_survives_restore_only_with_a_second_pane() {
-        // (layout, focused, expected zoom)
+        // (layout, focused, whether the workspace restores zoomed)
         for (layout, focused, zoomed) in [
             (split(leaf(1), split(leaf(2), leaf(3))), 2, true),
             (split(leaf(1), leaf(2)), 2, true),
-            // One pane cannot be zoomed.
+            // One pane cannot be zoomed: the saved zoom is damage, and the
+            // workspace is dropped rather than silently repaired.
             (leaf(1), 1, false),
         ] {
             let mut workspace = workspace_snapshot("w1", "ws", layout);
@@ -1267,8 +1243,18 @@ mod tests {
 
             let restored = restore_runtimeless(&snapshot);
 
-            let workspace = &restored.workspaces[0];
-            assert_eq!(workspace.tree().zoomed(), zoomed, "focused={focused}");
+            if zoomed {
+                assert!(restored.workspaces[0].tree().zoomed());
+            } else {
+                assert!(restored.workspaces.is_empty());
+                assert_eq!(
+                    restored
+                        .restore_loss
+                        .expect("the workspace was dropped")
+                        .dropped_workspaces,
+                    1
+                );
+            }
         }
     }
 
@@ -1303,7 +1289,7 @@ mod tests {
             2,
             "a duplicate saved ID is replaced, not dropped"
         );
-        assert!(restored.restore_damage);
+        assert_eq!(restored.damage.renamed_workspaces, 1);
         assert_eq!(
             ids[0].to_string(),
             taken,
@@ -1345,8 +1331,8 @@ mod tests {
             &mut workspace_ids,
         );
 
-        assert!(restored.restore_damage);
-        assert_eq!(restored.dropped_workspaces, 1);
+        assert_eq!(restored.damage.renamed_workspaces, 0);
+        assert_eq!(restored.damage.dropped_workspaces, 1);
         assert_eq!(restored.workspaces.len(), 1);
         assert_eq!(restored.workspaces[0].id().to_string(), id);
         assert_eq!(restored.active, Some(0));
@@ -1390,7 +1376,7 @@ mod tests {
             &mut crate::workspace::WorkspaceIdAllocator::new(),
         );
 
-        assert_eq!(plan.dropped_workspaces, 1);
+        assert_eq!(plan.damage.dropped_workspaces, 1);
         assert_eq!(plan.workspaces.len(), 1);
         assert_eq!(plan.workspaces[0].name(), "accepted");
         assert!(

@@ -6,14 +6,16 @@
 //! `resume` with the I/O result. A token cannot be resumed twice or outlive its
 //! tick, so no per-tick scratch lives in the detector.
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::probe::{AgentDetectionPresence, AgentExitPhase, AgentProcessChange};
 use super::publish::{ScreenDetectionCacheEntry, ScreenStep, StateChangedUpdate};
 use super::schedule::{ProbeScheduleDecision, ProcessProbeScheduler};
 use crate::limits::{
-    AGENT_ABSENCE_STARTUP_HOLD, AGENT_PENDING_IDLE_RECHECK, PROCESS_RECHECK_ACTIVE_AGENT,
-    PROCESS_RECHECK_NO_AGENT, PROCESS_RECHECK_TRANSIENT, TRANSIENT_COLOR_RECHECK_WINDOW,
+    AGENT_ABSENCE_STARTUP_HOLD, AGENT_PENDING_IDLE_CAP, AGENT_PENDING_IDLE_RECHECK,
+    PROCESS_RECHECK_ACTIVE_AGENT, PROCESS_RECHECK_NO_AGENT, PROCESS_RECHECK_TRANSIENT,
+    TRANSIENT_COLOR_RECHECK_WINDOW,
 };
 use crate::pane::agent_detection::PendingIdleConfirmation;
 use crate::pane::launch::LaunchKind;
@@ -64,6 +66,64 @@ pub(in crate::pane) struct TickOutput {
     pub(in crate::pane) process_change: Option<AgentProcessChange>,
     pub(in crate::pane) state_changed: Option<StateChangedUpdate>,
     pub(in crate::pane) next_wake: Duration,
+}
+
+/// A mux gate that can temporarily keep a fresh screen verdict from changing
+/// the pane's published state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DetectorGate {
+    PendingIdleConfirmation,
+    StartupGrace,
+    ResumeAbsenceHold,
+}
+
+#[derive(Clone, Default)]
+pub struct DetectorGateDiagnostics(Arc<Mutex<DetectorGateSnapshot>>);
+
+#[derive(Default)]
+struct DetectorGateSnapshot {
+    pending_idle_since: Option<Instant>,
+    startup_grace_until: Option<Instant>,
+    agent_absence_hold_until: Option<Instant>,
+    agent_present: bool,
+}
+
+impl DetectorGateDiagnostics {
+    /// The active gate from the detector's latest state, with timed holds
+    /// checked against the current time.
+    pub fn active_gate(&self) -> Option<DetectorGate> {
+        self.0.lock().ok()?.active_gate(Instant::now())
+    }
+
+    pub(in crate::pane) fn update(&self, detector: &DetectorState) {
+        if let Ok(mut snapshot) = self.0.lock() {
+            snapshot.pending_idle_since = detector.pending_idle.started_at();
+            snapshot.startup_grace_until = detector.agent_startup_grace_until;
+            snapshot.agent_absence_hold_until = detector.agent_absence_hold_until;
+            snapshot.agent_present = detector.current_agent().is_some();
+        }
+    }
+}
+
+impl DetectorGateSnapshot {
+    fn active_gate(&self, now: Instant) -> Option<DetectorGate> {
+        if self.startup_grace_until.is_some_and(|until| now < until) {
+            return Some(DetectorGate::StartupGrace);
+        }
+        if !self.agent_present
+            && self
+                .agent_absence_hold_until
+                .is_some_and(|until| now < until)
+        {
+            return Some(DetectorGate::ResumeAbsenceHold);
+        }
+        if self.pending_idle_since.is_some_and(|started_at| {
+            now.saturating_duration_since(started_at) < AGENT_PENDING_IDLE_CAP
+        }) {
+            return Some(DetectorGate::PendingIdleConfirmation);
+        }
+        None
+    }
 }
 
 /// The start of a tick.
@@ -315,6 +375,24 @@ mod tests {
             Tick::Done(output) => output,
             Tick::NeedsProbe(_) | Tick::NeedsScreen(_) => panic!("expected the tick to be done"),
         }
+    }
+
+    #[test]
+    fn diagnostics_report_startup_and_resume_absence_holds() {
+        let now = Instant::now();
+        let diagnostics = DetectorGateDiagnostics::default();
+
+        let resume = DetectorState::new(now, LaunchKind::AgentResume);
+        diagnostics.update(&resume);
+        assert_eq!(
+            diagnostics.active_gate(),
+            Some(DetectorGate::ResumeAbsenceHold)
+        );
+
+        let mut startup = DetectorState::new(now, LaunchKind::Fresh);
+        startup.agent_startup_grace_until = Some(now + AGENT_STARTUP_GRACE_WINDOW);
+        diagnostics.update(&startup);
+        assert_eq!(diagnostics.active_gate(), Some(DetectorGate::StartupGrace));
     }
 
     fn step_done(step: Step) -> TickOutput {

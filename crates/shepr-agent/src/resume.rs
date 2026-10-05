@@ -241,7 +241,9 @@ impl PersistedAgentSession {
     /// The source must belong to the agent and the reference must be one the
     /// agent's resume support accepts, so every identity can plan a resume.
     fn is_valid_identity(&self) -> bool {
-        self.source.agent() == self.agent && self.session_ref.accepted_for(self.agent)
+        self.source.agent() == self.agent
+            && !self.agent.executable().is_empty()
+            && self.session_ref.accepted_for(self.agent)
     }
 
     pub fn source(&self) -> &AgentSource {
@@ -274,16 +276,51 @@ impl PersistedAgentSession {
         let source = AgentSource::parse(source)?;
         Self::new(source, agent, session_ref)
     }
+
+    /// Build the resume command for this validated identity. Construction
+    /// admits only agents with resume support and a nonempty executable, so
+    /// planning cannot fail after a session has been accepted.
+    pub fn resume_plan(&self) -> AgentResumePlan {
+        let agent = self.agent;
+        let descriptor = agent.descriptor();
+        let resume_args = descriptor
+            .resume_support
+            .expect("persisted agent sessions require resume support")
+            .resume_args;
+        let executable = agent.executable().to_owned();
+        let argv = match (resume_args, &self.session_ref) {
+            (ResumeArgs::FlagValue(flag), reference) => {
+                vec![
+                    executable,
+                    flag.to_owned(),
+                    reference.value_str().to_owned(),
+                ]
+            }
+            (ResumeArgs::InlineFlag(flag), reference) => {
+                vec![executable, format!("{flag}{}", reference.value_str())]
+            }
+            (ResumeArgs::Subcommand(subcommand), reference) => vec![
+                executable,
+                subcommand.to_owned(),
+                reference.value_str().to_owned(),
+            ],
+        };
+        AgentResumePlan::from_argv(self, argv)
+    }
 }
 
 impl AgentResumePlan {
+    fn from_argv(session: &PersistedAgentSession, argv: Vec<String>) -> Self {
+        Self {
+            session: session.clone(),
+            argv,
+        }
+    }
+
     fn with_argv(session: &PersistedAgentSession, argv: Vec<String>) -> Option<Self> {
         argv.first()
             .is_some_and(|program| !program.is_empty())
-            .then(|| Self {
-                session: session.clone(),
-                argv,
-            })
+            .then(|| Self::from_argv(session, argv))
     }
 
     pub fn agent(&self) -> Agent {
@@ -334,32 +371,6 @@ pub fn session_ref_for_agent_report(
         }
         _ => None,
     }
-}
-
-pub fn plan(session: &PersistedAgentSession) -> Option<AgentResumePlan> {
-    let agent = session.agent;
-    let descriptor = agent.descriptor();
-    let executable = agent.executable().to_owned();
-    let argv = match (descriptor.resume_support?.resume_args, &session.session_ref) {
-        (ResumeArgs::FlagValue(flag), reference) => {
-            vec![
-                executable,
-                flag.to_owned(),
-                reference.value_str().to_owned(),
-            ]
-        }
-        (ResumeArgs::InlineFlag(flag), reference) => {
-            vec![executable, format!("{flag}{}", reference.value_str())]
-        }
-        (ResumeArgs::Subcommand(subcommand), reference) => {
-            vec![
-                executable,
-                subcommand.to_owned(),
-                reference.value_str().to_owned(),
-            ]
-        }
-    };
-    AgentResumePlan::with_argv(session, argv)
 }
 
 impl AgentSessionStartSource {
@@ -434,7 +445,7 @@ mod tests {
         let source = AgentSource::from_pair(source, agent_label)?;
         let agent = source.agent();
         let session = PersistedAgentSession::new(source, agent, session_ref.clone())?;
-        plan(&session)
+        Some(session.resume_plan())
     }
 
     #[test]

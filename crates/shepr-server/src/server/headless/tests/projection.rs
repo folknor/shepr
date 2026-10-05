@@ -578,10 +578,11 @@ async fn a_reconnecting_shell_is_seeded_again_and_gets_later_changes() {
 async fn every_client_of_a_partly_restored_boot_gets_the_notice_in_its_seed() {
     let mut server = test_headless_server();
     let notice = shepr_protocol::SessionRestoreNotice {
-        loss: shepr_protocol::SessionRestoreLoss::Workspaces {
-            dropped: std::num::NonZeroUsize::MIN,
-            panes_pruned: true,
-        },
+        loss: shepr_protocol::SessionRestoreLoss::Damaged(shepr_protocol::SessionRestoreDamage {
+            dropped_workspaces: 1,
+            renamed_workspaces: 1,
+            dropped_agent_sessions: Vec::new(),
+        }),
         backup_dir: "/state/shepr/session-backups".into(),
     };
     server.app.test_set_restore_notice(Some(notice.clone()));

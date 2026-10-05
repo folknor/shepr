@@ -106,7 +106,7 @@ fine, warn otherwise" policy. Not enforceable beyond review.
 Reported by: save-shutdown.
 
 - autosave backoff: `Backoff` over the `SESSION_SAVE_*` constants;
-- checkpoint backoff: `checkpoint_retry_delay` with a count cap (BUG-016, VAL-018);
+- checkpoint backoff: `checkpoint_retry_delay` with its own minimum and a count cap;
 - logind reconnect: `Backoff`, with a pending-shutdown override that resets the
   count; on `Ok(())` from `watch_shutdown` (owner change or signal stream end) the loop
   reconnects with no delay and resets `failures`, so a logind or bus that accepts and
@@ -160,20 +160,6 @@ about exactly this. Meanwhile `save_session_before_teardown_async` uses
 `spawn_blocking`. Today it stalls one worker of a multi-thread runtime while the
 process exits, but it is one rule implemented once async and once blocking. Make
 retirement async on the `run` path and leave `Drop` as the blocking backstop.
-
-## POL-009 - What a damaged saved value does depends on where it is
-
-Reported by: restore-resume.
-
-- repeated pane numbers: workspace dropped, backup, notice;
-- repeated workspace ID: renamed, backup, notice saying panes were lost (BUG-006);
-- focus, root or zoom naming no leaf: silently repaired, no backup (BUG-010);
-- invalid agent session: silently dropped, no backup (BUG-009);
-- anything the schema refuses: whole file refused, backup, notice.
-
-One rule, "every discard or repair of saved data backs up the file and is reported,
-naming what", would replace five. Enforceable by having the planner return a damage
-list the open path must consume.
 
 ## POL-010 - Test-only shortcuts in production APIs, which nothing reports
 
@@ -234,26 +220,6 @@ projection dirty. Either the recompute is needed on both paths or on neither; on
 post-pass helper decides it once. Also, `start_pending_agent_resumes` marks the session
 dirty when a pass only launched (the plan stays until settlement, which marks it dirty
 again), costing an extra save per resumed agent.
-
-## POL-013 - Reaping and kill-then-reap are implemented several times
-
-Reported by: pane-lifecycle.
-
-`backend.rs` has its own `shepr-launch-reaper` thread with a raw `waitpid` EINTR loop
-for the `ProcessHandle::open` failure; `PaneChild::wait_with` has a second `waitpid`
-loop; `child_watcher::reap_on_detached_thread` spawns `shepr-pane-reaper` over
-`PaneChild::wait`. Kill-then-reap on a failed start is written twice (`spawn_pty`'s
-handle failure and `PtySetup::start`'s actor failure, the latter also starting a full
-three-step teardown thread with `/proc` scans and then sending SIGKILL itself, which
-makes the teardown's SIGHUP grace moot). One `PaneChild::abandon()` in shepr-pty would
-own it.
-
-## POL-014 - The thread-spawn failure policy disagrees between teardown and reaping
-
-Reported by: pane-lifecycle. See BUG-025.
-
-Teardown runs inline on the caller when its thread cannot be spawned; reaping leaves the
-zombie rather than block. Pick one rule: never block the caller.
 
 ## POL-015 - The pane spawn path reaches the environment and clock directly, and a timer handle is set by call order
 
@@ -316,7 +282,8 @@ Reported by: integrations.
 
 `targets::install` picks the artifact role by `match target` (`Claude | Copilot |
 Devin => Settings`, `Cursor => UpdatedHooks`), inserts Cursor's `version` by
-`target == Target::Cursor`, hard-codes "mastracode hooks file" for any
+`target == Target::Cursor` (now a positional `cursor_version: bool` to the shared
+`install_json`), hard-codes "mastracode hooks file" for any
 `HooksRoot::Document` target, and checks OMP against Pi; `missing_agent_directory` has
 its own name table; `registration::expected_events` has `matches!(target, Copilot |
 Devin | Droid)`; `registry::action_label` special-cases Antigravity;
@@ -326,15 +293,6 @@ event). `DirectoryKey` is a second enum restating `IntegrationTarget`. Fix: the 
 carries role, document root description, extra required keys, presence directory,
 matcher source and the "decodes every event" flag; the per-site matches go. Once the rows
 carry it, the exhaustive `spec_for` match is the check.
-
-## POL-020 - Claude hook removal has two implementations kept in step only at runtime
-
-Reported by: integrations.
-
-`config_edit::remove_hook_path_commands_preserving` over `serde_json::Value` and
-`claude_settings::remove_hook_path_commands` over the CST. `verify_updated` refusing a
-mismatch protects the user's file, but turns a divergence into a permanent install
-failure instead of a test failure. BUG-036's single CST engine removes the second copy.
 
 ## POL-021 - Three hand-written delivery retry policies in the plugin kits
 
@@ -529,9 +487,9 @@ machines section), so local and machine uptimes can be computed against differen
 
 Reported by: server-lifecycle.
 
-`deny_unknown_fields` is decided per params struct (BUG-057), and
-`PaneReportAgentParams` deliberately accepts extra keys (tested); no single rule says
-which API types are strict. The same condition (the app loop saturated) is refused with
+Every server-route params type now refuses unknown keys, while
+`PaneReportAgentParams` deliberately accepts extra keys (tested); no single stated rule
+says which API types are strict. The same condition (the app loop saturated) is refused with
 two codes: `EndpointBusy` when app-slot admission is full, and `ServerUnavailable`
 ("server is busy handling API requests; retry later") when the channel is full, so a
 caller retrying on one and giving up on the other behaves differently for one cause. And

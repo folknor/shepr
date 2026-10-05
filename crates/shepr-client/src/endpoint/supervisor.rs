@@ -9,7 +9,7 @@ use super::{ClientEndpointId, ClientEndpointStatus, EndpointFailureStatus};
 use crate::events::ClientLoopEvent;
 use crate::limits::{
     ATTEMPT_BUDGET, ATTENTION_RETRY_DELAY, INITIAL_RETRY_DELAY, MAX_RETRY_DELAY,
-    RESTART_ATTEMPT_BUDGET, STABLE_CONNECTION_PERIOD,
+    RESTART_ATTEMPT_BUDGET, STABLE_CONNECTION_PERIOD, START_ATTEMPT_BUDGET,
 };
 use shepr_remote::{ConnectMode, ServerWatchEnd};
 
@@ -363,10 +363,10 @@ impl EndpointSupervisors {
             let event_tx = event_tx.clone();
             let shutdown = Arc::clone(&self.shutdown);
             let deadline = now
-                + if operation == Operation::Connect(ConnectMode::Restart) {
-                    RESTART_ATTEMPT_BUDGET
-                } else {
-                    ATTEMPT_BUDGET
+                + match operation {
+                    Operation::Connect(ConnectMode::Restart) => RESTART_ATTEMPT_BUDGET,
+                    Operation::Connect(ConnectMode::Start) => START_ATTEMPT_BUDGET,
+                    _ => ATTEMPT_BUDGET,
                 };
             tokio::spawn(async move {
                 if shutdown.load(Ordering::Acquire) {

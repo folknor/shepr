@@ -894,7 +894,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-integration-layer"
 from = "shepr-integration"
-allow = ["jsonc-parser", "serde_json", "shepr-agent", "shepr-core", "shepr-platform", "toml", "toml_edit", "tracing"]
+allow = ["jsonc-parser", "serde_json", "shepr-agent", "shepr-core", "shepr-paths", "shepr-platform", "toml", "toml_edit", "tracing"]
 kinds = ["normal"]
 
 # Only the server installs integrations, at launch. The config editor and its

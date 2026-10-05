@@ -346,6 +346,71 @@ struct BridgeUploadEnd {
     client_closed: bool,
 }
 
+struct BridgeDownload {
+    result: mpsc::Receiver<io::Result<u64>>,
+    worker: JoinHandle<()>,
+}
+
+enum BridgeDownloadEnd {
+    Complete(io::Result<u64>),
+    DrainTimedOut,
+}
+
+impl BridgeDownload {
+    fn spawn(copy: impl FnOnce() -> io::Result<u64> + Send + 'static) -> Self {
+        let (result_tx, result) = mpsc::sync_channel(1);
+        let worker = thread::spawn(move || {
+            let result = copy();
+            drop(result_tx.send(result));
+        });
+        Self { result, worker }
+    }
+
+    /// Waits for the SSH stdout drain only for its grace period. A process
+    /// forked by the SSH connection can inherit stdout and keep this worker
+    /// blocked after the SSH child exits, so an unfinished worker is detached.
+    fn finish(
+        self,
+        grace: std::time::Duration,
+        connection_stop: &AtomicBool,
+        stream: &shepr_platform::ipc::LocalStream,
+    ) -> io::Result<BridgeDownloadEnd> {
+        match self.result.recv_timeout(grace) {
+            Ok(result) => {
+                // The copy finished before sending its result; dropping the
+                // handle avoids waiting for the thread's final return path.
+                drop(self.worker);
+                Ok(BridgeDownloadEnd::Complete(result))
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                connection_stop.store(true, Ordering::Release);
+                if let Err(error) = stream.shutdown(std::net::Shutdown::Both)
+                    && !matches!(
+                        shepr_platform::ipc::classify_stream_error(error.kind()),
+                        shepr_platform::ipc::StreamFailure::PeerGone
+                    )
+                {
+                    tracing::debug!(%error, "remote bridge download stream shutdown failed");
+                }
+                tracing::debug!(
+                    ?grace,
+                    "remote bridge stdout stayed open past its drain grace; detaching download worker"
+                );
+                drop(self.worker);
+                Ok(BridgeDownloadEnd::DrainTimedOut)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                self.worker
+                    .join()
+                    .map_err(|_| io::Error::other("remote bridge download worker panicked"))?;
+                Err(io::Error::other(
+                    "remote bridge download worker ended without reporting",
+                ))
+            }
+        }
+    }
+}
+
 impl BridgeUpload {
     fn spawn(
         stream: shepr_platform::ipc::LocalStream,
@@ -444,6 +509,7 @@ fn bridge_connection(
     let stream_to_child = stream.try_clone()?;
     stream.set_nonblocking(true)?;
     let mut child_to_stream = stream;
+    let download_shutdown = child_to_stream.try_clone()?;
 
     let connection_stop = Arc::new(AtomicBool::new(false));
     let download_done = Arc::new(AtomicBool::new(false));
@@ -454,7 +520,7 @@ fn bridge_connection(
     let download_bridge_stop = Arc::clone(bridge_stop);
     let download_done_worker = Arc::clone(&download_done);
     let download_upload_stop = Arc::clone(&upload_stop);
-    let download = thread::spawn(move || {
+    let download = BridgeDownload::spawn(move || {
         let mut child_stdout = io::BufReader::new(child_stdout);
         let result = discard_remote_output_preamble(&mut child_stdout).and_then(|()| {
             copy_reader_to_local_stream(
@@ -506,13 +572,13 @@ fn bridge_connection(
     if !child_exited {
         connection_stop.store(true, Ordering::Release);
     }
+    let upload_end = upload.join();
+    let download_result = download.finish(PIPE_DRAIN_GRACE, &connection_stop, &download_shutdown);
     let BridgeUploadEnd {
         result: upload_result,
         client_closed,
-    } = upload.join()?;
-    let download_result = download
-        .join()
-        .map_err(|_| io::Error::other("remote bridge download worker panicked"))?;
+    } = upload_end?;
+    let download_result = download_result?;
     // Bounded: a ControlPersist master forked by this ssh can hold its stderr open for
     // the whole persist timeout after the bridge itself has exited.
     let stderr = stderr_reader.finish(PIPE_DRAIN_GRACE)?;
@@ -528,11 +594,13 @@ fn bridge_connection(
                 SshFailureDiagnostic::from_error(&err).with_context("remote bridge upload failed");
             io::Error::new(err.kind(), diagnostic)
         })?;
-        download_result.map_err(|err| {
-            let diagnostic = SshFailureDiagnostic::from_error(&err)
-                .with_context("remote bridge download failed");
-            io::Error::new(err.kind(), diagnostic)
-        })?;
+        if let BridgeDownloadEnd::Complete(download_result) = download_result {
+            download_result.map_err(|err| {
+                let diagnostic = SshFailureDiagnostic::from_error(&err)
+                    .with_context("remote bridge download failed");
+                io::Error::new(err.kind(), diagnostic)
+            })?;
+        }
     }
 
     if status.success() || stopping || client_closed {
@@ -594,10 +662,12 @@ pub(crate) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[
 fn classified_remote_bridge_failure(stderr: &str) -> Option<io::Error> {
     for (index, line) in stderr.lines().enumerate() {
         let line = line.trim();
-        let line = line.strip_prefix("error: ").unwrap_or(line);
-        let Some(token) = line.strip_prefix(BRIDGE_FAILURE_MARKER) else {
+        // The remote CLI may add a presentation prefix; the marker itself is
+        // the failure record, so its position on the line is not significant.
+        let Some(marker) = line.find(BRIDGE_FAILURE_MARKER) else {
             continue;
         };
+        let token = &line[marker + BRIDGE_FAILURE_MARKER.len()..];
         let Some(class) = shepr_launch::RemoteFailureClass::from_token(token) else {
             continue;
         };
@@ -719,6 +789,9 @@ fn copy_reader_to_local_stream<R: io::Read>(
                 Ok(count) => written += count,
                 Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                    // StreamWake only waits for reads; writable readiness
+                    // needs a shepr-platform primitive to keep fd polling out
+                    // of this SSH policy layer.
                     thread::sleep(BRIDGE_IO_POLL);
                 }
                 Err(err) => return Err(err),

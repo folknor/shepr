@@ -12,34 +12,6 @@ use super::command::{hook_command, is_hook_command_for_path};
 use super::types::{InstallErrorKind, InstallIssue};
 use super::{KIMI_CONFIG_BLOCK_BEGIN, KIMI_CONFIG_BLOCK_END};
 
-pub(crate) fn ensure_hooks_object<'a>(
-    settings: &'a mut Value,
-    settings_path: &Path,
-    root_description: &str,
-    hooks_description: &str,
-) -> io::Result<&'a mut Map<String, Value>> {
-    let root = settings.as_object_mut().ok_or_else(|| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigShape,
-            format!(
-                "{root_description} at {} must be a JSON object",
-                settings_path.display()
-            ),
-        )
-    })?;
-
-    let hooks = root.entry("hooks").or_insert_with(|| json!({}));
-    hooks.as_object_mut().ok_or_else(|| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigShape,
-            format!(
-                "{hooks_description} at {} must be a JSON object",
-                settings_path.display()
-            ),
-        )
-    })
-}
-
 pub(crate) fn ensure_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
@@ -58,8 +30,7 @@ pub(crate) fn ensure_command_hook(
             )
         })?;
 
-    // Claude preserves an already canonical entry so its settings text stays
-    // untouched; in that path this helper must not append a duplicate.
+    // Two descriptor events sharing a command collapse to one group.
     let already_installed = entries.iter().any(|entry| {
         entry
             .get("hooks")
@@ -98,13 +69,12 @@ pub(super) fn command_hook_group(command: &str, timeout: u64, matcher: Option<&s
 /// The description MastraCode's flat hook entries carry; status matches it.
 pub(crate) const MASTRACODE_HOOK_DESCRIPTION: &str = "Report MastraCode agent state to Shepr";
 
+// These helpers build the canonical entries of one agent's hook shape, which
+// install merges into the user's file through `json_edit` and status matches.
 // Claude and Codex use nested hook groups:
 //   { "matcher": "...", "hooks": [{ "type": "command", ... }] }
 // Copilot uses the flatter settings shape:
 //   { "type": "command", "matcher": "...", "bash": "...", ... }
-// Keep the helpers separate so install preserves unrelated hooks in
-// each agent's native format instead of normalizing user configuration.
-// Appends unconditionally: the caller strips entries carrying this hook path first.
 pub(crate) fn ensure_flat_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
@@ -196,9 +166,7 @@ pub(crate) fn is_matching_direct_command_entry(entry: &Value, command: &str) -> 
 }
 
 // Cursor hooks.json uses the minimal shape `{ "command": "..." }` documented at
-// https://cursor.com/docs/hooks. Keep this separate from the nested codex and
-// flat copilot helpers so install does not rewrite unrelated hooks.
-// Appends unconditionally: the caller strips entries carrying this hook path first.
+// https://cursor.com/docs/hooks.
 pub(crate) fn ensure_simple_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
@@ -217,81 +185,6 @@ pub(crate) fn ensure_simple_command_hook(
 
     entries.push(json!({ "command": command }));
     Ok(())
-}
-
-pub(crate) fn remove_hook_path_commands(
-    hooks: &mut Map<String, Value>,
-    hook_path: &Path,
-) -> io::Result<bool> {
-    remove_hook_path_commands_preserving(hooks, hook_path, None)
-}
-
-pub(crate) fn remove_hook_path_commands_preserving(
-    events: &mut Map<String, Value>,
-    hook_path: &Path,
-    preserve: Option<(&str, &Value)>,
-) -> io::Result<bool> {
-    let mut removed = false;
-    let mut preserved = false;
-    let mut empty_events = Vec::new();
-    for (event, entries_value) in events.iter_mut() {
-        let entries = entries_value.as_array_mut().ok_or_else(|| {
-            InstallIssue::io_error(
-                InstallErrorKind::ConfigShape,
-                format!("hook entries for {event} must be an array"),
-            )
-        })?;
-        let mut removed_in_event = false;
-        entries.retain_mut(|entry| {
-            if !preserved
-                && preserve.is_some_and(|(preserve_event, canonical)| {
-                    preserve_event == event && canonical == entry
-                })
-            {
-                preserved = true;
-                return true;
-            }
-            let Some(command_entries) = entry.get_mut("hooks").and_then(Value::as_array_mut) else {
-                let owned = value_uses_hook_path(entry, hook_path);
-                removed |= owned;
-                removed_in_event |= owned;
-                return !owned;
-            };
-            let mut removed_in_group = false;
-            command_entries.retain(|command_entry| {
-                let owned = value_uses_hook_path(command_entry, hook_path);
-                removed |= owned;
-                removed_in_group |= owned;
-                removed_in_event |= owned;
-                !owned
-            });
-            if removed_in_group && command_entries.is_empty() {
-                return false;
-            }
-            if value_uses_hook_path(entry, hook_path) {
-                removed = true;
-                removed_in_event = true;
-                return false;
-            }
-            true
-        });
-        if removed_in_event && entries.is_empty() {
-            empty_events.push(event.clone());
-        }
-    }
-    for event in empty_events {
-        events.remove(&event);
-    }
-    Ok(removed)
-}
-
-fn value_uses_hook_path(value: &Value, hook_path: &Path) -> bool {
-    HOOK_COMMAND_FIELDS.iter().any(|field| {
-        value
-            .get(*field)
-            .and_then(Value::as_str)
-            .is_some_and(|command| is_hook_command_for_path(command, hook_path))
-    })
 }
 
 /// Enable `features.hooks` in a Codex `config.toml`, preserving source layout
@@ -346,18 +239,53 @@ pub(super) fn build_kimi_config_with_timeout(
             "kimi config.toml registers the Shepr hook outside its managed block; remove that hook and retry",
         ));
     }
-    let mut result = unmarked_content;
-    if !result.is_empty() {
-        let separator = kimi_line_ending(&result);
-        if !result.ends_with('\n') {
-            result.push_str(separator);
+    let separator = kimi_line_ending(content);
+    let block = kimi_integration_block(hook_path, timeout).replace('\n', separator);
+    let result = if let Some(start) = content
+        .split_inclusive('\n')
+        .scan(0, |offset, line| {
+            let start = *offset;
+            *offset += line.len();
+            Some((start, line))
+        })
+        .find_map(|(start, line)| (line.trim() == KIMI_CONFIG_BLOCK_BEGIN).then_some(start))
+    {
+        let mut end = start;
+        for line in content[start..].split_inclusive('\n') {
+            end += line.len();
+            if line.trim() == KIMI_CONFIG_BLOCK_END {
+                break;
+            }
         }
-        if trailing_line_feed_count(&result) < 2 {
-            result.push_str(separator);
+        // Multiple blocks are ambiguous; never silently drop the later one.
+        if content[end..]
+            .lines()
+            .any(|line| line.trim() == KIMI_CONFIG_BLOCK_BEGIN)
+        {
+            return Err(InstallIssue::io_error(
+                InstallErrorKind::ManagedBlockConflict,
+                "kimi config.toml contains multiple managed blocks",
+            ));
         }
-    }
-
-    result.push_str(&kimi_integration_block(hook_path, timeout));
+        let block = if content[start..end].ends_with('\n') {
+            block
+        } else {
+            block.trim_end_matches(['\r', '\n']).to_string()
+        };
+        format!("{}{}{}", &content[..start], block, &content[end..])
+    } else {
+        let mut result = unmarked_content;
+        if !result.is_empty() {
+            if !result.ends_with('\n') {
+                result.push_str(separator);
+            }
+            if trailing_line_feed_count(&result) < 2 {
+                result.push_str(separator);
+            }
+        }
+        result.push_str(&block);
+        result
+    };
     result.parse::<DocumentMut>().map_err(|error| {
         InstallIssue::io_error(
             InstallErrorKind::ConfigUnparseable,
@@ -603,13 +531,13 @@ mod tests {
         let updated = build_kimi_config_with_timeout(&original, hook_path, Duration::from_secs(10))
             .expect("update Kimi config");
 
-        // The user's CRLF line and the blank lines around the old block are
-        // kept byte for byte, ahead of the rewritten block.
-        assert!(
-            updated.starts_with(&format!(
-                "user = true\r\n\r\n\r\n\r\n{KIMI_CONFIG_BLOCK_BEGIN}\n"
-            )),
-            "{updated:?}"
+        assert!(updated.starts_with(&format!("user = true\r\n\r\n{KIMI_CONFIG_BLOCK_BEGIN}\r\n")));
+        assert!(updated.ends_with(&format!("{KIMI_CONFIG_BLOCK_END}\r\n\r\n\r\n")));
+        assert!(!updated.replace("\r\n", "").contains('\n'));
+        assert_eq!(
+            build_kimi_config_with_timeout(&updated, hook_path, Duration::from_secs(10))
+                .expect("repeat update"),
+            updated
         );
     }
 

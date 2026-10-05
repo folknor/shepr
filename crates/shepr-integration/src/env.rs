@@ -185,14 +185,11 @@ impl AgentIntegrationPaths {
 }
 
 fn resolve_config_update_lock_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    // Agent configs are shared by dev and release builds. Capture the same
-    // lock root as the agent paths so every operation in this launch uses one
-    // stable environment snapshot.
-    Ok(
-        shepr_core::env::xdg_state_home_with(|variable| environment.path(variable))?
-            .join(shepr_core::env::SHARED_APP_DIR_NAME)
-            .join("integration-locks"),
-    )
+    // Agent configs are shared by dev and release builds. Resolve the shared
+    // installer lock directory from the same environment snapshot.
+    let xdg_state_home =
+        shepr_core::env::xdg_state_home_with(|variable| environment.path(variable))?;
+    Ok(shepr_paths::integration_lock_dir(&xdg_state_home))
 }
 
 fn pi_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {

@@ -30,6 +30,29 @@ fn request_uses_dot_method_names() {
 }
 
 #[test]
+fn client_request_constructors_own_their_ids() {
+    let boot_id = "17-23".parse().expect("boot identity");
+    assert_eq!(Request::ping().id, RequestId::StatusPing.as_str());
+    assert_eq!(Request::server_summary().id, RequestId::Summary.as_str());
+    assert_eq!(
+        Request::detect_capture("w1:p1").id,
+        RequestId::DetectCapture.as_str()
+    );
+    assert_eq!(
+        Request::detect_explain("w1:p1").id,
+        RequestId::DetectExplain.as_str()
+    );
+
+    let operator_stop = Request::server_stop(None);
+    let guarded_operator_stop = Request::server_stop(Some(&boot_id));
+    let restart = Request::startup_restart_stop(&boot_id);
+    assert_eq!(operator_stop.id, RequestId::OperatorStop.as_str());
+    assert_eq!(guarded_operator_stop.id, RequestId::OperatorStop.as_str());
+    assert_eq!(restart.id, RequestId::StartupRestart.as_str());
+    assert_ne!(guarded_operator_stop.id, restart.id);
+}
+
+#[test]
 fn request_round_trips_for_server_stop() {
     let request = Request {
         id: "req_stop".into(),
@@ -75,6 +98,21 @@ fn request_refuses_unknown_top_level_keys() {
 
     let duplicate_id = r#"{"id":"a","id":"b","method":"ping","params":{}}"#;
     assert!(serde_json::from_str::<Request>(duplicate_id).is_err());
+}
+
+#[test]
+fn server_method_params_refuse_unknown_fields() {
+    for request in [
+        r#"{"id":"p","method":"ping","params":{"extra":1}}"#,
+        r#"{"id":"s","method":"server.stop","params":{"extra":1}}"#,
+        r#"{"id":"s","method":"server.stop_if_boot","params":{"expected_boot_id":"17-23","extra":1}}"#,
+        r#"{"id":"s","method":"server.summary","params":{"extra":1}}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<Request>(request).is_err(),
+            "unexpected params were accepted: {request}"
+        );
+    }
 }
 
 #[test]

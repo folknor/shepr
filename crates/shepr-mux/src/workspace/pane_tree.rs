@@ -95,6 +95,9 @@ pub struct SavedTreeState {
 pub enum TreeRejection {
     RepeatedNumber(PanePublicNumber),
     NumberNotBelowNext(PanePublicNumber),
+    MissingFocus(PanePublicNumber),
+    MissingRoot(PanePublicNumber),
+    LonePaneZoom,
     /// Only from `build`; fresh IDs and a resolved focus rule it out.
     Layout(InvalidSavedLayout),
 }
@@ -224,10 +227,10 @@ impl PaneTree {
 
     /// Validates a saved or fixture shape before anything is built from it.
     ///
-    /// The numbers must be distinct and below the saved next number. The saved
-    /// focus and root each fall back to the first leaf when they name no leaf.
-    /// A saved zoom is kept only when the saved focus named a leaf and there
-    /// is a second pane for it to hide.
+    /// Numbers must be distinct and below the saved next number; focus and
+    /// root must name leaves, and zoom requires a second pane. Refuse damaged
+    /// saved values so restore reports the dropped workspace and preserves the
+    /// source file, rather than silently rewriting repaired values.
     pub fn plan<T>(
         shape: Shape<T>,
         number_of: impl Fn(&T) -> PanePublicNumber,
@@ -235,20 +238,20 @@ impl PaneTree {
     ) -> Result<TreePlan<T>, TreeRejection> {
         let numbers: Vec<PanePublicNumber> = shape.leaves().into_iter().map(&number_of).collect();
         admit_numbers(&numbers, saved.next_number)?;
-        let first = number_of(shape.first_leaf());
-        let focus_survived = numbers.contains(&saved.focus);
-        let focus = if focus_survived { saved.focus } else { first };
-        let root = if numbers.contains(&saved.root) {
-            saved.root
-        } else {
-            first
-        };
-        let zoomed = saved.zoomed && focus_survived && numbers.len() > 1;
+        if !numbers.contains(&saved.focus) {
+            return Err(TreeRejection::MissingFocus(saved.focus));
+        }
+        if !numbers.contains(&saved.root) {
+            return Err(TreeRejection::MissingRoot(saved.root));
+        }
+        if saved.zoomed && numbers.len() == 1 {
+            return Err(TreeRejection::LonePaneZoom);
+        }
         Ok(TreePlan {
             shape: shape.map(&mut |leaf| (number_of(&leaf), leaf)),
-            focus,
-            root,
-            zoomed,
+            focus: saved.focus,
+            root: saved.root,
+            zoomed: saved.zoomed,
             next_number: saved.next_number,
         })
     }
@@ -274,6 +277,11 @@ impl PaneTree {
 
     pub fn zoomed(&self) -> bool {
         self.zoomed
+    }
+
+    /// Whether this tree has only its one required pane.
+    pub fn is_lone(&self) -> bool {
+        self.panes.len() == 1
     }
 
     /// The sole pane a zoomed tree shows.
@@ -415,7 +423,7 @@ impl PaneTree {
 
     /// Zooming a one-pane tree is refused; unzooming always succeeds.
     pub(super) fn set_zoomed(&mut self, zoomed: bool) -> bool {
-        if zoomed && self.panes.len() < 2 {
+        if zoomed && self.is_lone() {
             return false;
         }
         self.zoomed = zoomed;
@@ -429,7 +437,7 @@ impl PaneTree {
         if !self.panes.contains_key(&pane) {
             return Err(RemoveRefusal::NotHere);
         }
-        if self.panes.len() <= 1 {
+        if self.is_lone() {
             return Err(RemoveRefusal::LastPane);
         }
         let promoted = (self.root == pane)
@@ -455,8 +463,8 @@ impl PaneTree {
     }
 
     /// Installs a prepared split: the new leaf and its record together, the
-    /// new pane focused, an unzoomed tree and the number counter moved past
-    /// the pane's number.
+    /// new pane focused, the prepared zoom state and the number counter moved
+    /// past the pane's number.
     fn commit_split(&mut self, split: PreparedSplit) -> Result<PaneId, SplitRefused> {
         if split.number != self.next_number {
             return Err(SplitRefused::NumberTaken);
@@ -467,7 +475,7 @@ impl PaneTree {
         if self.panes.contains_key(&split.pane)
             || !self
                 .layout
-                .split_pane(split.target, split.direction, SplitRatio::EVEN, split.pane)
+                .split_pane(split.target, split.direction, split.ratio, split.pane)
         {
             return Err(SplitRefused::TargetGone);
         }
@@ -475,15 +483,15 @@ impl PaneTree {
             .insert(split.pane, PaneRecord::new(split.number, split.terminal));
         self.layout_epoch = self.layout_epoch.next();
         self.layout.focus_pane(split.pane);
-        self.zoomed = false;
+        self.zoomed = split.zoomed;
         self.next_number = split.next_number;
         Ok(split.pane)
     }
 }
 
 /// A split planned without changing the workspace: the new pane's identity,
-/// number, spawn size and terminal. The caller launches from it and commits it
-/// in the same synchronous handler.
+/// number, spawn size, terminal, split ratio and resulting zoom. The caller
+/// launches from it and commits it in the same synchronous handler.
 ///
 /// Only `Workspace::prepare_split` builds one and its fields are private, so
 /// the split a commit installs is the one a launch read: nothing can pair a
@@ -502,7 +510,11 @@ pub struct PreparedSplit {
     number: PanePublicNumber,
     /// The number after `number`, so a committed split cannot overflow.
     next_number: PanePublicNumber,
-    /// The new pane's PTY size in the tiled layout, since a split unzooms.
+    /// The ratio used to size the new pane and install its split.
+    ratio: SplitRatio,
+    /// The zoom state used to size the new pane and install the tree.
+    zoomed: bool,
+    /// The new pane's PTY size in the prepared layout.
     geometry: shepr_core::geometry::PaneGeometry,
     terminal: TerminalState,
 }
@@ -521,7 +533,7 @@ impl PreparedSplit {
         PublicPaneId::new(&self.workspace, self.number)
     }
 
-    /// The new pane's PTY size in the tiled layout, since a split unzooms.
+    /// The new pane's PTY size in the prepared layout.
     pub fn geometry(&self) -> shepr_core::geometry::PaneGeometry {
         self.geometry
     }
@@ -561,7 +573,8 @@ impl Workspace {
     /// a child its commit would refuse.
     ///
     /// The split is made on a local copy of the layout to size the new pane's
-    /// PTY, then dropped: the token holds no layout.
+    /// PTY, then dropped. The token keeps the ratio and zoom decisions used to
+    /// calculate that size, and commit installs those same values.
     pub fn prepare_split(
         &self,
         target: PaneId,
@@ -578,13 +591,15 @@ impl Workspace {
             .checked_next()
             .ok_or(SplitPreparationRefused::NumberExhausted)?;
         let pane = PaneId::alloc();
+        let ratio = SplitRatio::EVEN;
+        let zoomed = false;
         let mut planned = self.tree.layout.clone();
-        if !planned.split_pane(target, direction, SplitRatio::EVEN, pane) {
+        if !planned.split_pane(target, direction, ratio, pane) {
             return Err(SplitPreparationRefused::LayoutRefused);
         }
         // A split unzooms the workspace, so launch against the tiled layout.
         let geometry = chrome
-            .pane_spawn_geometry(&planned, false, pane, cell)
+            .pane_spawn_geometry(&planned, zoomed, pane, cell)
             .unwrap_or_else(|| chrome.sole_pane_spawn_geometry(cell));
         let terminal = TerminalState::new(cwd);
         Ok(PreparedSplit {
@@ -594,16 +609,18 @@ impl Workspace {
             pane,
             number,
             next_number,
+            ratio,
+            zoomed,
             geometry,
             terminal,
         })
     }
 
     /// Commits a split planned by `prepare_split`: the new pane takes the
-    /// number its launched child was given, is focused, and the workspace is
-    /// unzoomed. A token of another workspace, one whose number is no longer
-    /// next, or one whose target is gone is refused, with the workspace
-    /// unchanged.
+    /// number its launched child was given, is focused, and the layout uses
+    /// the ratio and zoom state prepared for its spawn geometry. A token of
+    /// another workspace, one whose number is no longer next, or one whose
+    /// target is gone is refused, with the workspace unchanged.
     pub fn commit_split(&mut self, split: PreparedSplit) -> Result<PaneId, SplitRefused> {
         if split.workspace != self.id {
             return Err(SplitRefused::OtherWorkspace);
@@ -695,6 +712,9 @@ mod tests {
         let prepared = prepare(&ws, root);
         let pane = prepared.pane_id();
         let public = prepared.public_id();
+        let ratio = prepared.ratio;
+        let zoomed = prepared.zoomed;
+        let geometry = prepared.geometry();
         assert_eq!(public.number(), number(2));
 
         assert_eq!(ws.commit_split(prepared), Ok(pane));
@@ -702,6 +722,12 @@ mod tests {
         let tree = ws.tree();
         assert_eq!(tree.len(), 2);
         assert!(tree.layout().pane_ids().contains(&pane));
+        assert_eq!(tree.layout().splits(chrome().area)[0].ratio, ratio);
+        assert_eq!(tree.zoomed(), zoomed);
+        assert_eq!(
+            chrome().pane_spawn_geometry(tree.layout(), tree.zoomed(), pane, None),
+            Some(geometry)
+        );
         assert_eq!(tree.pane(pane).map(PaneRecord::number), Some(number(2)));
         assert_eq!(tree.pane_by_number(number(2)), Some(pane));
         assert_eq!(tree.next_number(), number(3));
@@ -899,14 +925,16 @@ mod tests {
     }
 
     #[test]
-    fn plans_fall_back_focus_and_root_to_the_first_leaf() {
-        let shape = split(Shape::Pane(4), split(Shape::Pane(2), Shape::Pane(3)));
-        let tree = built(plan(shape, saved(9, 9, false, 5)).expect("admitted"));
-
-        let first = tree.layout().pane_ids()[0];
-        assert_eq!(tree.focused(), first);
-        assert_eq!(tree.root(), first);
-        assert_eq!(tree.pane(first).map(PaneRecord::number), Some(number(4)));
+    fn plans_refuse_missing_focus_and_root() {
+        let shape = || split(Shape::Pane(4), split(Shape::Pane(2), Shape::Pane(3)));
+        assert!(matches!(
+            plan(shape(), saved(9, 4, false, 5)),
+            Err(TreeRejection::MissingFocus(_))
+        ));
+        assert!(matches!(
+            plan(shape(), saved(4, 9, false, 5)),
+            Err(TreeRejection::MissingRoot(_))
+        ));
     }
 
     #[test]
@@ -925,23 +953,21 @@ mod tests {
     }
 
     #[test]
-    fn plans_drop_a_zoom_without_its_focus_or_a_second_pane() {
-        let three = || split(Shape::Pane(1), split(Shape::Pane(2), Shape::Pane(3)));
-        // (shape, saved focus, kept zoom)
-        let cases = [
-            (three(), 2, true),
-            // The saved focus names no leaf.
-            (three(), 9, false),
-            // Only one pane is left to show.
-            (Shape::Pane(1), 1, false),
-        ];
-        for (shape, focus, kept) in cases {
-            let plan = plan(shape, saved(focus, 1, true, 4)).expect("admitted");
-            assert_eq!(plan.zoomed(), kept, "focus {focus}");
-            assert_eq!(built(plan).zoomed(), kept, "focus {focus}");
-        }
-        let unzoomed = plan(three(), saved(2, 1, false, 4)).expect("admitted");
-        assert!(!built(unzoomed).zoomed());
+    fn plans_refuse_a_zoom_without_its_focus_or_a_second_pane() {
+        let pair = || split(Shape::Pane(1), Shape::Pane(2));
+        assert!(matches!(
+            plan(pair(), saved(9, 1, true, 3)),
+            Err(TreeRejection::MissingFocus(_))
+        ));
+        assert!(matches!(
+            plan(Shape::Pane(1), saved(1, 1, true, 2)),
+            Err(TreeRejection::LonePaneZoom)
+        ));
+        assert!(
+            plan(pair(), saved(2, 1, true, 3))
+                .expect("valid zoom")
+                .zoomed()
+        );
     }
 
     #[test]

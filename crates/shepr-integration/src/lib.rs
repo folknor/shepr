@@ -5,12 +5,12 @@ use crate::limits::HOOK_TIMEOUT;
 
 mod actions;
 mod atomic_replace;
-mod claude_settings;
 mod command;
 mod config_edit;
 mod config_file;
 mod env;
 mod file_ops;
+mod json_edit;
 mod limits;
 mod logging;
 mod opencode_config;

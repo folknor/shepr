@@ -116,26 +116,51 @@ impl PaneChild {
         if let Some(status) = self.status {
             return Ok(Some(status));
         }
-        let pid = self.raw_pid();
-        let mut raw = 0;
-        loop {
-            // SAFETY: `raw` is a live writable int; waitpid(2) reaps only this
-            // child of ours.
-            let result = unsafe { libc::waitpid(pid, &mut raw, flags) };
-            if result == 0 {
-                return Ok(None);
-            }
-            if result > 0 {
-                use std::os::unix::process::ExitStatusExt;
-                let status = ExitStatus::from_raw(raw);
-                self.status = Some(status);
-                return Ok(Some(status));
-            }
-            let error = io::Error::last_os_error();
-            if error.kind() != io::ErrorKind::Interrupted {
-                return Err(error);
-            }
+        let status = wait_for_pid(self.raw_pid(), flags)?;
+        self.status = status;
+        Ok(status)
+    }
+
+    /// Hand waiting to a detached thread. Thread exhaustion is logged rather
+    /// than falling back to a blocking wait on a possible event-loop caller.
+    pub fn reap_detached(mut self, on_wait: impl FnOnce(io::Result<ExitStatus>) + Send + 'static) {
+        detach_reaper(self.process_id(), move || on_wait(self.wait()));
+    }
+}
+
+// The raw pid is safe only while this fork has not been handed to any other
+// waiter. Both the owned child and the failed handle-acquisition path obey it.
+fn wait_for_pid(pid: libc::pid_t, flags: libc::c_int) -> io::Result<Option<ExitStatus>> {
+    let mut raw = 0;
+    loop {
+        // SAFETY: `raw` is writable and this is our exclusively owned child.
+        let result = unsafe { libc::waitpid(pid, &mut raw, flags) };
+        if result == 0 {
+            return Ok(None);
         }
+        if result > 0 {
+            use std::os::unix::process::ExitStatusExt;
+            return Ok(Some(ExitStatus::from_raw(raw)));
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+fn detach_reaper(pid: shepr_platform::Pid, wait: impl FnOnce() + Send + 'static) {
+    if let Err(error) = std::thread::Builder::new()
+        .name("shepr-pane-reaper".into())
+        .spawn(wait)
+    {
+        tracing::warn!(%pid, %error, "could not start pane reaper; child may remain unreaped until server exit");
+    }
+}
+
+fn log_reap_failure(pid: shepr_platform::Pid, result: io::Result<ExitStatus>) {
+    if let Err(error) = result {
+        tracing::warn!(%pid, %error, "could not reap abandoned pane child");
     }
 }
 
@@ -246,23 +271,12 @@ pub fn spawn_pty(
         if unsafe { libc::kill(pid.as_pid_t(), libc::SIGKILL) } != 0 {
             tracing::warn!(pid = %pid, error = %io::Error::last_os_error(), "could not kill failed pane launch");
         }
-        if let Err(error) = std::thread::Builder::new()
-            .name("shepr-launch-reaper".into())
-            .spawn(move || {
-                let mut status = 0;
-                loop {
-                    // SAFETY: this is our unreaped child and status is writable.
-                    let result = unsafe { libc::waitpid(pid.as_pid_t(), &mut status, 0) };
-                    if result >= 0
-                        || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
-                    {
-                        break;
-                    }
-                }
-            })
-        {
-            tracing::warn!(pid = %pid, %error, "could not start failed launch reaper");
-        }
+        detach_reaper(pid, move || {
+            let result = wait_for_pid(pid.as_pid_t(), 0).and_then(|status| {
+                status.ok_or_else(|| io::Error::other("a blocking wait returned no status"))
+            });
+            log_reap_failure(pid, result);
+        });
         return Err(io::Error::other("no process handle for the pane's child"));
     };
     // Registered right after the fork: a connection that arrives first waits
@@ -696,6 +710,24 @@ mod tests {
 
     fn parent_pty_fd_count() -> usize {
         parent_pty_fd_targets().len()
+    }
+
+    #[test]
+    fn detached_reaper_collects_the_owned_child_and_reports_its_status() {
+        let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
+        let cmd = fixture_command(&[Step::Exit(7)]);
+        let (spawned, _) = spawn_and_read_status(&cmd);
+        let leader = spawned.child.handle();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        spawned.child.reap_detached(move |result| {
+            sender.send(result).expect("completion receiver exists");
+        });
+        let status = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("detached reaper completes")
+            .expect("child is reaped");
+        assert_eq!(status.code(), Some(7));
+        assert!(!leader.is_unreaped());
     }
 
     #[test]

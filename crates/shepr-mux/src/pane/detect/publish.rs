@@ -273,9 +273,11 @@ impl DetectorState {
 
 #[cfg(test)]
 mod tests {
+    use super::super::probe::AgentDetectionPresence;
     use super::*;
     use crate::events::AppEvent;
     use crate::limits::AGENT_STARTUP_GRACE_WINDOW;
+    use crate::pane::detect::DetectorGateDiagnostics;
     use crate::pane::launch::LaunchKind;
     use std::time::{Duration, Instant};
     use tokio::sync::mpsc;
@@ -315,6 +317,30 @@ mod tests {
         assert!(!detector.may_scan_screen(&tick(deadline - Duration::from_millis(1), 0), false));
         assert!(detector.may_scan_screen(&tick(deadline, 0), false));
         assert_eq!(detector.agent_startup_grace_until, None);
+    }
+
+    #[test]
+    fn diagnostics_name_the_real_pending_idle_confirmation_hold() {
+        let now = Instant::now();
+        let mut detector = DetectorState::new(now, LaunchKind::Fresh);
+        detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
+        detector.last_published = Some(Detection::Working { visible: false });
+
+        let update = detector.publish_screen(
+            &tick(now, 1),
+            Some(Agent::Pi),
+            false,
+            Some(Detection::Idle { visible: false }),
+            true,
+        );
+        assert!(update.is_none(), "the first working-to-idle scan is held");
+
+        let diagnostics = DetectorGateDiagnostics::default();
+        diagnostics.update(&detector);
+        assert_eq!(
+            diagnostics.active_gate(),
+            Some(crate::pane::detect::DetectorGate::PendingIdleConfirmation)
+        );
     }
 
     #[tokio::test]

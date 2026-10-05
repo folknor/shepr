@@ -22,7 +22,7 @@ pub(crate) const DAEMON_RESTART_INTERVAL: Duration = Duration::from_millis(500);
 /// Time allowed for one status request to a local server, the response
 /// deadline of every launch probe. The timeout bounds an unavailable or
 /// overloaded local server check.
-pub(crate) const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+pub const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The most a launched server's boot log may hold. A launch that finds more
 /// (a server printing without end while it boots) fails and kills the server,
@@ -61,9 +61,32 @@ pub(crate) const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 pub(crate) const STOP_LEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Per-request deadline while polling the server's boot identity after a stop.
+/// These repeated observations share the stop's overall deadline; keeping each
+/// short lets socket disappearance or a replacement boot be noticed promptly.
+/// They deliberately do not grant each poll the ordinary status request window.
 pub(crate) const STOP_STATUS_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Poll interval while waiting for a server to stop answering or its socket
 /// to disappear. It bounds shutdown detection latency without rapid repeated
 /// probes.
 pub(crate) const STOP_WAIT_POLL: Duration = Duration::from_millis(25);
+
+/// Status counts are optional; a stalled application loop must not hold up a probe.
+pub const STATUS_SUMMARY_TIMEOUT: Duration = STATUS_REQUEST_TIMEOUT;
+
+/// Maximum socket work performed by a status overview (ping and optional counts).
+pub const STATUS_OVERVIEW_TIMEOUT: Duration =
+    STATUS_REQUEST_TIMEOUT.saturating_add(STATUS_SUMMARY_TIMEOUT);
+
+/// Stop's socket wait, subsequent lease wait and final identity probe.
+pub const STOP_WORST_CASE: Duration = STOP_WAIT_TIMEOUT
+    .saturating_add(STOP_LEASE_WAIT_TIMEOUT)
+    .saturating_add(STOP_STATUS_PROBE_TIMEOUT);
+
+/// A runtime-address launch can probe, wait for the lock, wait for an existing
+/// socket to settle, and then give its own daemon a full readiness window.
+/// Probes at phase boundaries and the last readiness poll also need time.
+pub const START_WORST_CASE: Duration = SERVER_READY_TIMEOUT
+    .saturating_mul(3)
+    .saturating_add(LAUNCH_LOCK_WAIT_GRACE)
+    .saturating_add(STATUS_REQUEST_TIMEOUT.saturating_mul(3));

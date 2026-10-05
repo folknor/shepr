@@ -79,9 +79,6 @@ What the operator learns today:
   second pane starts as a plain shell and loses its session;
 - an invalid saved session dropped at decode: a warn with no workspace or pane
   (BUG-009);
-- an unconfirmed resume launch: nothing, and the pane vanishes (BUG-007);
-- a resume command whose send failed: a warn and an error the UI never draws
-  (BUG-008);
 - a resume that launched: nothing, so when an agent does not come back there is no
   log to compare against;
 - the `persist.restore` summary (`open.rs` `log_restore`) reports a workspace count
@@ -216,8 +213,7 @@ A `Launched` settlement is not logged, so a launch that fell back from its
 requested directory to `HOME`, the passwd home or `/` leaves no trace of which
 candidate it entered or why candidate 0 failed (the child does not send that errno;
 only total failure is reported). `pane_launch.rs` stores the fallback cwd and no
-notice says so. An `Unconfirmed` settlement is not logged either, which is the only
-signal of BUG-017 and BUG-018. `pane_spawn_started` logs rows, cols and the
+notice says so. `pane_spawn_started` logs rows, cols and the
 scrollback budget (constant per server) but not the launch kind, cwd or shell.
 
 ## DIAG-013 - Child setup failures are indistinguishable from the shell's own exit
@@ -242,6 +238,9 @@ Reported by: pane-lifecycle.
 - `PaneChild::kill` turns a failed `pidfd_send_signal` into `last_os_error()` read
   after `ProcessHandle::signal` returned, correct only because nothing runs between;
   `signal` should return the `io::Result`.
+- The mux terminal read collapses a `shepr_vt::ReadError` into `None`, so the
+  `detect capture` / `detect explain` read-failure error can say only that the screen
+  read failed, not why.
 
 ## DIAG-015 - Thread names exceed the kernel's 15-byte limit and are truncated
 
@@ -313,8 +312,7 @@ Reported by: integrations.
   `install_present_integrations` at warn with the error.
 - An info "integration action finished" status line is logged per present agent per
   launch even when nothing is done.
-- Nothing is logged when a shell hook will be inert for lack of `python3` (BUG-039), or
-  when a JSON target's whole file is re-serialized (BUG-036).
+- Nothing is logged when a shell hook will be inert for lack of `python3` (BUG-039).
 - `targets.rs` names a binary spelling inline in the OpenCode V2 notice ("start
   opencode2 once and the next shepr server launch registers it").
 
@@ -535,22 +533,3 @@ Reported by: workspace-model.
 - `mark_shell_projection_dirty` stops advancing at `u64::MAX` "so bookkeeping never
   panics", after which no client sees a change. Unreachable; the chosen failure is
   silent staleness.
-
-## DIAG-032 - Silent no-ops in the resume command path leave a plan pending forever
-
-Reported by: restore-resume.
-
-`pane_launch.rs` `send_resume_command`'s `None => {}` arm (no runtime) leaves the
-terminal in `AgentResumeState::Launching { command: None }` forever. That state is
-`is_pending()`, so `has_pending_agent_resumes()` stays true, the schedule never
-retires, and every loop iteration walks every pane. Admission (`admit_event` requires
-the runtime's current generation) makes the arm unreachable today, which is why it
-should not exist: replace it with an `error!` and an abandonment, or pass the runtime
-in. Likewise, if `take_agent_resume_command` returns `None` for an `AgentResume`
-settlement (state not `Launching`), nothing is logged and a `Planned` plan with a live
-runtime is stuck pending (`candidate()` requires no runtime). And `resume::plan`
-returns `Option` for a total function: `PersistedAgentSession::new` already requires
-`session_ref.accepted_for(agent)`, which requires resume support, and descriptor
-executables are nonempty, so a `None` in `restore_plan_for_snapshot` would silently
-start a plain shell. Make it `PersistedAgentSession::resume_plan(&self) ->
-AgentResumePlan`.

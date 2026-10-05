@@ -237,7 +237,10 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let kind = shepr_protocol::SessionRestoreNotice {
-        loss: shepr_protocol::SessionRestoreLoss::Panes,
+        loss: shepr_protocol::SessionRestoreLoss::Damaged(shepr_protocol::SessionRestoreDamage {
+            renamed_workspaces: 1,
+            ..Default::default()
+        }),
         backup_dir: "/state/session-backups".into(),
     };
     let first = crate::tests::test_boot_id("restored-first");
@@ -268,8 +271,11 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
     );
     assert_eq!(
         state.notices.visible().expect("remote card").title,
-        "Build: saved session not fully restored"
+        "Build: saved session IDs repaired"
     );
+    let body = &state.notices.visible().expect("remote card").body;
+    assert!(body.contains("1 duplicate workspace ID was reassigned"));
+    assert!(!body.contains("saved panes"));
     // A queued card receives a full lifetime only after it is actually drawn.
     assert!(
         !state
@@ -284,7 +290,10 @@ fn a_saves_stopped_card_shows_once_per_boot_beside_the_restore_card() {
     state.set_snapshot(Box::new(snapshot()));
     let boot = crate::tests::test_boot_id("saves-stopped");
     let kind = shepr_protocol::SessionRestoreNotice {
-        loss: shepr_protocol::SessionRestoreLoss::Panes,
+        loss: shepr_protocol::SessionRestoreLoss::Damaged(shepr_protocol::SessionRestoreDamage {
+            renamed_workspaces: 1,
+            ..Default::default()
+        }),
         backup_dir: "/state/session-backups".into(),
     };
     assert!(state.receive_restore_notice(&ClientEndpointId::Local, &boot, &kind));
@@ -316,7 +325,10 @@ fn transient_cards_do_not_discard_queued_restore_cards() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let boot = crate::tests::test_boot_id("restored");
     let kind = shepr_protocol::SessionRestoreNotice {
-        loss: shepr_protocol::SessionRestoreLoss::Panes,
+        loss: shepr_protocol::SessionRestoreLoss::Damaged(shepr_protocol::SessionRestoreDamage {
+            renamed_workspaces: 1,
+            ..Default::default()
+        }),
         backup_dir: "/state/session-backups".into(),
     };
     state.receive_restore_notice(&ClientEndpointId::Local, &boot, &kind);
@@ -342,7 +354,10 @@ fn dismissing_a_restore_card_immediately_shows_the_next_queued_card() {
     let second = crate::tests::test_boot_id("restored-second");
     let remote = ClientEndpointId::Ssh(shepr_config::MachineLabel::parse("Build").expect("label"));
     let kind = shepr_protocol::SessionRestoreNotice {
-        loss: shepr_protocol::SessionRestoreLoss::Panes,
+        loss: shepr_protocol::SessionRestoreLoss::Damaged(shepr_protocol::SessionRestoreDamage {
+            renamed_workspaces: 1,
+            ..Default::default()
+        }),
         backup_dir: "/state/session-backups".into(),
     };
     state.receive_restore_notice(&ClientEndpointId::Local, &first, &kind);

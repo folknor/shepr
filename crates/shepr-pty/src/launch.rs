@@ -242,7 +242,6 @@ struct Waiting {
 }
 
 struct Parked {
-    pid: shepr_platform::Pid,
     channel: OwnedFd,
     at: Instant,
 }
@@ -250,7 +249,7 @@ struct Parked {
 #[derive(Default)]
 struct Routes {
     waiting: HashMap<u64, Waiting>,
-    parked: HashMap<u64, Parked>,
+    parked: HashMap<(u64, u32), Parked>,
     /// Tickets whose launch withdrew before its child's connection was
     /// routed; that connection is dropped when it arrives instead of parked.
     retired: HashMap<u64, Instant>,
@@ -269,11 +268,20 @@ impl Routes {
             // Dropping delivery wakes a launch racing the listener's failure.
             return None;
         }
-        if let Some(parked) = self.parked.remove(&ticket) {
-            if parked.pid == waiting.pid {
-                return Some((waiting.deliver, parked.channel));
+        let matching = self.parked.remove(&(ticket, waiting.pid.get()));
+        self.parked.retain(|(parked_ticket, pid), _| {
+            let keep = *parked_ticket != ticket;
+            if !keep {
+                tracing::warn!(
+                    ticket,
+                    pid = *pid,
+                    "pane launch status from an unexpected process"
+                );
             }
-            tracing::warn!(ticket, pid = %parked.pid, "pane launch status from an unexpected process");
+            keep
+        });
+        if let Some(parked) = matching {
+            return Some((waiting.deliver, parked.channel));
         }
         self.waiting.insert(ticket, waiting);
         None
@@ -297,21 +305,20 @@ impl Routes {
                 None
             }
             None => {
-                self.parked.insert(
-                    ticket,
-                    Parked {
-                        pid,
-                        channel,
-                        at: now,
-                    },
-                );
+                let key = (ticket, pid.get());
+                if self.parked.contains_key(&key) {
+                    tracing::warn!(ticket, %pid, "duplicate pane launch status connection");
+                    return None;
+                }
+                self.parked.insert(key, Parked { channel, at: now });
                 None
             }
         }
     }
 
     fn retire(&mut self, ticket: u64, now: Instant) {
-        self.parked.remove(&ticket);
+        self.parked
+            .retain(|(parked_ticket, _), _| *parked_ticket != ticket);
         if self.waiting.remove(&ticket).is_some() {
             self.retired.insert(ticket, now);
         }
@@ -326,13 +333,14 @@ impl Routes {
 
     fn check_health(&self) -> io::Result<()> {
         match &self.failure {
-            Some(error) => Err(io::Error::new(
-                error.kind(),
-                CachedLaunchFailure(Arc::clone(error)),
-            )),
+            Some(error) => Err(clone_failure(error)),
             None => Ok(()),
         }
     }
+}
+
+fn clone_failure(error: &Arc<io::Error>) -> io::Error {
+    io::Error::new(error.kind(), CachedLaunchFailure(Arc::clone(error)))
 }
 
 /// The process-wide status listener, and what every launch reads once.
@@ -527,6 +535,13 @@ impl LaunchService {
 }
 
 impl Router {
+    fn failure(&self) -> Option<io::Error> {
+        lock_auxiliary(&self.routes)
+            .failure
+            .as_ref()
+            .map(clone_failure)
+    }
+
     /// Polls every unfinished hello together. A silent peer has its own
     /// deadline and cannot hold up a child's hello or failure report.
     /// The mux's post-exit status grace therefore need not exceed a stray
@@ -688,6 +703,16 @@ pub struct Registration {
     ticket: u64,
 }
 
+impl Registration {
+    /// Returns a live probe for a listener failure that may race delivery.
+    /// The probe outlives this registration guard without keeping its ticket
+    /// registered.
+    pub fn failure_probe(&self) -> impl Fn() -> Option<io::Error> + Send + Sync + 'static {
+        let router = std::sync::Arc::clone(&self.service.router);
+        move || router.failure()
+    }
+}
+
 impl Drop for Registration {
     fn drop(&mut self) {
         let mut routes = lock_auxiliary(&self.service.router.routes);
@@ -841,6 +866,29 @@ mod tests {
     }
 
     #[test]
+    fn parked_channels_are_kept_per_ticket_and_pid() {
+        let mut routes = Routes::default();
+        let now = Instant::now();
+        let (child, child_peer) = pair();
+        let (stray, stray_peer) = pair();
+        send_record(&child_peer, &chdir_ok_record(0));
+        send_record(&stray_peer, &exec_failed_record(libc::ENOENT));
+
+        assert!(routes.route(3, pid(42), child, now).is_none());
+        assert!(routes.route(3, pid(7), stray, now).is_none());
+        assert_eq!(routes.parked.len(), 2);
+
+        let (waiting, receive) = waiter(42);
+        dispatch(routes.register(3, waiting));
+        let delivered = receive.try_recv().expect("registered child delivered");
+        assert_eq!(
+            read_record(&delivered).expect("read child's report"),
+            RecordRead::Record(LaunchRecord::ChdirOk(0))
+        );
+        assert!(routes.parked.is_empty());
+    }
+
+    #[test]
     fn retirement_rejects_every_late_connection_until_expiry() {
         let mut routes = Routes::default();
         let now = Instant::now();
@@ -860,6 +908,8 @@ mod tests {
     #[test]
     fn listener_failure_drops_waiters_and_rejects_future_launches() {
         let router = router();
+        let failure_probe = || router.failure();
+        assert!(failure_probe().is_none());
         let (waiting, receive) = waiter(42);
         lock_auxiliary(&router.routes).register(1, waiting);
         router.accept_loop_with(
@@ -870,6 +920,7 @@ mod tests {
             |_| panic!("fatal listener must not retry"),
             || panic!("must not accept"),
         );
+        assert!(failure_probe().is_some());
         let mut routes = lock_auxiliary(&router.routes);
         assert!(routes.check_health().is_err());
         assert!(matches!(

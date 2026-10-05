@@ -72,7 +72,7 @@ pub(crate) fn run(
     };
     let local = restart_local(
         || local_server_status(paths),
-        |boot_id| shepr_launch::stop::stop_active_server(paths, Some(boot_id)),
+        |boot_id| shepr_launch::stop::stop_for_startup_restart(paths, boot_id),
         local_decision,
     );
     for notice in local_notice(&local)

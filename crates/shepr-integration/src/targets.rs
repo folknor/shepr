@@ -9,10 +9,7 @@ use shepr_agent::{IntegrationHookAction, IntegrationTarget as Target};
 
 use super::ANTIGRAVITY_CLI_HOOK_BLOCK_NAME;
 use super::command::hook_command;
-use super::config_edit::{
-    build_codex_config_with_hooks, build_kimi_config_with_timeout, ensure_hooks_object,
-    remove_hook_path_commands,
-};
+use super::config_edit::{build_codex_config_with_hooks, build_kimi_config_with_timeout};
 use super::config_file::{
     ConfigUpdateLock, check_config_target, lock_config_for_update, write_config_for_update,
 };
@@ -97,25 +94,14 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
                 _ => ArtifactRole::Hooks,
             };
             let path = dir.join(file);
-            if let JsonShape::NestedClaude(timeout) = shape {
-                edits.push(ConfigEdit::prepare(
-                    path.clone(),
-                    paths,
-                    "{}",
-                    |content, path| {
-                        super::claude_settings::install(content, path, &hook_path, timeout)
-                    },
-                )?);
-            } else {
-                edits.push(prepare_json(
-                    path.clone(),
-                    paths,
-                    target,
-                    root,
-                    shape,
-                    &hook_path,
-                )?);
-            }
+            edits.push(prepare_json(
+                path.clone(),
+                paths,
+                target,
+                root,
+                shape,
+                &hook_path,
+            )?);
             outcome = outcome.with_artifact(role, path);
         }
         Registration::Codex {
@@ -160,21 +146,12 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
                 paths,
                 "{}",
                 |content, path| {
-                    let mut document = parse_json(content, path)?;
-                    let hooks = document.as_object_mut().ok_or_else(|| {
-                        InstallIssue::io_error(
-                            InstallErrorKind::ConfigShape,
-                            format!(
-                                "antigravity cli hooks file at {} must be a JSON object",
-                                path.display()
-                            ),
-                        )
-                    })?;
-                    hooks.insert(
-                        ANTIGRAVITY_CLI_HOOK_BLOCK_NAME.to_string(),
-                        antigravity_cli_hook_block_with_timeout(&hook_path, timeout)?,
-                    );
-                    serde_json::to_string_pretty(&document).map_err(io::Error::other)
+                    super::json_edit::install_block(
+                        content,
+                        path,
+                        ANTIGRAVITY_CLI_HOOK_BLOCK_NAME,
+                        &antigravity_cli_hook_block_with_timeout(&hook_path, timeout)?,
+                    )
                 },
             )?);
             outcome = outcome.with_artifact(ArtifactRole::Hooks, path);
@@ -239,15 +216,6 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
     Ok(outcome)
 }
 
-fn parse_json(content: &str, path: &Path) -> io::Result<Value> {
-    serde_json::from_str(content).map_err(|error| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigUnparseable,
-            format!("failed to parse {}: {error}", path.display()),
-        )
-    })
-}
-
 fn prepare_json(
     path: PathBuf,
     paths: &AgentIntegrationPaths,
@@ -257,52 +225,14 @@ fn prepare_json(
     hook_path: &Path,
 ) -> io::Result<ConfigEdit> {
     ConfigEdit::prepare(path, paths, "{}", |content, path| {
-        let mut document = parse_json(content, path)?;
-        if target == Target::Cursor && document.get("version").is_none() {
-            document
-                .as_object_mut()
-                .ok_or_else(|| {
-                    InstallIssue::io_error(
-                        InstallErrorKind::ConfigShape,
-                        format!(
-                            "cursor hooks file at {} must be a JSON object",
-                            path.display()
-                        ),
-                    )
-                })?
-                .insert("version".to_string(), json!(1));
-        }
-        let hooks = match root {
-            HooksRoot::HooksKey => {
-                ensure_hooks_object(&mut document, path, "agent config", "agent config hooks")?
-            }
-            HooksRoot::Document => document.as_object_mut().ok_or_else(|| {
-                InstallIssue::io_error(
-                    InstallErrorKind::ConfigShape,
-                    format!(
-                        "mastracode hooks file at {} must be a JSON object",
-                        path.display()
-                    ),
-                )
-            })?,
-        };
-        remove_hook_path_commands(hooks, hook_path)?;
-        for (event, expected) in shape.expected_events(target, hook_path)? {
-            let entries = hooks
-                .entry(event.clone())
-                .or_insert_with(|| json!([]))
-                .as_array_mut()
-                .ok_or_else(|| {
-                    InstallIssue::io_error(
-                        InstallErrorKind::ConfigShape,
-                        format!("hook entries for {event} must be an array"),
-                    )
-                })?;
-            if let Value::Array(expected) = expected {
-                entries.extend(expected);
-            }
-        }
-        serde_json::to_string_pretty(&document).map_err(io::Error::other)
+        super::json_edit::install_json(
+            content,
+            path,
+            hook_path,
+            root,
+            shape.expected_events(target, hook_path)?,
+            target == Target::Cursor,
+        )
     })
 }
 

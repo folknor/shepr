@@ -92,9 +92,7 @@ fn print_full_status(
     // Only a running server of this build is asked for its counts: another
     // build may not know the method, and a starting one is still restoring.
     let summary = match &server {
-        ServerPresence::Running(status)
-            if BuildIdentity::for_this_build().matches(status.build_id) =>
-        {
+        ServerPresence::Running(status) if status.build_id.is_this_build() => {
             Some(read_server_summary(address.socket()))
         }
         _ => None,
@@ -220,7 +218,7 @@ fn machine_line(overview: &StatusOverviewJson, now: SystemTime) -> String {
                 short_build(installed)
             ));
         }
-        (_, Some(installed)) if !BuildIdentity::for_this_build().matches(installed) => {
+        (_, Some(installed)) if !installed.is_this_build() => {
             line.push_str(&format!(
                 "; installed build {} is not this shepr's",
                 short_build(installed)
@@ -361,7 +359,7 @@ fn answered_status(server: &ServerPresence) -> Option<&RuntimeStatus> {
 fn read_server_runtime_status(paths: &shepr_paths::AppPaths) -> super::CliResult<ServerPresence> {
     Ok(shepr_launch::status::read_server_presence_at(
         paths.server_address().socket(),
-        crate::limits::STATUS_ANSWER_TIMEOUT,
+        shepr_launch::limits::STATUS_REQUEST_TIMEOUT,
     )?)
 }
 
@@ -369,7 +367,7 @@ fn read_server_runtime_status(paths: &shepr_paths::AppPaths) -> super::CliResult
 /// only leaves the counts out of the report; the status still exits 0.
 fn read_server_summary(socket: &Path) -> Result<ServerSummary, String> {
     let deadline = Instant::now()
-        .checked_add(crate::limits::STATUS_ANSWER_TIMEOUT)
+        .checked_add(shepr_launch::limits::STATUS_SUMMARY_TIMEOUT)
         .ok_or_else(|| "status timeout is too large".to_owned())?;
     ApiClient::for_socket(socket)
         .server_summary_until(deadline)

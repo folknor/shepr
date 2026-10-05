@@ -82,7 +82,6 @@ Reported by: restore-resume.
   path that hangs) makes it observable; otherwise rename it.
 - `resume.rs` `ids_are_data_not_shell_text` asserts the argv vector, never the
   shell text that is typed.
-- The `open.rs` test asserting the false "panes lost" notice (BUG-006).
 - `test_support.rs` `test_codex_plan(identity, argv)` keeps only the text after the
   last NUL and always builds a Codex session; callers pass
   `"shepr:codex\0codex\0Id\0probe-session"`, a leftover of an older NUL-joined key, so
@@ -334,7 +333,6 @@ Reported by: server-lifecycle, remote.
   including the guidance, then asserts the notice contains it.
 - `stop.rs` `stop_wait_timeout_allows_slow_graceful_shutdown` asserts the constant
   equals 15 s.
-- `serve_pong_once` answers with an id production never sends (BUG-056).
 - `a_vanished_server_reads_as_gone_not_unresponsive` duplicates
   `status.rs` `a_listener_that_vanishes_before_answering_is_gone`.
 - Wall-clock tests: `repeated_socket_transitions_share_one_wait_deadline` (350 ms
@@ -507,8 +505,6 @@ Reported by: restore-resume, agent-state, workspace-model.
   terminal's cached history as it was"; there is no history capture (BUG-027).
 - `App::open`: "Restored workspaces get their Git identity (label and status) from
   the first background Git refresh"; a refresh never sets the name.
-- `pane_launch.rs`'s `Unconfirmed` comment (BUG-007) and `abandon_agent_resume`'s doc
-  (BUG-008).
 - `ResumeSchedule.retired`: "plans are minted only by session restore, before the
   first pass. Once set, nothing scans." Nothing enforces it:
   `TerminalState::plan_agent_resume` is a `pub` production method only tests call,
@@ -564,8 +560,7 @@ Reported by: pane-lifecycle.
   clippy::unwrap_used, clippy::expect_used, clippy::panic)]` on `launch_status.rs`
   outside tests makes it a build fact.
 - `PtyIoInbox`'s "never held across a syscall" holds today, by review only.
-- `SHEPR_BIN_PATH` (BUG-022) and `Unconfirmed`'s "The pane's death follows"
-  (BUG-017) are false today.
+- `SHEPR_BIN_PATH`'s "set for every pane" (BUG-022) is false today.
 
 ## CLAIM-025 - Agent detection claims that are false today or unenforced
 
@@ -639,8 +634,8 @@ the `From` impls.
 
 Reported by: server-lifecycle.
 
-- `headless.rs` `next_loop_event`: "Production keeps the sender in the listener until
-  this loop ends" (false after a fatal accept, BUG-052).
+- `api_service.rs`'s conditional-stop comment names `ServerStopParams` where the
+  validation it explains is `ServerStopIfBootParams`'.
 - `local_server.rs` `server_daemon_working_dir` names `new_terminal_cwd = "current"`;
   the setting is `terminal.new_cwd`.
 - `local_server.rs` `build_server_daemon_command`: the child "gets the

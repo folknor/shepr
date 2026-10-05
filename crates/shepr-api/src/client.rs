@@ -6,10 +6,7 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 
 use crate::limits::ORDINARY_RESPONSE_TIMEOUT;
-use crate::schema::{
-    ErrorResponse, Method, PingParams, Request, ResponseResult, ServerSummaryParams,
-    SuccessResponse,
-};
+use crate::schema::{ErrorResponse, Request, ResponseResult, SuccessResponse};
 use shepr_platform::ipc::{LocalStreamDeadlineReader, TrustedServerStream};
 
 /// A decoded `ping` answer: the identity the server reports and its readiness
@@ -89,7 +86,7 @@ impl ApiClient {
 
         let deadline = deadline_after(timeout)?;
         let mut reader = BufReader::new(LocalStreamDeadlineReader::new(&mut stream, deadline));
-        read_json_line(&mut reader).map_err(normalize_socket_timeout)
+        read_response_value(&mut reader, &request.id).map_err(normalize_socket_timeout)
     }
 
     /// Sends one request and reads its single-line response, all of it bounded
@@ -128,7 +125,7 @@ impl ApiClient {
             .map_err(ApiClientDeadlineError::Request)?;
 
         let mut reader = BufReader::new(LocalStreamDeadlineReader::new(&mut stream, deadline));
-        read_json_line(&mut reader)
+        read_response_value(&mut reader, &request.id)
             .map_err(normalize_socket_timeout)
             .map_err(ApiClientDeadlineError::Request)
     }
@@ -147,13 +144,13 @@ impl ApiClient {
     /// Asks the server for its identity and readiness with the ordinary
     /// response bound.
     pub fn ping(&self) -> Result<Pong, ApiClientError> {
-        let response = self.request(&ping_request())?;
+        let response = self.request(&Request::ping())?;
         pong(response)
     }
 
     /// [`Self::ping`] bounded by one `deadline`.
     pub fn ping_until(&self, deadline: Instant) -> Result<Pong, ApiClientDeadlineError> {
-        let response = self.request_until(&ping_request(), deadline)?;
+        let response = self.request_until(&Request::ping(), deadline)?;
         pong(response).map_err(ApiClientDeadlineError::Request)
     }
 
@@ -163,10 +160,7 @@ impl ApiClient {
         &self,
         deadline: Instant,
     ) -> Result<ServerSummary, ApiClientDeadlineError> {
-        let request = Request {
-            id: "api-client:summary".into(),
-            method: Method::ServerSummary(ServerSummaryParams::default()),
-        };
+        let request = Request::server_summary();
         let response = self.request_until(&request, deadline)?;
         match response.result {
             ResponseResult::ServerSummary {
@@ -191,13 +185,6 @@ impl ApiClient {
     /// a listener whose backlog is full (`ErrorKind::TimedOut`).
     fn connect(&self, timeout: Duration) -> io::Result<TrustedServerStream> {
         shepr_platform::ipc::connect_trusted_local_stream_within(&self.socket_path, timeout)
-    }
-}
-
-fn ping_request() -> Request {
-    Request {
-        id: "api-client:status".into(),
-        method: Method::Ping(PingParams::default()),
     }
 }
 
@@ -332,6 +319,21 @@ fn read_json_line<T: DeserializeOwned>(reader: &mut impl BufRead) -> Result<T, A
     serde_json::from_str(&line).map_err(ApiClientError::Json)
 }
 
+fn read_response_value(
+    reader: &mut impl BufRead,
+    expected_id: &str,
+) -> Result<serde_json::Value, ApiClientError> {
+    let value = read_json_line::<serde_json::Value>(reader)?;
+    let response_id = value.get("id").and_then(serde_json::Value::as_str);
+    if response_id != Some(expected_id) {
+        return Err(ApiClientError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("API response id mismatch: expected {expected_id:?}, received {response_id:?}"),
+        )));
+    }
+    Ok(value)
+}
+
 pub fn parse_response_value(value: serde_json::Value) -> Result<SuccessResponse, ApiClientError> {
     if value.get("error").is_some() {
         let response: ErrorResponse = serde_json::from_value(value)?;
@@ -344,6 +346,7 @@ pub fn parse_response_value(value: serde_json::Value) -> Result<SuccessResponse,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::{Method, PingParams};
 
     #[test]
     fn local_client_targets_the_build_runtime_socket() {
@@ -419,6 +422,34 @@ mod tests {
         std::fs::remove_file(path).expect("test precondition");
         assert!(
             matches!(&error, ApiClientError::Io(error) if error.kind() == io::ErrorKind::TimedOut),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn a_response_with_another_request_id_is_invalid_data() {
+        let scratch = shepr_test_support::ScratchDir::new("response-id-mismatch");
+        let path = scratch.join("api.sock");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("test precondition");
+            let mut reader = BufReader::new(stream.try_clone().expect("test precondition"));
+            let mut request = String::new();
+            reader.read_line(&mut request).expect("test precondition");
+            stream
+                .write_all(b"{\"id\":\"another-request\",\"result\":{\"type\":\"ok\"}}\n")
+                .expect("test precondition");
+        });
+
+        let client = ApiClient::for_socket(path.clone());
+        let error = client
+            .request_value_with_timeout(&Request::ping(), Duration::from_secs(1))
+            .expect_err("a response for another request must be refused");
+        server.join().expect("test precondition");
+        std::fs::remove_file(path).expect("test precondition");
+        assert!(
+            matches!(&error, ApiClientError::Io(error) if error.kind() == io::ErrorKind::InvalidData),
             "{error:?}"
         );
     }

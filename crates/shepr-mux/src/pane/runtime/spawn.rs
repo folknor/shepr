@@ -64,7 +64,7 @@ pub(super) fn prepare_terminal(
 }
 
 /// Startup borrows the owners it wires into the actor. On success the caller
-/// starts the child watcher; on failure this path tears down and reaps first.
+/// starts the child watcher; on failure this path schedules teardown and reaping.
 struct PtySetup<'a> {
     pane_id: PaneId,
     geometry: shepr_core::geometry::PaneGeometry,
@@ -114,7 +114,7 @@ impl PtySetup<'_> {
         )
         .inspect_err(|err| error!(pane = %pane_id, error = %err, "failed to spawn shell"))?;
 
-        let mut child = spawned.child;
+        let child = spawned.child;
         let master_fd = spawned.master_fd;
         let launch = super::launch_status::LaunchStatus {
             channel: status_channel,
@@ -170,20 +170,13 @@ impl PtySetup<'_> {
                 Err(err) => {
                     // Actor startup consumes and closes the PTY master on
                     // failure, but the child and any session members still
-                    // need the pane teardown sequence before we return.
+                    // need the pane teardown sequence. Keep its grace periods:
+                    // killing the leader here would preempt session escalation.
                     shutdown_pane_processes(
                         pane_id,
                         Arc::clone(&startup_child_liveness),
                         teardown_tracker,
                     );
-                    if let Err(kill_err) = child.kill() {
-                        warn!(
-                            pane = %pane_id,
-                            %pid,
-                            error = %kill_err,
-                            "failed to kill pane child after PTY actor startup failed"
-                        );
-                    }
                     // Startup is synchronous on its caller. Keep a delayed
                     // child exit from stalling the server loop by handing it
                     // to the child watcher's detached reaper.
@@ -378,6 +371,7 @@ impl PaneLauncher {
         );
 
         let detect_reset_notify = Arc::new(Notify::new());
+        let detector_gate_diagnostics = DetectorGateDiagnostics::default();
         let detect_handle = Some(super::detection_task::DetectionTask::spawn(
             pane_id,
             launch_kind,
@@ -388,6 +382,7 @@ impl PaneLauncher {
                 exit_arbiter: Arc::clone(&exit_arbiter),
                 lifecycle_authority: Arc::clone(&full_lifecycle_authority_active),
                 reset: Arc::clone(&detect_reset_notify),
+                detector_gate_diagnostics: detector_gate_diagnostics.clone(),
                 events: events.clone(),
                 render_notify: Arc::clone(render_notify),
                 render_dirty: Arc::clone(render_dirty),
@@ -407,6 +402,7 @@ impl PaneLauncher {
             cwd: cwd_state,
             full_lifecycle_authority_active,
             detect_reset_notify,
+            detector_gate_diagnostics,
             detect_handle,
         })
     }

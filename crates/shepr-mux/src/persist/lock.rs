@@ -2,10 +2,6 @@
 
 use std::path::Path;
 
-/// Config owns the lease filename used to build API paths; platform is below
-/// config in the crate layers and owns opening and locking that path.
-pub(super) const LOCK_FILE_NAME: &str = shepr_paths::DATA_DIR_LEASE_FILE_NAME;
-
 /// Acquired before restore and held through the final save. Possession of this
 /// value is required to construct a session writer.
 pub struct DataDirLease {
@@ -15,7 +11,10 @@ pub struct DataDirLease {
 impl DataDirLease {
     pub fn acquire(directory: &Path) -> Result<Self, shepr_platform::LeaseAcquireError> {
         Ok(Self {
-            inner: shepr_platform::DataDirectoryLease::acquire(directory, LOCK_FILE_NAME)?,
+            inner: shepr_platform::DataDirectoryLease::acquire(
+                directory,
+                shepr_paths::DATA_DIR_LEASE_FILE_NAME,
+            )?,
         })
     }
 
@@ -54,7 +53,10 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let scratch = crate::test_support::ScratchDir::new("lease-private");
         let lease = DataDirLease::acquire(&scratch.join("data")).expect("lease");
-        let mode = std::fs::metadata(lease.directory().join(LOCK_FILE_NAME))
+        let lock_path = lease
+            .directory()
+            .join(shepr_paths::DATA_DIR_LEASE_FILE_NAME);
+        let mode = std::fs::metadata(lock_path)
             .expect("lock file")
             .permissions()
             .mode();

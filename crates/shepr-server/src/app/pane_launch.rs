@@ -8,7 +8,7 @@ use bytes::Bytes;
 use shepr_core::layout::PaneId;
 use shepr_mux::pane::{LaunchKind, LaunchOutcome, LaunchSettlement};
 
-use shepr_mux::terminal::TerminalState;
+use shepr_mux::terminal::{PaneStartFailure, ResumeUnavailableReason, TerminalState};
 use shepr_mux::workspace::PaneRecord;
 
 use super::App;
@@ -44,8 +44,16 @@ impl App {
                     .map(PaneRecord::terminal_mut)
                     .filter(|_| kind == LaunchKind::AgentResume)
                     .and_then(TerminalState::take_agent_resume_command);
-                if let Some(command) = command {
-                    self.send_resume_command(pane_id, command);
+                if kind == LaunchKind::AgentResume {
+                    if let Some(command) = command {
+                        self.send_resume_command(pane_id, command);
+                    } else {
+                        tracing::error!(
+                            pane = %pane_id,
+                            "agent resume launch settled without a pending command"
+                        );
+                        self.fail_agent_resume(pane_id, ResumeUnavailableReason::CommandSendFailed);
+                    }
                 }
                 self.state.mark_session_dirty();
                 self.request_git_identity_refresh(self.clock.now);
@@ -64,39 +72,70 @@ impl App {
                 self.state.mark_shell_projection_dirty();
                 true
             }
-            // The pane's death follows and is handled as any other. The
-            // runtime stays: the child may still be alive, and its teardown
-            // and death report go through the runtime.
-            //
-            // An agent resume whose launch is unconfirmed is abandoned, not
-            // planned again. Its command was never typed (that waits for
-            // `Launched`), so this attempt started no agent, but whether its
-            // shell child started, or is still stuck in its chdir, is
-            // unknown. Returning the plan to `Planned` would retry in a pane
-            // whose earlier child may still be alive, and whether the retry
-            // can ever run depends on the death that follows removing the
-            // runtime, which a held or skipped exit (a checkpointed exit, a
-            // signal quit) does not do on this event's schedule. A resume is
-            // attempted at most once per restore, so one session is never
-            // launched twice. Leaving it `Launching` instead would keep the
-            // resume pending with no way to finish. The saved identity is
-            // untouched, so the next restore still resumes the session.
+            // The child is gone, or the pane ended before the launch settled,
+            // and the pane's death follows as an ordinary one. An agent resume
+            // is the exception: an ordinary death would remove the pane and
+            // its saved session with it, so the resume fails into a
+            // placeholder that keeps the session (`fail_agent_resume`). The
+            // resume command was never typed, since that waits for `Launched`.
             LaunchOutcome::Unconfirmed => {
                 if kind != LaunchKind::AgentResume {
                     return false;
                 }
-                self.abandon_agent_resume(
-                    pane_id,
-                    shepr_mux::terminal::PaneStartFailure::resume_unavailable(
-                        shepr_mux::terminal::ResumeUnavailableReason::ShellLaunchUnconfirmed,
-                    ),
-                    self.clock.now,
-                );
+                self.fail_agent_resume(pane_id, ResumeUnavailableReason::ShellLaunchUnconfirmed);
+                true
+            }
+            // The child may be alive, but with its status unreadable it never
+            // opens observation: no liveness, no detection, no exit to wait
+            // for. Retiring the runtime ends it, and the pane stays as a
+            // placeholder saying why, as for a launch that failed. The
+            // coordinator already logged the error.
+            LaunchOutcome::StatusUnavailable(error) => {
+                if kind == LaunchKind::AgentResume {
+                    self.fail_agent_resume(
+                        pane_id,
+                        ResumeUnavailableReason::ShellLaunchUnconfirmed,
+                    );
+                    return true;
+                }
+                self.terminal_runtimes.remove(&pane_id);
+                if let Some(record) = self.state.workspaces.pane_mut(pane_id) {
+                    record
+                        .terminal_mut()
+                        .record_start_failure(PaneStartFailure::launch_unobservable(&error));
+                }
                 self.state.mark_session_dirty();
                 self.state.mark_shell_projection_dirty();
                 true
             }
         }
+    }
+
+    /// A deferred agent resume that cannot go on ends its shell too: the pane
+    /// becomes a placeholder that says why and keeps the saved agent session,
+    /// so a save writes it back and the next restore resumes it. The failure
+    /// is drawn only on a pane without a runtime; a live shell's rows are its
+    /// own, and its PTY patches would repaint any notice laid over them.
+    fn fail_agent_resume(&mut self, pane_id: PaneId, reason: ResumeUnavailableReason) {
+        let agent = self
+            .state
+            .terminal(pane_id)
+            .and_then(|terminal| terminal.ownership().persisted_agent_session())
+            .map(shepr_agent::resume::PersistedAgentSession::agent);
+        tracing::warn!(
+            pane = %pane_id,
+            ?agent,
+            reason = reason.as_str(),
+            "deferred agent resume failed; keeping the pane as a placeholder with its saved session"
+        );
+        self.terminal_runtimes.remove(&pane_id);
+        self.abandon_agent_resume(
+            pane_id,
+            PaneStartFailure::resume_unavailable(reason),
+            self.clock.now,
+        );
+        self.state.mark_session_dirty();
+        self.state.mark_shell_projection_dirty();
     }
 
     fn send_resume_command(&mut self, pane_id: PaneId, command: Bytes) {
@@ -116,15 +155,18 @@ impl App {
                     %error,
                     "failed to send deferred agent resume command to shell"
                 );
-                self.abandon_agent_resume(
-                    pane_id,
-                    shepr_mux::terminal::PaneStartFailure::resume_unavailable(
-                        shepr_mux::terminal::ResumeUnavailableReason::CommandSendFailed,
-                    ),
-                    self.clock.now,
-                );
+                self.fail_agent_resume(pane_id, ResumeUnavailableReason::CommandSendFailed);
             }
-            None => {}
+            // Admission of the settlement requires the runtime's current
+            // generation, so this is unreachable today; it still fails the
+            // resume rather than leave it pending forever.
+            None => {
+                tracing::error!(
+                    pane = %pane_id,
+                    "cannot send deferred agent resume command: pane has no live runtime"
+                );
+                self.fail_agent_resume(pane_id, ResumeUnavailableReason::CommandSendFailed);
+            }
         }
     }
 }
@@ -143,26 +185,72 @@ mod tests {
         let pane_id = workspace.tree().root();
         app.state.test_set_workspaces(vec![workspace]);
         let terminal = app.state.terminal_mut(pane_id);
-        terminal.plan_agent_resume(crate::test_support::test_codex_plan(
-            "unconfirmed",
-            vec!["codex".into()],
-        ));
+        let plan = crate::test_support::test_codex_plan("unconfirmed", vec!["codex".into()]);
+        terminal
+            .ownership_mut()
+            .set_persisted_agent_session(plan.key().clone());
+        terminal.plan_agent_resume(plan);
         terminal.begin_agent_resume_launch(Bytes::from_static(b"codex resume\r"));
         app.insert_idle_test_runtime(pane_id);
         (app, pane_id)
     }
 
     fn settle(app: &mut App, pane_id: PaneId, kind: LaunchKind) -> bool {
+        settle_as(app, pane_id, kind, LaunchOutcome::Unconfirmed)
+    }
+
+    fn settle_as(app: &mut App, pane_id: PaneId, kind: LaunchKind, outcome: LaunchOutcome) -> bool {
         let settled = app.from_pane_runtime(
             pane_id,
             RuntimeEvent::PaneLaunchSettled {
-                settlement: LaunchSettlement {
-                    kind,
-                    outcome: LaunchOutcome::Unconfirmed,
-                },
+                settlement: LaunchSettlement { kind, outcome },
             },
         );
         app.handle_internal_event_with_view_change(settled)
+    }
+
+    fn status_unavailable() -> LaunchOutcome {
+        LaunchOutcome::StatusUnavailable(std::io::Error::other("status channel failed"))
+    }
+
+    #[test]
+    fn an_unobservable_fresh_launch_is_ended_into_a_placeholder() {
+        let (mut app, pane_id) = app_with_launching_resume();
+
+        assert!(settle_as(
+            &mut app,
+            pane_id,
+            LaunchKind::Fresh,
+            status_unavailable()
+        ));
+
+        let terminal = app.state.terminal(pane_id).expect("the pane stays");
+        assert!(matches!(
+            terminal.restore_error(),
+            Some(shepr_mux::terminal::PaneStartFailure::LaunchUnobservable { .. })
+        ));
+        assert!(app.terminal_runtimes.get(&pane_id).is_none());
+    }
+
+    #[test]
+    fn an_unobservable_resume_launch_keeps_the_saved_session_in_a_placeholder() {
+        let (mut app, pane_id) = app_with_launching_resume();
+
+        assert!(settle_as(
+            &mut app,
+            pane_id,
+            LaunchKind::AgentResume,
+            status_unavailable()
+        ));
+
+        let terminal = app.state.terminal(pane_id).expect("the pane stays");
+        assert!(matches!(
+            terminal.restore_error(),
+            Some(shepr_mux::terminal::PaneStartFailure::ResumeUnavailable { .. })
+        ));
+        assert!(terminal.ownership().persisted_agent_session().is_some());
+        assert!(!app.has_pending_agent_resumes());
+        assert!(app.terminal_runtimes.get(&pane_id).is_none());
     }
 
     #[test]
@@ -180,10 +268,11 @@ mod tests {
             terminal.restore_error(),
             Some(shepr_mux::terminal::PaneStartFailure::ResumeUnavailable { .. })
         ));
+        assert!(terminal.ownership().persisted_agent_session().is_some());
         assert!(!app.has_pending_agent_resumes());
-        // The child may still be alive: its runtime stays for the death that
-        // follows.
-        assert!(app.terminal_runtimes.get(&pane_id).is_some());
+        // The unconfirmed launch is retired before its queued exit can remove
+        // the pane and its saved session.
+        assert!(app.terminal_runtimes.get(&pane_id).is_none());
     }
 
     #[test]

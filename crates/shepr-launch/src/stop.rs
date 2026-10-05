@@ -3,9 +3,7 @@
 
 use shepr_api::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
 use shepr_api::error::ApiErrorCode;
-use shepr_api::schema::{
-    Method, Request, ResponseResult, ServerStopIfBootParams, ServerStopParams,
-};
+use shepr_api::schema::{Request, ResponseResult};
 use shepr_protocol::BootId;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -240,11 +238,46 @@ pub fn stop_active_server(
     paths: &shepr_paths::AppPaths,
     expected_boot_id: Option<&BootId>,
 ) -> Result<(), ServerStopError> {
-    stop_active_server_with_timeout(paths, expected_boot_id, STOP_WAIT_TIMEOUT)
+    stop_active_server_with_timeout(
+        paths,
+        StopOrigin::Operator,
+        expected_boot_id,
+        STOP_WAIT_TIMEOUT,
+    )
+}
+
+/// [`stop_active_server`] for the startup restart offer, which always names
+/// the boot it observed. Its request carries its own id, so the server's log
+/// tells it from an operator's `shepr stop`.
+///
+/// # Errors
+///
+/// As [`stop_active_server`].
+pub fn stop_for_startup_restart(
+    paths: &shepr_paths::AppPaths,
+    expected_boot_id: &BootId,
+) -> Result<(), ServerStopError> {
+    stop_active_server_with_timeout(
+        paths,
+        StopOrigin::StartupRestart,
+        Some(expected_boot_id),
+        STOP_WAIT_TIMEOUT,
+    )
+}
+
+/// Who asks for a stop, which names the stop's request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopOrigin {
+    /// `shepr stop`, also when a remote Restart or `stop --all` runs it on its
+    /// host over SSH.
+    Operator,
+    /// The startup restart offer; always with the boot it observed.
+    StartupRestart,
 }
 
 fn stop_active_server_with_timeout(
     paths: &shepr_paths::AppPaths,
+    origin: StopOrigin,
     expected_boot_id: Option<&BootId>,
     timeout: Duration,
 ) -> Result<(), ServerStopError> {
@@ -255,6 +288,7 @@ fn stop_active_server_with_timeout(
         Some((&paths.data_dir_lease_path(), STOP_LEASE_WAIT_TIMEOUT)),
         timeout,
         "server",
+        origin,
         expected_boot_id,
     )
 }
@@ -269,12 +303,13 @@ fn stop_socket_with_timeout(
     lease: Option<(&Path, Duration)>,
     timeout: Duration,
     label: &str,
+    origin: StopOrigin,
     expected_boot_id: Option<&BootId>,
 ) -> Result<(), ServerStopError> {
     // clock-io-ok: one deadline bounds the real stop request's socket reads
     // and the server process's exit, so it must share their real clock.
     let deadline = Instant::now() + timeout;
-    let request = server_stop_request("cli:stop", expected_boot_id);
+    let request = server_stop_request(origin, expected_boot_id);
     send_stop_request(socket_path, &request, deadline, label, expected_boot_id)?;
     let stopped = if let Some(expected_boot_id) = expected_boot_id {
         match wait_until_boot_stops(socket_path, expected_boot_id, deadline, label)? {
@@ -667,16 +702,16 @@ fn stop_socket_io_error(socket_path: &Path, label: &str, error: io::Error) -> Se
     }
 }
 
-fn server_stop_request(id: &str, expected_boot_id: Option<&BootId>) -> Request {
-    let method = match expected_boot_id {
-        Some(expected_boot_id) => Method::ServerStopIfBoot(ServerStopIfBootParams {
-            expected_boot_id: expected_boot_id.clone(),
-        }),
-        None => Method::ServerStop(ServerStopParams::default()),
-    };
-    Request {
-        id: id.into(),
-        method,
+fn server_stop_request(origin: StopOrigin, expected_boot_id: Option<&BootId>) -> Request {
+    match (origin, expected_boot_id) {
+        (StopOrigin::StartupRestart, Some(expected_boot_id)) => {
+            Request::startup_restart_stop(expected_boot_id)
+        }
+        // `stop_for_startup_restart` always names a boot, so a startup
+        // restart never reaches this arm without one.
+        (StopOrigin::Operator | StopOrigin::StartupRestart, expected_boot_id) => {
+            Request::server_stop(expected_boot_id)
+        }
     }
 }
 
@@ -773,8 +808,10 @@ mod tests {
                 .expect("stop request line");
             request
         });
-        let request =
-            server_stop_request("cli:stop", Some(&"17-23".parse().expect("boot identity")));
+        let request = server_stop_request(
+            StopOrigin::StartupRestart,
+            Some(&"17-23".parse().expect("boot identity")),
+        );
 
         send_stop_request(
             &socket_path,
@@ -787,9 +824,15 @@ mod tests {
         let received = handle.join().expect("test precondition");
         let received: Request =
             serde_json::from_str(&received).expect("stop request is valid API JSON");
+        assert_eq!(received, request);
         assert_eq!(
-            received,
-            server_stop_request("cli:stop", Some(&"17-23".parse().expect("boot identity")))
+            received.id,
+            shepr_api::schema::RequestId::StartupRestart.as_str()
+        );
+        assert_ne!(
+            received.id,
+            server_stop_request(StopOrigin::Operator, None).id,
+            "a startup restart is told apart from an operator stop"
         );
         assert_eq!(received.method.traits().name, "server.stop_if_boot");
     }
@@ -829,19 +872,38 @@ mod tests {
             }
         });
 
-        let err = stop_active_server_with_timeout(&paths, None, Duration::from_millis(75))
-            .expect_err("silent server should fail after timeout");
+        let err = stop_active_server_with_timeout(
+            &paths,
+            StopOrigin::Operator,
+            None,
+            Duration::from_millis(75),
+        )
+        .expect_err("silent server should fail after timeout");
 
         assert!(matches!(err, ServerStopError::TimedOut { .. }), "{err}");
         keep_running.store(false, Ordering::Relaxed);
         handle.join().expect("test precondition");
     }
 
+    /// A reply line to an operator stop with `body` (a `"result"` or
+    /// `"error"` member), under that stop's request id.
+    fn operator_stop_reply(body: &str) -> String {
+        format!(
+            "{{\"id\":\"{}\",{body}}}\n",
+            shepr_api::schema::RequestId::OperatorStop.as_str()
+        )
+    }
+
+    /// The success answer to an operator stop.
+    fn operator_stop_ok() -> String {
+        operator_stop_reply(r#""result":{"type":"ok"}"#)
+    }
+
     /// Answers every request at `socket_path` with `reply` and records each
     /// request line, so a test can see what a stop sent.
     fn serve_reply(
         socket_path: &Path,
-        reply: &'static str,
+        reply: String,
     ) -> (
         std::sync::Arc<std::sync::atomic::AtomicBool>,
         std::thread::JoinHandle<Vec<String>>,
@@ -890,7 +952,9 @@ mod tests {
         let socket_path = paths.server_address().socket().to_path_buf();
         let (keep_running, handle) = serve_reply(
             &socket_path,
-            "{\"id\":\"cli:stop\",\"error\":{\"code\":\"server_boot_mismatch\",\"message\":\"this server is boot 9-9\"}}\n",
+            operator_stop_reply(
+                r#""error":{"code":"server_boot_mismatch","message":"this server is boot 9-9"}"#,
+            ),
         );
 
         let error = stop_active_server(&paths, Some(&"1-1".parse().expect("boot identity")))
@@ -936,7 +1000,7 @@ mod tests {
                             continue;
                         }
                         let response = if request.contains("server.stop") {
-                            "{\"id\":\"cli:stop\",\"result\":{\"type\":\"ok\"}}\n".to_owned()
+                            operator_stop_ok()
                         } else {
                             status_requests += 1;
                             let boot_id = if status_requests == 1 {
@@ -945,7 +1009,8 @@ mod tests {
                                 "17-24"
                             };
                             format!(
-                                "{{\"id\":\"api-client:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.1.0\",\"build_id\":\"0123456789abcdef\",\"boot_id\":\"{boot_id}\"}}}}\n"
+                                "{{\"id\":\"{}\",\"result\":{{\"type\":\"pong\",\"version\":\"0.1.0\",\"build_id\":\"0123456789abcdef\",\"boot_id\":\"{boot_id}\"}}}}\n",
+                                shepr_api::schema::RequestId::StatusPing.as_str()
                             )
                         };
                         drop(stream.write_all(response.as_bytes()));
@@ -963,6 +1028,7 @@ mod tests {
             None,
             Duration::from_secs(2),
             "test server",
+            StopOrigin::Operator,
             Some(&"17-23".parse().expect("boot identity")),
         )
         .expect_err("a new boot must be reported instead of waiting for its socket");
@@ -987,15 +1053,17 @@ mod tests {
     fn an_unconditional_stop_sends_no_expected_boot_and_never_reads_the_build() {
         let (_env, paths) = isolated_config_env();
         let socket_path = paths.server_address().socket().to_path_buf();
-        let (keep_running, handle) = serve_reply(
-            &socket_path,
-            "{\"id\":\"cli:stop\",\"result\":{\"type\":\"ok\"}}\n",
-        );
+        let (keep_running, handle) = serve_reply(&socket_path, operator_stop_ok());
 
         // The fake keeps its socket up, so the stop times out: what is under
         // test is the request it sent.
-        let error = stop_active_server_with_timeout(&paths, None, Duration::from_millis(75))
-            .expect_err("the fake never exits");
+        let error = stop_active_server_with_timeout(
+            &paths,
+            StopOrigin::Operator,
+            None,
+            Duration::from_millis(75),
+        )
+        .expect_err("the fake never exits");
 
         keep_running.store(false, Ordering::Relaxed);
         let requests = handle.join().expect("test precondition");
@@ -1009,13 +1077,12 @@ mod tests {
     fn a_stop_rejects_a_success_response_with_the_wrong_result() {
         let scratch = ScratchDir::new("stop-wrong-result");
         let socket_path = scratch.join("api.sock");
-        let reply = concat!(
-            r#"{"id":"cli:stop","result":{"type":"pong","version":"0.1.0","#,
-            r#""build_id":"0123456789abcdef","boot_id":"17-23"}}"#,
-            "\n"
-        );
+        let reply = operator_stop_reply(concat!(
+            r#""result":{"type":"pong","version":"0.1.0","#,
+            r#""build_id":"0123456789abcdef","boot_id":"17-23"}"#,
+        ));
         let (keep_running, handle) = serve_reply(&socket_path, reply);
-        let request = server_stop_request("cli:stop", None);
+        let request = server_stop_request(StopOrigin::Operator, None);
 
         let error = send_stop_request(
             &socket_path,
@@ -1082,10 +1149,7 @@ mod tests {
                         // A client may close before reading this reply; the test
                         // asserts on the stop call's timeout, not on the reply. A
                         // Unix stream has nothing to flush.
-                        drop(
-                            stream
-                                .write_all(b"{\"id\":\"cli:stop\",\"result\":{\"type\":\"ok\"}}\n"),
-                        );
+                        drop(stream.write_all(operator_stop_ok().as_bytes()));
                     }
                     Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));
@@ -1095,8 +1159,13 @@ mod tests {
             }
         });
 
-        let err = stop_active_server_with_timeout(&paths, None, Duration::from_millis(75))
-            .expect_err("still-running server should fail");
+        let err = stop_active_server_with_timeout(
+            &paths,
+            StopOrigin::Operator,
+            None,
+            Duration::from_millis(75),
+        )
+        .expect_err("still-running server should fail");
 
         assert!(
             matches!(&err, ServerStopError::TimedOut { socket, .. } if socket == &socket_path),
@@ -1141,7 +1210,7 @@ mod tests {
                 .expect("request");
             assert!(request.contains("server.stop_if_boot"));
             stream
-                .write_all(b"{\"id\":\"cli:stop\",\"result\":{\"type\":\"ok\"}}\n")
+                .write_all(operator_stop_ok().as_bytes())
                 .expect("answer");
             held_tx.send(listener).expect("retain listener");
         });
@@ -1153,6 +1222,7 @@ mod tests {
                     None,
                     Duration::from_secs(2),
                     "test server",
+                    StopOrigin::Operator,
                     Some(&"17-23".parse().expect("boot identity")),
                 ))
                 .expect("result");
@@ -1190,7 +1260,7 @@ mod tests {
                 .read_line(&mut request)
                 .expect("request");
             stream
-                .write_all(b"{\"id\":\"cli:stop\",\"result\":{\"type\":\"ok\"}}\n")
+                .write_all(operator_stop_ok().as_bytes())
                 .expect("answer");
             held_tx.send(listener).expect("retain listener");
         });
@@ -1202,6 +1272,7 @@ mod tests {
                     Some((&lease_path, Duration::from_millis(500))),
                     Duration::from_millis(75),
                     "test server",
+                    StopOrigin::Operator,
                     Some(&"17-23".parse().expect("boot identity")),
                 ))
                 .expect("result");

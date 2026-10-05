@@ -8,8 +8,8 @@ use std::path::{Path, PathBuf};
 use clap::ArgMatches;
 
 use shepr_api::schema::{
-    DetectionCapture, DetectionExplanation, DetectionStateSource, ErrorBody, ErrorResponse, Method,
-    PaneTarget, ParkedHookAwaiting, Request, ResponseResult, UnappliedHookOutcome,
+    DetectionCapture, DetectionExplanation, DetectionStateSource, ErrorBody, ErrorResponse,
+    ParkedHookAwaiting, Request, RequestId, ResponseResult, UnappliedHookOutcome,
     UnappliedHookReport, UnappliedHookReportKind,
 };
 
@@ -77,12 +77,7 @@ pub(super) fn run_detect_command(
 /// The request behind `detect capture`: the server answers with the complete
 /// detector input for that pane, whether or not an agent is currently detected.
 fn capture_request(pane: &shepr_protocol::PublicPaneId) -> Request {
-    Request {
-        id: "cli:detect:capture".into(),
-        method: Method::DetectCapture(PaneTarget {
-            pane_id: pane.to_string(),
-        }),
-    }
+    Request::detect_capture(pane.to_string())
 }
 
 fn capture(
@@ -106,12 +101,7 @@ pub(super) fn explain(
     json: bool,
     verbose: bool,
 ) -> super::CliResult<i32> {
-    let request = Request {
-        id: "cli:detect:explain".into(),
-        method: Method::DetectExplain(PaneTarget {
-            pane_id: target.to_string(),
-        }),
-    };
+    let request = Request::detect_explain(target.to_string());
     let explain = match super::send_request(paths, &request)? {
         ResponseResult::DetectExplain { explain } => explain,
         other => return Err(super::unexpected_result(&other)),
@@ -159,7 +149,7 @@ pub(super) fn explain_file(
         Ok(content) => content,
         Err(err) => {
             return Err(super::CliError::Response(ErrorResponse {
-                id: Some("cli:detect:explain".into()),
+                id: Some(RequestId::DetectExplain.as_str().to_owned()),
                 error: ErrorBody::new(
                     &shepr_api::error::ApiErrorCode::AgentExplainFileReadFailed,
                     format!("failed to read explain file {}: {err}", path.display()),
@@ -240,11 +230,15 @@ pub(super) fn print_explain_text(explain: &DetectionExplanation, verbose: bool) 
         println!("screen_state: {screen_state}");
         if screen_state != explain.state
             && matches!(&explain.state_source, DetectionStateSource::Screen)
+            && explain.detector_gate.is_none()
         {
             println!(
-                "screen_state_note: differs from the effective state; the reason is unavailable"
+                "screen_state_note: differs from the effective state; no active mux gate was reported"
             );
         }
+    }
+    if let Some(gate) = explain.detector_gate {
+        println!("detector_gate: {gate}");
     }
     if let Some(rule) = &explain.matched_rule {
         println!(
@@ -322,7 +316,7 @@ pub(super) fn print_explain_text(explain: &DetectionExplanation, verbose: bool) 
 mod tests {
     use super::super::tests::group_matches;
     use super::*;
-    use shepr_api::schema::SuccessResponse;
+    use shepr_api::schema::{Method, SuccessResponse};
 
     fn command(args: &[&str]) -> Command {
         parse(&group_matches(args)).expect("test precondition")

@@ -247,6 +247,7 @@ fn capture_workspace(
             agent_session: terminal
                 .ownership()
                 .current_session_identity_for_persistence(),
+            unusable_agent_session: None,
         }
     });
     let Some(shape) = shape else {

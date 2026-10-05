@@ -2490,14 +2490,15 @@ fn install_grok_uses_grok_home_env() {
 
 #[test]
 fn hook_path_strip_rejects_non_array_event_values() {
-    let mut settings = json!({"hooks": {"UnrelatedEvent": {}}});
-    let hooks = settings
-        .get_mut("hooks")
-        .and_then(Value::as_object_mut)
-        .expect("test precondition");
-
-    let error = remove_hook_path_commands(hooks, Path::new("/hooks/shepr-agent-state.sh"))
-        .expect_err("all event values must be arrays");
+    let error = super::json_edit::install_json(
+        r#"{"hooks":{"UnrelatedEvent":{}}}"#,
+        Path::new("/settings.json"),
+        Path::new("/hooks/shepr-agent-state.sh"),
+        super::registration::HooksRoot::HooksKey,
+        serde_json::Map::new(),
+        false,
+    )
+    .expect_err("all event values must be arrays");
 
     assert_eq!(
         error.to_string(),

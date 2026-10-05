@@ -183,7 +183,7 @@ impl WorkspaceSet {
             .position(|workspace| workspace.tree().contains(pane))?;
         let workspace = self.workspaces.get_mut(index)?;
         let workspace_id = workspace.id;
-        if workspace.tree().len() > 1 {
+        if !workspace.tree().is_lone() {
             let focused = workspace.tree().focused();
             let record = workspace.remove_pane(pane).ok()?;
             return Some(PaneRemoval {

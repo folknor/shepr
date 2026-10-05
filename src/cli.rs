@@ -613,14 +613,17 @@ mod tests {
         let mapped = super::map_server_not_running_or_io(
             &paths,
             ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::NotFound)),
-            "cli:detect:capture",
+            shepr_api::schema::RequestId::DetectCapture.as_str(),
             &client,
         );
 
         let CliError::Response(response) = &mapped else {
             panic!("dead-server connect failure should carry a response");
         };
-        assert_eq!(response.id.as_deref(), Some("cli:detect:capture"));
+        assert_eq!(
+            response.id.as_deref(),
+            Some(shepr_api::schema::RequestId::DetectCapture.as_str())
+        );
         assert_eq!(
             response.error.code,
             shepr_api::error::ApiErrorCode::ServerNotRunning
@@ -641,7 +644,7 @@ mod tests {
         let mapped = super::map_server_not_running_or_io(
             &paths,
             ApiClientError::Io(std::io::Error::from(std::io::ErrorKind::TimedOut)),
-            "cli:detect:capture",
+            shepr_api::schema::RequestId::DetectCapture.as_str(),
             &client,
         );
         assert!(!matches!(

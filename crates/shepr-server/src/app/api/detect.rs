@@ -1,7 +1,7 @@
 use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
 use shepr_api::schema::{
-    DetectionCapture, DetectionExplanation, PaneTarget, ResponseResult, ScreenDetectionSkipReason,
-    UnappliedHookReport,
+    DetectionCapture, DetectionExplanation, PaneTarget, ResponseResult, ScreenDetectionGate,
+    ScreenDetectionSkipReason, UnappliedHookReport,
 };
 
 use crate::app::App;
@@ -11,12 +11,34 @@ use super::responses::{failure, success};
 
 /// One locked read of the detector's input, the same read the live detection
 /// tick takes, so the screen and OSC values describe one terminal state.
-fn detection_capture(pane: &shepr_mux::pane::PaneRuntime) -> DetectionCapture {
-    let inputs = pane.read().agent_detection_inputs();
-    DetectionCapture {
+fn detection_capture(
+    pane: &shepr_mux::pane::PaneRuntime,
+) -> Result<DetectionCapture, shepr_mux::pane::AgentDetectionReadError> {
+    let inputs = pane.read().agent_detection_inputs()?;
+    Ok(DetectionCapture {
         screen: inputs.screen_text,
         osc_title: inputs.osc_title.unwrap_or_default(),
         osc_progress: inputs.osc_progress.unwrap_or_default(),
+    })
+}
+
+fn detection_read_error(
+    public_pane_id: &str,
+    error: shepr_mux::pane::AgentDetectionReadError,
+) -> ApiError {
+    ApiError::new(
+        ApiErrorCode::PaneTerminalUnavailable,
+        format!("pane {public_pane_id} detection input read failed: {error}"),
+    )
+}
+
+fn screen_detection_gate(gate: shepr_mux::pane::DetectorGate) -> ScreenDetectionGate {
+    match gate {
+        shepr_mux::pane::DetectorGate::PendingIdleConfirmation => {
+            ScreenDetectionGate::PendingIdleConfirmation
+        }
+        shepr_mux::pane::DetectorGate::StartupGrace => ScreenDetectionGate::StartupGrace,
+        shepr_mux::pane::DetectorGate::ResumeAbsenceHold => ScreenDetectionGate::ResumeAbsenceHold,
     }
 }
 
@@ -31,9 +53,11 @@ impl App {
             return Err(self.detect_terminal_unavailable_error(pane_id, &target.pane_id));
         };
 
+        let capture = detection_capture(pane)
+            .map_err(|error| detection_read_error(&target.pane_id, error))?;
         success(ResponseResult::DetectCapture {
             pane_id: public_id,
-            capture: detection_capture(pane),
+            capture,
         })
     }
 
@@ -69,7 +93,13 @@ impl App {
             );
         };
 
-        let capture = detection_capture(pane);
+        let detector_gate = if owner == shepr_detect::ownership::EffectiveStateSource::Screen {
+            pane.active_detector_gate().map(screen_detection_gate)
+        } else {
+            None
+        };
+        let capture = detection_capture(pane)
+            .map_err(|error| detection_read_error(&target.pane_id, error))?;
         let screen_explain = shepr_detect::manifest::explain_with_input(
             agent,
             shepr_detect::manifest::DetectionInput {
@@ -78,11 +108,8 @@ impl App {
                 osc_progress: capture.osc_progress_evidence(),
             },
         );
-        // Effective ownership and a fresh screen evaluation answer separate
-        // questions. Detector timing gates live inside the mux's private
-        // DetectorState, so only a manifest skip and the effective owner are
-        // observable here; do not guess whether a state mismatch is pending
-        // idle confirmation, startup grace, or restore absence hold.
+        // Effective ownership, the latest mux gate, and a fresh screen
+        // evaluation answer separate questions.
         let state_source = match owner {
             shepr_detect::ownership::EffectiveStateSource::Screen => {
                 shepr_api::schema::DetectionStateSource::Screen
@@ -120,6 +147,7 @@ impl App {
             explain: Box::new(
                 DetectionExplanation::from(screen_explain)
                     .with_pane_decision(ownership.state(), state_source)
+                    .with_detector_gate(detector_gate)
                     .with_last_unapplied_hook_report(last_unapplied_hook_report),
             ),
         })
@@ -252,10 +280,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn capture_and_explain_report_a_poisoned_screen_read() {
+        let (mut app, pane_id) = app_with_pane("detect-read-failure");
+        app.state
+            .terminal_mut(pane_id)
+            .set_detected_state(Some(Agent::Codex), AgentState::Working);
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"ignored");
+        runtime.test_break_terminal_core();
+        app.terminal_runtimes.insert(pane_id, runtime);
+        let pane = app
+            .state
+            .pane(pane_id)
+            .expect("test precondition")
+            .public_id()
+            .to_string();
+
+        for method in [
+            AppMethod::DetectCapture(PaneTarget {
+                pane_id: pane.clone(),
+            }),
+            AppMethod::DetectExplain(PaneTarget {
+                pane_id: pane.clone(),
+            }),
+        ] {
+            let response = request(&mut app, "read_failure", method);
+            assert_eq!(
+                response["error"]["code"], "pane_terminal_unavailable",
+                "{response}"
+            );
+            let message = response["error"]["message"].as_str().unwrap_or_default();
+            assert!(message.contains(&pane), "{response}");
+            assert!(
+                message.contains("detection input read failed"),
+                "{response}"
+            );
+            assert!(
+                message.contains("terminal core lock is poisoned"),
+                "{response}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn explain_reports_the_pane_state_when_the_screen_verdict_differs() {
         let (mut app, pane_id) = app_with_pane("detect-explain-state-differs");
-        // Exercise the API's observable state/evaluation mismatch. The
-        // detector's private timing gates are not exposed at this boundary.
+        // This childless fixture has no DetectorTask; the real hold transition
+        // is tested beside the mux gate, and this checks that no stale gate is
+        // reported when the fixture has none.
         app.state
             .terminal_mut(pane_id)
             .set_detected_state(Some(Agent::Codex), AgentState::Working);
@@ -282,6 +353,7 @@ mod tests {
         assert_eq!(explain["state"], "working", "{response}");
         assert_eq!(explain["state_source"]["kind"], "screen", "{response}");
         assert_eq!(explain["screen_state"], "blocked", "{response}");
+        assert!(explain["detector_gate"].is_null(), "{response}");
         assert_eq!(
             explain["matched_rule"]["id"], "live_strong_blocker",
             "{response}"

@@ -24,7 +24,7 @@ pub mod daemon_exit;
 pub mod failure;
 pub mod guidance;
 pub mod invocation;
-mod limits;
+pub mod limits;
 pub mod local_server;
 pub mod restart;
 pub mod status;

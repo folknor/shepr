@@ -67,16 +67,6 @@ an `InstallErrorKind::NotRegularFile` encoding (DIAG, typed errors through
 `io::Error`). Platform's `open_regular_file` should return the typed error itself.
 Enforceable by a textlint on `struct NotRegularFile` outside platform.
 
-## VAL-006 - The lease file name is aliased again in mux under a false comment
-
-Reported by: persistence, server-lifecycle.
-
-`persist/lock.rs` has `LOCK_FILE_NAME = shepr_paths::DATA_DIR_LEASE_FILE_NAME`
-with the comment "Config owns the lease filename used to build API paths; platform
-is below config". Config does not own it, `shepr-paths` does. The alias exists only
-so a writer test can join it. Use the `shepr_paths` name directly and drop the
-comment.
-
 ## VAL-007 - The default resume spacing is spelled in five places
 
 Reported by: restore-resume.
@@ -200,16 +190,6 @@ Reported by: save-shutdown.
 on stop, using the channel's capacity to mean "drain everything queued", which
 `drain_all_internal_events_with_forwarding` (`outputs.queued_events()`) already
 expresses. Use the queued count.
-
-## VAL-018 - The checkpoint retry minimum borrows the autosave minimum
-
-Reported by: save-shutdown. See BUG-016.
-
-`checkpoint_retry_delay` uses `SESSION_SAVE_RETRY_MIN` with
-`CHECKPOINT_RETRY_MAX_DELAY`. A tuner finds a checkpoint `MAX` and `MAX_FAILURES`
-but no `MIN`, and changing the autosave minimum silently changes the checkpoint
-schedule and its total budget against logind. Name `CHECKPOINT_RETRY_MIN` (equal
-to the other, with a `const` assert if they must match).
 
 ## VAL-019 - Save and shutdown tests restate the constants' current arithmetic
 
@@ -497,16 +477,6 @@ header, `bundle::integration_id`), and the directory `antigravity_cli/`.
 "antigravity-cli", so one line names it two ways. Drop `action_label`; one name
 per target from the descriptor.
 
-## VAL-041 - The integration lock root is assembled outside `shepr-paths`
-
-Reported by: integrations.
-
-`<XDG_STATE_HOME>/shepr/integration-locks` is built in
-`env::resolve_config_update_lock_dir` from `SHARED_APP_DIR_NAME` plus a local
-literal. AGENTS.md names `shepr-paths` the owner of the XDG layout; the integration
-layer rule does not allow it, but nothing prevents adding it. Fix: a `shepr-paths`
-accessor and a dependency-rule change. See VAL-001.
-
 ## VAL-042 - The integration asset list is written three times
 
 Reported by: integrations.
@@ -568,31 +538,6 @@ decoder timing from `limits`, and pass a clock and timer object into the kits; t
 Rust clock textlints do not reach `.js` / `.ts`. Also,
 `TOML_BASIC_STRING_DELIMITER_BYTES = 2` (the two quote characters, a `with_capacity`
 hint) poses as a tunable; mark it `limits-exempt` at the use or write `len() + 2`.
-
-## VAL-047 - "A workspace has one pane" is spelled six times
-
-Reported by: workspace-model.
-
-`shepr-core/src/limits.rs` owns `MIN_WORKSPACE_PANES = 1`, used only by
-`TileLayout::close_focused` / `close_pane`. The rule is re-spelled as literals in
-`PaneTree::remove` (`len() <= 1`), `PaneTree::set_zoomed` (`len() < 2`),
-`PaneTree::plan` (`numbers.len() > 1`), `WorkspaceSet::remove_pane` (`len() > 1`),
-`AppState::toggle_pane_zoom` and `handle_pane_zoom` (`len() <= 1`). Not diverged.
-Fix: `PaneTree::is_lone()` (or `can_zoom()` / `can_remove()`); delete the server
-copies. Enforceable by a textlint on `tree\(\)\.len\(\)\s*[<>]=?\s*[12]` in
-`crates/shepr-server/src/app/**`.
-
-## VAL-048 - A new split's ratio and zoom are decided at prepare and again at commit
-
-Reported by: workspace-model.
-
-`Workspace::prepare_split` sizes the PTY against
-`planned.split_pane(target, direction, SplitRatio::EVEN, pane)` with
-`zoomed = false`; `PaneTree::commit_split` independently installs `SplitRatio::EVEN`
-and sets `zoomed = false`. If either changed, the child would be spawned at one size
-and laid out at another, which `PreparedSplit` exists to rule out. Fix:
-`PreparedSplit` carries the planned layout (or ratio and resulting zoom) and commit
-installs it; enforceable by commit taking no ratio argument.
 
 ## VAL-049 - The default workspace name rule has two halves in two crates, and the client uses one
 
@@ -676,43 +621,25 @@ through `guidance::operator_entrypoint`. Enforceable with a textlint on
 `"shepr-server` and `` `shepr `` in string literals outside `invocation.rs` and
 `guidance.rs`.
 
-## VAL-056 - Four budgets for one `ping`, already diverged
+## VAL-056 - `ApiClient::ping` still waits the ordinary 20 s response window
 
-Reported by: server-lifecycle. Root of BUG-051.
+Reported by: server-lifecycle.
 
-"Does a server answer at this socket, and as what" has `STATUS_REQUEST_TIMEOUT` 2 s
-(launch, bridge, remote wait), `STATUS_ANSWER_TIMEOUT` 20 s (`src/limits.rs`,
-`shepr status`), `ORDINARY_RESPONSE_TIMEOUT` 20 s (`ApiClient::ping`, used by the
-CLI's pre-request build check) and `STOP_STATUS_PROBE_TIMEOUT` 250 ms (stop).
-`STATUS_ANSWER_TIMEOUT`'s doc claims it matches the API client's window "so a slow
-but working loop still answers in time", but `ping` is answered on the connection
-thread and never waits for the loop, so the rationale is false; it also restates a
-`pub(crate)` value the binary cannot name. One owner (launch) with named
-derivations, and a `const` assert in remote that its SSH command budget exceeds the
-remote status worst case.
-
-## VAL-057 - Remote stop and connect budgets restate launch's stop and start budgets
-
-Reported by: server-lifecycle, remote. See BUG-062 for the start half.
-
-`shepr-remote/src/limits.rs` says `REMOTE_STOP_SSH_TIMEOUT` (45 s) covers the
-remote `shepr stop`'s own deadline plus the connection. That deadline is
-`STOP_WAIT_TIMEOUT` (15 s) + `STOP_LEASE_WAIT_TIMEOUT` (10 s) + a final probe, all
-`pub(crate)` in `shepr-launch`. In step today (about 25 s + `ConnectTimeout=10`),
-but nothing notices if either grows. Export a `STOP_WORST_CASE` from launch and
-assert in remote, as `BRIDGE_IDLE_TIMEOUT` already does against
-`HEARTBEAT_INTERVAL`.
+Status probes now use launch-owned 2 s windows and the stop keeps its documented
+250 ms probe. `ApiClient::ping` (the CLI's pre-request build check) still waits
+`ORDINARY_RESPONSE_TIMEOUT` (20 s), although `ping` is answered on the connection
+thread and never waits for the app loop. Give it the launch status window.
 
 ## VAL-058 - Request ids, "is this build" and similar wire facts are spelled per call site
 
 Reported by: server-lifecycle.
 
-`"api-client:status"`, `"api-client:summary"`, `"cli:stop"`, `"cli:detect:capture"`,
-`"cli:detect:explain"` are literals at each call site; test fakes spell
-`"autodetect:server:status"`. The stop's id is always `"cli:stop"`, including when
-the TUI's restart offer or a remote `--expect-boot` stop sends it, so server logs
-cannot tell an operator stop from the startup restart. With BUG-056 fixed, a request
-type that mints its id is the owner. Separately, "is this build" has two spellings:
+`shepr-api` now has a request id type with constructors (ping, summary, operator
+stop, startup-restart stop, detect capture and explain), used by the API client.
+Still spelled as literals: the request ids and a local error response id in
+`src/cli/detect.rs`, and the stop request in `shepr-launch/src/stop.rs` (which
+still sends one id for an operator stop and the startup restart) and its status
+fake in `shepr-launch/src/status.rs`. Separately, "is this build" has two spellings:
 `status.build_id.is_this_build()` (launch, preflight, remote) and
 `BuildIdentity::for_this_build().matches(..)` (`cli/status.rs`). Pick one.
 
@@ -730,31 +657,16 @@ Reported by: server-lifecycle.
   wall-clock pacing. Drive them with a fake clock or drop the seam.
 - `SOCKET_POLL_INTERVAL` is also the poll of a child process
   (`read_server_version_line`), named for something else.
-- `MAX_LOCAL_OFFERS` and `STATUS_ANSWER_TIMEOUT` live in the binary's
-  `src/limits.rs` while the restart policy lives in launch.
+- `MAX_LOCAL_OFFERS` lives in the binary's `src/limits.rs` while the restart
+  policy lives in launch.
 - The lifecycle tunables are split over five limits modules (launch, api, remote,
-  server, binary), with the couplings of VAL-056, VAL-057 and BUG-062 stated only
-  in prose. Nothing answers which timeouts must stay ordered with which.
-
-## VAL-060 - The `error: ` prefix is a cross-process protocol spelled in two crates
-
-Reported by: remote.
-
-`src/cli/error.rs` `CliError::print` writes `eprintln!("error: {error}")` for
-`CliError::Io`; `shepr-remote/src/bridge.rs` `classified_remote_bridge_failure`
-strips `line.strip_prefix("error: ")` to find `BRIDGE_FAILURE_MARKER`;
-`bridge/tests.rs` spells it a third time. Change the CLI's prefix and every remote
-classification silently becomes "unclassified retry", while the test, which forges
-the stderr itself, still passes. Fix: search for the marker anywhere in a line, or
-export the prefix from `shepr_launch` for both ends. Enforce with a test that runs
-the real `CliError::print` into a buffer and feeds it to `ssh_bridge_exit_error`.
+  server, binary). The remote start and stop budgets are now tied to launch by
+  `const` asserts, but nothing names which timeouts must stay ordered with which.
 
 ## VAL-061 - Small duplicated values in the remote layer
 
 Reported by: remote.
 
-- Remote exit codes 125, 126 and 127 are spelled twice in `failure.rs`
-  (`SshExit::from_code` arms and `RemoteExit::code`); one table, round-trip test.
 - The "probe a candidate" script (`test -x {path} || exit {candidate_missing};
   {command}`, decoding `SshExit::Remote(CandidateMissing)`) is built in both
   `discovery.rs` `remote_client_status` and `fleet.rs` `overview_of`; one

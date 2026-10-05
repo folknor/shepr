@@ -270,7 +270,8 @@ impl HookSessionPolicy {
         foreground_takeover: true,
     };
     // Claude's SessionStart sources are this list plus `startup`, and the
-    // integration's hook matcher is built from it (`claude_settings`), so the
+    // integration's hook matcher is built from it (shepr-integration's
+    // `registration`), so the
     // sources Claude reports and the sources that replace stay one list.
     // `startup` reports a new process, which has no live session in this pane
     // to replace. Every other source puts a different session id in the pane's

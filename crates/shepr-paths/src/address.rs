@@ -16,16 +16,18 @@ pub struct ServerAddress {
 impl ServerAddress {
     // Address construction needs a resolved runtime directory and the socket
     // override. A context-free default cannot describe the selected server
-    // target or guarantee valid paths. An override equal to the runtime socket
+    // target or guarantee valid paths. An override naming the runtime socket
     // is not an override: a pane exports its server's resolved socket, and a
-    // pane of the same profile must still count as the runtime address.
+    // pane of the same profile must still count as the runtime address, also
+    // when it reaches the socket through another spelling of the runtime
+    // directory (a symlink), which is why the two are compared canonically.
     /// Resolve and retain the checked socket pathname for the entire launch.
     pub fn for_runtime_dir(
         runtime_dir: &Path,
         socket_override: Option<&Path>,
     ) -> std::io::Result<Self> {
         let runtime = runtime_dir.join(SOCKET_FILE_NAME);
-        let socket_override = socket_override.filter(|path| *path != runtime);
+        let socket_override = socket_override.filter(|path| !same_socket_path(path, &runtime));
         Ok(Self {
             socket: SocketPath::new(socket_override.map_or(runtime, Path::to_path_buf))?,
             overridden: socket_override.is_some(),
@@ -68,6 +70,29 @@ impl ServerAddress {
     pub fn apply_to_child_command(&self, command: &mut Command) {
         command.env_remove(EnvVar::SheprSocketPath);
     }
+}
+
+/// Compare socket pathnames after resolving existing path components. The
+/// socket usually does not exist yet, so compare the canonical parent and the
+/// final component when canonicalizing the full path cannot succeed.
+fn same_socket_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+
+    canonical_socket_path(left)
+        .zip(canonical_socket_path(right))
+        .is_some_and(|(left, right)| left == right)
+}
+
+fn canonical_socket_path(path: &Path) -> Option<std::path::PathBuf> {
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return Some(path);
+    }
+
+    let parent = path.parent()?;
+    let file_name = path.file_name()?;
+    Some(std::fs::canonicalize(parent).ok()?.join(file_name))
 }
 
 /// File name of the server socket inside a runtime directory.
@@ -121,5 +146,28 @@ mod tests {
                 .get_envs()
                 .any(|(key, value)| key == EnvVar::SheprSocketPath.name() && value.is_none())
         );
+    }
+
+    /// The runtime socket reached through a symlinked runtime directory is
+    /// still the runtime address, whether or not the socket exists yet.
+    #[test]
+    fn the_runtime_socket_through_a_symlink_is_not_an_override() {
+        let scratch = shepr_test_support::ScratchDir::new("address-symlink");
+        let runtime = scratch.join("runtime");
+        std::fs::create_dir_all(&runtime).expect("test precondition");
+        let alias = scratch.join("alias");
+        std::os::unix::fs::symlink(&runtime, &alias).expect("test precondition");
+        let through_alias = alias.join(SOCKET_FILE_NAME);
+
+        let address = ServerAddress::resolve_paths(&runtime, Some(&through_alias));
+        assert!(address.is_runtime_address());
+        assert_eq!(address.socket(), runtime.join(SOCKET_FILE_NAME));
+
+        std::fs::write(runtime.join(SOCKET_FILE_NAME), b"").expect("test precondition");
+        let address = ServerAddress::resolve_paths(&runtime, Some(&through_alias));
+        assert!(address.is_runtime_address());
+
+        let elsewhere = scratch.join("elsewhere.sock");
+        assert!(!ServerAddress::resolve_paths(&runtime, Some(&elsewhere)).is_runtime_address());
     }
 }

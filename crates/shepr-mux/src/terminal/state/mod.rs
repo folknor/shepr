@@ -59,10 +59,12 @@ impl AgentResumeState {
     }
 }
 
-/// Why a pane has no running shell, whether newly opened or restored. The pane surface renders its
-/// `guidance` and `cause`; detect requests include its `Display` text in the
-/// existing API error message when a pane has no runtime. OS causes retain
-/// their errno and error kind until the presentation boundary.
+/// Why a pane has no running shell, whether newly opened or restored: its
+/// start failed, or a deferred agent resume failed and its shell was ended.
+/// The pane surface renders its `guidance` and `cause`; detect requests
+/// include its `Display` text in the existing API error message when a pane
+/// has no runtime. OS causes retain their errno and error kind until the
+/// presentation boundary.
 #[derive(Debug)]
 pub enum PaneStartFailure {
     DirectoryUnavailable {
@@ -77,6 +79,9 @@ pub enum PaneStartFailure {
         program: Option<PathBuf>,
         error: std::io::Error,
     },
+    /// The launch's status channel failed while its child lived, so the
+    /// child could not be observed and was ended.
+    LaunchUnobservable { error: std::io::Error },
     /// The saved agent's resume cannot be issued at all (no command to run,
     /// the pane gone from under the attempt), whatever the directory and shell.
     ResumeUnavailable { reason: ResumeUnavailableReason },
@@ -121,6 +126,12 @@ impl PaneStartFailure {
         }
     }
 
+    pub fn launch_unobservable(error: &std::io::Error) -> Self {
+        Self::LaunchUnobservable {
+            error: copy_io_error(error),
+        }
+    }
+
     /// What the operator should do about the failure.
     pub fn guidance(&self) -> &'static str {
         match self {
@@ -133,6 +144,9 @@ impl PaneStartFailure {
             Self::ShellStartFailed { .. } => {
                 "Could not start the pane shell. Fix the shell configuration and restart this session."
             }
+            Self::LaunchUnobservable { .. } => {
+                "Could not confirm that the pane shell started, so it was stopped. Close this pane and open a new one."
+            }
             Self::ResumeUnavailable { .. } => {
                 "Could not resume the saved agent. Restart this session."
             }
@@ -144,6 +158,7 @@ impl PaneStartFailure {
         match self {
             Self::DirectoryUnavailable { error, .. }
             | Self::DirectoryUnreadable { error, .. }
+            | Self::LaunchUnobservable { error }
             | Self::ShellStartFailed {
                 error,
                 program: None,
@@ -164,7 +179,9 @@ impl std::fmt::Display for PaneStartFailure {
             Self::DirectoryUnavailable { path, .. } | Self::DirectoryUnreadable { path, .. } => {
                 write!(formatter, " Directory: {}.", path.display())?;
             }
-            Self::ShellStartFailed { .. } | Self::ResumeUnavailable { .. } => {}
+            Self::ShellStartFailed { .. }
+            | Self::LaunchUnobservable { .. }
+            | Self::ResumeUnavailable { .. } => {}
         }
         if let Some(cause) = self.cause() {
             write!(formatter, " Error: {cause}")?;

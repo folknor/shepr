@@ -17,3 +17,11 @@ pub use self::address::ServerAddress;
 pub use self::app_paths::{AppPaths, DATA_DIR_LEASE_FILE_NAME};
 pub use self::error::PathsError;
 pub use self::profile::BuildProfile;
+
+/// The integration installer lock directory beneath the XDG state home.
+/// Agent config is shared by build profiles, so this root is shared too.
+pub fn integration_lock_dir(xdg_state_home: &std::path::Path) -> std::path::PathBuf {
+    xdg_state_home
+        .join(shepr_core::env::SHARED_APP_DIR_NAME)
+        .join("integration-locks")
+}

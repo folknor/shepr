@@ -264,30 +264,28 @@ pub(super) fn shutdown_pane_processes(
     {
         leader.signal(shepr_platform::Signal::Hangup);
     }
-    // `thread::Builder::spawn` drops its closure on failure, so the work is
-    // parked in a shared slot that the inline fallback can still take back.
-    let work = Arc::new(Mutex::new(Some((tracker.start(), child_liveness))));
-    let thread_work = Arc::clone(&work);
+    let in_flight = tracker.start();
     let spawned = std::thread::Builder::new()
         .name(format!("shepr-pane-{pane_id}-teardown"))
-        .spawn(move || run_pane_teardown(pane_id, &thread_work));
+        .spawn(move || run_pane_teardown(pane_id, in_flight, &child_liveness));
     if let Err(err) = spawned {
+        // Closing a pane must not run sleeps or /proc scans on the event loop,
+        // even under thread exhaustion. The leader already received SIGHUP;
+        // its watcher still owns reaping. Dropping the closure retires the ticket.
         warn!(
             pane = %pane_id,
             error = %err,
-            "could not start pane teardown thread; tearing down inline"
+            "could not start pane teardown thread; session escalation skipped"
         );
-        run_pane_teardown(pane_id, &work);
     }
 }
 
-type PaneTeardownWork = Mutex<Option<(PaneTeardownInFlight, Arc<ChildLiveness>)>>;
-
-fn run_pane_teardown(pane_id: PaneId, work: &PaneTeardownWork) {
-    let taken = shepr_core::locks::lock_auxiliary(work).take();
-    if let Some((_in_flight, child_liveness)) = taken {
-        terminate_pane_session(pane_id, &child_liveness);
-    }
+fn run_pane_teardown(
+    pane_id: PaneId,
+    _in_flight: PaneTeardownInFlight,
+    child_liveness: &ChildLiveness,
+) {
+    terminate_pane_session(pane_id, child_liveness);
 }
 
 fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
@@ -296,12 +294,11 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
     };
     let session_id = shepr_platform::SessionId::of_leader(leader_pid);
     let leader_reaped = || child_liveness.is_reaped();
-    let mut members = Vec::new();
     let leader = child_liveness.leader();
     for (signal, grace) in PANE_TEARDOWN_STEPS {
         // Rescan every round: a process that forked while being hung up is
         // still in the session and must not escape the next signal.
-        members = shepr_platform::session_members(session_id, leader_reaped);
+        let members = shepr_platform::session_members(session_id, leader_reaped);
         let handles: Vec<&shepr_platform::ProcessHandle> = leader
             .as_deref()
             .into_iter()
@@ -328,6 +325,8 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
         }
     }
 
+    // Include descendants forked during the final signal round.
+    let members = shepr_platform::session_members(session_id, leader_reaped);
     let survivors: Vec<u32> = leader
         .as_deref()
         .into_iter()

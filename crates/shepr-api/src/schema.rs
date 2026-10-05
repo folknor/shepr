@@ -27,6 +27,93 @@ pub struct Request {
     pub method: Method,
 }
 
+/// Stable ids used by requests the client creates. Keeping the spellings here
+/// lets logs and response fakes name the same operation without duplicating
+/// wire text at each call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestId {
+    StatusPing,
+    Summary,
+    OperatorStop,
+    StartupRestart,
+    DetectCapture,
+    DetectExplain,
+}
+
+impl RequestId {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StatusPing => "api-client:status",
+            Self::Summary => "api-client:summary",
+            Self::OperatorStop => "cli:stop",
+            Self::StartupRestart => "startup:restart",
+            Self::DetectCapture => "cli:detect:capture",
+            Self::DetectExplain => "cli:detect:explain",
+        }
+    }
+}
+
+impl Request {
+    fn with_id(id: RequestId, method: Method) -> Self {
+        Self {
+            id: id.as_str().to_owned(),
+            method,
+        }
+    }
+
+    pub fn ping() -> Self {
+        Self::with_id(RequestId::StatusPing, Method::Ping(PingParams::default()))
+    }
+
+    pub fn server_summary() -> Self {
+        Self::with_id(
+            RequestId::Summary,
+            Method::ServerSummary(ServerSummaryParams::default()),
+        )
+    }
+
+    /// Builds a stop issued by the operator, optionally guarding it to the
+    /// server boot that a status request observed.
+    pub fn server_stop(expected_boot_id: Option<&shepr_protocol::BootId>) -> Self {
+        let method = match expected_boot_id {
+            Some(expected_boot_id) => Method::ServerStopIfBoot(ServerStopIfBootParams {
+                expected_boot_id: expected_boot_id.clone(),
+            }),
+            None => Method::ServerStop(ServerStopParams::default()),
+        };
+        Self::with_id(RequestId::OperatorStop, method)
+    }
+
+    /// Stops only the server boot observed by startup before it offers a
+    /// restart, so server logs can distinguish that operation from `shepr stop`.
+    pub fn startup_restart_stop(expected_boot_id: &shepr_protocol::BootId) -> Self {
+        Self::with_id(
+            RequestId::StartupRestart,
+            Method::ServerStopIfBoot(ServerStopIfBootParams {
+                expected_boot_id: expected_boot_id.clone(),
+            }),
+        )
+    }
+
+    pub fn detect_capture(pane_id: impl Into<String>) -> Self {
+        Self::with_id(
+            RequestId::DetectCapture,
+            Method::DetectCapture(PaneTarget {
+                pane_id: pane_id.into(),
+            }),
+        )
+    }
+
+    pub fn detect_explain(pane_id: impl Into<String>) -> Self {
+        Self::with_id(
+            RequestId::DetectExplain,
+            Method::DetectExplain(PaneTarget {
+                pane_id: pane_id.into(),
+            }),
+        )
+    }
+}
+
 impl<'de> Deserialize<'de> for Request {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

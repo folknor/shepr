@@ -1025,7 +1025,7 @@ mod registration_tests {
 
         let settings_path = dir.join("settings.json");
         let target = Target::Claude;
-        let installed = super::super::claude_settings::install(
+        let installed = super::super::json_edit::install_claude_settings(
             "{}",
             &settings_path,
             &hook,
@@ -1080,7 +1080,7 @@ mod registration_tests {
         write_current_hook(IntegrationTarget::Claude, &hook);
         let settings_path = dir.join("settings.json");
         let command = hook_command(&hook, Some("session"));
-        let matcher = super::super::claude_settings::claude_session_start_matcher();
+        let matcher = super::super::registration::claude_session_start_matcher();
         let write = |session_start: serde_json::Value| {
             let settings = serde_json::json!({ "hooks": { "SessionStart": session_start } });
             fs::write(&settings_path, settings.to_string()).expect("test precondition");

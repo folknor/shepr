@@ -375,7 +375,11 @@ async fn a_frozen_persisting_server_runs_the_final_save_and_writes_nothing() {
     let written_by_the_warning = std::fs::read(&session_file).expect("the warning's checkpoint");
 
     server.app.test_state_mut().mark_session_dirty();
-    server.app.save_session_for_exit(None).await;
+    server
+        .app
+        .save_session_for_exit(None)
+        .await
+        .expect("frozen save is skipped");
     assert_eq!(
         std::fs::read(&session_file).expect("the checkpoint still stands"),
         written_by_the_warning,

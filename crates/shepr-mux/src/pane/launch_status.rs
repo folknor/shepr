@@ -8,9 +8,10 @@
 //!
 //! - an error record: the launch failed at that stage;
 //! - `ChdirOk` then EOF while the child lives: exec committed (`Launched`);
-//! - anything else (the child exited first, the channel broke, or the pane
-//!   ended before the launch was confirmed): unconfirmed, handled as an
-//!   ordinary pane death.
+//! - a child exit or pane ending before confirmation: unconfirmed, handled as
+//!   an ordinary pane death;
+//! - a status channel failure while the child lives: failed, so the caller
+//!   tears down a process it can no longer observe safely.
 //!
 //! The settled result is shared state (`ChildLiveness` opens observation of
 //! the child, `LaunchProgress` wakes detection) and is published to the app
@@ -56,6 +57,11 @@ pub enum LaunchOutcome {
     /// pane ended before the launch settled. The pane's death follows and is
     /// an ordinary one.
     Unconfirmed,
+    /// The launch status channel failed while the child still lived, so the
+    /// child never opens observation (`ChildLiveness`) and a death follows
+    /// only if it exits by itself. The caller must retire the runtime, which
+    /// ends the child, rather than leave an unobservable process running.
+    StatusUnavailable(std::io::Error),
 }
 
 /// The runtime's launch kind and the result of that launch, published together.
@@ -113,7 +119,14 @@ pub(super) fn spawn(
             cwd_candidates,
             program,
         } = status;
-        let settling = settle(channel, cwd_candidates, &program, &child_liveness);
+        let failure_probe = registration.failure_probe();
+        let settling = settle(
+            channel,
+            cwd_candidates,
+            &program,
+            &child_liveness,
+            failure_probe,
+        );
         coordinate(
             Coordinator {
                 pane_id,
@@ -195,6 +208,9 @@ async fn coordinate<Claim>(
     if let LaunchOutcome::Failed(failure) = &settlement {
         tracing::warn!(pane = %pane_id, %failure, "pane launch failed");
     }
+    if let LaunchOutcome::StatusUnavailable(error) = &settlement {
+        tracing::error!(pane = %pane_id, %error, "pane launch status unavailable for a live child");
+    }
     if let Err(error) = events
         .send(crate::events::RuntimeEvent::PaneLaunchSettled {
             settlement: LaunchSettlement {
@@ -227,6 +243,7 @@ async fn settle(
     cwd_candidates: Vec<shepr_core::absolute_path::AbsolutePath>,
     program: &Path,
     child_liveness: &ChildLiveness,
+    failure_probe: impl Fn() -> Option<std::io::Error> + Send + Sync + 'static,
 ) -> LaunchOutcome {
     let exit = child_liveness
         .leader()
@@ -245,30 +262,46 @@ async fn settle(
             tokio::time::sleep(LAUNCH_EXIT_POLL_INTERVAL).await;
         }
     };
+    let delivery_lost = || {
+        failure_probe().unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "pane launch status delivery ended before a channel arrived",
+            )
+        })
+    };
     let channel = tokio::select! {
-        channel = &mut channel => channel.ok(),
+        channel = &mut channel => match channel {
+            Ok(channel) => channel,
+            Err(_) => return status_unavailable(delivery_lost(), child_liveness),
+        },
         () = child_exited => {
             // A child that connected before it exited is already queued at
             // the listener; give its routing a moment. A listener delayed
             // past this bound loses that child's failure report: the launch
-            // settles unconfirmed and the pane dies as an ordinary death
-            // instead of a placeholder that says why. Accepted, since the
-            // bound is what keeps a child that never connected from holding
-            // the settlement open.
-            tokio::time::timeout(LAUNCH_STATUS_AFTER_EXIT, channel)
-                .await
-                .ok()
-                .and_then(Result::ok)
+            // settles unconfirmed if pidfd confirms exit. A completed wait
+            // alone does not prove exit, so a missing status in that case is
+            // a failure that must end the still-unobservable child.
+            match tokio::time::timeout(LAUNCH_STATUS_AFTER_EXIT, &mut channel).await {
+                Ok(Ok(channel)) => channel,
+                Ok(Err(_)) => return status_unavailable(delivery_lost(), child_liveness),
+                Err(_) => {
+                    return status_unavailable(
+                        std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "pane launch status channel did not arrive before the child wait ended",
+                        ),
+                        child_liveness,
+                    );
+                }
+            }
         }
-    };
-    let Some(channel) = channel else {
-        return LaunchOutcome::Unconfirmed;
     };
     let channel = match AsyncFd::new(channel) {
         Ok(channel) => channel,
         Err(error) => {
             tracing::warn!(%error, "could not watch a pane launch status channel");
-            return LaunchOutcome::Unconfirmed;
+            return status_unavailable(error, child_liveness);
         }
     };
     let mut reader = LaunchStatusReader::new(cwd_candidates);
@@ -277,7 +310,7 @@ async fn settle(
             Ok(ready) => ready,
             Err(error) => {
                 tracing::warn!(%error, "pane launch status channel failed");
-                return LaunchOutcome::Unconfirmed;
+                return status_unavailable(error, child_liveness);
             }
         };
         match reader.read(ready.get_inner()) {
@@ -301,12 +334,28 @@ async fn settle(
                     }
                 };
             }
-            Ok(LaunchStatusEvent::Unconfirmed) => return LaunchOutcome::Unconfirmed,
+            Ok(LaunchStatusEvent::Unconfirmed) => {
+                return status_unavailable(
+                    std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "pane launch status channel ended before confirming chdir",
+                    ),
+                    child_liveness,
+                );
+            }
             Err(error) => {
                 tracing::warn!(%error, "pane launch status channel failed");
-                return LaunchOutcome::Unconfirmed;
+                return status_unavailable(error, child_liveness);
             }
         }
+    }
+}
+
+fn status_unavailable(error: std::io::Error, child_liveness: &ChildLiveness) -> LaunchOutcome {
+    if child_liveness.has_exited() {
+        LaunchOutcome::Unconfirmed
+    } else {
+        LaunchOutcome::StatusUnavailable(error)
     }
 }
 
@@ -348,6 +397,7 @@ mod tests {
                         LaunchOutcome::Launched { .. } => "launched",
                         LaunchOutcome::Failed(_) => "failed",
                         LaunchOutcome::Unconfirmed => "unconfirmed",
+                        LaunchOutcome::StatusUnavailable(_) => "status-unavailable",
                     })
                 }
                 crate::events::RuntimeEvent::PaneDied { ending, .. } => Told::Died(ending.reason()),
@@ -438,6 +488,52 @@ mod tests {
             program: None,
             error: std::io::Error::from_raw_os_error(libc::ENOENT),
         })
+    }
+
+    struct SleepingChild(std::process::Child);
+
+    impl Drop for SleepingChild {
+        fn drop(&mut self) {
+            // The fixture may already be gone; there is nothing to report.
+            drop(self.0.kill());
+            drop(self.0.wait());
+        }
+    }
+
+    fn sleeping_child() -> (SleepingChild, ChildLiveness) {
+        let child = shepr_test_support::command_in_scratch("/bin/sleep", "launch-status-sleep")
+            .arg("30")
+            .spawn()
+            .expect("start sleeping fixture child");
+        let pid = shepr_platform::Pid::new(child.id()).expect("sleep has a positive pid");
+        let handle = shepr_platform::ProcessHandle::open(pid).expect("open sleep pidfd");
+        (
+            SleepingChild(child),
+            ChildLiveness::running_with_handle(Arc::new(handle)),
+        )
+    }
+
+    #[tokio::test]
+    async fn lost_listener_delivery_fails_a_still_live_child() {
+        let (_sleeping, child_liveness) = sleeping_child();
+        let (sender, channel) = oneshot::channel();
+        drop(sender);
+
+        let outcome = settle(
+            channel,
+            Vec::new(),
+            Path::new("shell"),
+            &child_liveness,
+            || Some(std::io::Error::from_raw_os_error(libc::EBADF)),
+        )
+        .await;
+
+        match outcome {
+            LaunchOutcome::StatusUnavailable(error) => {
+                assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+            }
+            _ => panic!("a live child with failed status delivery must fail settlement"),
+        }
     }
 
     #[tokio::test]

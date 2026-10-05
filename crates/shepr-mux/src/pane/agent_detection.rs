@@ -17,6 +17,10 @@ impl PendingIdleConfirmation {
         self.started_at.is_some()
     }
 
+    pub(super) fn started_at(&self) -> Option<std::time::Instant> {
+        self.started_at
+    }
+
     pub(super) fn clear(&mut self) {
         self.started_at = None;
         self.matching_observations = 0;

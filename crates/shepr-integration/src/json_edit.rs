@@ -1,263 +1,273 @@
+//! The one JSON config editor every JSON integration target goes through. It
+//! edits the concrete syntax tree, touching only shepr's own entries and the
+//! containers it inserts, so every other byte of the user's file (key order,
+//! spacing, line endings, number and escape spellings) is kept, and refuses a
+//! document with duplicate keys. Each edit is checked by decoding the result
+//! against the value it was meant to produce.
+
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
-use std::time::Duration;
 
 use jsonc_parser::ast::{Array as AstArray, Object as AstObject, Value as AstValue};
 use jsonc_parser::common::Ranged;
 use jsonc_parser::cst::{CstInputValue, CstNode, CstObject, CstRootNode};
-use jsonc_parser::{CollectOptions, ParseOptions, json, parse_to_ast};
+use jsonc_parser::{CollectOptions, ParseOptions, parse_to_ast};
 use serde_json::{Map, Value};
 
-use shepr_agent::resume::AgentSessionStartSource;
-use shepr_agent::{Agent, CLAUDE_SESSION_START_EVENT, IntegrationHookAction};
-
-use super::command::{hook_command, is_hook_command_for_path};
-use super::config_edit::{
-    ensure_command_hook, ensure_hooks_object, remove_hook_path_commands_preserving,
-};
+use super::command::is_hook_command_for_path;
+use super::registration::HooksRoot;
 use super::types::{InstallErrorKind, InstallIssue};
 
-/// Claude's SessionStart sources: `startup`, which replaces nothing, then the
-/// sources Claude's hook session policy treats as replacements. Deriving the
-/// matcher from the policy keeps the reported and replacing sources one list;
-/// the policy says why each source has its role.
-fn claude_session_start_sources() -> impl Iterator<Item = AgentSessionStartSource> {
-    std::iter::once(AgentSessionStartSource::Startup).chain(
-        Agent::Claude
-            .descriptor()
-            .hook_session_policy()
-            .replacement_starts
-            .iter()
-            .copied(),
-    )
-}
-
-pub(crate) fn claude_session_start_matcher() -> String {
-    let mut matcher = String::from("^(");
-    for (index, source) in claude_session_start_sources().enumerate() {
-        if index > 0 {
-            matcher.push('|');
+/// Replace shepr's hook entries in a JSON agent config. An entry already equal
+/// to an expected one is kept where it is; every other entry naming
+/// `hook_path` is removed, and the expected entries still missing are appended.
+/// `cursor_version` adds Cursor's required top-level `"version": 1` when absent.
+/// Parsing and duplicate validation precede even a no-op, so an ambiguous user
+/// document is never accepted.
+pub(super) fn install_json(
+    content: &str,
+    path: &Path,
+    hook_path: &Path,
+    location: HooksRoot,
+    mut expected: Map<String, Value>,
+    cursor_version: bool,
+) -> io::Result<String> {
+    let mut root = parse_root(content, path)?;
+    let mut object = root
+        .value()
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| {
+            shape_error(&format!(
+                "agent config at {} must be a JSON object",
+                path.display()
+            ))
+        })?;
+    let mut desired = parse_value(content, path)?;
+    if cursor_version && object.get("version").is_none() {
+        desired["version"] = Value::from(1);
+        let updated = append_property(&root, &object, path, false, "version", &Value::from(1))?;
+        root = parse_root(&updated, path)?;
+        object = root
+            .value()
+            .and_then(|value| value.as_object())
+            .ok_or_else(|| shape_error("missing root"))?;
+    }
+    let hooks = match location {
+        HooksRoot::Document => object,
+        HooksRoot::HooksKey => match object.get("hooks") {
+            Some(property) => property.object_value().ok_or_else(|| {
+                shape_error(&format!(
+                    "agent config hooks at {} must be a JSON object",
+                    path.display()
+                ))
+            })?,
+            None => {
+                let updated = append_property(
+                    &root,
+                    &object,
+                    path,
+                    false,
+                    "hooks",
+                    &Value::Object(expected.clone()),
+                )?;
+                desired["hooks"] = Value::Object(expected);
+                return verify_updated(updated, path, &desired);
+            }
+        },
+    };
+    remove_hook_path_commands(&hooks, hook_path, &mut expected)?;
+    // The removal has one implementation. Its decoded result is the baseline
+    // for verifying subsequent insertions, rather than a second removal model.
+    desired = parse_value(&root.to_string(), path)?;
+    let desired_hooks = match location {
+        HooksRoot::Document => desired.as_object_mut(),
+        HooksRoot::HooksKey => desired.get_mut("hooks").and_then(Value::as_object_mut),
+    }
+    .ok_or_else(|| {
+        shape_error(&format!(
+            "agent config hooks at {} must be a JSON object",
+            path.display()
+        ))
+    })?;
+    let mut updated = root.to_string();
+    for (event, value) in expected {
+        let additions = value
+            .as_array()
+            .ok_or_else(|| shape_error("expected hooks must be arrays"))?;
+        for addition in additions {
+            let root = parse_root(&updated, path)?;
+            let object = root
+                .value()
+                .and_then(|value| value.as_object())
+                .ok_or_else(|| shape_error("missing root"))?;
+            let hooks = match location {
+                HooksRoot::Document => object,
+                HooksRoot::HooksKey => object
+                    .get("hooks")
+                    .and_then(|p| p.object_value())
+                    .ok_or_else(|| shape_error("missing hooks"))?,
+            };
+            match hooks.get(&event) {
+                Some(property) => {
+                    let array = property.array_value().ok_or_else(|| {
+                        shape_error(&format!("hook entries for {event} must be an array"))
+                    })?;
+                    if direct_children_are_compact(&array.children()) {
+                        let ast = parse_ast_root_object(&updated, path)?;
+                        let ast_hooks = match location {
+                            HooksRoot::Document => &ast,
+                            HooksRoot::HooksKey => ast
+                                .get_object("hooks")
+                                .ok_or_else(|| shape_error("missing hooks"))?,
+                        };
+                        let ast_array = ast_hooks
+                            .get_array(&event)
+                            .ok_or_else(|| shape_error("missing event array"))?;
+                        updated = append_array_element(
+                            &updated,
+                            ast_array,
+                            &serde_json::to_string(addition)?,
+                        );
+                    } else {
+                        array.append(input_value(addition));
+                        updated = root.to_string();
+                    }
+                }
+                None => {
+                    updated = append_property(
+                        &root,
+                        &hooks,
+                        path,
+                        matches!(location, HooksRoot::HooksKey),
+                        &event,
+                        &Value::Array(vec![addition.clone()]),
+                    )?;
+                }
+            }
+            desired_hooks
+                .entry(event.clone())
+                .or_insert_with(|| Value::Array(Vec::new()))
+                .as_array_mut()
+                .ok_or_else(|| shape_error("expected event array"))?
+                .push(addition.clone());
         }
-        matcher.push_str(source.as_str());
     }
-    matcher.push_str(")$");
-    matcher
+    verify_updated(updated, path, &desired)
 }
 
-pub(crate) fn install(
-    content: &str,
-    settings_path: &Path,
-    hook_path: &Path,
-    timeout: Duration,
-) -> io::Result<String> {
-    let hook = CLAUDE_SESSION_START_EVENT;
-    let event = hook.event;
-    let action = hook.action.map(IntegrationHookAction::as_str);
-    let original = parse_value(content, settings_path)?;
-    let matcher = claude_session_start_matcher();
-    let mut desired = original.clone();
-    let hooks = ensure_hooks_object(
-        &mut desired,
-        settings_path,
-        "claude settings",
-        "claude settings hooks",
-    )?;
-    let canonical = canonical_hook_value(hook_path, &matcher, action, timeout.as_secs());
-    apply_value_removals(hooks, hook_path, &canonical, event)?;
-    ensure_command_hook(
-        hooks,
-        event,
-        &hook_command(hook_path, action),
-        timeout.as_secs(),
-        Some(&matcher),
-    )?;
-
-    if desired == original {
-        return Ok(content.to_string());
-    }
-
-    rewrite(
-        content,
-        settings_path,
-        hook_path,
-        &desired,
-        &matcher,
-        event,
-        action,
-        timeout.as_secs(),
-    )
+fn shape_error(message: &str) -> io::Error {
+    InstallIssue::io_error(InstallErrorKind::ConfigShape, message)
 }
 
-fn apply_value_removals(
-    hooks: &mut Map<String, Value>,
-    hook_path: &Path,
-    canonical: &Value,
-    event: &str,
-) -> io::Result<()> {
-    let _ = remove_hook_path_commands_preserving(hooks, hook_path, Some((event, canonical)))?;
-    Ok(())
-}
-
-fn rewrite(
-    content: &str,
-    settings_path: &Path,
-    hook_path: &Path,
-    desired: &Value,
-    matcher: &str,
-    event: &str,
-    action: Option<&str>,
-    timeout_seconds: u64,
-) -> io::Result<String> {
+fn parse_root(content: &str, path: &Path) -> io::Result<CstRootNode> {
     let root = CstRootNode::parse(content, &strict_parse_options()).map_err(|err| {
         InstallIssue::io_error(
             InstallErrorKind::ConfigUnparseable,
-            format!("failed to parse {}: {err}", settings_path.display()),
+            format!("failed to parse {}: {err}", path.display()),
         )
     })?;
-    let root_value = root.value().ok_or_else(|| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigShape,
-            format!(
-                "claude settings at {} must be a JSON object",
-                settings_path.display()
-            ),
-        )
-    })?;
-    reject_duplicate_keys(&root_value, settings_path)?;
-    let root_object = root_value.as_object().ok_or_else(|| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigShape,
-            format!(
-                "claude settings at {} must be a JSON object",
-                settings_path.display()
-            ),
-        )
-    })?;
+    if let Some(value) = root.value() {
+        reject_duplicate_keys(&value, path)?;
+    }
+    Ok(root)
+}
 
-    let hooks = match root_object.get("hooks") {
-        Some(property) => property.object_value().ok_or_else(|| {
-            InstallIssue::io_error(
-                InstallErrorKind::ConfigShape,
-                format!(
-                    "claude settings hooks at {} must be a JSON object",
-                    settings_path.display()
-                ),
-            )
-        })?,
-        None if direct_children_are_compact(&root_object.children()) => {
-            let updated = append_hooks_property_compact(
-                content,
-                hook_path,
-                settings_path,
-                event,
-                matcher,
-                action,
-                timeout_seconds,
-            )?;
-            return verify_updated(updated, settings_path, desired);
-        }
-        None => root_object
-            .append("hooks", CstInputValue::Object(Vec::new()))
-            .object_value()
-            .ok_or_else(|| {
-                InstallIssue::io_error(
-                    InstallErrorKind::ConfigShape,
-                    "failed to create claude settings hooks object",
-                )
-            })?,
-    };
-
-    let canonical = canonical_hook_value(hook_path, matcher, action, timeout_seconds);
-    let canonical_preserved = remove_hook_path_commands(&hooks, hook_path, event, &canonical)?;
-
-    if !canonical_preserved {
-        match hooks.get(event) {
-            Some(property) => {
-                let session_start = property.array_value().ok_or_else(|| {
-                    InstallIssue::io_error(
-                        InstallErrorKind::ConfigShape,
-                        format!("hook entries for {event} must be an array"),
-                    )
-                })?;
-                if direct_children_are_compact(&session_start.children()) {
-                    let updated = append_session_entry_compact(
-                        &root.to_string(),
-                        hook_path,
-                        settings_path,
-                        event,
-                        matcher,
-                        action,
-                        timeout_seconds,
-                    )?;
-                    return verify_updated(updated, settings_path, desired);
-                }
-                session_start.append(canonical_hook_input(
-                    hook_path,
-                    matcher,
-                    action,
-                    timeout_seconds,
-                ));
-            }
-            None if direct_children_are_compact(&hooks.children()) => {
-                let updated = append_session_property_compact(
-                    &root.to_string(),
-                    hook_path,
-                    settings_path,
-                    event,
-                    matcher,
-                    action,
-                    timeout_seconds,
-                )?;
-                return verify_updated(updated, settings_path, desired);
-            }
-            None => {
-                let session_start = hooks
-                    .append(event, CstInputValue::Array(Vec::new()))
-                    .array_value()
-                    .ok_or_else(|| {
-                        InstallIssue::io_error(
-                            InstallErrorKind::ConfigShape,
-                            format!("failed to create {event} hook array"),
-                        )
-                    })?;
-                session_start.append(canonical_hook_input(
-                    hook_path,
-                    matcher,
-                    action,
-                    timeout_seconds,
-                ));
-            }
+fn input_value(value: &Value) -> CstInputValue {
+    match value {
+        Value::Null => CstInputValue::Null,
+        Value::Bool(v) => CstInputValue::Bool(*v),
+        Value::Number(v) => CstInputValue::Number(v.to_string()),
+        Value::String(v) => CstInputValue::String(v.clone()),
+        Value::Array(v) => CstInputValue::Array(v.iter().map(input_value).collect()),
+        Value::Object(v) => {
+            CstInputValue::Object(v.iter().map(|(k, v)| (k.clone(), input_value(v))).collect())
         }
     }
+}
 
-    verify_updated(root.to_string(), settings_path, desired)
+fn append_property(
+    root: &CstRootNode,
+    object: &CstObject,
+    path: &Path,
+    under_hooks: bool,
+    name: &str,
+    value: &Value,
+) -> io::Result<String> {
+    if direct_children_are_compact(&object.children()) {
+        let text = root.to_string();
+        let ast = parse_ast_root_object(&text, path)?;
+        let container = if under_hooks {
+            ast.get_object("hooks")
+                .ok_or_else(|| shape_error("missing hooks"))?
+        } else {
+            &ast
+        };
+        append_object_property(&text, container, name, &serde_json::to_string(value)?)
+    } else {
+        object.append(name, input_value(value));
+        Ok(root.to_string())
+    }
+}
+
+/// Replace a dedicated owned property while retaining every other property's bytes.
+pub(super) fn install_block(
+    content: &str,
+    path: &Path,
+    name: &str,
+    block: &Value,
+) -> io::Result<String> {
+    let root = parse_root(content, path)?;
+    let object = root
+        .value()
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| {
+            shape_error(&format!(
+                "agent config at {} must be a JSON object",
+                path.display()
+            ))
+        })?;
+    let mut desired = parse_value(content, path)?;
+    if desired.get(name) == Some(block) {
+        return Ok(content.to_string());
+    }
+    desired[name] = block.clone();
+    let updated = if let Some(property) = object.get(name) {
+        property.set_value(input_value(block));
+        root.to_string()
+    } else {
+        append_property(&root, &object, path, false, name, block)?
+    };
+    verify_updated(updated, path, &desired)
 }
 
 fn remove_hook_path_commands(
     hooks: &CstObject,
     hook_path: &Path,
-    event: &str,
-    canonical: &Value,
-) -> io::Result<bool> {
-    let mut canonical_preserved = false;
+    expected: &mut Map<String, Value>,
+) -> io::Result<()> {
     for event_property in hooks.properties() {
         let property_event = event_property.decoded_name().ok_or_else(|| {
             InstallIssue::io_error(
                 InstallErrorKind::ConfigShape,
-                "Claude settings hooks contain an undecodable event name",
+                "agent config hooks contain an undecodable event name",
             )
         })?;
         let Some(entries) = event_property.value().and_then(|value| value.as_array()) else {
-            continue;
+            return Err(shape_error(&format!(
+                "hook entries for {property_event} must be an array"
+            )));
         };
         let mut removed_in_event = false;
         for entry in entries.elements() {
-            if property_event == event
-                && !canonical_preserved
-                && entry.to_serde_value().as_ref() == Some(canonical)
+            if let Some(canonicals) = expected
+                .get_mut(&property_event)
+                .and_then(Value::as_array_mut)
+                && let Some(index) = canonicals
+                    .iter()
+                    .position(|canonical| entry.to_serde_value().as_ref() == Some(canonical))
             {
-                canonical_preserved = true;
+                canonicals.remove(index);
                 continue;
             }
             let Some(command_entries) = entry
@@ -294,7 +304,7 @@ fn remove_hook_path_commands(
         }
     }
 
-    Ok(canonical_preserved)
+    Ok(())
 }
 
 fn cst_value_uses_hook_path(value: &CstNode, hook_path: &Path) -> bool {
@@ -306,106 +316,6 @@ fn cst_value_uses_hook_path(value: &CstNode, hook_path: &Path) -> bool {
                 .is_some_and(|command| is_hook_command_for_path(command, hook_path))
         })
     })
-}
-
-fn canonical_hook_value(
-    hook_path: &Path,
-    matcher: &str,
-    action: Option<&str>,
-    timeout_seconds: u64,
-) -> Value {
-    super::config_edit::command_hook_group(
-        &hook_command(hook_path, action),
-        timeout_seconds,
-        Some(matcher),
-    )
-}
-
-fn canonical_hook_input(
-    hook_path: &Path,
-    matcher: &str,
-    action: Option<&str>,
-    timeout_seconds: u64,
-) -> CstInputValue {
-    let command = hook_command(hook_path, action);
-    json!({
-        matcher: matcher,
-        hooks: [{
-            "type": "command",
-            command: command,
-            timeout: timeout_seconds,
-        }],
-    })
-}
-
-fn append_hooks_property_compact(
-    content: &str,
-    hook_path: &Path,
-    settings_path: &Path,
-    event: &str,
-    matcher: &str,
-    action: Option<&str>,
-    timeout_seconds: u64,
-) -> io::Result<String> {
-    let root = parse_ast_root_object(content, settings_path)?;
-    let event = serde_json::to_string(event)?;
-    let value = format!(
-        "{{{event}:[{}]}}",
-        canonical_hook_json(hook_path, matcher, action, timeout_seconds)?
-    );
-    append_object_property(content, &root, "hooks", &value)
-}
-
-fn append_session_property_compact(
-    content: &str,
-    hook_path: &Path,
-    settings_path: &Path,
-    event: &str,
-    matcher: &str,
-    action: Option<&str>,
-    timeout_seconds: u64,
-) -> io::Result<String> {
-    let root = parse_ast_root_object(content, settings_path)?;
-    let hooks = root.get_object("hooks").ok_or_else(|| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigShape,
-            format!(
-                "claude settings hooks at {} must be a JSON object",
-                settings_path.display()
-            ),
-        )
-    })?;
-    let value = format!(
-        "[{}]",
-        canonical_hook_json(hook_path, matcher, action, timeout_seconds)?
-    );
-    append_object_property(content, hooks, event, &value)
-}
-
-fn append_session_entry_compact(
-    content: &str,
-    hook_path: &Path,
-    settings_path: &Path,
-    event: &str,
-    matcher: &str,
-    action: Option<&str>,
-    timeout_seconds: u64,
-) -> io::Result<String> {
-    let root = parse_ast_root_object(content, settings_path)?;
-    let event_entries = root
-        .get_object("hooks")
-        .and_then(|hooks| hooks.get_array(event))
-        .ok_or_else(|| {
-            InstallIssue::io_error(
-                InstallErrorKind::ConfigShape,
-                format!("hook entries for {event} must be an array"),
-            )
-        })?;
-    Ok(append_array_element(
-        content,
-        event_entries,
-        &canonical_hook_json(hook_path, matcher, action, timeout_seconds)?,
-    ))
 }
 
 fn parse_ast_root_object<'a>(content: &'a str, settings_path: &Path) -> io::Result<AstObject<'a>> {
@@ -421,7 +331,7 @@ fn parse_ast_root_object<'a>(content: &'a str, settings_path: &Path) -> io::Resu
         _ => Err(InstallIssue::io_error(
             InstallErrorKind::ConfigShape,
             format!(
-                "claude settings at {} must be a JSON object",
+                "agent config at {} must be a JSON object",
                 settings_path.display()
             ),
         )),
@@ -436,7 +346,7 @@ fn append_object_property(
 ) -> io::Result<String> {
     let key = serde_json::to_string(name).map_err(|err| {
         io::Error::other(format!(
-            "failed to encode Claude settings property name: {err}"
+            "failed to encode agent config property name: {err}"
         ))
     })?;
     let key_value_separator = object.properties.first().map_or(":", |property| {
@@ -512,26 +422,13 @@ fn append_to_container(
     updated
 }
 
-fn canonical_hook_json(
-    hook_path: &Path,
-    matcher: &str,
-    action: Option<&str>,
-    timeout_seconds: u64,
-) -> io::Result<String> {
-    let matcher_json = serde_json::to_string(matcher)?;
-    let command = serde_json::to_string(&hook_command(hook_path, action))?;
-    Ok(format!(
-        "{{\"matcher\":{matcher_json},\"hooks\":[{{\"type\":\"command\",\"command\":{command},\"timeout\":{timeout_seconds}}}]}}"
-    ))
-}
-
 fn verify_updated(updated: String, settings_path: &Path, desired: &Value) -> io::Result<String> {
     let actual = parse_value(&updated, settings_path)?;
     if &actual != desired {
         return Err(InstallIssue::io_error(
             InstallErrorKind::ConfigShape,
             format!(
-                "failed to safely update claude settings at {}",
+                "failed to safely update agent config at {}",
                 settings_path.display()
             ),
         ));
@@ -575,7 +472,7 @@ fn reject_duplicate_keys(node: &CstNode, settings_path: &Path) -> io::Result<()>
                 return Err(InstallIssue::io_error(
                     InstallErrorKind::ConfigShape,
                     format!(
-                        "claude settings at {} contains duplicate key {name:?}",
+                        "agent config at {} contains duplicate key {name:?}",
                         settings_path.display()
                     ),
                 ));
@@ -607,10 +504,65 @@ fn strict_parse_options() -> ParseOptions {
     }
 }
 
+/// Claude's settings edit as the installer makes it, for tests that drive it
+/// without an installation.
+#[cfg(test)]
+pub(crate) fn install_claude_settings(
+    content: &str,
+    settings_path: &Path,
+    hook_path: &Path,
+    timeout: std::time::Duration,
+) -> io::Result<String> {
+    install_json(
+        content,
+        settings_path,
+        hook_path,
+        HooksRoot::HooksKey,
+        super::registration::JsonShape::NestedClaude(timeout)
+            .expected_events(shepr_agent::IntegrationTarget::Claude, hook_path)?,
+        false,
+    )
+}
+
+#[cfg(test)]
+fn canonical_hook_value(
+    hook_path: &Path,
+    matcher: &str,
+    action: Option<&str>,
+    timeout_seconds: u64,
+) -> Value {
+    super::config_edit::command_hook_group(
+        &super::command::hook_command(hook_path, action),
+        timeout_seconds,
+        Some(matcher),
+    )
+}
+
+#[cfg(test)]
+fn canonical_hook_json(
+    hook_path: &Path,
+    matcher: &str,
+    action: Option<&str>,
+    timeout_seconds: u64,
+) -> io::Result<String> {
+    serde_json::to_string(&canonical_hook_value(
+        hook_path,
+        matcher,
+        action,
+        timeout_seconds,
+    ))
+    .map_err(io::Error::other)
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::command::hook_command;
+    use super::super::registration::JsonShape;
+    use super::super::registration::{claude_session_start_matcher, claude_session_start_sources};
     use super::*;
-    use shepr_agent::resume::ReportedSessionStart;
+    use shepr_agent::Agent;
+    use shepr_agent::resume::{AgentSessionStartSource, ReportedSessionStart};
+    use std::time::Duration;
 
     fn install_for_test(
         content: &str,
@@ -618,7 +570,7 @@ mod tests {
         hook_path: &Path,
     ) -> io::Result<String> {
         let target = shepr_agent::IntegrationTarget::Claude;
-        super::install(
+        super::install_claude_settings(
             content,
             settings_path,
             hook_path,
@@ -631,6 +583,87 @@ mod tests {
             Path::new("/home/test/.claude/settings.json"),
             Path::new("/home/test/.claude/hooks/shepr-agent-state.sh"),
         )
+    }
+
+    #[test]
+    fn every_shared_json_target_preserves_user_bytes_and_is_idempotent() {
+        use super::super::registration::Registration;
+        use super::super::registry::registration;
+        use shepr_agent::IntegrationTarget as Target;
+        let path = Path::new("/settings.json");
+        let hook = Path::new("/hooks/shepr-agent-state.sh");
+        let user = r#"{ "escaped":"\u0061\/", "number":1e+02 }"#;
+        for target in [
+            Target::Claude,
+            Target::Codex,
+            Target::Copilot,
+            Target::Devin,
+            Target::Droid,
+            Target::Cursor,
+            Target::Mastracode,
+            Target::AntigravityCli,
+        ] {
+            let (location, events) = match registration(target) {
+                Registration::Json { root, shape, .. } => (
+                    root,
+                    Some(shape.expected_events(target, hook).expect("events")),
+                ),
+                Registration::Codex { timeout, .. } => (
+                    HooksRoot::HooksKey,
+                    Some(
+                        JsonShape::Nested(timeout)
+                            .expected_events(target, hook)
+                            .expect("events"),
+                    ),
+                ),
+                Registration::AntigravityCli { .. } => (HooksRoot::Document, None),
+                _ => panic!("JSON target"),
+            };
+            let unrelated = match location {
+                HooksRoot::HooksKey => {
+                    format!("\"zeta\" : {user},\r\n    \"hooks\" : {{\"Unrelated\":[{user}]}}")
+                }
+                HooksRoot::Document => format!("\"Unrelated\" : [{user}]"),
+            };
+            for input in [
+                format!("{{\r\n    {unrelated}\r\n}}  \r\n\r\n"),
+                format!("{{{unrelated}}}  \r\n\r\n"),
+            ] {
+                let edit = |text: &str| match &events {
+                    Some(events) => install_json(
+                        text,
+                        path,
+                        hook,
+                        location,
+                        events.clone(),
+                        target == Target::Cursor,
+                    ),
+                    None => install_block(
+                        text,
+                        path,
+                        super::super::ANTIGRAVITY_CLI_HOOK_BLOCK_NAME,
+                        &super::super::targets::antigravity_cli_hook_block_with_timeout(
+                            hook,
+                            Duration::from_secs(10),
+                        )
+                        .expect("block"),
+                    ),
+                };
+                let updated = edit(&input).expect("edit JSON");
+                // Every edit lands after the user's last entry, so the whole
+                // text up to it is kept byte for byte.
+                let kept = &input[..=input.rfind(']').expect("test precondition")];
+                assert!(updated.starts_with(kept), "{target:?}: {updated}");
+                assert_ne!(updated, input, "{target:?}: nothing was installed");
+                assert!(updated.ends_with("}  \r\n\r\n"), "{target:?}: {updated}");
+                assert!(!updated.replace("\r\n", "").contains('\n'), "{target:?}");
+                assert_eq!(edit(&updated).expect("repeat edit"), updated, "{target:?}");
+                assert!(
+                    edit(r#"{"x":{"duplicate":1,"duplicate":2}}"#).is_err(),
+                    "{target:?}"
+                );
+            }
+        }
     }
 
     #[test]

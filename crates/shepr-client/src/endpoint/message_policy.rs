@@ -154,7 +154,12 @@ mod tests {
             boot_id: crate::tests::test_boot_id("restored"),
             revision: shepr_protocol::ProjectionRevision::FIRST,
             restore_notice: Some(shepr_protocol::SessionRestoreNotice {
-                loss: shepr_protocol::SessionRestoreLoss::Panes,
+                loss: shepr_protocol::SessionRestoreLoss::Damaged(
+                    shepr_protocol::SessionRestoreDamage {
+                        renamed_workspaces: 1,
+                        ..Default::default()
+                    },
+                ),
                 backup_dir: "/state/session-backups".into(),
             }),
             session_saves_stopped: false,

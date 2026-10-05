@@ -79,7 +79,7 @@ pub(super) fn reap_after_startup_failure(
     child: PaneChild,
     child_liveness: Option<Arc<ChildLiveness>>,
 ) {
-    reap_on_detached_thread(child, move |result| {
+    child.reap_detached(move |result| {
         match result {
             Ok(status) => super::logging::pane_exited(pane_id, &status),
             Err(err) => super::logging::pane_exit_failed(pane_id, &err.to_string()),
@@ -90,37 +90,10 @@ pub(super) fn reap_after_startup_failure(
     });
 }
 
-type ReaperCompletion = Box<dyn FnOnce(std::io::Result<std::process::ExitStatus>) + Send + 'static>;
-
-/// Wait on a child away from the task or synchronous caller that gives it up.
-/// If the system cannot create the reaper thread, the child is left for the
-/// process to collect at exit rather than waited on inline: the caller may be
-/// the event loop, and the child may be stuck in a hung chdir.
-fn reap_on_detached_thread(
-    child: PaneChild,
-    on_wait: impl FnOnce(std::io::Result<std::process::ExitStatus>) + Send + 'static,
-) {
-    let pid = child.process_id();
-    let on_wait: ReaperCompletion = Box::new(on_wait);
-    let spawned = std::thread::Builder::new()
-        .name("shepr-pane-reaper".into())
-        .spawn(move || {
-            let mut child = child;
-            on_wait(child.wait());
-        });
-    if let Err(err) = spawned {
-        tracing::warn!(
-            %pid,
-            error = %err,
-            "could not start a reaper for a pane child; it stays a zombie until the server exits"
-        );
-    }
-}
-
 /// Owns the pane child while its watcher awaits the pidfd. If the watcher is
 /// dropped before it reaps (the runtime shutting down while the child still
 /// runs), the child is handed to a detached thread that waits for it, so it
-/// never stays a zombie for the rest of the process.
+/// can still be collected unless the system cannot create a reaper thread.
 struct UnreapedChild(Option<PaneChild>);
 
 impl UnreapedChild {
@@ -148,7 +121,7 @@ impl Drop for UnreapedChild {
         // The pane is gone, so its exit status has no reader; only a failed
         // reap (a possible zombie) is worth a line.
         let pid = child.process_id();
-        reap_on_detached_thread(child, move |result| {
+        child.reap_detached(move |result| {
             if let Err(err) = result {
                 tracing::warn!(
                     %pid,
@@ -194,12 +167,14 @@ async fn wait_for_child_exit(
 async fn wait_for_child_exit_blocking(
     mut child: UnreapedChild,
 ) -> std::io::Result<std::process::ExitStatus> {
-    let Some(mut child) = child.take() else {
-        return Err(std::io::Error::other("pane child was already reaped"));
-    };
-    // A blocking task keeps running once started even if this await is
-    // dropped, so the fallback reaps on runtime shutdown too.
-    tokio::task::spawn_blocking(move || child.wait())
-        .await
-        .map_err(std::io::Error::other)?
+    // Keep the guard inside the queued closure too: runtime shutdown may
+    // discard blocking work before it starts.
+    tokio::task::spawn_blocking(move || {
+        let Some(mut owned_child) = child.take() else {
+            return Err(std::io::Error::other("pane child was already reaped"));
+        };
+        owned_child.wait()
+    })
+    .await
+    .map_err(std::io::Error::other)?
 }

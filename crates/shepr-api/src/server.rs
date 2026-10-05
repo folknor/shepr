@@ -107,9 +107,8 @@ pub fn start_server(
     info!(path = %path.display(), "server socket listening");
     let running = Arc::new(AtomicBool::new(true));
     let gate = ClientGate::default();
-    // Nothing restarts the listener, and a dead one leaves a server that
-    // answers neither the CLI, agent hooks nor TUI attaches: it must outlive
-    // every accept and spawn failure.
+    // Nothing restarts the listener. Recoverable accept and spawn failures
+    // keep it serving; a fatal accept requests orderly server shutdown.
     let thread = listener::start_listener(
         listener,
         Arc::clone(&running),

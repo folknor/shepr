@@ -8,7 +8,8 @@ use std::time::Duration;
 
 /// Growth factor of every retry backoff (`backoff::Backoff`): session writes,
 /// checkpoints, default workspace creation and logind reconnects. Doubling
-/// grows quickly after failure while each schedule's own cap bounds it.
+/// grows quickly after failure while each schedule's own cap (or, for
+/// checkpoints, attempt count) bounds it.
 pub(crate) const BACKOFF_MULTIPLIER: u32 = 2;
 
 // ---------------------------------------------------------------------------
@@ -21,8 +22,12 @@ pub(crate) const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
 pub(crate) const SESSION_SAVE_RETRY_MIN: Duration = Duration::from_millis(250);
 /// Longest session-save retry, limiting failing-disk pressure.
 pub(crate) const SESSION_SAVE_RETRY_MAX: Duration = Duration::from_secs(30);
-/// Longest retry delay of a failed pane-exit or host-shutdown checkpoint.
-pub(crate) const CHECKPOINT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
+/// First retry of a failed pane-exit or host-shutdown checkpoint, independent
+/// of ordinary autosaves. Each later retry doubles it, and
+/// `CHECKPOINT_MAX_FAILURES` alone bounds the schedule, so there is no cap.
+/// The attempts themselves are unbounded filesystem IO, so the schedule's sum
+/// is not a bound on how long a checkpoint holds logind's shutdown delay.
+pub(crate) const CHECKPOINT_RETRY_MIN: Duration = Duration::from_millis(250);
 /// Repeated failed critical checkpoints release shutdown delay or exited panes;
 /// persistence must not stall either indefinitely.
 pub(crate) const CHECKPOINT_MAX_FAILURES: u8 = 3;
