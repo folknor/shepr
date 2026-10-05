@@ -43,7 +43,7 @@ impl AppPaths {
         &self.state_dir
     }
 
-    /// The directory of the saved layout, pane history, server log and the
+    /// The directory of the saved layout, server log and the
     /// lease that keeps one server per directory. For a release build it is
     /// [`state_dir`](Self::state_dir) itself; a dev build gets a `shepr-dev`
     /// sibling of it.

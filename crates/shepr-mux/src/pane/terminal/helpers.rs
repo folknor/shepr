@@ -62,12 +62,6 @@ pub(super) fn focus_report_on_enable(core: &PaneTerminalCore, before: bool) -> O
         .then(|| Bytes::from_static(shepr_vt::encode_focus(shepr_vt::FocusEvent::Gained)))
 }
 
-/// Drops queued effects that must never reach the live child or the app
-/// (restored history).
-pub(super) fn discard_core_effects(terminal: &mut shepr_vt::Terminal) {
-    drop(terminal.take_effects());
-}
-
 pub(super) fn has_default_color_override(terminal: &shepr_vt::Terminal) -> bool {
     terminal
         .default_color_override(shepr_vt::DefaultColor::Foreground)
@@ -250,8 +244,6 @@ pub(super) fn terminal_collect_dirty_patch(
 /// agent redrawing from the top, alacritty has pushed the previous frame into
 /// history; reading a screen's worth of rows ending at the last content row
 /// would hand the detector that stale frame (an old "proceed?" blocker, say).
-/// Restored history seeded into the primary screen reads as blank rows: it is
-/// display history, not evidence of what a later agent is doing.
 pub(super) fn terminal_detection_text(
     terminal: &shepr_vt::Terminal,
 ) -> Result<String, shepr_vt::ReadError> {
@@ -262,16 +254,11 @@ pub(super) fn terminal_detection_text(
         return Ok(String::new());
     };
     let screen_start = terminal.total_rows().saturating_sub(screen_rows);
-    let primary = terminal.active_screen() == shepr_vt::ActiveScreen::Primary;
     let mut rows = Vec::with_capacity(screen_rows);
     let mut scratch = String::new();
     for row in start.max(screen_start)..=end {
         let mut text = String::new();
-        let seeded =
-            terminal_screen_row_into_with_seeded(terminal, ScreenRow(row), &mut scratch, &mut text);
-        if primary && seeded {
-            text.clear();
-        }
+        terminal_screen_row_into(terminal, ScreenRow(row), &mut scratch, &mut text);
         rows.push(text);
     }
     trim_trailing_blank_rows(&mut rows);
@@ -286,8 +273,6 @@ pub(super) struct RecentReadRange {
 /// The screen rows a recent read covers, on the active screen: while the
 /// alternate screen is active that is the full-screen program's frame, never
 /// the primary history (alacritty offers no access to the inactive grid).
-/// History persistence must not take that for history; it reads through
-/// [`PaneHistorySource::refresh`], which says so instead.
 pub(super) fn terminal_recent_read_range(
     terminal: &shepr_vt::Terminal,
     lines: usize,
@@ -372,45 +357,13 @@ pub(super) fn terminal_screen_row_into(
     scratch: &mut String,
     line: &mut String,
 ) {
-    let _ = terminal_screen_row_into_inner::<false>(terminal, y, scratch, line);
-}
-
-pub(super) fn terminal_screen_row_into_with_seeded(
-    terminal: &shepr_vt::Terminal,
-    y: ScreenRow,
-    scratch: &mut String,
-    line: &mut String,
-) -> bool {
-    terminal_screen_row_into_inner::<true>(terminal, y, scratch, line)
-}
-
-// The const mode selects the VT visitor at compile time, so plain reads keep
-// using the unseeded path without a per-cell provenance check.
-#[inline(always)]
-fn terminal_screen_row_into_inner<const TRACK_SEEDED: bool>(
-    terminal: &shepr_vt::Terminal,
-    y: ScreenRow,
-    scratch: &mut String,
-    line: &mut String,
-) -> bool {
     line.clear();
-    let seeded = {
-        let mut visit = |_, wide, text: &str| {
-            if wide != shepr_vt::CellWide::SpacerTail {
-                line.push_str(text);
-            }
-        };
-        if TRACK_SEEDED {
-            terminal
-                .visit_screen_row_text_with_seeded(y, scratch, &mut visit)
-                .is_some_and(|(_, seeded)| seeded)
-        } else {
-            terminal.visit_screen_row_text(y, scratch, &mut visit);
-            false
+    terminal.visit_screen_row_text(y, scratch, |_, wide, text: &str| {
+        if wide != shepr_vt::CellWide::SpacerTail {
+            line.push_str(text);
         }
-    };
+    });
     line.truncate(line.trim_end().len());
-    seeded
 }
 
 pub(super) fn terminal_blank_symbol_for_width(wide: shepr_vt::CellWide) -> &'static str {

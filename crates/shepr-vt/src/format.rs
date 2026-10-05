@@ -1,11 +1,9 @@
 //! Plain-text and VT formatters over an alacritty grid.
 //!
-//! The VT output is replayed into a fresh terminal when history is restored
-//! (the pane's `PaneHistorySource` -> `seed_history_ansi`), so
-//! it must round-trip through our own parser: every style change is written as
-//! a full `SGR 0;...` reset, soft-wrapped rows are joined when unwrapping so the
-//! replay reflows them, hard line breaks are `\r\n`, and no SGR or OSC 8 state
-//! is left open at a line break or at the end.
+//! The VT output round-trips through our own parser: every style change is
+//! written as a full `SGR 0;...` reset, soft-wrapped rows are joined when
+//! unwrapping so a replay reflows them, hard line breaks are `\r\n`, and no
+//! SGR or OSC 8 state is left open at a line break or at the end.
 
 use std::fmt::Write as _;
 

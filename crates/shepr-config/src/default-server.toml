@@ -59,8 +59,6 @@
 # startup_per_agent_delay_ms = 100
 
 [experimental]
-# Save recent pane screen history across full server restarts.
-# pane_history = false
 # Expose the focused pane's cursor to the outer terminal so input
 # methods keep tracking the candidate window when TUIs paint their own
 # cursor (Claude Code, pi, codex). Trade-off: extra cursor visible for

@@ -336,8 +336,7 @@ impl PaneRuntime {
     }
 
     /// Whether the pane's shell exec committed. Before that the pane has a PTY
-    /// but no shell: its live screen holds nothing a save should prefer over
-    /// history carried for it.
+    /// but no shell.
     pub fn launched(&self) -> bool {
         self.child_liveness.is_launched()
     }
@@ -1057,23 +1056,6 @@ mod tests {
         runtime.test_process_pty_bytes(b"\x1b[?2004l");
         let raw = runtime.paste_payload("a\x1b[201~\x07b\r".into());
         assert_eq!(raw.as_ref(), b"a\x1b[201~\x07b\r");
-    }
-
-    #[tokio::test]
-    async fn alternate_screen_does_not_replace_primary_saved_history() {
-        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
-        let source = runtime.read().history_source();
-        let mut history = PaneHistoryCache::default();
-        runtime.test_process_pty_bytes(b"primary history");
-        assert!(source.refresh(&mut history).is_ok());
-        assert!(history.text().contains("primary history"));
-        let saved_history = history.text();
-        runtime.test_process_pty_bytes(b"\x1b[?1049halt frame");
-        assert_eq!(
-            source.refresh(&mut history),
-            Err(super::HistoryUnavailable::AlternateScreen)
-        );
-        assert_eq!(history.text(), saved_history);
     }
 
     #[test]

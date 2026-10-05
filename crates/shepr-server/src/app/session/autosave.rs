@@ -42,9 +42,8 @@ impl Autosave {
     /// Counts the failure and arms the retry: the earlier of an existing
     /// future deadline and a delay doubling from `SESSION_SAVE_RETRY_MIN` per
     /// consecutive failure, capped at `SESSION_SAVE_RETRY_MAX`, so a
-    /// persistent failure (a full disk, a directory where the history file
-    /// belongs) does not re-capture and rewrite the whole session four times
-    /// a second. Returns the failure count and the delay.
+    /// persistent failure (a full disk, an unwritable data directory) does
+    /// not re-capture and rewrite the whole session four times a second. Returns the failure count and the delay.
     pub(super) fn record_failure(&mut self, now: Instant) -> (u32, Duration) {
         let failures_before = self.failures;
         self.failures = self.failures.saturating_add(1);

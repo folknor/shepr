@@ -1,15 +1,14 @@
 //! Recovery copies of the saved session: the backup a first save or clear
 //! makes of a file restore could not fully use, and the periodic layout
 //! snapshots kept as recovery points. This file decides when a copy is due,
-//! writes it with its paired history, and prunes old copies; the save sequence
-//! that calls it is in `writer`.
+//! writes it, and prunes old copies; the save sequence that calls it is in
+//! `writer`.
 
 use std::io::{self, Seek};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::files;
-use super::history::sha256_bytes;
 use super::schema::{DirectionSnapshot, LayoutSnapshot, SessionSnapshot};
 use crate::limits::{BACKUP_LIMIT, RECOVERY_SEQUENCE_LIMIT, SNAPSHOT_INTERVAL, SNAPSHOT_LIMIT};
 
@@ -24,24 +23,22 @@ pub enum SessionBackupPolicy {
 
 // The layout's shape and each pane's public number, which tell whether two
 // layouts are the same for recovery-copy cadence (the writer's snapshot
-// history). It does not pair a history file with a layout: two layouts can
-// share a fingerprint while their panes hold each other's scrollback. A layout
-// names its history by the digest of the history bytes its own save serialized
-// instead.
+// history).
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct LayoutFingerprint([u8; 32]);
 
 impl LayoutFingerprint {
     fn from_bytes(bytes: &[u8]) -> Self {
-        Self(sha256_bytes(bytes))
+        use sha2::{Digest, Sha256};
+
+        Self(Sha256::digest(bytes).into())
     }
 }
 
 fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<LayoutFingerprint> {
     // The encoding uses tagged tree nodes and fixed-width little-endian counts,
-    // numbers, and ratios. Each leaf carries its pane's public number, and
-    // other saved fields do not say which recovery copy's screen history
-    // belongs to each pane.
+    // numbers, and ratios. Each leaf carries its pane's public number; other
+    // saved fields (cwds, labels, agent sessions) do not count.
     let mut encoding = Vec::new();
     append_fingerprint_count(snapshot.workspaces.len(), &mut encoding)?;
     for workspace in &snapshot.workspaces {
@@ -136,9 +133,7 @@ impl SnapshotFingerprintCache {
         };
         let layout = match layout {
             Some(content) => {
-                let snapshot = super::schema::parse_session_file(&content)
-                    .ok()
-                    .map(|file| file.snapshot);
+                let snapshot = super::schema::parse_session_file(&content).ok();
                 Some(snapshot.map_or(SavedLayout::Unknown, |snapshot| saved_layout(&snapshot)))
             }
             None => stamp.map(|_| SavedLayout::Unknown),
@@ -192,42 +187,18 @@ const RECOVERY_TIMESTAMP_DIGITS: usize = 39;
 // limits-exempt: a filename field width of the recovery-copy name format.
 const RECOVERY_SEQUENCE_DIGITS: usize = 3;
 
+/// What names one recovery copy, and orders the copies of a directory: the
+/// file is `session-<timestamp>-<sequence>.json`, both fields zero-padded to
+/// a fixed width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct RecoveryKey {
     timestamp: u128,
     sequence: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RecoveryFileKind {
-    Layout,
-    History,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RecoveryName {
-    key: RecoveryKey,
-    kind: RecoveryFileKind,
-}
-
-impl RecoveryName {
-    fn new(timestamp: u128, sequence: usize, kind: RecoveryFileKind) -> Self {
-        Self {
-            key: RecoveryKey {
-                timestamp,
-                sequence,
-            },
-            kind,
-        }
-    }
-
+impl RecoveryKey {
     fn parse(name: &str) -> Option<Self> {
-        let (kind, fields) = if let Some(fields) = name.strip_prefix("session-history-") {
-            (RecoveryFileKind::History, fields)
-        } else {
-            (RecoveryFileKind::Layout, name.strip_prefix("session-")?)
-        };
-        let fields = fields.strip_suffix(".json")?;
+        let fields = name.strip_prefix("session-")?.strip_suffix(".json")?;
         let (timestamp, sequence) = fields.split_once('-')?;
         if timestamp.len() != RECOVERY_TIMESTAMP_DIGITS
             || sequence.len() != RECOVERY_SEQUENCE_DIGITS
@@ -236,30 +207,17 @@ impl RecoveryName {
         {
             return None;
         }
-        Some(Self::new(
-            timestamp.parse().ok()?,
-            sequence.parse().ok()?,
-            kind,
-        ))
-    }
-
-    fn pair(self) -> Self {
-        let kind = match self.kind {
-            RecoveryFileKind::Layout => RecoveryFileKind::History,
-            RecoveryFileKind::History => RecoveryFileKind::Layout,
-        };
-        Self { kind, ..self }
+        Some(Self {
+            timestamp: timestamp.parse().ok()?,
+            sequence: sequence.parse().ok()?,
+        })
     }
 
     fn file_name(self) -> String {
-        let prefix = match self.kind {
-            RecoveryFileKind::Layout => "session-",
-            RecoveryFileKind::History => "session-history-",
-        };
-        let timestamp = self.key.timestamp;
-        let sequence = self.key.sequence;
+        let timestamp = self.timestamp;
+        let sequence = self.sequence;
         format!(
-            "{prefix}{timestamp:0RECOVERY_TIMESTAMP_DIGITS$}-{sequence:0RECOVERY_SEQUENCE_DIGITS$}.json"
+            "session-{timestamp:0RECOVERY_TIMESTAMP_DIGITS$}-{sequence:0RECOVERY_SEQUENCE_DIGITS$}.json"
         )
     }
 }
@@ -293,7 +251,7 @@ impl RecoveryKind {
     }
 }
 
-// Every sequence must fit the fixed width `RecoveryName` parses.
+// Every sequence must fit the fixed width `RecoveryKey` parses.
 const _: () = {
     let mut largest = RECOVERY_SEQUENCE_LIMIT - 1;
     let mut digits = 1;
@@ -303,16 +261,6 @@ const _: () = {
     }
     assert!(digits <= RECOVERY_SEQUENCE_DIGITS);
 };
-
-fn recovery_history_path(layout_path: &Path) -> io::Result<PathBuf> {
-    let name = layout_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(RecoveryName::parse)
-        .filter(|name| name.kind == RecoveryFileKind::Layout)
-        .ok_or_else(|| io::Error::other("invalid recovery layout name"))?;
-    Ok(layout_path.with_file_name(name.pair().file_name()))
-}
 
 /// Decides which layout needs preserving before the caller replaces the file.
 /// The newest recovery copy controls both cadence and layout deduplication.
@@ -477,8 +425,8 @@ fn preserve_snapshot_after_write(
     Ok(())
 }
 
-/// Copies the session file at `path` (and its history) into the backup
-/// directory. `false` when there is no file to copy.
+/// Copies the session file at `path` into the backup directory. `false` when
+/// there is no file to copy.
 pub(super) fn preserve_existing(path: &Path, now: SystemTime) -> io::Result<bool> {
     preserve_existing_in(path, RecoveryKind::Backup, now)
 }
@@ -487,30 +435,15 @@ pub(super) fn preserve_existing(path: &Path, now: SystemTime) -> io::Result<bool
 /// needs it to know whether to forget its newest-copy fingerprint, and the
 /// backup caller passes it on, so a named type would only rename it.
 fn preserve_existing_in(path: &Path, kind: RecoveryKind, now: SystemTime) -> io::Result<bool> {
-    // Both sources are opened once, through their type check, and the copies
-    // are read from these very descriptors: reopening the paths could meet
-    // other objects (a FIFO swapped in would block the copy). A session path
-    // that is not a regular file fails the preservation, and with it the save,
-    // with a message naming it; one that is a history path only leaves the
-    // copy without history.
+    // The source is opened once, through its type check, and the copy is read
+    // from this very descriptor: reopening the path could meet another object
+    // (a FIFO swapped in would block the copy). A session path that is not a
+    // regular file fails the preservation, and with it the save, with a
+    // message naming it.
     let mut source = match files::open_regular(path) {
         Ok(file) => file,
         // Recheck on the next mutation until a fresh session is actually saved.
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(err) => return Err(err),
-    };
-    let history_path = files::session_history_path(files::containing_directory(path));
-    let mut history_source = match files::open_regular(&history_path) {
-        Ok(file) => Some(file),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
-        Err(err) if files::is_not_regular(&err) => {
-            tracing::warn!(
-                event = kind.event(), subsystem = "persist", outcome = "history_skipped",
-                path = %history_path.display(), error = %err,
-                "preserving the session recovery copy without its history"
-            );
-            None
-        }
         Err(err) => return Err(err),
     };
     let directory = kind.directory(path);
@@ -532,57 +465,32 @@ fn preserve_existing_in(path: &Path, kind: RecoveryKind, now: SystemTime) -> io:
         None => timestamp_now,
     };
     for sequence in 0..RECOVERY_SEQUENCE_LIMIT {
-        let layout_name = RecoveryName::new(timestamp, sequence, RecoveryFileKind::Layout);
-        let backup = directory.join(layout_name.file_name());
-        let history_backup = directory.join(layout_name.pair().file_name());
-        if backup.try_exists()? || history_backup.try_exists()? {
+        let backup = directory.join(
+            RecoveryKey {
+                timestamp,
+                sequence,
+            }
+            .file_name(),
+        );
+        if backup.try_exists()? {
             continue;
         }
 
-        // Publish history first. The layout filename is the recovery copy's
-        // commit marker, so a layout backup never appears without its pair.
-        // The `AlreadyExists` arms below are a backstop: under the data
+        // The `AlreadyExists` arm below is a backstop: under the data
         // directory lease there is one writer, and the existence check above
         // already skips a taken name, so only a file appearing in between
-        // (which the lease rules out) reaches them.
-        let copied_history = match history_source.as_mut() {
-            Some(history) => {
-                history.rewind()?;
-                match copy_recovery(history, &history_backup) {
-                    Ok(()) => true,
-                    Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-                    Err(err) => return Err(err),
-                }
-            }
-            None => false,
-        };
-        if let Err(err) = source.rewind() {
-            if copied_history {
-                remove_recovery_history_copy(&history_backup)?;
-            }
-            return Err(err);
-        }
+        // (which the lease rules out) reaches it. A refused copy has read the
+        // source, so every attempt starts from its beginning.
+        source.rewind()?;
         match copy_recovery(&mut source, &backup) {
             Ok(()) => {}
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
-                if copied_history {
-                    remove_recovery_history_copy(&history_backup)?;
-                }
-                continue;
-            }
-            Err(err) => {
-                if copied_history {
-                    remove_recovery_history_copy(&history_backup)?;
-                }
-                return Err(err);
-            }
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err),
         }
         // Recovery-copy events use their own labels; the platform's session
         // helpers emit through tracing too but only cover session mutations.
         log_recovery_preserved(kind, path, &backup);
-        let copy_prune_error = prune_recovery_copies(&older, keep).err();
-        let orphan_prune_error = prune_orphaned_recovery_histories(&directory, &backup).err();
-        if let Some(err) = copy_prune_error.or(orphan_prune_error) {
+        if let Err(err) = prune_recovery_copies(&older, keep) {
             // The new copy is durable, so preserve it and let the caller
             // complete its save or clear. The unloaded-session guard consumes
             // this copy once, and snapshot saves use their normal cadence;
@@ -652,10 +560,9 @@ fn recovery_files(directory: &Path) -> io::Result<Vec<(RecoveryKey, PathBuf)>> {
     for entry in std::fs::read_dir(directory)? {
         let entry = entry?;
         if entry.file_type()?.is_file()
-            && let Some(name) = entry.file_name().to_str().and_then(RecoveryName::parse)
-            && name.kind == RecoveryFileKind::Layout
+            && let Some(key) = entry.file_name().to_str().and_then(RecoveryKey::parse)
         {
-            files.push((name.key, entry.path()));
+            files.push((key, entry.path()));
         }
     }
     files.sort();
@@ -671,12 +578,7 @@ fn prune_recovery_copies(older: &[(RecoveryKey, PathBuf)], keep: usize) -> io::R
             return Ok(());
         }
         match std::fs::remove_file(path) {
-            Ok(()) => {
-                remaining -= 1;
-                if let Err(err) = remove_recovery_history_copy(&recovery_history_path(path)?) {
-                    failure = Some(err);
-                }
-            }
+            Ok(()) => remaining -= 1,
             Err(err) => failure = Some(err),
         }
     }
@@ -684,49 +586,6 @@ fn prune_recovery_copies(older: &[(RecoveryKey, PathBuf)], keep: usize) -> io::R
         && let Some(err) = failure
     {
         return Err(err);
-    }
-    Ok(())
-}
-
-fn remove_recovery_history_copy(path: &Path) -> io::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
-    }
-}
-
-fn prune_orphaned_recovery_histories(directory: &Path, newest_layout: &Path) -> io::Result<()> {
-    let newest_key = newest_layout
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(RecoveryName::parse)
-        .filter(|name| name.kind == RecoveryFileKind::Layout)
-        .map(|name| name.key)
-        .ok_or_else(|| io::Error::other("invalid newest recovery layout name"))?;
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let Some(name) = entry.file_name().to_str().and_then(RecoveryName::parse) else {
-            continue;
-        };
-        if name.kind != RecoveryFileKind::History || name.key >= newest_key {
-            continue;
-        }
-        let layout = directory.join(name.pair().file_name());
-        match std::fs::symlink_metadata(&layout) {
-            Ok(metadata) if metadata.file_type().is_file() => continue,
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
-        match std::fs::remove_file(entry.path()) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
-        }
     }
     Ok(())
 }
@@ -741,26 +600,13 @@ pub(super) fn recovery_layouts_for_test(directory: &Path) -> io::Result<Vec<(u12
         .collect())
 }
 
-/// The history copy paired with a recovery layout copy, for tests.
-#[cfg(test)]
-pub(super) fn recovery_history_path_for_test(layout_path: &Path) -> io::Result<PathBuf> {
-    recovery_history_path(layout_path)
-}
-
 #[cfg(test)]
 fn recovery_filename(timestamp: u128, sequence: usize) -> String {
-    RecoveryName::new(timestamp, sequence, RecoveryFileKind::Layout).file_name()
-}
-
-#[cfg(test)]
-fn history_recovery_filename(timestamp: u128, sequence: usize) -> String {
-    RecoveryName::new(timestamp, sequence, RecoveryFileKind::History).file_name()
-}
-
-#[cfg(test)]
-fn recovery_timestamp(name: &str) -> Option<u128> {
-    let name = RecoveryName::parse(name)?;
-    (name.kind == RecoveryFileKind::Layout).then_some(name.key.timestamp)
+    RecoveryKey {
+        timestamp,
+        sequence,
+    }
+    .file_name()
 }
 
 #[cfg(test)]
@@ -785,55 +631,38 @@ mod tests {
     fn pruning_continues_past_an_undeletable_entry() {
         let scratch = shepr_test_support::ScratchDir::new("prune-undeletable");
         let directory = scratch.path();
-        let first = RecoveryName::new(1, 0, RecoveryFileKind::Layout);
-        let second = RecoveryName::new(2, 0, RecoveryFileKind::Layout);
+        let first = RecoveryKey {
+            timestamp: 1,
+            sequence: 0,
+        };
+        let second = RecoveryKey {
+            timestamp: 2,
+            sequence: 0,
+        };
         let locked = directory.join(first.file_name());
         std::fs::create_dir(&locked).expect("test precondition");
         let removable = directory.join(second.file_name());
         std::fs::write(&removable, b"old").expect("test precondition");
-        let older = [(first.key, locked.clone()), (second.key, removable.clone())];
+        let older = [(first, locked.clone()), (second, removable.clone())];
         assert!(prune_recovery_copies(&older, 2).is_ok());
         assert!(locked.try_exists().expect("test stat"));
         assert!(!removable.try_exists().expect("test stat"));
-        assert!(prune_recovery_copies(&[(first.key, locked)], 1).is_err());
+        assert!(prune_recovery_copies(&[(first, locked)], 1).is_err());
     }
 
     #[test]
-    fn orphaned_history_copies_older_than_the_newest_layout_are_pruned() {
-        let scratch = shepr_test_support::ScratchDir::new("orphan-history-copies");
-        let directory = scratch.path();
-        let write = |name: String| {
-            std::fs::write(directory.join(name), "{}").expect("test precondition");
+    fn recovery_filename_round_trips() {
+        let key = RecoveryKey {
+            timestamp: 1_729_123_456_789_012_345_678_901_234_567_890u128,
+            sequence: 7,
         };
-        // A paired copy, an orphan older than the newest layout, the newest
-        // layout, and a history copy newer than it (a copy still being made).
-        write(recovery_filename(1, 0));
-        write(history_recovery_filename(1, 0));
-        write(history_recovery_filename(2, 0));
-        write(recovery_filename(3, 0));
-        write(history_recovery_filename(4, 0));
-
-        prune_orphaned_recovery_histories(directory, &directory.join(recovery_filename(3, 0)))
-            .expect("prune");
-
-        let exists = |name: String| directory.join(name).try_exists().expect("test stat");
-        assert!(exists(history_recovery_filename(1, 0)));
-        assert!(!exists(history_recovery_filename(2, 0)));
-        assert!(exists(history_recovery_filename(4, 0)));
-        assert!(exists(recovery_filename(1, 0)));
-        assert!(exists(recovery_filename(3, 0)));
-    }
-
-    #[test]
-    fn recovery_filename_timestamp_round_trips() {
-        let timestamp = 1_729_123_456_789_012_345_678_901_234_567_890u128;
-        let name = RecoveryName::new(timestamp, 7, RecoveryFileKind::Layout);
-        let filename = name.file_name();
+        let filename = key.file_name();
+        let timestamp = key.timestamp;
         assert_eq!(
             filename,
             format!("session-{timestamp:0RECOVERY_TIMESTAMP_DIGITS$}-007.json")
         );
-        assert_eq!(recovery_timestamp(&filename), Some(timestamp));
+        assert_eq!(RecoveryKey::parse(&filename), Some(key));
     }
 
     #[test]

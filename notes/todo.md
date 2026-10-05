@@ -2,24 +2,15 @@
 
 Recurring chores and checks that wait for the situation to come up.
 
-## Decide whether to keep `pane_history`
+## Decide what stays of the sidebar layout settings
 
-`experimental.pane_history` (off by default) makes every session save also
-write each pane's screen and scrollback to `session-history.json`, and a
-restore replays that text above each fresh shell's prompt. Weigh what it buys
-(seeing what a pane showed before a restart or reboot) against what it costs:
-larger saves (scrollback can reach the default 10 MB budget per pane), screen
-contents, possibly secrets, written to disk, and its code in shepr-mux
-persistence, the server save and checkpoint paths, and
-`spawn_with_initial_history`. Either keep it, and make it a plain
-`server.toml` setting rather than an experimental one, or remove it along with
-the history file and its restore path.
-
-## Judge the UI contrast targets by eye
-
-The contrast targets in `shepr-term/src/limits.rs` (`UI_*_CONTRAST`) are first
-guesses. Run `brokkr run shepr-palette-preview` in a few terminals (and with
-`--background`/`--foreground`/`--ansi` for themes not at hand) and tune them.
+`[ui.sidebar.agents]` and `[ui.sidebar.spaces]` let `client.toml` choose each
+sidebar entry's lines from tokens, per agent (`rows_by_agent`), with inline
+token styles and value rules that restyle or hide a token. It is roughly 1,900
+lines: parsing and validation in `shepr-config` (`sidebar.rs`,
+`sidebar/rules.rs`) and rendering in the client (`sidebar_tokens.rs`,
+`token_definitions.rs`). Deferred while other settings were removed; decide
+whether any of it stays configurable.
 
 # Gaps and smells
 
@@ -30,16 +21,6 @@ should.
 
 Proposals that arrived as defects but would widen what shepr claims. None is
 promised anywhere; each waits for the owner to want it.
-
-## Keep a corrupt pane-history file instead of overwriting it
-
-`App::with_paths` loads pane history with `load_history`; a read or parse
-failure is only a `warn!` in shepr-mux, the restore notice says nothing, and
-`protect_unloaded` covers the session file but not the history file, so the
-first save overwrites it. The restore notice is scoped to the session file, so
-nothing promises otherwise. Pane history is the bulk of what a user wants back,
-so a backup of the unreadable file and a line in the restore notice may be
-worth having.
 
 ## Survive Kimi rewriting its own config.toml
 

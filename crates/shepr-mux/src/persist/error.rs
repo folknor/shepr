@@ -12,8 +12,7 @@ pub enum SaveRefusal {
 /// The outcome of a session save.
 #[derive(Debug)]
 pub enum SaveError {
-    /// The write failed before it was known to have been published, or a
-    /// follow-up operation such as writing history failed.
+    /// The write failed before it was known to have been published.
     Io(io::Error),
     /// The layout was published but could not be confirmed durable.
     PublishedNotDurable(io::Error),

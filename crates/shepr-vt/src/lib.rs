@@ -7,7 +7,7 @@
 //! What this adapter adds on top of alacritty:
 //! * render snapshots with row dirty flags derived from alacritty's damage
 //!   (`RenderState` and borrowed row/cell views);
-//! * plain and VT formatters for reads and history persistence (`format.rs`);
+//! * plain and VT formatters for reads (`format.rs`);
 //! * a `Handler` wrapper the parser drives in place of `Term` (`handler.rs`):
 //!   it caps the kitty keyboard-mode stack before alacritty's broken overflow
 //!   branch can panic, models modes 9/1016/2031/2048 and modifyOtherKeys,

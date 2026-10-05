@@ -1,26 +1,16 @@
 //! The session's files on disk: path layout, the regular-file policy, atomic
-//! publication, and reading and writing the layout and history files.
+//! publication, and reading and writing the layout file.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use tracing::warn;
 
-use super::history::{
-    CappedBuf, HistoryDigest, SessionHistory, ensure_history_size, history_digest,
-    serialize_history,
-};
 use super::lock::DataDirLease;
-use super::schema::{
-    SessionFile, SessionHistorySnapshot, SessionSnapshot, parse_history_snapshot,
-    parse_session_file,
-};
-use crate::limits::{
-    MAX_SESSION_FILE_BYTES, MAX_SESSION_HISTORY_FILE_BYTES, MAX_SESSION_PATH_SYMLINK_HOPS,
-};
+use super::schema::{SessionSnapshot, parse_session_file};
+use crate::limits::{MAX_SESSION_FILE_BYTES, MAX_SESSION_PATH_SYMLINK_HOPS};
 
 pub(super) const SESSION_FILE_NAME: &str = "session.json";
-const SESSION_HISTORY_FILE_NAME: &str = "session-history.json";
 pub(super) const SNAPSHOT_DIRECTORY_NAME: &str = "session-snapshots";
 pub(super) const BACKUP_DIRECTORY_NAME: &str = "session-backups";
 
@@ -31,10 +21,6 @@ pub fn session_path(data_dir: &Path) -> PathBuf {
     data_dir.join(SESSION_FILE_NAME)
 }
 
-pub(super) fn session_history_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(SESSION_HISTORY_FILE_NAME)
-}
-
 pub(super) fn snapshot_directory(path: &Path) -> PathBuf {
     path.with_file_name(SNAPSHOT_DIRECTORY_NAME)
 }
@@ -43,8 +29,8 @@ pub(super) fn backup_directory(path: &Path) -> PathBuf {
     path.with_file_name(BACKUP_DIRECTORY_NAME)
 }
 
-/// A session or history path that resolves to something other than a regular
-/// file: a directory, a FIFO, a socket or a device.
+/// A session path that resolves to something other than a regular file: a
+/// directory, a FIFO, a socket or a device.
 #[derive(Debug, Clone, Copy)]
 enum NotRegularKind {
     Directory,
@@ -121,13 +107,6 @@ pub(super) fn not_regular(path: &Path, file_type: std::fs::FileType) -> std::io:
     })
 }
 
-/// Whether `error` says a session or history path is not a regular file.
-pub(super) fn is_not_regular(error: &std::io::Error) -> bool {
-    error
-        .get_ref()
-        .is_some_and(<dyn std::error::Error + Send + Sync>::is::<NotRegularFile>)
-}
-
 fn session_file_kind(error: &std::io::Error) -> Option<shepr_protocol::SessionFileKind> {
     let file = error.get_ref()?.downcast_ref::<NotRegularFile>()?;
     Some(match file.kind {
@@ -181,7 +160,7 @@ enum SessionPathState {
     NotRegular(std::fs::FileType),
 }
 
-/// The inspected target and state of one session or history path.
+/// The inspected target and state of one session path.
 ///
 /// All persistence operations use this resolver so startup checks, reads,
 /// replacement checks, and metadata stamps classify the same target through
@@ -221,7 +200,7 @@ impl SessionPath {
         match std::fs::symlink_metadata(&target) {
             Ok(metadata) if metadata.file_type().is_symlink() => Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "session or history path still resolves through a symlink after the hop limit",
+                "session path still resolves through a symlink after the hop limit",
             )),
             Ok(metadata) => Ok(Self::from_metadata(target, metadata)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self {
@@ -287,15 +266,6 @@ pub(super) fn regular_file_stamp(
         return Ok(None);
     };
     Ok(Some(shepr_platform::FileStamp::from_metadata(metadata)))
-}
-
-fn read_history_file(path: &Path) -> std::io::Result<Vec<u8>> {
-    let file = open_regular(path)?;
-    let mut content = Vec::new();
-    file.take((MAX_SESSION_HISTORY_FILE_BYTES as u64).saturating_add(1))
-        .read_to_end(&mut content)?;
-    ensure_history_size(content.len())?;
-    Ok(content)
 }
 
 pub(super) fn read_session_file(path: &Path) -> std::io::Result<String> {
@@ -365,10 +335,10 @@ pub(super) use shepr_platform::publish_file::PublishTarget;
 /// kept even when the directory sync then reports an error; that comes back
 /// as `Published::NotDurable`.
 ///
-/// Both the live session files and the recovery copies go through here, so
-/// they share one durability and permission policy. Session history can hold
-/// full pane scrollback up to its file-size limit and can include tokens, so
-/// nothing here may be group- or world-readable.
+/// Both the live session file and the recovery copies go through here, so
+/// they share one durability and permission policy. A saved layout names
+/// working directories, labels and agent session references, so nothing here
+/// may be group- or world-readable.
 pub(super) fn publish_private_file(
     source: &mut impl std::io::Read,
     target: &Path,
@@ -409,21 +379,44 @@ pub(super) fn remove_after_failed_publish(path: &Path) {
     }
 }
 
-pub(super) fn save_to_path(
-    path: &Path,
-    snapshot: &SessionSnapshot,
-    history_digest: Option<&HistoryDigest>,
-) -> std::io::Result<Published> {
-    save_json_to_path(
-        path,
-        &SessionFile {
-            snapshot,
-            history_digest: history_digest.copied(),
-        },
-    )
+/// A sink that keeps output only while it is within `cap`, then counts the
+/// rest without retaining it. Oversized JSON costs no more buffer memory than
+/// a value that fits, and its full size is still known.
+struct CappedBuf {
+    bytes: Vec<u8>,
+    cap: usize,
+    /// Bytes written, kept or not.
+    len: usize,
 }
 
-fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io::Result<Published> {
+impl CappedBuf {
+    fn new(cap: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            cap,
+            len: 0,
+        }
+    }
+}
+
+impl Write for CappedBuf {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.len = self.len.saturating_add(buf.len());
+        if self.len <= self.cap {
+            self.bytes.extend_from_slice(buf);
+        } else {
+            // Over the cap: nothing kept is of use any more.
+            self.bytes = Vec::new();
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub(super) fn save_to_path(path: &Path, snapshot: &SessionSnapshot) -> std::io::Result<Published> {
     let mut json = CappedBuf::new(MAX_SESSION_FILE_BYTES);
     serde_json::to_writer_pretty(&mut json, snapshot)?;
     if json.len > MAX_SESSION_FILE_BYTES {
@@ -432,10 +425,6 @@ fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io:
             format!("session file exceeds {MAX_SESSION_FILE_BYTES} bytes"),
         ));
     }
-    save_serialized_to_path(path, &json.bytes)
-}
-
-fn save_serialized_to_path(path: &Path, json: &[u8]) -> std::io::Result<Published> {
     let resolved = SessionPath::resolve(path)?;
     resolved.ensure_replaceable(resolved.target())?;
     let target = resolved.target();
@@ -444,7 +433,7 @@ fn save_serialized_to_path(path: &Path, json: &[u8]) -> std::io::Result<Publishe
     // The session root may already have been created by DataDirLease before
     // this save runs; that earlier creator must apply the same private mode.
     shepr_platform::create_private_directory_all(directory)?;
-    let mut source = json;
+    let mut source = json.bytes.as_slice();
     let published = publish_private_file(&mut source, target, PublishTarget::ReplaceExisting)?;
     if matches!(published, Published::Durable) {
         // Publishing synced the leaf directory. Sync each parent that records
@@ -458,28 +447,6 @@ fn save_serialized_to_path(path: &Path, json: &[u8]) -> std::io::Result<Publishe
         }
     }
     Ok(published)
-}
-
-/// Optional history has no follow-up work that depends on it, so a
-/// published-but-unsynced write is reported like any other failure.
-pub(super) fn save_history_to_path(
-    path: &Path,
-    history: Option<&SessionHistory>,
-) -> std::io::Result<()> {
-    match history {
-        Some(history) => save_history_json_to_path(path, &serialize_history(history)?.json),
-        None => clear_path(path),
-    }
-}
-
-/// Writes history that `serialize_history` already produced, so a caller that
-/// needs the bytes too (to tell whether anything changed) serializes once.
-pub(super) fn save_history_json_to_path(path: &Path, json: &[u8]) -> std::io::Result<()> {
-    ensure_history_size(json.len())?;
-    match save_serialized_to_path(path, json)? {
-        Published::Durable => Ok(()),
-        Published::NotDurable(err) => Err(err),
-    }
 }
 
 /// Removes what a save to `path` would have written. Saves write through
@@ -503,12 +470,7 @@ pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
 pub enum SessionLoad {
     /// No session file: a fresh start.
     Missing,
-    Loaded {
-        snapshot: SessionSnapshot,
-        /// The digest of the history file this layout pairs with; `None`
-        /// when it was saved without history.
-        history_digest: Option<HistoryDigest>,
-    },
+    Loaded(SessionSnapshot),
     /// A session file exists but could not be read or parsed; the reason.
     /// Nothing of it is restored, and the first save backs it up before
     /// replacing it.
@@ -519,7 +481,7 @@ impl SessionLoad {
     #[must_use]
     pub fn into_snapshot(self) -> Option<SessionSnapshot> {
         match self {
-            Self::Loaded { snapshot, .. } => Some(snapshot),
+            Self::Loaded(snapshot) => Some(snapshot),
             Self::Missing | Self::Unusable(_) => None,
         }
     }
@@ -529,8 +491,7 @@ impl SessionLoad {
 /// directory, a FIFO, a socket, a device). No save could ever replace it, so a
 /// server that started anyway would run panes whose layout can never be
 /// saved; the server refuses to start instead, before anything is restored.
-/// Symlinks are followed, as saves follow them. A history path in the same
-/// state only costs history and is left to the saves.
+/// Symlinks are followed, as saves follow them.
 pub fn check_session_target(lease: &DataDirLease) -> std::io::Result<()> {
     let path = session_path(lease.directory());
     // Use the shared resolver so startup and later saves apply the same
@@ -580,76 +541,13 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
         }
     };
     match parse_session_file(&content) {
-        Ok(file) => SessionLoad::Loaded {
-            snapshot: file.snapshot,
-            history_digest: file.history_digest,
-        },
+        Ok(snapshot) => SessionLoad::Loaded(snapshot),
         Err(err) => {
             warn!(
                 event = "persist.restore", subsystem = "persist", outcome = "parse_error",
                 path = %path.display(), error = %err, "failed to parse session file, ignoring"
             );
             SessionLoad::Unusable(session_parse_failure(&err))
-        }
-    }
-}
-
-/// Reads the history file only when the layout names one (`expected_digest`)
-/// and only if its bytes hash to exactly that digest: then it is the history
-/// that layout's own save serialized, every pane under the key it was saved
-/// with. The bytes are read once, and the ones hashed are the ones parsed. A
-/// matching digest is no exemption from parsing and version checks. It binds
-/// the buffer, not the file: a rewrite in place during the read yields bytes
-/// that simply fail to match.
-pub(super) fn load_history(
-    lease: &DataDirLease,
-    expected_digest: Option<&HistoryDigest>,
-) -> Option<SessionHistorySnapshot> {
-    let expected_digest = expected_digest?;
-    let path = session_history_path(lease.directory());
-    let content = match read_history_file(&path) {
-        Ok(content) => content,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            warn!(
-                event = "persist.restore", subsystem = "persist", outcome = "history_missing",
-                path = %path.display(), "the saved layout names a history file that is missing"
-            );
-            return None;
-        }
-        Err(err) => {
-            warn!(
-                event = "persist.restore", subsystem = "persist", outcome = "read_error",
-                path = %path.display(), error = %err, "failed to read session history file"
-            );
-            return None;
-        }
-    };
-    if history_digest(&content) != *expected_digest {
-        warn!(
-            event = "persist.restore", subsystem = "persist", outcome = "history_mismatch",
-            path = %path.display(),
-            "ignoring a session history file that is not the one the saved layout names"
-        );
-        return None;
-    }
-    let content = match String::from_utf8(content) {
-        Ok(content) => content,
-        Err(err) => {
-            warn!(
-                event = "persist.restore", subsystem = "persist", outcome = "parse_error",
-                path = %path.display(), error = %err, "session history file is not UTF-8, ignoring"
-            );
-            return None;
-        }
-    };
-    match parse_history_snapshot(&content) {
-        Ok(snapshot) => Some(snapshot),
-        Err(err) => {
-            warn!(
-                event = "persist.restore", subsystem = "persist", outcome = "parse_error",
-                path = %path.display(), error = %err, "failed to parse session history file, ignoring"
-            );
-            None
         }
     }
 }
@@ -678,12 +576,15 @@ fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::persist::history::HistoryText;
     use crate::persist::schema::SNAPSHOT_VERSION;
-    use shepr_protocol::PanePublicNumber;
+
+    /// Whether `error` says a session path is not a regular file.
+    fn is_not_regular(error: &std::io::Error) -> bool {
+        error
+            .get_ref()
+            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<NotRegularFile>)
+    }
 
     #[test]
     fn a_session_path_still_a_symlink_after_the_hop_limit_is_refused() {
@@ -718,12 +619,6 @@ mod tests {
             .join("session.json")
     }
 
-    fn temp_session_paths(name: &str) -> (PathBuf, PathBuf) {
-        let session = temp_session_path(name);
-        let history = session_history_path(containing_directory(&session));
-        (session, history)
-    }
-
     fn empty_snapshot() -> SessionSnapshot {
         SessionSnapshot {
             version: SNAPSHOT_VERSION,
@@ -733,72 +628,15 @@ mod tests {
         }
     }
 
-    fn number(value: usize) -> PanePublicNumber {
-        PanePublicNumber::new(value).expect("nonzero literal")
-    }
-
-    /// A history with one workspace holding one pane's text.
-    fn history_with(text: &str) -> SessionHistory {
-        SessionHistory {
-            version: SNAPSHOT_VERSION,
-            workspaces: vec![vec![(number(1), HistoryText::single(Arc::from(text)))]],
-        }
-    }
-
     #[test]
     fn reacquiring_after_release_loads_the_existing_session() {
         let scratch = crate::test_support::ScratchDir::new("released-session-lease");
         let lease = DataDirLease::acquire(&scratch).expect("lease");
-        save_to_path(&session_path(lease.directory()), &empty_snapshot(), None).expect("save");
-        assert!(matches!(load(&lease), SessionLoad::Loaded { .. }));
+        save_to_path(&session_path(lease.directory()), &empty_snapshot()).expect("save");
+        assert!(matches!(load(&lease), SessionLoad::Loaded(_)));
         lease.release();
         let lease = DataDirLease::acquire(&scratch).expect("lease after release");
-        assert!(matches!(load(&lease), SessionLoad::Loaded { .. }));
-        let digest = history_digest(b"any");
-        assert!(load_history(&lease, Some(&digest)).is_none());
-    }
-
-    #[test]
-    fn history_is_restored_only_for_the_digest_its_layout_names() {
-        let scratch = crate::test_support::ScratchDir::new("history-digest-pairing");
-        let lease = DataDirLease::acquire(&scratch).expect("lease");
-        let history = history_with("saved scrollback\r\n");
-        let json = serialize_history(&history).expect("serialize").json;
-        save_history_json_to_path(&session_history_path(lease.directory()), &json)
-            .expect("write history");
-        let digest = history_digest(&json);
-        save_to_path(
-            &session_path(lease.directory()),
-            &empty_snapshot(),
-            Some(&digest),
-        )
-        .expect("save layout");
-
-        let SessionLoad::Loaded {
-            history_digest: named,
-            ..
-        } = load(&lease)
-        else {
-            panic!("the layout loads");
-        };
-        assert_eq!(named, Some(digest));
-        let restored = load_history(&lease, named.as_ref()).expect("paired history");
-        assert_eq!(
-            restored.workspaces[0].panes[&number(1)].ansi,
-            "saved scrollback\r\n"
-        );
-
-        // Any other history in the file, a layout naming none, or a digest
-        // for other bytes restores nothing.
-        assert!(load_history(&lease, None).is_none());
-        let other_digest = history_digest(b"other");
-        assert!(load_history(&lease, Some(&other_digest)).is_none());
-        let other = serialize_history(&history_with("swapped\r\n"))
-            .expect("serialize")
-            .json;
-        save_history_json_to_path(&session_history_path(lease.directory()), &other)
-            .expect("write history");
-        assert!(load_history(&lease, Some(&digest)).is_none());
+        assert!(matches!(load(&lease), SessionLoad::Loaded(_)));
     }
 
     #[test]
@@ -813,7 +651,7 @@ mod tests {
         assert!(error.to_string().contains("a directory"), "{error}");
         // A save neither replaces it nor a clear removes it.
         assert!(is_not_regular(
-            &save_to_path(&session, &empty_snapshot(), None).expect_err("refused")
+            &save_to_path(&session, &empty_snapshot()).expect_err("refused")
         ));
         assert!(is_not_regular(&clear_path(&session).expect_err("refused")));
         assert!(std::fs::metadata(&session).expect("test stat").is_dir());
@@ -850,42 +688,9 @@ mod tests {
     }
 
     #[test]
-    fn save_to_paths_writes_pane_history_only_to_history_file() {
-        let (session_path, history_path) = temp_session_paths("split-history");
-
-        save_to_path(&session_path, &empty_snapshot(), None).expect("test precondition");
-        save_history_to_path(&history_path, Some(&history_with("split-secret")))
-            .expect("test precondition");
-
-        let session = std::fs::read_to_string(&session_path).expect("test precondition");
-        let history = std::fs::read_to_string(&history_path).expect("test precondition");
-        assert!(!session.contains("split-secret"));
-        assert!(
-            parse_session_file(&session)
-                .expect("test precondition")
-                .history_digest
-                .is_none()
-        );
-        assert!(history.contains("split-secret"));
-    }
-
-    #[test]
-    fn save_to_paths_removes_stale_history_when_history_is_disabled() {
-        let (session_path, history_path) = temp_session_paths("clear-history");
-        save_to_path(&session_path, &empty_snapshot(), None).expect("test precondition");
-        save_history_to_path(&history_path, Some(&history_with("stale-secret")))
-            .expect("test precondition");
-
-        save_history_to_path(&history_path, None).expect("test precondition");
-
-        assert!(session_path.try_exists().expect("test stat"));
-        assert!(!history_path.try_exists().expect("test stat"));
-    }
-
-    #[test]
     fn clear_path_removes_existing_session_file() {
         let path = temp_session_path("clear-existing");
-        save_to_path(&path, &empty_snapshot(), None).expect("test precondition");
+        save_to_path(&path, &empty_snapshot()).expect("test precondition");
 
         clear_path(&path).expect("test precondition");
 
@@ -905,12 +710,12 @@ mod tests {
     fn save_to_path_preserves_existing_symlink() {
         let target = temp_session_path("symlink-target");
         let link = target.with_file_name("link.json");
-        save_to_path(&target, &empty_snapshot(), None).expect("test precondition");
+        save_to_path(&target, &empty_snapshot()).expect("test precondition");
         std::os::unix::fs::symlink(&target, &link).expect("test precondition");
 
         let mut snap = empty_snapshot();
         snap.active = Some(7);
-        save_to_path(&link, &snap, None).expect("test precondition");
+        save_to_path(&link, &snap).expect("test precondition");
 
         assert!(
             std::fs::symlink_metadata(&link)
@@ -921,7 +726,7 @@ mod tests {
         let parsed =
             parse_session_file(&std::fs::read_to_string(&target).expect("test precondition"))
                 .expect("test precondition");
-        assert_eq!(parsed.snapshot.active, Some(7));
+        assert_eq!(parsed.active, Some(7));
     }
 
     #[test]
@@ -932,7 +737,7 @@ mod tests {
             .expect("test precondition");
         std::os::unix::fs::symlink(&target, &link).expect("test precondition");
 
-        save_to_path(&link, &empty_snapshot(), None).expect("test precondition");
+        save_to_path(&link, &empty_snapshot()).expect("test precondition");
 
         assert!(
             std::fs::symlink_metadata(&link)
@@ -960,32 +765,26 @@ mod tests {
     }
 
     #[test]
-    fn saved_session_and_history_files_are_private() {
+    fn the_saved_session_file_is_private() {
         use std::os::unix::fs::PermissionsExt;
         let data_dir = crate::test_support::ScratchDir::new("private-mode").join("data");
         let session = session_path(&data_dir);
-        let history = session_history_path(&data_dir);
-        save_to_path(&session, &empty_snapshot(), None).expect("create private session directory");
+        save_to_path(&session, &empty_snapshot()).expect("create private session directory");
         // Publishing renames a fresh private file over the target, so an
         // existing file with a broader mode is replaced, not reused.
-        std::fs::write(&history, b"old").expect("test precondition");
-        std::fs::set_permissions(&history, std::fs::Permissions::from_mode(0o644))
+        std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o644))
             .expect("test precondition");
 
-        save_to_path(&session, &empty_snapshot(), None).expect("test precondition");
-        save_history_to_path(&history, Some(&history_with("private-secret")))
-            .expect("test precondition");
+        save_to_path(&session, &empty_snapshot()).expect("test precondition");
 
-        for path in [&session, &history] {
-            let mode = std::fs::metadata(path)
-                .expect("test precondition")
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o777, 0o600, "{}", path.display());
-        }
+        let mode = std::fs::metadata(&session)
+            .expect("test precondition")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
         assert_eq!(
             entry_names(&data_dir),
-            ["session-history.json", "session.json"],
+            ["session.json"],
             "no staging file is left behind"
         );
         let directory_mode = std::fs::metadata(&data_dir)
@@ -1006,12 +805,12 @@ mod tests {
 
         let mut snap = empty_snapshot();
         snap.active = Some(3);
-        save_to_path(&path, &snap, None).expect("test precondition");
+        save_to_path(&path, &snap).expect("test precondition");
 
         let parsed =
             parse_session_file(&std::fs::read_to_string(&path).expect("test precondition"))
                 .expect("test precondition");
-        assert_eq!(parsed.snapshot.active, Some(3));
+        assert_eq!(parsed.active, Some(3));
         assert_eq!(
             std::fs::read(&leftover).expect("test precondition"),
             b"{\"trunc"
@@ -1027,7 +826,7 @@ mod tests {
         let target = dir.join("real.json");
         let link = dir.join("link.json");
         std::os::unix::fs::symlink("real.json", &link).expect("test precondition");
-        save_to_path(&link, &empty_snapshot(), None).expect("test precondition");
+        save_to_path(&link, &empty_snapshot()).expect("test precondition");
         assert!(target.try_exists().expect("test stat"));
 
         clear_path(&link).expect("test precondition");
@@ -1094,7 +893,7 @@ mod tests {
         let link = dir.join("link.json");
         std::os::unix::fs::symlink("real.json", &link).expect("test precondition");
 
-        save_to_path(&link, &empty_snapshot(), None).expect("test precondition");
+        save_to_path(&link, &empty_snapshot()).expect("test precondition");
 
         assert!(
             std::fs::symlink_metadata(&link)

@@ -343,9 +343,9 @@ with `brokkr run shepr-palette-preview -- --help`.
 ### Running a dev build next to the installed one
 
 The build profile selects the runtime directory and the data directory (saved
-layout, history, server log, lease). A release build keeps the plain XDG
+layout, server log, lease). A release build keeps the plain XDG
 locations; a dev build uses sibling `shepr-dev` directories, so it has its own
-sockets, saved layout and history with no flag. Both config files, machines
+sockets and saved layout with no flag. Both config files, machines
 included, are shared by every profile. The build identity also covers the profile
 as well as the source, so a dev and a release build never talk to each other's
 server: one that is reached anyway is refused with guidance naming the current
@@ -500,7 +500,7 @@ The emulator is `alacritty_terminal`, pinned with `=` in `Cargo.toml` (bump it
 deliberately, never through a loose requirement). Direct use of its types stays
 in `crates/shepr-vt/src/`: `lib.rs` defines `shepr_vt::Terminal` and the adapter
 boundary, with supporting implementation split across modules. `format.rs`
-provides the plain/VT formatters used for reads and history persistence;
+provides the plain/VT formatters used for reads;
 `handler.rs` wraps the parser's `Handler` for dispatched input, while `scan.rs`
 scans sequences vte does not dispatch that shepr still needs to answer or track.
 Alacritty types must not leak out of `shepr-vt`. In the mux
@@ -533,8 +533,7 @@ resolved. It reports `ChdirOk` or a chdir or exec errno over a status socket it
 connects after the fork (`launch.rs`). A child-made socket is one no other fork
 can inherit. In shepr-mux, `pane/launch_status.rs` settles each launch from
 those reports. Exec committed while the child lives opens observation of the
-child (`ChildLiveness::live_process_id`), starts detection and lets the pane's own
-screen supersede its carried history. A reported failure leaves the pane as a
+child (`ChildLiveness::live_process_id`) and starts detection. A reported failure leaves the pane as a
 placeholder that says why. The child watcher, the PTY reader and the
 runtime's teardown only record how the pane ended with its exit arbiter
 (`pane/exit_arbiter.rs`), the first recording winning. The launch

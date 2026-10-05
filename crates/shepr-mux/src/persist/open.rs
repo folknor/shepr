@@ -13,8 +13,7 @@ use crate::workspace::{WorkspaceIdAllocator, WorkspaceSet};
 use shepr_core::layout::PaneId;
 
 use super::actor::SessionPersister;
-use super::files::{SessionLoad, load, load_history, session_backup_directory, session_path};
-use super::history::HistoryCarry;
+use super::files::{SessionLoad, load, session_backup_directory, session_path};
 use super::lock::DataDirLease;
 use super::recovery::SessionBackupPolicy;
 use super::restore::{RestoredSession, plan_restore};
@@ -30,7 +29,6 @@ pub enum SessionOpenPolicy {
 /// Runtime inputs needed to restore saved panes.
 pub struct SessionOpenOptions<'a> {
     pub policy: SessionOpenPolicy,
-    pub pane_history: bool,
     pub geometry: WorkspaceChrome,
     pub launcher: &'a PaneLauncher,
     pub resume_agents_on_restore: bool,
@@ -85,9 +83,9 @@ struct SessionRestoreSummary {
 }
 
 /// Opens the session in the data directory `lease` guards. Under
-/// [`SessionOpenPolicy::Persist`] it reads the saved layout (and its pane
-/// history when `pane_history`), restores it through the launcher, decides
-/// whether the saved files need a recovery copy before the first write and
+/// [`SessionOpenPolicy::Persist`] it reads the saved layout, restores it
+/// through the launcher, decides whether the saved file needs a recovery copy
+/// before the first write and
 /// whether clients must be told of a loss, and logs how the restore went.
 /// Either way the lease moves to the returned persister, which fires
 /// `save_finished` each time a submitted save ends.
@@ -127,7 +125,6 @@ fn open_and_summarize(
     let mut restore_notice = None;
     let mut restore_summary = None;
     let mut restored = None;
-    let mut history_carry = HistoryCarry::default();
     // The session's one workspace ID allocator. Restore moves it past every
     // saved ID before it issues any, and the workspace set then owns it.
     let mut workspace_ids = WorkspaceIdAllocator::new();
@@ -143,19 +140,11 @@ fn open_and_summarize(
                     backup_dir: backup_dir(),
                 });
             }
-            SessionLoad::Loaded {
-                snapshot,
-                history_digest,
-            } => {
+            SessionLoad::Loaded(snapshot) => {
                 backup_policy = SessionBackupPolicy::NoBackupNeeded;
                 host_theme = Some(snapshot.host_theme.to_theme());
-                let history = options
-                    .pane_history
-                    .then(|| load_history(&lease, history_digest.as_ref()))
-                    .flatten();
                 let restored_session = plan_restore(
                     &snapshot,
-                    history.as_ref(),
                     options.geometry,
                     options.resume_agents_on_restore,
                     options.now,
@@ -166,10 +155,8 @@ fn open_and_summarize(
                     workspaces,
                     terminal_runtimes,
                     active,
-                    history_carry: restored_history,
                     restore_loss,
                 } = restored_session;
-                history_carry = restored_history;
                 let restore_was_partial = restore_loss.is_some();
                 if let Some(loss) = restore_loss {
                     backup_policy = SessionBackupPolicy::PreserveExisting;
@@ -201,9 +188,7 @@ fn open_and_summarize(
 
     let persister = match options.policy {
         SessionOpenPolicy::Never => SessionPersister::lease_only(lease, save_finished),
-        SessionOpenPolicy::Persist => {
-            SessionPersister::spawn(lease, backup_policy, history_carry, save_finished)
-        }
+        SessionOpenPolicy::Persist => SessionPersister::spawn(lease, backup_policy, save_finished),
     };
     // Nothing restored: an empty set with no bookmark and no runtimes.
     let (workspaces, terminal_runtimes, active) = restored.unwrap_or_default();
@@ -226,8 +211,8 @@ mod tests {
     use super::*;
     use crate::pane::PaneRuntimeRegistry;
     use crate::persist::schema::{
-        DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SNAPSHOT_VERSION, SessionFile,
-        SessionSnapshot, WorkspaceSnapshot,
+        DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SNAPSHOT_VERSION, SessionSnapshot,
+        WorkspaceSnapshot,
     };
     use crate::persist::{SaveError, SaveRefusal, capture_job};
     use shepr_protocol::PanePublicNumber;
@@ -293,12 +278,8 @@ mod tests {
         }
 
         /// Writes `snapshot` as the saved session; returns the bytes written.
-        fn write_session(&self, snapshot: SessionSnapshot) -> Vec<u8> {
-            let bytes = serde_json::to_vec(&SessionFile {
-                snapshot,
-                history_digest: None,
-            })
-            .expect("encode the saved session");
+        fn write_session(&self, snapshot: &SessionSnapshot) -> Vec<u8> {
+            let bytes = serde_json::to_vec(snapshot).expect("encode the saved session");
             std::fs::write(self.session_file(), &bytes).expect("write the saved session");
             bytes
         }
@@ -313,7 +294,6 @@ mod tests {
             lease,
             &SessionOpenOptions {
                 policy,
-                pane_history: true,
                 geometry: geometry(),
                 launcher: &launcher,
                 resume_agents_on_restore: false,
@@ -331,7 +311,6 @@ mod tests {
             &PaneRuntimeRegistry::new(),
             &shepr_core::absolute_path::AbsolutePath::root(),
             opened.host_theme,
-            false,
         )
         .into_job();
         opened.persister.submit(job, SystemTime::now()).wait()
@@ -405,7 +384,7 @@ mod tests {
     #[test]
     fn a_never_policy_reads_nothing_and_only_holds_the_lease() {
         let (dir, lease) = DataDir::new("open-never");
-        let original = dir.write_session(session(
+        let original = dir.write_session(&session(
             vec![workspace("w1", "saved", LayoutSnapshot::Pane(pane(1)), 2)],
             Some(0),
         ));
@@ -430,7 +409,7 @@ mod tests {
     #[test]
     fn a_clean_restore_reports_its_workspaces_and_needs_no_backup() {
         let (dir, lease) = DataDir::new("open-clean");
-        dir.write_session(session(
+        dir.write_session(&session(
             vec![
                 workspace("w1", "first", LayoutSnapshot::Pane(pane(1)), 2),
                 workspace("w2", "second", LayoutSnapshot::Pane(pane(1)), 2),
@@ -461,7 +440,7 @@ mod tests {
     #[test]
     fn a_saved_session_without_workspaces_restores_as_empty() {
         let (dir, lease) = DataDir::new("open-empty");
-        dir.write_session(session(Vec::new(), None));
+        dir.write_session(&session(Vec::new(), None));
         let (opened, summary) = open(lease, SessionOpenPolicy::Persist);
         assert!(opened.workspaces.is_empty());
         assert_eq!(opened.restore_notice, None);
@@ -527,7 +506,7 @@ mod tests {
             },
             2,
         );
-        let original = dir.write_session(session(
+        let original = dir.write_session(&session(
             vec![
                 workspace("w1", "healthy", LayoutSnapshot::Pane(pane(1)), 2),
                 colliding,
@@ -565,8 +544,7 @@ mod tests {
         let saved = crate::persist::schema::parse_session_file(
             &std::fs::read_to_string(dir.session_file()).expect("read the new session"),
         )
-        .expect("parse the new session")
-        .snapshot;
+        .expect("parse the new session");
         assert_eq!(
             saved
                 .workspaces
@@ -590,7 +568,7 @@ mod tests {
     #[test]
     fn restore_with_damage_backs_up_the_saved_session_before_the_first_save() {
         let (dir, lease) = DataDir::new("open-damaged");
-        let original = dir.write_session(session(
+        let original = dir.write_session(&session(
             vec![
                 workspace("w1", "first", LayoutSnapshot::Pane(pane(1)), 2),
                 workspace("w1", "repeat", LayoutSnapshot::Pane(pane(1)), 2),
@@ -617,83 +595,10 @@ mod tests {
         assert_eq!(directory_files(&dir.backups()), vec![original]);
     }
 
-    /// The saved history pairs with its layout, but only a boot that persists
-    /// pane history reads it: the pane's carried history is what the next
-    /// history save writes for a pane without a running shell.
-    #[test]
-    fn saved_pane_history_is_read_only_when_pane_history_is_on() {
-        use crate::persist::files::{
-            save_history_json_to_path, save_to_path, session_history_path,
-        };
-        use crate::persist::history::{
-            HistoryText, SessionHistory, history_digest, serialize_history,
-        };
-
-        const SAVED_TEXT: &str = "remembered scrollback";
-        for pane_history in [true, false] {
-            let (dir, lease) = DataDir::new(&format!("open-pane-history-{pane_history}"));
-            let history = SessionHistory {
-                version: SNAPSHOT_VERSION,
-                workspaces: vec![vec![(
-                    number(1),
-                    HistoryText::single(Arc::from(SAVED_TEXT)),
-                )]],
-            };
-            let json = serialize_history(&history).expect("serialize").json;
-            save_history_json_to_path(&session_history_path(&dir.path), &json)
-                .expect("write history");
-            save_to_path(
-                &dir.session_file(),
-                &session(
-                    vec![workspace("w1", "history", LayoutSnapshot::Pane(pane(1)), 2)],
-                    Some(0),
-                ),
-                Some(&history_digest(&json)),
-            )
-            .expect("write layout");
-
-            let launcher = refusing_launcher();
-            let (mut opened, _) = open_and_summarize(
-                lease,
-                &SessionOpenOptions {
-                    policy: SessionOpenPolicy::Persist,
-                    pane_history,
-                    geometry: geometry(),
-                    launcher: &launcher,
-                    resume_agents_on_restore: false,
-                    now: Instant::now(),
-                },
-                Arc::new(Notify::new()),
-            );
-            // A save that captures history, whatever the boot's setting, so
-            // the persister's carried history shows in the file it writes.
-            let job = capture_job(
-                &opened.workspaces,
-                &PaneRuntimeRegistry::new(),
-                &shepr_core::absolute_path::AbsolutePath::root(),
-                opened.host_theme,
-                true,
-            )
-            .into_job();
-            opened
-                .persister
-                .submit(job, SystemTime::now())
-                .wait()
-                .expect("save");
-            let written = std::fs::read_to_string(session_history_path(&dir.path))
-                .expect("the save writes a history file");
-            assert_eq!(
-                written.contains(SAVED_TEXT),
-                pane_history,
-                "pane_history = {pane_history}"
-            );
-        }
-    }
-
     #[test]
     fn a_failed_pane_launch_keeps_its_workspace_without_a_runtime() {
         let (dir, lease) = DataDir::new("open-refused-launch");
-        dir.write_session(session(
+        dir.write_session(&session(
             vec![workspace("w1", "kept", LayoutSnapshot::Pane(pane(1)), 2)],
             Some(0),
         ));

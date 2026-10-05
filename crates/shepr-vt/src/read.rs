@@ -1,64 +1,6 @@
 use super::*;
-use alacritty_terminal::grid::GridCell;
-
-// A cell flag bit alacritty leaves unused, marking restored history. Its
-// scroll and reflow code moves Cell values, erases and recycled rows reset
-// them to a fresh cell, and text writes replace the flags from the cursor
-// template, which only SGR sets; so the bit follows seeded cells, is dropped
-// by any live change, and adds no work to parser input. Nothing else
-// interprets it: style conversion, the formatters and alacritty's selection
-// test named flags only.
-const SEEDED_ROW: Flags = Flags::from_bits_retain(1 << 15);
-// A bump of the pinned alacritty that claims this bit fails the build.
-const _: () = assert!(Flags::all().bits() & SEEDED_ROW.bits() == 0);
 
 impl Terminal {
-    /// Marks every cell in retained screen row `y` as restored history.
-    /// Marks stay with the cells when alacritty scrolls, evicts or reflows
-    /// their rows. `false` means that the row is not retained.
-    pub fn mark_screen_row_seeded(&mut self, y: ScreenRow) -> bool {
-        let Some(line) = self.screen_line(y) else {
-            return false;
-        };
-        // Borrowing the whole row mutably marks all of it occupied, so the
-        // reset that recycles this row later clears every mark, not just the
-        // cells written before.
-        for cell in &mut self.emu.term.grid_mut()[line][..] {
-            cell.flags.insert(SEEDED_ROW);
-        }
-        true
-    }
-
-    /// Visits the cells of screen row `y` and reports whether its retained
-    /// content is still seeded. Reflow may add empty cells at a row's end,
-    /// which have no provenance bit; a live cell or an unmarked gap before
-    /// later seeded cells makes the row live. `None` means that the row is
-    /// not retained.
-    pub fn visit_screen_row_text_with_seeded(
-        &self,
-        y: ScreenRow,
-        scratch: &mut String,
-        visit: impl FnMut(u16, CellWide, &str),
-    ) -> Option<(RowWrap, bool)> {
-        let mut saw_seeded = false;
-        let mut saw_unseeded = false;
-        let mut live = false;
-        let wrap = self.visit_screen_row_text_inner(y, scratch, visit, |cell| {
-            let is_seeded = cell.flags.contains(SEEDED_ROW);
-            let reflow_spacer = cell.flags.contains(Flags::LEADING_WIDE_CHAR_SPACER);
-            if is_seeded {
-                if saw_unseeded {
-                    live = true;
-                }
-                saw_seeded = true;
-            } else if !reflow_spacer {
-                saw_unseeded = true;
-                live |= !cell.is_empty();
-            }
-        })?;
-        Some((wrap, saw_seeded && !live))
-    }
-
     /// Visits the cells of screen row `y` without allocating: `visit` gets
     /// each cell's column, width class and text. The text is what readers
     /// show for the cell: its grapheme, or a single space for blank cells,
@@ -70,21 +12,7 @@ impl Terminal {
         &self,
         y: ScreenRow,
         scratch: &mut String,
-        visit: impl FnMut(u16, CellWide, &str),
-    ) -> Option<RowWrap> {
-        self.visit_screen_row_text_inner(y, scratch, visit, |_| {})
-    }
-
-    // Keep the per-cell hook statically dispatched. The ordinary row visitor
-    // passes a known no-op, so optimized readers add no per-cell test or
-    // dynamic dispatch on hot paths.
-    #[inline(always)]
-    fn visit_screen_row_text_inner(
-        &self,
-        y: ScreenRow,
-        scratch: &mut String,
         mut visit: impl FnMut(u16, CellWide, &str),
-        mut on_cell: impl FnMut(&Cell),
     ) -> Option<RowWrap> {
         let line = self.screen_line(y)?;
         let grid = self.emu.term.grid();
@@ -94,7 +22,6 @@ impl Terminal {
             let Ok(x) = u16::try_from(x) else {
                 break;
             };
-            on_cell(cell);
             cell_text_into(cell, scratch);
             visit(x, cell_wide(cell), scratch.as_str());
         }

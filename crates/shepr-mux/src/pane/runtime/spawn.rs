@@ -50,7 +50,6 @@ pub(super) fn prepare_terminal(
     scrollback: shepr_core::scrollback::ScrollbackBudget,
     host_terminal_theme: shepr_term::host::TerminalTheme,
     host_terminal_appearance: Option<shepr_term::host::HostAppearance>,
-    initial_history_ansi: Option<&str>,
     local_host: Option<Arc<shepr_platform::HostNames>>,
 ) -> Arc<PaneTerminal> {
     let terminal = shepr_vt::Terminal::new(geometry, scrollback);
@@ -61,11 +60,6 @@ pub(super) fn prepare_terminal(
     let _ = pane_terminal.resize(geometry);
     pane_terminal.apply_host_terminal_theme(host_terminal_theme);
     let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
-    if let Some(ansi) = initial_history_ansi {
-        // Seeding records row provenance before the child can write. The
-        // detector excludes unchanged saved rows from its live snapshot.
-        pane_terminal.seed_history_ansi(ansi);
-    }
     Arc::new(pane_terminal)
 }
 
@@ -258,7 +252,6 @@ pub struct PaneLaunchRequest<'a> {
     pub geometry: shepr_core::geometry::PaneGeometry,
     pub cwd: &'a shepr_core::absolute_path::AbsolutePath,
     pub kind: LaunchKind,
-    pub initial_history: Option<&'a str>,
     pub presentation: LaunchPresentation,
 }
 
@@ -299,7 +292,6 @@ impl PaneLauncher {
             geometry,
             cwd,
             kind: launch_kind,
-            initial_history,
             presentation,
         } = request;
         let launch_env =
@@ -332,7 +324,6 @@ impl PaneLauncher {
             scrollback,
             host_terminal_theme,
             host_terminal_appearance,
-            initial_history,
             self.local_host.clone(),
         );
 

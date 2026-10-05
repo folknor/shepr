@@ -146,15 +146,8 @@ impl PaneRead<'_> {
 
     /// The screen text, OSC title and OSC progress the detector evaluates,
     /// read together under one terminal lock like the live detection tick.
-    /// Unchanged seeded history rows are excluded from the screen text.
     pub fn agent_detection_inputs(&self) -> super::AgentDetectionInputs {
         self.terminal.agent_detection_inputs()
-    }
-
-    /// A handle that reads this pane's history from any thread, so a save
-    /// can take it on the event loop and format the history off it.
-    pub fn history_source(&self) -> super::PaneHistorySource {
-        super::PaneHistorySource::new(Arc::clone(self.terminal))
     }
 
     pub fn extract_selection<P>(

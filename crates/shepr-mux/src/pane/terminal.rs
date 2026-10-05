@@ -155,7 +155,6 @@ enum TerminalMutation {
     HostThemeRestore,
     AgentOscStateClear,
     DefaultColorOwnerUpdate,
-    HistorySeed,
     Resize,
     DirtyCollectionHookUpdate,
     ScrollUp,
@@ -320,7 +319,6 @@ pub(crate) struct PaneTerminalCore {
     // `SyncState::Poisoned`, never an invented epoch. Keeping that read atomic
     // is the important invariant.
     synchronized_output_epoch: SyncEpoch,
-    history_epoch: HistoryEpoch,
     pub(super) render_state: shepr_vt::RenderState,
     pub(super) host_terminal_theme: shepr_term::host::TerminalTheme,
     /// Process group of the foreground program that last overrode a default
@@ -359,7 +357,6 @@ enum CoreMutation<'a> {
     },
     SyncFlush,
     Resize {
-        grid_changed: bool,
         sync_changed: bool,
     },
     Presentation,
@@ -374,7 +371,7 @@ impl PaneTerminalCore {
     fn record_mutation(&mut self, mutation: CoreMutation<'_>) {
         // How far each counter moves, besides the content revision, which
         // every other mutation advances once.
-        let (detection_bumps, sync_steps, grid_changed) = match mutation {
+        let (detection_bumps, sync_steps) = match mutation {
             CoreMutation::DefaultColorSet => {
                 self.default_color_generation.advance();
                 return;
@@ -386,24 +383,17 @@ impl PaneTerminalCore {
             } => (
                 u8::from(!bytes.is_empty()) + u8::from(flushed),
                 u8::from(flushed) + u8::from(sync_changed),
-                false,
             ),
-            CoreMutation::SyncFlush => (1, 1, false),
-            CoreMutation::Resize {
-                grid_changed,
-                sync_changed,
-            } => (1, u8::from(sync_changed), grid_changed),
-            CoreMutation::Clear => (1, 0, false),
-            CoreMutation::Presentation => (0, 0, false),
+            CoreMutation::SyncFlush => (1, 1),
+            CoreMutation::Resize { sync_changed } => (1, u8::from(sync_changed)),
+            CoreMutation::Clear => (1, 0),
+            CoreMutation::Presentation => (0, 0),
         };
         self.content_revision.advance();
         for _ in 0..detection_bumps {
             self.detection_seq.bump();
         }
         self.synchronized_output_epoch.advance(sync_steps);
-        if grid_changed {
-            self.history_epoch.advance();
-        }
     }
 
     /// The detector's token for this core's screen content.
@@ -608,13 +598,11 @@ impl PaneTerminal {
 mod backend;
 mod counters;
 mod helpers;
-mod history;
 mod input;
 mod text;
 
+pub(crate) use counters::DefaultColorGeneration;
 pub use counters::{ContentRevision, DetectionSeq, SyncEpoch, SyncState};
-pub(crate) use counters::{DefaultColorGeneration, HistoryEpoch};
-pub use history::{HistoryPiece, HistoryUnavailable, PaneHistoryCache, PaneHistorySource};
 pub use input::WheelRouting;
 
 use helpers::*;

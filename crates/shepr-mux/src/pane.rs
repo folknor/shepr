@@ -29,7 +29,6 @@ pub use terminal::{ContentRevision, DetectionSeq, SyncEpoch, SyncState};
 pub use terminal::{
     CursorRead, PaneClearError, PaneDraw, ScrollMetrics, TerminalCursorState, WheelRouting,
 };
-pub use terminal::{HistoryPiece, HistoryUnavailable, PaneHistoryCache, PaneHistorySource};
 pub use terminal::{
     PatchFallback, PatchRow, PatchUnavailable, TerminalCopyMotion, TerminalCopyMotionError,
     TerminalDirtyPatch, TerminalDirtyPatchSnapshot, TerminalLineMotion, TerminalParagraphMotion,
@@ -37,6 +36,3 @@ pub use terminal::{
     TerminalSearchWindow, TerminalTextPoint, TerminalTextRange, TerminalTextSearch,
     TerminalWordMotion,
 };
-
-#[cfg(test)]
-use terminal::PaneTerminal;

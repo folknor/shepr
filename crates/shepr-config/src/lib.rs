@@ -442,7 +442,6 @@ mod tests {
             scrollback_limit_bytes => _,
         });
         record_config_fields!(fields, experimental, "experimental", ExperimentalConfig {
-            pane_history => _,
             reveal_hidden_cursor_for_cjk_ime => _,
             cjk_ime_agents => _,
             cjk_ime_cursor_shape => _,

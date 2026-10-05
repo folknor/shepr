@@ -683,7 +683,6 @@ pub struct ValidatedSessionConfig {
 /// The `[experimental]` settings resolved by the server at launch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedExperimentalConfig {
-    pub pane_history: bool,
     pub reveal_hidden_cursor_for_cjk_ime: bool,
     /// Agents the cursor reveal is restricted to, without duplicates; empty
     /// means every focused pane.
@@ -744,7 +743,6 @@ pub(crate) fn validate_server(
                 config.advanced.scrollback_limit_bytes,
             ),
             experimental: ValidatedExperimentalConfig {
-                pane_history: config.experimental.pane_history,
                 reveal_hidden_cursor_for_cjk_ime: config
                     .experimental
                     .reveal_hidden_cursor_for_cjk_ime,

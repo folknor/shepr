@@ -76,16 +76,3 @@ impl DefaultColorGeneration {
         self.0 = self.0.wrapping_add(1);
     }
 }
-
-/// Advances with every resize that changes the grid. A taller grid pulls
-/// history rows back onto the screen, where the child can rewrite them, so
-/// history formatted before a resize may no longer match its rows
-/// (`history.rs`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct HistoryEpoch(u64);
-
-impl HistoryEpoch {
-    pub(super) fn advance(&mut self) {
-        self.0 = self.0.wrapping_add(1);
-    }
-}

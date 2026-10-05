@@ -2,12 +2,11 @@
 //!
 //! Saving itself belongs to the session persister
 //! (`shepr_mux::persist::SessionPersister`), which owns the data directory
-//! lease, the writer and the pane history carried between saves on a thread
-//! of its own. This side decides when to save (debounced autosaves, pane-exit
-//! and host-shutdown checkpoints, retries), captures what to save on the
-//! event loop, where only the cheap part happens (the structural snapshot, a
-//! handle to each pane's terminal and a probe of each shell's cwd), and hands
-//! the result to the persister.
+//! lease and the writer on a thread of its own. This side decides when to
+//! save (debounced autosaves, pane-exit and host-shutdown checkpoints,
+//! retries), captures what to save on the event loop, where only the cheap
+//! part happens (the structural snapshot and a probe of each shell's cwd),
+//! and hands the result to the persister.
 //!
 //! The loop learns that a save finished from the persister's completion
 //! signal (the `save_finished` notification `App::open` hands the persister
@@ -99,8 +98,6 @@ pub(crate) struct SessionSaver {
     /// capture reaches the persister after the one before it finished.
     in_flight: Option<InFlightSave>,
     persister: shepr_mux::persist::SessionPersister,
-    /// Whether pane history is captured into a save, from the config.
-    pane_history: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -211,7 +208,6 @@ impl SessionSaver {
     pub(crate) fn new(
         persister: shepr_mux::persist::SessionPersister,
         policy: shepr_mux::persist::SessionOpenPolicy,
-        pane_history: bool,
     ) -> Self {
         Self {
             policy: SavePolicy::new(policy),
@@ -220,18 +216,12 @@ impl SessionSaver {
             host: HostShutdownCheckpoint::new(),
             in_flight: None,
             persister,
-            pane_history,
         }
     }
 
     /// Whether this boot persists the session, frozen or not.
     pub(crate) fn persists_this_boot(&self) -> bool {
         self.policy.persists_this_boot()
-    }
-
-    /// Whether saves capture pane history.
-    pub(crate) fn pane_history(&self) -> bool {
-        self.pane_history
     }
 
     /// Whether nothing may start now whatever is requested or due: a save is
@@ -409,10 +399,10 @@ impl App {
         else {
             return Some(self.capture_session_save().into_job());
         };
-        let job = layout.recapture(&self.terminal_runtimes, self.session_saver.pane_history());
+        let job = layout.recapture(&self.terminal_runtimes);
         if job.is_none() {
             tracing::warn!(
-                "could not pair fresh pane history with the saved pane-exit layout; keeping the durable checkpoint"
+                "could not pair fresh cwd probes with the saved pane-exit layout; keeping the durable checkpoint"
             );
         }
         job
@@ -525,17 +515,14 @@ impl App {
     }
 
     /// Runs on the event loop, so it takes only what must be read here: the
-    /// structural snapshot, a handle to each pane's terminal and a probe of
-    /// each shell's cwd. No terminal lock is taken and no /proc file is read;
-    /// turning history into its saved form and reading the cwds are the
-    /// persister's work.
+    /// structural snapshot and a probe of each shell's cwd. No /proc file is
+    /// read; reading the cwds is the persister's work.
     fn capture_session_save(&self) -> shepr_mux::persist::SessionCapture {
         shepr_mux::persist::capture_job(
             &self.state.workspaces,
             &self.terminal_runtimes,
             self.paths.fallback_cwd(),
             self.state.host_terminal_theme(),
-            self.session_saver.pane_history(),
         )
     }
 
@@ -824,7 +811,6 @@ impl App {
         self.session_saver.persister = shepr_mux::persist::SessionPersister::spawn(
             lease,
             shepr_mux::persist::SessionBackupPolicy::NoBackupNeeded,
-            shepr_mux::persist::HistoryCarry::default(),
             save_finished,
         );
         self.session_saver.policy = SavePolicy::Persisting;
@@ -861,8 +847,8 @@ impl App {
         self.wait_for_session_save_with_outcome() == Some(true)
     }
 
-    /// Save the live pane histories while runtimes still exist, keeping the
-    /// directory claim until their processes have finished tearing down.
+    /// Save the session while runtimes still exist, keeping the directory
+    /// claim until their processes have finished tearing down.
     pub(crate) fn save_session_before_teardown(&mut self) {
         self.wait_for_session_save();
         let Some(pending) = self.submit_final_session_save() else {
@@ -950,7 +936,6 @@ mod tests {
             .expect("read the session file");
         shepr_mux::persist::schema::parse_session_file(&saved)
             .expect("parse the session file")
-            .snapshot
             .workspaces
             .iter()
             .map(|workspace| workspace.layout.panes().len())
@@ -1477,8 +1462,7 @@ mod tests {
     async fn the_app_opens_on_the_restored_session_and_saves_through_its_persister() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::schema::{
-            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionFile, SessionSnapshot,
-            WorkspaceSnapshot,
+            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionSnapshot, WorkspaceSnapshot,
         };
 
         let scratch = crate::test_support::ScratchDir::new("dropped-workspace-backup");
@@ -1536,11 +1520,7 @@ mod tests {
             ],
             active: Some(0),
         };
-        let original = serde_json::to_vec(&SessionFile {
-            snapshot,
-            history_digest: None,
-        })
-        .expect("encode the saved session");
+        let original = serde_json::to_vec(&snapshot).expect("encode the saved session");
         std::fs::write(shepr_mux::persist::session_path(&data_dir), &original)
             .expect("test precondition");
 

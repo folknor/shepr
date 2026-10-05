@@ -47,7 +47,6 @@ impl PaneTerminal {
                 dirty_collection_hook: None,
                 terminal,
                 synchronized_output_epoch: SyncEpoch::default(),
-                history_epoch: HistoryEpoch::default(),
                 render_state,
                 host_terminal_theme: shepr_term::host::TerminalTheme::default(),
                 transient_default_color_owner_pgid: None,
@@ -332,40 +331,6 @@ impl PaneTerminal {
         })
     }
 
-    pub(crate) fn seed_history_ansi(&self, ansi: &str) {
-        if ansi.is_empty() {
-            return;
-        }
-        // Production calls happen during pane construction, before this fresh
-        // core is shared with runtime tasks. Keep a diagnostic if that
-        // invariant ever changes and restored history cannot be seeded.
-        let Ok(mut core) = self.core.lock() else {
-            self.report_terminal_mutation_failure(TerminalMutation::HistorySeed);
-            return;
-        };
-        self.commit_mutation(&mut core, CoreMutation::Presentation);
-        core.terminal.write(ansi.as_bytes());
-        // Saved history is trimmed, so it normally ends on the last restored
-        // line with no line break. Without one the cursor stays at the end of
-        // that line and the fresh shell prints its first prompt glued onto it.
-        if !ansi.ends_with('\n') {
-            core.terminal.write(b"\r\n");
-        }
-        // Mark every retained row, including blank rows. A live write
-        // replaces the cell flags with the cursor template, so later output
-        // into one of these blank rows becomes live detection evidence.
-        for row in 0..core.terminal.total_rows() {
-            core.terminal.mark_screen_row_seeded(ScreenRow(row));
-        }
-        // Restored history must never answer the live child, nor surface as
-        // live clipboard writes, directory reports or title and colour
-        // changes.
-        discard_core_effects(&mut core.terminal);
-        // The replayed history may itself have left an update open, after the
-        // mutation above was committed.
-        self.mirror_synchronized_output(&core);
-    }
-
     pub(crate) fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) -> Vec<Bytes> {
         let rows = geometry.rows();
         let mut core = match self.core.lock() {
@@ -384,14 +349,11 @@ impl PaneTerminal {
         // Alacritty resizes and reflows the grid directly. Replaying history
         // through the parser here could split a sequence the child is still
         // writing and move its cursor behind its back.
-        let grid_before = (core.terminal.cols(), core.terminal.rows());
         core.terminal.resize(geometry);
-        let grid_changed = (core.terminal.cols(), core.terminal.rows()) != grid_before;
         let synchronized_output_after = core.terminal.sync_update_buffering();
         self.commit_mutation(
             &mut core,
             CoreMutation::Resize {
-                grid_changed,
                 sync_changed: synchronized_output_after != synchronized_output_before,
             },
         );
@@ -976,8 +938,8 @@ impl PaneTerminal {
             .unwrap_or_default()
     }
 
-    // Test-only reads compare retained content and replay against the chunked
-    // production history reader; they need only text, not truncation metadata.
+    // Test-only reads of retained content; they need only text, not
+    // truncation metadata.
     pub(crate) fn recent_text(&self, lines: usize) -> String {
         self.core
             .lock()
@@ -1010,37 +972,6 @@ impl PaneTerminal {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn writing_into_a_blank_seeded_row_makes_it_live() {
-        let pane = PaneTerminal::new(shepr_vt::Terminal::new(
-            shepr_core::geometry::PaneGeometry::cells_only(80, 4),
-            shepr_core::scrollback::ScrollbackBudget::new(0),
-        ));
-        pane.seed_history_ansi("saved first row\r\n\r\nsaved third row");
-
-        let mut core = pane.core.lock().expect("terminal core");
-        let mut scratch = String::new();
-        let mut row_text = String::new();
-        let seeded = terminal_screen_row_into_with_seeded(
-            &core.terminal,
-            ScreenRow(1),
-            &mut scratch,
-            &mut row_text,
-        );
-        assert!(seeded, "the blank restored row is marked seeded");
-        assert!(row_text.is_empty());
-
-        core.terminal.write(b"\x1b[2;1Hlive in restored blank row");
-        let seeded = terminal_screen_row_into_with_seeded(
-            &core.terminal,
-            ScreenRow(1),
-            &mut scratch,
-            &mut row_text,
-        );
-        assert!(!seeded, "output written into it makes the row live");
-        assert_eq!(row_text, "live in restored blank row");
-    }
 
     #[test]
     fn resize_returns_queued_replies_before_its_own() {

@@ -691,20 +691,14 @@ mod tests {
             .get(&pane_id)
             .expect("pending resume should leave a shell runtime");
         let marker = "restored agent: shell quoted | marker";
-        let source = runtime.read().history_source();
-        let mut history = shepr_mux::pane::PaneHistoryCache::default();
         for _ in 0..20 {
-            if source.refresh(&mut history).is_ok() && history.text().contains(marker) {
+            if runtime.read().detection_text().contains(marker) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         assert!(
-            source.refresh(&mut history).is_ok(),
-            "runtime should expose terminal history"
-        );
-        assert!(
-            history.text().contains(marker),
+            runtime.read().detection_text().contains(marker),
             "deferred restore should inject the resume argv into the restored shell"
         );
 

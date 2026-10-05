@@ -425,8 +425,6 @@ where
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ExperimentalConfig {
-    /// Persist pane screen history to session-history.json. Default: false.
-    pub pane_history: bool,
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`, so an input method (fcitx5, ibus) that
     /// places its candidate window at the terminal cursor keeps tracking the
@@ -997,19 +995,6 @@ headless_rows = 50
             config.advanced.scrollback_limit_bytes,
             DEFAULT_SCROLLBACK_LIMIT_BYTES
         );
-    }
-
-    #[test]
-    fn pane_history_persistence_is_opt_in() {
-        assert!(!ServerConfig::default().experimental.pane_history);
-
-        let toml = r#"
-[experimental]
-pane_history = true
-"#;
-        let config: ServerConfig = toml::from_str(toml).expect("test precondition");
-
-        assert!(config.experimental.pane_history);
     }
 
     #[test]

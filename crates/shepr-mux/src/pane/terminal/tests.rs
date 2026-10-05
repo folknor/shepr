@@ -1002,34 +1002,6 @@ fn process_pty_bytes_surfaces_clipboard_writes_without_other_results() {
     assert!(result.terminal_responses.is_empty());
 }
 
-#[test]
-fn seeded_history_clipboard_write_does_not_leak_into_live_output() {
-    let terminal = shepr_vt::Terminal::new(
-        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
-        shepr_core::scrollback::ScrollbackBudget::new(100),
-    );
-    let pane = PaneTerminal::new(terminal);
-    pane.seed_history_ansi("\x1b]52;c;c3RhbGU=\x07");
-
-    let result = pane.process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), b"live output");
-
-    assert!(result.clipboard_writes.is_empty());
-}
-
-#[test]
-fn seeded_history_pwd_does_not_leak_into_live_output() {
-    let terminal = shepr_vt::Terminal::new(
-        shepr_core::geometry::PaneGeometry::cells_only(80, 24),
-        shepr_core::scrollback::ScrollbackBudget::new(100),
-    );
-    let pane = PaneTerminal::new(terminal);
-    pane.seed_history_ansi("\x1b]7;file:///tmp/restored\x07");
-
-    let result = pane.process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), b"live output");
-
-    assert_eq!(result.reported_cwd, None);
-}
-
 fn expected_xtgettcap_response(cap_hex: &str, value: Option<&[u8]>) -> Bytes {
     let mut response = format!("\x1bP1+r{cap_hex}").into_bytes();
     if let Some(value) = value {
@@ -1989,7 +1961,7 @@ fn terminal_modify_other_keys_mode_one_preserves_shift_enter() {
     let key =
         shepr_termio::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
 
-    pane.seed_history_ansi("\x1b[>4;1m");
+    pane.process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), b"\x1b[>4;1m");
     assert_eq!(
         pane.modify_other_keys_level(),
         shepr_vt::ModifyOtherKeysLevel::ExceptWellDefined
@@ -2637,34 +2609,6 @@ fn detection_text_ignores_the_frame_a_clear_pushed_into_history() {
 }
 
 #[test]
-fn seeded_history_leaves_the_cursor_on_a_fresh_line() {
-    let terminal = shepr_vt::Terminal::new(
-        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
-        shepr_core::scrollback::ScrollbackBudget::new(100),
-    );
-    let pane = PaneTerminal::new(terminal);
-    // Saved history is trimmed and ends mid-line on the old prompt.
-    pane.seed_history_ansi("output\r\nuser@host $ ");
-    let cursor = pane.cursor_state().expect("test precondition");
-    assert_eq!((cursor.x, cursor.y), (0, 2));
-
-    pane.process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), b"new $ ");
-    assert_eq!(pane.recent_text(5), "output\nuser@host $\nnew $\n");
-}
-
-#[test]
-fn seeded_history_ending_in_a_line_break_gets_no_extra_blank_line() {
-    let terminal = shepr_vt::Terminal::new(
-        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
-        shepr_core::scrollback::ScrollbackBudget::new(100),
-    );
-    let pane = PaneTerminal::new(terminal);
-    pane.seed_history_ansi("restored\r\n");
-    let cursor = pane.cursor_state().expect("test precondition");
-    assert_eq!((cursor.x, cursor.y), (0, 1));
-}
-
-#[test]
 fn plain_text_reads_skip_wide_character_spacer_cells() {
     let mut terminal = shepr_vt::Terminal::new(
         shepr_core::geometry::PaneGeometry::cells_only(40, 3),
@@ -2998,22 +2942,6 @@ fn synchronized_output_suppresses_intermediate_render_requests_until_batch_ends(
         idle_epoch(pane_terminal.synchronized_output_state()),
         Some(2)
     );
-}
-
-#[test]
-fn seeded_history_is_rendered_on_next_draw() {
-    let terminal = shepr_vt::Terminal::new(
-        shepr_core::geometry::PaneGeometry::cells_only(20, 5),
-        shepr_core::scrollback::ScrollbackBudget::new(100),
-    );
-    let pane = PaneTerminal::new(terminal);
-    pane.seed_history_ansi("restored history");
-
-    let frame = render_frame(&pane, 20, 5);
-    let row = (0..16)
-        .map(|x| frame_cell(&frame, x, 0).symbol.as_str())
-        .collect::<String>();
-    assert_eq!(row, "restored history");
 }
 
 #[test]
@@ -4773,34 +4701,6 @@ fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
     let reset_set = core.terminal.take_effects().default_color_set;
     assert_eq!(note_default_color_change(&mut core, reset_set), None);
     assert_eq!(core.transient_default_color_owner_pgid, None);
-}
-
-#[test]
-fn primary_history_is_unavailable_on_the_alternate_screen() {
-    let terminal = shepr_vt::Terminal::new(
-        shepr_core::geometry::PaneGeometry::cells_only(20, 3),
-        shepr_core::scrollback::ScrollbackBudget::new(100_000),
-    );
-    let pane = std::sync::Arc::new(PaneTerminal::new(terminal));
-    let source = PaneHistorySource::new(std::sync::Arc::clone(&pane));
-    let mut cache = PaneHistoryCache::default();
-    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.process_pty_bytes(pane_id, b"history one\r\nhistory two\r\nprompt");
-    assert!(
-        source
-            .read(&mut cache)
-            .is_some_and(|ansi| ansi.contains("history one"))
-    );
-
-    pane.process_pty_bytes(pane_id, b"\x1b[?1049h\x1b[2J\x1b[Hfull-screen frame");
-    assert_eq!(source.read(&mut cache), None);
-
-    pane.process_pty_bytes(pane_id, b"\x1b[?1049l");
-    assert!(
-        source
-            .read(&mut cache)
-            .is_some_and(|ansi| ansi.contains("history one") && !ansi.contains("full-screen"))
-    );
 }
 
 #[test]

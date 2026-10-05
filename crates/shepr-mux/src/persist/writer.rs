@@ -1,6 +1,6 @@
-//! The save sequence: one layout save or clear with its paired history file,
-//! and the recovery copies made around it. The files themselves are `files`,
-//! the history serializer is `history` and the recovery copies are `recovery`.
+//! The save sequence: one layout save or clear, and the recovery copies made
+//! around it. The files themselves are `files` and the recovery copies are
+//! `recovery`.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -8,10 +8,6 @@ use std::time::SystemTime;
 
 use super::error::SaveError;
 use super::files;
-use super::history::{
-    HistoryDigest, HistoryTrim, SerializedHistory, SessionHistory, history_digest,
-    serialize_history,
-};
 use super::recovery::{self, SessionBackupPolicy, SnapshotFingerprintCache, SnapshotHistoryPlan};
 use super::schema::SessionSnapshot;
 
@@ -61,54 +57,13 @@ fn session_clear_failed(path: &Path, err: &str) {
     );
 }
 
-struct WrittenHistory {
-    digest: HistoryDigest,
-    file: shepr_platform::FileStamp,
-}
-
-/// What a save does to the history file, decided before the layout is
-/// written, since the layout names the history it pairs with.
-enum HistoryIntent {
-    /// Delete it: history is not persisted. The layout names none.
-    Remove,
-    /// Replace it with these serialized bytes, unless it already holds
-    /// exactly them. The layout names `digest`, the hash of `json`.
-    Write {
-        json: Vec<u8>,
-        digest: HistoryDigest,
-    },
-    /// The caller knows it already holds the history `digest` names.
-    Keep(HistoryDigest),
-    /// The history could not be serialized: the layout names none, and the
-    /// error is the save's.
-    Failed(io::Error),
-}
-
-impl HistoryIntent {
-    /// The digest the layout written with this intent names.
-    fn digest(&self) -> Option<HistoryDigest> {
-        match self {
-            Self::Write { digest, .. } | Self::Keep(digest) => Some(*digest),
-            Self::Remove | Self::Failed(_) => None,
-        }
-    }
-}
-
 /// Shared by autosave, pane-exit checkpoints, and shutdown.
 pub(super) struct SessionWriter {
     path: PathBuf,
     backup_policy: SessionBackupPolicy,
     _lease: super::lock::DataDirLease,
-    /// Digest and file stamp for the history JSON this writer last put on
-    /// disk. History is the bulk of a save (full scrollback per pane) and is
-    /// rewritten and fsynced on every save otherwise, even when no pane printed
-    /// anything.
-    written_history: Option<WrittenHistory>,
     /// Reuses parsed layout fingerprints while the writer owns unchanged files.
     snapshot_fingerprints: SnapshotFingerprintCache,
-    /// Whether the last history save had to trim scrollback or workspace
-    /// shape to fit the file cap, so the log records transitions only.
-    trimming_history: bool,
 }
 
 impl SessionWriter {
@@ -121,9 +76,7 @@ impl SessionWriter {
             path,
             backup_policy,
             _lease: lease,
-            written_history: None,
             snapshot_fingerprints: SnapshotFingerprintCache::default(),
-            trimming_history: false,
         }
     }
 
@@ -141,72 +94,14 @@ impl SessionWriter {
         Ok(())
     }
 
-    /// Saves the layout and optional history, reporting durability failures.
-    /// An error may follow publication if syncing or writing the history fails.
-    /// `now` supplies the time used for recovery-copy naming and preservation.
-    /// On success, returns the digest the published layout names its history
-    /// by, `None` when it has none.
+    /// Saves the layout, reporting durability failures: an error may follow
+    /// publication if syncing its directory fails. `now` supplies the time
+    /// used for recovery-copy naming and preservation.
     pub(super) fn save(
         &mut self,
         snapshot: &SessionSnapshot,
-        history: Option<&SessionHistory>,
         now: SystemTime,
-    ) -> Result<Option<HistoryDigest>, SaveError> {
-        let history = match history {
-            None => HistoryIntent::Remove,
-            Some(history) => self.prepare_history(history),
-        };
-        self.save_with(snapshot, history, now)
-    }
-
-    /// Saves the layout, naming the history by `digest`, and leaves the
-    /// history file as it is. Only right when [`history_is_current`] and the
-    /// history the caller would save is known to be the one `digest` names.
-    ///
-    /// [`history_is_current`]: Self::history_is_current
-    pub(super) fn save_keeping_history(
-        &mut self,
-        snapshot: &SessionSnapshot,
-        digest: &HistoryDigest,
-        now: SystemTime,
-    ) -> Result<Option<HistoryDigest>, SaveError> {
-        self.save_with(snapshot, HistoryIntent::Keep(*digest), now)
-    }
-
-    /// Serializes `history` (trimmed to the file cap) and hashes exactly the
-    /// bytes that would be written.
-    fn prepare_history(&mut self, history: &SessionHistory) -> HistoryIntent {
-        let history_path = files::session_history_path(files::containing_directory(&self.path));
-        match serialize_history(history) {
-            Ok(SerializedHistory { json, trimmed }) => {
-                self.note_history_trim(&history_path, trimmed);
-                let digest = history_digest(&json);
-                HistoryIntent::Write { json, digest }
-            }
-            Err(error) => HistoryIntent::Failed(error),
-        }
-    }
-
-    /// Whether the history file is still exactly what this writer last put on
-    /// disk (one `stat`), so a caller that knows its history has not changed
-    /// since may skip assembling it.
-    pub(super) fn history_is_current(&self) -> bool {
-        let Some(written) = &self.written_history else {
-            return false;
-        };
-        let history_path = files::session_history_path(files::containing_directory(&self.path));
-        files::regular_file_stamp(&history_path)
-            .ok()
-            .flatten()
-            .is_some_and(|file| file == written.file)
-    }
-
-    fn save_with(
-        &mut self,
-        snapshot: &SessionSnapshot,
-        history: HistoryIntent,
-        now: SystemTime,
-    ) -> Result<Option<HistoryDigest>, SaveError> {
+    ) -> Result<(), SaveError> {
         let mut snapshot_history_plan = SnapshotHistoryPlan::RetryAfterWrite;
         let result = self.preserve_unloaded(now).and_then(|()| {
             snapshot_history_plan = recovery::plan_snapshot_history(
@@ -215,139 +110,63 @@ impl SessionWriter {
                 now,
                 &mut self.snapshot_fingerprints,
             );
-            let digest = history.digest();
-            files::save_to_path(&self.path, snapshot, digest.as_ref())
+            files::save_to_path(&self.path, snapshot)
         });
-        self.finish_save_with_snapshot_plan(result, snapshot, history, snapshot_history_plan, now)
+        self.finish_save(result, snapshot, snapshot_history_plan, now)
     }
 
-    fn finish_save_with_snapshot_plan(
+    fn finish_save(
         &mut self,
         result: io::Result<files::Published>,
         snapshot: &SessionSnapshot,
-        history: HistoryIntent,
         snapshot_history_plan: SnapshotHistoryPlan,
         now: SystemTime,
-    ) -> Result<Option<HistoryDigest>, SaveError> {
-        let digest = history.digest();
-        let mut failure = None;
-        if result.is_ok() {
-            self.snapshot_fingerprints
-                .remember_current(&self.path, snapshot);
-        }
-        match result {
-            Ok(files::Published::Durable) => {}
+    ) -> Result<(), SaveError> {
+        let failure = match result {
+            Ok(files::Published::Durable) => None,
             // The new layout already replaced the old file; only its
             // directory entry may not be on disk yet. That is still our
-            // committed layout, so the history that pairs with it is written
-            // too and the unloaded-file guard is released, exactly as for a
-            // durable save.
+            // committed layout, so the unloaded-file guard is released and
+            // the snapshot step runs, exactly as for a durable save.
             Ok(files::Published::NotDurable(err)) => {
                 session_save_failed(
                     &self.path,
                     &format!("saved, but syncing its directory failed: {err}"),
                 );
-                failure = Some(SaveError::PublishedNotDurable(err));
+                Some(SaveError::PublishedNotDurable(err))
             }
             Err(err) => {
                 session_save_failed(&self.path, &err.to_string());
                 return Err(SaveError::Io(err));
             }
-        }
-        // Optional history failure must not reclassify our committed layout as unloaded.
-        self.backup_policy = SessionBackupPolicy::NoBackupNeeded;
-        let history_path = files::session_history_path(files::containing_directory(&self.path));
-        if let Err(err) = self.save_history(&history_path, history) {
-            self.written_history = None;
-            session_save_failed(&history_path, &err.to_string());
-            if failure.is_none() {
-                failure = Some(SaveError::Io(err));
-            }
-        } else {
-            // After-write snapshots must include the history just committed
-            // for their layout. Before-write snapshots were already copied
-            // with the old history in `plan_snapshot_history`.
-            recovery::finish_snapshot_history(
-                &self.path,
-                snapshot_history_plan,
-                now,
-                &mut self.snapshot_fingerprints,
-            );
-        }
-        if failure.is_none() {
-            session_saved(&self.path, snapshot.workspaces.len());
-        }
-        failure.map_or(Ok(digest), Err)
-    }
-
-    /// Writes the history unless the file already holds exactly these bytes
-    /// from this writer's previous save. The layout names the history by the
-    /// digest of these bytes, so a layout only ever pairs with the history its
-    /// own save serialized.
-    fn save_history(&mut self, history_path: &Path, history: HistoryIntent) -> io::Result<()> {
-        let (json, digest) = match history {
-            HistoryIntent::Keep(_) => return Ok(()),
-            HistoryIntent::Remove => {
-                self.written_history = None;
-                return files::save_history_to_path(history_path, None);
-            }
-            HistoryIntent::Failed(error) => return Err(error),
-            HistoryIntent::Write { json, digest } => (json, digest),
         };
-        if let Some(written) = self
-            .written_history
-            .as_ref()
-            .filter(|written| written.digest == digest)
-            && files::regular_file_stamp(history_path)? == Some(written.file)
-        {
-            return Ok(());
+        self.snapshot_fingerprints
+            .remember_current(&self.path, snapshot);
+        self.backup_policy = SessionBackupPolicy::NoBackupNeeded;
+        recovery::finish_snapshot_history(
+            &self.path,
+            snapshot_history_plan,
+            now,
+            &mut self.snapshot_fingerprints,
+        );
+        match failure {
+            None => {
+                session_saved(&self.path, snapshot.workspaces.len());
+                Ok(())
+            }
+            Some(failure) => Err(failure),
         }
-        self.written_history = None;
-        files::save_history_json_to_path(history_path, &json)?;
-        // Metadata only guards the optimization. If it cannot be captured
-        // after a successful write, future saves simply publish the history
-        // again rather than trusting a cache with no matching file stamp.
-        self.written_history = files::regular_file_stamp(history_path)
-            .ok()
-            .flatten()
-            .map(|file| WrittenHistory { digest, file });
-        Ok(())
     }
 
-    fn note_history_trim(&mut self, history_path: &Path, trimmed: Option<HistoryTrim>) {
-        match (trimmed, self.trimming_history) {
-            (Some(trim), false) => tracing::warn!(
-                event = "persist.save", subsystem = "persist", outcome = "history_trimmed",
-                path = %history_path.display(), panes = trim.panes,
-                dropped_bytes = trim.dropped_bytes,
-                structure_dropped = trim.structure_dropped,
-                "session history exceeds its file cap; saving what fits"
-            ),
-            (None, true) => tracing::info!(
-                event = "persist.save", subsystem = "persist", outcome = "history_fits",
-                path = %history_path.display(),
-                "session history fits its file cap again; saving all scrollback"
-            ),
-            (Some(_), true) | (None, false) => {}
-        }
-        self.trimming_history = trimmed.is_some();
-    }
-
-    /// Clears the layout and history, reporting either file's clear failure.
-    /// `now` supplies the time used for recovery-copy naming and preservation.
+    /// Clears the layout, reporting a clear failure. `now` supplies the time
+    /// used for recovery-copy naming and preservation.
     pub(super) fn clear(&mut self, now: SystemTime) -> Result<(), SaveError> {
-        self.written_history = None;
         let result = self.preserve_unloaded(now).and_then(|()| {
             recovery::preserve_snapshot_history(&self.path, now, &mut self.snapshot_fingerprints);
             files::clear_path(&self.path)
         });
         if let Err(err) = result {
             session_clear_failed(&self.path, &err.to_string());
-            return Err(SaveError::Io(err));
-        }
-        let history_path = files::session_history_path(files::containing_directory(&self.path));
-        if let Err(err) = files::clear_path(&history_path) {
-            session_clear_failed(&history_path, &err.to_string());
             return Err(SaveError::Io(err));
         }
         self.snapshot_fingerprints.forget_current();
@@ -357,47 +176,18 @@ impl SessionWriter {
 }
 
 #[cfg(test)]
-impl SessionWriter {
-    fn finish_save(
-        &mut self,
-        result: io::Result<files::Published>,
-        snapshot: &SessionSnapshot,
-        history: Option<&SessionHistory>,
-    ) -> Result<(), SaveError> {
-        let history = match history {
-            None => HistoryIntent::Remove,
-            Some(history) => self.prepare_history(history),
-        };
-        self.finish_save_with_snapshot_plan(
-            result,
-            snapshot,
-            history,
-            SnapshotHistoryPlan::RetryAfterWrite,
-            std::time::UNIX_EPOCH,
-        )
-        .map(drop)
-    }
-}
-
-#[cfg(test)]
 mod tests {
-    use super::recovery::{recovery_history_path_for_test, recovery_layouts_for_test};
+    use super::recovery::recovery_layouts_for_test;
     use super::*;
     use crate::limits::{SNAPSHOT_INTERVAL, SNAPSHOT_LIMIT};
-    use crate::persist::history::HistoryText;
-    use shepr_protocol::PanePublicNumber;
     use std::fs::File;
     use std::time::UNIX_EPOCH;
 
     impl SessionWriter {
         /// A save at the real current time, for tests whose subject is not
         /// the recovery cadence.
-        fn save_for_test(
-            &mut self,
-            snapshot: &SessionSnapshot,
-            history: Option<&SessionHistory>,
-        ) -> Result<(), SaveError> {
-            self.save(snapshot, history, SystemTime::now()).map(drop)
+        fn save_for_test(&mut self, snapshot: &SessionSnapshot) -> Result<(), SaveError> {
+            self.save(snapshot, SystemTime::now())
         }
 
         /// A clear at the real current time; see [`Self::save_for_test`].
@@ -460,29 +250,6 @@ mod tests {
         workspace.root_pane = second;
     }
 
-    fn number(value: usize) -> PanePublicNumber {
-        PanePublicNumber::new(value).expect("nonzero literal")
-    }
-
-    /// A history of one pane's text in one workspace.
-    fn history_of(text: &str) -> SessionHistory {
-        SessionHistory {
-            version: super::super::schema::SNAPSHOT_VERSION,
-            workspaces: vec![vec![(
-                number(1),
-                HistoryText::single(std::sync::Arc::from(text)),
-            )]],
-        }
-    }
-
-    /// A history with no workspaces.
-    fn empty_history() -> SessionHistory {
-        SessionHistory {
-            version: super::super::schema::SNAPSHOT_VERSION,
-            workspaces: Vec::new(),
-        }
-    }
-
     fn backups(writer: &SessionWriter) -> Vec<Vec<u8>> {
         let directory = files::backup_directory(&writer.path);
         if !directory.try_exists().expect("test stat") {
@@ -500,27 +267,13 @@ mod tests {
             .expect("test precondition")
     }
 
-    fn paired_history_backups(directory: &Path) -> Vec<Vec<u8>> {
-        recovery_layouts_for_test(directory)
-            .expect("test precondition")
-            .into_iter()
-            .filter_map(|(_, layout)| {
-                let history = recovery_history_path_for_test(&layout).expect("valid recovery name");
-                history
-                    .try_exists()
-                    .expect("test stat")
-                    .then(|| std::fs::read(history).expect("test precondition"))
-            })
-            .collect()
-    }
-
     #[test]
     fn snapshot_survives_exit_bursts_clears_and_writer_restarts() {
         use std::os::unix::fs::PermissionsExt;
 
         let mut writer = writer(false);
         let original = snapshot();
-        writer.save_for_test(&original, None).expect("save");
+        writer.save_for_test(&original).expect("save");
         let files = snapshots(&writer);
         assert_eq!(files.len(), 1);
         let snapshot_directory = super::super::files::snapshot_directory(&writer.path);
@@ -536,7 +289,7 @@ mod tests {
         for i in 0..100 {
             let mut shrinking = snapshot();
             shrinking.workspaces[0].name = test_name(&format!("remaining pane {i}"));
-            writer.save_for_test(&shrinking, None).expect("save");
+            writer.save_for_test(&shrinking).expect("save");
             let path = writer.path.clone();
             drop(writer);
             writer = SessionWriter::new(
@@ -556,28 +309,6 @@ mod tests {
             saved
         );
         assert!(backups(&writer).is_empty());
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
-    }
-
-    #[test]
-    fn session_snapshots_keep_history_with_the_layout_they_preserve() {
-        let mut writer = writer(false);
-        let history_path = files::session_history_path(files::containing_directory(&writer.path));
-        files::save_to_path(&writer.path, &snapshot(), None).expect("test precondition");
-        std::fs::write(&history_path, b"matching screen history").expect("test precondition");
-
-        writer.save_for_test(&snapshot(), None).expect("save");
-
-        let saved_layouts = snapshots(&writer);
-        assert_eq!(saved_layouts.len(), 1);
-        assert_eq!(
-            std::fs::read(
-                recovery_history_path_for_test(&saved_layouts[0].1).expect("valid recovery name")
-            )
-            .expect("paired history snapshot"),
-            b"matching screen history"
-        );
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
     }
@@ -604,7 +335,7 @@ mod tests {
                 .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
                 .expect("test precondition");
         }
-        writer.save_for_test(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot()).expect("save");
         assert_eq!(snapshots(&writer).len(), SNAPSHOT_LIMIT);
         assert!(
             !directory
@@ -630,7 +361,7 @@ mod tests {
             .expect("test precondition")
             .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
             .expect("test precondition");
-        writer.save_for_test(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot()).expect("save");
         assert_eq!(snapshots(&writer), vec![(1, old)]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -639,7 +370,7 @@ mod tests {
     #[test]
     fn snapshot_cadence_recovers_after_clock_rollback_and_restart() {
         let mut writer = writer(false);
-        writer.save_for_test(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot()).expect("save");
         // The supplied clock is one day behind the saved file's mtime.
         let saved_at = std::fs::metadata(&writer.path)
             .expect("session metadata")
@@ -648,7 +379,7 @@ mod tests {
         let rolled_back = saved_at - std::time::Duration::from_secs(86400);
         let mut changed = snapshot();
         renumber_only_pane(&mut changed);
-        writer.save(&changed, None, rolled_back).expect("save");
+        writer.save(&changed, rolled_back).expect("save");
         assert_eq!(snapshots(&writer).len(), 2);
         let path = writer.path.clone();
         drop(writer);
@@ -658,7 +389,7 @@ mod tests {
             SessionBackupPolicy::NoBackupNeeded,
         );
         changed.workspaces[0].name = test_name("after restart");
-        writer.save_for_test(&changed, None).expect("save");
+        writer.save_for_test(&changed).expect("save");
         assert_eq!(
             snapshots(&writer).len(),
             2,
@@ -671,9 +402,7 @@ mod tests {
     #[test]
     fn snapshot_interval_uses_supplied_clock() {
         let mut writer = writer(false);
-        writer
-            .save_for_test(&snapshot(), None)
-            .expect("initial save");
+        writer.save_for_test(&snapshot()).expect("initial save");
         let latest = snapshots(&writer).pop().expect("initial snapshot").1;
         let modified = std::fs::metadata(latest)
             .expect("snapshot metadata")
@@ -684,13 +413,12 @@ mod tests {
         writer
             .save(
                 &changed,
-                None,
                 modified + SNAPSHOT_INTERVAL - std::time::Duration::from_nanos(1),
             )
             .expect("save inside interval");
         assert_eq!(snapshots(&writer).len(), 1);
         writer
-            .save(&changed, None, modified + SNAPSHOT_INTERVAL)
+            .save(&changed, modified + SNAPSHOT_INTERVAL)
             .expect("save at interval");
         assert_eq!(snapshots(&writer).len(), 2);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -702,7 +430,7 @@ mod tests {
         let mut writer = writer(false);
         std::fs::write(files::snapshot_directory(&writer.path), b"blocked")
             .expect("test precondition");
-        writer.save_for_test(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot()).expect("save");
         assert!(writer.path.try_exists().expect("test stat"));
         writer.clear_for_test().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
@@ -715,12 +443,12 @@ mod tests {
         for preserve_existing in [false, true] {
             let mut writer = writer(preserve_existing);
             if !preserve_existing {
-                files::save_to_path(&writer.path, &snapshot(), None).expect("test precondition");
+                files::save_to_path(&writer.path, &snapshot()).expect("test precondition");
             }
-            writer.save_for_test(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot()).expect("save");
             assert_eq!(writer.backup_policy, SessionBackupPolicy::NoBackupNeeded);
             assert!(writer.path.try_exists().expect("test stat"));
-            writer.save_for_test(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot()).expect("save");
             writer.clear_for_test().expect("clear");
             assert!(!writer.path.try_exists().expect("test stat"));
             assert!(backups(&writer).is_empty());
@@ -734,12 +462,10 @@ mod tests {
         let original = b"invalid utf8 \xff";
         let mut writer = writer(true);
         std::fs::write(&writer.path, original).expect("test precondition");
-        let history_path = files::session_history_path(files::containing_directory(&writer.path));
-        std::fs::write(&history_path, b"history").expect("test precondition");
         let directory = files::backup_directory(&writer.path);
         std::fs::write(&directory, b"blocks recovery").expect("test precondition");
         writer
-            .save_for_test(&snapshot(), None)
+            .save_for_test(&snapshot())
             .expect_err("a blocked recovery copy must fail the save");
         writer
             .clear_for_test()
@@ -749,56 +475,23 @@ mod tests {
             std::fs::read(&writer.path).expect("test precondition"),
             original
         );
-        assert_eq!(
-            std::fs::read(&history_path).expect("test precondition"),
-            b"history"
-        );
 
         std::fs::remove_file(&directory).expect("test precondition");
-        writer.save_for_test(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot()).expect("save");
         assert_eq!(writer.backup_policy, SessionBackupPolicy::NoBackupNeeded);
-        writer.save_for_test(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot()).expect("save");
         writer.clear_for_test().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
         assert_eq!(backups(&writer), vec![original.to_vec()]);
-        assert_eq!(
-            paired_history_backups(&files::backup_directory(&writer.path)),
-            vec![b"history".to_vec()]
-        );
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
     }
 
     #[test]
-    fn optional_history_failure_is_reported_after_layout_saves() {
+    fn unsynced_layout_save_releases_the_guard() {
         let mut writer = writer(true);
-        let history = files::session_history_path(files::containing_directory(&writer.path));
-        std::fs::create_dir(&history).expect("test precondition");
-        std::fs::write(files::backup_directory(&writer.path), b"unavailable")
-            .expect("test precondition");
-        assert!(writer.save_for_test(&snapshot(), None).is_err());
-        assert!(
-            writer.backup_policy == SessionBackupPolicy::NoBackupNeeded,
-            "structural session was saved successfully"
-        );
-        let mut changed = snapshot();
-        changed.workspaces[0].name = test_name("latest layout");
-        assert!(writer.save_for_test(&changed, None).is_err());
-        let saved: super::super::schema::SessionFile<SessionSnapshot> =
-            serde_json::from_slice(&std::fs::read(&writer.path).expect("test precondition"))
-                .expect("test precondition");
-        assert_eq!(saved.snapshot.workspaces[0].name.as_str(), "latest layout");
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
-    }
-
-    #[test]
-    fn unsynced_layout_save_still_writes_history_and_releases_the_guard() {
-        let history = empty_history();
-        let mut writer = writer(true);
-        let history_path = files::session_history_path(files::containing_directory(&writer.path));
         // The layout rename happened; only the directory sync after it failed.
-        files::save_to_path(&writer.path, &snapshot(), None).expect("test precondition");
+        files::save_to_path(&writer.path, &snapshot()).expect("test precondition");
         assert!(
             writer
                 .finish_save(
@@ -806,17 +499,14 @@ mod tests {
                         "directory sync failed",
                     ))),
                     &snapshot(),
-                    Some(&history),
+                    SnapshotHistoryPlan::RetryAfterWrite,
+                    UNIX_EPOCH,
                 )
                 .is_err()
         );
         assert_eq!(writer.backup_policy, SessionBackupPolicy::NoBackupNeeded);
-        assert!(
-            history_path.try_exists().expect("test stat"),
-            "history pairs with the new layout"
-        );
 
-        // A save that never reached the target changes nothing else.
+        // A save that never reached the target changes nothing.
         let path = writer.path.clone();
         drop(writer);
         let mut failed = SessionWriter::new(
@@ -824,18 +514,17 @@ mod tests {
                 .expect("lease"),
             SessionBackupPolicy::PreserveExisting,
         );
-        std::fs::remove_file(&history_path).expect("test precondition");
         assert!(
             failed
                 .finish_save(
                     Err(io::Error::other("write failed")),
                     &snapshot(),
-                    Some(&history),
+                    SnapshotHistoryPlan::RetryAfterWrite,
+                    UNIX_EPOCH,
                 )
                 .is_err()
         );
         assert_eq!(failed.backup_policy, SessionBackupPolicy::PreserveExisting);
-        assert!(!history_path.try_exists().expect("test stat"));
         std::fs::remove_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
     }
@@ -859,7 +548,7 @@ mod tests {
     #[test]
     fn retiring_consumes_the_writer_and_releases_the_directory() {
         let mut writer = writer(false);
-        writer.save_for_test(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot()).expect("save");
         let path = writer.path.clone();
         let lock_path = path.with_file_name(super::super::lock::LOCK_FILE_NAME);
         let lock = File::open(lock_path).expect("test precondition");
@@ -878,139 +567,6 @@ mod tests {
     }
 
     #[test]
-    fn unchanged_history_is_not_rewritten() {
-        let mut writer = writer(false);
-        let history_path = files::session_history_path(files::containing_directory(&writer.path));
-        writer
-            .save_for_test(&snapshot(), Some(&history_of("one")))
-            .expect("save");
-        // A rewrite replaces the file, so the inode tells whether one happened.
-        // (A chmod would not do as a marker: the stamp includes the change
-        // time, so it would itself count as an outside change.)
-        use std::os::unix::fs::MetadataExt;
-        let inode = || {
-            std::fs::metadata(&history_path)
-                .expect("test precondition")
-                .ino()
-        };
-        let written = inode();
-        writer
-            .save_for_test(&snapshot(), Some(&history_of("one")))
-            .expect("save");
-        assert_eq!(
-            inode(),
-            written,
-            "unchanged history should keep the file written by the previous save"
-        );
-
-        writer
-            .save_for_test(&snapshot(), Some(&history_of("two")))
-            .expect("save");
-        let changed = std::fs::read(&history_path).expect("test precondition");
-        assert!(String::from_utf8_lossy(&changed).contains("two"));
-
-        // A clear forgets what was written, so the same history is written
-        // again afterwards.
-        writer.clear_for_test().expect("clear");
-        assert!(!history_path.try_exists().expect("test stat"));
-        writer
-            .save_for_test(&snapshot(), Some(&history_of("two")))
-            .expect("save");
-        assert_eq!(
-            std::fs::read(&history_path).expect("test precondition"),
-            changed
-        );
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
-    }
-
-    #[test]
-    fn every_layout_names_the_digest_of_the_history_it_pairs_with() {
-        let history = history_of("screen");
-        let mut writer = writer(false);
-        let history_path = files::session_history_path(files::containing_directory(&writer.path));
-        let named = |writer: &SessionWriter| {
-            let layout: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(&writer.path).expect("layout"))
-                    .expect("layout json");
-            layout["history_digest"].as_str().map(str::to_owned)
-        };
-        let file_digest =
-            || history_digest(&std::fs::read(&history_path).expect("history")).to_hex();
-
-        let digest = writer
-            .save(&snapshot(), Some(&history), SystemTime::now())
-            .expect("save")
-            .expect("a history was saved");
-        let digest_hex = digest.to_hex();
-        assert_eq!(named(&writer).as_deref(), Some(digest_hex.as_str()));
-        assert_eq!(file_digest(), digest_hex);
-
-        let mut changed = snapshot();
-        changed.workspaces[0].name = test_name("layout only");
-        let kept = writer
-            .save_keeping_history(&changed, &digest, SystemTime::now())
-            .expect("save");
-        assert_eq!(kept, Some(digest));
-        assert_eq!(named(&writer).as_deref(), Some(digest_hex.as_str()));
-        assert_eq!(file_digest(), digest_hex);
-
-        assert_eq!(
-            writer
-                .save(&changed, None, SystemTime::now())
-                .expect("save"),
-            None
-        );
-        assert_eq!(named(&writer), None, "a layout without history names none");
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
-    }
-
-    #[test]
-    fn a_history_path_that_is_not_a_regular_file_costs_only_history() {
-        let history = empty_history();
-        let mut writer = writer(true);
-        std::fs::write(&writer.path, b"unloaded session").expect("test precondition");
-        let history_path = files::session_history_path(files::containing_directory(&writer.path));
-        std::fs::create_dir(&history_path).expect("test precondition");
-        // The unloaded session is still preserved, without its history, and
-        // the layout is saved; only the history write fails.
-        assert!(writer.save_for_test(&snapshot(), Some(&history)).is_err());
-        assert_eq!(writer.backup_policy, SessionBackupPolicy::NoBackupNeeded);
-        assert_eq!(backups(&writer), vec![b"unloaded session".to_vec()]);
-        assert!(
-            std::fs::metadata(&history_path)
-                .expect("test stat")
-                .is_dir(),
-            "the obstruction is left alone"
-        );
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
-    }
-
-    #[test]
-    fn deleted_unchanged_history_is_written_again() {
-        let mut writer = writer(false);
-        let history_path = files::session_history_path(files::containing_directory(&writer.path));
-        writer
-            .save_for_test(&snapshot(), Some(&empty_history()))
-            .expect("save");
-        let expected = std::fs::read(&history_path).expect("test precondition");
-
-        std::fs::remove_file(&history_path).expect("test precondition");
-        writer
-            .save_for_test(&snapshot(), Some(&empty_history()))
-            .expect("save after history deletion");
-
-        assert_eq!(
-            std::fs::read(&history_path).expect("history is restored"),
-            expected
-        );
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
-    }
-
-    #[test]
     fn pruning_leaves_user_named_recovery_files_alone() {
         let mut writer = writer(true);
         let directory = files::backup_directory(&writer.path);
@@ -1020,7 +576,7 @@ mod tests {
         for i in 0..5u8 {
             writer.backup_policy = SessionBackupPolicy::PreserveExisting;
             std::fs::write(&writer.path, [i]).expect("test precondition");
-            writer.save_for_test(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot()).expect("save");
         }
         assert_eq!(
             std::fs::read(manual).expect("test precondition"),
@@ -1077,10 +633,10 @@ mod tests {
             return;
         }
         writer
-            .save_for_test(&snapshot(), None)
+            .save_for_test(&snapshot())
             .expect_err("an unwritable data directory must fail the save");
         writer
-            .save_for_test(&snapshot(), None)
+            .save_for_test(&snapshot())
             .expect_err("an unwritable data directory must fail the save");
         std::fs::set_permissions(&data_directory, std::fs::Permissions::from_mode(0o700))
             .expect("test cleanup");
@@ -1088,7 +644,7 @@ mod tests {
             std::fs::read(&writer.path).expect("test precondition"),
             b"original"
         );
-        writer.save_for_test(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot()).expect("save");
         assert_eq!(backups(&writer), vec![b"original".to_vec()]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -1110,7 +666,7 @@ mod tests {
         for i in 2..4u8 {
             writer.backup_policy = SessionBackupPolicy::PreserveExisting;
             std::fs::write(&writer.path, [i]).expect("test precondition");
-            writer.save_for_test(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot()).expect("save");
         }
         assert_eq!(backups(&writer), vec![vec![1], vec![2], vec![3]]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -1123,17 +679,10 @@ mod tests {
         for i in 0..5u8 {
             writer.backup_policy = SessionBackupPolicy::PreserveExisting;
             std::fs::write(&writer.path, [i]).expect("test precondition");
-            let history_path =
-                files::session_history_path(files::containing_directory(&writer.path));
-            std::fs::write(&history_path, [i + 10]).expect("test precondition");
-            writer.save_for_test(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot()).expect("save");
         }
         assert_eq!(backups(&writer), vec![vec![2], vec![3], vec![4]]);
-        assert_eq!(
-            paired_history_backups(&files::backup_directory(&writer.path)),
-            vec![vec![12], vec![13], vec![14]]
-        );
-        writer.save_for_test(&snapshot(), None).expect("save");
+        writer.save_for_test(&snapshot()).expect("save");
         writer.clear_for_test().expect("clear");
         assert_eq!(backups(&writer), vec![vec![2], vec![3], vec![4]]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -1150,7 +699,7 @@ mod tests {
             if late_target {
                 std::fs::write(&target, b"late layout").expect("test precondition");
             }
-            writer.save_for_test(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot()).expect("save");
             assert!(
                 std::fs::symlink_metadata(&writer.path)
                     .expect("test precondition")
@@ -1187,7 +736,7 @@ mod tests {
                     .is_symlink()
             );
             assert!(!target.try_exists().expect("test stat"));
-            writer.save_for_test(&snapshot(), None).expect("save");
+            writer.save_for_test(&snapshot()).expect("save");
             assert!(
                 std::fs::symlink_metadata(&writer.path)
                     .expect("test precondition")

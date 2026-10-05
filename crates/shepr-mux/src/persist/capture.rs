@@ -1,6 +1,6 @@
-//! Capture of the live session: the structural snapshot, the cwd probes and
-//! the history handles, read from workspaces and pane runtimes on the event
-//! loop and handed to whoever writes them.
+//! Capture of the live session: the structural snapshot and the cwd probes,
+//! read from workspaces and pane runtimes on the event loop and handed to
+//! whoever writes them.
 
 use std::collections::HashMap;
 
@@ -11,20 +11,17 @@ use shepr_core::layout::PaneId;
 use shepr_protocol::PanePublicNumber;
 
 use super::actor::{PersistJob, SessionBundle};
-use super::history::{PendingHistory, PendingPaneHistory};
 use super::schema::{
     LayoutSnapshot, PaneSnapshot, SNAPSHOT_VERSION, SessionSnapshot, WorkspaceSnapshot,
 };
 
 /// Captures the current session for a save: the job clears the saved state
-/// when no workspace remains, and otherwise writes one structural snapshot
-/// with optional pane history.
+/// when no workspace remains, and otherwise writes one structural snapshot.
 pub fn capture_job(
     workspaces: &WorkspaceSet,
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &AbsolutePath,
     host_theme: shepr_term::host::TerminalTheme,
-    persist_pane_history: bool,
 ) -> SessionCapture {
     if workspaces.is_empty() {
         return SessionCapture {
@@ -34,14 +31,8 @@ pub fn capture_job(
     }
     let (snapshot, cwds, pane_ids) =
         capture_deferred(workspaces, terminal_runtimes, fallback_cwd, host_theme);
-    let history =
-        persist_pane_history.then(|| capture_pending_history(workspaces, terminal_runtimes));
     SessionCapture {
-        job: PersistJob::Save(SessionBundle {
-            snapshot,
-            cwds,
-            history,
-        }),
+        job: PersistJob::Save(SessionBundle { snapshot, cwds }),
         pane_ids,
     }
 }
@@ -98,31 +89,16 @@ impl CapturedLayout {
         &self.snapshot
     }
 
-    /// A save of this same layout with fresh cwd probes and, when
-    /// `persist_pane_history`, fresh history handles: a pane that still has
-    /// a runtime contributes its current state, and one removed since the
-    /// capture keeps what the persister carries for it. `None` when a saved
-    /// pane has no identity in the map.
-    pub fn recapture(
-        &self,
-        terminal_runtimes: &PaneRuntimeRegistry,
-        persist_pane_history: bool,
-    ) -> Option<PersistJob> {
+    /// A save of this same layout with fresh cwd probes: a pane that still
+    /// has a runtime contributes its current cwd, and one removed since the
+    /// capture keeps the cwd the layout saved. `None` when a saved pane has
+    /// no identity in the map.
+    pub fn recapture(&self, terminal_runtimes: &PaneRuntimeRegistry) -> Option<PersistJob> {
         let cwds =
             capture_pending_cwds_for_snapshot(&self.snapshot, &self.pane_ids, terminal_runtimes)?;
-        let history = if persist_pane_history {
-            Some(capture_pending_history_for_snapshot(
-                &self.snapshot,
-                &self.pane_ids,
-                terminal_runtimes,
-            )?)
-        } else {
-            None
-        };
         Some(PersistJob::Save(SessionBundle {
             snapshot: self.snapshot.clone(),
             cwds,
-            history,
         }))
     }
 }
@@ -288,77 +264,6 @@ fn capture_workspace(
     })
 }
 
-/// The event-loop half of a history capture; see `PendingHistory`. Takes no
-/// terminal lock: a live pane contributes a handle to its terminal.
-pub fn capture_pending_history(
-    workspaces: &WorkspaceSet,
-    terminal_runtimes: &PaneRuntimeRegistry,
-) -> PendingHistory {
-    PendingHistory::new(
-        workspaces
-            .iter()
-            .map(|workspace| {
-                workspace
-                    .tree()
-                    .panes()
-                    .map(|(pane, record)| {
-                        let runtime = terminal_runtimes.get(&pane);
-                        (record.number(), pending_pane_history(pane, runtime))
-                    })
-                    .collect()
-            })
-            .collect(),
-    )
-}
-
-/// A pane's own screen supersedes its carried history only once its shell
-/// launched. Until then (a chdir on a hung mount can last indefinitely) the
-/// runtime holds a PTY and no shell, and a save must not trade the history
-/// carried for it for that empty screen; if the launch then fails, the pane is
-/// left with the carried history.
-fn pending_pane_history(
-    pane: PaneId,
-    runtime: Option<&crate::pane::PaneRuntime>,
-) -> PendingPaneHistory {
-    match runtime.filter(|runtime| runtime.launched()) {
-        Some(runtime) => PendingPaneHistory::Live(pane, runtime.read().history_source()),
-        None => PendingPaneHistory::Runtimeless(pane),
-    }
-}
-
-/// Captures fresh history handles for a previously captured session layout.
-/// Panes removed since that layout was saved use the persister's carried
-/// history, while panes that still have runtimes contribute their current
-/// history. The pane map must have been captured with `snapshot`.
-fn capture_pending_history_for_snapshot(
-    snapshot: &SessionSnapshot,
-    pane_ids: &HashMap<SavedPaneRef, PaneId>,
-    terminal_runtimes: &PaneRuntimeRegistry,
-) -> Option<PendingHistory> {
-    let mut workspaces = Vec::with_capacity(snapshot.workspaces.len());
-    for (workspace_index, workspace) in snapshot.workspaces.iter().enumerate() {
-        let mut numbers: Vec<_> = workspace
-            .layout
-            .panes()
-            .into_iter()
-            .map(|pane| pane.public_number)
-            .collect();
-        numbers.sort_unstable();
-        let mut panes = Vec::with_capacity(numbers.len());
-        for number in numbers {
-            let saved = SavedPaneRef {
-                workspace: workspace_index,
-                pane: number,
-            };
-            let pane = *pane_ids.get(&saved)?;
-            let runtime = terminal_runtimes.get(&pane);
-            panes.push((number, pending_pane_history(pane, runtime)));
-        }
-        workspaces.push(panes);
-    }
-    Some(PendingHistory::new(workspaces))
-}
-
 /// Captures cwd probes for a previously captured session layout. A probe keeps
 /// the best known cwd if its child has exited, and live panes keep their
 /// checkpoint workspace and pane keys even if removals changed workspace indexes.
@@ -383,17 +288,6 @@ fn capture_pending_cwds_for_snapshot(
     Some(cwds)
 }
 
-/// Both halves of a history capture in one call. Saves split them across the
-/// event loop and the persister's thread instead.
-#[cfg(test)]
-pub fn capture_history(
-    workspaces: &WorkspaceSet,
-    terminal_runtimes: &PaneRuntimeRegistry,
-    carry: &mut super::history::HistoryCarry,
-) -> super::schema::SessionHistorySnapshot {
-    capture_pending_history(workspaces, terminal_runtimes).resolve(carry)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,13 +307,12 @@ mod tests {
         serde_json::to_value(snapshot).expect("a snapshot serializes")
     }
 
-    fn capture_of(workspaces: &WorkspaceSet, persist_pane_history: bool) -> SessionCapture {
+    fn capture_of(workspaces: &WorkspaceSet) -> SessionCapture {
         capture_job(
             workspaces,
             &PaneRuntimeRegistry::new(),
             &AbsolutePath::root(),
             Default::default(),
-            persist_pane_history,
         )
     }
 
@@ -430,7 +323,7 @@ mod tests {
             Vec::new(),
             None,
         );
-        let (job, layout) = capture_of(&empty, true).into_job_with_layout();
+        let (job, layout) = capture_of(&empty).into_job_with_layout();
         assert!(matches!(job, PersistJob::Clear));
         assert!(layout.is_none());
     }
@@ -440,36 +333,26 @@ mod tests {
         let mut workspace = Workspace::test_new("kept");
         workspace.test_split(shepr_core::layout::Direction::Horizontal);
         let workspaces = set_of(workspace);
-        for persist_pane_history in [false, true] {
-            let (job, layout) =
-                capture_of(&workspaces, persist_pane_history).into_job_with_layout();
-            let PersistJob::Save(saved) = job else {
-                panic!("a session with a workspace is saved");
-            };
-            let layout = layout.expect("a save keeps its layout");
-            assert_eq!(json(layout.snapshot()), json(&saved.snapshot));
+        let (job, layout) = capture_of(&workspaces).into_job_with_layout();
+        let PersistJob::Save(saved) = job else {
+            panic!("a session with a workspace is saved");
+        };
+        let layout = layout.expect("a save keeps its layout");
+        assert_eq!(json(layout.snapshot()), json(&saved.snapshot));
 
-            let Some(PersistJob::Save(again)) =
-                layout.recapture(&PaneRuntimeRegistry::new(), persist_pane_history)
-            else {
-                panic!("every saved pane has its identity");
-            };
-            assert_eq!(json(&again.snapshot), json(&saved.snapshot));
-            assert_eq!(again.history.is_some(), persist_pane_history);
-        }
+        let Some(PersistJob::Save(again)) = layout.recapture(&PaneRuntimeRegistry::new()) else {
+            panic!("every saved pane has its identity");
+        };
+        assert_eq!(json(&again.snapshot), json(&saved.snapshot));
     }
 
     #[test]
     fn a_layout_missing_a_pane_identity_recaptures_nothing() {
         let workspaces = set_of(Workspace::test_new("unpaired"));
-        let (_, layout) = capture_of(&workspaces, false).into_job_with_layout();
+        let (_, layout) = capture_of(&workspaces).into_job_with_layout();
         let layout = layout.expect("a save keeps its layout");
         let unpaired = CapturedLayout::new(layout.snapshot().clone(), HashMap::new());
-        assert!(
-            unpaired
-                .recapture(&PaneRuntimeRegistry::new(), false)
-                .is_none()
-        );
+        assert!(unpaired.recapture(&PaneRuntimeRegistry::new()).is_none());
     }
 
     #[test]

@@ -1,6 +1,4 @@
-//! The on-disk schema of a saved session: the layout file and the history file.
-
-use std::collections::BTreeMap;
+//! The on-disk schema of a saved session: the layout file.
 
 use serde::{Deserialize, Serialize};
 
@@ -105,7 +103,7 @@ mod path_bytes {
 // what a type cannot express. The one tolerance is a pane's agent session
 // (see `deserialize_agent_session`).
 
-/// Serializable snapshot of the entire shepr session.
+/// Serializable snapshot of the entire shepr session: the whole layout file.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionSnapshot {
@@ -117,16 +115,6 @@ pub struct SessionSnapshot {
     /// location of its own starts.
     #[serde(deserialize_with = "required_nullable")]
     pub active: Option<usize>,
-}
-
-/// One saved layout file, including the history bytes it names. `T` is the
-/// borrowed snapshot form while writing and the owned form while reading.
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SessionFile<T> {
-    pub snapshot: T,
-    #[serde(deserialize_with = "required_nullable")]
-    pub history_digest: Option<super::history::HistoryDigest>,
 }
 
 // Serde fills a missing `Option` field with `None` unless the field has its
@@ -204,20 +192,6 @@ impl SavedHostTheme {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct SessionHistorySnapshot {
-    /// Format version follows the matching session snapshot version.
-    pub version: SnapshotVersion,
-    pub workspaces: Vec<WorkspaceHistorySnapshot>,
-}
-
-/// The history of each pane of one workspace, by the pane's public number.
-/// The ordered map writes the same captured history as the same bytes.
-#[derive(Serialize, Deserialize)]
-pub struct WorkspaceHistorySnapshot {
-    pub panes: BTreeMap<PanePublicNumber, PaneHistorySnapshot>,
-}
-
 /// One saved workspace. Its identity cwd is not saved: restore derives it from
 /// the restored root pane's cwd. The panes are the leaves of `layout`, each
 /// carrying its own record, so a leaf without a record and a record without a
@@ -291,12 +265,6 @@ where
             None
         }
     }))
-}
-
-/// Saved screen history of one pane.
-#[derive(Serialize, Deserialize)]
-pub struct PaneHistorySnapshot {
-    pub ansi: String,
 }
 
 /// Serializable BSP tree.
@@ -405,21 +373,12 @@ impl From<DirectionSnapshot> for Direction {
 
 /// Parses one on-disk session file. The serde types are the whole schema, so
 /// a missing key, a wrong type or an unknown field is a parse error here.
-pub fn parse_session_file(
-    content: &str,
-) -> Result<SessionFile<SessionSnapshot>, serde_json::Error> {
-    serde_json::from_str(content)
-}
-
-pub(super) fn parse_history_snapshot(
-    content: &str,
-) -> Result<SessionHistorySnapshot, serde_json::Error> {
+pub fn parse_session_file(content: &str) -> Result<SessionSnapshot, serde_json::Error> {
     serde_json::from_str(content)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
     use std::path::PathBuf;
@@ -452,7 +411,6 @@ mod tests {
             r#"{"version":2,"workspaces":[]}"#,
         ] {
             assert!(serde_json::from_str::<super::SessionSnapshot>(json).is_err());
-            assert!(serde_json::from_str::<super::SessionHistorySnapshot>(json).is_err());
         }
     }
 
@@ -496,25 +454,20 @@ mod tests {
             }],
             active: None,
         };
-        let saved = serde_json::to_value(super::SessionFile {
-            snapshot: &snapshot,
-            history_digest: None,
-        })
-        .expect("serialize");
-        let pane = "/snapshot/workspaces/0/layout/Split/first/Pane";
+        let saved = serde_json::to_value(&snapshot).expect("serialize");
+        let pane = "/workspaces/0/layout/Split/first/Pane";
         assert!(saved.pointer(&format!("{pane}/agent_session")).is_none());
         super::parse_session_file(&saved.to_string()).expect("a saved file parses");
 
-        let workspace = "/snapshot/workspaces/0";
+        let workspace = "/workspaces/0";
         for (parent, key) in [
-            ("", "history_digest"),
-            ("/snapshot", "version"),
-            ("/snapshot", "host_theme"),
-            ("/snapshot", "workspaces"),
-            ("/snapshot", "active"),
-            ("/snapshot/host_theme", "foreground"),
-            ("/snapshot/host_theme", "background"),
-            ("/snapshot/host_theme", "palette"),
+            ("", "version"),
+            ("", "host_theme"),
+            ("", "workspaces"),
+            ("", "active"),
+            ("/host_theme", "foreground"),
+            ("/host_theme", "background"),
+            ("/host_theme", "palette"),
             (workspace, "id"),
             (workspace, "name"),
             (workspace, "next_public_pane_number"),
@@ -539,35 +492,29 @@ mod tests {
         }
 
         for (pointer, invalid) in [
-            ("/snapshot/workspaces/0/id", serde_json::json!("ws_1")),
-            ("/snapshot/workspaces/0/id", serde_json::json!(0)),
+            ("/workspaces/0/id", serde_json::json!("ws_1")),
+            ("/workspaces/0/id", serde_json::json!(0)),
             (
-                "/snapshot/workspaces/0/next_public_pane_number",
+                "/workspaces/0/next_public_pane_number",
                 serde_json::json!(0),
             ),
             (
-                "/snapshot/workspaces/0/layout/Split/first/Pane/public_number",
+                "/workspaces/0/layout/Split/first/Pane/public_number",
                 serde_json::json!(0),
             ),
-            ("/snapshot/workspaces/0/focused", serde_json::json!(0)),
-            ("/snapshot/workspaces/0/root_pane", serde_json::json!(0)),
+            ("/workspaces/0/focused", serde_json::json!(0)),
+            ("/workspaces/0/root_pane", serde_json::json!(0)),
             // A workspace name follows the rename rule: never blank or padded.
-            ("/snapshot/workspaces/0/name", serde_json::json!("")),
-            ("/snapshot/workspaces/0/name", serde_json::json!("   ")),
-            ("/snapshot/workspaces/0/name", serde_json::json!(" w")),
-            ("/snapshot/workspaces/0/name", serde_json::json!(null)),
+            ("/workspaces/0/name", serde_json::json!("")),
+            ("/workspaces/0/name", serde_json::json!("   ")),
+            ("/workspaces/0/name", serde_json::json!(" w")),
+            ("/workspaces/0/name", serde_json::json!(null)),
             (
-                "/snapshot/workspaces/0/layout/Split/first/Pane/label",
+                "/workspaces/0/layout/Split/first/Pane/label",
                 serde_json::json!(" "),
             ),
-            (
-                "/snapshot/workspaces/0/layout/Split/ratio",
-                serde_json::json!(0.0),
-            ),
-            (
-                "/snapshot/workspaces/0/layout/Split/ratio",
-                serde_json::json!(1.0),
-            ),
+            ("/workspaces/0/layout/Split/ratio", serde_json::json!(0.0)),
+            ("/workspaces/0/layout/Split/ratio", serde_json::json!(1.0)),
         ] {
             let mut damaged = saved.clone();
             *damaged.pointer_mut(pointer).expect("schema field") = invalid;
@@ -587,7 +534,7 @@ mod tests {
 
         let mut short_palette = saved;
         short_palette
-            .pointer_mut("/snapshot/host_theme/palette")
+            .pointer_mut("/host_theme/palette")
             .and_then(serde_json::Value::as_array_mut)
             .expect("test precondition")
             .pop();
@@ -609,32 +556,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn history_panes_serialize_in_numeric_order() {
-        let snapshot = super::WorkspaceHistorySnapshot {
-            panes: BTreeMap::from([
-                (
-                    number(12),
-                    super::PaneHistorySnapshot {
-                        ansi: "twelve".into(),
-                    },
-                ),
-                (number(2), super::PaneHistorySnapshot { ansi: "two".into() }),
-                (
-                    number(9),
-                    super::PaneHistorySnapshot {
-                        ansi: "nine".into(),
-                    },
-                ),
-            ]),
-        };
-
-        assert_eq!(
-            serde_json::to_string(&snapshot).expect("serialize"),
-            r#"{"panes":{"2":{"ansi":"two"},"9":{"ansi":"nine"},"12":{"ansi":"twelve"}}}"#
-        );
-    }
-
     /// A pane's record lives in its layout leaf, so a file whose leaves name
     /// panes without records, or that keeps records beside the layout, is not
     /// a saved file.
@@ -654,13 +575,10 @@ mod tests {
                 workspace[key] = value;
             }
             serde_json::json!({
-                "snapshot": {
-                    "version": 1,
-                    "host_theme": super::SavedHostTheme::default(),
-                    "workspaces": [workspace],
-                    "active": null,
-                },
-                "history_digest": null,
+                "version": 1,
+                "host_theme": super::SavedHostTheme::default(),
+                "workspaces": [workspace],
+                "active": null,
             })
         };
         let record = serde_json::json!({"cwd": "/", "public_number": 1, "label": null});
@@ -694,27 +612,24 @@ mod tests {
     fn a_blank_workspace_name_fails_the_whole_file() {
         let file = |name: &str| {
             serde_json::json!({
-                "snapshot": {
-                    "version": 1,
-                    "host_theme": super::SavedHostTheme::default(),
-                    "workspaces": [{
-                        "id": "w1",
-                        "name": name,
-                        "next_public_pane_number": 2,
-                        "layout": {"Pane": {"cwd": "/", "public_number": 1, "label": null}},
-                        "zoomed": false,
-                        "focused": 1,
-                        "root_pane": 1,
-                    }],
-                    "active": 0,
-                },
-                "history_digest": null,
+                "version": 1,
+                "host_theme": super::SavedHostTheme::default(),
+                "workspaces": [{
+                    "id": "w1",
+                    "name": name,
+                    "next_public_pane_number": 2,
+                    "layout": {"Pane": {"cwd": "/", "public_number": 1, "label": null}},
+                    "zoomed": false,
+                    "focused": 1,
+                    "root_pane": 1,
+                }],
+                "active": 0,
             })
             .to_string()
         };
 
         let parsed = super::parse_session_file(&file("named")).expect("a named workspace parses");
-        assert_eq!(parsed.snapshot.workspaces[0].name.as_str(), "named");
+        assert_eq!(parsed.workspaces[0].name.as_str(), "named");
         for blank in ["", " ", "\t\n"] {
             assert!(
                 super::parse_session_file(&file(blank)).is_err(),

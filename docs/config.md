@@ -18,7 +18,7 @@ Both files live in shepr's directory under the XDG config directory:
 path; a relative one fails the launch.
 
 Release and dev builds read the same two files. (They keep separate sockets,
-saved layouts and history, but not separate config.)
+saved layouts and server logs, but not separate config.)
 
 ## When the files are read
 
@@ -587,7 +587,6 @@ greater than zero, each at most 4096, and together at most 4194304 cells.
 
 | Setting | Type | Default | What it does |
 |---|---|---|---|
-| `pane_history` | boolean | `false` | Save recent pane screen history so it survives a full server restart. |
 | `reveal_hidden_cursor_for_cjk_ime` | boolean | `false` | Show the focused pane's cursor position to your terminal even when the program hid its cursor, so an input method (fcitx5, ibus) keeps its candidate window at the input position in programs that paint their own cursor, such as Claude Code, pi or codex. Trade-off: an extra cursor shows in programs that hide the cursor without painting one, such as vim in normal mode. |
 | `cjk_ime_agents` | array of agent names | `[]` | Limit `reveal_hidden_cursor_for_cjk_ime` to focused panes running one of these agents. Empty means every focused pane. Agent names and their aliases are accepted in any case (`claude`, `claude-code`); an unknown name fails the launch. |
 | `cjk_ime_cursor_shape` | string | `"steady_block"` | The cursor shape shown when `reveal_hidden_cursor_for_cjk_ime` is on: `block`, `steady_block`, `underline`, `steady_underline`, `bar` or `steady_bar`. |

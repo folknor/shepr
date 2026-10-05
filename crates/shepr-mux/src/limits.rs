@@ -60,7 +60,7 @@ const AGENT_RESUME_DETECTION_HOLD: Duration = Duration::from_secs(30);
 /// detection cannot clear the agent before its process has time to appear.
 pub(crate) const AGENT_ABSENCE_STARTUP_HOLD: Duration = AGENT_RESUME_DETECTION_HOLD;
 
-// The pane terminal: detection reads, render pacing and history reads.
+// The pane terminal: detection reads, render pacing and scrollback scans.
 
 /// Default screen depth sampled for agent detection when no caller supplies
 /// one; it covers a conventional terminal viewport.
@@ -68,24 +68,11 @@ pub(crate) const DEFAULT_DETECTION_ROWS: usize = 24;
 /// Slack after synchronized output's deadline before a follow-up render, so
 /// the terminal can finish its batch.
 pub(crate) const SYNCHRONIZED_OUTPUT_FLUSH_MARGIN: Duration = Duration::from_millis(5);
-/// Rows a chunked history scan reads per hold of the terminal lock. Between
-/// chunks the lock is released so the PTY reader, rendering and detection
-/// are never stalled behind a scan of the whole scrollback.
+/// Rows a chunked scrollback scan (copy-mode search) reads per hold of the
+/// terminal lock. Between chunks the lock is released so the PTY reader,
+/// rendering and detection are never stalled behind a scan of the whole
+/// scrollback.
 pub(crate) const SCAN_CHUNK_ROWS: usize = 2048;
-/// The most rows a merged history chunk covers. Eviction drops a chunk whole
-/// and formats the rows of it that survive again under one lock hold, so this
-/// bounds that rework (a history at its limit evicts on nearly every save, and
-/// each would redo the whole oldest chunk). With `MERGE_MAX_BYTES` it also sets
-/// the chunk count: two neighbours that could still merge do not exist, so a
-/// cache of `n` rows holds about `2 n / MERGE_MAX_ROWS` chunks at most, however
-/// often it was saved.
-pub(crate) const MERGE_MAX_ROWS: u64 = 256;
-/// The most text a merged history chunk holds. Merging copies both texts, and
-/// a save that adds a few rows to a small last chunk copies that chunk again;
-/// this caps the copy at a size that costs far less than the formatting of the
-/// rows that caused it, which happens under the terminal lock and the copy does
-/// not.
-pub(crate) const MERGE_MAX_BYTES: usize = 64 * 1024;
 /// Screens of history, at the resized height, a resize may step a blank
 /// scrolled-back viewport toward live output looking for text; never fewer
 /// than `DEFAULT_DETECTION_ROWS` rows. The walk holds the terminal lock, so it
@@ -184,16 +171,9 @@ pub(crate) const SNAPSHOT_LIMIT: usize =
 pub(crate) const BACKUP_LIMIT: usize = 3;
 /// Name attempts per recovery timestamp. The data directory lease admits one
 /// writer, so a name that is already taken is a leftover, not a concurrent
-/// writer: for example a history copy whose layout copy was never published,
-/// which pruning keeps when it is not older than the newest layout copy. The
-/// loop skips such names. The publish is not exclusive against a second
-/// writer and does not need to be.
+/// writer. The loop skips such names. The publish is not exclusive against a
+/// second writer and does not need to be.
 pub(crate) const RECOVERY_SEQUENCE_LIMIT: usize = 128;
-/// This is the session-history writer's file budget and restore uses the same
-/// bound. `serialize_history` trims pane text to it; if the workspace shape
-/// alone is larger, it writes a compact history with no pane entries. The
-/// fingerprint in that compact form is a fixed SHA-256 digest.
-pub(crate) const MAX_SESSION_HISTORY_FILE_BYTES: usize = 256 * 1024 * 1024;
 /// The session layout file's size bound, for saves and for the reads restore
 /// and snapshot recovery make, so a damaged file cannot allocate without limit.
 pub(crate) const MAX_SESSION_FILE_BYTES: usize = 64 * 1024 * 1024;

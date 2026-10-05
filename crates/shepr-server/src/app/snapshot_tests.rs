@@ -6,8 +6,8 @@ use ratatui::layout::Rect;
 use super::AppState;
 use shepr_core::layout::Direction;
 use shepr_mux::pane::PaneRuntimeRegistry;
+use shepr_mux::persist::capture;
 use shepr_mux::persist::schema::*;
-use shepr_mux::persist::{HistoryCarry, capture};
 use shepr_mux::workspace::Workspace;
 use shepr_protocol::PanePublicNumber;
 
@@ -99,23 +99,6 @@ fn capture_from_state_with_runtimes(
         &shepr_core::absolute_path::AbsolutePath::root(),
         state.host_terminal_theme,
     )
-}
-
-fn capture_history_from_state_with_runtimes(
-    state: &AppState,
-    terminal_runtimes: &PaneRuntimeRegistry,
-) -> SessionHistorySnapshot {
-    capture_history_with_carry(state, terminal_runtimes, &mut HistoryCarry::default())
-}
-
-/// Both halves of a history capture in one call: the event loop's capture,
-/// then the persister's resolve against `carry`.
-fn capture_history_with_carry(
-    state: &AppState,
-    terminal_runtimes: &PaneRuntimeRegistry,
-    carry: &mut HistoryCarry,
-) -> SessionHistorySnapshot {
-    shepr_mux::persist::capture_pending_history(&state.workspaces, terminal_runtimes).resolve(carry)
 }
 
 fn root_split_ratio(workspace: &WorkspaceSnapshot) -> Option<f32> {
@@ -461,7 +444,6 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
             cwd: &shepr_core::absolute_path::AbsolutePath::new(old.clone())
                 .expect("a scratch path is absolute"),
             kind: shepr_mux::pane::LaunchKind::Fresh,
-            initial_history: None,
             presentation: shepr_mux::pane::LaunchPresentation::Live {
                 theme: Default::default(),
                 appearance: None,
@@ -540,189 +522,6 @@ fn capture_contract_tracks_pane_cwds() {
     let workspace = &snapshot.workspaces[0];
     assert_eq!(pane_snapshot(workspace, 1).cwd, pion_cwd);
     assert_eq!(pane_snapshot(workspace, 2).cwd, shepr_cwd);
-}
-
-#[tokio::test]
-async fn capture_contract_tracks_pane_history_from_runtime() {
-    let state = state_with_workspaces(&["one"]);
-    let root = state.ws(0).tree().root();
-    let mut terminal_runtimes = PaneRuntimeRegistry::new();
-    terminal_runtimes.insert(
-        root,
-        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(
-            20,
-            3,
-            4096,
-            b"alpha\r\nbeta\r\ngamma\r\n",
-        ),
-    );
-
-    let snapshot = capture_from_state_with_runtimes(&state, &terminal_runtimes);
-    let encoded = serde_json::to_string(&snapshot).expect("test precondition");
-    assert!(!encoded.contains("alpha"));
-    assert!(!encoded.contains("\"history\""));
-
-    let history_snapshot = capture_history_from_state_with_runtimes(&state, &terminal_runtimes);
-    let history = &history_snapshot.workspaces[0].panes[&pane_number(&state, root)];
-
-    assert!(history.ansi.contains("alpha"));
-    assert!(history.ansi.contains("gamma"));
-}
-
-#[tokio::test]
-async fn capture_contract_tracks_history_for_each_pane() {
-    let mut state = state_with_workspaces(&["one"]);
-    let first = state.ws(0).tree().root();
-    let second = state.test_split_workspace(0, Direction::Horizontal);
-    let mut terminal_runtimes = PaneRuntimeRegistry::new();
-    terminal_runtimes.insert(
-        first,
-        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(
-            20,
-            3,
-            4096,
-            b"first-pane-history\r\n",
-        ),
-    );
-    terminal_runtimes.insert(
-        second,
-        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(
-            20,
-            3,
-            4096,
-            b"second-pane-history\r\n",
-        ),
-    );
-
-    let snapshot = capture_from_state_with_runtimes(&state, &terminal_runtimes);
-    let encoded = serde_json::to_string(&snapshot).expect("test precondition");
-    assert!(!encoded.contains("first-pane-history"));
-    assert!(!encoded.contains("second-pane-history"));
-
-    let history_snapshot = capture_history_from_state_with_runtimes(&state, &terminal_runtimes);
-    let workspace = &history_snapshot.workspaces[0];
-    let first_history = &workspace.panes[&pane_number(&state, first)];
-    let second_history = &workspace.panes[&pane_number(&state, second)];
-
-    assert!(first_history.ansi.contains("first-pane-history"));
-    assert!(second_history.ansi.contains("second-pane-history"));
-}
-
-/// The history saved for the pane with `root`'s public number, which is the
-/// first pane of every fixture workspace.
-fn root_history(history: &SessionHistorySnapshot, root: PanePublicNumber) -> Option<&str> {
-    history.workspaces[0]
-        .panes
-        .get(&root)
-        .map(|pane| pane.ansi.as_str())
-}
-
-/// The alternate screen hides the primary one from saves; a save made
-/// meanwhile keeps the pane's last primary history instead of dropping it
-/// or writing the alternate frame, and the fallback follows every fresh
-/// primary read.
-#[tokio::test]
-async fn running_pane_saved_on_alternate_screen_keeps_last_primary_history() {
-    let state = state_with_workspaces(&["one"]);
-    let root_pane = state.ws(0).tree().root();
-    let root = pane_number(&state, root_pane);
-    let mut terminal_runtimes = PaneRuntimeRegistry::new();
-    terminal_runtimes.insert(
-        root_pane,
-        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(20, 3, 4096, b"PRIMARY_ONE\r\n"),
-    );
-    let runtime = |runtimes: &PaneRuntimeRegistry, bytes: &[u8]| {
-        runtimes
-            .get(&root_pane)
-            .expect("test precondition")
-            .test_process_pty_bytes(bytes);
-    };
-    let mut carry = HistoryCarry::default();
-
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
-    assert!(root_history(&saved, root).is_some_and(|ansi| ansi.contains("PRIMARY_ONE")));
-
-    runtime(&terminal_runtimes, b"\x1b[?1049hALT_FRAME");
-    for _ in 0..2 {
-        let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
-        let ansi = root_history(&saved, root).expect("alternate screen keeps the history");
-        assert!(ansi.contains("PRIMARY_ONE"));
-        assert!(!ansi.contains("ALT_FRAME"));
-    }
-
-    runtime(&terminal_runtimes, b"\x1b[?1049lPRIMARY_TWO\r\n");
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
-    assert!(root_history(&saved, root).is_some_and(|ansi| ansi.contains("PRIMARY_TWO")));
-    runtime(&terminal_runtimes, b"\x1b[?1049hALT_AGAIN");
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
-    let ansi = root_history(&saved, root).expect("alternate screen keeps the history");
-    assert!(ansi.contains("PRIMARY_TWO"));
-    assert!(!ansi.contains("ALT_AGAIN"));
-
-    // Closing the pane drops its fallback.
-    let other = state_with_workspaces(&["other"]);
-    let saved = capture_history_with_carry(&other, &PaneRuntimeRegistry::new(), &mut carry);
-    assert_eq!(
-        root_history(&saved, pane_number(&other, other.ws(0).tree().root())),
-        None
-    );
-    for (_, runtime) in terminal_runtimes.drain() {
-        drop(runtime);
-    }
-}
-
-/// A restored pane without a runtime keeps its saved history in every
-/// save until it runs. From then on only its own screen counts: the
-/// restored copy is gone even while the pane is on the alternate screen,
-/// and even if the pane later loses its runtime again.
-#[tokio::test]
-async fn restored_history_is_carried_until_the_pane_runs_then_superseded() {
-    let state = state_with_workspaces(&["one"]);
-    let root_pane = state.ws(0).tree().root();
-    let root = pane_number(&state, root_pane);
-    let mut carry = HistoryCarry::default();
-    carry.carry_restored(
-        root_pane,
-        Some(&PaneHistorySnapshot {
-            ansi: "RESTORED_HISTORY\r\n".into(),
-        }),
-    );
-    let mut terminal_runtimes = PaneRuntimeRegistry::new();
-    for _ in 0..2 {
-        let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
-        assert_eq!(root_history(&saved, root), Some("RESTORED_HISTORY\r\n"));
-    }
-
-    // The pane starts straight into an alternate-screen program, as a
-    // resumed agent does: no primary history of its own yet.
-    terminal_runtimes.insert(
-        root_pane,
-        shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(
-            20,
-            3,
-            4096,
-            b"\x1b[?1049hAGENT_TUI",
-        ),
-    );
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
-    assert_eq!(root_history(&saved, root), None);
-
-    terminal_runtimes
-        .get(&root_pane)
-        .expect("test precondition")
-        .test_process_pty_bytes(b"\x1b[?1049lLIVE_SCREEN\r\n");
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
-    let ansi = root_history(&saved, root).expect("live history is saved");
-    assert!(ansi.contains("LIVE_SCREEN"));
-    assert!(!ansi.contains("RESTORED_HISTORY"));
-
-    if let Some(runtime) = terminal_runtimes.remove(&root_pane) {
-        drop(runtime);
-    }
-    let saved = capture_history_with_carry(&state, &terminal_runtimes, &mut carry);
-    let ansi = root_history(&saved, root).expect("last live history is kept");
-    assert!(ansi.contains("LIVE_SCREEN"));
-    assert!(!ansi.contains("RESTORED_HISTORY"));
 }
 
 #[test]

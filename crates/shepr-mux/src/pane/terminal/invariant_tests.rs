@@ -381,26 +381,3 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
         .collect();
     assert_eq!(dirty, vec![1, 4]);
 }
-
-#[test]
-fn complete_history_replay_supports_plain_append() {
-    // ANSI history is text restoration, not a parser/cursor snapshot. End at a
-    // non-wrapping printable cell with SGR and OSC8 closed; no pending tab/CSI.
-    let mut source = Harness::new(24, 4);
-    source.write(b"\x1b[31mred\x1b[0m\r\nplain");
-    let ansi = source.pane.recent_ansi(32);
-    let mut restored = Harness::new(24, 4);
-    restored.pane.seed_history_ansi(&ansi);
-    assert_eq!(restored.pane.recent_text(32), source.pane.recent_text(32));
-    // Establish the documented live-output boundary explicitly instead of
-    // requiring history formatting to restore arbitrary cursor/SGR state.
-    // `source` still sits at the end of the unterminated "plain" line, so it
-    // needs its own line break before the live write; `restored` was already
-    // seeded with a trailing CRLF, so writing another one here would produce
-    // an extra blank line that never existed in `source`.
-    source.write(b"\x1b[0m\r\nappended");
-    restored.write(b"\x1b[0mappended");
-    assert_eq!(restored.pane.recent_text(32), source.pane.recent_text(32));
-    assert!(restored.effects.clipboard.is_empty());
-    assert!(restored.effects.replies.is_empty());
-}

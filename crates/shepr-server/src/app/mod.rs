@@ -170,7 +170,6 @@ impl App {
             lease,
             &shepr_mux::persist::SessionOpenOptions {
                 policy: persistence,
-                pane_history: config.experimental().pane_history,
                 geometry: settings.pane_geometry_in(settings.headless_rect()),
                 launcher: &pane_launcher,
                 resume_agents_on_restore: config.session().resume_agents_on_restore,
@@ -200,11 +199,7 @@ impl App {
                 PENDING_AGENT_RESUME_THEME_WAIT,
                 config.session().startup_per_agent_delay,
             ),
-            session_saver: session::SessionSaver::new(
-                persister,
-                persistence,
-                config.experimental().pane_history,
-            ),
+            session_saver: session::SessionSaver::new(persister, persistence),
             pending_pane_resizes: pane_resize::PendingPaneResizes::default(),
             pane_teardowns,
             pane_launcher,
@@ -237,7 +232,7 @@ impl App {
     }
 
     /// Launches a pane shell for a live server: the current host theme and
-    /// appearance, no carried history. Restore launches through the same
+    /// appearance. Restore launches through the same
     /// launcher with its saved theme (`SessionRestorePlan::launch`).
     pub(super) fn launch_pane(
         &self,
@@ -254,7 +249,6 @@ impl App {
                 geometry,
                 cwd,
                 kind,
-                initial_history: None,
                 presentation: shepr_mux::pane::LaunchPresentation::Live {
                     theme: self.state.host_terminal_theme(),
                     appearance: self.state.host_terminal_appearance(),

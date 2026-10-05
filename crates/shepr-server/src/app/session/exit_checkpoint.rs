@@ -30,7 +30,7 @@ pub(super) enum PaneExitCheckpoint {
     Saved {
         generation: CheckpointGeneration,
         /// The layout the checkpoint made durable, kept so the final save can
-        /// rewrite it (with fresh history and cwds, `CapturedLayout::recapture`)
+        /// rewrite it (with fresh cwds, `CapturedLayout::recapture`)
         /// instead of the layout after the exited panes left.
         layout: Box<CapturedLayout>,
     },

@@ -350,7 +350,6 @@ mod tests {
             "[session]\nresume_agents_on_restore = true\n",
             "[server]\nheadless_cols = 120\n",
             "[advanced]\nscrollback_limit_bytes = 1000\n",
-            "[experimental]\npane_history = true\n",
             "[experimental]\nreveal_hidden_cursor_for_cjk_ime = true\n",
             "[experimental]\ncjk_ime_agents = ['codex']\n",
             "[experimental]\ncjk_ime_cursor_shape = 'bar'\n",
@@ -386,6 +385,7 @@ mod tests {
         }
         for source in [
             "[experimental]\nallow_nested = true\n",
+            "[experimental]\npane_history = true\n",
             "[ui]\naccent = 'cyan'\n",
             "[ui]\nwindow_title = 'shepr'\n",
             "[theme]\nname = 'nord'\n",
