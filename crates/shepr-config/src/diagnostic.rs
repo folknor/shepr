@@ -84,9 +84,14 @@ impl std::fmt::Display for ConfigKeyPath {
 pub enum ConfigDiagnosticKind {
     Read(String),
     Parse(String),
-    UnknownKey,
+    /// A key this file's program does not read. `belongs_in` is the other
+    /// program's config file when that program reads the key.
+    UnknownKey {
+        belongs_in: Option<PathBuf>,
+    },
     UnknownSection {
         array_table: bool,
+        belongs_in: Option<PathBuf>,
     },
     Validation(String),
     Path(String),
@@ -113,15 +118,33 @@ impl ConfigDiagnostic {
     }
 
     pub fn unknown_key(key: ConfigKeyPath) -> Self {
-        Self::new(ConfigDiagnosticKind::UnknownKey, None, Some(key))
+        Self::new(
+            ConfigDiagnosticKind::UnknownKey { belongs_in: None },
+            None,
+            Some(key),
+        )
     }
 
     pub fn unknown_section(key: ConfigKeyPath, array_table: bool) -> Self {
         Self::new(
-            ConfigDiagnosticKind::UnknownSection { array_table },
+            ConfigDiagnosticKind::UnknownSection {
+                array_table,
+                belongs_in: None,
+            },
             None,
             Some(key),
         )
+    }
+
+    /// Names `file` as where an unknown key or section belongs; any other
+    /// diagnostic is returned unchanged.
+    pub(crate) fn belonging_in(mut self, file: &Path) -> Self {
+        if let ConfigDiagnosticKind::UnknownKey { belongs_in }
+        | ConfigDiagnosticKind::UnknownSection { belongs_in, .. } = &mut self.kind
+        {
+            *belongs_in = Some(file.to_path_buf());
+        }
+        self
     }
 
     pub fn validation(key: ConfigKeyPath, reason: impl Into<String>) -> Self {
@@ -188,7 +211,7 @@ impl ConfigDiagnostic {
             | ConfigDiagnosticKind::Validation(message)
             | ConfigDiagnosticKind::Path(message)
             | ConfigDiagnosticKind::Internal(message) => message,
-            ConfigDiagnosticKind::UnknownKey => "unknown key",
+            ConfigDiagnosticKind::UnknownKey { .. } => "unknown key",
             ConfigDiagnosticKind::UnknownSection { .. } => "unknown section",
         }
     }
@@ -199,6 +222,22 @@ impl ConfigDiagnostic {
         }
         if let Some(key) = &self.key {
             write!(f, "{key}: ")?;
+        }
+        Ok(())
+    }
+
+    /// The file an unknown key or section was found in, then the file it
+    /// belongs in when the other program reads it.
+    fn write_misplacement(
+        &self,
+        f: &mut std::fmt::Formatter<'_>,
+        belongs_in: Option<&Path>,
+    ) -> std::fmt::Result {
+        if let Some(file) = &self.file {
+            write!(f, " in {}", file.display())?;
+        }
+        if let Some(belongs_in) = belongs_in {
+            write!(f, "; it belongs in {}", belongs_in.display())?;
         }
         Ok(())
     }
@@ -224,25 +263,22 @@ impl std::fmt::Display for ConfigDiagnostic {
             ConfigDiagnosticKind::Internal(message) => {
                 write!(f, "internal config resolution error: {message}")
             }
-            ConfigDiagnosticKind::UnknownKey => {
+            ConfigDiagnosticKind::UnknownKey { belongs_in } => {
                 f.write_str("unknown config key ")?;
                 if let Some(key) = &self.key {
                     write!(f, "{key}")?;
                 }
-                if let Some(file) = &self.file {
-                    write!(f, " in {}", file.display())?;
-                }
-                Ok(())
+                self.write_misplacement(f, belongs_in.as_deref())
             }
-            ConfigDiagnosticKind::UnknownSection { array_table } => {
+            ConfigDiagnosticKind::UnknownSection {
+                array_table,
+                belongs_in,
+            } => {
                 f.write_str("unknown config section ")?;
                 if let Some(key) = &self.key {
                     f.write_str(&key.section_header(*array_table))?;
                 }
-                if let Some(file) = &self.file {
-                    write!(f, " in {}", file.display())?;
-                }
-                Ok(())
+                self.write_misplacement(f, belongs_in.as_deref())
             }
             ConfigDiagnosticKind::Validation(message) | ConfigDiagnosticKind::Path(message) => {
                 self.write_source(f)?;

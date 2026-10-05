@@ -68,13 +68,26 @@ struct Document<C> {
     unknown: Vec<ConfigDiagnostic>,
 }
 
-impl<C> Document<C>
-where
-    C: Default + serde::de::DeserializeOwned,
-{
-    fn read(path: &Path) -> Result<Self, Vec<ConfigDiagnostic>> {
+/// One program's config file type, paired with the other program's, so a key
+/// unknown here can be checked against the file that does read it.
+trait Role: Default + serde::de::DeserializeOwned {
+    type Other: serde::de::DeserializeOwned;
+}
+
+impl Role for ClientConfig {
+    type Other = ServerConfig;
+}
+
+impl Role for ServerConfig {
+    type Other = ClientConfig;
+}
+
+impl<C: Role> Document<C> {
+    /// `other_file` is the other program's config file, named by an unknown
+    /// key or section that program reads.
+    fn read(path: &Path, other_file: &Path) -> Result<Self, Vec<ConfigDiagnostic>> {
         match read_optional_config(path) {
-            Ok(Some(content)) => Self::parse(&content),
+            Ok(Some(content)) => Self::parse(&content, other_file),
             Ok(None) => Ok(Self {
                 config: C::default(),
                 provenance: ConfigProvenance::from_document(None),
@@ -84,7 +97,7 @@ where
         }
     }
 
-    fn parse(content: &str) -> Result<Self, Vec<ConfigDiagnostic>> {
+    fn parse(content: &str, other_file: &Path) -> Result<Self, Vec<ConfigDiagnostic>> {
         let table = content
             .parse::<toml::Table>()
             .map_err(|error| vec![ConfigDiagnostic::parse(error.to_string())])?;
@@ -101,6 +114,15 @@ where
                 })
                 .collect(),
         ));
+        let unknown = unknown
+            .into_iter()
+            .map(|diagnostic| match diagnostic.key() {
+                Some(key) if read_by::<C::Other>(&document, key) => {
+                    diagnostic.belonging_in(other_file)
+                }
+                _ => diagnostic,
+            })
+            .collect();
         Ok(Self {
             config,
             provenance,
@@ -162,7 +184,7 @@ pub fn load_client_validated(
     paths: &AppPaths,
 ) -> Result<ValidatedClientConfig, Vec<ConfigDiagnostic>> {
     let path = paths.client_config_file();
-    Document::<ClientConfig>::read(&path)
+    Document::<ClientConfig>::read(&path, &paths.server_config_file())
         .and_then(|document| document.validate_client(paths))
         .map_err(|diagnostics| in_file(diagnostics, &path))
 }
@@ -172,7 +194,7 @@ pub fn load_server_validated(
     paths: &AppPaths,
 ) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
     let path = paths.server_config_file();
-    Document::<ServerConfig>::read(&path)
+    Document::<ServerConfig>::read(&path, &paths.client_config_file())
         .and_then(|document| document.validate_server(paths))
         .map_err(|diagnostics| in_file(diagnostics, &path))
 }
@@ -214,6 +236,40 @@ fn unknown_top_level_section_diagnostic(value: &toml::Value) -> Option<bool> {
     }
 }
 
+/// Whether config `O` reads the setting at `key`, with the value it has in
+/// `document`: the setting alone, deserialized as `O`, leaves nothing ignored
+/// at, above or inside it, so a section is read only when every key in it
+/// is. A value `O` would refuse, or an array entry missing a field `O`
+/// requires, is no evidence either way and reads as not read.
+fn read_by<O: serde::de::DeserializeOwned>(document: &toml::Value, key: &ConfigKeyPath) -> bool {
+    let Some(isolated) = isolate(document, key.segments()) else {
+        return false;
+    };
+    // Isolation leaves only the path to `key` and what lies under it, so
+    // anything ignored is on that path or inside it.
+    deserialize_with_ignored::<O, _>(isolated).is_ok_and(|(_, ignored)| ignored.is_empty())
+}
+
+/// `value` cut down to the one setting at `segments`, with every table and
+/// array on the way to it holding only that path.
+fn isolate(value: &toml::Value, segments: &[ConfigKeyPathSegment]) -> Option<toml::Value> {
+    let Some((first, rest)) = segments.split_first() else {
+        return Some(value.clone());
+    };
+    match first {
+        ConfigKeyPathSegment::Key(key) => {
+            let child = isolate(value.as_table()?.get(key)?, rest)?;
+            let mut table = toml::Table::new();
+            table.insert(key.clone(), child);
+            Some(toml::Value::Table(table))
+        }
+        ConfigKeyPathSegment::Index(index) => Some(toml::Value::Array(vec![isolate(
+            value.as_array()?.get(*index)?,
+            rest,
+        )?])),
+    }
+}
+
 fn config_key_path(path: &serde_ignored::Path<'_>) -> ConfigKeyPath {
     match path {
         serde_ignored::Path::Root => ConfigKeyPath::root(),
@@ -252,19 +308,43 @@ mod tests {
 
     use super::*;
 
+    fn client_document(content: &str) -> Result<Document<ClientConfig>, Vec<ConfigDiagnostic>> {
+        Document::<ClientConfig>::parse(content, &crate::test_paths().server_config_file())
+    }
+
     fn client_from_str(content: &str) -> Result<ValidatedClientConfig, Vec<ConfigDiagnostic>> {
-        Document::<ClientConfig>::parse(content)
-            .and_then(|document| document.validate_client(&crate::test_paths()))
+        client_document(content).and_then(|document| document.validate_client(&crate::test_paths()))
     }
 
     fn server_from_str(content: &str) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
-        Document::<ServerConfig>::parse(content)
-            .and_then(|document| document.validate_server(&crate::test_paths()))
+        let paths = crate::test_paths();
+        Document::<ServerConfig>::parse(content, &paths.client_config_file())
+            .and_then(|document| document.validate_server(&paths))
     }
 
+    /// The file each unknown key or section of `errors` is said to belong
+    /// in, `None` for one no other program reads.
+    fn belongs_in(errors: &[ConfigDiagnostic]) -> Vec<Option<std::path::PathBuf>> {
+        errors
+            .iter()
+            .filter_map(|error| match error.kind() {
+                super::super::ConfigDiagnosticKind::UnknownKey { belongs_in }
+                | super::super::ConfigDiagnosticKind::UnknownSection { belongs_in, .. } => {
+                    Some(belongs_in.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A setting in the other program's file fails this launch and names the
+    /// file it belongs in; a retired one fails both and names neither.
     #[test]
     fn misplaced_settings_and_retired_settings_fail_only_the_owning_launch() {
         let _env = shepr_test_support::IsolatedEnv::new();
+        let paths = crate::test_paths();
+        let client_file = Some(paths.client_config_file());
+        let server_file = Some(paths.server_config_file());
         for source in [
             "[terminal]\ndefault_shell = '/bin/sh'\n",
             "[session]\nresume_agents_on_restore = true\n",
@@ -282,41 +362,58 @@ mod tests {
         ] {
             assert!(server_from_str(source).is_ok(), "{source}");
             let errors = client_from_str(source).expect_err("server setting in client file");
-            assert!(
-                errors.iter().any(|error| matches!(
-                    error.kind(),
-                    super::super::ConfigDiagnosticKind::UnknownKey
-                        | super::super::ConfigDiagnosticKind::UnknownSection { .. }
-                )),
-                "{source}: {errors:?}"
+            assert_eq!(
+                belongs_in(&errors),
+                std::slice::from_ref(&server_file),
+                "{source}"
             );
         }
         for source in [
             "[[machines]]\nlabel = 'build'\nssh = 'build'\n",
             "[keys]\nprefix = 'ctrl+b'\n",
+            "[local]\nlabel = 'desk'\n",
             "[ui]\nmouse_capture = false\n",
             "[ui]\nsidebar_width = 26\n",
             "[ui.sidebar.spaces]\nrows = [['workspace']]\n",
         ] {
             assert!(client_from_str(source).is_ok(), "{source}");
             let errors = server_from_str(source).expect_err("client setting in server file");
-            assert!(
-                errors.iter().any(|error| matches!(
-                    error.kind(),
-                    super::super::ConfigDiagnosticKind::UnknownKey
-                        | super::super::ConfigDiagnosticKind::UnknownSection { .. }
-                )),
-                "{source}: {errors:?}"
+            assert_eq!(
+                belongs_in(&errors),
+                std::slice::from_ref(&client_file),
+                "{source}"
             );
         }
         for source in [
             "[experimental]\nallow_nested = true\n",
             "[ui]\naccent = 'cyan'\n",
             "[ui]\nwindow_title = 'shepr'\n",
+            "[retired]\nanything = 1\n",
         ] {
-            assert!(client_from_str(source).is_err());
-            assert!(server_from_str(source).is_err());
+            let errors = client_from_str(source).expect_err("retired in client file");
+            assert_eq!(belongs_in(&errors), [None], "{source}");
+            let errors = server_from_str(source).expect_err("retired in server file");
+            assert_eq!(belongs_in(&errors), [None], "{source}");
         }
+
+        // Only the misplaced key of a section is sent on; a value the other
+        // program would refuse names no file.
+        let errors = client_from_str("[ui]\npane_gaps = true\nmouse_captur = true\n")
+            .expect_err("one misplaced and one unknown key");
+        assert_eq!(belongs_in(&errors), [None, server_file.clone()]);
+        let errors = client_from_str("[ui]\npane_gaps = 'sometimes'\n")
+            .expect_err("a server key with a value the server refuses");
+        assert_eq!(belongs_in(&errors), [None]);
+
+        let errors = client_from_str("[terminal]\ndefault_shell = '/bin/sh'\n")
+            .expect_err("a server section in the client file");
+        assert_eq!(
+            errors.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [format!(
+                "unknown config section [terminal]; it belongs in {}",
+                paths.server_config_file().display()
+            )]
+        );
     }
 
     #[test]
@@ -408,7 +505,7 @@ mod tests {
         assert!(matches!(unknown, Err(ref errors)
             if matches!(errors.as_slice(), [diagnostic]
                 if matches!(diagnostic.kind(),
-                    super::super::ConfigDiagnosticKind::UnknownKey
+                    super::super::ConfigDiagnosticKind::UnknownKey { .. }
                         | super::super::ConfigDiagnosticKind::UnknownSection { .. }))));
 
         let invalid = client_from_str("[keys]\nprefix = 'ctrl+'");
@@ -420,9 +517,10 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         // A directory where the config file should be cannot be read.
         let scratch = shepr_test_support::ScratchDir::new("config");
-        assert!(Document::<ServerConfig>::read(scratch.path()).is_err());
+        let other = scratch.join("other.toml");
+        assert!(Document::<ServerConfig>::read(scratch.path(), &other).is_err());
         assert!(
-            Document::<ClientConfig>::read(scratch.path()).is_err_and(|diagnostics| {
+            Document::<ClientConfig>::read(scratch.path(), &other).is_err_and(|diagnostics| {
                 diagnostics
                     .iter()
                     .any(|diagnostic| diagnostic.to_string().contains("config read error"))
@@ -629,13 +727,9 @@ ssh = "gpu"
         }
         let errors = server_from_str("[local]\npalette = \"green\"\n")
             .expect_err("the server file has no local table");
-        assert!(
-            errors.iter().any(|error| matches!(
-                error.kind(),
-                super::super::ConfigDiagnosticKind::UnknownKey
-                    | super::super::ConfigDiagnosticKind::UnknownSection { .. }
-            )),
-            "{errors:?}"
+        assert_eq!(
+            belongs_in(&errors),
+            [Some(crate::test_paths().client_config_file())]
         );
     }
 
@@ -814,7 +908,7 @@ sidebar_max_width = 36
     #[test]
     fn config_load_reports_unknown_keys_and_parses_known_siblings() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let document = Document::<ClientConfig>::parse(
+        let document = client_document(
             r##"
 plugin = []
 
@@ -854,7 +948,7 @@ mouse_captur = true
     #[test]
     fn config_load_keeps_optional_ui_values_explicit() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let document = Document::<ClientConfig>::parse(
+        let document = client_document(
             r#"
 [ui]
 sidebar_width = 26
@@ -870,7 +964,7 @@ agent_panel_sort = "priority"
         assert_eq!(document.config.ui.sidebar_start_collapsed, None);
         assert!(document.validate_client(&crate::test_paths()).is_ok());
 
-        let empty = Document::<ClientConfig>::parse("").expect("the empty document parses");
+        let empty = client_document("").expect("the empty document parses");
         assert_eq!(empty.config.ui.sidebar_width, None);
     }
 

@@ -25,12 +25,6 @@ should.
 Proposals that arrived as defects but would widen what shepr claims. None is
 promised anywhere; each waits for the owner to want it.
 
-## Name the right file for a misplaced config setting
-
-A setting put in the wrong one of `client.toml` and `server.toml` fails the
-launch as an unknown key ("unknown config key ui.window_title (.../client.toml)").
-For keys that are valid in the other file, the error could say so and name it.
-
 ## Keep a corrupt pane-history file instead of overwriting it
 
 `App::with_paths` loads pane history with `load_history`; a read or parse

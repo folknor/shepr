@@ -56,7 +56,11 @@ as its type at all, is reported alone.
 A setting placed in the other program's file is an unknown key there. For
 example, `[terminal]` in `client.toml` fails the TUI's launch, and `[keys]` in
 `server.toml` fails the server's. Both files have a `[ui]` table, but each
-accepts only its own `[ui]` settings.
+accepts only its own `[ui]` settings. When the other program would accept the
+setting as written, the error says so and names that program's file, as in
+`unknown config section [terminal] in .../client.toml; it belongs in
+.../server.toml`. A section is sent on only when every key in it belongs to
+the other program.
 
 ## Which program owns a setting
 

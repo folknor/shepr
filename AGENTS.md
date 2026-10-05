@@ -87,7 +87,8 @@ only by `shepr-server`. CLI subcommands and the internal
 once at launch, and a missing file means that program's defaults. There is no
 reload and no config path override. Any config problem fails the launch; no
 fallbacks. An unknown key is a config problem, so a setting placed in the
-other program's file fails this program's launch. Directories follow the XDG
+other program's file fails this program's launch; the error names the file
+it belongs in when the other program reads it as written. Directories follow the XDG
 spec. `crates/shepr-config/src/default-client.toml` and `default-server.toml`
 document every setting of each file.
 
