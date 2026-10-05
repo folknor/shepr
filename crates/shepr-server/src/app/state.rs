@@ -85,8 +85,6 @@ pub(crate) struct AppState {
 pub(crate) struct AppSettings {
     /// Virtual terminal size (columns, rows) used when no client is attached.
     pub(crate) headless_size: shepr_core::geometry::GridSize,
-    pub(crate) pane_borders: shepr_config::PaneBordersConfig,
-    pub(crate) pane_outer_borders: bool,
     pub(crate) pane_scrollbars: bool,
     pub(crate) pane_gaps: bool,
     pub(crate) show_agent_labels_on_pane_borders: bool,
@@ -107,8 +105,6 @@ impl AppSettings {
         let terminal = config.terminal();
         Self {
             headless_size: config.headless_size(),
-            pane_borders: ui.pane_borders,
-            pane_outer_borders: ui.pane_outer_borders,
             pane_scrollbars: ui.pane_scrollbars,
             pane_gaps: ui.pane_gaps,
             show_agent_labels_on_pane_borders: ui.show_agent_labels_on_pane_borders,
@@ -133,9 +129,7 @@ impl AppSettings {
     pub(crate) fn pane_geometry_in(&self, area: Rect) -> shepr_mux::workspace::WorkspaceChrome {
         shepr_mux::workspace::WorkspaceChrome {
             area,
-            pane_borders: self.pane_borders,
             pane_gaps: self.pane_gaps,
-            pane_outer_borders: self.pane_outer_borders,
             pane_scrollbars: self.pane_scrollbars,
         }
     }
@@ -475,7 +469,8 @@ mod tests {
         assert_eq!(state.chrome_in(area).area, Rect::new(0, 0, 132, 41));
         assert_eq!(
             state.chrome_in(area).sole_pane_size(),
-            shepr_core::geometry::GridSize::clamped(132, 41)
+            // Framed on every side: the headless area less the border cells.
+            shepr_core::geometry::GridSize::clamped(130, 39)
         );
     }
 
@@ -667,7 +662,6 @@ mod tests {
     fn split_spawn_size_is_the_new_panes_content_size_not_the_first_panes_outer_rect() {
         let mut state = AppState::test_new();
         let area = Rect::new(5, 2, 120, 40);
-        state.settings.pane_borders = shepr_config::PaneBordersConfig::Always;
         state.settings.pane_scrollbars = true;
         let geometry = state.chrome_in(area);
         assert_eq!(geometry.area, area);

@@ -1175,7 +1175,6 @@ async fn a_split_sizes_against_the_recorded_geometry_and_only_then_the_requester
     env.set("SHELL", exiting_test_command());
 
     let mut app = test_app();
-    app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Off;
     app.state.settings.pane_scrollbars = false;
     app.state.test_set_workspaces(vec![
         Workspace::test_new("recorded"),
@@ -1211,7 +1210,8 @@ async fn a_split_sizes_against_the_recorded_geometry_and_only_then_the_requester
         let grid = runtime.grid_size();
         assert_eq!(
             u32::from(grid.rows.get()),
-            u32::from(expected.area.height),
+            // The split pane's top and bottom border rows are not content.
+            u32::from(expected.area.height) - 2,
             "workspace {ws_idx} is sized against the geometry it has or the requester's"
         );
         assert_eq!(

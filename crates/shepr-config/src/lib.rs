@@ -30,7 +30,7 @@ pub use self::{
         ActionKeybinds, BindingConfig, IndexedKeybind, IndexedRange, Keybinds, LiveKeybindConfig,
         format_key_chord, parse_key_chord,
     },
-    model::{NewTerminalCwdConfig, PaneBordersConfig, SidebarBounds, SidebarWidth},
+    model::{NewTerminalCwdConfig, SidebarBounds, SidebarWidth},
     sidebar::{
         AgentSidebarToken, AgentSidebarTokenKind, AgentsSidebarConfig, SidebarConfig,
         SidebarTokenRendering, SidebarTokenRule, SidebarTokenSpec, SidebarTokenStyle,
@@ -409,8 +409,6 @@ mod tests {
             headless_rows => _,
         });
         record_config_fields!(fields, ui, "ui", ServerUiConfig {
-            pane_borders => _,
-            pane_outer_borders => _,
             pane_scrollbars => _,
             pane_gaps => _,
             show_agent_labels_on_pane_borders => _,

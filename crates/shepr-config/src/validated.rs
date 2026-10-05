@@ -607,8 +607,6 @@ impl ValidatedClientConfig {
 /// Pane chrome resolved by the server at launch.
 #[derive(Debug, Clone)]
 pub struct ValidatedServerUiConfig {
-    pub pane_borders: super::PaneBordersConfig,
-    pub pane_outer_borders: bool,
     pub pane_scrollbars: bool,
     pub pane_gaps: bool,
     pub show_agent_labels_on_pane_borders: bool,
@@ -672,8 +670,6 @@ pub(crate) fn validate_server(
             headless_size,
             terminal,
             ui: ValidatedServerUiConfig {
-                pane_borders: config.ui.pane_borders,
-                pane_outer_borders: config.ui.pane_outer_borders,
                 pane_scrollbars: config.ui.pane_scrollbars,
                 pane_gaps: config.ui.pane_gaps,
                 show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,

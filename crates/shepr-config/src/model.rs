@@ -159,10 +159,6 @@ crate::keybinding_rows! {
     }
 }
 
-/// The setting is the core chrome math's own mode, so the config value is what
-/// the pane chrome computation takes.
-pub use shepr_core::chrome::PaneBorders as PaneBordersConfig;
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ClientUiConfig {
@@ -189,13 +185,6 @@ pub struct ClientUiConfig {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ServerUiConfig {
-    /// Draw borders around split panes. auto draws them only for split panes,
-    /// always also frames a lone pane (only while pane_outer_borders is
-    /// enabled, since every edge of a lone pane is an outer edge), off
-    /// disables them. Default: auto.
-    pub pane_borders: PaneBordersConfig,
-    /// Draw borders along the outside edge of the pane area. Default: true.
-    pub pane_outer_borders: bool,
     /// Draw interactive scrollbars beside terminal panes. Default: true.
     pub pane_scrollbars: bool,
     /// Keep split panes visually separated instead of sharing divider borders. Default: true.
@@ -327,8 +316,6 @@ impl Default for ClientUiConfig {
 impl Default for ServerUiConfig {
     fn default() -> Self {
         Self {
-            pane_borders: PaneBordersConfig::Auto,
-            pane_outer_borders: true,
             pane_scrollbars: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
@@ -440,39 +427,19 @@ startup_per_agent_delay_ms = 0
     }
 
     #[test]
-    fn pane_borders_parse_modes() {
-        let auto: ServerConfig =
-            toml::from_str("[ui]\npane_borders = \"auto\"").expect("test precondition");
-        assert_eq!(auto.ui.pane_borders, PaneBordersConfig::Auto);
-
-        let off: ServerConfig =
-            toml::from_str("[ui]\npane_borders = \"off\"").expect("test precondition");
-        assert_eq!(off.ui.pane_borders, PaneBordersConfig::Off);
-
-        assert!(toml::from_str::<ServerConfig>("[ui]\npane_borders = \"framed\"").is_err());
-        assert!(toml::from_str::<ServerConfig>("[ui]\npane_borders = true").is_err());
-    }
-
-    #[test]
     fn pane_appearance_defaults_and_parse() {
         let default_config = ServerConfig::default();
-        assert_eq!(default_config.ui.pane_borders, PaneBordersConfig::Auto);
-        assert!(default_config.ui.pane_outer_borders);
         assert!(default_config.ui.pane_scrollbars);
         assert!(default_config.ui.pane_gaps);
         assert!(!default_config.ui.show_agent_labels_on_pane_borders);
 
         let toml = r#"
 [ui]
-pane_borders = "always"
-pane_outer_borders = false
 pane_scrollbars = false
 pane_gaps = true
 show_agent_labels_on_pane_borders = true
 "#;
         let config: ServerConfig = toml::from_str(toml).expect("test precondition");
-        assert_eq!(config.ui.pane_borders, PaneBordersConfig::Always);
-        assert!(!config.ui.pane_outer_borders);
         assert!(!config.ui.pane_scrollbars);
         assert!(config.ui.pane_gaps);
         assert!(config.ui.show_agent_labels_on_pane_borders);

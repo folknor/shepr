@@ -38,9 +38,7 @@ impl SpawnGeometry {
 pub struct WorkspaceChrome {
     /// Area the workspace's panes are laid out in.
     pub area: Rect,
-    pub pane_borders: shepr_config::PaneBordersConfig,
     pub pane_gaps: bool,
-    pub pane_outer_borders: bool,
     pub pane_scrollbars: bool,
 }
 
@@ -71,32 +69,18 @@ impl WorkspaceChrome {
     /// borders. Call `PaneChrome::into_content` to settle content using the
     /// pane's screen mode; scroll metrics then select whether its track draws.
     ///
-    /// A zoomed workspace shows only its focused pane, filling `area`. Every
-    /// edge of that pane is an outer edge, so it is framed on all sides exactly
-    /// when borders show for the workspace's real pane count and outer borders
-    /// are on.
+    /// A zoomed workspace shows only its focused pane, filling `area`, framed
+    /// on all sides.
     /// View computation, background resizing and spawn sizing all go through
     /// here, so the zoomed rule exists once.
     pub fn visible_panes(&self, layout: &TileLayout, zoomed: bool) -> Vec<PaneChrome> {
         let Some(zoomed_pane) = Self::zoomed_pane(layout, zoomed) else {
-            return apply_pane_chrome(
-                &layout.panes(self.area),
-                self.pane_borders,
-                self.pane_gaps,
-                self.pane_outer_borders,
-            );
-        };
-        let borders = if self.pane_borders.shows_borders(layout.pane_count() > 1)
-            && self.pane_outer_borders
-        {
-            Borders::ALL
-        } else {
-            Borders::NONE
+            return apply_pane_chrome(&layout.panes(self.area), self.pane_gaps);
         };
         vec![PaneChrome {
             id: zoomed_pane,
             rect: self.area,
-            borders,
+            borders: Borders::ALL,
             is_focused: true,
         }]
     }
@@ -159,15 +143,10 @@ mod tests {
     use shepr_core::chrome::inner_rect;
     use shepr_core::layout::Direction;
 
-    fn geometry(
-        pane_borders: shepr_config::PaneBordersConfig,
-        scrollbars: bool,
-    ) -> WorkspaceChrome {
+    fn geometry(scrollbars: bool) -> WorkspaceChrome {
         WorkspaceChrome {
             area: Rect::new(0, 0, 100, 40),
-            pane_borders,
             pane_gaps: false,
-            pane_outer_borders: true,
             pane_scrollbars: scrollbars,
         }
     }
@@ -180,7 +159,7 @@ mod tests {
     fn empty_drawable_content_uses_the_same_minimum_grid_at_spawn_and_resize() {
         let geometry = WorkspaceChrome {
             area: Rect::new(0, 0, 0, 0),
-            ..geometry(shepr_config::PaneBordersConfig::Always, true)
+            ..geometry(true)
         };
         let (layout, root) = TileLayout::new();
         let pane = geometry.visible_panes(&layout, false).remove(0);
@@ -198,15 +177,15 @@ mod tests {
 
     #[test]
     fn spawn_geometry_pairs_the_content_grid_with_the_cell_pixel_size() {
-        let geometry = geometry(shepr_config::PaneBordersConfig::Off, true);
+        let geometry = geometry(true);
         let cell = CellPx::new(9, 18);
 
         let sole = geometry.sole_pane_spawn_geometry(cell);
-        assert_eq!((sole.rows(), sole.cols()), (40, 99));
+        assert_eq!((sole.rows(), sole.cols()), (38, 97));
         let extent = sole.pixel_extent().expect("cell known");
         assert_eq!(
             (extent.width().get(), extent.height().get()),
-            (99 * 9, 40 * 18)
+            (97 * 9, 38 * 18)
         );
 
         let (mut layout, root) = TileLayout::new();
@@ -231,19 +210,19 @@ mod tests {
     }
 
     #[test]
-    fn sole_pane_without_borders_keeps_only_the_scrollbar_gutter() {
-        let geometry = geometry(shepr_config::PaneBordersConfig::Off, true);
-        assert_eq!(geometry.sole_pane_size(), grid(40, 99));
+    fn sole_pane_is_framed_and_keeps_the_scrollbar_gutter() {
+        let geometry = geometry(true);
+        assert_eq!(geometry.sole_pane_size(), grid(38, 97));
         let geometry = WorkspaceChrome {
             pane_scrollbars: false,
             ..geometry
         };
-        assert_eq!(geometry.sole_pane_size(), grid(40, 100));
+        assert_eq!(geometry.sole_pane_size(), grid(38, 98));
     }
 
     #[test]
     fn split_pane_gets_its_own_half_not_the_split_target_size() {
-        let geometry = geometry(shepr_config::PaneBordersConfig::Off, false);
+        let geometry = geometry(false);
         let (mut layout, root) = TileLayout::new();
         let right = PaneId::alloc();
         assert!(layout.split_pane(
@@ -258,16 +237,17 @@ mod tests {
             .pane_size(&layout, false, right)
             .expect("new pane size");
 
-        assert_eq!(size.rows(), 40);
-        assert_eq!(root_size.rows(), 40);
-        assert_eq!(root_size.cols() + size.cols(), 100);
+        // Full height less the top and bottom border rows; the width less the
+        // outer left and right columns and the one shared divider.
+        assert_eq!(size.rows(), 38);
+        assert_eq!(root_size.rows(), 38);
+        assert_eq!(root_size.cols() + size.cols(), 97);
         assert!(size.cols() < 100);
     }
 
     #[test]
-    fn bordered_split_excludes_border_cells() {
-        let borderless = geometry(shepr_config::PaneBordersConfig::Off, false);
-        let bordered = geometry(shepr_config::PaneBordersConfig::Always, false);
+    fn split_panes_exclude_border_cells() {
+        let geometry = geometry(false);
         let (mut layout, root) = TileLayout::new();
         let below = PaneId::alloc();
         assert!(layout.split_pane(
@@ -277,23 +257,24 @@ mod tests {
             below,
         ));
 
-        let plain = borderless.pane_size(&layout, false, below).expect("size");
-        let framed = bordered.pane_size(&layout, false, below).expect("size");
-
-        assert!(framed.rows() < plain.rows());
-        assert!(framed.cols() < plain.cols());
+        // The upper pane leaves its bottom side to the shared divider.
+        assert_eq!(geometry.pane_size(&layout, false, root), Some(grid(19, 98)));
+        assert_eq!(
+            geometry.pane_size(&layout, false, below),
+            Some(grid(18, 98))
+        );
     }
 
     #[test]
     fn pane_outside_the_layout_has_no_size() {
-        let geometry = geometry(shepr_config::PaneBordersConfig::Off, true);
+        let geometry = geometry(true);
         let (layout, _) = TileLayout::new();
         assert_eq!(geometry.pane_size(&layout, false, PaneId::alloc()), None);
     }
 
     #[test]
     fn zoomed_workspace_shows_only_the_focused_pane_over_the_whole_area() {
-        let geometry = geometry(shepr_config::PaneBordersConfig::Always, false);
+        let geometry = geometry(false);
         let (mut layout, root) = TileLayout::new();
         let right = PaneId::alloc();
         assert!(layout.split_pane(
@@ -320,44 +301,16 @@ mod tests {
     }
 
     #[test]
-    fn zoomed_pane_borders_follow_the_real_pane_count_and_outer_border_setting() {
+    fn zoomed_pane_is_framed_whatever_the_pane_count() {
         let (mut layout, root) = TileLayout::new();
-        let chrome = |borders, outer| WorkspaceChrome {
-            pane_outer_borders: outer,
-            ..geometry(borders, false)
-        };
-        // A lone pane is never zoomed in practice, but the rule must still
-        // agree with the tiled chrome: `Always` frames it, `Auto` does not.
-        assert_eq!(
-            chrome(shepr_config::PaneBordersConfig::Always, true).visible_panes(&layout, true)[0]
-                .borders,
-            Borders::ALL
-        );
-        assert_eq!(
-            chrome(shepr_config::PaneBordersConfig::Auto, true).visible_panes(&layout, true)[0]
-                .borders,
-            Borders::NONE
-        );
+        let chrome = geometry(false);
+        assert_eq!(chrome.visible_panes(&layout, true)[0].borders, Borders::ALL);
         assert!(layout.split_pane(
             root,
             Direction::Vertical,
             shepr_core::layout::SplitRatio::EVEN,
             PaneId::alloc(),
         ));
-        assert_eq!(
-            chrome(shepr_config::PaneBordersConfig::Auto, true).visible_panes(&layout, true)[0]
-                .borders,
-            Borders::ALL
-        );
-        assert_eq!(
-            chrome(shepr_config::PaneBordersConfig::Always, false).visible_panes(&layout, true)[0]
-                .borders,
-            Borders::NONE
-        );
-        assert_eq!(
-            chrome(shepr_config::PaneBordersConfig::Off, true).visible_panes(&layout, true)[0]
-                .borders,
-            Borders::NONE
-        );
+        assert_eq!(chrome.visible_panes(&layout, true)[0].borders, Borders::ALL);
     }
 }

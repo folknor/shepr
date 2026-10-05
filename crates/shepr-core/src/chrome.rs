@@ -6,8 +6,6 @@
 
 use std::ops::BitOr;
 
-use serde::Deserialize;
-
 use crate::geometry::Rect;
 use crate::layout::{NavDirection, PaneId, PaneInfo as LayoutPaneInfo, rect_distance_in_direction};
 
@@ -42,28 +40,6 @@ impl BitOr for Borders {
 
     fn bitor(self, other: Self) -> Self {
         Self(self.0 | other.0)
-    }
-}
-
-/// When panes draw borders.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PaneBorders {
-    /// Borders once a workspace has more than one pane.
-    #[default]
-    Auto,
-    /// Borders even around a lone pane.
-    Always,
-    Off,
-}
-
-impl PaneBorders {
-    pub fn draws_borders(self) -> bool {
-        !matches!(self, Self::Off)
-    }
-
-    pub fn shows_borders(self, multi_pane: bool) -> bool {
-        self.draws_borders() && (multi_pane || matches!(self, Self::Always))
     }
 }
 
@@ -166,82 +142,25 @@ fn touching_neighbor<'a>(
     })
 }
 
-fn shrink_for_one_cell_gap(size: u16) -> u16 {
-    if size > 1 { size - 1 } else { size }
-}
-
-/// Apply the pane chrome settings to a layout's pane rects.
-pub fn apply_pane_chrome(
-    panes: &[LayoutPaneInfo],
-    pane_borders: PaneBorders,
-    pane_gaps: bool,
-    pane_outer_borders: bool,
-) -> Vec<PaneChrome> {
-    let multi_pane = panes.len() > 1;
-    let bordered = pane_borders.shows_borders(multi_pane);
-    let outer_left = panes.iter().map(|info| info.rect.x).min().unwrap_or(0);
-    let outer_top = panes.iter().map(|info| info.rect.y).min().unwrap_or(0);
-    let outer_right = panes
-        .iter()
-        .map(|info| u32::from(info.rect.x) + u32::from(info.rect.width))
-        .max()
-        .unwrap_or(0);
-    let outer_bottom = panes
-        .iter()
-        .map(|info| u32::from(info.rect.y) + u32::from(info.rect.height))
-        .max()
-        .unwrap_or(0);
+/// Apply the pane chrome settings to a layout's pane rects. Every pane draws
+/// its full border box; with no gaps, a side shared with a neighbouring pane
+/// is left to that neighbour so the two share one divider line.
+pub fn apply_pane_chrome(panes: &[LayoutPaneInfo], pane_gaps: bool) -> Vec<PaneChrome> {
     panes
         .iter()
         .map(|layout_info| {
-            let right_neighbor = multi_pane
-                .then(|| touching_neighbor(layout_info, panes, NavDirection::Right))
-                .flatten();
-            let below_neighbor = multi_pane
-                .then(|| touching_neighbor(layout_info, panes, NavDirection::Down))
-                .flatten();
-            let mut rect = layout_info.rect;
-
-            if multi_pane && pane_gaps && !pane_borders.draws_borders() {
-                if right_neighbor.is_some() {
-                    rect.width = shrink_for_one_cell_gap(rect.width);
+            let mut borders = Borders::ALL;
+            if !pane_gaps {
+                if touching_neighbor(layout_info, panes, NavDirection::Right).is_some() {
+                    borders.remove(Borders::RIGHT);
                 }
-                if below_neighbor.is_some() {
-                    rect.height = shrink_for_one_cell_gap(rect.height);
+                if touching_neighbor(layout_info, panes, NavDirection::Down).is_some() {
+                    borders.remove(Borders::BOTTOM);
                 }
             }
-
-            let borders = if !bordered {
-                Borders::NONE
-            } else {
-                let mut borders = Borders::ALL;
-                if !pane_gaps {
-                    if right_neighbor.is_some() {
-                        borders.remove(Borders::RIGHT);
-                    }
-                    if below_neighbor.is_some() {
-                        borders.remove(Borders::BOTTOM);
-                    }
-                }
-                if !pane_outer_borders {
-                    if rect.x == outer_left {
-                        borders.remove(Borders::LEFT);
-                    }
-                    if rect.y == outer_top {
-                        borders.remove(Borders::TOP);
-                    }
-                    if u32::from(rect.x) + u32::from(rect.width) == outer_right {
-                        borders.remove(Borders::RIGHT);
-                    }
-                    if u32::from(rect.y) + u32::from(rect.height) == outer_bottom {
-                        borders.remove(Borders::BOTTOM);
-                    }
-                }
-                borders
-            };
             PaneChrome {
                 id: layout_info.id,
-                rect,
+                rect: layout_info.rect,
                 borders,
                 is_focused: layout_info.is_focused,
             }
@@ -262,18 +181,8 @@ mod tests {
         (layout, root, second)
     }
 
-    fn chrome_of(
-        layout: &TileLayout,
-        borders: PaneBorders,
-        gaps: bool,
-        outer: bool,
-    ) -> Vec<PaneChrome> {
-        apply_pane_chrome(
-            &layout.panes(Rect::new(0, 0, 100, 20)),
-            borders,
-            gaps,
-            outer,
-        )
+    fn chrome_of(layout: &TileLayout, gaps: bool) -> Vec<PaneChrome> {
+        apply_pane_chrome(&layout.panes(Rect::new(0, 0, 100, 20)), gaps)
     }
 
     fn find(chrome: &[PaneChrome], id: PaneId) -> &PaneChrome {
@@ -319,7 +228,7 @@ mod tests {
             touching_neighbor(&from, &panes, NavDirection::Right).map(|pane| pane.id),
             Some(to.id)
         );
-        let chrome = apply_pane_chrome(&panes, PaneBorders::Always, false, true);
+        let chrome = apply_pane_chrome(&panes, false);
         assert!(!chrome[0].borders.contains(Borders::RIGHT));
     }
 
@@ -365,7 +274,7 @@ mod tests {
     #[test]
     fn default_horizontal_split_uses_one_shared_divider_column() {
         let (layout, root, second) = split(Direction::Horizontal);
-        let chrome = chrome_of(&layout, PaneBorders::Auto, false, true);
+        let chrome = chrome_of(&layout, false);
         let left = find(&chrome, root);
         let right = find(&chrome, second);
 
@@ -377,7 +286,7 @@ mod tests {
     #[test]
     fn default_vertical_split_uses_one_shared_divider_row() {
         let (layout, root, second) = split(Direction::Vertical);
-        let chrome = chrome_of(&layout, PaneBorders::Auto, false, true);
+        let chrome = chrome_of(&layout, false);
         let top = find(&chrome, root);
         let bottom = find(&chrome, second);
 
@@ -387,18 +296,9 @@ mod tests {
     }
 
     #[test]
-    fn disabled_outer_borders_keep_only_shared_pane_dividers() {
-        let (layout, root, second) = split(Direction::Horizontal);
-        let chrome = chrome_of(&layout, PaneBorders::Auto, false, false);
-
-        assert_eq!(find(&chrome, root).borders, Borders::NONE);
-        assert_eq!(find(&chrome, second).borders, Borders::LEFT);
-    }
-
-    #[test]
     fn pane_gaps_keep_independent_bordered_panes() {
         let (layout, root, second) = split(Direction::Horizontal);
-        let chrome = chrome_of(&layout, PaneBorders::Auto, true, true);
+        let chrome = chrome_of(&layout, true);
         let left = find(&chrome, root);
         let right = find(&chrome, second);
 
@@ -408,38 +308,8 @@ mod tests {
     }
 
     #[test]
-    fn borderless_pane_gaps_add_one_empty_cell_between_panes() {
-        let (layout, root, second) = split(Direction::Horizontal);
-        let chrome = chrome_of(&layout, PaneBorders::Off, true, true);
-        let left = find(&chrome, root);
-        let right = find(&chrome, second);
-
-        assert_eq!(left.rect, Rect::new(0, 0, 49, 20));
-        assert_eq!(right.rect, Rect::new(50, 0, 50, 20));
-        assert!(left.borders.is_empty());
-        assert!(right.borders.is_empty());
-    }
-
-    #[test]
-    fn disabled_pane_borders_make_inner_rect_equal_visual_rect() {
-        let (layout, _, _) = split(Direction::Horizontal);
-        for pane in chrome_of(&layout, PaneBorders::Off, false, true) {
-            assert!(pane.borders.is_empty());
-            assert_eq!(pane.inner_rect(), pane.rect);
-        }
-    }
-
-    #[test]
-    fn always_pane_borders_frame_lone_pane() {
+    fn lone_pane_is_framed_on_every_side() {
         let (layout, _) = TileLayout::new();
-
-        let default_chrome = chrome_of(&layout, PaneBorders::Auto, false, true);
-        assert_eq!(default_chrome[0].borders, Borders::NONE);
-
-        let framed = chrome_of(&layout, PaneBorders::Always, false, true);
-        assert_eq!(framed[0].borders, Borders::ALL);
-
-        let no_outer = chrome_of(&layout, PaneBorders::Always, false, false);
-        assert_eq!(no_outer[0].borders, Borders::NONE);
+        assert_eq!(chrome_of(&layout, false)[0].borders, Borders::ALL);
     }
 }

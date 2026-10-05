@@ -229,7 +229,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         focused: true,
     }));
     let focused_size = server.app.test_runtime(pane_id).current_size();
-    assert_eq!(focused_size, (17, 67));
+    assert_eq!(focused_size, (15, 65));
     let shared_workspace_id = server
         .shell_target_for_client(ClientId::test_new(7))
         .expect("focused workspace");
@@ -345,7 +345,7 @@ async fn focused_surface_reassertion_reclaims_workspace_geometry() {
         ClientId::test_new(7),
         client_views::PendingResumes::Defer
     ));
-    assert_eq!(server.app.test_runtime(pane_id).current_size(), (17, 67));
+    assert_eq!(server.app.test_runtime(pane_id).current_size(), (15, 65));
 
     request_active_surface(&mut server, 8);
     let _ = focused_control
@@ -358,7 +358,7 @@ async fn focused_surface_reassertion_reclaims_workspace_geometry() {
             .outer_terminal_focus,
         crate::server::clients::OuterFocus::Focused
     );
-    assert_eq!(server.app.test_runtime(pane_id).current_size(), (35, 99));
+    assert_eq!(server.app.test_runtime(pane_id).current_size(), (33, 97));
     assert_eq!(
         server.clients.geometry_controller(&shared_workspace_id),
         Some(ClientId::test_new(8))
@@ -431,7 +431,7 @@ async fn navigation_reapplies_geometry_for_the_workspace_left_behind() {
             .map(|geometry| geometry.area),
         Some(Rect::new(0, 0, 100, 30))
     );
-    assert_eq!(server.app.test_runtime(first_pane).current_size(), (30, 99));
+    assert_eq!(server.app.test_runtime(first_pane).current_size(), (28, 97));
     shutdown_test_runtimes(&mut server);
 }
 

@@ -655,7 +655,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
                 .get(&terminal_id)
                 .expect("focused runtime")
                 .current_size(),
-            (30, 99)
+            (28, 97)
         );
 
         assert!(server.test_handle_server_event(ServerEvent::ShellFocus {
@@ -677,7 +677,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
                 .get(&terminal_id)
                 .expect("focused runtime")
                 .current_size(),
-            (24, 79)
+            (22, 77)
         );
         assert_eq!(
             input_rx.try_recv().expect("focus gained input"),

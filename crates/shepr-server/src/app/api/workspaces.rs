@@ -242,7 +242,6 @@ mod tests {
         use super::super::test_support::shutdown_test_runtimes;
 
         let mut app = app();
-        app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Off;
         app.state.settings.pane_scrollbars = false;
         let geometry = SpawnGeometry {
             area: shepr_core::geometry::Rect::new(0, 0, 100, 30),
@@ -263,7 +262,8 @@ mod tests {
         let runtime = app.test_runtime(workspace.tree().root());
         assert_eq!(
             runtime.grid_size(),
-            shepr_core::geometry::GridSize::clamped(100, 30)
+            // The sole pane is framed: the area less one border cell per side.
+            shepr_core::geometry::GridSize::clamped(98, 28)
         );
         assert_eq!(
             runtime
@@ -271,7 +271,7 @@ mod tests {
                 .pixel_mouse()
                 .extent()
                 .map(|extent| (extent.width().get(), extent.height().get())),
-            Some((100 * 9, 30 * 18)),
+            Some((98 * 9, 28 * 18)),
             "the first window size already has pixel dimensions"
         );
         // Recorded at creation, before any geometry pass has run.

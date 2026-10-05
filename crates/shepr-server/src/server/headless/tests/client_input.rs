@@ -82,7 +82,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
         .app
         .pane_runtime(runtime_pane_id)
         .expect("focused runtime");
-    assert_eq!(runtime.current_size(), (24, 79));
+    assert_eq!(runtime.current_size(), (22, 77));
     assert!(input_rx.try_recv().is_err(), "legacy release emitted bytes");
     shutdown_test_runtimes(&mut server);
 }

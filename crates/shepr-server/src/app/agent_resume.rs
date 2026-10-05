@@ -860,7 +860,6 @@ mod tests {
     async fn pending_agent_resume_launches_at_the_size_its_first_resize_keeps() {
         let mut app = test_app();
         app.state.settings.pane_scrollbars = true;
-        app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Always;
         let mut workspace = shepr_mux::workspace::Workspace::test_new("split");
         let pane_id = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         let area = ratatui::layout::Rect::new(0, 0, 100, 30);

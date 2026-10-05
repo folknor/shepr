@@ -745,14 +745,12 @@ mod tests {
         shepr_test_support::fixture::idle_shell()
     }
 
-    /// Workspaces laid out in `rows` by `cols` cells with no pane chrome, so a
-    /// workspace's only pane is exactly that size.
+    /// Workspaces laid out in `rows` by `cols` cells without scrollbars, so a
+    /// workspace's only pane has that size less its border cells.
     fn test_geometry(rows: u16, cols: u16) -> WorkspaceChrome {
         WorkspaceChrome {
             area: shepr_core::geometry::Rect::new(0, 0, cols, rows),
-            pane_borders: shepr_config::PaneBordersConfig::Off,
             pane_gaps: false,
-            pane_outer_borders: false,
             pane_scrollbars: false,
         }
     }
@@ -875,7 +873,7 @@ mod tests {
         assert_eq!(launch.saved_cwd, cwd);
         assert_eq!(
             launch.geometry,
-            shepr_core::geometry::PaneGeometry::cells_only(40, 12)
+            shepr_core::geometry::PaneGeometry::cells_only(38, 10)
         );
         assert!(
             plan.workspaces[0].tree().pane(launch.pane_id).is_some(),
@@ -1931,13 +1929,16 @@ mod tests {
             let (other_rows, other_cols) = (other_size.rows.get(), other_size.cols.get());
             let focused_size = size(focused);
             let (focused_rows, focused_cols) = (focused_size.rows.get(), focused_size.cols.get());
-            assert_eq!((other_rows, focused_rows), (24, 24), "zoomed={zoomed}");
+            // Every pane is 24 rows less its top and bottom border.
+            assert_eq!((other_rows, focused_rows), (22, 22), "zoomed={zoomed}");
             // The first pane has a quarter of the width in the tiled layout.
             assert!(other_cols < 40, "zoomed={zoomed} cols={other_cols}");
             if zoomed {
-                assert_eq!(focused_cols, 80);
+                assert_eq!(focused_cols, 78);
             } else {
-                assert_eq!(other_cols + focused_cols, 80);
+                // 80 columns less the outer left and right borders and the
+                // one divider the two panes share.
+                assert_eq!(other_cols + focused_cols, 77);
             }
             for (_, runtime) in runtimes {
                 drop(runtime);

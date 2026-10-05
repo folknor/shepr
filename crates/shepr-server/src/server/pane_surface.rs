@@ -161,32 +161,22 @@ pub(super) fn render_pane_surface(
             });
         }
     }
-    let pane_frames = layout
-        .panes
-        .iter()
-        .map(|pane| pane.rect)
-        .collect::<Vec<_>>();
     let layout_epoch = target
         .and_then(|target| target.workspace(view.state))
         .map_or_default(|workspace| workspace.tree().layout_epoch());
     let splits = layout
         .split_borders
         .iter()
-        .filter_map(|split| {
-            let hit_rect = crate::ui::split_hit_rect(
-                split,
-                view.state.settings().pane_borders.draws_borders(),
-                view.state.settings().pane_gaps,
-                &pane_frames,
-            )?;
-            Some(shepr_protocol::PaneSurfaceSplit {
+        .map(|split| {
+            let hit_rect = crate::ui::split_hit_rect(split, view.state.settings().pane_gaps);
+            shepr_protocol::PaneSurfaceSplit {
                 direction: split.direction,
                 pos: split.pos,
                 area: split.area,
                 hit_rect: surface_rect(hit_rect),
                 path: split.path.branches().to_vec(),
                 epoch: layout_epoch,
-            })
+            }
         })
         .collect();
     if let Some(target) = target {

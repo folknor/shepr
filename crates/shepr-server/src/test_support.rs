@@ -203,9 +203,7 @@ impl WorkspaceFixture for Workspace {
     fn test_split(&mut self, direction: Direction) -> PaneId {
         let chrome = shepr_mux::workspace::WorkspaceChrome {
             area: shepr_core::geometry::Rect::new(0, 0, 80, 24),
-            pane_borders: shepr_config::PaneBordersConfig::Off,
             pane_gaps: false,
-            pane_outer_borders: false,
             pane_scrollbars: false,
         };
         let prepared = self

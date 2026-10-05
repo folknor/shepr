@@ -192,12 +192,6 @@ fn render_pane_borders(
     split_borders: &[shepr_core::layout::SplitBorder],
     frame: &mut FrameData,
 ) {
-    if !app.settings().pane_borders.draws_borders()
-        || pane_infos.iter().all(|info| info.borders.is_empty())
-    {
-        return;
-    }
-
     let mut cells = BorderGrid::new(frame);
     for info in pane_infos {
         add_pane_border_cells(&mut cells, info);
@@ -467,17 +461,18 @@ fn line_cell_symbol(line: LineCell) -> &'static str {
     }
 }
 
-pub(crate) fn split_hit_rect(
-    split: &shepr_core::layout::SplitBorder,
-    pane_borders: bool,
-    pane_gaps: bool,
-    pane_frames: &[Rect],
-) -> Option<Rect> {
-    let hit = match (split.direction, pane_borders, pane_gaps) {
-        (shepr_core::layout::Direction::Horizontal, true, false) => {
+/// The cell strip a split divider can be grabbed on: the divider line itself
+/// when neighbouring panes share one, or that line and the border of the pane
+/// before it when `pane_gaps` keeps each pane's own box.
+/// The cell strip a split divider can be grabbed on: the divider line itself
+/// when neighbouring panes share one, or that line and the border of the pane
+/// before it when `pane_gaps` keeps each pane's own box.
+pub(crate) fn split_hit_rect(split: &shepr_core::layout::SplitBorder, pane_gaps: bool) -> Rect {
+    match (split.direction, pane_gaps) {
+        (shepr_core::layout::Direction::Horizontal, false) => {
             Rect::new(split.pos, split.area.y, 1, split.area.height)
         }
-        (shepr_core::layout::Direction::Horizontal, true, true) => {
+        (shepr_core::layout::Direction::Horizontal, true) => {
             let start = split.pos.saturating_sub(1);
             Rect::new(
                 start,
@@ -486,16 +481,10 @@ pub(crate) fn split_hit_rect(
                 split.area.height,
             )
         }
-        (shepr_core::layout::Direction::Horizontal, false, true) => Rect::new(
-            split.pos.checked_sub(1)?,
-            split.area.y,
-            1,
-            split.area.height,
-        ),
-        (shepr_core::layout::Direction::Vertical, true, false) => {
+        (shepr_core::layout::Direction::Vertical, false) => {
             Rect::new(split.area.x, split.pos, split.area.width, 1)
         }
-        (shepr_core::layout::Direction::Vertical, true, true) => {
+        (shepr_core::layout::Direction::Vertical, true) => {
             let start = split.pos.saturating_sub(1);
             Rect::new(
                 split.area.x,
@@ -504,22 +493,7 @@ pub(crate) fn split_hit_rect(
                 split.pos.saturating_sub(start).saturating_add(1),
             )
         }
-        (shepr_core::layout::Direction::Vertical, false, true) => {
-            Rect::new(split.area.x, split.pos.checked_sub(1)?, split.area.width, 1)
-        }
-        (_, false, false) => return None,
-    };
-    if !pane_borders
-        && pane_frames.iter().any(|pane| {
-            hit.x < pane.right()
-                && hit.right() > pane.x
-                && hit.y < pane.bottom()
-                && hit.bottom() > pane.y
-        })
-    {
-        return None;
     }
-    Some(hit)
 }
 
 #[cfg(test)]
@@ -544,7 +518,6 @@ fn compute_pane_infos(
 mod tests {
     use super::*;
     use crate::test_support::*;
-    use shepr_config::PaneBordersConfig;
     use shepr_core::layout::PaneId;
     use shepr_mux::pane::PaneRuntime;
     use shepr_mux::workspace::Workspace;
@@ -577,16 +550,16 @@ mod tests {
 
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].scrollbar_rect, None);
-        // A lone pane has no borders under the default setting, so the gutter
-        // is the one column its fresh shell does not get.
-        assert!(infos[0].borders.is_empty());
+        // A lone pane is framed on every side; the gutter is the one column
+        // inside the frame its fresh shell does not get.
+        assert_eq!(infos[0].borders, Borders::ALL);
         assert_eq!(
             infos[0].inner_rect,
             Rect::new(
-                infos[0].rect.x,
-                infos[0].rect.y,
-                infos[0].rect.width - 1,
-                infos[0].rect.height
+                infos[0].rect.x + 1,
+                infos[0].rect.y + 1,
+                infos[0].rect.width - 3,
+                infos[0].rect.height - 2
             )
         );
     }
@@ -603,7 +576,9 @@ mod tests {
                 error: std::io::Error::from(std::io::ErrorKind::NotFound),
             });
         let runtimes = PaneRuntimeRegistry::new();
-        let area = Rect::new(0, 0, 80, 24);
+        // Wide enough that the framed pane's content does not wrap the
+        // message mid-sentence.
+        let area = Rect::new(0, 0, 100, 24);
         let target = crate::ui::SurfaceTarget {
             index: 0,
             id: app.ws(0).id(),
@@ -858,7 +833,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
+        assert_eq!(info.inner_rect, Rect::new(11, 4, 37, 6));
     }
 
     #[tokio::test]
@@ -887,17 +862,17 @@ mod tests {
             let infos = compute_pane_infos(&app, &terminal_runtimes, area);
             assert_eq!(
                 infos[0].inner_rect,
-                Rect::new(area.x, area.y, expected_width, area.height)
+                Rect::new(area.x + 1, area.y + 1, expected_width, area.height - 2)
             );
             assert_eq!(infos[0].scrollbar_rect.is_some(), has_scrollbar);
             assert_eq!(runtime.current_size(), (8, 40));
         };
 
-        assert_geometry(39, true);
+        assert_geometry(37, true);
         runtime.test_process_pty_bytes(b"\x1b[?1049h");
-        assert_geometry(40, false);
+        assert_geometry(38, false);
         runtime.test_process_pty_bytes(b"\x1b[?1049l");
-        assert_geometry(39, true);
+        assert_geometry(37, true);
     }
 
     #[tokio::test]
@@ -919,7 +894,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
+        assert_eq!(info.inner_rect, Rect::new(11, 4, 37, 6));
     }
 
     #[tokio::test]
@@ -965,55 +940,48 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, area);
+        assert_eq!(info.inner_rect, Rect::new(11, 4, 2, 6));
     }
 
     #[tokio::test]
     async fn rendered_content_rect_matches_the_size_new_panes_are_spawned_at() {
-        for pane_borders in [
-            PaneBordersConfig::Off,
-            PaneBordersConfig::Auto,
-            PaneBordersConfig::Always,
-        ] {
-            for (pane_scrollbars, zoomed) in
-                [(true, false), (false, false), (true, true), (false, true)]
-            {
-                let mut app = AppState::test_new();
-                app.settings_mut().pane_borders = pane_borders;
-                app.settings_mut().pane_scrollbars = pane_scrollbars;
-                let area = Rect::new(2, 1, 101, 31);
-                let mut workspace = Workspace::test_new("test");
-                let root = workspace.tree().root();
-                let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
-                workspace.set_zoomed(zoomed);
-                let mut terminal_runtimes = PaneRuntimeRegistry::new();
-                for pane in [root, right] {
-                    terminal_runtimes.insert(
-                        pane,
-                        PaneRuntime::test_with_scrollback_bytes(20, 5, 1024, b""),
-                    );
-                }
-                app.test_set_workspaces(vec![workspace]);
-                app.seed_bookmark_index(Some(0));
-                app.test_record_all_workspace_areas(area);
+        for (pane_scrollbars, zoomed) in
+            [(true, false), (false, false), (true, true), (false, true)]
+        {
+            let mut app = AppState::test_new();
+            app.settings_mut().pane_scrollbars = pane_scrollbars;
+            let area = Rect::new(2, 1, 101, 31);
+            let mut workspace = Workspace::test_new("test");
+            let root = workspace.tree().root();
+            let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
+            workspace.set_zoomed(zoomed);
+            let mut terminal_runtimes = PaneRuntimeRegistry::new();
+            for pane in [root, right] {
+                terminal_runtimes.insert(
+                    pane,
+                    PaneRuntime::test_with_scrollback_bytes(20, 5, 1024, b""),
+                );
+            }
+            app.test_set_workspaces(vec![workspace]);
+            app.seed_bookmark_index(Some(0));
+            app.test_record_all_workspace_areas(area);
 
-                let infos = compute_pane_infos(&app, &terminal_runtimes, area);
-                let geometry = app.chrome_in(app.layout_area(app.ws(0)));
-                assert_eq!(geometry.area, crate::ui::core_rect(area));
-                assert_eq!(infos.len(), if zoomed { 1 } else { 2 });
-                for info in &infos {
-                    assert_eq!(
-                        geometry.pane_size(app.ws(0).tree().layout(), zoomed, info.id),
-                        shepr_core::geometry::GridSize::new(
-                            info.inner_rect.width,
-                            info.inner_rect.height
-                        ),
-                        "borders {pane_borders:?}, scrollbars {pane_scrollbars}, zoomed {zoomed}"
-                    );
-                }
-                for (_, runtime) in terminal_runtimes.drain() {
-                    drop(runtime);
-                }
+            let infos = compute_pane_infos(&app, &terminal_runtimes, area);
+            let geometry = app.chrome_in(app.layout_area(app.ws(0)));
+            assert_eq!(geometry.area, crate::ui::core_rect(area));
+            assert_eq!(infos.len(), if zoomed { 1 } else { 2 });
+            for info in &infos {
+                assert_eq!(
+                    geometry.pane_size(app.ws(0).tree().layout(), zoomed, info.id),
+                    shepr_core::geometry::GridSize::new(
+                        info.inner_rect.width,
+                        info.inner_rect.height
+                    ),
+                    "scrollbars {pane_scrollbars}, zoomed {zoomed}"
+                );
+            }
+            for (_, runtime) in terminal_runtimes.drain() {
+                drop(runtime);
             }
         }
     }
@@ -1041,8 +1009,8 @@ mod tests {
         let info = &infos[0];
 
         assert_eq!(info.rect, area);
-        assert_eq!(info.scrollbar_rect, Some(Rect::new(49, 3, 1, 8)));
-        assert_eq!(info.inner_rect, Rect::new(10, 3, 39, 8));
+        assert_eq!(info.scrollbar_rect, Some(Rect::new(48, 4, 1, 6)));
+        assert_eq!(info.inner_rect, Rect::new(11, 4, 37, 6));
 
         app.settings_mut().pane_scrollbars = false;
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1050,7 +1018,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, area);
+        assert_eq!(info.inner_rect, Rect::new(11, 4, 38, 6));
     }
 }
 
@@ -1059,7 +1027,7 @@ mod split_hit_tests {
     use super::*;
 
     #[test]
-    fn split_hits_follow_released_border_and_gap_geometry() {
+    fn split_hits_follow_divider_and_gap_geometry() {
         let horizontal = shepr_core::layout::SplitBorder {
             pos: 20,
             direction: shepr_core::layout::Direction::Horizontal,
@@ -1067,19 +1035,8 @@ mod split_hit_tests {
             area: shepr_core::geometry::Rect::new(2, 3, 40, 12),
             path: vec![shepr_core::layout::SplitBranch::First].into(),
         };
-        assert_eq!(
-            split_hit_rect(&horizontal, true, false, &[]),
-            Some(Rect::new(20, 3, 1, 12))
-        );
-        assert_eq!(
-            split_hit_rect(&horizontal, true, true, &[]),
-            Some(Rect::new(19, 3, 2, 12))
-        );
-        assert_eq!(
-            split_hit_rect(&horizontal, false, true, &[]),
-            Some(Rect::new(19, 3, 1, 12))
-        );
-        assert_eq!(split_hit_rect(&horizontal, false, false, &[]), None);
+        assert_eq!(split_hit_rect(&horizontal, false), Rect::new(20, 3, 1, 12));
+        assert_eq!(split_hit_rect(&horizontal, true), Rect::new(19, 3, 2, 12));
 
         let vertical = shepr_core::layout::SplitBorder {
             pos: 9,
@@ -1088,10 +1045,8 @@ mod split_hit_tests {
             area: shepr_core::geometry::Rect::new(2, 3, 40, 12),
             path: vec![shepr_core::layout::SplitBranch::Second].into(),
         };
-        assert_eq!(
-            split_hit_rect(&vertical, true, true, &[]),
-            Some(Rect::new(2, 8, 40, 2))
-        );
+        assert_eq!(split_hit_rect(&vertical, true), Rect::new(2, 8, 40, 2));
+        assert_eq!(split_hit_rect(&vertical, false), Rect::new(2, 9, 40, 1));
 
         let edge = shepr_core::layout::SplitBorder {
             pos: 0,
@@ -1100,14 +1055,6 @@ mod split_hit_tests {
             area: shepr_core::geometry::Rect::new(0, 0, 1, 4),
             path: shepr_core::layout::SplitPath::default(),
         };
-        assert_eq!(
-            split_hit_rect(&edge, true, true, &[]),
-            Some(Rect::new(0, 0, 1, 4))
-        );
-        assert_eq!(split_hit_rect(&edge, false, true, &[]), None);
-        assert_eq!(
-            split_hit_rect(&horizontal, false, true, &[Rect::new(19, 3, 1, 12)]),
-            None
-        );
+        assert_eq!(split_hit_rect(&edge, true), Rect::new(0, 0, 1, 4));
     }
 }

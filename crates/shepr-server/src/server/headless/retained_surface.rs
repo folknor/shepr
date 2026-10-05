@@ -541,7 +541,7 @@ mod tests {
             boot_id: shepr_test_fixtures::fixed_boot_id(1),
             projection_revision: shepr_protocol::ProjectionRevision::FIRST,
             surface_revision: shepr_protocol::SurfaceRevision::FIRST,
-            frame: FrameData::blank(1, 1).expect("test frame"),
+            frame: FrameData::blank(3, 3).expect("test frame"),
             panes: vec![shepr_protocol::PaneSurfacePane {
                 pane_id: shepr_protocol::PublicPaneId::new(
                     &wire_workspace_id,
@@ -551,12 +551,12 @@ mod tests {
                 rect: shepr_protocol::SurfaceRect {
                     x: 0,
                     y: 0,
-                    width: 1,
-                    height: 1,
+                    width: 3,
+                    height: 3,
                 },
                 inner_rect: shepr_protocol::SurfaceRect {
-                    x: 0,
-                    y: 0,
+                    x: 1,
+                    y: 1,
                     width: 1,
                     height: 1,
                 },
@@ -588,9 +588,7 @@ mod tests {
     #[test]
     fn retained_scrollbar_does_not_invent_a_gutter_at_the_pane_border() {
         let mut app = app::App::new(&shepr_config::ServerConfig::default());
-        app.test_state_mut().settings_mut().pane_borders = shepr_config::PaneBordersConfig::Always;
         app.test_state_mut().settings_mut().pane_scrollbars = true;
-        app.test_state_mut().settings_mut().pane_outer_borders = true;
         let workspace = shepr_mux::workspace::Workspace::test_new("narrow-scrollbar");
         let workspace_id = workspace.id();
         let pane_id = workspace.tree().root();
@@ -647,9 +645,7 @@ mod tests {
     #[test]
     fn an_unchanged_scrollbar_track_produces_no_patch_rows() {
         let mut app = app::App::new(&shepr_config::ServerConfig::default());
-        app.test_state_mut().settings_mut().pane_borders = shepr_config::PaneBordersConfig::Always;
         app.test_state_mut().settings_mut().pane_scrollbars = true;
-        app.test_state_mut().settings_mut().pane_outer_borders = true;
         let workspace = shepr_mux::workspace::Workspace::test_new("settled-scrollbar");
         let workspace_id = workspace.id();
         let pane_id = workspace.tree().root();

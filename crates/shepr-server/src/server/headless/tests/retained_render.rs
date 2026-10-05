@@ -467,7 +467,9 @@ async fn late_retained_fallback_promotes_its_client_and_commits_no_patch_for_it(
         .frame
         .push_hyperlink("https://example.com".into())
         .expect("room in the link table");
-    linked.frame.cells_mut()[0].hyperlink = Some(0);
+    // The first content cell, inside the pane's top-left border corner.
+    let first_content_cell = usize::from(linked.frame.width()) + 1;
+    linked.frame.cells_mut()[first_content_cell].hyperlink = Some(0);
     let before = [7, 8].map(|id| {
         server.clients[&ClientId::test_new(id)]
             .render_state

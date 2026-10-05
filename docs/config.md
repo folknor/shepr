@@ -570,8 +570,6 @@ greater than zero, each at most 4096, and together at most 4194304 cells.
 
 | Setting | Type | Default | What it does |
 |---|---|---|---|
-| `pane_borders` | `"auto"`, `"always"` or `"off"` | `"auto"` | `auto` draws borders around split panes only; `always` also frames a lone pane (only while `pane_outer_borders` is on, since every edge of a lone pane is an outer edge); `off` draws none. |
-| `pane_outer_borders` | boolean | `true` | Draw borders along the outside edge of the pane area. Turn off for tmux-style internal dividers without an outer frame. |
 | `pane_scrollbars` | boolean | `true` | Draw interactive scrollbars beside panes. Turn off to reclaim the column and keep it out of selections the terminal makes itself. |
 | `pane_gaps` | boolean | `true` | Keep split panes visually apart instead of sharing divider borders. |
 | `show_agent_labels_on_pane_borders` | boolean | `false` | Show the detected agent's name in a split pane's border when the pane has no name of its own. |

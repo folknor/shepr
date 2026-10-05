@@ -353,8 +353,6 @@ mod tests {
             "[experimental]\nreveal_hidden_cursor_for_cjk_ime = true\n",
             "[experimental]\ncjk_ime_agents = ['codex']\n",
             "[experimental]\ncjk_ime_cursor_shape = 'bar'\n",
-            "[ui]\npane_borders = 'always'\n",
-            "[ui]\npane_outer_borders = true\n",
             "[ui]\npane_scrollbars = true\n",
             "[ui]\npane_gaps = true\n",
             "[ui]\nshow_agent_labels_on_pane_borders = true\n",
@@ -580,6 +578,22 @@ mod tests {
         }
 
         assert!(server_from_str("[server]\nheadless_cols = \"wide\"\n").is_err());
+    }
+
+    #[test]
+    fn the_removed_pane_border_keys_are_unknown_in_server_toml() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        for key in ["pane_borders", "pane_outer_borders"] {
+            let errors = server_from_str(&format!("[ui]\n{key} = true\n"))
+                .expect_err("a removed key fails the launch");
+            let message = format!("unknown config key ui.{key}");
+            assert!(
+                errors
+                    .iter()
+                    .any(|diagnostic| diagnostic.to_string().contains(&message)),
+                "expected {message:?} in {errors:?}"
+            );
+        }
     }
 
     #[test]

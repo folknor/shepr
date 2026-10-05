@@ -620,9 +620,7 @@ mod tests {
     fn chrome() -> WorkspaceChrome {
         WorkspaceChrome {
             area: shepr_core::geometry::Rect::new(0, 0, 80, 24),
-            pane_borders: shepr_config::PaneBordersConfig::Off,
             pane_gaps: false,
-            pane_outer_borders: false,
             pane_scrollbars: false,
         }
     }
@@ -789,7 +787,8 @@ mod tests {
         assert_eq!(ws.tree().focused(), root);
         assert_eq!(ws.tree().next_number(), number(2));
         assert_eq!(prepared.cwd(), cwd);
-        assert_eq!(prepared.geometry(), spawn_geometry_for(24, 40));
+        // The new right half is 40 by 24 cells less its four border sides.
+        assert_eq!(prepared.geometry(), spawn_geometry_for(22, 38));
         assert_eq!(prepared.public_id(), PublicPaneId::new(&id, number(2)));
         assert_eq!(prepared.workspace_id(), id);
         // An unknown target plans nothing.
