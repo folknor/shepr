@@ -107,11 +107,6 @@
 # copies and clears it.
 # copy_on_select = true
 
-# Force a full redraw when the outer terminal regains focus.
-# Set false to reduce visible flashing when switching back to Shepr.
-# Trade-off: rare host terminal surface corruption may persist until the next full redraw.
-# redraw_on_focus_gained = true
-
 # Pane scrollback lines to scroll per mouse wheel notch.
 # Values must be between 1 and 4096 lines.
 # mouse_scroll_lines = 3

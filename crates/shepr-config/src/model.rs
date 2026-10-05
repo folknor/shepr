@@ -202,8 +202,6 @@ pub struct ClientUiConfig {
     pub mouse_capture: bool,
     /// Copy text selected with the mouse. Default: true.
     pub copy_on_select: bool,
-    /// Force a full host-terminal redraw when the outer terminal regains focus. Default: true.
-    pub redraw_on_focus_gained: bool,
     /// Lines to scroll per mouse wheel notch. Default: 3.
     /// The raw count stays wide so validation can report an oversized value as entered.
     pub mouse_scroll_lines: Option<NonZeroUsize>,
@@ -354,7 +352,6 @@ impl Default for ClientUiConfig {
             sidebar_start_collapsed: None,
             mouse_capture: true,
             copy_on_select: true,
-            redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
             confirm_close: true,
             prompt_new_workspace_name: true,
@@ -706,19 +703,6 @@ copy_on_select = false
 "#;
         let config: ClientConfig = toml::from_str(toml).expect("test precondition");
         assert!(!config.ui.copy_on_select);
-    }
-
-    #[test]
-    fn redraw_on_focus_gained_default_on_and_parse() {
-        let default_config = ClientConfig::default();
-        assert!(default_config.ui.redraw_on_focus_gained);
-
-        let toml = r#"
-[ui]
-redraw_on_focus_gained = false
-"#;
-        let config: ClientConfig = toml::from_str(toml).expect("test precondition");
-        assert!(!config.ui.redraw_on_focus_gained);
     }
 
     #[test]

@@ -29,7 +29,6 @@ pub(crate) struct ClientShellConfig {
     pub(in crate::shell) confirm_close: bool,
     pub(in crate::shell) mouse_capture: bool,
     pub(in crate::shell) mouse_scroll_lines: u16,
-    pub(in crate::shell) redraw_on_focus_gained: bool,
     pub(in crate::shell) preferences_path: Option<std::path::PathBuf>,
     pub(in crate::shell) preferences: preferences::ClientChromePreferences,
 }
@@ -75,7 +74,6 @@ impl ClientShellConfig {
             confirm_close: config.confirm_close,
             mouse_capture: config.mouse_capture,
             mouse_scroll_lines: config.mouse_scroll_lines.get(),
-            redraw_on_focus_gained: config.redraw_on_focus_gained,
             preferences_path: None,
             preferences: preferences::ClientChromePreferences::default()
                 .without_configured(configured),

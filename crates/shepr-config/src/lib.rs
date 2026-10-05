@@ -375,7 +375,6 @@ mod tests {
             sidebar_start_collapsed => _,
             mouse_capture => _,
             copy_on_select => _,
-            redraw_on_focus_gained => _,
             mouse_scroll_lines => _,
             confirm_close => _,
             prompt_new_workspace_name => _,

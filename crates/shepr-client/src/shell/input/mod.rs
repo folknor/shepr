@@ -334,10 +334,8 @@ impl ClientShellState {
             RawInputEvent::OuterFocusGained => {
                 self.outer_focused = Some(true);
                 outcome.query_host_appearance = true;
-                if self.config.redraw_on_focus_gained {
-                    outcome.repaint = true;
-                    outcome.full_redraw = true;
-                }
+                outcome.repaint = true;
+                outcome.full_redraw = true;
                 outcome
                     .requests
                     .push(ClientShellRequest::Shown(ClientMessage::ClientShellFocus {

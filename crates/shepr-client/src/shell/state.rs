@@ -111,7 +111,7 @@ pub(crate) struct ClientShellInput {
     pub(crate) detach: bool,
     pub(crate) repaint: bool,
     /// Present the next frame in full rather than diffed against what the
-    /// host terminal is assumed to show (`ui.redraw_on_focus_gained`).
+    /// host terminal is assumed to show (set when the host terminal regains focus).
     pub(crate) full_redraw: bool,
     pub(crate) resize: bool,
     pub(crate) query_host_appearance: bool,

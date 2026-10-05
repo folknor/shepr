@@ -106,7 +106,6 @@ captures the mouse, from its own `ui.mouse_capture`.)
 | `sidebar_start_collapsed` | boolean | `false` | Start with the sidebar collapsed. |
 | `mouse_capture` | boolean | `true` | Capture the mouse for shepr's own mouse UI (selection, sidebar, menus). Set `false` to let the terminal handle normal clicks, such as clicking URLs. Programs in panes that ask for the mouse still get it. |
 | `copy_on_select` | boolean | `true` | Copy mouse selections as soon as the button is released. With `false` the selection stays until `ctrl+c` copies and clears it. See [Clipboard](clipboard.md). |
-| `redraw_on_focus_gained` | boolean | `true` | Redraw the whole screen when your terminal regains focus. Set `false` to avoid a visible flash when switching back; rare terminal surface corruption may then persist until the next full redraw. |
 | `mouse_scroll_lines` | integer, 1 to 4096 | 3 | Scrollback lines moved per mouse wheel notch. |
 | `confirm_close` | boolean | `true` | Ask for confirmation before closing a workspace. |
 | `prompt_new_workspace_name` | boolean | `true` | Ask for a name when you create a workspace. The prompt names the machine the workspace is created on (the one shown) and starts with the name of the new workspace's directory, and a blank answer keeps that name. With `false`, workspaces are created at once and named after their directory. |

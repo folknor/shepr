@@ -190,17 +190,11 @@ fn passive_host_events_do_not_dismiss_endpoint_errors() {
 }
 
 #[test]
-fn focus_gained_forces_a_full_redraw_only_when_configured() {
-    for redraw in [false, true] {
-        let mut config = ClientConfig::default();
-        config.ui.redraw_on_focus_gained = redraw;
-        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
-        let outcome = state.handle_raw_events(vec![RawInputEvent::OuterFocusGained]);
-        assert_eq!(outcome.full_redraw, redraw);
-        if redraw {
-            assert!(outcome.repaint);
-        }
-    }
+fn focus_gained_forces_a_full_redraw() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    let outcome = state.handle_raw_events(vec![RawInputEvent::OuterFocusGained]);
+    assert!(outcome.full_redraw);
+    assert!(outcome.repaint);
 }
 
 #[test]
