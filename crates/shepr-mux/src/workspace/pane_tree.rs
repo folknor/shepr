@@ -19,7 +19,9 @@ pub struct PaneRecord {
     number: PanePublicNumber,
     terminal: TerminalState,
     /// Whether unmodified right-click gestures are forwarded to the pane
-    /// application.
+    /// application. Deliberately not saved: it is a toggle the user sets on a
+    /// running pane from its context menu, not part of the layout, so a
+    /// restored pane starts with it off.
     right_click_passthrough: bool,
 }
 

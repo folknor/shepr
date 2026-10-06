@@ -181,6 +181,11 @@ impl From<Vec<SplitBranch>> for SplitPath {
 /// owner of the tree advances it on every change that can move or replace a
 /// split (a pane added, removed or swapped), so a path is valid exactly while
 /// the epoch it was published with is current. Ratio edits do not advance it.
+///
+/// An epoch means something only within one server boot: every tree starts at
+/// the default, a restored one included, so two boots reuse the same values.
+/// That is safe because a client only ever holds epochs from the projection of
+/// the boot it is connected to, and drops them with that boot's snapshot.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LayoutEpoch(u64);
 

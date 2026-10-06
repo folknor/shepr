@@ -41,6 +41,10 @@ impl App {
     pub(crate) fn projection_input(&self) -> ProjectionInput {
         let mut workspaces = Vec::new();
         let mut panes = Vec::new();
+        // `workspace_info` and `pane` look up by id with a linear scan, so a
+        // rebuild is quadratic in workspaces and panes. Accepted: a session
+        // holds a handful of each, and an index would be one more structure to
+        // keep in step with the set's own order.
         for ws in self.state.workspaces().iter() {
             workspaces.extend(self.workspace_info(&ws.id()));
             panes.extend(

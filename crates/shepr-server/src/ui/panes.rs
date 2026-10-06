@@ -183,6 +183,8 @@ impl BorderGrid {
         Some(cell)
     }
 
+    /// Marks `(x, y)` focused when it is a drawn border cell inside the grid,
+    /// and ignores it otherwise, so callers may name cells past an edge.
     fn mark_focused(&mut self, x: u16, y: u16) {
         if let Some(index) = self.index(x, y) {
             let cell = &mut self.cells[index];
@@ -359,6 +361,10 @@ fn mark_focused_pane_cells(cells: &mut BorderGrid, info: &PaneSurface, pane_gaps
     }
     let right = rect.x.saturating_add(rect.width).saturating_sub(1);
     let bottom = rect.y.saturating_add(rect.height).saturating_sub(1);
+    // Without gaps the focused border includes the divider shared with the
+    // neighbour to the right and below, one cell past the rect. An outermost
+    // pane has none there; `mark_focused` marks only a drawn border cell
+    // inside the grid, so those cells are left alone.
     let shared_right = rect.x.saturating_add(rect.width);
     let shared_bottom = rect.y.saturating_add(rect.height);
     for y in rect.y..=bottom {

@@ -73,7 +73,8 @@ impl AppState {
         self.mark_session_dirty();
         self.mark_shell_projection_dirty();
         crate::logging::workspace_closed(workspace_id);
-        let removed = self.forget_removed_panes(workspace.tree().panes().map(|(pane, _)| pane));
+        // Layout order, as `remove_pane` reports its panes.
+        let removed = self.forget_removed_panes(workspace.tree().pane_ids().into_iter());
         Some(WorkspaceRemovalOutcome {
             workspace_id: *workspace_id,
             removed,
