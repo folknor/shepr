@@ -4,6 +4,16 @@ use shepr_agent::IntegrationTarget as Target;
 
 /// Resolve the agent config root in the environment of the host running this
 /// command. Keep this aligned with the directory functions in `env.rs`.
+/// The shell that sets `hook_dir` for a registered command. It accepts a
+/// relative override, which `AgentIntegrationPaths` refuses, and resolves it
+/// from the agent's cwd. That cannot point a working registration at the
+/// wrong hook: a server that sees a relative override installs nothing, and an
+/// agent that alone sees one reads its config from a directory shepr never
+/// installed into, the environment mismatch `AgentIntegrationPaths` describes.
+///
+/// The Pi, OMP, OpenCode and Kilo arms only keep the match exhaustive: those
+/// targets load from a directory or their own config and register no command,
+/// which `targets_without_a_registered_command_have_no_hook_events` holds.
 fn directory_setup(target: Target) -> &'static str {
     match target {
         Target::Pi => {
@@ -32,6 +42,12 @@ fn directory_setup(target: Target) -> &'static str {
 /// Build a command that resolves the hook under this host's agent config
 /// directory. A config shared by several hosts therefore points at each
 /// host's locally installed asset.
+///
+/// The command is a POSIX shell script, so it relies on the agent handing it to
+/// a shell rather than splitting and executing it. Claude Code and Kimi run hook
+/// commands with `sh -c`, and Codex with `$SHELL -lc`, which in a shepr pane is
+/// the pane shell config holds to the POSIX family; the other agents document
+/// their hooks as shell commands.
 pub(crate) fn hook_command(target: Target, action: Option<&str>) -> String {
     let relative_path = super::registry::primary_asset_path(target).join("/");
     let mut command = format!(

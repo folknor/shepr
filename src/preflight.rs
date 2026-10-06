@@ -729,6 +729,37 @@ mod tests {
         assert!(notice.contains("refused"), "{notice}");
     }
 
+    /// A stop whose server reported a failed final save, and was then
+    /// replaced, is a failure the operator must hear about (the observed
+    /// boot's layout may be unsaved), not a new occupant to offer again.
+    #[test]
+    fn a_failed_final_save_before_a_new_occupant_fails_the_offer() {
+        let mut script = LocalScript::new(
+            vec![
+                Some(status(other_build(), "1-1")),
+                Some(status(other_build(), "2-2")),
+            ],
+            vec![Err(ServerStopError::FinalSaveFailed {
+                message: "data directory is read-only".into(),
+                stop_error: Some(Box::new(boot_mismatch())),
+            })],
+            vec![true, true],
+        );
+        let result = script.run(true);
+        assert!(
+            matches!(
+                result,
+                RestartResult::Failed(ServerStopError::FinalSaveFailed { .. })
+            ),
+            "{:?}",
+            local_notice(&result)
+        );
+        assert_eq!(script.asked, ["1-1"], "the new occupant is not offered");
+        assert_eq!(script.stopped, ["1-1"]);
+        let notice = local_notice(&result).expect("a notice");
+        assert!(notice.contains("data directory is read-only"), "{notice}");
+    }
+
     #[test]
     fn the_local_notices_leave_kept_servers_to_the_launch() {
         for kept in [

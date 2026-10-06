@@ -552,7 +552,8 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
             };
             shepr_platform::structured_log!(
                 WARN, event = persist.restore, outcome = Error,
-                path = %path.display(), error = %err, "failed to read session file"
+                path = %path.display(), stage = "read", error = %err,
+                "failed to read session file"
             );
             return SessionLoad::Unusable(failure);
         }
@@ -562,7 +563,7 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
         Err(err) => {
             shepr_platform::structured_log!(
                 WARN, event = persist.restore, outcome = Error,
-                path = %path.display(), error = %err,
+                path = %path.display(), stage = "parse", error = %err,
                 "failed to parse session file; retaining it for first-save recovery"
             );
             SessionLoad::Unusable(shepr_protocol::SessionRestoreFailure {

@@ -606,7 +606,7 @@ message = "ValidatedServerConfig::validate_for_test is the config fixture's seam
 [[textlint]]
 name = "no-interpreter-stand-ins"
 preset = "host-programs"
-pattern = '\bCommand::new\(\s*"(?:/usr)?(?:/s?bin/)?(?:python3?|perl|ruby|node|bun)"'
+pattern = '\b(?:Command::new|command_in_scratch)\(\s*"(?:/usr)?(?:/s?bin/)?(?:python3?|perl|ruby|node|bun)"'
 message = "spawn a shepr_test_support::fixture script, not a language runtime the host may not have (host-program-ok: <why> where the script under it is the subject)"
 
 [[textlint]]
