@@ -481,7 +481,7 @@ impl PtyIoActorHandle {
 
 fn report_terminal_response_drops(pane_id: PaneId, dropped_responses: u64) {
     shepr_platform::structured_log!(
-        WARN, event = pty.reply, outcome = "inbox_full",
+        WARN, event = pty.reply, outcome = Exhausted,
         pane = %pane_id,
         dropped_responses, "PTY terminal reply inbox is full; dropped terminal replies"
     );
@@ -489,7 +489,7 @@ fn report_terminal_response_drops(pane_id: PaneId, dropped_responses: u64) {
 
 fn report_terminal_response_drop_total(pane_id: PaneId, total_dropped_responses: u64) {
     shepr_platform::structured_log!(
-        WARN, event = pty.reply, outcome = "dropped",
+        WARN, event = pty.reply, outcome = Dropped,
         pane = %pane_id,
         total_dropped_responses, "PTY actor stopped after dropping terminal replies"
     );
@@ -678,7 +678,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
             }
             if (self.core_broken)() {
                 shepr_platform::structured_log!(
-                    ERROR, event = pty.terminal, outcome = "broken",
+                    ERROR, event = pty.terminal, outcome = Poisoned,
                     pane = %self.pane_id,
                     "terminal core is broken by a panic elsewhere; closing the pane"
                 );
@@ -708,7 +708,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                         && let Err(err) = self.io.drain(self.wake_read_fd.as_raw_fd())
                     {
                         shepr_platform::structured_log!(
-                            ERROR, event = pty.wake_drain, outcome = "error",
+                            ERROR, event = pty.wake_drain, outcome = Error,
                             pane = %self.pane_id,
                             error = %err,
                             "PTY actor wake drain failed; closing the pane"
@@ -724,7 +724,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                             ReadOutcome::Closed => break,
                             ReadOutcome::WouldBlock if readiness.pty_error => {
                                 shepr_platform::structured_log!(
-                                    ERROR, event = pty.poll, outcome = "empty_error",
+                                    ERROR, event = pty.poll, outcome = Error,
                                     pane = %self.pane_id,
                                     "PTY reported an error with nothing to read; closing the pane"
                                 );
@@ -745,7 +745,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                 }
                 Err(err) => {
                     shepr_platform::structured_log!(
-                        ERROR, event = pty.poll, outcome = "error",
+                        ERROR, event = pty.poll, outcome = Error,
                         pane = %self.pane_id,
                         error = %err,
                         "PTY actor poll failed; closing the pane"
@@ -825,7 +825,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
             } else {
                 self.resize_failure_logged = true;
                 shepr_platform::structured_log!(
-                    WARN, event = pty.resize, outcome = "error",
+                    WARN, event = pty.resize, outcome = Error,
                     pane = %self.pane_id,
                     error = %err,
                     "PTY resize failed; the child keeps its previous window size"
@@ -874,7 +874,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                     );
                 } else {
                     shepr_platform::structured_log!(
-                        ERROR, event = pty.read, outcome = "error",
+                        ERROR, event = pty.read, outcome = Error,
                         pane = %self.pane_id,
                         error = %err,
                         "PTY actor read failed; closing the pane"
@@ -903,9 +903,9 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                         Ok(result) => result,
                         Err(payload) => {
                             shepr_platform::structured_log!(
-                                ERROR, event = pty.read_callback, outcome = "panicked",
+                                ERROR, event = pty.read_callback, outcome = Panicked,
                                 pane = %self.pane_id,
-                                panic = shepr_core::panic_message(
+                                error = shepr_core::panic_message(
                                     &*payload,
                                     "non-string panic payload"
                                 ),
@@ -919,7 +919,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                     PtyReadResult::Effects(effects) => effects,
                     PtyReadResult::CoreBroken => {
                         shepr_platform::structured_log!(
-                            ERROR, event = pty.terminal, outcome = "broken",
+                            ERROR, event = pty.terminal, outcome = Poisoned,
                             pane = %self.pane_id,
                             "terminal core is broken by an earlier panic; closing the pane"
                         );
@@ -962,9 +962,9 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                     ));
                     if let Err(payload) = effects_result {
                         shepr_platform::structured_log!(
-                            ERROR, event = pty.read_effects, outcome = "panicked",
+                            ERROR, event = pty.read_effects, outcome = Panicked,
                             pane = %self.pane_id,
-                            panic =
+                            error =
                                 shepr_core::panic_message(&*payload, "non-string panic payload"),
                             "PTY post-read effects panicked; closing the pane"
                         );
@@ -1035,7 +1035,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                     );
                 } else {
                     shepr_platform::structured_log!(
-                        ERROR, event = pty.write, outcome = "error",
+                        ERROR, event = pty.write, outcome = Error,
                         pane = %self.pane_id,
                         error = %err,
                         "PTY actor write failed; closing the pane"

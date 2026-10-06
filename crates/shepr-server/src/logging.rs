@@ -3,7 +3,7 @@ pub(crate) fn startup() {
     shepr_platform::structured_log!(
         INFO,
         event = server.startup,
-        outcome = "started",
+        outcome = Started,
         pid = std::process::id(),
         "shepr starting"
     );
@@ -13,7 +13,7 @@ pub(crate) fn shutdown() {
     shepr_platform::structured_log!(
         INFO,
         event = server.shutdown,
-        outcome = "completed",
+        outcome = Ok,
         pid = std::process::id(),
         "shepr exiting"
     );
@@ -26,7 +26,7 @@ pub(crate) fn workspace_created(
     name: &str,
 ) {
     shepr_platform::structured_log!(
-        INFO, event = workspace.create, outcome = "ok",
+        INFO, event = workspace.create, outcome = Ok,
         %workspace_id,
         public_pane_id = %root_pane_id,
         cwd = %cwd.as_path().display(),
@@ -37,7 +37,7 @@ pub(crate) fn workspace_created(
 
 pub(crate) fn workspace_focused(workspace_id: &shepr_protocol::WorkspaceId) {
     shepr_platform::structured_log!(
-        INFO, event = workspace.focus, outcome = "ok",
+        INFO, event = workspace.focus, outcome = Ok,
         %workspace_id,
         "workspace focused"
     );
@@ -45,7 +45,7 @@ pub(crate) fn workspace_focused(workspace_id: &shepr_protocol::WorkspaceId) {
 
 pub(crate) fn workspace_closed(workspace_id: &shepr_protocol::WorkspaceId) {
     shepr_platform::structured_log!(
-        INFO, event = workspace.close, outcome = "ok",
+        INFO, event = workspace.close, outcome = Ok,
         %workspace_id,
         "workspace closed"
     );
@@ -53,7 +53,7 @@ pub(crate) fn workspace_closed(workspace_id: &shepr_protocol::WorkspaceId) {
 
 pub(crate) fn workspace_renamed(workspace_id: &shepr_protocol::WorkspaceId, name: &str) {
     shepr_platform::structured_log!(
-        INFO, event = workspace.rename, outcome = "ok",
+        INFO, event = workspace.rename, outcome = Ok,
         name,
         %workspace_id,
         "workspace renamed"
@@ -65,34 +65,34 @@ pub(crate) fn workspace_renamed(workspace_id: &shepr_protocol::WorkspaceId, name
 
 pub(crate) fn pane_removed(pane_id: shepr_protocol::PublicPaneId) {
     shepr_platform::structured_log!(
-        INFO, event = pane.remove, outcome = "ok",
+        INFO, event = pane.remove, outcome = Ok,
         public_pane_id = %pane_id, "pane lifecycle changed"
     );
 }
 
 pub(crate) fn pane_split(pane_id: shepr_protocol::PublicPaneId) {
     shepr_platform::structured_log!(
-        INFO, event = pane.split, outcome = "ok",
+        INFO, event = pane.split, outcome = Ok,
         public_pane_id = %pane_id, "pane lifecycle changed"
     );
 }
 
 pub(crate) fn pane_zoomed(pane_id: shepr_protocol::PublicPaneId, zoomed: bool) {
-    shepr_platform::structured_log!(INFO, event = pane.zoom, outcome = "ok", public_pane_id = %pane_id, zoomed, "pane zoom changed");
+    shepr_platform::structured_log!(INFO, event = pane.zoom, outcome = Ok, public_pane_id = %pane_id, zoomed, "pane zoom changed");
 }
 
 pub(crate) fn panes_swapped(
     source: shepr_protocol::PublicPaneId,
     target: shepr_protocol::PublicPaneId,
 ) {
-    shepr_platform::structured_log!(INFO, event = pane.swap, outcome = "ok", public_pane_id = %source, swapped_with = %target, "panes swapped");
+    shepr_platform::structured_log!(INFO, event = pane.swap, outcome = Ok, public_pane_id = %source, swapped_with = %target, "panes swapped");
 }
 
 pub(crate) fn workspace_moved(
     workspace_id: &shepr_protocol::WorkspaceId,
     before: Option<&shepr_protocol::WorkspaceId>,
 ) {
-    shepr_platform::structured_log!(INFO, event = workspace.move, outcome = "ok", %workspace_id, ?before, "workspace moved");
+    shepr_platform::structured_log!(INFO, event = workspace.move, outcome = Ok, %workspace_id, ?before, "workspace moved");
 }
 
 pub(crate) fn creation_refused(
@@ -100,5 +100,5 @@ pub(crate) fn creation_refused(
     kind: &str,
     reason: &impl std::fmt::Debug,
 ) {
-    shepr_platform::structured_log!(ERROR, event = workspace.create, outcome = "refused", %workspace_id, kind, ?reason, "creation refused");
+    shepr_platform::structured_log!(ERROR, event = workspace.create, outcome = Refused, %workspace_id, kind, error = ?reason, "creation refused");
 }

@@ -63,7 +63,7 @@ fn write_client_stream_with_clock(
             && error.kind() != io::ErrorKind::NotConnected
         {
             crate::structured_log!(
-                WARN, event = client.stream_shutdown, outcome = "error",
+                WARN, event = connection.stream_shutdown, outcome = Error,
                 error = %error,
                 "failed to shut down a stalled terminal observer stream"
             );

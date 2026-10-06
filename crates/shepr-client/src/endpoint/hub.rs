@@ -167,7 +167,7 @@ impl EndpointHub {
                 ) {
                     return Vec::new();
                 }
-                shepr_platform::structured_log!(INFO, event = endpoint.connection, outcome = "connected", endpoint = %endpoint_id, %generation, "endpoint connected");
+                shepr_platform::structured_log!(INFO, event = endpoint.connection, outcome = Connected, endpoint = %endpoint_id, %generation, "endpoint connected");
                 self.registry.insert_native(
                     endpoint_id.clone(),
                     connection.activate(),
@@ -203,9 +203,9 @@ impl EndpointHub {
             return Vec::new();
         };
         if status == EndpointFailureStatus::Attention {
-            shepr_platform::structured_log!(WARN, event = endpoint.attempt, outcome = "needs_attention", endpoint = %endpoint_id, %generation, error = %failure, "endpoint needs attention");
+            shepr_platform::structured_log!(WARN, event = endpoint.attempt, outcome = NeedsAttention, endpoint = %endpoint_id, %generation, error = %failure, "endpoint needs attention");
         } else {
-            shepr_platform::structured_log!(INFO, event = endpoint.attempt, outcome = "ended", endpoint = %endpoint_id, %generation, ?status, error = %failure, "endpoint attempt ended");
+            shepr_platform::structured_log!(INFO, event = endpoint.attempt, outcome = Ended, endpoint = %endpoint_id, %generation, ?status, error = %failure, "endpoint attempt ended");
         }
         shell.set_endpoint_status(endpoint_id, status);
         shell.set_machine_diagnostic(endpoint_id, failure);
@@ -308,7 +308,7 @@ impl EndpointHub {
             // its generation is connected, and only `endpoint_lost` below re-arms it. So
             // every queued failure ends its endpoint's lane here.
             shepr_platform::structured_log!(
-                INFO, event = endpoint.transport, outcome = "error",
+                INFO, event = endpoint.transport, outcome = Error,
                 endpoint = %failure.endpoint_id,
                 generation = %failure.generation,
                 error = %failure.failure,

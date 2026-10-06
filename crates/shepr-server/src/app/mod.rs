@@ -200,7 +200,7 @@ impl App {
         shepr_platform::structured_log!(
             INFO,
             event = server.scrollback,
-            outcome = "configured",
+            outcome = Ok,
             pane_scrollback_limit_bytes = pane_scrollback.bytes(),
             "using pane scrollback configuration"
         );
@@ -328,7 +328,7 @@ impl App {
                 DefaultWorkspace::Created
             }
             Err(err) => {
-                shepr_platform::structured_log!(ERROR, event = workspace.create, outcome = "error", error = %err, cwd = %cwd.as_path().display(), "failed to create default workspace");
+                shepr_platform::structured_log!(ERROR, event = workspace.create, outcome = Error, error = %err, cwd = %cwd.as_path().display(), "failed to create default workspace");
                 DefaultWorkspace::Failed
             }
         }

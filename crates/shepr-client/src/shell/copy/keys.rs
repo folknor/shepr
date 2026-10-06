@@ -870,7 +870,7 @@ impl ClientShellState {
             shepr_platform::structured_log!(
                 WARN,
                 event = clipboard.copy,
-                outcome = "busy",
+                outcome = Busy,
                 "a copy operation was routed while another was outstanding"
             );
             return;

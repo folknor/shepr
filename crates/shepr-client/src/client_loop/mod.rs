@@ -285,7 +285,7 @@ impl ClientLoop {
         {
             // Reassertion repeats a mode the host already accepted after a host event that
             // may have reset it; a failure here is logged and never ends the session.
-            shepr_platform::structured_log!(WARN, event = terminal.mouse_capture, outcome = "error", %error, "failed to re-assert host mouse capture");
+            shepr_platform::structured_log!(WARN, event = host_terminal.mouse_capture, outcome = Error, %error, "failed to re-assert host mouse capture");
         }
         let host_reports_all_keys = state.host_modes.keyboard_report_all_active();
         let shell = &mut state.shell;
@@ -300,7 +300,7 @@ impl ClientLoop {
         &mut self,
         err: &io::Error,
     ) -> Result<ClientLoopAction, LoopExit> {
-        shepr_platform::structured_log!(INFO, event = client.detach, outcome = "terminal_unavailable", error = %err, "client terminal unavailable; detaching");
+        shepr_platform::structured_log!(INFO, event = client.detach, outcome = Unavailable, error = %err, "client terminal unavailable; detaching");
         Ok(ClientLoopAction::Exit)
     }
 

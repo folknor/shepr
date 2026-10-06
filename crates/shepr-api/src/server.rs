@@ -41,7 +41,7 @@ impl Drop for ServerHandle {
         if let Err(err) = self.remove_socket_file_if_owned()
             && err.kind() != std::io::ErrorKind::NotFound
         {
-            shepr_platform::structured_log!(WARN, event = ipc.socket_remove, outcome = "error", path = %self.path.display(), error = %err, "failed to remove server socket on shutdown");
+            shepr_platform::structured_log!(WARN, event = ipc.socket_remove, outcome = Error, path = %self.path.display(), error = %err, "failed to remove server socket on shutdown");
         }
 
         if let Some(thread) = self.thread.take() {
@@ -51,7 +51,7 @@ impl Drop for ServerHandle {
                     shepr_platform::structured_log!(
                         WARN,
                         event = ipc.listener_join,
-                        outcome = "panicked",
+                        outcome = Panicked,
                         "server listener thread panicked"
                     );
                 }
@@ -112,7 +112,7 @@ pub fn start_server(
         &paths.server_socket_startup_lock_path(),
     )?
     .into_parts();
-    shepr_platform::structured_log!(INFO, event = ipc.socket_listen, outcome = "ok", path = %path.display(), "server socket listening");
+    shepr_platform::structured_log!(INFO, event = ipc.socket_listen, outcome = Ok, path = %path.display(), "server socket listening");
     let running = Arc::new(AtomicBool::new(true));
     let gate = ClientGate::default();
     // Nothing restarts the listener. Recoverable accept and spawn failures

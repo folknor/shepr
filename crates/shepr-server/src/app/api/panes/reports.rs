@@ -48,7 +48,7 @@ impl App {
             Some(Ok(source)) => ReportedSessionStart::Known(source),
             Some(Err(source)) => {
                 shepr_platform::structured_log!(
-                    WARN, event = agent.session_start, outcome = "unknown_source",
+                    WARN, event = agent.session_start, outcome = Refused,
                     pane = %pane_id,
                     public_pane_id = %params.pane_id,
                     agent = %origin.agent(),

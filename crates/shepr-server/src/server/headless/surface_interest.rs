@@ -36,7 +36,7 @@ impl HeadlessServer {
                 shepr_platform::structured_log!(
                     WARN,
                     event = surface.projection_revision,
-                    outcome = "exhausted",
+                    outcome = Exhausted,
                     ?client_id,
                     "projection revisions exhausted; dropping client"
                 );

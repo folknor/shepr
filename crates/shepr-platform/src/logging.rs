@@ -94,7 +94,7 @@ pub fn init_file_logging_with_config(
         .try_init()
     {
         crate::structured_log!(
-            WARN, event = logging.install, outcome = "already_set",
+            WARN, event = logging.install, outcome = Unchanged,
             path = %path.display(),
             error = %error,
             "file logging not installed: a logger is already set"

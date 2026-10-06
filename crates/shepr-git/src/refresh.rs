@@ -137,7 +137,7 @@ impl GitRefresher {
                 shepr_platform::structured_log!(
                     WARN,
                     event = git.refresh,
-                    outcome = "panicked",
+                    outcome = Panicked,
                     "git status refresh panicked while committing; cleared the status cache \
                      and reporting an empty refresh"
                 );
@@ -145,7 +145,7 @@ impl GitRefresher {
                 shepr_platform::structured_log!(
                     WARN,
                     event = git.refresh,
-                    outcome = "panicked",
+                    outcome = Panicked,
                     "git status refresh panicked; reporting an empty refresh"
                 );
             }

@@ -112,7 +112,7 @@ impl Drop for UnreapedChild {
             Ok(None) => {}
             Err(err) => {
                 shepr_platform::structured_log!(
-                    WARN, event = pane.child_probe, outcome = "error",
+                    WARN, event = pane.child_probe, outcome = Error,
                     pid = %child.process_id(),
                     error = %err,
                     "could not check an abandoned pane child before reaping"
@@ -125,7 +125,7 @@ impl Drop for UnreapedChild {
         child.reap_detached(move |result| {
             if let Err(err) = result {
                 shepr_platform::structured_log!(
-                    ERROR, event = pane.child_reap, outcome = "error",
+                    ERROR, event = pane.child_reap, outcome = Error,
                     %pid,
                     error = %err,
                     "could not reap an abandoned pane child"

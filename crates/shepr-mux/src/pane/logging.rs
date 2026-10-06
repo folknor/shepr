@@ -10,7 +10,7 @@ pub(super) fn pane_spawn_started(
     shell: &std::path::Path,
 ) {
     shepr_platform::structured_log!(
-        INFO, event = pane.spawn, outcome = "started",
+        INFO, event = pane.spawn, outcome = Started,
         pane = %pane_id,
         kind = ?kind,
         cwd = %cwd.display(),
@@ -24,7 +24,7 @@ pub(super) fn pane_spawn_started(
 
 pub(super) fn pane_spawned(pane_id: shepr_core::layout::PaneId, pid: shepr_platform::Pid) {
     shepr_platform::structured_log!(
-        INFO, event = pane.spawn, outcome = "ok",
+        INFO, event = pane.spawn, outcome = Ok,
         pane = %pane_id,
         pid = pid.get(),
         "pane child spawned"
@@ -41,7 +41,7 @@ pub(super) fn pane_exited(
     // shepr, not that setup certainly failed.
     let setup_failure_status = exit_status.code() == Some(shepr_pty::backend::EXIT_SETUP_FAILED);
     shepr_platform::structured_log!(
-        INFO, event = pane.exit, outcome = "completed",
+        INFO, event = pane.exit, outcome = Ok,
         pane = %pane_id,
         status = status.as_str(),
         setup_failure_status,
@@ -51,7 +51,7 @@ pub(super) fn pane_exited(
 
 pub(super) fn pane_exit_failed(pane_id: shepr_core::layout::PaneId, err: &str) {
     shepr_platform::structured_log!(
-        ERROR, event = pane.exit, outcome = "error",
+        ERROR, event = pane.exit, outcome = Error,
         pane = %pane_id,
         error = err,
         "pane child wait failed"

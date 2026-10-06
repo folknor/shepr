@@ -79,12 +79,12 @@ fn forward_remote_bridge_stdio_with_timeout(
             &mut TrackedIo::new(&mut stdin_to_socket, Some(activity)),
         ) && !matches!(classify_stream_error(err.kind()), StreamFailure::PeerGone)
         {
-            shepr_platform::structured_log!(WARN, event = remote.bridge_upload, outcome = "error", bridge_pid = std::process::id(), error_kind = ?err.kind(), error = %err, "SSH bridge upload failed");
+            shepr_platform::structured_log!(WARN, event = remote.bridge_upload, outcome = Error, bridge_pid = std::process::id(), error_kind = ?err.kind(), error = %err, "SSH bridge upload failed");
         }
         if let Err(err) = stdin_to_socket.shutdown(std::net::Shutdown::Write)
             && !matches!(classify_stream_error(err.kind()), StreamFailure::PeerGone)
         {
-            shepr_platform::structured_log!(WARN, event = remote.bridge_half_close, outcome = "error", bridge_pid = std::process::id(), error = %err, "SSH bridge failed to half-close the server socket");
+            shepr_platform::structured_log!(WARN, event = remote.bridge_half_close, outcome = Error, bridge_pid = std::process::id(), error = %err, "SSH bridge failed to half-close the server socket");
         }
     });
     let _download = std::thread::spawn(move || {
@@ -103,7 +103,7 @@ fn forward_remote_bridge_stdio_with_timeout(
             if let Err(err) = control.shutdown(std::net::Shutdown::Both)
                 && !matches!(classify_stream_error(err.kind()), StreamFailure::PeerGone)
             {
-                shepr_platform::structured_log!(WARN, event = remote.bridge_shutdown, outcome = "error", bridge_pid = std::process::id(), error = %err, "SSH bridge failed to shut down the idle server socket");
+                shepr_platform::structured_log!(WARN, event = remote.bridge_shutdown, outcome = Error, bridge_pid = std::process::id(), error = %err, "SSH bridge failed to shut down the idle server socket");
             }
             Ok(RemoteBridgeOutcome::IdleExpired { idle_for })
         }

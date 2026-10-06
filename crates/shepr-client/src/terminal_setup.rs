@@ -73,7 +73,7 @@ pub(super) fn setup_terminal(
     // host's own title on exit. A title the host did not take is cosmetic, so
     // it does not fail the launch.
     if let Err(error) = host_modes.write_window_title(&mut output, Some(window_title)) {
-        shepr_platform::structured_log!(WARN, event = terminal.title, outcome = "error", %error, "the host terminal's window title could not be set");
+        shepr_platform::structured_log!(WARN, event = host_terminal.title, outcome = Error, %error, "the host terminal's window title could not be set");
     }
 
     terminal_guard.escape_disambiguation = escape_disambiguation;
@@ -830,7 +830,7 @@ fn restore_terminal_state(
     let modes_result = host_modes.restore(writer);
     if let Err(error) = &modes_result {
         shepr_platform::structured_log!(
-            WARN, event = terminal.restore_modes, outcome = "error",
+            WARN, event = host_terminal.restore_modes, outcome = Error,
             error = %error,
             "failed to restore host terminal modes; keyboard protocol, mouse or paste modes may stay enabled"
         );
@@ -840,17 +840,17 @@ fn restore_terminal_state(
     // mode, and crossterm then leaves the terminal as it is.
     let raw_mode_result = crossterm::terminal::disable_raw_mode();
     if let Err(error) = &raw_mode_result {
-        shepr_platform::structured_log!(WARN, event = terminal.restore_raw, outcome = "error", error = %error, "failed to restore host terminal raw mode");
+        shepr_platform::structured_log!(WARN, event = host_terminal.restore_raw, outcome = Error, error = %error, "failed to restore host terminal raw mode");
     }
 
     let screen_result = write_dec_mode(writer, shepr_term::DecMode::AlternateScreen, false);
     if let Err(error) = &screen_result {
-        shepr_platform::structured_log!(WARN, event = terminal.restore_screen, outcome = "error", error = %error, "failed to restore host terminal screen");
+        shepr_platform::structured_log!(WARN, event = host_terminal.restore_screen, outcome = Error, error = %error, "failed to restore host terminal screen");
     }
 
     let postlude_result = write_terminal_restore_postlude(writer);
     if let Err(error) = &postlude_result {
-        shepr_platform::structured_log!(WARN, event = terminal.restore_postlude, outcome = "error", error = %error, "failed to write host terminal restore postlude");
+        shepr_platform::structured_log!(WARN, event = host_terminal.restore_postlude, outcome = Error, error = %error, "failed to write host terminal restore postlude");
     }
 
     // Preserve the first failure while still attempting every restoration step.

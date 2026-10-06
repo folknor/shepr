@@ -48,10 +48,10 @@ impl ClientLoop {
                         // patch does not list; the decoder checks neither). Both are bugs, and
                         // reconnecting for a fresh full surface baseline is the one response.
                         shepr_platform::structured_log!(
-                            ERROR, event = surface.patch, outcome = "refused",
+                            ERROR, event = surface.patch, outcome = Refused,
                             endpoint = %endpoint_id,
                             %generation,
-                            ?reason,
+                            error = ?reason,
                             "client shell rejected a pane surface patch; failing its connection"
                         );
                         hub.fail(
@@ -128,7 +128,7 @@ impl ClientLoop {
                     &mut state.output_writer,
                 ) {
                     shepr_platform::structured_log!(
-                        WARN, event = clipboard.copy, outcome = "error",
+                        WARN, event = clipboard.copy, outcome = Error,
                         endpoint = %endpoint_id,
                         %generation,
                         bytes = data.len(),

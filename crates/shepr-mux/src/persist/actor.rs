@@ -166,7 +166,7 @@ impl PersistState {
             // restore stale files while this server still owns live panes.
             self.accepting_jobs = false;
             shepr_platform::structured_log!(
-                ERROR, event = persist.actor, outcome = "panicked",
+                ERROR, event = persist.actor, outcome = Panicked,
                 "session persister stopped after a job panicked; holding the data directory lease until retirement"
             );
             Err(stopped_after_panic())
@@ -251,7 +251,7 @@ impl SessionPersister {
             },
             Err(error) => {
                 shepr_platform::structured_log!(
-                    ERROR, event = persist.actor, outcome = "spawn_error",
+                    ERROR, event = persist.actor, outcome = Error,
                     %error,
                     "failed to start the session persister thread; saving on the event loop"
                 );
@@ -299,7 +299,7 @@ impl SessionPersister {
                     shepr_platform::structured_log!(
                         ERROR,
                         event = persist.actor,
-                        outcome = "panicked",
+                        outcome = Panicked,
                         "session persister thread panicked"
                     );
                 }

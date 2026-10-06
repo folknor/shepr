@@ -38,7 +38,7 @@ impl App {
             } => {
                 if let Some(error) = first_candidate_error {
                     shepr_platform::structured_log!(
-                        WARN, event = pane.cwd, outcome = "fallback",
+                        WARN, event = pane.cwd, outcome = Fallback,
                         pane = %pane_id,
                         kind = ?kind,
                         requested_cwd = %requested_cwd.display(),
@@ -145,15 +145,15 @@ impl App {
             .and_then(|pane| pane.terminal().agent_resume().plan())
             .map(shepr_agent::resume::AgentResumePlan::to_shell_command);
         shepr_platform::structured_log!(
-            WARN, event = agent.resume, outcome = "unavailable",
+            WARN, event = agent.resume, outcome = Unavailable,
             command = command.as_deref(),
             workspace = ?public_id.map(|id| *id.workspace_id()),
             public_pane_id = ?public_id,
             pane = %pane_id,
             agent = ?session.map(shepr_agent::resume::PersistedAgentSession::agent),
             session_ref = ?session.map(|session| session.session_ref().value_str()),
-            reason = reason.as_str(),
-            detail = detail.map(tracing::field::display),
+            error_kind = reason.as_str(),
+            error = detail.map(tracing::field::display),
             "deferred agent resume failed; keeping the pane as a placeholder with its saved session"
         );
         self.terminal_runtimes.remove(&pane_id);

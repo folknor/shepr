@@ -102,11 +102,11 @@ fn admit_hook_outcome(
         shepr_detect::ownership::HookOutcome::Rejected(reason) => {
             if reason.is_integration_fault() {
                 shepr_platform::structured_log!(
-                    WARN, event = agent.report, outcome = "refused",
+                    WARN, event = agent.report, outcome = Refused,
                     pane = %pane_id,
                     ?kind,
                     %source,
-                    rejection = %reason,
+                    error = %reason,
                     seq = ?seq,
                     session_ref = ?session_ref,
                     "bundled agent integration report violated its contract"
@@ -239,7 +239,7 @@ impl AppState {
                         .is_none_or(|current| current.origin != origin)
                 {
                     shepr_platform::structured_log!(
-                        INFO, event = agent.authority, outcome = "withdrawn",
+                        INFO, event = agent.authority, outcome = Changed,
                         pane = %pane_id,
                         previous_agent = %origin.agent(),
                         detected_agent = %agent,

@@ -29,7 +29,7 @@ pub(super) fn reader_exit_callback(
             let closed = ending(PaneEndReason::TerminalClosed);
             if arbiter.decide_after(closed_grace, closed) {
                 shepr_platform::structured_log!(
-                    WARN, event = pane.exit, outcome = "unreported",
+                    WARN, event = pane.exit, outcome = Timeout,
                     pane = %pane_id,
                     "pane terminal closed and its child's exit was not reported in time; ending the pane"
                 );
@@ -436,7 +436,7 @@ impl PaneLauncher {
             Ok(started) => started,
             Err(failure) => {
                 shepr_platform::structured_log!(
-                    ERROR, event = pane.spawn, outcome = "error",
+                    ERROR, event = pane.spawn, outcome = Error,
                     pane = %pane_id,
                     public_pane_id = %public_id,
                     kind = ?launch_kind,

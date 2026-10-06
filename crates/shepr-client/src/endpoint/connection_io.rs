@@ -105,7 +105,7 @@ impl EndpointConnectionIo {
         endpoint_id: endpoint::ClientEndpointId,
         generation: shepr_protocol::ConnectionGeneration,
     ) -> io::Result<Self> {
-        shepr_platform::structured_log!(INFO, event = endpoint.handshake, outcome = "accepted", endpoint = %endpoint_id, %generation, "endpoint handshake accepted");
+        shepr_platform::structured_log!(INFO, event = endpoint.handshake, outcome = Accepted, endpoint = %endpoint_id, %generation, "endpoint handshake accepted");
         let assemble = || -> io::Result<Self> {
             let reader = accepted.stream.try_clone()?;
             let writer =
@@ -272,7 +272,7 @@ fn server_reader_thread(
             // `EndpointReader` waits out WouldBlock itself, so any error here is final.
             Err(err) => {
                 shepr_platform::structured_log!(
-                    WARN, event = endpoint.read, outcome = "error",
+                    WARN, event = endpoint.read, outcome = Error,
                     endpoint = %endpoint_id,
                     %generation,
                     error = %err,

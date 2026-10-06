@@ -15,7 +15,7 @@ use super::schema::SessionSnapshot;
 
 fn session_saved(path: &Path, workspaces: usize) {
     shepr_platform::structured_log!(
-        INFO, event = persist.save, outcome = "ok",
+        INFO, event = persist.save, outcome = Ok,
         path = %path.display(),
         workspaces,
         "session saved"
@@ -24,7 +24,7 @@ fn session_saved(path: &Path, workspaces: usize) {
 
 fn session_save_failed(path: &Path, err: &str) {
     shepr_platform::structured_log!(
-        ERROR, event = persist.save, outcome = "error",
+        ERROR, event = persist.save, outcome = Error,
         path = %path.display(),
         error = err,
         "failed to save session"
@@ -33,7 +33,7 @@ fn session_save_failed(path: &Path, err: &str) {
 
 fn session_cleared(path: &Path) {
     shepr_platform::structured_log!(
-        INFO, event = persist.clear, outcome = "ok",
+        INFO, event = persist.clear, outcome = Ok,
         path = %path.display(),
         "session cleared"
     );
@@ -41,7 +41,7 @@ fn session_cleared(path: &Path) {
 
 fn session_clear_failed(path: &Path, err: &str) {
     shepr_platform::structured_log!(
-        ERROR, event = persist.clear, outcome = "error",
+        ERROR, event = persist.clear, outcome = Error,
         path = %path.display(),
         error = err,
         "failed to clear session"
@@ -137,7 +137,7 @@ impl SessionWriter {
             // the snapshot step runs, exactly as for a durable save.
             Ok(files::Published::NotDurable(err)) => {
                 shepr_platform::structured_log!(
-                    WARN, event = persist.save, outcome = "not_durable",
+                    WARN, event = persist.save, outcome = NotDurable,
                     path = %self.path.display(), error = %err,
                     "session saved but not confirmed durable"
                 );

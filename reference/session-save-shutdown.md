@@ -87,8 +87,10 @@ exit candidates observed at the signal time before this capture.
 
 The final save is skipped while host-shutdown saves are frozen, because the
 checkpoint from the warning is the layout to restore. The `persist.save`
-log with `kind = "final"` records the save's outcome (such as `completed`,
-`failed` or `frozen`) and its duration. A failed final save is reported as an unclean exit, and to every
+log with `kind = "final"` records the save's outcome (`ok`, `error`, `stopped`,
+`blocked_on_backup` or `frozen`) and its duration; a failed save's cause is the
+`error` field of the error-level `persist.save` event logged when the save
+fails. A failed final save is reported as an unclean exit, and to every
 client whose stop request the server accepted: the answer to `server.stop` and
 `server.stop_if_boot` waits for the final save and carries its error, if any.
 That wait is bounded by `FINAL_SAVE_ANSWER_TIMEOUT` in

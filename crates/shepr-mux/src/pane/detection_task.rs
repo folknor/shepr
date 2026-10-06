@@ -123,7 +123,7 @@ impl DetectionTask {
                     // terminal core already ends the pane: the PTY actor
                     // checks the core on every loop (`core_broken`).
                     shepr_platform::structured_log!(
-                        ERROR, event = agent.detection, outcome = "panicked",
+                        ERROR, event = agent.detection, outcome = Panicked,
                         pane = %pane_id,
                         agent = ?last_agent,
                         ?error,
@@ -251,7 +251,7 @@ impl DetectionTask {
             }
             if change.agent_changed {
                 shepr_platform::structured_log!(
-                    INFO, event = agent.identity, outcome = "changed",
+                    INFO, event = agent.identity, outcome = Changed,
                     pane = %self.pane_id,
                     previous_agent = ?change.previous_agent,
                     agent = ?change.agent,

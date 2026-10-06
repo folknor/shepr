@@ -138,7 +138,7 @@ impl SnapshotState {
         let message = error.to_string();
         if self.failure.as_ref() != Some(&message) {
             shepr_platform::structured_log!(
-                WARN, event = persist.snapshot, outcome = "error",
+                WARN, event = persist.snapshot, outcome = Error,
                 path = %path.display(), error = %error,
                 "failed to preserve session snapshot"
             );
@@ -499,12 +499,12 @@ fn preserve_opened_source(
 fn log_recovery_preserved(kind: RecoveryKind, path: &Path, backup: &Path) {
     match kind {
         RecoveryKind::Snapshot => shepr_platform::structured_log!(
-            INFO, event = persist.snapshot, outcome = "ok",
+            INFO, event = persist.snapshot, outcome = Ok,
             path = %path.display(), backup_path = %backup.display(),
             "preserved session snapshot"
         ),
         RecoveryKind::Backup => shepr_platform::structured_log!(
-            INFO, event = persist.backup, outcome = "ok",
+            INFO, event = persist.backup, outcome = Ok,
             path = %path.display(), backup_path = %backup.display(),
             "preserved session recovery copy"
         ),
@@ -514,12 +514,12 @@ fn log_recovery_preserved(kind: RecoveryKind, path: &Path, backup: &Path) {
 fn log_recovery_prune_failure(kind: RecoveryKind, path: &Path, directory: &Path, err: &io::Error) {
     match kind {
         RecoveryKind::Snapshot => shepr_platform::structured_log!(
-            WARN, event = persist.snapshot, outcome = "prune_error",
+            WARN, event = persist.snapshot, outcome = Error,
             path = %path.display(), recovery_directory = %directory.display(), error = %err,
             "preserved session snapshot but could not prune old copies"
         ),
         RecoveryKind::Backup => shepr_platform::structured_log!(
-            WARN, event = persist.backup, outcome = "prune_error",
+            WARN, event = persist.backup, outcome = Error,
             path = %path.display(), recovery_directory = %directory.display(), error = %err,
             "preserved session recovery copy but could not prune old copies"
         ),

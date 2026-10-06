@@ -128,7 +128,7 @@ impl ClientShellState {
             shepr_platform::structured_log!(
                 WARN,
                 event = surface.receive,
-                outcome = "stale",
+                outcome = Stale,
                 ?generation,
                 ?newest,
                 "dropping a pane surface from an older connection"

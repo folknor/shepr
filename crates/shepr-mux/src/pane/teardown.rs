@@ -243,7 +243,7 @@ impl Drop for PaneTeardownInFlight {
             // `start` inserts this pane before constructing the guard. Keep an
             // invariant-failure fallback so teardown completion cannot panic
             // or report a different pane as finished if that ownership changes.
-            shepr_platform::structured_log!(WARN, event = pane.teardown, outcome = "unmatched", pane = %self.pane_id, "pane teardown completion had no matching start");
+            shepr_platform::structured_log!(WARN, event = pane.teardown, outcome = Missing, pane = %self.pane_id, "pane teardown completion had no matching start");
             return;
         };
         in_flight.swap_remove(index);
@@ -308,7 +308,7 @@ pub(super) fn shutdown_pane_processes_with_steps(
             .as_ref()
             .is_some_and(|leader| leader.signal(shepr_platform::Signal::Kill));
         shepr_platform::structured_log!(
-            WARN, event = pane.teardown_start, outcome = "error",
+            WARN, event = pane.teardown_start, outcome = Error,
             pane = %pane_id,
             error = %err,
             leader_killed,
@@ -357,7 +357,7 @@ fn terminate_pane_session(
             // is empty before ending the escalation.
             if shepr_platform::session_members(session_id, leader_reaped).is_empty() {
                 shepr_platform::structured_log!(
-                    INFO, event = pane.session_terminate, outcome = "completed",
+                    INFO, event = pane.session_terminate, outcome = Ok,
                     pane = %pane_id,
                     session = session_id.get(),
                     ?signal,
@@ -378,7 +378,7 @@ fn terminate_pane_session(
         .map(|handle| handle.process_id().get())
         .collect();
     shepr_platform::structured_log!(
-        WARN, event = pane.session_terminate, outcome = "survivors",
+        WARN, event = pane.session_terminate, outcome = Partial,
         pane = %pane_id,
         session = session_id.get(),
         ?survivors,

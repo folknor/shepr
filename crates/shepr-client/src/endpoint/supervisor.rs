@@ -305,14 +305,14 @@ impl EndpointSupervisors {
             // retrying rather than issuing a duplicate.
             let Some(generation) = self.last_generation.checked_next() else {
                 shepr_platform::structured_log!(
-                    ERROR, event = endpoint.generation, outcome = "exhausted",
+                    ERROR, event = endpoint.generation, outcome = Exhausted,
                     endpoint = ?endpoint_id,
                     "connection generations exhausted; not starting another attempt"
                 );
                 state.next_attempt = None;
                 continue;
             };
-            shepr_platform::structured_log!(INFO, event = endpoint.operation, outcome = "started", endpoint = %endpoint_id, %generation, mode = ?operation, "endpoint operation starting");
+            shepr_platform::structured_log!(INFO, event = endpoint.operation, outcome = Started, endpoint = %endpoint_id, %generation, mode = ?operation, "endpoint operation starting");
             let target = match (&mut state.target, operation) {
                 (
                     ConnectTarget::Local {
@@ -464,7 +464,7 @@ impl EndpointSupervisors {
         if !matches!(state.target, ConnectTarget::Ssh { .. }) || state.online_since.is_some() {
             return false;
         }
-        shepr_platform::structured_log!(INFO, event = endpoint.operation, outcome = "accepted", endpoint = %endpoint_id, generation = ?state.generation, ?mode, "endpoint operator request accepted");
+        shepr_platform::structured_log!(INFO, event = endpoint.operation, outcome = Accepted, endpoint = %endpoint_id, generation = ?state.generation, ?mode, "endpoint operator request accepted");
         state.requested = Some((mode, now));
         if let Some(cancel) = &state.watch_cancel {
             cancel.store(true, Ordering::Release);
@@ -503,7 +503,7 @@ impl EndpointSupervisors {
             // and is refused, and on a host counting refusals (fail2ban, `MaxAuthTries`)
             // that bans this client's address, turning a login problem into an outage
             // for every client there. The machine's entry offers Retry instead.
-            shepr_platform::structured_log!(INFO, event = endpoint.attempt, outcome = "awaiting_login", endpoint = %endpoint_id, %generation, "endpoint refused authentication; waiting for the operator's retry");
+            shepr_platform::structured_log!(INFO, event = endpoint.attempt, outcome = Pending, endpoint = %endpoint_id, %generation, "endpoint refused authentication; waiting for the operator's retry");
             state.next_attempt = None;
         }
         if failure.cause() == shepr_launch::FailureCause::NoServer
@@ -512,7 +512,7 @@ impl EndpointSupervisors {
         {
             // The backoff `record_status` scheduled stays: a wait that keeps ending at
             // once cannot spin.
-            shepr_platform::structured_log!(INFO, event = endpoint.server_wait, outcome = "scheduled", endpoint = %endpoint_id, %generation, "endpoint wait for a server scheduled");
+            shepr_platform::structured_log!(INFO, event = endpoint.server_wait, outcome = Pending, endpoint = %endpoint_id, %generation, "endpoint wait for a server scheduled");
             state.scheduled = Scheduled::WatchForServer;
         }
         Some(status)
@@ -534,7 +534,7 @@ impl EndpointSupervisors {
         if state.generation != Some(generation) {
             return false;
         }
-        shepr_platform::structured_log!(INFO, event = endpoint.server_wait, outcome = "completed", endpoint = %endpoint_id, %generation, ?end, "endpoint wait for a server ended");
+        shepr_platform::structured_log!(INFO, event = endpoint.server_wait, outcome = Ok, endpoint = %endpoint_id, %generation, ?end, "endpoint wait for a server ended");
         state.in_flight = false;
         state.watch_cancel = None;
         state.attempt_started = None;

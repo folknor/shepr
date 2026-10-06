@@ -264,7 +264,7 @@ impl ShutdownLifecycle {
                 shepr_platform::structured_log!(
                     INFO,
                     event = shutdown.cancel,
-                    outcome = "resumed",
+                    outcome = Ok,
                     generation = cancelled_generation.map(WarningGeneration::as_u64),
                     "host shutdown cancelled; session saves resumed"
                 );
@@ -318,7 +318,7 @@ impl ShutdownLifecycle {
             shepr_platform::structured_log!(
                 WARN,
                 event = shutdown.freeze,
-                outcome = "unsaved",
+                outcome = Unavailable,
                 generation = generation.map(WarningGeneration::as_u64),
                 "host shutdown checkpoint unavailable; freezing session saves"
             );
@@ -326,7 +326,7 @@ impl ShutdownLifecycle {
             shepr_platform::structured_log!(
                 INFO,
                 event = shutdown.freeze,
-                outcome = "saved",
+                outcome = Ok,
                 generation = generation.map(WarningGeneration::as_u64),
                 "host shutdown checkpoint saved; freezing session saves"
             );
@@ -362,7 +362,7 @@ impl HeadlessServer {
         shepr_platform::structured_log!(
             INFO,
             event = server.shutdown,
-            outcome = "started",
+            outcome = Started,
             cause,
             "server shutdown initiated"
         );
@@ -393,7 +393,7 @@ impl HeadlessServer {
         shepr_platform::structured_log!(
             INFO,
             event = server.shutdown,
-            outcome = "completing",
+            outcome = Pending,
             "completing server shutdown"
         );
         // A client whose outbox already closed leaves first, so a request it
@@ -440,8 +440,8 @@ impl HeadlessServer {
                 Err(_) => {
                     shepr_platform::structured_log!(
                         WARN,
-                        event = shutdown.client_flush,
-                        outcome = "timeout",
+                        event = server.client_flush,
+                        outcome = Timeout,
                         timeout_ms = SHUTDOWN_FLUSH_TIMEOUT.as_millis(),
                         "client writers did not flush shutdown frames in time; closing anyway"
                     );

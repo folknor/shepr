@@ -3,7 +3,7 @@ pub(crate) fn startup() {
     shepr_platform::structured_log!(
         INFO,
         event = client.startup,
-        outcome = "started",
+        outcome = Started,
         pid = std::process::id(),
         "shepr starting"
     );
@@ -13,7 +13,7 @@ pub(crate) fn shutdown() {
     shepr_platform::structured_log!(
         INFO,
         event = client.shutdown,
-        outcome = "completed",
+        outcome = Ok,
         pid = std::process::id(),
         "shepr exiting"
     );

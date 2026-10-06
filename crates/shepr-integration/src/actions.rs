@@ -32,7 +32,7 @@ pub fn install_present_integrations(paths: &AgentIntegrationPaths) {
                 }
                 for notice in output.notices {
                     shepr_platform::structured_log!(
-                        INFO, event = integration.notice, outcome = "reported",
+                        INFO, event = integration.notice, outcome = Ok,
                         integration = label,
                         notice = %notice,
                         "integration installation notice"
@@ -42,7 +42,7 @@ pub fn install_present_integrations(paths: &AgentIntegrationPaths) {
             Ok(None) => {}
             Err(error) => {
                 shepr_platform::structured_log!(
-                    WARN, event = integration.install, outcome = "error",
+                    WARN, event = integration.install, outcome = Error,
                     integration = label,
                     error_kind = ?error.kind(),
                     %error,

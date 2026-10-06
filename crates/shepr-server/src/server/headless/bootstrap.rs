@@ -126,12 +126,12 @@ pub fn run_server(
     })?;
 
     let result = rt.block_on(async move {
-        shepr_platform::structured_log!(INFO, event = server.startup, outcome = "ready", socket = %ready.socket.display(), "shepr server started");
+        shepr_platform::structured_log!(INFO, event = server.startup, outcome = Ok, socket = %ready.socket.display(), "shepr server started");
         on_ready(&ready);
 
         server.run().await.map_err(|error| {
             // A client-spawned server's stderr is /dev/null by now.
-            shepr_platform::structured_log!(ERROR, event = server.event_loop, outcome = "error", %error, "the server event loop failed");
+            shepr_platform::structured_log!(ERROR, event = server.event_loop, outcome = Error, %error, "the server event loop failed");
             error
         })
     });
@@ -295,7 +295,7 @@ fn log_panics() {
         shepr_platform::structured_log!(
             ERROR,
             event = server.panic,
-            outcome = "panicked",
+            outcome = Panicked,
             thread = thread.name().unwrap_or("<unnamed>"),
             "{info}"
         );
@@ -318,7 +318,7 @@ fn spawn_integration_install() {
         shepr_platform::structured_log!(
             INFO,
             event = integration.install,
-            outcome = "skipped",
+            outcome = Skipped,
             "agent integration installation skipped; only release servers own agent configs"
         );
         return;
@@ -331,7 +331,7 @@ fn spawn_integration_install() {
             shepr_integration::install_present_integrations(&paths);
         })
     {
-        shepr_platform::structured_log!(WARN, event = integration.worker_start, outcome = "error", %error, "could not start the agent integration install");
+        shepr_platform::structured_log!(WARN, event = integration.worker_start, outcome = Error, %error, "could not start the agent integration install");
     }
 }
 
@@ -349,7 +349,7 @@ fn seed_startup_workspace_if_empty(
 
     if !app.state().workspaces().is_empty() {
         shepr_platform::structured_log!(
-            INFO, event = workspace.startup, outcome = "ignored",
+            INFO, event = workspace.startup, outcome = Skipped,
             cwd = %cwd.display(),
             "restored session already has workspaces; ignoring startup cwd"
         );
@@ -361,10 +361,10 @@ fn seed_startup_workspace_if_empty(
     let geometry = app.headless_spawn_geometry();
     match app.create_workspace(&cwd, geometry) {
         Ok(_) => {
-            shepr_platform::structured_log!(INFO, event = workspace.startup, outcome = "created", cwd = %cwd.display(), "created startup workspace");
+            shepr_platform::structured_log!(INFO, event = workspace.startup, outcome = Ok, cwd = %cwd.display(), "created startup workspace");
         }
         Err(err) => {
-            shepr_platform::structured_log!(WARN, event = workspace.startup, outcome = "error", cwd = %cwd.display(), error = %err, "failed to create startup workspace");
+            shepr_platform::structured_log!(WARN, event = workspace.startup, outcome = Error, cwd = %cwd.display(), error = %err, "failed to create startup workspace");
         }
     }
 }
@@ -377,7 +377,7 @@ fn startup_error(error: shepr_platform::ipc::BindError) -> RunServerError {
     match error {
         shepr_platform::ipc::BindError::Busy(busy) => {
             let path = busy.path().to_path_buf();
-            shepr_platform::structured_log!(ERROR, event = ipc.socket_bind, outcome = "busy", path = %path.display(), "another server already listens on the socket");
+            shepr_platform::structured_log!(ERROR, event = ipc.socket_bind, outcome = Busy, path = %path.display(), "another server already listens on the socket");
             RunServerError::AlreadyRunning { path }
         }
         shepr_platform::ipc::BindError::Io(error) => RunServerError::Socket(error),

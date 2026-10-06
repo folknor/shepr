@@ -40,7 +40,7 @@ pub(in crate::pane) async fn publish_state_changed_event(
         .await
     {
         shepr_platform::structured_log!(
-            WARN, event = agent.state_notify, outcome = "error",
+            WARN, event = agent.state_notify, outcome = Error,
             pane = %pane_id,
             error = %e,
             "failed to deliver StateChanged event"
@@ -59,7 +59,7 @@ pub(in crate::pane) async fn publish_agent_process_detected_event(
         .await
     {
         shepr_platform::structured_log!(
-            WARN, event = agent.process_notify, outcome = "error",
+            WARN, event = agent.process_notify, outcome = Error,
             pane = %pane_id,
             error = %e,
             "failed to deliver AgentProcessDetected event"
@@ -160,7 +160,7 @@ impl DetectorState {
             self.agent_absence_hold_until = None;
             if let Some(identity) = &self.resume_identity {
                 shepr_platform::structured_log!(
-                    INFO, event = agent.resume_hold, outcome = "agent_not_detected",
+                    INFO, event = agent.resume_hold, outcome = Expired,
                     public_pane_id = %identity.public_pane_id,
                     session_ref = %identity.session_ref.value_str(),
                     session_ref_kind = ?identity.session_ref.kind(),

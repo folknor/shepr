@@ -25,7 +25,7 @@ fn warn_surface_encoding_failure(
     surface: &PaneSurfaceFrame,
 ) {
     shepr_platform::structured_log!(
-        WARN, event = surface.encode, outcome = "error",
+        WARN, event = surface.encode, outcome = Error,
         %error,
         encoding = %encoding,
         boot_id = %surface.boot_id,
@@ -300,7 +300,7 @@ impl ClientRenderState {
                     shepr_platform::structured_log!(
                         ERROR,
                         event = surface.render,
-                        outcome = "missing_baseline",
+                        outcome = Missing,
                         "full surface render did not contain a surface baseline"
                     );
                     self.committed = None;
@@ -317,7 +317,7 @@ impl ClientRenderState {
                     None => Err(shepr_surface::decode::SurfaceDecodeError::MissingBaseline),
                 };
                 if let Err(reason) = applied {
-                    shepr_platform::structured_log!(WARN, event = surface.patch, outcome = "invalid", %reason, "sent surface patch did not apply to its baseline");
+                    shepr_platform::structured_log!(WARN, event = surface.patch, outcome = Invalid, error = %reason, "sent surface patch did not apply to its baseline");
                     self.committed = None;
                 }
                 self.surface_revision = patch.surface_revision;

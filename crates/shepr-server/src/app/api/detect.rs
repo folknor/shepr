@@ -134,7 +134,7 @@ impl App {
                     }
                     None => {
                         shepr_platform::structured_log!(
-                            ERROR, event = agent.authority, outcome = "missing",
+                            ERROR, event = agent.authority, outcome = Missing,
                             public_pane_id = %target.pane_id,
                             "pane state owner names hook authority without an authority"
                         );

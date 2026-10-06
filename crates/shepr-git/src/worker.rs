@@ -289,7 +289,7 @@ impl<T: Send + 'static> GitStatusWorker<T> {
                     shepr_platform::structured_log!(
                         WARN,
                         event = git.worker,
-                        outcome = "restarting",
+                        outcome = Retry,
                         "git status worker stopped; starting a new one"
                     );
                     command = returned;
@@ -405,7 +405,7 @@ impl<T: Send + 'static> GitStatusWorker<T> {
             if !self.abandon_limit_logged {
                 self.abandon_limit_logged = true;
                 shepr_platform::structured_log!(
-                    WARN, event = git.refresh, outcome = "abandon_limit",
+                    WARN, event = git.refresh, outcome = Exhausted,
                     paths = ?stuck,
                     abandoned = self.abandoned.len(),
                     "git status refresh is stalled, but the abandoned-thread limit is reached; \
@@ -425,13 +425,13 @@ impl<T: Send + 'static> GitStatusWorker<T> {
             shepr_platform::structured_log!(
                 WARN,
                 event = git.refresh,
-                outcome = "abandoned",
+                outcome = Abandoned,
                 "git status worker made no progress within its bound with no step running; \
                  abandoned its thread, with no paths to leave out of refreshes"
             );
         } else {
             shepr_platform::structured_log!(
-                WARN, event = git.refresh, outcome = "abandoned",
+                WARN, event = git.refresh, outcome = Abandoned,
                 paths = ?stuck,
                 "git status refresh made no progress within its bound; abandoned its worker \
                  thread and left these paths out of refreshes until it finishes"
@@ -454,7 +454,7 @@ impl<T: Send + 'static> GitStatusWorker<T> {
             thread.handle.join().ok();
             self.abandon_limit_logged = false;
             shepr_platform::structured_log!(
-                INFO, event = git.worker, outcome = "recovered",
+                INFO, event = git.worker, outcome = Recovered,
                 paths = ?thread.stuck,
                 "abandoned git status worker thread finished; refreshing its paths again"
             );

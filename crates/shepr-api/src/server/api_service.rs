@@ -128,7 +128,7 @@ pub(super) fn handle_connection(
             // Recover correlation without relaxing typed request validation or accepting
             // ambiguous duplicate IDs. Invalid JSON and non-string IDs stay uncorrelated.
             let id = request_id_from_line(line);
-            shepr_platform::structured_log!(WARN, event = api.request, outcome = "invalid", request_id = ?id, error_category = ?request_error.classify(), line = request_error.line(), column = request_error.column(), "invalid API request");
+            shepr_platform::structured_log!(WARN, event = api.request, outcome = Invalid, request_id = ?id, error_category = ?request_error.classify(), line = request_error.line(), column = request_error.column(), "invalid API request");
             let response = ErrorResponse {
                 id,
                 error: crate::error::ApiError::new(
@@ -296,7 +296,7 @@ fn stop_server(
             ));
         }
     }
-    shepr_platform::structured_log!(INFO, event = server.stop, outcome = "accepted", request_id = id, boot_id = %actual, expected_boot_id = ?expected_boot_id, "server stop accepted");
+    shepr_platform::structured_log!(INFO, event = server.stop, outcome = Accepted, request_id = id, boot_id = %actual, expected_boot_id = ?expected_boot_id, "server stop accepted");
     server_stop.request();
     // The answer waits for the final save so it can carry its result. The
     // server keeps its socket through that save, so the client would wait
@@ -716,7 +716,7 @@ mod tests {
     fn api_response_logging_outcome_comes_from_the_typed_result() {
         let success =
             crate::error::encode_result_with_outcome("req".into(), Ok(ResponseResult::Ok {}));
-        assert_eq!(success.outcome.as_str(), "ok");
+        assert_eq!(success.outcome.outcome(), shepr_platform::Outcome::Ok);
 
         let timeout = crate::error::encode_result_with_outcome(
             "req".into(),
@@ -725,7 +725,7 @@ mod tests {
                 "timed out waiting for agent status",
             )),
         );
-        assert_eq!(timeout.outcome.as_str(), "timeout");
+        assert_eq!(timeout.outcome.outcome(), shepr_platform::Outcome::Timeout);
 
         let generic_error = crate::error::encode_result_with_outcome(
             "req".into(),
@@ -734,7 +734,10 @@ mod tests {
                 "boom",
             )),
         );
-        assert_eq!(generic_error.outcome.as_str(), "error");
+        assert_eq!(
+            generic_error.outcome.outcome(),
+            shepr_platform::Outcome::Error
+        );
     }
 
     #[test]

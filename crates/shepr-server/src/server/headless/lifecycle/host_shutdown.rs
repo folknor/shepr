@@ -100,7 +100,7 @@ impl Shared {
         shepr_platform::structured_log!(
             INFO,
             event = shutdown.request,
-            outcome = "pending",
+            outcome = Pending,
             generation = generation.as_u64(),
             "host shutdown requested; preserving session before pane termination"
         );
@@ -113,7 +113,7 @@ impl Shared {
         shepr_platform::structured_log!(
             INFO,
             event = shutdown.refresh,
-            outcome = "pending",
+            outcome = Pending,
             generation = generation.as_u64(),
             "host shutdown remains pending after reconnect; refreshing session checkpoint"
         );
@@ -178,7 +178,7 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<Option<Wa
                 shepr_platform::structured_log!(
                     DEBUG,
                     event = shutdown.notification,
-                    outcome = "disconnected",
+                    outcome = Disconnected,
                     retry_seconds = retry_delay.as_secs(),
                     "host shutdown notification stream ended"
                 );
@@ -187,7 +187,7 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<Option<Wa
                 // Missing logind is routine unless a shutdown warning is pending.
                 if shutdown_pending {
                     shepr_platform::structured_log!(
-                        WARN, event = shutdown.notification, outcome = "unavailable",
+                        WARN, event = shutdown.notification, outcome = Unavailable,
                         shutdown_pending,
                         generation = shared.generation.load(Ordering::Acquire),
                         error = %err, retry_seconds = retry_delay.as_secs(),
@@ -195,7 +195,7 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<Option<Wa
                     );
                 } else {
                     shepr_platform::structured_log!(
-                        DEBUG, event = shutdown.notification, outcome = "unavailable",
+                        DEBUG, event = shutdown.notification, outcome = Unavailable,
                         shutdown_pending,
                         generation = shared.generation.load(Ordering::Acquire),
                         error = %err, retry_seconds = retry_delay.as_secs(),
@@ -312,7 +312,7 @@ async fn watch_connection(
                 shepr_platform::structured_log!(
                     DEBUG,
                     event = shutdown.delay_release,
-                    outcome = "released",
+                    outcome = Released,
                     generation = shared.generation.load(Ordering::Acquire),
                     "session checkpoint finished; releasing the shutdown delay lock"
                 );

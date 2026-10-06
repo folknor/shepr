@@ -72,7 +72,7 @@ pub use random::unpredictable_token;
 pub use stderr_null::redirect_stderr_to_null;
 pub use stream_wake::StreamWake;
 #[doc(hidden)]
-pub use structured_log::tracing_backend;
+pub use structured_log::{Outcome, tracing_backend};
 
 /// The mode of a private runtime directory.
 pub const PRIVATE_DIRECTORY_MODE: u32 = limits::PRIVATE_DIRECTORY_MODE;
@@ -83,7 +83,7 @@ pub const PRIVATE_DIRECTORY_MODE: u32 = limits::PRIVATE_DIRECTORY_MODE;
 /// accepted; the fallback keeps a future registry error fail-soft.
 fn env_present(var: shepr_core::env::EnvVar) -> bool {
     shepr_core::env::read_present(var).unwrap_or_else(|error| {
-        crate::structured_log!(WARN, event = environment.read, outcome = "refused", %error, "ignoring a refused environment value");
+        crate::structured_log!(WARN, event = environment.read, outcome = Refused, %error, "ignoring a refused environment value");
         false
     })
 }

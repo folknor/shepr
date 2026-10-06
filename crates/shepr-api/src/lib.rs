@@ -32,7 +32,7 @@ pub(crate) fn serialize_response_or_error_with_outcome<T: serde::Serialize>(
             outcome: error::ApiLogOutcome::Ok,
         },
         Err(error) => {
-            shepr_platform::structured_log!(ERROR, event = api.response_encode, outcome = "error", request_id, %error, "failed to serialize API response");
+            shepr_platform::structured_log!(ERROR, event = api.response_encode, outcome = Error, request_id, %error, "failed to serialize API response");
             error::EncodedApiResponse {
                 body: serde_json::json!({
                     "id": request_id,

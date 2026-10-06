@@ -493,7 +493,7 @@ impl PaneTerminal {
         if !self.mutation_failure_reported.swap(true, Ordering::Relaxed) {
             if let Some(pane_id) = self.pane_id {
                 shepr_platform::structured_log!(
-                    ERROR, event = terminal.mutation, outcome = "poisoned",
+                    ERROR, event = terminal.mutation, outcome = Poisoned,
                     pane = %pane_id,
                     ?operation,
                     "terminal core lock poisoned; mutation was not applied"
@@ -502,7 +502,7 @@ impl PaneTerminal {
                 shepr_platform::structured_log!(
                     ERROR,
                     event = terminal.mutation,
-                    outcome = "poisoned",
+                    outcome = Poisoned,
                     ?operation,
                     "terminal core lock poisoned; mutation was not applied"
                 );
@@ -516,7 +516,7 @@ impl PaneTerminal {
             .swap(true, Ordering::Relaxed)
         {
             shepr_platform::structured_log!(
-                WARN, event = clipboard.osc_store, outcome = "oversized",
+                WARN, event = clipboard.osc_store, outcome = Oversized,
                 pane = %pane_id,
                 bytes, "dropped oversized OSC 52 clipboard store"
             );

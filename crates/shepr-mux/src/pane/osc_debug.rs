@@ -98,7 +98,7 @@ pub(super) fn events(bodies: &[Vec<u8>]) -> Vec<OscDebugEvent> {
 pub(super) fn log(pane_id: PaneId, events: &[OscDebugEvent]) {
     for event in events {
         shepr_platform::structured_log!(
-            INFO, event = agent.osc, outcome = "observed",
+            INFO, event = agent.osc, outcome = Ok,
             pane = %pane_id,
             osc_command = %event.command,
             osc_payload = ?event.payload,

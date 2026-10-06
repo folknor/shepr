@@ -81,7 +81,7 @@ impl BlitEncoder {
             clear_before_full_redraw,
         ) {
             shepr_platform::structured_log!(
-                WARN, event = blit.frame_encode, outcome = "error",
+                WARN, event = host_terminal.frame_encode, outcome = Error,
                 error = %error,
                 "could not encode terminal frame"
             );

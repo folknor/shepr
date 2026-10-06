@@ -217,7 +217,7 @@ impl App {
         // Quote the planner's validated command before typing it into the shell.
         let resume_command = plan.to_shell_command();
         shepr_platform::structured_log!(
-            INFO, event = agent.resume, outcome = "dispatched",
+            INFO, event = agent.resume, outcome = Started,
             public_pane_id = %public_id,
             pane = %pane_id,
             agent = plan.agent().label(),

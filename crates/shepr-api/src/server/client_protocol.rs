@@ -39,7 +39,7 @@ impl ClientGate {
             shepr_platform::structured_log!(
                 ERROR,
                 event = api.protocol_open,
-                outcome = "already_open",
+                outcome = Duplicate,
                 "client protocol gate was opened twice; keeping its first handler"
             );
         }
@@ -182,7 +182,7 @@ pub(super) fn refuse_client(mut stream: LocalStream, reason: shepr_protocol::Han
                     }
                 }
                 Err(error) => {
-                    shepr_platform::structured_log!(ERROR, event = api.refusal_encode, outcome = "error", %error, "failed to encode client refusal");
+                    shepr_platform::structured_log!(ERROR, event = api.refusal_encode, outcome = Error, %error, "failed to encode client refusal");
                 }
             }
         }

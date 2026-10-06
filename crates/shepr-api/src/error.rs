@@ -123,13 +123,13 @@ pub(crate) enum ApiLogOutcome {
 }
 
 impl ApiLogOutcome {
-    // Emit the log schema string only after request handling has kept the outcome typed.
-    pub(crate) const fn as_str(&self) -> &'static str {
+    // Emit the log outcome only after request handling has kept the result typed.
+    pub(crate) const fn outcome(self) -> shepr_platform::Outcome {
         match self {
-            Self::Ok => "ok",
-            Self::Timeout => "timeout",
-            Self::Error => "error",
-            Self::ClientDisconnected => "client_disconnected",
+            Self::Ok => shepr_platform::Outcome::Ok,
+            Self::Timeout => shepr_platform::Outcome::Timeout,
+            Self::Error => shepr_platform::Outcome::Error,
+            Self::ClientDisconnected => shepr_platform::Outcome::Disconnected,
         }
     }
 }

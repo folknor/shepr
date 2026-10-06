@@ -256,7 +256,7 @@ impl PaneReadEffects {
                 .try_send(crate::events::RuntimeEvent::ClipboardWrite { content })
             {
                 shepr_platform::structured_log!(
-                    WARN, event = clipboard.osc_notify, outcome = "error",
+                    WARN, event = clipboard.osc_notify, outcome = Error,
                     pane = %pane_id,
                     error = %err,
                     "failed to send OSC 52 clipboard write"

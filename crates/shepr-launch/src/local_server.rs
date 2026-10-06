@@ -185,7 +185,7 @@ pub fn ensure_running(
 ) -> Result<RuntimeStatus, LaunchError> {
     match probe_server(paths)? {
         Probed::Running(status) => {
-            shepr_platform::structured_log!(INFO, event = server.start, outcome = "already_running", socket = %paths.server_address().socket().display(), build_id = %status.build_id, boot_id = %status.boot_id, "server already running");
+            shepr_platform::structured_log!(INFO, event = launch.server_start, outcome = Unchanged, socket = %paths.server_address().socket().display(), build_id = %status.build_id, boot_id = %status.boot_id, "server already running");
             return accept_running(paths, status, build_check);
         }
         Probed::Unresponsive => return Err(unresponsive_error(paths)),
@@ -206,7 +206,7 @@ pub fn ensure_running(
     loop {
         match probed {
             Probed::Running(status) => {
-                shepr_platform::structured_log!(INFO, event = server.start, outcome = "already_running", socket = %paths.server_address().socket().display(), build_id = %status.build_id, boot_id = %status.boot_id, "server started by another client");
+                shepr_platform::structured_log!(INFO, event = launch.server_start, outcome = Unchanged, socket = %paths.server_address().socket().display(), build_id = %status.build_id, boot_id = %status.boot_id, "server started by another client");
                 return accept_running(paths, status, build_check);
             }
             Probed::Unresponsive => return Err(unresponsive_error(paths)),
@@ -214,8 +214,8 @@ pub fn ensure_running(
             Probed::Starting | Probed::Stopping => {
                 shepr_platform::structured_log!(
                     INFO,
-                    event = server.start,
-                    outcome = "waiting",
+                    event = launch.server_start,
+                    outcome = Pending,
                     "the server socket is in transition; waiting for it to settle"
                 );
                 // clock-io-ok: the launch budget measures real elapsed waiting
@@ -236,7 +236,7 @@ pub fn ensure_running(
     // daemon. Resolve it after transition waits so a missing install cannot
     // prevent attaching to a server that is already coming up.
     let server = server_executable().map_err(LaunchError::Executable)?;
-    shepr_platform::structured_log!(INFO, event = server.start, outcome = "started", server = %server.display(), "no server running, starting the server daemon");
+    shepr_platform::structured_log!(INFO, event = launch.server_start, outcome = Started, server = %server.display(), "no server running, starting the server daemon");
     let status = launch_daemon(paths, &server, timeout)?;
     accept_running(paths, status, build_check)
 }
@@ -569,7 +569,7 @@ pub fn sibling_server_status() -> SiblingServerJson {
 /// probe's own failure; a cleanup failure is only logged beside it.
 fn reap_version_child(mut child: Child, server: &Path) {
     if let Err(error) = child.kill() {
-        shepr_platform::structured_log!(WARN, event = launch.probe_kill, outcome = "error", %error, server = %server.display(), "could not kill server version probe");
+        shepr_platform::structured_log!(WARN, event = launch.probe_kill, outcome = Error, %error, server = %server.display(), "could not kill server version probe");
     }
     let server = server.to_path_buf();
     // Reaping can block even after SIGKILL if the child is uninterruptible.
@@ -578,11 +578,11 @@ fn reap_version_child(mut child: Child, server: &Path) {
         .name("shepr-version-reaper".into())
         .spawn(move || {
             if let Err(error) = child.wait() {
-                shepr_platform::structured_log!(WARN, event = launch.probe_reap, outcome = "error", %error, server = %server.display(), "could not reap server version probe");
+                shepr_platform::structured_log!(WARN, event = launch.probe_reap, outcome = Error, %error, server = %server.display(), "could not reap server version probe");
             }
         })
     {
-        shepr_platform::structured_log!(WARN, event = launch.probe_cleanup, outcome = "error", %error, "could not start server version probe cleanup");
+        shepr_platform::structured_log!(WARN, event = launch.probe_cleanup, outcome = Error, %error, "could not start server version probe cleanup");
     }
 }
 
@@ -834,8 +834,8 @@ fn launch_with(
         })?;
         shepr_platform::structured_log!(
             INFO,
-            event = server.spawn,
-            outcome = "ok",
+            event = launch.server_spawn,
+            outcome = Ok,
             pid = child.id(),
             "server daemon spawned"
         );
@@ -855,7 +855,7 @@ fn launch_with(
                 )
             })?;
             if let Some(status) = exited {
-                shepr_platform::structured_log!(INFO, event = server.start, outcome = "exited", %status, "server daemon exited during boot");
+                shepr_platform::structured_log!(INFO, event = launch.server_start, outcome = Ended, %status, "server daemon exited during boot");
             }
         }
 
@@ -892,8 +892,8 @@ fn launch_with(
                         .unwrap_or_else(|error| format!("(unreadable: {error})"));
                     shepr_platform::structured_log!(
                         WARN,
-                        event = server.start,
-                        outcome = "boot_log_not_empty",
+                        event = launch.server_start,
+                        outcome = Unexpected,
                         boot_log = %files.boot_log.display(),
                         output = %tail,
                         "the server wrote to its boot log before it was ready, and may have no server log"
@@ -947,8 +947,8 @@ fn launch_with(
         {
             shepr_platform::structured_log!(
                 INFO,
-                event = server.start,
-                outcome = "retry",
+                event = launch.server_start,
+                outcome = Retry,
                 "the server daemon found the data directory held while nothing listens, starting it again"
             );
             daemon = spawn_daemon(&mut spawn)?;

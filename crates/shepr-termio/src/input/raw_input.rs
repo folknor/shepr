@@ -454,7 +454,7 @@ impl RawInputByteFramer {
             shepr_platform::structured_log!(
                 WARN,
                 event = input.paste,
-                outcome = "missing_terminator",
+                outcome = Invalid,
                 "bracketed paste terminator never arrived; resuming input"
             );
             self.buffer.clear();
@@ -463,7 +463,7 @@ impl RawInputByteFramer {
         shepr_platform::structured_log!(
             WARN,
             event = input.paste,
-            outcome = "stalled",
+            outcome = Timeout,
             len = self.buffer.len(),
             "bracketed paste stalled without a terminator; delivering what arrived"
         );
@@ -503,7 +503,7 @@ impl RawInputByteFramer {
         shepr_platform::structured_log!(
             WARN,
             event = input.paste,
-            outcome = "oversized",
+            outcome = Oversized,
             len = self.buffer.len(),
             max = MAX_PENDING_PASTE_BYTES,
             "bracketed paste exceeds the held-paste limit; delivering its head and dropping the rest"
@@ -734,7 +734,7 @@ impl RawInputByteFramer {
             shepr_platform::structured_log!(
                 WARN,
                 event = input.escape,
-                outcome = "timeout",
+                outcome = Timeout,
                 len = self.buffer.len(),
                 "flushing lone escape after input timeout; if this follows an alt chord or focus switch it may reach the pane as plain esc"
             );

@@ -165,7 +165,7 @@ impl MachineProbe {
         self.executable = ProbeExecutable::Verified(discovered.clone());
         if let Err(error) = cache.store(&discovered) {
             shepr_platform::structured_log!(
-                WARN, event = remote.metadata_save, outcome = "error",
+                WARN, event = remote.metadata_save, outcome = Error,
                 %error,
                 path = %cache.path().display(),
                 "could not cache SSH machine metadata; later connections rediscover the remote shepr"
@@ -179,7 +179,7 @@ impl MachineProbe {
         self.discovery = DiscoveryProgress::default();
         if let Err(error) = cache.invalidate() {
             shepr_platform::structured_log!(
-                WARN, event = remote.metadata_invalidate, outcome = "error",
+                WARN, event = remote.metadata_invalidate, outcome = Error,
                 %error,
                 path = %cache.path().display(),
                 "could not drop stale SSH machine metadata"
@@ -349,7 +349,7 @@ impl MachineSshConnector {
             }
             Err(error) => {
                 shepr_platform::structured_log!(
-                    WARN, event = remote.ssh_setup, outcome = "retry",
+                    WARN, event = remote.ssh_setup, outcome = Retry,
                     %error,
                     machine = %self.label,
                     target = %self.target,

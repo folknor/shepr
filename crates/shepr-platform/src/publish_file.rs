@@ -273,7 +273,7 @@ fn cleanup(path: &Path) {
         && error.kind() != io::ErrorKind::NotFound
     {
         crate::structured_log!(
-            WARN, event = publish_file.cleanup, outcome = "remove_error",
+            WARN, event = publish_file.cleanup, outcome = Error,
             path = %path.display(), %error, "failed to remove publication artifact"
         );
     }

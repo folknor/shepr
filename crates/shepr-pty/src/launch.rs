@@ -431,7 +431,7 @@ impl Routes {
                 shepr_platform::structured_log!(
                     WARN,
                     event = pty.launch_status,
-                    outcome = "unexpected_process",
+                    outcome = Refused,
                     ticket,
                     pid = *pid,
                     "pane launch status from an unexpected process"
@@ -460,13 +460,13 @@ impl Routes {
             Some(waiting) if waiting.pid == pid => Some((waiting.deliver, channel)),
             Some(waiting) => {
                 self.waiting.insert(ticket, waiting);
-                shepr_platform::structured_log!(WARN, event = pty.launch_status, outcome = "unexpected_process", ticket, pid = %pid, "pane launch status from an unexpected process");
+                shepr_platform::structured_log!(WARN, event = pty.launch_status, outcome = Refused, ticket, pid = %pid, "pane launch status from an unexpected process");
                 None
             }
             None => {
                 let key = (ticket, pid.get());
                 if self.parked.contains_key(&key) {
-                    shepr_platform::structured_log!(WARN, event = pty.launch_status, outcome = "duplicate", ticket, %pid, "duplicate pane launch status connection");
+                    shepr_platform::structured_log!(WARN, event = pty.launch_status, outcome = Duplicate, ticket, %pid, "duplicate pane launch status connection");
                     return None;
                 }
                 self.parked.insert(key, Parked { channel, at: now });
@@ -736,7 +736,7 @@ impl Router {
                     shepr_platform::structured_log!(
                         WARN,
                         event = pty.launch_hello,
-                        outcome = "timeout",
+                        outcome = Timeout,
                         pid = peer.pid,
                         "pane launch status hello timed out"
                     );
@@ -767,7 +767,7 @@ impl Router {
             if let Err(error) = poll(&mut fds, wait) {
                 if error.kind() != io::ErrorKind::Interrupted {
                     if !exhausted {
-                        shepr_platform::structured_log!(WARN, event = pty.launch_poll, outcome = "retry", %error, "pane launch status poll failed; retrying");
+                        shepr_platform::structured_log!(WARN, event = pty.launch_poll, outcome = Retry, %error, "pane launch status poll failed; retrying");
                     }
                     exhausted = true;
                     sleep(self.timing.retry);
@@ -785,7 +785,7 @@ impl Router {
                     Ok(Some((ticket, pid))) => self.route(ticket, pid, peer.channel),
                     Ok(None) => pending.push(peer),
                     Err(error) => {
-                        shepr_platform::structured_log!(WARN, event = pty.launch_status, outcome = "dropped", %error, "dropping a pane launch status connection");
+                        shepr_platform::structured_log!(WARN, event = pty.launch_status, outcome = Error, %error, "dropping a pane launch status connection");
                     }
                 }
             }
@@ -802,7 +802,7 @@ impl Router {
                         shepr_platform::structured_log!(
                             INFO,
                             event = pty.launch_listener,
-                            outcome = "recovered",
+                            outcome = Recovered,
                             "pane launch status listener recovered"
                         );
                         exhausted = false;
@@ -817,7 +817,7 @@ impl Router {
                 shepr_platform::ipc::Accepted::RetryNow => {}
                 shepr_platform::ipc::Accepted::Backoff(error) => {
                     if !exhausted {
-                        shepr_platform::structured_log!(WARN, event = pty.launch_accept, outcome = "retry", %error, "pane launch status accept failed; retrying");
+                        shepr_platform::structured_log!(WARN, event = pty.launch_accept, outcome = Retry, %error, "pane launch status accept failed; retrying");
                     }
                     exhausted = true;
                     sleep(self.timing.retry);
@@ -831,7 +831,7 @@ impl Router {
     }
 
     fn fail(&self, error: io::Error) {
-        shepr_platform::structured_log!(ERROR, event = pty.launch_listener, outcome = "stopped", %error, "pane launch status listener stopped; launches unavailable");
+        shepr_platform::structured_log!(ERROR, event = pty.launch_listener, outcome = Stopped, %error, "pane launch status listener stopped; launches unavailable");
         lock_auxiliary(&self.routes).fail(error);
     }
 

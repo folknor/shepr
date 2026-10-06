@@ -148,7 +148,7 @@ fn read_clipboard_text_bounded_with(
         shepr_platform::structured_log!(
             WARN,
             event = clipboard.paste,
-            outcome = "busy",
+            outcome = Busy,
             "an earlier clipboard read is still running; paste skipped"
         );
         return None;
@@ -166,7 +166,7 @@ fn read_clipboard_text_bounded_with(
         });
     if let Err(error) = spawned {
         in_flight.store(false, Ordering::Release);
-        shepr_platform::structured_log!(WARN, event = clipboard.paste, outcome = "error", %error, "could not start the clipboard reader; paste skipped");
+        shepr_platform::structured_log!(WARN, event = clipboard.paste, outcome = Error, %error, "could not start the clipboard reader; paste skipped");
         return None;
     }
     // The channel's timed wait is the deadline boundary here; this helper does not read or
@@ -177,7 +177,7 @@ fn read_clipboard_text_bounded_with(
             shepr_platform::structured_log!(
                 WARN,
                 event = clipboard.paste,
-                outcome = "timeout",
+                outcome = Timeout,
                 timeout_ms = timeout.as_millis(),
                 "clipboard helper did not answer in time; paste skipped"
             );

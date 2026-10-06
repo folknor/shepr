@@ -35,7 +35,7 @@ fn encode_message_or_close<M: serde::Serialize>(
     match shepr_protocol::encode_message(message) {
         Ok(bytes) => Some(bytes),
         Err(error) => {
-            shepr_platform::structured_log!(WARN, event = client.message_encode, outcome = "error", %error, "failed to encode client message; closing the client");
+            shepr_platform::structured_log!(WARN, event = connection.message_encode, outcome = Error, %error, "failed to encode client message; closing the client");
             queue.close_connection();
             None
         }
@@ -478,8 +478,8 @@ impl ClientOutbox {
         if count > MAX_HELD_ENDPOINT_REPLIES || bytes > MAX_HELD_ENDPOINT_REPLY_BYTES {
             shepr_platform::structured_log!(
                 WARN,
-                event = client.reply_budget,
-                outcome = "exceeded",
+                event = connection.reply_budget,
+                outcome = Exhausted,
                 count,
                 bytes,
                 "client exceeded held endpoint reply budget; closing the client"

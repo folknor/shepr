@@ -595,8 +595,8 @@ impl HeadlessServer {
                 let Some(cache) = self.shell_session_cache.as_ref() else {
                     shepr_platform::structured_log!(
                         WARN,
-                        event = client.session_cache,
-                        outcome = "missing",
+                        event = connection.session_cache,
+                        outcome = Missing,
                         ?client_id,
                         "shell session cache missing while projecting"
                     );
@@ -622,7 +622,7 @@ impl HeadlessServer {
                     shepr_platform::structured_log!(
                         WARN,
                         event = surface.projection_revision,
-                        outcome = "exhausted",
+                        outcome = Exhausted,
                         ?client_id,
                         "projection revisions exhausted; dropping client"
                     );
@@ -728,7 +728,7 @@ impl HeadlessServer {
                 shepr_platform::structured_log!(
                     WARN,
                     event = surface.revision,
-                    outcome = "exhausted",
+                    outcome = Exhausted,
                     ?client_id,
                     "surface revisions exhausted; dropping client"
                 );
@@ -759,7 +759,7 @@ impl HeadlessServer {
                     shepr_platform::structured_log!(
                         WARN,
                         event = surface.render,
-                        outcome = "oversized",
+                        outcome = Oversized,
                         ?client_id,
                         claimed,
                         max,
@@ -775,7 +775,7 @@ impl HeadlessServer {
                 return ClientPassOutcome::Refused;
             }
             Err(err) => {
-                shepr_platform::structured_log!(WARN, event = surface.encode, outcome = "error", ?client_id, error = %err, "failed to serialize frame");
+                shepr_platform::structured_log!(WARN, event = surface.encode, outcome = Error, ?client_id, error = %err, "failed to serialize frame");
                 client.outbox.close();
                 return ClientPassOutcome::Closed;
             }

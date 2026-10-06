@@ -1268,7 +1268,7 @@ impl AgentOwnership {
         if expired {
             if let Some(session_ref) = expired_session_ref {
                 shepr_platform::structured_log!(
-                    INFO, event = agent.session_start, outcome = "expired",
+                    INFO, event = agent.session_start, outcome = Expired,
                     agent = %detected_agent,
                     source = %origin.source(),
                     session_ref = ?session_ref,

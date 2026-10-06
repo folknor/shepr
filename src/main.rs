@@ -37,7 +37,7 @@ impl ProcessExit {
                 shepr_platform::structured_log!(
                     ERROR,
                     event = cli.exit_status,
-                    outcome = "invalid",
+                    outcome = Invalid,
                     code,
                     "CLI returned an invalid process exit status"
                 );
@@ -138,7 +138,7 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<ProcessExit> {
             shepr_platform::structured_log!(
                 INFO,
                 event = remote.server_wait,
-                outcome = "completed",
+                outcome = Ok,
                 ?end,
                 "remote wait for a server ended"
             );
@@ -200,7 +200,7 @@ fn finish_bridge(outcome: shepr_remote::RemoteBridgeOutcome) -> CliResult<Proces
     match outcome {
         shepr_remote::RemoteBridgeOutcome::Closed => Ok(ProcessExit::Success),
         shepr_remote::RemoteBridgeOutcome::IdleExpired { idle_for } => {
-            shepr_platform::structured_log!(WARN, event = remote.bridge_idle, outcome = "expired", idle_for = ?idle_for, "remote bridge idle timeout expired");
+            shepr_platform::structured_log!(WARN, event = remote.bridge_idle, outcome = Expired, idle_for = ?idle_for, "remote bridge idle timeout expired");
             Err(CliError::Io(shepr_remote::classified_bridge_failure(
                 shepr_launch::RemoteFailureClass::Retry,
                 io::ErrorKind::TimedOut,

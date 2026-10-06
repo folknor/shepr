@@ -54,11 +54,10 @@ enum SessionRestoreOutcome {
 }
 
 impl SessionRestoreOutcome {
-    fn as_log_value(self) -> &'static str {
+    fn outcome(self) -> shepr_platform::Outcome {
         match self {
-            Self::Partial => "partial",
-            Self::Empty => "empty",
-            Self::Restored => "ok",
+            Self::Partial => shepr_platform::Outcome::Partial,
+            Self::Empty | Self::Restored => shepr_platform::Outcome::Ok,
         }
     }
 }
@@ -98,7 +97,7 @@ pub fn open_session(
 
 fn log_restore(path: &std::path::Path, summary: SessionRestoreSummary) {
     shepr_platform::structured_log!(
-        INFO, event = persist.restore, outcome = summary.outcome.as_log_value(),
+        INFO, event = persist.restore, outcome = (summary.outcome.outcome()),
         path = %path.display(),
         workspaces = summary.workspaces,
         resumes_planned = summary.resumes_planned,
@@ -166,7 +165,7 @@ fn open_and_summarize(
                 if let Some(damage) = restore_loss {
                     backup_policy = SessionBackupPolicy::PreserveExisting;
                     shepr_platform::structured_log!(
-                        WARN, event = persist.restore, outcome = "partial",
+                        WARN, event = persist.restore, outcome = Partial,
                         path = %session_path(lease.directory()).display(),
                         dropped_workspaces = damage.dropped_workspaces,
                         renamed_workspaces = damage.renamed_workspaces,

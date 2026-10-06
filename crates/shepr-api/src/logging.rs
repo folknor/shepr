@@ -10,7 +10,7 @@ pub(crate) fn api_request_started(request_id: &str, method: MethodTraits) {
         shepr_platform::structured_log!(
             INFO,
             event = api.request,
-            outcome = "started",
+            outcome = Started,
             request_id,
             method = method.name,
             changes_ui = method.mutates_ui,
@@ -20,7 +20,7 @@ pub(crate) fn api_request_started(request_id: &str, method: MethodTraits) {
         shepr_platform::structured_log!(
             DEBUG,
             event = api.request,
-            outcome = "started",
+            outcome = Started,
             request_id,
             method = method.name,
             changes_ui = method.mutates_ui,
@@ -35,12 +35,12 @@ pub(crate) fn api_request_completed(
     outcome: ApiLogOutcome,
 ) {
     let message = "api request completed";
-    let outcome_value = outcome.as_str();
+    let outcome_value = outcome.outcome();
     if outcome != ApiLogOutcome::Ok || (method.mutates_ui && !method.routine) {
         shepr_platform::structured_log!(
             INFO,
             event = api.request,
-            outcome = outcome_value,
+            outcome = (outcome_value),
             request_id,
             method = method.name,
             "{message}"
@@ -49,7 +49,7 @@ pub(crate) fn api_request_completed(
         shepr_platform::structured_log!(
             DEBUG,
             event = api.request,
-            outcome = outcome_value,
+            outcome = (outcome_value),
             request_id,
             method = method.name,
             "{message}"
@@ -65,7 +65,7 @@ pub(crate) fn api_request_failed(request_id: &str, method_name: &str, err: &str)
     shepr_platform::structured_log!(
         ERROR,
         event = api.request,
-        outcome = "delivery_error",
+        outcome = Error,
         request_id,
         method = method_name,
         error = err,

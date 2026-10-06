@@ -101,7 +101,7 @@ pub(super) fn finish_client_shell_input(
             &mut state.output_writer,
         ) {
             shepr_platform::structured_log!(
-                WARN, event = clipboard.copy, outcome = "error",
+                WARN, event = clipboard.copy, outcome = Error,
                 bytes = bytes.len(),
                 %error,
                 "clipboard copy did not reach the host clipboard"

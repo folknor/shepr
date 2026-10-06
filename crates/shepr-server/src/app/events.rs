@@ -229,7 +229,7 @@ impl App {
     ) -> bool {
         self.git_refresh.finish(self.clock.now);
         for error in &outcome.new_read_errors {
-            shepr_platform::structured_log!(WARN, event = git.read, outcome = "error", %error, "git status read failed");
+            shepr_platform::structured_log!(WARN, event = git.read, outcome = Error, %error, "git status read failed");
         }
         let results = outcome
             .statuses
@@ -476,7 +476,7 @@ impl App {
     ) {
         let Some(terminal) = self.state.terminal(pane_id) else {
             shepr_platform::structured_log!(
-                ERROR, event = pane.runtime_install, outcome = "missing_pane",
+                ERROR, event = pane.runtime_install, outcome = Missing,
                 pane = %pane_id,
                 "a runtime was installed for a pane that is not in the state; dropping it"
             );

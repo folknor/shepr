@@ -42,7 +42,7 @@ fn response_within(
             size,
         )),
         Err(error) => {
-            shepr_platform::structured_log!(WARN, event = endpoint.response_encode, outcome = "error", %error, "an endpoint response could not be encoded");
+            shepr_platform::structured_log!(WARN, event = connection.response_encode, outcome = Error, %error, "an endpoint response could not be encoded");
             EndpointError::Internal("the response could not be encoded".to_owned())
         }
     };

@@ -121,7 +121,7 @@ impl OwnedRuntimeEntry {
                 Err(error) => {
                     remove_file(&path.join(OWNER_MARKER));
                     if let Err(cleanup) = fs::remove_dir(&path) {
-                        crate::structured_log!(WARN, event = runtime.directory_remove, outcome = "error", error = %cleanup, path = %path.display(), "could not remove runtime artifact directory");
+                        crate::structured_log!(WARN, event = runtime.directory_remove, outcome = Error, error = %cleanup, path = %path.display(), "could not remove runtime artifact directory");
                     }
                     return Err(error.into());
                 }
@@ -292,7 +292,7 @@ pub(crate) fn remove_file(path: &Path) -> bool {
         Ok(()) => true,
         Err(error) if error.kind() == io::ErrorKind::NotFound => true,
         Err(error) => {
-            crate::structured_log!(WARN, event = runtime.file_remove, outcome = "error", %error, path = %path.display(), "could not remove runtime artifact file");
+            crate::structured_log!(WARN, event = runtime.file_remove, outcome = Error, %error, path = %path.display(), "could not remove runtime artifact file");
             false
         }
     }
@@ -320,10 +320,10 @@ fn release(path: &Path, kind: DirectoryKind, owner: Option<ProcessIdentity>) {
                     .open(&marker)
                     .and_then(|mut file| file.write_all(owner.tag().as_bytes()));
                 if let Err(error) = restore {
-                    crate::structured_log!(WARN, event = runtime.marker_restore, outcome = "error", %error, "could not restore runtime artifact marker");
+                    crate::structured_log!(WARN, event = runtime.marker_restore, outcome = Error, %error, "could not restore runtime artifact marker");
                 }
             }
-            crate::structured_log!(WARN, event = runtime.directory_remove, outcome = "error", %error, path = %path.display(), "could not remove runtime artifact directory");
+            crate::structured_log!(WARN, event = runtime.directory_remove, outcome = Error, %error, path = %path.display(), "could not remove runtime artifact directory");
         }
     }
 }

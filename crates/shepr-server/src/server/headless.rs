@@ -615,17 +615,17 @@ impl HeadlessServer {
         shepr_platform::structured_log!(
             INFO,
             event = persist.save,
-            outcome = if final_save.is_err() {
-                "failed"
+            outcome = (if final_save.is_err() {
+                shepr_platform::Outcome::Error
             } else if self.app.session_saves_stopped() {
-                "stopped"
+                shepr_platform::Outcome::Stopped
             } else if self.app.session_saves_blocked_on_backup() {
-                "blocked_on_backup"
+                shepr_platform::Outcome::BlockedOnBackup
             } else if self.app.session_saves_frozen() {
-                "frozen"
+                shepr_platform::Outcome::Frozen
             } else {
-                "completed"
-            },
+                shepr_platform::Outcome::Ok
+            }),
             kind = "final",
             duration_ms = self
                 .app
@@ -651,7 +651,7 @@ impl HeadlessServer {
         };
         if !unfinished.is_empty() {
             shepr_platform::structured_log!(
-                WARN, event = shutdown.pane_teardown, outcome = "timeout",
+                WARN, event = server.pane_teardown, outcome = Timeout,
                 count = unfinished.len(), panes = ?unfinished,
                 "pane session teardown did not finish before server exit"
             );
@@ -681,7 +681,7 @@ impl HeadlessServer {
         shepr_platform::structured_log!(
             INFO,
             event = server.shutdown,
-            outcome = "released",
+            outcome = Released,
             "headless server exiting"
         );
         run_error.map_or(Ok(()), Err)
@@ -711,7 +711,7 @@ impl HeadlessServer {
                     self.api_request_open = false;
                     stop_signal.request();
                     shepr_platform::structured_log!(
-                        ERROR, event = api.channel, outcome = "closed",
+                        ERROR, event = api.channel, outcome = Disconnected,
                         "API request channel closed; stopping server"
                     );
                     LoopEvent::Timer
@@ -848,7 +848,7 @@ impl HeadlessServer {
             // The client is gone, so there is nobody to show a failure to.
             let result = apply_client_pane_input_events(runtime, &[held.release]);
             if let Err(err) = result {
-                shepr_platform::structured_log!(WARN, event = client.teardown_release, outcome = "error", ?client_id, error = %err, "client shell teardown release failed");
+                shepr_platform::structured_log!(WARN, event = connection.teardown_release, outcome = Error, ?client_id, error = %err, "client shell teardown release failed");
             }
         }
     }
@@ -863,7 +863,7 @@ impl HeadlessServer {
         pane_id: &shepr_protocol::PublicPaneId,
         failures: &crate::server::pane_input::PaneInputFailures,
     ) {
-        shepr_platform::structured_log!(WARN, event = client.input, outcome = "error", ?client_id, public_pane_id = %pane_id, error = %failures, "targeted client shell input failed");
+        shepr_platform::structured_log!(WARN, event = connection.input, outcome = Error, ?client_id, public_pane_id = %pane_id, error = %failures, "targeted client shell input failed");
         let dropped = failures.dropped_for_backpressure();
         if dropped == 0 {
             return;
@@ -908,8 +908,8 @@ impl HeadlessServer {
         for client_id in closed {
             shepr_platform::structured_log!(
                 INFO,
-                event = client.connection,
-                outcome = "closed",
+                event = connection.lifecycle,
+                outcome = Disconnected,
                 ?client_id,
                 "client connection closed"
             );
@@ -1126,7 +1126,7 @@ impl HeadlessServer {
                 outbox,
             } => {
                 shepr_platform::structured_log!(
-                    INFO, event = client.connection, outcome = "connected",
+                    INFO, event = connection.lifecycle, outcome = Connected,
                     ?client_id,
                     cols = geometry.cols(),
                     rows = geometry.rows(),
@@ -1173,8 +1173,8 @@ impl HeadlessServer {
                 let Some(session_cache) = self.shell_session_cache.as_ref() else {
                     shepr_platform::structured_log!(
                         WARN,
-                        event = client.session_cache,
-                        outcome = "missing",
+                        event = connection.session_cache,
+                        outcome = Missing,
                         ?client_id,
                         "shell session cache missing while seeding client"
                     );
@@ -1423,8 +1423,8 @@ impl HeadlessServer {
                 }
                 shepr_platform::structured_log!(
                     INFO,
-                    event = client.connection,
-                    outcome = "detached",
+                    event = connection.lifecycle,
+                    outcome = Detached,
                     ?client_id,
                     "client detached"
                 );
@@ -1435,8 +1435,8 @@ impl HeadlessServer {
                 }
                 shepr_platform::structured_log!(
                     INFO,
-                    event = client.connection,
-                    outcome = "disconnected",
+                    event = connection.lifecycle,
+                    outcome = Disconnected,
                     ?client_id,
                     "client disconnected"
                 );

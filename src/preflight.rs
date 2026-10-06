@@ -101,7 +101,7 @@ fn local_server_status(
     match shepr_launch::local_server::running_server_status(paths, announce_wait) {
         Ok(status) => status,
         Err(error) => {
-            shepr_platform::structured_log!(WARN, event = launch.restart_offer, outcome = "unavailable", socket = %paths.server_address().socket().display(), error_kind = ?error.kind(), %error, "no restart offer: cannot read the local server");
+            shepr_platform::structured_log!(WARN, event = launch.restart_offer, outcome = Unavailable, socket = %paths.server_address().socket().display(), error_kind = ?error.kind(), %error, "no restart offer: cannot read the local server");
             if report_unavailable {
                 crate::cli::print_notice(&format!(
                     "shepr: cannot check the local server for a restart: {error}"

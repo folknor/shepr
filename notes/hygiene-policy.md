@@ -50,32 +50,6 @@ Reported by: workspace-model.
   client's epoch is always from the current boot's projection, but a client reconnecting
   to a new boot with a cached epoch could match a different tree by accident.
 
-## POL-041 - The structured log vocabulary is not constrained
-
-Reported by: the wave 11 reviewer.
-
-Every info, warn and error call now goes through `structured_log!`, and
-`scripts/check_structured_logs.py` refuses direct ones. The names those calls carry
-are free text:
-
-- Failure outcomes are spelled `error` almost everywhere, but the final save's info
-  logs `failed` (documented so in `reference/session-save-shutdown.md`), so a failed
-  final save logs two `persist.save` events with different failure outcomes. Success
-  is spelled both `ok` and `completed`. `$outcome:expr` accepts any expression, so
-  nothing holds outcomes to a small set; an outcome enum or a closed list of idents
-  would.
-- Subsystems that mean two things: `terminal.*` is the host terminal in the client
-  and a pane's terminal in mux; `client.*` is the client process in shepr-client and a
-  server-side connection in shepr-server and platform; `client.connection` in
-  `shepr-client` `launch.rs` overlaps `endpoint.connection` in the same crate;
-  `endpoint.response_encode` in the server's `client_commands.rs` uses the client-side
-  name. `shutdown.pane_teardown` and `shutdown.client_flush` sit under `shutdown`,
-  otherwise the logind host shutdown. `blit.frame_encode` is a one-event subsystem.
-- Failure fields keyed other than `error`: `%failure` (`pane.launch` in
-  `launch_status.rs`), `%reason` (`surface.patch` in `render_stream.rs`,
-  `client.resize` in `client_transport.rs`). The textlint for the `error` key only
-  catches `err`.
-
 ## POL-042 - Wave 12 laterals
 
 Reported by: the wave 12 fixers.
@@ -104,3 +78,9 @@ Reported by: the wave 12 fixers.
   to return it to its callers.
 - `src/preflight.rs` `restart_local` now fails for a final-save failure followed by a
   new occupant; no preflight test covers that combination.
+- The final save's summary `persist.save` logs outcome `error` at INFO, beside the
+  separate ERROR event that carries the cause; split it if level-based filtering of
+  save failures matters.
+- Collapsing outcome synonyms moved distinctions such as `persist.restore`'s
+  `read_error` against `parse_error` out of `outcome` and into the message only; give
+  those events a field (an error kind) if an operator needs to filter on them.

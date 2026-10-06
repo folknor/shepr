@@ -412,7 +412,7 @@ impl App {
             shepr_platform::structured_log!(
                 WARN,
                 event = persist.checkpoint,
-                outcome = "unpaired",
+                outcome = Unavailable,
                 "could not pair fresh cwd probes with the saved pane-exit layout; keeping the durable checkpoint"
             );
         }
@@ -498,7 +498,7 @@ impl App {
                     shepr_platform::structured_log!(
                         INFO,
                         event = persist.save,
-                        outcome = "recovered",
+                        outcome = Recovered,
                         failures,
                         "session save recovered after failures"
                     );
@@ -529,7 +529,7 @@ impl App {
             }
             Err(error) if error.is_blocked_on_backup() => {
                 shepr_platform::structured_log!(
-                    ERROR, event = persist.save, outcome = "blocked_on_backup",
+                    ERROR, event = persist.save, outcome = BlockedOnBackup,
                     kind = save_kind, generation, directory = %self.paths.data_dir().display(),
                     error = %error,
                     "session saves are blocked because the existing session could not be opened for backup; fix access and restart the server"
@@ -540,7 +540,7 @@ impl App {
             }
             Err(error) if !error.is_retryable() => {
                 shepr_platform::structured_log!(
-                    ERROR, event = persist.save, outcome = "stopped",
+                    ERROR, event = persist.save, outcome = Stopped,
                     kind = save_kind, generation, directory = %self.paths.data_dir().display(),
                     error = %error,
                     "session persistence failed permanently; disabling session saves for this boot"
@@ -562,14 +562,14 @@ impl App {
                     // layer owns that diagnostic. Writer failures are logged
                     // by the mux, and only their retry policy is recorded here.
                     shepr_platform::structured_log!(
-                        WARN, event = persist.capture, outcome = "error",
+                        WARN, event = persist.capture, outcome = Error,
                         kind = save_kind, generation, directory = %self.paths.data_dir().display(),
                         error = %error, "session capture failed; keeping the previous session file"
                     );
                 }
                 let (failures, delay) = self.session_saver.autosave.record_failure(now);
                 shepr_platform::structured_log!(
-                    DEBUG, event = persist.save, outcome = "retry_scheduled",
+                    DEBUG, event = persist.save, outcome = Retry,
                     kind = save_kind, generation, directory = %self.paths.data_dir().display(),
                     error = %error, failures, retry_ms = delay.as_millis(),
                     "session save retry scheduled"
@@ -583,7 +583,7 @@ impl App {
                         )
                     {
                         shepr_platform::structured_log!(
-                            WARN, event = persist.checkpoint, outcome = "abandoned",
+                            WARN, event = persist.checkpoint, outcome = Abandoned,
                             kind = "pane_exit_checkpoint", generation = exit.generation.0,
                             directory = %self.paths.data_dir().display(),
                             failures = self.session_saver.config.checkpoint_max_failures,
@@ -789,7 +789,7 @@ impl App {
         self.session_saver.autosave.clear();
         if let Err(error) = &result {
             shepr_platform::structured_log!(
-                ERROR, event = persist.save, outcome = "error",
+                ERROR, event = persist.save, outcome = Error,
                 kind = "final",
                 directory = %self.paths.data_dir().display(),
                 %error,

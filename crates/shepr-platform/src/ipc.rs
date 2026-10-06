@@ -189,8 +189,8 @@ fn warn_peer_rejection(reason: &'static str, error: Option<&io::Error>) {
         return;
     };
     crate::structured_log!(
-        WARN, event = ipc.peer_admit, outcome = "refused",
-        reason,
+        WARN, event = ipc.peer_admit, outcome = Refused,
+        error_kind = reason,
         error = ?error,
         suppressed,
         "accepted socket peer was not admitted; further rejection warnings are rate-limited"
@@ -404,24 +404,6 @@ pub fn bind_owned_private_socket(
     bind_private_socket(path.as_path(), startup_lock_path)
 }
 
-/// What a socket startup lock attempt did, as logged in `ipc.socket_lock`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SocketLockOutcome {
-    Acquired,
-    Busy,
-    Released,
-}
-
-impl SocketLockOutcome {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Acquired => "acquired",
-            Self::Busy => "busy",
-            Self::Released => "released",
-        }
-    }
-}
-
 /// An exclusive, nonblocking lock for a server socket's startup and lifetime.
 ///
 /// [`bind_private_socket`] takes it before preparing the path; keep it until
@@ -435,7 +417,7 @@ pub struct SocketStartupLock {
 impl Drop for SocketStartupLock {
     fn drop(&mut self) {
         crate::structured_log!(
-            INFO, event = ipc.socket_lock, outcome = SocketLockOutcome::Released.as_str(),
+            INFO, event = ipc.socket_lock, outcome = Released,
             path = %self.socket_path.as_path().display(),
             "server socket startup lock released"
         );
@@ -540,7 +522,7 @@ fn acquire_socket_startup_lock(
         Ok(lock) => lock,
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
             crate::structured_log!(
-                INFO, event = ipc.socket_lock, outcome = SocketLockOutcome::Busy.as_str(),
+                INFO, event = ipc.socket_lock, outcome = Busy,
                 path = %socket_path.display(),
                 "server socket startup lock is already held"
             );
@@ -549,7 +531,7 @@ fn acquire_socket_startup_lock(
         Err(error) => return Err(error.into()),
     };
     crate::structured_log!(
-        INFO, event = ipc.socket_lock, outcome = SocketLockOutcome::Acquired.as_str(),
+        INFO, event = ipc.socket_lock, outcome = Acquired,
         path = %socket_path.display(),
         "server socket startup lock acquired"
     );
@@ -812,7 +794,7 @@ pub fn bind_private_local_listener(path: &Path) -> Result<UnixListener, BindErro
     match bind_via_private_staging(path, parent) {
         Ok(listener) => {
             crate::structured_log!(
-                INFO, event = ipc.socket_bind, outcome = "ok",
+                INFO, event = ipc.socket_bind, outcome = Ok,
                 strategy = "staged",
                 path = %path.display(),
                 "private socket listener bound"
@@ -823,14 +805,14 @@ pub fn bind_private_local_listener(path: &Path) -> Result<UnixListener, BindErro
         Err(StagedBindError::RandomSource(error)) => Err(error.into()),
         Err(StagedBindError::Unavailable(err)) => {
             crate::structured_log!(
-                WARN, event = ipc.socket_bind, outcome = "staging_unavailable",
+                WARN, event = ipc.socket_bind, outcome = Unavailable,
                 path = %path.display(),
                 error = %err,
                 "private socket staging failed; binding in place"
             );
             let listener = bind_in_place_then_restrict(path)?;
             crate::structured_log!(
-                INFO, event = ipc.socket_bind, outcome = "ok",
+                INFO, event = ipc.socket_bind, outcome = Ok,
                 strategy = "in_place",
                 path = %path.display(),
                 "private socket listener bound"
@@ -854,7 +836,7 @@ fn bind_in_place_then_restrict(path: &Path) -> Result<UnixListener, BindError> {
         // with the wrong mode is still worth an operator's attention.
         if let Err(remove_error) = fs::remove_file(path) {
             crate::structured_log!(
-                WARN, event = ipc.socket_remove, outcome = "error",
+                WARN, event = ipc.socket_remove, outcome = Error,
                 path = %path.display(),
                 error = %remove_error,
                 "failed to remove socket after restricting its mode failed"

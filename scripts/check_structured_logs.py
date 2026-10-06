@@ -11,6 +11,17 @@ level macros however they are reached (`tracing::warn!`, an imported `warn!`,
 first, so text that only looks like a call is not one. Debug and trace are
 outside this operator-diagnostic contract. The macro itself passes its level
 as `Level::$level`, which names no level and so is not refused.
+
+Two more rules hold the vocabulary of every `structured_log!` call, at any
+level. The event's subsystem must be one of `SUBSYSTEMS` below, each of which
+means one thing; a new subsystem is added there with its meaning, never reused
+for a second one. And a failure's cause is the field `error`: a field keyed
+`err`, `e`, `failure`, `reason`, `rejection`, `diagnostic`, `detail`, `panic`
+and the like is refused, whether written `key = value` or as a `?key` or `%key`
+shorthand. The check is textual, so it knows only the key, not what the value
+means: a field that holds something else under one of those names takes a
+different name. Outcomes are held by the macro itself (`shepr_platform::Outcome`),
+not by this script.
 """
 from __future__ import annotations
 
@@ -20,6 +31,47 @@ import sys
 from _brokkr_config import ROOT, repository_sources
 
 
+SUBSYSTEMS = {
+    'agent': 'agent identity, detection, state and session reports for a pane',
+    'api': 'the JSON API listener and its requests',
+    'cli': 'the command line process',
+    'client': 'the client process (TUI launch, startup, shutdown, its own files)',
+    'clipboard': 'clipboard copy, paste, OSC 52 and the helper processes',
+    'connection': 'one TUI connection as the server sees it, and its transport',
+    'daemon': 'daemonizing and reaping the server process',
+    'endpoint': 'the client side of a server endpoint, local or remote',
+    'environment': 'reading process environment values',
+    'git': 'Git status refresh and its worker',
+    'host_terminal': 'the terminal the client runs in: modes, queries, writes, frames',
+    'input': 'parsing raw host terminal input',
+    'integration': 'agent integration installation and reports',
+    'ipc': 'sockets, listeners and their locks',
+    'launch': 'launching, probing and stopping a server from outside it',
+    'logging': 'the log sink itself',
+    'pane': 'a pane, its process launch, exit and teardown',
+    'persist': 'session save, restore, checkpoints and their files',
+    'process': 'process handle plumbing',
+    'pty': 'the PTY layer: reads, writes, launch handshake',
+    'publish_file': 'atomic file publication',
+    'remote': 'SSH machines and the remote host side of the bridge',
+    'runtime': 'the owned runtime directory',
+    'server': 'the server process: startup, shutdown, event loop, pane teardown',
+    'shutdown': 'the logind host shutdown warning and freeze',
+    'surface': 'pane surface projection, encoding, patches and receipt',
+    'terminal': 'a pane terminal core: its state, cwd and theme',
+    'workspace': 'workspace create, focus, close, rename, move and startup',
+}
+# A failure's cause is the field `error`; these keys say the same thing otherwise.
+FAILURE_KEYS = {
+    'err', 'e', 'fail', 'failure', 'reason', 'rejection', 'diagnostic', 'detail',
+    'details', 'panic', 'exception', 'fault', 'problem', 'why', 'error_message',
+    'error_msg', 'errmsg',
+}
+
+STRUCTURED_CALL = re.compile(r'\bstructured_log\s*!\s*[({\[]')
+EVENT_ARGUMENT = re.compile(r'event\s*=\s*(\w+)\s*\.\s*(\w+)$')
+FIELD_KEY = re.compile(r'([A-Za-z_][\w.]*)\s*=(?!=)')
+FIELD_SHORTHAND = re.compile(r'[?%]?\s*([A-Za-z_][\w.]*)$')
 LEVEL_CALL = re.compile(r"\b(?:info|warn|error)\s*!\s*[({\[]")
 EVENT_CALL = re.compile(r"\bevent\s*!\s*[({\[]")
 OPERATOR_LEVEL = re.compile(r"\bLevel\s*::\s*(?:INFO|WARN|ERROR)\b")
@@ -92,6 +144,57 @@ def first_argument(masked: str, start: int) -> str:
     return ''.join(argument)
 
 
+def top_level_arguments(masked: str, start: int) -> list[str]:
+    """The top-level comma-separated arguments of a macro invocation."""
+    depth = 0
+    arguments = []
+    current = []
+    for char in masked[start:]:
+        if char in ')}]' and depth == 0:
+            break
+        if char in '({[':
+            depth += 1
+        elif char in ')}]':
+            depth -= 1
+        if char == ',' and depth == 0:
+            arguments.append(''.join(current).strip())
+            current = []
+        else:
+            current.append(char)
+    arguments.append(''.join(current).strip())
+    return arguments
+
+
+def vocabulary_problems(source: str) -> list[tuple[int, str]]:
+    """Unlisted subsystems and failure fields not keyed `error`, by line."""
+    masked = code_mask(source)
+    problems = []
+    for call in STRUCTURED_CALL.finditer(masked):
+        line = source.count('\n', 0, call.start()) + 1
+        arguments = top_level_arguments(masked, call.end())
+        if len(arguments) < 3:
+            continue
+        event = EVENT_ARGUMENT.match(arguments[1])
+        if event and event[1] not in SUBSYSTEMS:
+            problems.append((
+                line,
+                f'subsystem `{event[1]}` is not in SUBSYSTEMS in scripts/check_structured_logs.py; '
+                'pick the one that means this, or add it there with its meaning',
+            ))
+        for argument in arguments[3:]:
+            keyed = FIELD_KEY.match(argument)
+            if keyed:
+                key = keyed[1]
+            else:
+                shorthand = FIELD_SHORTHAND.match(argument)
+                if not shorthand:
+                    continue
+                key = shorthand[1]
+            if key.split('.')[0] in FAILURE_KEYS:
+                problems.append((line, f'a failure is the field `error`, not `{key}`'))
+    return problems
+
+
 def direct_calls(source: str) -> list[int]:
     masked = code_mask(source)
     starts = [call.start() for call in LEVEL_CALL.finditer(masked)]
@@ -104,6 +207,27 @@ def direct_calls(source: str) -> list[int]:
 
 
 def self_check() -> None:
+    vocabulary_cases = [
+        ('structured_log!(WARN, event = pane.exit, outcome = Error, error = %e, "x");', []),
+        ('structured_log!(WARN, event = pane.exit, outcome = Error, %error, "x");', []),
+        ('structured_log!(WARN, event = pane.exit, outcome = Error, error_kind = k, "x");', []),
+        ('structured_log!(WARN, event = pane.exit, outcome = Error, %failure, "x");', [1]),
+        ('structured_log!(WARN, event = pane.exit, outcome = Error, ?reason, "x");', [1]),
+        ('structured_log!(WARN, event = pane.exit, outcome = Error, reason = ?r, "x");', [1]),
+        ('structured_log!(WARN, event = pane.exit, outcome = Error, err, "x");', [1]),
+        ('structured_log!(\n    WARN, event = pane.exit, outcome = Error,\n    pane = %id,\n    %e,\n    "x"\n);', [1]),
+        ('structured_log!(WARN, event = pane.exit, outcome = Error, failure.stage, "x");', [1]),
+        ('structured_log!(WARN, event = pane.exit, outcome = Error, stage = failure.stage, "x");', []),
+        ('structured_log!(WARN, event = pane.exit, outcome = Error, setup_failure_status, "x");', []),
+        ('structured_log!(WARN, event = nowhere.exit, outcome = Error, "x");', [1]),
+        ('structured_log!(WARN, event = pane.exit, outcome = Error, "failure, reason = 1");', []),
+        ('structured_log!($level, event = $subsystem.$operation, outcome = (x), $($fields)+)', []),
+    ]
+    for source, expected in vocabulary_cases:
+        actual = [line for line, _ in vocabulary_problems(source)]
+        if actual != expected:
+            raise RuntimeError(f'log check self-test failed: {source!r}: {actual} != {expected}')
+
     cases = [
         ('tracing::warn!(event = "ipc.accept", "failed");', [1]),
         ('info! { "ready" }', [1]),
@@ -123,7 +247,7 @@ def self_check() -> None:
         ('event!(\n    Level::ERROR,\n    "raw"\n);', [1]),
         ('tracing::event!(Level::DEBUG, "fine");', []),
         ('$crate::tracing_backend::event!($crate::tracing_backend::Level::$level, x)', []),
-        ('shepr_platform::structured_log!(WARN, event = a.b, outcome = "error", "ok");', []),
+        ('shepr_platform::structured_log!(WARN, event = a.b, outcome = Error, "ok");', []),
     ]
     for source, expected in cases:
         actual = direct_calls(source)
@@ -140,6 +264,8 @@ def main() -> int:
                 f'{path.relative_to(ROOT)}:{line}: log info, warn and error events '
                 'through shepr_platform::structured_log!'
             )
+        for line, problem in vocabulary_problems(path.read_text()):
+            failures.append(f'{path.relative_to(ROOT)}:{line}: {problem}')
     if failures:
         print('\n'.join(failures), file=sys.stderr)
         return 1

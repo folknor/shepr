@@ -268,7 +268,7 @@ fn hand_to_reaper(child: Child) {
         shepr_platform::structured_log!(
             WARN,
             event = git.probe_reap,
-            outcome = "limit",
+            outcome = Exhausted,
             pid = child.id(),
             "too many killed git probes are still unreaped; leaving this one a zombie until \
              shepr exits"

@@ -85,7 +85,7 @@ impl GitRefreshScheduler {
             shepr_platform::structured_log!(
                 WARN,
                 event = git.refresh,
-                outcome = "worker_stopped",
+                outcome = Stopped,
                 "git status worker stopped without publishing an accepted refresh; \
                  scheduling the next refresh on a new worker"
             );
@@ -174,7 +174,7 @@ impl App {
                 self.git_refresh.lost_refresh_check_at = lost_refresh_check_after(now);
             }
             Err(err) => {
-                shepr_platform::structured_log!(WARN, event = git.worker_start, outcome = "error", error = %err, "failed to start the git status worker");
+                shepr_platform::structured_log!(WARN, event = git.worker_start, outcome = Error, error = %err, "failed to start the git status worker");
                 self.git_refresh.next_git_remote_status_refresh = refresh_deadline_after(now);
             }
         }

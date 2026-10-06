@@ -109,7 +109,7 @@ impl SessionRestorePlan {
                     match record {
                         Some(record) => record.replace_terminal(terminal),
                         None => shepr_platform::structured_log!(
-                            ERROR, event = persist.restore, outcome = "missing_pane_record",
+                            ERROR, event = persist.restore, outcome = Missing,
                             public_pane_id = %launch.public_id,
                             "a pane whose launch failed is not in its restored workspace"
                         ),
@@ -208,7 +208,7 @@ pub(super) fn plan_restore(
             // collision-free replacement. Keep the earlier workspace and drop
             // this one whole, counted like any other dropped workspace.
             shepr_platform::structured_log!(
-                WARN, event = persist.restore, outcome = "workspace_id_exhausted",
+                WARN, event = persist.restore, outcome = Exhausted,
                 workspace = %saved_id,
                 "dropping saved workspace: duplicate ID has no available replacement"
             );
@@ -227,7 +227,7 @@ pub(super) fn plan_restore(
             if workspace_id != saved_id {
                 damage.renamed_workspaces += 1;
                 shepr_platform::structured_log!(
-                    WARN, event = persist.restore, outcome = "workspace_id_reassigned",
+                    WARN, event = persist.restore, outcome = Changed,
                     workspace = %saved_id,
                     replacement = %workspace_id,
                     "reassigned duplicate saved workspace ID"
@@ -248,7 +248,7 @@ pub(super) fn plan_restore(
             shepr_platform::structured_log!(
                 WARN,
                 event = persist.restore,
-                outcome = "bookmark_repaired",
+                outcome = Changed,
                 saved_index = active,
                 saved_workspaces = restored_index.len(),
                 "repairing out-of-range saved workspace bookmark"
@@ -399,9 +399,9 @@ fn plan_workspace(snapshot: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan<'
         Ok(plan) => plan,
         Err(rejection) => {
             shepr_platform::structured_log!(
-                WARN, event = persist.restore, outcome = "invalid_pane_tree",
+                WARN, event = persist.restore, outcome = Invalid,
                 workspace = %snapshot.id,
-                ?rejection,
+                error = ?rejection,
                 "dropping saved workspace with invalid saved pane tree"
             );
             return None;
@@ -441,7 +441,7 @@ fn restore_workspace(
         if let Some(unusable) = &saved.unusable_agent_session {
             let public_id = PublicPaneId::new(&workspace_id, saved.public_number);
             shepr_platform::structured_log!(
-                WARN, event = persist.restore, outcome = "unusable_agent_session",
+                WARN, event = persist.restore, outcome = Invalid,
                 workspace = %workspace_id,
                 public_pane_id = %public_id,
                 source = unusable.source.as_deref().unwrap_or("unknown"),
@@ -464,7 +464,7 @@ fn restore_workspace(
             let public_id = PublicPaneId::new(&workspace_id, saved.public_number);
             if let Some(session) = saved.agent_session.as_ref() {
                 shepr_platform::structured_log!(
-                    WARN, event = persist.restore, outcome = "duplicate_agent_session",
+                    WARN, event = persist.restore, outcome = Duplicate,
                     workspace = %workspace_id,
                     public_pane_id = %public_id,
                     agent = session.agent().label(),
@@ -514,9 +514,9 @@ fn restore_workspace(
             // Fresh IDs and a resolved focus rule this out, and planning
             // already refused every defect the saved data can have.
             shepr_platform::structured_log!(
-                ERROR, event = persist.restore, outcome = "workspace_build_error",
+                ERROR, event = persist.restore, outcome = Error,
                 workspace = %workspace_id,
-                ?rejection,
+                error = ?rejection,
                 "a planned workspace failed to build; dropping it"
             );
             return None;

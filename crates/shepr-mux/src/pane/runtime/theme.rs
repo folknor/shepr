@@ -101,7 +101,7 @@ pub(in crate::pane) fn maybe_restore_host_terminal_theme(
     let dropped = terminal.drop_default_color_overrides_if(owner_pgid);
     if dropped {
         shepr_platform::structured_log!(
-            INFO, event = terminal.theme, outcome = "restored",
+            INFO, event = terminal.theme, outcome = Recovered,
             pane = %pane_id,
             owner_pgid = owner_pgid.get(),
             "restored host terminal default colors after transient override"

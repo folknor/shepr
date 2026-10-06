@@ -237,7 +237,7 @@ pub(in crate::shell) fn load(path: &Path) -> Option<ClientChromePreferences> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
         Err(error) => {
             shepr_platform::structured_log!(
-                WARN, event = client.preferences_read, outcome = "error",
+                WARN, event = client.preferences_read, outcome = Error,
                 path = %path.display(),
                 error = %error,
                 "failed to read client chrome preferences; using defaults"
@@ -249,7 +249,7 @@ pub(in crate::shell) fn load(path: &Path) -> Option<ClientChromePreferences> {
         Ok(preferences) => Some(preferences),
         Err(error) => {
             shepr_platform::structured_log!(
-                WARN, event = client.preferences_parse, outcome = "error",
+                WARN, event = client.preferences_parse, outcome = Error,
                 path = %path.display(),
                 error = %error,
                 "failed to parse client chrome preferences; using defaults"

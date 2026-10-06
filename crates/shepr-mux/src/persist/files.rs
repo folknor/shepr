@@ -52,7 +52,7 @@ pub(super) fn sweep_staging_leftovers(lease: &DataDirLease) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
                 shepr_platform::structured_log!(
-                    WARN, event = persist.cleanup, outcome = "staging_sweep_error",
+                    WARN, event = persist.cleanup, outcome = Error,
                     directory = %directory.display(), %error,
                     "failed to inspect a session publication directory"
                 );
@@ -64,7 +64,7 @@ pub(super) fn sweep_staging_leftovers(lease: &DataDirLease) {
                 Ok(entry) => entry,
                 Err(error) => {
                     shepr_platform::structured_log!(
-                        WARN, event = persist.cleanup, outcome = "staging_sweep_error",
+                        WARN, event = persist.cleanup, outcome = Error,
                         directory = %directory.display(), %error,
                         "failed to inspect a session publication entry"
                     );
@@ -83,7 +83,7 @@ pub(super) fn sweep_staging_leftovers(lease: &DataDirLease) {
                 Ok(_) => continue,
                 Err(error) => {
                     shepr_platform::structured_log!(
-                        WARN, event = persist.cleanup, outcome = "staging_sweep_error",
+                        WARN, event = persist.cleanup, outcome = Error,
                         path = %entry.path().display(), %error,
                         "failed to inspect a session publication artifact"
                     );
@@ -94,7 +94,7 @@ pub(super) fn sweep_staging_leftovers(lease: &DataDirLease) {
                 Ok(()) => removed = removed.saturating_add(1),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => shepr_platform::structured_log!(
-                    WARN, event = persist.cleanup, outcome = "staging_sweep_error",
+                    WARN, event = persist.cleanup, outcome = Error,
                     path = %entry.path().display(), %error,
                     "failed to remove an interrupted session publication artifact"
                 ),
@@ -105,7 +105,7 @@ pub(super) fn sweep_staging_leftovers(lease: &DataDirLease) {
         shepr_platform::structured_log!(
             INFO,
             event = persist.cleanup,
-            outcome = "staging_swept",
+            outcome = Ok,
             removed,
             "removed interrupted session publication artifacts"
         );
@@ -377,7 +377,7 @@ pub(super) fn remove_after_failed_publish(path: &Path) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => shepr_platform::structured_log!(
-            WARN, event = persist.cleanup, outcome = "remove_error",
+            WARN, event = persist.cleanup, outcome = Error,
             path = %path.display(), error = %err,
             "failed to remove a file left by a failed session publish"
         ),
@@ -535,7 +535,7 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
         Ok(content) => content,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             shepr_platform::structured_log!(
-                INFO, event = persist.restore, outcome = "missing",
+                INFO, event = persist.restore, outcome = Missing,
                 path = %path.display(), "session file is missing"
             );
             return SessionLoad::Missing;
@@ -551,7 +551,7 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
                 detail,
             };
             shepr_platform::structured_log!(
-                WARN, event = persist.restore, outcome = "read_error",
+                WARN, event = persist.restore, outcome = Error,
                 path = %path.display(), error = %err, "failed to read session file"
             );
             return SessionLoad::Unusable(failure);
@@ -561,7 +561,7 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
         Ok(snapshot) => SessionLoad::Loaded(snapshot),
         Err(err) => {
             shepr_platform::structured_log!(
-                WARN, event = persist.restore, outcome = "parse_error",
+                WARN, event = persist.restore, outcome = Error,
                 path = %path.display(), error = %err,
                 "failed to parse session file; retaining it for first-save recovery"
             );
