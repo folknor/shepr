@@ -422,7 +422,7 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
             render_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             render_dirty: std::sync::Arc::new(shepr_mux::render_signal::RenderSignal::new()),
             pane_teardowns: std::sync::Arc::default(),
-            socket_path: "/run/user/1000/shepr-test.sock".into(),
+            socket_path: shell_dir.path().join("shepr-test.sock"),
         },
         shepr_mux::pane::PaneShellConfig::new(
             &shepr_test_support::fixture::resolved_shell(&shell),

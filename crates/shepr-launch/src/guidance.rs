@@ -378,6 +378,14 @@ pub fn local_notice(local: &crate::restart::RestartResult) -> Option<String> {
             "shepr: the local server changed while it was being stopped; no stop was sent to a new occupant."
                 .to_owned(),
         ),
+        // The server went, and what failed is the layout it saved on the way
+        // out: it is not a server that could not be stopped.
+        crate::restart::RestartResult::Failed(crate::stop::ServerStopError::FinalSaveFailed {
+            message,
+            stop_error: None,
+        }) => Some(format!(
+            "shepr: stopped the local server of a different build, but its final session save failed: {message}; the saved layout may lack its latest changes. One of this build starts now."
+        )),
         crate::restart::RestartResult::Failed(error) => {
             Some(format!("shepr: could not stop the local server: {error}"))
         }
@@ -585,6 +593,29 @@ mod tests {
     fn overridden_address(socket: &str) -> ServerAddress {
         ServerAddress::for_runtime_dir(Path::new("/run/user/1/shepr"), Some(Path::new(socket)))
             .expect("valid test socket path")
+    }
+
+    #[test]
+    fn a_restart_whose_final_save_failed_says_the_server_stopped() {
+        use crate::restart::RestartResult;
+        use crate::stop::ServerStopError;
+
+        let notice = local_notice(&RestartResult::Failed(ServerStopError::FinalSaveFailed {
+            message: "disk full".to_owned(),
+            stop_error: None,
+        }))
+        .expect("a notice");
+        assert!(notice.contains("stopped the local server"), "{notice}");
+        assert!(notice.contains("disk full"), "{notice}");
+        assert!(!notice.contains("could not stop"), "{notice}");
+
+        // With the stop itself unconfirmed, the server may still be running.
+        let unconfirmed = local_notice(&RestartResult::Failed(ServerStopError::FinalSaveFailed {
+            message: "disk full".to_owned(),
+            stop_error: Some(Box::new(ServerStopError::Protocol("slow".to_owned()))),
+        }))
+        .expect("a notice");
+        assert!(unconfirmed.contains("could not stop"), "{unconfirmed}");
     }
 
     #[test]

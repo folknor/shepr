@@ -91,7 +91,12 @@ log with `kind = "final"` records the save's outcome (such as `completed`,
 `failed` or `frozen`) and its duration. A failed final save is reported as an unclean exit, and to every
 client whose stop request the server accepted: the answer to `server.stop` and
 `server.stop_if_boot` waits for the final save and carries its error, if any.
-Before removing its socket, the server waits a short bound
+That wait is bounded by `FINAL_SAVE_ANSWER_TIMEOUT` in
+`crates/shepr-api/src/limits.rs`; past it the answer says the server has not
+reported its final save and may still be saving, though the save itself goes
+on. A server that exits without reaching its final save (its run failed
+first) answers every waiting stop with an explicit error rather than an empty
+answer. Before removing its socket, the server waits a short bound
 (`STOP_ANSWER_WAIT`) for those answers to be written. The final save is deliberately a
 single attempt with no retry schedule, unlike autosaves and checkpoints: the
 event loop no longer runs, and retries would hold the lease, the socket and

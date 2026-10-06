@@ -12,8 +12,8 @@ use tracing::debug;
 
 use super::client_protocol::{ClientGate, ConnectionAdmission, ConnectionSlot};
 use crate::limits::{
-    BUSY_REQUEST_ID_TIMEOUT, INITIAL_REQUEST_READ_CHUNK_BYTES, MAX_INITIAL_REQUEST_BYTES,
-    ORDINARY_REQUEST_TIMEOUT, STREAM_WRITE_TIMEOUT,
+    BUSY_REQUEST_ID_TIMEOUT, FINAL_SAVE_ANSWER_TIMEOUT, INITIAL_REQUEST_READ_CHUNK_BYTES,
+    MAX_INITIAL_REQUEST_BYTES, ORDINARY_REQUEST_TIMEOUT, STREAM_WRITE_TIMEOUT,
 };
 use crate::schema::{
     AppRequest, ErrorResponse, MethodRoute, MethodTraits, Request, ResponseResult, SocketMethod,
@@ -301,7 +301,19 @@ fn stop_server(
     // The answer waits for the final save so it can carry its result. The
     // server keeps its socket through that save, so the client would wait
     // that long for the socket to go anyway; its stop deadline covers both.
-    let final_save_error = server_stop.wait_for_final_save();
+    let Some(final_save_error) = server_stop.wait_for_final_save(FINAL_SAVE_ANSWER_TIMEOUT) else {
+        // The result never came, so no save outcome is claimed either way: an
+        // error answer ends the stop request, and the server's own log says
+        // what became of the save.
+        return Route::Immediate(error_response_json(
+            id,
+            crate::error::ApiErrorCode::ServerUnavailable,
+            format!(
+                "the server did not report its final session save within {}s; it may still be saving",
+                FINAL_SAVE_ANSWER_TIMEOUT.as_secs()
+            ),
+        ));
+    };
     let response = SuccessResponse {
         id: id.to_owned(),
         result: ResponseResult::ServerStopCompleted { final_save_error },
@@ -672,9 +684,11 @@ mod tests {
     #[test]
     fn request_line_read_honours_its_deadline_and_size_limit() {
         let (_client, mut server) = local_stream_pair("request-line-deadline");
-        let error =
-            read_request_line_until(&mut server, Instant::now() + Duration::from_millis(30))
-                .expect_err("silent client must time out");
+        // The platform's reader clock seam is private to it, so this test
+        // cannot inject a fake clock; a deadline that has already passed makes
+        // the same silent-client read fail at once, on no real wait.
+        let error = read_request_line_until(&mut server, Instant::now())
+            .expect_err("silent client must time out");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
 
         let (mut client, mut server) = local_stream_pair("request-line-oversize");

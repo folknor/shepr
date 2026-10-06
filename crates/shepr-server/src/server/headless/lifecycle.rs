@@ -1,6 +1,6 @@
 use super::HeadlessServer;
 use crate::app;
-use crate::limits::SHUTDOWN_FLUSH_TIMEOUT;
+use crate::limits::{SHUTDOWN_FLUSH_TIMEOUT, STOP_ANSWER_WAIT};
 use crate::server::outbox::ReleaseMode;
 use shepr_protocol::ServerMessage;
 use std::sync::Arc;
@@ -9,6 +9,11 @@ use tracing::debug;
 
 mod host_shutdown;
 use host_shutdown::HostShutdownMonitor;
+
+/// The final save result a stop request is answered with when the server
+/// exits without having run its final save.
+const UNFINISHED_FINAL_SAVE_MESSAGE: &str =
+    "the server exited before it ran its final session save";
 
 /// The server lifecycle states that can affect saves or request handling.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -465,6 +470,23 @@ impl HeadlessServer {
         &mut self,
         before_socket_removal: impl FnOnce(),
     ) {
+        // An exit that never reached its final save (the run errored before
+        // the loop, or the server was dropped) still owes a waiting stop
+        // request an answer, and an empty one would count as an accepted stop.
+        // This is a no-op after a final save has published its result. The
+        // answer is written while the socket is still up, before the lease
+        // and socket go.
+        if self
+            .lifecycle
+            .stop_signal()
+            .complete_unfinished_final_save(UNFINISHED_FINAL_SAVE_MESSAGE)
+            && !self
+                .lifecycle
+                .stop_signal()
+                .wait_for_stop_answers(STOP_ANSWER_WAIT)
+        {
+            debug!("a stop request's answer was not written before the server exit");
+        }
         self.app.retire_session_writer();
         before_socket_removal();
         drop(self.api_server.take());

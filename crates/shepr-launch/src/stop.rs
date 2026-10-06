@@ -112,16 +112,17 @@ pub enum ServerStopError {
 impl ServerStopError {
     /// Whether a conditional stop found a different boot, either when the
     /// request arrived or while the requested boot was shutting down.
+    ///
+    /// A failed final save is not one, even when the stop's wait then met a
+    /// different boot: the requested boot did stop and reported that its
+    /// layout was not saved, and that is the outcome the caller must act on.
+    /// Reading it as a changed occupant would exit 3 ("replaced, nothing
+    /// lost") and let a restart offer carry on over the unsaved layout. The
+    /// wrapped stop error stays in the message.
     pub fn is_boot_mismatch(&self) -> bool {
         matches!(
             self,
             Self::BootMismatch { .. } | Self::OccupantChanged { .. }
-        ) || matches!(
-            self,
-            Self::FinalSaveFailed {
-                stop_error: Some(error),
-                ..
-            } if error.is_boot_mismatch()
         )
     }
 
@@ -1291,6 +1292,124 @@ mod tests {
             .expect("stopped");
         answer.join().expect("answer thread");
         stop.join().expect("stop thread");
+    }
+
+    /// The answer to an operator stop whose final session save failed.
+    fn operator_stop_final_save_failed() -> String {
+        operator_stop_reply(
+            r#""result":{"type":"server_stop_completed","final_save_error":"data directory is read-only"}"#,
+        )
+    }
+
+    #[test]
+    fn a_stop_answered_with_a_final_save_error_fails_even_when_the_server_goes() {
+        let scratch = ScratchDir::new("stop-final-save-failed");
+        let path = scratch.join("server.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind socket");
+        // Answers the stop with the failed save, then goes away.
+        let answer = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("stop");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().expect("clone"))
+                .read_line(&mut request)
+                .expect("request");
+            stream
+                .write_all(operator_stop_final_save_failed().as_bytes())
+                .expect("answer");
+        });
+
+        let error = stop_socket_with_timeout(
+            &path,
+            None,
+            Duration::from_secs(2),
+            StopOrigin::Operator,
+            None,
+        )
+        .expect_err("a failed final save fails the stop");
+
+        answer.join().expect("answer thread");
+        assert!(
+            matches!(
+                &error,
+                ServerStopError::FinalSaveFailed { message, stop_error: None }
+                    if message == "data directory is read-only"
+            ),
+            "{error}"
+        );
+        assert!(!error.is_boot_mismatch());
+        assert!(!error.is_not_running());
+        assert!(
+            error
+                .to_string()
+                .contains("final session save failed: data directory is read-only"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_failed_final_save_is_not_a_changed_occupant_when_a_new_boot_follows() {
+        let scratch = ScratchDir::new("stop-final-save-failed-replaced");
+        let socket_path = scratch.join("api.sock");
+        let listener =
+            std::os::unix::net::UnixListener::bind(&socket_path).expect("test precondition");
+        listener.set_nonblocking(true).expect("test precondition");
+        let keep_running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let keep_running_for_thread = std::sync::Arc::clone(&keep_running);
+        let handle = std::thread::spawn(move || {
+            while keep_running_for_thread.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = String::new();
+                        if BufReader::new(stream.try_clone().expect("test precondition"))
+                            .read_line(&mut request)
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        let response = if request.contains("server.stop") {
+                            operator_stop_final_save_failed()
+                        } else {
+                            // The successor already answers as another boot.
+                            format!(
+                                "{{\"id\":\"{}\",\"result\":{{\"type\":\"pong\",\"version\":\"0.1.0\",\"build_id\":\"0123456789abcdef\",\"boot_id\":\"17-24\"}}}}\n",
+                                shepr_api::schema::RequestId::StatusPing.as_str()
+                            )
+                        };
+                        drop(stream.write_all(response.as_bytes()));
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let error = stop_socket_with_timeout(
+            &socket_path,
+            None,
+            Duration::from_secs(2),
+            StopOrigin::Operator,
+            Some(&"17-23".parse().expect("boot identity")),
+        )
+        .expect_err("the failed save fails the stop");
+
+        keep_running.store(false, Ordering::Relaxed);
+        handle.join().expect("test precondition");
+        assert!(
+            matches!(
+                &error,
+                ServerStopError::FinalSaveFailed {
+                    stop_error: Some(wrapped),
+                    ..
+                } if matches!(**wrapped, ServerStopError::OccupantChanged { .. })
+            ),
+            "{error}"
+        );
+        assert!(
+            !error.is_boot_mismatch(),
+            "the unsaved layout is what the caller must act on, not the new occupant"
+        );
     }
 
     #[test]

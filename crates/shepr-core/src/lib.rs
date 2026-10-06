@@ -41,11 +41,16 @@ macro_rules! named_enum {
 
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(match self { $(Self::$variant => $spelling),* })
+                f.write_str(self.label())
             }
         }
 
         impl $name {
+            /// The variant's spelling, the same one serde and `Display` use.
+            $vis const fn label(&self) -> &'static str {
+                match self { $(Self::$variant => $spelling),* }
+            }
+
             /// Every variant, generated from the spelling table, so a contract
             /// test can cover each spelling without listing the variants. Not
             /// gated on a test cfg: one written in this definition would put

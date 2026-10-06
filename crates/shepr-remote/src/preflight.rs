@@ -242,23 +242,7 @@ impl<'a> MachineSshPreflight<'a> {
                     );
                 }
             }
-            let mut checks = Vec::with_capacity(handles.len());
-            let mut panic_payload = None;
-            for handle in handles {
-                match handle.join() {
-                    Ok(check) => checks.push(check),
-                    Err(payload) => {
-                        if panic_payload.is_none() {
-                            panic_payload = Some(payload);
-                        }
-                    }
-                }
-            }
-            if let Some(payload) = panic_payload {
-                // Finish joining all workers before unwinding through the caller.
-                std::panic::resume_unwind(payload);
-            }
-            checks
+            join_all(handles)
         })
     }
 
@@ -273,6 +257,27 @@ impl<'a> MachineSshPreflight<'a> {
             Err(AuthenticationError::Exited(status))
         }
     }
+}
+
+/// Joins every worker of a round in order. A worker panic is re-raised only
+/// after all workers have been joined, so none outlives the unwind.
+fn join_all<T>(handles: Vec<std::thread::ScopedJoinHandle<'_, T>>) -> Vec<T> {
+    let mut results = Vec::with_capacity(handles.len());
+    let mut panic_payload = None;
+    for handle in handles {
+        match handle.join() {
+            Ok(result) => results.push(result),
+            Err(payload) => {
+                if panic_payload.is_none() {
+                    panic_payload = Some(payload);
+                }
+            }
+        }
+    }
+    if let Some(payload) = panic_payload {
+        std::panic::resume_unwind(payload);
+    }
+    results
 }
 
 fn round_deadline() -> Instant {
@@ -333,23 +338,7 @@ fn check_concurrently(ssh: &dyn PreflightSsh, machines: &[&MachineConfig]) -> Ve
             .iter()
             .map(|machine| scope.spawn(move || classify_check(ssh.check(machine))))
             .collect();
-        let mut checks = Vec::with_capacity(handles.len());
-        let mut panic_payload = None;
-        for handle in handles {
-            match handle.join() {
-                Ok(check) => checks.push(check),
-                Err(payload) => {
-                    if panic_payload.is_none() {
-                        panic_payload = Some(payload);
-                    }
-                }
-            }
-        }
-        if let Some(payload) = panic_payload {
-            // Finish joining all workers before unwinding through the caller.
-            std::panic::resume_unwind(payload);
-        }
-        checks
+        join_all(handles)
     })
 }
 

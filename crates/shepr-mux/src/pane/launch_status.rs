@@ -545,12 +545,14 @@ mod tests {
     }
 
     fn sleeping_child() -> (SleepingChild, ChildLiveness) {
-        let child = shepr_test_support::command_in_scratch("/bin/sleep", "launch-status-sleep")
-            .arg("30")
+        let child =
+            shepr_test_support::fixture::command(&[shepr_test_support::fixture::Step::Sleep(
+                std::time::Duration::from_secs(30),
+            )])
             .spawn()
             .expect("start sleeping fixture child");
-        let pid = shepr_platform::Pid::new(child.id()).expect("sleep has a positive pid");
-        let handle = shepr_platform::ProcessHandle::open(pid).expect("open sleep pidfd");
+        let pid = shepr_platform::Pid::new(child.id()).expect("the fixture has a positive pid");
+        let handle = shepr_platform::ProcessHandle::open(pid).expect("open the fixture's pidfd");
         (
             SleepingChild(child),
             ChildLiveness::running_with_handle(Arc::new(handle)),

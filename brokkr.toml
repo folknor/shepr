@@ -172,17 +172,6 @@ skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 message = "shell features hold the ledger's Ticket, not a RequestId; only ledger.rs knows request ids"
 
-# The endpoint move protocol has one driver, crate::endpoint. Elsewhere the choice is
-# read, never transitioned.
-[[textlint]]
-name = "endpoint-moves-are-driven-from-the-endpoint-module"
-pattern = '\bchoice\s*\.\s*(?:select|connection_lost|abandon|begin_preparing|preparing_mut|fail_move|commit)\s*\('
-paths = ["crates/shepr-client/src/**/*.rs"]
-exclude = ["crates/shepr-client/src/endpoint/**", "**/tests/**", "**/tests.rs"]
-skip_after = '^[ \t]*#\[cfg\(test\)\]'
-region = "code"
-message = "only crate::endpoint (the hub and its view steps) transitions the endpoint choice"
-
 # The client event loop samples the clock at launch, before it waits and once
 # an event arrives; everything it dispatches takes those samples.
 [[textlint]]
@@ -594,7 +583,7 @@ allow_marker_above = 2
 [[textlint]]
 name = "no-borrowed-process-stand-ins"
 preset = "host-programs"
-pattern = '\b(?:(?:(?:Pty)?Command::new|PaneShellConfig::new|interactive_shell|set_test_shell)\(\s*"(?:/usr)?(?:/s?bin/)?(?:sh|bash|dash|zsh|sleep|true|false|yes|cat|echo|printf|head|tr|ps|env|git|dbus-daemon)"|command_in_scratch\(\s*"dbus-daemon")'
+pattern = '\b(?:(?:Pty)?Command::new|PaneShellConfig::new|interactive_shell|set_test_shell|command_in_scratch)\(\s*"(?:/usr)?(?:/s?bin/)?(?:sh|bash|dash|zsh|sleep|true|false|yes|cat|echo|printf|head|tr|ps|env|git|dbus-daemon)"'
 message = "spawn a shepr_test_support::fixture script; a borrowed host utility makes the fixture's behaviour the host's to define (host-program-ok: <why> where the host program is the subject)"
 
 [[textlint]]

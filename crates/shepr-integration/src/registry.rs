@@ -347,6 +347,12 @@ pub(super) fn directory_must_differ_from(target: Target) -> Option<Target> {
     spec_for(target).different_directory_from
 }
 
+/// The path, under the agent directory, of the file `target`'s registered
+/// commands run.
+pub(super) fn primary_asset_path(target: Target) -> &'static [&'static str] {
+    spec_for(target).primary_asset.path
+}
+
 pub(super) fn managed_assets(target: Target) -> impl Iterator<Item = &'static ManagedAsset> {
     let spec = spec_for(target);
     std::iter::once(&spec.primary_asset).chain(spec.additional_assets.iter())

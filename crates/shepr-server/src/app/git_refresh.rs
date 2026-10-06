@@ -373,6 +373,7 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("git-full-demand");
         let git = |args: &[&str]| {
+            // host-program-ok: the Git repository fixture is the subject, and only Git can write one
             let output = shepr_test_support::command_in_scratch("git", "git-full-demand-command")
                 .current_dir(scratch.path())
                 .args(args)

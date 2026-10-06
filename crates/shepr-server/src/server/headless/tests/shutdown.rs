@@ -654,3 +654,20 @@ fn final_save_run_loop_subprocess_entry_point() {
             assert!(shepr_mux::persist::DataDirLease::acquire(paths.data_dir()).is_ok());
         });
 }
+
+#[test]
+fn an_exit_before_the_final_save_answers_a_waiting_stop_with_an_error() {
+    let mut server = test_headless_server();
+    let signal = Arc::clone(server.lifecycle.stop_signal());
+
+    server.release_socket_after_save();
+
+    // The exit published the result itself, so a later unfinished completion
+    // finds one already there. (The result's wording and the waiting
+    // request's answer are covered in shepr-api.)
+    assert!(
+        !signal.complete_unfinished_final_save("again"),
+        "the exit left no result published"
+    );
+    shutdown_test_runtimes(&mut server);
+}

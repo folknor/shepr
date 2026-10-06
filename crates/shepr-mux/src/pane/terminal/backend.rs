@@ -900,6 +900,7 @@ impl PaneTerminal {
     /// Processes one chunk of child output. `now` is the read's timestamp: it
     /// decides whether a pending synchronized update has expired, and it is
     /// the parser's clock for any synchronized update this chunk begins.
+    #[cfg(test)]
     pub(crate) fn process_pty_bytes_at(
         &self,
         pane_id: PaneId,
@@ -910,6 +911,7 @@ impl PaneTerminal {
             .expect("test process requires a healthy terminal core")
     }
 
+    #[cfg(test)]
     pub(crate) fn try_process_pty_bytes_at(
         &self,
         pane_id: PaneId,
@@ -960,8 +962,9 @@ impl PaneTerminal {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub(crate) fn process_pty_bytes(&self, pane_id: PaneId, bytes: &[u8]) -> ProcessBytesEffects {
-        // clock-io-ok: fixture adapter; production reads supply their timestamp.
+        // clock-io-ok: test fixture adapter; production reads supply their timestamp.
         self.process_pty_bytes_at(pane_id, bytes, Instant::now())
     }
 }

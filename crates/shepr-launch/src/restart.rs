@@ -35,8 +35,9 @@ pub enum RestartResult {
     /// A different boot answered the stop or appeared while the observed
     /// instance was shutting down; it was not stopped as part of this offer.
     OccupantChanged,
-    /// The stop failed; the server may still be running. The failure is kept
-    /// until the operator notice is rendered.
+    /// The stop failed: either the server may still be running, or it stopped
+    /// but reported a failed final session save. The failure is kept until
+    /// the operator notice is rendered.
     Failed(ServerStopError),
 }
 

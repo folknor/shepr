@@ -806,7 +806,7 @@ fn launch_with(
         )
     })?;
     // The launcher's own handle on the log, to bound its size while the daemon
-    // boots and to empty it once the daemon is up.
+    // boots and to see whether the daemon left anything in it once it is up.
     let boot_log_handle = boot_log.try_clone().map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -876,12 +876,28 @@ fn launch_with(
         let nothing_listens = matches!(probed, Probed::NoServer);
         if let Probed::Running(status) = probed {
             if status.build_id.is_this_build() {
-                // Empty startup diagnostics after readiness. The server
-                // bounds what it writes here after that itself: it points
-                // stderr at /dev/null once its log is running, and without a
-                // log it reports only a capped number of panics.
-                if let Err(error) = boot_log_handle.set_len(0) {
-                    tracing::debug!(%error, "could not empty the server boot log");
+                // The boot log is not emptied here: a server whose own log
+                // file could not be opened writes its ready notice saying so
+                // into it and keeps it as the only record of its later
+                // panics, so emptying it would hide that there is no server
+                // log. A server with a log points stderr at /dev/null once
+                // it is up and leaves nothing here; one without reports only
+                // a capped number of panics, so the file stays bounded, and
+                // the next launch empties it when it opens it.
+                if boot_log_handle
+                    .metadata()
+                    .is_ok_and(|metadata| metadata.len() > 0)
+                {
+                    let tail = shepr_platform::read_boot_log_tail(files.boot_log)
+                        .unwrap_or_else(|error| format!("(unreadable: {error})"));
+                    shepr_platform::structured_log!(
+                        WARN,
+                        event = server.start,
+                        outcome = "boot_log_not_empty",
+                        boot_log = %files.boot_log.display(),
+                        output = %tail,
+                        "the server wrote to its boot log before it was ready, and may have no server log"
+                    );
                 }
                 daemon.disarm();
                 return Ok(status);

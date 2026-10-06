@@ -42,7 +42,7 @@ fn install_path(outcome: &InstallOutcome, role: ArtifactRole) -> PathBuf {
         .clone()
 }
 
-fn kimi_hook_command(_hook_path: &Path, action: &str) -> String {
+fn kimi_hook_command(action: &str) -> String {
     hook_command(Target::Kimi, Some(action))
 }
 
@@ -55,14 +55,8 @@ fn kimi_config_hooks(config: &str) -> Vec<toml::Value> {
         .unwrap_or_default()
 }
 
-fn assert_kimi_hook(
-    config: &str,
-    hook_path: &Path,
-    event: &str,
-    matcher: Option<&str>,
-    action: &str,
-) {
-    let command = kimi_hook_command(hook_path, action);
+fn assert_kimi_hook(config: &str, event: &str, matcher: Option<&str>, action: &str) {
+    let command = kimi_hook_command(action);
     let hooks = kimi_config_hooks(config);
     assert!(
         hooks.iter().any(|hook| {
@@ -802,13 +796,7 @@ fn install_kimi_writes_hook_and_updates_config() {
             .action
             .map(shepr_agent::IntegrationHookAction::as_str)
             .expect("Kimi hook action should be present");
-        assert_kimi_hook(
-            &config,
-            &install_path(&installed, ArtifactRole::Hook),
-            hook.event,
-            hook.matcher,
-            action,
-        );
+        assert_kimi_hook(&config, hook.event, hook.matcher, action);
     }
 }
 

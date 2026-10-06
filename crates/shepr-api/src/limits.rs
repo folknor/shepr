@@ -92,3 +92,12 @@ pub(crate) const MAX_UNCLASSIFIED_CONNECTIONS: usize = 64;
 /// Overall bound on reading a refused TUI connection's preamble and hello, so
 /// an excess client cannot monopolize the refuser.
 pub(crate) const BUSY_CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Bounds how long a stop request's connection thread waits for the server's
+/// final session save result. The server keeps its socket through that save
+/// and the save itself has no deadline, but a stopping client gives up at its
+/// own stop budget (`ORDINARY_REQUEST_TIMEOUT` for the request, which the
+/// launcher's stop budget matches), so a thread that waits past the client's
+/// response window answers nobody. It guards a server that dies or wedges
+/// before it publishes a result.
+pub(crate) const FINAL_SAVE_ANSWER_TIMEOUT: Duration = ORDINARY_RESPONSE_TIMEOUT;

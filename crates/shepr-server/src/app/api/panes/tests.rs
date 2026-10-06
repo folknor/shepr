@@ -821,8 +821,8 @@ fn pane_resize_changes_target_ratio_without_changing_focus_or_navigating() {
     assert_eq!(handled.navigate, None);
     let area = app.state.layout_area(app.state.ws(0));
     let splits = app.state.ws(0).tree().layout().splits(area);
-    let expected = shepr_core::layout::EVEN_SPLIT + crate::limits::PANE_RESIZE_STEP.get();
-    assert!((splits[0].ratio.get() - expected).abs() < 1e-6);
+    let expected = shepr_core::layout::SplitRatio::EVEN.nudged(crate::limits::PANE_RESIZE_STEP);
+    assert_eq!(splits[0].ratio, expected);
     assert_eq!(app.state.ws(0).tree().focused(), right);
 }
 

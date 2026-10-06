@@ -1297,3 +1297,29 @@ fn an_undecodable_older_status_keeps_stop_guidance() {
     assert!(message.contains(&guidance::build_mismatch_guidance(paths.server_address())));
     server.join().expect("server");
 }
+
+#[test]
+fn a_ready_daemon_keeps_what_it_left_in_the_boot_log() {
+    let dir = ScratchDir::new("launch-ready-boot-log");
+    let boot_log = shepr_paths::boot_log_path(dir.path());
+    let calls = Cell::new(0_u32);
+    let (result, _group) =
+        launch_fixture(&dir, &idle_daemon_steps(), Duration::from_secs(10), || {
+            calls.set(calls.get() + 1);
+            if calls.get() < 2 {
+                return Ok(Probed::NoServer);
+            }
+            // What a server whose own log file could not be opened writes
+            // before it answers.
+            let mut log = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&boot_log)
+                .expect("the launch opened the boot log");
+            log.write_all(b"logs: unavailable, could not open the server log\n")
+                .expect("write the ready notice");
+            Ok(Probed::Running(this_build()))
+        });
+    result.expect("the daemon answers");
+    let kept = std::fs::read_to_string(&boot_log).expect("read the boot log");
+    assert!(kept.contains("logs: unavailable"), "{kept}");
+}

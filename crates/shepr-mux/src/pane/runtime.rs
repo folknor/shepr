@@ -1343,7 +1343,7 @@ mod tests {
         apply_pane_launch_env(
             &mut cmd,
             &PaneLaunchEnv::new(
-                "/run/user/1000/shepr-test.sock".into(),
+                scratch.join("shepr-test.sock"),
                 shepr_test_fixtures::id("w1:p1"),
             ),
         );

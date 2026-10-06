@@ -67,10 +67,6 @@ impl RatioDelta {
         Self(value)
     }
 
-    pub const fn get(self) -> f32 {
-        self.0
-    }
-
     const fn negated(self) -> Self {
         Self(-self.0)
     }

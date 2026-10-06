@@ -55,22 +55,53 @@ impl ServerStopSignal {
         self.final_save_ready.notify_all();
     }
 
-    /// Waits for the final save result after [`Self::request`] has been called.
-    /// The caller then owes an answer: it reports it with
-    /// [`Self::stop_answered`] once the answer is written or abandoned.
-    pub(crate) fn wait_for_final_save(&self) -> Option<String> {
+    /// Publishes `error` as the final save result unless a result was already
+    /// published, and says whether it did. The server calls this on every exit
+    /// path: an exit that never reached its final save would otherwise leave
+    /// a waiting stop request to read a closed connection as an accepted stop.
+    pub fn complete_unfinished_final_save(&self, error: &str) -> bool {
         let mut completion = match self.final_save.lock() {
             Ok(completion) => completion,
             Err(poisoned) => poisoned.into_inner(),
         };
+        if completion.completed {
+            return false;
+        }
+        completion.error = Some(error.to_owned());
+        completion.completed = true;
+        self.final_save_ready.notify_all();
+        true
+    }
+
+    /// Waits up to `timeout` for the final save result after [`Self::request`]
+    /// has been called; `None` when none was published in time. With a result
+    /// the caller owes an answer: it reports it with [`Self::stop_answered`]
+    /// once the answer is written or abandoned. Without one nothing is owed.
+    pub(crate) fn wait_for_final_save(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Option<Option<String>> {
+        let mut completion = match self.final_save.lock() {
+            Ok(completion) => completion,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        // Counted before the wait, so the result's publisher cannot see no
+        // answer owed between waking this waiter and its reading the result.
         completion.unanswered += 1;
-        while !completion.completed {
-            completion = match self.final_save_ready.wait(completion) {
-                Ok(completion) => completion,
+        let (mut completion, _) =
+            match self
+                .final_save_ready
+                .wait_timeout_while(completion, timeout, |completion| !completion.completed)
+            {
+                Ok(waited) => waited,
                 Err(poisoned) => poisoned.into_inner(),
             };
+        if !completion.completed {
+            completion.unanswered = completion.unanswered.saturating_sub(1);
+            self.final_save_ready.notify_all();
+            return None;
         }
-        completion.error.clone()
+        Some(completion.error.clone())
     }
 
     /// Settles one answer owed since [`Self::wait_for_final_save`].
@@ -130,7 +161,10 @@ mod tests {
 
         signal.request();
         signal.complete_final_save(Some("disk full".to_owned()));
-        assert_eq!(signal.wait_for_final_save().as_deref(), Some("disk full"));
+        assert_eq!(
+            signal.wait_for_final_save(std::time::Duration::ZERO),
+            Some(Some("disk full".to_owned()))
+        );
         assert!(
             !signal.wait_for_stop_answers(std::time::Duration::ZERO),
             "an answer holding the result is still owed"
@@ -138,5 +172,32 @@ mod tests {
 
         signal.stop_answered();
         assert!(signal.wait_for_stop_answers(std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn a_wait_with_no_result_in_time_gives_up_and_owes_no_answer() {
+        let signal = ServerStopSignal::default();
+        signal.request();
+        assert_eq!(signal.wait_for_final_save(std::time::Duration::ZERO), None);
+        assert!(signal.wait_for_stop_answers(std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn an_unfinished_completion_never_overwrites_a_published_result() {
+        let signal = ServerStopSignal::default();
+        assert!(signal.complete_unfinished_final_save("exited early"));
+        assert_eq!(
+            signal.wait_for_final_save(std::time::Duration::ZERO),
+            Some(Some("exited early".to_owned()))
+        );
+        signal.stop_answered();
+
+        let signal = ServerStopSignal::default();
+        signal.complete_final_save(None);
+        assert!(!signal.complete_unfinished_final_save("exited early"));
+        assert_eq!(
+            signal.wait_for_final_save(std::time::Duration::ZERO),
+            Some(None)
+        );
     }
 }

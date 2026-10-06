@@ -19,6 +19,14 @@ pub(crate) use supervisor::*;
 pub(crate) use view::HostBaseline;
 
 /// Token for mutable choice access; only this module can construct it.
+///
+/// This is the one guard on the endpoint move protocol. Every transition takes
+/// `&mut EndpointChoice`, so confining who can obtain that reference confines
+/// the transitions, and it also stops a wholesale `*choice = ..` replacement,
+/// which no method visibility could. The transitions themselves are therefore
+/// plain `pub(crate)`: a visibility restriction on them would hold only
+/// against a caller that already has the `&mut`, and a textlint on the
+/// receiver's name is defeated by a rename or a helper.
 pub(crate) struct ChoiceAccess {
     _private: (),
 }

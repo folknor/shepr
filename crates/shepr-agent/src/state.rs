@@ -13,25 +13,17 @@ shepr_core::named_enum! {
     }
 }
 
-/// An agent state after applying the user-facing presentation policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PresentedAgentState {
-    Idle,
-    Working,
-    Blocked,
+shepr_core::named_enum! {
+    /// An agent state after applying the user-facing presentation policy.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub enum PresentedAgentState {
+        Idle => "idle",
+        Working => "working",
+        Blocked => "blocked",
+    }
 }
 
 impl PresentedAgentState {
-    /// Canonical user-facing state spelling.
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Idle => "idle",
-            Self::Working => "working",
-            Self::Blocked => "blocked",
-        }
-    }
-
     /// Rank presented states for attention, from least to most urgent.
     pub const fn attention_rank(self) -> u8 {
         match self {
