@@ -60,7 +60,7 @@ fn abandoned_and_failed_publication_leave_config_unchanged() {
         let staged = Replacement::prepare(&path, b"new").expect("test precondition");
         fs::remove_file(staged.temporary()).expect("test precondition");
         assert_eq!(
-            staged.commit().expect_err("test precondition").kind(),
+            staged.commit().expect_err("test precondition").io_kind(),
             io::ErrorKind::NotFound
         );
         if existing {
@@ -90,30 +90,17 @@ fn config_update_lock_covers_the_full_read_modify_write() {
     let paths = super::super::env::AgentIntegrationPaths::resolve();
     env.set("XDG_STATE_HOME", env.path().join("changed-state"));
 
-    let start = std::sync::Arc::new(std::sync::Barrier::new(3));
-    let workers: Vec<_> = (0..2)
-        .map(|_| {
-            let path = path.clone();
-            let paths = paths.clone();
-            let start = std::sync::Arc::clone(&start);
-            std::thread::spawn(move || {
-                start.wait();
-                let _lock = lock_config_for_update(&path, &paths).expect("test precondition");
-                let value = fs::read_to_string(&path)
-                    .expect("test precondition")
-                    .parse::<u32>()
-                    .expect("test precondition");
-                std::thread::sleep(std::time::Duration::from_millis(10));
-                write_config_for_update(&path, &_lock, (value + 1).to_string())
-                    .expect("test precondition");
-            })
-        })
-        .collect();
-    start.wait();
-    for worker in workers {
-        worker.join().expect("test precondition");
-    }
-
+    let lock = lock_config_for_update(&path, &paths).expect("first installer takes lock");
+    let error = match lock_config_for_update(&path, &paths) {
+        Ok(_) => panic!("a second installer must refuse a held lock"),
+        Err(error) => error,
+    };
+    assert_eq!(error.io_kind(), io::ErrorKind::WouldBlock);
+    write_config_for_update(&path, &lock, "1").expect("holder publishes");
+    drop(lock);
+    let lock = lock_config_for_update(&path, &paths).expect("retry after holder leaves");
+    write_config_for_update(&path, &lock, "2").expect("retry publishes");
+    drop(lock);
     assert_eq!(fs::read_to_string(&path).expect("test precondition"), "2");
     assert_eq!(fs::read_dir(&dir.0).expect("test precondition").count(), 1);
 
@@ -151,7 +138,10 @@ fn config_update_preserves_a_change_from_an_agent_after_the_lock_snapshot() {
     let error = write_config_for_update(&path, &update_lock, b"shepr update")
         .expect_err("concurrent agent update must be preserved");
 
-    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    assert!(matches!(
+        error,
+        crate::types::InstallError::ConfigChanged(_)
+    ));
     assert!(
         error
             .to_string()
@@ -359,7 +349,7 @@ fn writable_directory_does_not_bypass_read_only_config() {
     if let Some(path) = std::env::var_os(CHILD) {
         let error =
             write_config(Path::new(&path), b"must not replace").expect_err("test precondition");
-        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(error.io_kind(), io::ErrorKind::PermissionDenied);
         println!("read-only rejection executed");
         return;
     }

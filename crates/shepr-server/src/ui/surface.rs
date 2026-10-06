@@ -184,7 +184,7 @@ mod tests {
         let mut workspace = Workspace::test_new("shell-workspace");
         let left = workspace.tree().root();
         let right = workspace.test_split(Direction::Horizontal);
-        let mut runtimes = PaneRuntimeRegistry::new();
+        let mut runtimes = PaneRuntimeRegistry::default();
         runtimes.insert(
             left,
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
@@ -253,7 +253,7 @@ mod tests {
             Workspace::test_new("first"),
             Workspace::test_new("second"),
         ]);
-        let runtimes = PaneRuntimeRegistry::new();
+        let runtimes = PaneRuntimeRegistry::default();
         let area = Rect::new(0, 0, 80, 24);
         let first = app.ws(0).id();
         let second = app.ws(1).id();

@@ -471,7 +471,9 @@ impl PtyIoActor {
         config: PtyIoActorConfig,
         io: I,
     ) -> std::io::Result<PtyIoActorHandle> {
-        fd::set_cloexec(config.master_fd.as_raw_fd())?;
+        // Production masters come from open_pty_with_geometry with
+        // O_CLOEXEC set atomically. The injected actor seam may use other fds
+        // in tests, but it does not own their child-inheritance policy.
         fd::set_nonblocking(config.master_fd.as_raw_fd())?;
 
         let wake_pipe = fd::create_wake_pipe()?;
@@ -501,8 +503,7 @@ impl PtyIoActor {
         };
         std::thread::Builder::new()
             .name(format!("shepr-pty-{}", config.pane_id))
-            .spawn(move || runner.run())
-            .map_err(|err| std::io::Error::other(err.to_string()))?;
+            .spawn(move || runner.run())?;
 
         Ok(handle)
     }

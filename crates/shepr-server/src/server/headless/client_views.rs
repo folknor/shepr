@@ -670,6 +670,18 @@ impl HeadlessServer {
         changed
     }
 
+    /// Every resume entry point applies the same view and focus effects.
+    pub(super) fn finish_pending_agent_resume_pass(&mut self, now: std::time::Instant) -> bool {
+        let resumed = self.app.start_pending_agent_resumes(now);
+        if resumed.consumed {
+            for client in self.clients.values_mut() {
+                client.request_recompute();
+            }
+            self.sync_pane_focus_after(&resumed.installed_runtimes);
+        }
+        resumed.consumed
+    }
+
     fn finish_shell_workspace_geometry_change(
         &mut self,
         geometry_changed: bool,
@@ -679,14 +691,7 @@ impl HeadlessServer {
             return geometry_changed;
         }
         let now = self.app.clock().now;
-        let resumed = self.app.start_pending_agent_resumes(now);
-        if resumed.consumed {
-            for client in self.clients.values_mut() {
-                client.request_recompute();
-            }
-            self.sync_pane_focus_after(&resumed.replaced_runtimes);
-        }
-        geometry_changed || resumed.consumed
+        geometry_changed | self.finish_pending_agent_resume_pass(now)
     }
 
     /// Applies the PTY size rule to every workspace and has its viewers

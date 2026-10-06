@@ -213,20 +213,6 @@ pub fn set_fd_nonblocking(fd: RawFd, nonblocking: bool) -> std::io::Result<()> {
     Ok(())
 }
 
-pub fn set_cloexec(fd: RawFd) -> std::io::Result<()> {
-    // SAFETY: F_GETFD/F_SETFD take and return integers and touch no memory;
-    // a bad fd fails with EBADF.
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    if flags < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    // SAFETY: as above.
-    if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Wait, remaining_until};

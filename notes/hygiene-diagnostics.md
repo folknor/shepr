@@ -39,34 +39,11 @@ pane, ipc, api, client, server, integration), and many lines skip them:
   `persist.backup` through `RecoveryKind::event()` in two helpers and spells
   `"persist.snapshot"` inline three more times; `persist.restore` is spelled in
   `files.rs` and `open.rs`. No list of persistence events exists.
-- The host-shutdown lifecycle lines carry no `event`, `subsystem` or `generation`
-  (DIAG-007).
 
 Fix: one shared macro or helper owning the field set, and one convention for event
 names. Enforceable by a script check (multi-line, so not a single-line textlint)
 requiring `event =` in every `tracing::(warn|error|info)!` under the persistence
 and lifecycle modules.
-
-## DIAG-002 - A published-but-not-durable save logs as a failed save, twice
-
-Reported by: persistence.
-
-`finish_save` logs `NotDurable` through `session_save_failed` at error level with
-"failed to save session", though the file was saved and only the directory sync
-failed. The server then logs `warn!("session save failed")` for the same event
-without the path. Every save failure produces two lines at two levels, one with the
-path and one without. Give `NotDurable` its own outcome (`outcome = "not_durable"`,
-"session saved but not confirmed durable") and let one layer log.
-
-## DIAG-003 - A broken snapshot directory logs two warnings on every save, indefinitely
-
-Reported by: persistence.
-
-If `session-snapshots` is unreadable (a file in its place, as in
-`snapshot_failure_does_not_block_primary_save_and_clear`), `plan_snapshot_history`
-fails, returns `RetryAfterWrite`, and `preserve_snapshot_history` fails again after
-the write: two `persist.snapshot` warnings per autosave for the life of the boot.
-Rate-limit, or log once per state change in the writer.
 
 ## DIAG-004 - Resume outcomes have no channel; a resume that did not happen is mostly silent
 
@@ -129,44 +106,6 @@ Reported by: restore-resume.
   a `warn!`. Pick one level for "a pane could not start" and log it once (see
   DIAG-012 for the pane-lifecycle side of the same rule).
 
-## DIAG-007 - Host-shutdown transitions log three or four untagged lines and some none
-
-Reported by: save-shutdown.
-
-Per warning, the monitor logs `event = "host.shutdown.request"` with `generation`;
-`freeze_for_host_shutdown` logs "host shutdown announced; checkpointing the session
-and freezing saves" on its first call and again on the call that takes the result,
-because the function is re-entered. The lifecycle lines carry no `event`,
-`subsystem` or `generation`, and say "checkpointing" even when the session does not
-persist. Cancellation logs twice (the monitor's "host shutdown cancelled", then the
-lifecycle's "...; resuming session saves"); a cancellation landing in
-`HostShutdownWarning` logs nothing from the lifecycle. An exhausted host checkpoint
-warns twice: `finish_session_save`'s "host shutdown checkpoint failed repeatedly"
-and the lifecycle's "...; releasing the delay lock", and the second is false when
-no lock exists (the monitor connected after preparation began, or no monitor runs).
-Fix: one lifecycle line per transition (request, freeze with outcome, cancel,
-restart), each with the generation and the monitor's `event` / `subsystem` scheme;
-the exhausted-checkpoint warn kept only in the lifecycle, which knows whether a
-lock exists.
-
-## DIAG-008 - Save failure and shutdown lines omit what failed and what remains
-
-Reported by: save-shutdown.
-
-- `"session save failed"` has `error`, `failures`, `retry_ms`, but not the save
-  kind (autosave, pane-exit checkpoint and its generation, host checkpoint, final
-  save) or the data directory; a reader cannot tell whether an exited pane is held
-  or the shutdown checkpoint is retrying. Add `kind` and `generation`.
-- No line says a final save happened: the log goes from "completing server
-  shutdown" to "headless server exiting"; only a failure appears, with retry
-  wording (BUG-014). Add an info line with outcome and duration.
-- `"pane session teardown did not finish before server exit"` gives no count and
-  no pane ids; `PaneTeardownTracker::wait` returns only a bool. Return the
-  unfinished ids and log them.
-- While a host-shutdown freeze is in force no client is told anything; by design,
-  but a cancelled shutdown that never thaws (BUG-012 delays freeze and cancel
-  alike) would be invisible.
-
 ## DIAG-010 - The product is spelled "Shepr" in operator-facing text, and the local server is called "Local"
 
 Reported by: save-shutdown, server-lifecycle.
@@ -177,22 +116,6 @@ says "remote Shepr server socket"; elsewhere the product is `shepr` (the window
 title is `shepr: <label>`). `failure.rs`'s module doc says "the Local server" and
 `tui.rs`'s doc "the Local endpoint", although AGENTS.md says the local server is
 never named "Local". A textlint on `"Shepr` in string literals would hold it.
-
-## DIAG-011 - Pane spawn and reap failures are logged twice, at different levels, or not at all
-
-Reported by: pane-lifecycle.
-
-- `PtySetup::start` logs `error!("failed to spawn shell")` on a `spawn_pty` failure,
-  then `agent_resume.rs` logs `warn!("failed to start shell for deferred agent
-  resume")` for the same event; the split path (`api/panes.rs`) logs nothing and
-  returns the text to the client; an actor-startup failure (the other `Err` from
-  `PtySetup::start`) is not logged at the mux level at all. One site, the launcher,
-  should log once with pane, kind, cwd and stage.
-- Reap failures are `error!` in the watcher (`pane_exit_failed`) and `warn!` in
-  `UnreapedChild::drop` and `reap_on_detached_thread`: one class of event (a
-  possible zombie), two levels.
-- `ProcessHandle::open` logs at `error!` for every non-ESRCH failure, so a teardown
-  scan under fd exhaustion logs one error per process in `/proc`.
 
 ## DIAG-012 - Launch settlements and cwd fallbacks leave no trace
 
@@ -205,28 +128,10 @@ only total failure is reported). `pane_launch.rs` stores the fallback cwd and no
 notice says so. `pane_spawn_started` logs rows, cols and the
 scrollback budget (constant per server) but not the launch kind, cwd or shell.
 
-## DIAG-013 - Child setup failures are indistinguishable from the shell's own exit
+## DIAG-014 - A screen read error loses its reason
 
 Reported by: pane-lifecycle.
 
-Every pre-exec step failure exits 126 and the watcher logs only "pane child exited"
-with the status; a shell that itself exits 126 reads the same. Failures after the
-status socket is connected (the `sigprocmask` reset) could send a record and do
-not.
-
-## DIAG-014 - PTY and actor errors lose their stage and kind
-
-Reported by: pane-lifecycle.
-
-- `open_pty_with_geometry` returns bare `io::Error`s from five steps (open
-  `/dev/ptmx`, `grantpt`, `unlockpt`, `TIOCGPTPEER`, `TIOCSWINSZ`); the operator sees
-  "failed to spawn shell: Inappropriate ioctl for device" with no stage. Wrap each
-  with its step.
-- `PtyIoActor::spawn` maps the thread-spawn error through
-  `io::Error::other(err.to_string())`, dropping its kind.
-- `PaneChild::kill` turns a failed `pidfd_send_signal` into `last_os_error()` read
-  after `ProcessHandle::signal` returned, correct only because nothing runs between;
-  `signal` should return the `io::Result`.
 - The mux terminal read collapses a `shepr_vt::ReadError` into `None`, so the
   `detect capture` / `detect explain` read-failure error can say only that the screen
   read failed, not why.
@@ -240,16 +145,15 @@ Reported by: pane-lifecycle.
 so every teardown thread shows as `shepr-pane-NN-t` and the reaper as
 `shepr-launch-re`.
 
-## DIAG-016 - A panicking detection tick ends detection for the pane, silently
+## DIAG-016 - A panicking detection tick leaves the pane's last state on the sidebar
 
 Reported by: agent-state.
 
-`DetectionTask::run` returns on `Err(JoinError)` after `warn!(?error, "pane
-detection tick failed")`, which has no pane id. The pane keeps its last published
-state forever (Working stays Working on the sidebar) and its process exit is only
-learned from the child watcher. A panic in a regex or a `/proc` reader should
-restart the task with a fresh `DetectorState`, or publish Unknown and mark the pane,
-and log at error with the pane id.
+The failure now logs at error with the pane id. Restarting the task was declined (a
+panic may follow terminal mutations or poison its mutex; reasoning at the failure
+site), so detection stops and the pane keeps its last published state forever
+(Working stays Working). It needs a pane failure policy that keeps terminal integrity:
+publish Unknown and mark the pane, or end it.
 
 ## DIAG-017 - Agent-state log lines: two keys for one id, levels that disagree, missing fields, silent changes
 
@@ -277,33 +181,6 @@ Reported by: agent-state, restore-resume.
   filter admitting debug for shepr_mux; with only the first, nothing is logged and
   nothing says why. Log at info, or say so in the variable's doc.
 
-## DIAG-018 - A manifest that fails to compile degrades its agent to Unknown forever
-
-Reported by: agent-state.
-
-`bundled_manifest` logs `error!` once and the agent's panes report Unknown forever.
-A test compiles every bundled manifest, so this cannot ship today, but the runtime
-path treats an impossible state as a soft degrade. Since detection changes ship only
-as new builds, it could be a server startup failure (or an `expect` justified by the
-test).
-
-## DIAG-019 - Integration install logging: free text with baked-in paths, failures logged twice, noise, and silence
-
-Reported by: integrations.
-
-- `ArtifactRole::install_message` builds "installed claude integration hook to
-  /home/.../shepr-agent-state.sh" and `install_present_integrations` logs it as
-  `info!(integration = label, "{message}")`; path, role and verb are not fields, so
-  no query can select "which files did shepr rewrite". Log `role`, `path`,
-  `integration` as fields with a fixed message.
-- A status or install failure is logged by `logging::integration_action` at info
-  with `outcome = Failed` and no error text, and again by
-  `install_present_integrations` at warn with the error.
-- An info "integration action finished" status line is logged per present agent per
-  launch even when nothing is done.
-- `targets.rs` names a binary spelling inline in the OpenCode V2 notice ("start
-  opencode2 once and the next shepr server launch registers it").
-
 ## DIAG-020 - Operator text is assembled where failures are detected, outside the guidance module
 
 Reported by: server-lifecycle, remote, restore-resume.
@@ -327,6 +204,8 @@ enforceable short of a textlint on imperative operator verbs.
 
 Reported by: server-lifecycle.
 
+- The final-save log reports `outcome = "completed"` when saves are stopped or blocked
+  on backup and nothing was written; only a frozen final save is distinguished.
 - `stop_active_server` logs nothing, so the client log has no record of which boot
   the restart offer stopped, or of a stop that timed out.
 - A successful `server.stop` / `server.stop_if_boot` is logged at debug only
@@ -374,32 +253,6 @@ Reported by: remote.
   Starting... or Restarting.... Latent today (the refusal cases do not offer the
   entry); the shell should set the entry only when the request was taken, which
   needs the shell reducers to take the outcome (commented at `hub.rs`).
-
-## DIAG-027 - Integration errors travel as downcast payloads inside `io::Error`
-
-Reported by: integrations.
-
-`InstallIssue` (kind + message), `file_ops::NotRegularFile` and
-`config_file::ConfigChanged` are three payload types that `InstallError::from`
-downcasts. "Not a regular file" has two encodings (`InstallIssue` with
-`InstallErrorKind::NotRegularFile` from `resolve_target`, and the struct from
-`read_config_bytes`), and so does "config changed" (the `ConfigChanged` struct, and
-an `InstallErrorKind::ConfigChanged` arm in `InstallIssue::io_error` that nothing
-constructs). Fix: a typed error enum through the crate, turned into text once at the
-log boundary. The test `install_failures_keep_their_category_at_the_log_boundary`
-restates the `io::ErrorKind` mapping table rather than testing behaviour.
-
-## DIAG-028 - Integration error paths that wait forever or allow an impossible state
-
-Reported by: integrations.
-
-- `config_file::lock_config_for_update` with `LockWait::UntilFree` waits forever on a
-  held lock with nothing logged, so a stuck holder silently stalls every later
-  target in the detached install thread.
-- `PluginConfigEdit::write` can fail with "OpenCode config edit is missing its update
-  lock", a state the type allows (contents `Some`, lock `None`). Use
-  `Option<(String, ConfigUpdateLock)>`.
-- A status error stops a repair the install could have made (BUG-038).
 
 ## DIAG-029 - Workspace and pane lifecycle is barely logged, and with the wrong identifier
 

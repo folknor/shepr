@@ -348,7 +348,7 @@ mod tests {
         app.state
             .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("rename")]);
         let workspace_id = app.state.ws(0).id();
-        let directory_name = shepr_core::workspace_label::default_workspace_name(
+        let directory_name = shepr_core::workspace_label::default_workspace_label(
             app.state.ws(0).identity_cwd().as_path(),
         );
         let mut rename = |label: &str| {

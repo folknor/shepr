@@ -622,7 +622,7 @@ mod tests {
 
     #[test]
     fn resolved_identity_cwd_keeps_a_stored_path_ending_with_deleted_text() {
-        let registry = PaneRuntimeRegistry::new();
+        let registry = PaneRuntimeRegistry::default();
         let identity = Path::new("/shepr-test/construction");
         let stored = Path::new("/shepr-test/real (deleted)");
 
@@ -782,7 +782,7 @@ mod tests {
     fn cwd_for_pane_reads_the_registered_runtime_over_the_stored_report() {
         let ws = workspace_at(Path::new("/shepr-test/identity"), "/stored");
         let root = ws.tree().root();
-        let mut registry = PaneRuntimeRegistry::new();
+        let mut registry = PaneRuntimeRegistry::default();
         registry.insert(
             root,
             runtime_with_cwd_state(Some(("/osc", None)), Some("/saved")),
@@ -809,16 +809,16 @@ mod tests {
         let ws = workspace_at(Path::new("/shepr-test/identity"), "/shepr-test/pion");
 
         assert_eq!(
-            ws.resolved_identity_cwd(&PaneRuntimeRegistry::new()),
+            ws.resolved_identity_cwd(&PaneRuntimeRegistry::default()),
             PathBuf::from("/shepr-test/pion")
         );
         assert_eq!(
-            ws.cwd_for_pane(ws.tree().root(), &PaneRuntimeRegistry::new())
+            ws.cwd_for_pane(ws.tree().root(), &PaneRuntimeRegistry::default())
                 .as_deref(),
             Some(Path::new("/shepr-test/pion"))
         );
         assert_eq!(
-            ws.cwd_for_pane(PaneId::alloc(), &PaneRuntimeRegistry::new()),
+            ws.cwd_for_pane(PaneId::alloc(), &PaneRuntimeRegistry::default()),
             None
         );
     }

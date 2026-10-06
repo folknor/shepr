@@ -18,12 +18,12 @@ pub struct PaneRuntimeRegistry {
 }
 
 impl PaneRuntimeRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn get(&self, pane: &PaneId) -> Option<&PaneRuntime> {
         self.runtimes.get(pane)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.runtimes.is_empty()
     }
 
     pub fn get_mut(&mut self, pane: &PaneId) -> Option<&mut PaneRuntime> {

@@ -19,7 +19,7 @@ Three standings:
 | script | standing | what it is |
 |---|---|---|
 | `_brokkr_config.py` | gate | shared module: `repository_sources()`, the one definition of "a file this repository authored", and `workspace_member_manifests()`, the root package plus the globbed members |
-| `check_agent_asset_tests.py` | gate | the `agent-asset-tests` check: runs the bun tests beside the integration assets and passes only on a clean run with passing tests, no failure and every test file run |
+| `check_agent_asset_tests.py` | gate | the `agent-asset-tests` check: runs each bun test file beside the integration assets in its own process, isolating module mocks, and passes only on a clean run with passing tests, no failure and every test file run |
 | `check_dead_test_helpers.py` | gate | the `dead-test-helpers` check: every helper in test-only code (test-cfg items, modules loaded only for tests, dev-only crates) is named by live code its visibility reaches, outside its own body and other dead helpers; rustc misses the `pub` ones it counts as exported API and whatever only they call. It reuses `check_skip_after_scopes.py`'s test-only cfg judgement |
 | `check_cited_paths.py` | gate | the `cited-paths` check: every backticked repository path in a comment or durable document names a file in the tree |
 | `check_scripts_roster.py` | gate | the `scripts-roster` check: this table against this directory |

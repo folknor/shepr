@@ -25,15 +25,6 @@ impl std::fmt::Display for ChildIoSendError {
 
 impl std::error::Error for ChildIoSendError {}
 
-/// What stands behind a [`ChildIo`] channel.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ChildBacking {
-    /// A child process, so ending the pane has a process group to signal.
-    Process,
-    /// No process: ending the pane tears nothing down beyond the channel.
-    NoProcess,
-}
-
 /// What a pane runtime writes to its child through: user input, terminal
 /// replies and resizes. Every pane shepr runs talks to its child through the
 /// PTY actor ([`PtyIoActorHandle`]); the trait is the seam that lets a caller
@@ -47,10 +38,6 @@ pub trait ChildIo: Send + Sync {
     /// next shutdown check and drops everything still queued when it closes
     /// the inbox; work it processes before then may still be written.
     fn shutdown(&self);
-
-    /// What stands behind the channel, which decides whether ending the pane
-    /// has a process group to signal.
-    fn child_backing(&self) -> ChildBacking;
 
     /// Apply `geometry`, queueing the replies `terminal_responses` produces at
     /// the resize's place in the reply order.
@@ -69,10 +56,6 @@ pub trait ChildIo: Send + Sync {
 impl ChildIo for PtyIoActorHandle {
     fn shutdown(&self) {
         PtyIoActorHandle::shutdown(self);
-    }
-
-    fn child_backing(&self) -> ChildBacking {
-        ChildBacking::Process
     }
 
     fn resize(

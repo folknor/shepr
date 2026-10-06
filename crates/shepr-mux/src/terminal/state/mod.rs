@@ -82,15 +82,13 @@ pub enum PaneStartFailure {
     /// The launch's status channel failed while its child lived, so the
     /// child could not be observed and was ended.
     LaunchUnobservable { error: std::io::Error },
-    /// The saved agent's resume cannot be issued at all (no command to run,
-    /// the pane gone from under the attempt), whatever the directory and shell.
+    /// The saved agent's resume could not be issued to its shell.
     ResumeUnavailable { reason: ResumeUnavailableReason },
 }
 
 /// Why an agent session's resume attempt could not be completed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResumeUnavailableReason {
-    PaneGone,
     ShellLaunchUnconfirmed,
     CommandSendFailed,
 }
@@ -98,7 +96,6 @@ pub enum ResumeUnavailableReason {
 impl ResumeUnavailableReason {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::PaneGone => "the pane no longer exists",
             Self::ShellLaunchUnconfirmed => {
                 "the shell for the resume did not confirm that it started"
             }
@@ -211,7 +208,7 @@ pub struct TerminalState {
     manual_label: Option<Label>,
     ownership: AgentOwnership,
     agent_resume: AgentResumeState,
-    restore_error: Option<PaneStartFailure>,
+    start_failure: Option<PaneStartFailure>,
 }
 
 impl TerminalState {
@@ -245,19 +242,23 @@ impl TerminalState {
     pub fn clear_agent_resume(&mut self) {
         self.agent_resume = AgentResumeState::None;
     }
-    pub fn restore_error(&self) -> Option<&PaneStartFailure> {
-        self.restore_error.as_ref()
+    /// Why the pane's shell could not start, for fresh launches and restored
+    /// panes alike.
+    pub fn start_failure(&self) -> Option<&PaneStartFailure> {
+        self.start_failure.as_ref()
     }
     pub fn record_start_failure(&mut self, failure: PaneStartFailure) {
-        self.restore_error = Some(failure);
+        self.start_failure = Some(failure);
     }
 }
 
-mod detection;
 mod hooks;
 mod init;
 mod names;
-mod sessions;
+mod resume;
+#[cfg(test)]
+mod test_support;
+mod titles;
 
 #[cfg(test)]
 mod start_failure_tests {

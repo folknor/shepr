@@ -622,7 +622,7 @@ pub fn compile_bundled_manifests() {
 }
 
 /// The compiled bundled manifest for `agent`, or `None` for an agent without
-/// screen detection or whose bundled manifest failed to compile (logged once).
+/// screen detection. An invalid bundled manifest fails startup.
 fn loaded(agent: Agent) -> Option<&'static CompiledManifest> {
     manifests()
         .iter()
@@ -657,8 +657,8 @@ fn detect_with_manifest(
 }
 
 /// Whether this screen detector can report a stable `Unknown` for `agent`.
-/// Missing or failed manifests always report `Unknown`; a compiled manifest
-/// can report it through its fallback or one of its rules.
+/// Agents without screen manifests report `Unknown`; a compiled manifest
+/// can report it through its fallback or a rule that updates state.
 pub fn screen_unknown_is_stable(agent: Agent) -> bool {
     loaded(agent).is_none_or(|manifest| manifest.unknown_is_stable)
 }
@@ -790,13 +790,13 @@ fn fallback_explain(
 fn bundled_manifest(agent: Agent) -> Option<CompiledManifest> {
     let id = agent.label();
     let content = bundled_manifest_source(agent)?;
-    match parse_bundled_manifest(id, content) {
-        Ok(manifest) => Some(manifest),
-        Err(err) => {
-            tracing::error!(agent = id, error = %err, "bundled manifest could not be compiled");
-            None
-        }
-    }
+    // These bytes are compiled into the executable and the all-bundled test
+    // validates them. Startup eagerly compiles them before restoring panes;
+    // a broken build must fail there rather than silently disable detection.
+    Some(
+        parse_bundled_manifest(id, content)
+            .unwrap_or_else(|error| panic!("invalid bundled detection manifest for {id}: {error}")),
+    )
 }
 
 /// Parse a bundled manifest and check its identity against its owning agent.
@@ -831,7 +831,7 @@ fn compile_manifest(manifest: AgentManifest) -> Result<CompiledManifest, String>
     let mut regions = RegionTable::default();
     let mut rules = Vec::with_capacity(manifest.rules.len());
     for rule in manifest.rules {
-        unknown_is_stable |= rule.state == AgentState::Unknown;
+        unknown_is_stable |= !rule.skip_state_update && rule.state == AgentState::Unknown;
         rules.push(compile_rule(rule, &mut regions, &mut complexity)?);
     }
 

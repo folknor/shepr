@@ -349,7 +349,8 @@ impl Drop for PaneRuntime {
     fn drop(&mut self) {
         // Abort the async loop; its drop guard cancels a running blocking tick
         // at its next boundary. Stop PTY IO before tearing down the child
-        // session. Test runtimes have no child process to tear down.
+        // session. Test runtimes start with an absent child identity; tests
+        // that install fixture identities exercise the normal cleanup path.
         if let Some(handle) = &self.detect_handle {
             handle.abort();
         }
@@ -357,15 +358,12 @@ impl Drop for PaneRuntime {
         // causes publish nothing. An observer that already decided keeps its
         // publication, which the generation check then sorts out.
         self.exit_arbiter.decide(RecordedEnding::Silent);
-        let backing = self.io.child_backing();
         self.io.shutdown();
-        if backing == shepr_pty::ChildBacking::Process {
-            super::teardown::shutdown_pane_processes(
-                self.pane_id,
-                &self.child_liveness,
-                &self.teardown_tracker,
-            );
-        }
+        super::teardown::shutdown_pane_processes(
+            self.pane_id,
+            &self.child_liveness,
+            &self.teardown_tracker,
+        );
     }
 }
 
@@ -1102,7 +1100,7 @@ mod tests {
         assert!(child_liveness.is_reaped());
         child_liveness.mark_wait_completed();
 
-        let members = shepr_platform::session_member_handles(
+        let members = shepr_platform::session_members(
             shepr_platform::SessionId::of_leader(leader_pid),
             || true,
         );
@@ -1323,7 +1321,10 @@ mod tests {
         apply_pane_terminal_env(&mut cmd);
         apply_pane_launch_env(
             &mut cmd,
-            &PaneLaunchEnv::new("/run/user/1000/shepr-test.sock".into()),
+            &PaneLaunchEnv::new(
+                "/run/user/1000/shepr-test.sock".into(),
+                shepr_test_fixtures::id("w1:p1"),
+            ),
         );
 
         let mut spawned = shepr_pty::backend::spawn_pty(
@@ -1477,6 +1478,15 @@ mod tests {
 
     #[tokio::test]
     async fn exited_shell_keeps_persistence_cwd_when_pid_is_reused() {
+        struct ChildGuard(std::process::Child);
+
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                self.0.kill().ok();
+                self.0.wait().ok();
+            }
+        }
+
         let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("exited-cwd");
         let saved = scratch.join("saved");
@@ -1484,12 +1494,17 @@ mod tests {
             path: saved.clone(),
             report_generation: None,
         });
-        // A different live process now owns the exited shell's numeric PID.
+        // A fixture process supplies a harmless pidfd for the stale identity.
+        let child = ChildGuard(
+            fixture::command(&[Step::Sleep(std::time::Duration::from_secs(30))])
+                .spawn()
+                .expect("spawn fixture process"),
+        );
         runtime.child_liveness = Arc::new(ChildLiveness::running_with_handle(Arc::new(
             shepr_platform::ProcessHandle::open(
-                shepr_platform::Pid::new(std::process::id()).expect("test pid"),
+                shepr_platform::Pid::new(child.0.id()).expect("fixture pid"),
             )
-            .expect("current process handle"),
+            .expect("fixture process handle"),
         )));
         runtime.child_liveness.mark_wait_completed();
         assert_eq!(runtime.cwd_probe().read(), Some(saved.clone()));

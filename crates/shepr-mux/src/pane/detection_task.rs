@@ -103,10 +103,17 @@ impl DetectionTask {
                 },
                 () = self.handles.exit_arbiter.cancelled() => return,
             }
+            let pane_id = self.pane_id;
             let (task, output) = match self.blocking_tick().await {
                 Ok(result) => result,
                 Err(error) => {
-                    tracing::warn!(?error, "pane detection tick failed");
+                    // The blocking job owns the detector and can panic after
+                    // terminal mutations or while holding the core mutex.
+                    // Recreating only DetectorState cannot repair a poisoned
+                    // terminal or roll back those effects. Do not blindly
+                    // retry or publish Unknown over live hook authority; a
+                    // pane/runtime failure policy must resolve that boundary.
+                    tracing::error!(pane_id = %pane_id, ?error, "pane detection stopped after tick failure");
                     return;
                 }
             };

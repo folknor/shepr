@@ -123,7 +123,7 @@ impl Drop for UnreapedChild {
         let pid = child.process_id();
         child.reap_detached(move |result| {
             if let Err(err) = result {
-                tracing::warn!(
+                tracing::error!(
                     %pid,
                     error = %err,
                     "could not reap an abandoned pane child"

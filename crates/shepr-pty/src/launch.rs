@@ -10,13 +10,12 @@
 //! One listening `SOCK_SEQPACKET` socket per server process, bound by Linux
 //! abstract autobind (no filesystem path), accepts those channels. The child
 //! connects to it before any filesystem step, names its launch with the ticket
-//! the server gave it, then reports `ChdirOk(index)`, the first cwd
-//! candidate's chdir errno when no candidate could be entered, or an exec
-//! errno.
-//! Its end is close-on-exec, so EOF after `ChdirOk` while the child is still
-//! alive means exec passed its point of no return (ExecCommitted). The kernel
-//! closes those fds before the new image is fully mapped, so it does not prove
-//! that the shell already runs.
+//! the server gave it, then reports child-setup errors with their stage,
+//! `ChdirOk(index)`, the first cwd candidate's chdir errno when no candidate
+//! could be entered, or an exec errno. Its end is close-on-exec, so EOF after
+//! `ChdirOk` while the child is still alive means exec passed its point of no
+//! return (ExecCommitted). The kernel closes those fds before the new image is
+//! fully mapped, so it does not prove that the shell already runs.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -41,6 +40,38 @@ const RECORD_CHDIR_OK: u32 = 2;
 const RECORD_CHDIR_FAILED: u32 = 3;
 // limits-exempt: launch status wire protocol record kind.
 const RECORD_EXEC_FAILED: u32 = 4;
+// limits-exempt: launch status wire protocol record kind.
+const RECORD_SETUP_FAILED: u32 = 5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChildSetupStage {
+    InitializeSignalMask,
+    RestoreSignalMask,
+}
+
+impl ChildSetupStage {
+    fn code(self) -> u32 {
+        match self {
+            Self::InitializeSignalMask => 1,
+            Self::RestoreSignalMask => 2,
+        }
+    }
+
+    fn from_code(code: u32) -> Option<Self> {
+        match code {
+            1 => Some(Self::InitializeSignalMask),
+            2 => Some(Self::RestoreSignalMask),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InitializeSignalMask => "initialize signal mask",
+            Self::RestoreSignalMask => "restore signal mask",
+        }
+    }
+}
 
 /// One status report from a launching pane child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +85,8 @@ pub(crate) enum LaunchRecord {
     ChdirFailed(i32),
     /// `execve` of the shell returned this errno.
     ExecFailed(i32),
+    /// Child setup failed at this step and reported its errno.
+    SetupFailed { stage: ChildSetupStage, errno: i32 },
 }
 
 /// What one nonblocking read of a status channel found.
@@ -74,6 +107,8 @@ pub enum LaunchStatusEvent {
         path: AbsolutePath,
         error: io::Error,
     },
+    /// Shell startup failed before exec committed. The error retains the
+    /// child setup stage when a pre-exec operation reported one.
     ExecFailed(io::Error),
     CommitCandidate(AbsolutePath),
     Unconfirmed,
@@ -131,6 +166,16 @@ impl LaunchStatusReader {
                     error: io::Error::from_raw_os_error(errno),
                 })
             }
+            (
+                StatusPhase::AwaitDirectory,
+                RecordRead::Record(LaunchRecord::SetupFailed { stage, errno }),
+            ) => {
+                let source = io::Error::from_raw_os_error(errno);
+                Ok(LaunchStatusEvent::ExecFailed(io::Error::new(
+                    source.kind(),
+                    ChildSetupFailure { stage, source },
+                )))
+            }
             (StatusPhase::Entered(_), RecordRead::Record(LaunchRecord::ExecFailed(errno))) => Ok(
                 LaunchStatusEvent::ExecFailed(io::Error::from_raw_os_error(errno)),
             ),
@@ -169,6 +214,14 @@ pub(crate) fn chdir_failed_record(errno: i32) -> [u8; LAUNCH_STATUS_RECORD_BYTES
 
 pub(crate) fn exec_failed_record(errno: i32) -> [u8; LAUNCH_STATUS_RECORD_BYTES] {
     encode_record(RECORD_EXEC_FAILED, errno_value(errno))
+}
+
+pub(crate) fn setup_failed_record(
+    stage: ChildSetupStage,
+    errno: i32,
+) -> [u8; LAUNCH_STATUS_RECORD_BYTES] {
+    let value = (u64::from(stage.code()) << 32) | u64::from(errno.unsigned_abs());
+    encode_record(RECORD_SETUP_FAILED, value)
 }
 
 pub(crate) fn hello_record(ticket: u64) -> [u8; LAUNCH_STATUS_RECORD_BYTES] {
@@ -217,15 +270,52 @@ pub(crate) fn read_record(channel: &OwnedFd) -> io::Result<RecordRead> {
                 .filter(|errno| *errno > 0)
                 .ok_or_else(|| protocol_error("launch status errno out of range"))
         };
-        return Ok(RecordRead::Record(match kind {
+        let record = match kind {
             RECORD_CHDIR_OK => LaunchRecord::ChdirOk(
                 u32::try_from(value)
                     .map_err(|_| protocol_error("launch status cwd index out of range"))?,
             ),
             RECORD_CHDIR_FAILED => LaunchRecord::ChdirFailed(errno()?),
             RECORD_EXEC_FAILED => LaunchRecord::ExecFailed(errno()?),
+            RECORD_SETUP_FAILED => {
+                let stage_code = u32::try_from(value >> 32)
+                    .map_err(|_| protocol_error("launch setup stage out of range"))?;
+                let stage = ChildSetupStage::from_code(stage_code)
+                    .ok_or_else(|| protocol_error("unknown child setup stage"))?;
+                let error_value = u32::try_from(value & u64::from(u32::MAX))
+                    .map_err(|_| protocol_error("launch setup errno out of range"))?;
+                let errno = i32::try_from(error_value)
+                    .ok()
+                    .filter(|errno| *errno > 0)
+                    .ok_or_else(|| protocol_error("launch setup errno out of range"))?;
+                LaunchRecord::SetupFailed { stage, errno }
+            }
             _ => return Err(protocol_error("unexpected launch status record")),
-        }));
+        };
+        return Ok(RecordRead::Record(record));
+    }
+}
+
+#[derive(Debug)]
+struct ChildSetupFailure {
+    stage: ChildSetupStage,
+    source: io::Error,
+}
+
+impl std::fmt::Display for ChildSetupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "child setup failed at {}: {}",
+            self.stage.as_str(),
+            self.source
+        )
+    }
+}
+
+impl std::error::Error for ChildSetupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
     }
 }
 

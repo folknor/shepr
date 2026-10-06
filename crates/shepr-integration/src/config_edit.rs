@@ -1,4 +1,4 @@
-use std::io;
+use crate::types::{InstallError, InstallResult};
 use std::path::Path;
 use std::time::Duration;
 
@@ -9,7 +9,6 @@ use crate::limits::TOML_BASIC_STRING_DELIMITER_BYTES;
 use shepr_agent::IntegrationTarget as Target;
 
 use super::command::{hook_command, is_hook_command_for_path};
-use super::types::{InstallErrorKind, InstallIssue};
 use super::{KIMI_CONFIG_BLOCK_BEGIN, KIMI_CONFIG_BLOCK_END};
 
 pub(crate) fn ensure_command_hook(
@@ -18,16 +17,13 @@ pub(crate) fn ensure_command_hook(
     command: &str,
     timeout: u64,
     matcher: Option<&str>,
-) -> io::Result<()> {
+) -> InstallResult<()> {
     let entries = hooks
         .entry(event.to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| {
-            InstallIssue::io_error(
-                InstallErrorKind::ConfigShape,
-                format!("hook entries for {event} must be an array"),
-            )
+            InstallError::config_shape(format!("hook entries for {event} must be an array"))
         })?;
 
     // Identical registrations collapse, while a distinct matcher gets its own
@@ -84,16 +80,13 @@ pub(crate) fn ensure_flat_command_hook(
     event: &str,
     command: &str,
     timeout_ms: u64,
-) -> io::Result<()> {
+) -> InstallResult<()> {
     let entries = hooks
         .entry(event.to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| {
-            InstallIssue::io_error(
-                InstallErrorKind::ConfigShape,
-                format!("hook entries for {event} must be an array"),
-            )
+            InstallError::config_shape(format!("hook entries for {event} must be an array"))
         })?;
 
     entries.push(json!({
@@ -111,16 +104,13 @@ pub(crate) fn ensure_direct_command_hook(
     command: String,
     timeout_sec: u64,
     matcher: Option<&str>,
-) -> io::Result<()> {
+) -> InstallResult<()> {
     let entries = hooks
         .entry(event.to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| {
-            InstallIssue::io_error(
-                InstallErrorKind::ConfigShape,
-                format!("hook entries for {event} must be an array"),
-            )
+            InstallError::config_shape(format!("hook entries for {event} must be an array"))
         })?;
 
     let mut entry = Map::new();
@@ -144,16 +134,13 @@ pub(crate) fn ensure_simple_command_hook(
     hooks: &mut Map<String, Value>,
     event: &str,
     command: &str,
-) -> io::Result<()> {
+) -> InstallResult<()> {
     let entries = hooks
         .entry(event.to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
         .ok_or_else(|| {
-            InstallIssue::io_error(
-                InstallErrorKind::ConfigShape,
-                format!("hook entries for {event} must be an array"),
-            )
+            InstallError::config_shape(format!("hook entries for {event} must be an array"))
         })?;
 
     entries.push(json!({ "command": command }));
@@ -163,12 +150,9 @@ pub(crate) fn ensure_simple_command_hook(
 /// Enable `features.hooks` in a Codex `config.toml`, preserving source layout
 /// when `features` is a table or root-level dotted table. An explicit false is
 /// the user's global opt-out, so installation must leave it alone.
-pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String> {
+pub(crate) fn build_codex_config_with_hooks(content: &str) -> InstallResult<String> {
     let mut document = content.parse::<DocumentMut>().map_err(|error| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigUnparseable,
-            format!("could not parse Codex config.toml: {error}"),
-        )
+        InstallError::config_unparseable(format!("could not parse Codex config.toml: {error}"))
     })?;
 
     let Some(features) = document.as_table_mut().get_mut("features") else {
@@ -182,15 +166,13 @@ pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String>
 
     if let Some(features) = features.as_table_mut() {
         if features.get("hooks").and_then(Item::as_bool) == Some(false) {
-            return Err(InstallIssue::io_error(
-                InstallErrorKind::ManagedBlockConflict,
+            return Err(InstallError::managed_block_conflict(
                 "codex config.toml disables hooks with `features.hooks = false`; leaving the user's setting unchanged",
             ));
         }
         features.insert("hooks", Item::Value(TomlValue::from(true)));
     } else {
-        return Err(InstallIssue::io_error(
-            InstallErrorKind::ConfigShape,
+        return Err(InstallError::config_shape(
             "codex config.toml declares `features` as an inline table or non-table value; move it \
              to a [features] table (or `features.<key> = ...` lines) and retry",
         ));
@@ -203,12 +185,11 @@ pub(super) fn build_kimi_config_with_timeout(
     content: &str,
     hook_path: &Path,
     timeout: Duration,
-) -> io::Result<String> {
+) -> InstallResult<String> {
     let unmarked_content = remove_kimi_config_block(content)?;
     // Only the marked block is safe to rewrite without reformatting user TOML.
     if kimi_config_uses_hook_path(&unmarked_content, hook_path)? {
-        return Err(InstallIssue::io_error(
-            InstallErrorKind::ManagedBlockConflict,
+        return Err(InstallError::managed_block_conflict(
             "kimi config.toml registers the Shepr hook outside its managed block; remove that hook and retry",
         ));
     }
@@ -235,8 +216,7 @@ pub(super) fn build_kimi_config_with_timeout(
             .lines()
             .any(|line| line.trim() == KIMI_CONFIG_BLOCK_BEGIN)
         {
-            return Err(InstallIssue::io_error(
-                InstallErrorKind::ManagedBlockConflict,
+            return Err(InstallError::managed_block_conflict(
                 "kimi config.toml contains multiple managed blocks",
             ));
         }
@@ -260,10 +240,7 @@ pub(super) fn build_kimi_config_with_timeout(
         result
     };
     result.parse::<DocumentMut>().map_err(|error| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigUnparseable,
-            format!("could not build Kimi config.toml: {error}"),
-        )
+        InstallError::config_unparseable(format!("could not build Kimi config.toml: {error}"))
     })?;
     Ok(result)
 }
@@ -272,7 +249,7 @@ pub(super) fn kimi_config_block_with_timeout_is_current(
     content: &str,
     hook_path: &Path,
     timeout: Duration,
-) -> io::Result<bool> {
+) -> InstallResult<bool> {
     let unmarked_content = match remove_kimi_config_block(content) {
         Ok(content) => content,
         Err(_) => return Ok(false),
@@ -307,12 +284,9 @@ pub(super) fn kimi_config_block_with_timeout_is_current(
     Ok(found_block && !in_block && actual.replace("\r\n", "\n") == expected)
 }
 
-fn kimi_config_uses_hook_path(content: &str, hook_path: &Path) -> io::Result<bool> {
+fn kimi_config_uses_hook_path(content: &str, hook_path: &Path) -> InstallResult<bool> {
     let config = toml::from_str::<toml::Value>(content).map_err(|error| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigUnparseable,
-            format!("could not parse Kimi config.toml: {error}"),
-        )
+        InstallError::config_unparseable(format!("could not parse Kimi config.toml: {error}"))
     })?;
     Ok(config
         .get("hooks")
@@ -368,7 +342,7 @@ pub(crate) fn kimi_hook_table(
 /// Remove shepr's marked block from a Kimi `config.toml`, leaving all bytes
 /// outside it untouched. An unmatched begin marker is an error: guessing where
 /// the damaged block ends could delete the user's config that follows it.
-pub(crate) fn remove_kimi_config_block(content: &str) -> io::Result<String> {
+pub(crate) fn remove_kimi_config_block(content: &str) -> InstallResult<String> {
     let mut result = String::with_capacity(content.len());
     let mut in_block = false;
     let mut removed_block = false;
@@ -423,14 +397,11 @@ fn trailing_line_feed_count(content: &str) -> usize {
         .count()
 }
 
-fn unterminated_kimi_block_error() -> io::Error {
-    InstallIssue::io_error(
-        InstallErrorKind::ManagedBlockConflict,
-        format!(
-            "kimi config.toml has a `{KIMI_CONFIG_BLOCK_BEGIN}` line without a matching \
+fn unterminated_kimi_block_error() -> super::types::InstallError {
+    InstallError::managed_block_conflict(format!(
+        "kimi config.toml has a `{KIMI_CONFIG_BLOCK_BEGIN}` line without a matching \
              `{KIMI_CONFIG_BLOCK_END}` line; remove the damaged shepr block by hand and retry"
-        ),
-    )
+    ))
 }
 
 pub(crate) fn toml_basic_string(value: &str) -> String {
@@ -456,7 +427,10 @@ pub(crate) fn toml_basic_string(value: &str) -> String {
 }
 
 #[cfg(test)]
-pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> io::Result<String> {
+pub(crate) fn build_kimi_config_with_hooks(
+    content: &str,
+    hook_path: &Path,
+) -> InstallResult<String> {
     build_kimi_config_with_timeout(content, hook_path, super::HOOK_TIMEOUT)
 }
 

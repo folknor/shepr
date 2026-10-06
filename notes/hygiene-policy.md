@@ -32,67 +32,30 @@ phase guard the loop has already checked; and `TestApp::persist` /
 `HeadlessServer::persist_for_test` (18 call sites) are now nearly no-ops, since
 `App::new` already persists on the outputs' signal; they only restart the persister.
 
-## POL-002 - The snapshot cadence mixes the injected clock with filesystem time and re-derives what the writer already knows
-
-Reported by: persistence.
-
-`persist-clock-is-injected` forbids `SystemTime::now()` in `persist/`, and `now` is
-injected, but `snapshot_history_decision` compares it with
-`std::fs::metadata(latest)?.modified()`, the filesystem's clock at copy time. Tests
-reach the cadence only by reading real mtimes back
-(`snapshot_interval_uses_supplied_clock` builds `now` from the file's mtime, so its
-name is half true) or by `set_times`. The mtime is used deliberately, so a rolled-back
-clock recovers after one copy (`snapshot_cadence_recovers_after_clock_rollback_and_restart`).
-
-More broadly, `SnapshotFingerprintCache` stamps and re-parses files (full schema
-validation, with logging side effects; BUG-009) to learn the fingerprint of the newest
-copy and of the current file, though under the lease the writer is the only process
-writing any of them. The four-state `SnapshotHistoryPlan` (`Skip`,
-`PreserveBeforeWrite`, `PreserveAfterWrite`, `RetryAfterWrite`), the
-optional-replacement decision and the stamp cache all exist to recover facts the
-writer discarded. Structural fix: the writer holds `{ on_disk: SavedLayout,
-latest_copy: Option<(when, SavedLayout)> }`, initialized once at open from disk and
-updated on each publish and copy, with the file's mtime used only for the first
-decision after startup. The decision becomes a pure function of that state and
-`now`, testable without a filesystem. Also: `SnapshotHistoryPlan`,
-`plan_snapshot_history`, `finish_snapshot_history` and `preserve_snapshot_history`
-use "history" for the series of recovery snapshots, not pane history; rename (for
-example `SnapshotPlan`) so they are not mistaken for leftovers of the removed feature.
-
-## POL-003 - Staging and recovery files: unstated placement and leftovers that accumulate
+## POL-003 - Staging leftovers outside the data directory have no owner to reclaim them
 
 Reported by: persistence, integrations.
 
-- `snapshot_directory` and `backup_directory` are `path.with_file_name(..)` of the
-  session path as configured (the symlink), while staging files and directory syncs
-  use the resolved target, so with a symlinked session file recovery copies live in
-  the data directory and staging in the target's directory. Consistent with the notice
-  (which names the data directory) and possibly intended, but nothing states it, and
-  `missing_directory_chain` / `create_private_directory_all` create directories on the
-  target side. Write the rule down where `SessionPath` is defined.
-- A crash mid-publish leaves a `.shepr-<token>-<seq>.tmp` staging file (up to
-  `MAX_SESSION_FILE_BYTES`, 64 MiB) beside the session file (possibly in the user's
-  dotfiles tree when the session file is symlinked) or in a recovery directory.
-  `publish_private_file`'s doc says such a leftover "is never reused or removed here",
-  and nothing removes it anywhere, so they accumulate across crashes. The lease makes a
-  startup sweep of `.shepr-*.tmp` in the data and recovery directories safe.
-- The integration install thread is detached, so a shutdown during install can leave
-  the same kind of staging file in the user's agent directory (process exit does not
-  run the `PreparedFile` destructor); nothing reclaims those either.
+The data and recovery directories are now swept of staging leftovers at startup
+under the lease, and the session file placement rule is written down in `files.rs`.
+Not swept, deliberately, with the reason at the sweep site and in
+`atomic_replace.rs`: staging leftovers beside an external symlinked session target,
+and leftovers of the detached integration installer in agent directories. Both use
+the same staging names, and a server's data-directory lease does not own agent
+directories or an external target (servers with different XDG state roots can share
+them), so a sweep could delete a live installer's file. Reclaiming them needs a
+shared ownership mechanism for those directories first.
 
-## POL-004 - One platform publish primitive, three call styles and two cleanup functions
+## POL-004 - Integration's `AtomicReplace` keeps its own publish path
 
 Reported by: persistence.
 
-`shepr-integration` has its own `AtomicReplace` wrapper over
-`shepr_platform::publish_file::PreparedFile` (and its own `NotRegularFile`, VAL-005);
-`shepr-remote/src/machine/ssh_metadata.rs` builds `PublishOptions` inline;
-persistence's `publish_private_file` is the cleanest of the three. A platform-level
-`publish_private(target, bytes, mode, PublishTarget)` would serve all three.
-Separately, `shepr_platform::publish_file::cleanup` (a warn with `path` and `error`,
-no `event` or `subsystem`) and `persist::files::remove_after_failed_publish` (a warn
-with `event = "persist.cleanup"`) implement the same "best-effort remove, NotFound is
-fine, warn otherwise" policy. Not enforceable beyond review.
+Mux and `ssh_metadata.rs` now use the platform's `prepare_private` /
+`publish_private`. `shepr-integration`'s `AtomicReplace` still wraps the lower-level
+`PreparedFile` itself, because its metadata, permission and deferred-commit policies
+are not the private publisher's defaults; adopt the shared preparation where the
+policies match. The two best-effort cleanup functions stay separate on purpose (each
+logs with its own layer's fields), as commented at both.
 
 ## POL-005 - Retry and backoff are spelled per site, with different growth and different reset rules
 
@@ -112,37 +75,6 @@ Reported by: save-shutdown.
 `BACKOFF_MULTIPLIER`'s "Growth factor of every retry backoff" is therefore false
 workspace-wide. Move `Backoff` down a layer (core or platform) for the API listener to
 share, or say why that one stays separate.
-
-## POL-006 - The session dirty bit is consumed while saves are disallowed, and kept correct by writers who never meet
-
-Reported by: save-shutdown.
-
-`sync_session_save_schedule` evaluates `take_session_dirty()` before
-`allows_saves()`, so while frozen or stopped every mutation's dirty bit is dropped.
-`preserves_pane_exit_checkpoint` treats "not dirty" as "no mutation since the
-preserved capture", which is false after a freeze. Correctness rests on three other
-writers: `resume_session_saves_after_cancel` re-marks dirty on cancel, a frozen final
-save writes nothing, and a restart's host checkpoint captures the live state and
-discards the preserved layout. `finish_checkpointed_pane_exit_after_event` also writes
-`self.state.session_dirty = false` directly (bypassing `take_session_dirty`) on a
-comment's argument that no other mutation can interleave, and calls
-`autosave.schedule` without checking the policy, unlike `note_mutation`. Structural
-fix: a mutation epoch counter that `CapturedLayout` records at capture, so a preserved
-layout is authoritative iff the epoch is unchanged; it replaces the dirty bit's double
-duty and the direct field write.
-
-## POL-008 - Session writer retirement blocks the runtime thread where the save path is async
-
-Reported by: save-shutdown, persistence.
-
-`retire_session_writer` calls `pending.wait()` and `persister.retire()` (a thread
-join) synchronously. It is reached from async `run` (normally with nothing in flight)
-and from `HeadlessServer::drop`, which runs inside `rt.block_on`'s future when the loop
-errors or unwinds, possibly with a save in flight; the persister's own `Drop` doc warns
-about exactly this. Meanwhile `save_session_before_teardown_async` uses
-`spawn_blocking`. Today it stalls one worker of a multi-thread runtime while the
-process exits, but it is one rule implemented once async and once blocking. Make
-retirement async on the `run` path and leave `Drop` as the blocking backstop.
 
 ## POL-010 - Test-only shortcuts in production APIs, which nothing reports
 
@@ -168,13 +100,14 @@ Production `pub` items whose only callers are tests:
   and `PaneRuntime::with_child_io`. Seams are sanctioned over test features; the
   finding is that `write` and `try_begin` are wider than the seam needs (production's
   reader uses `begin` plus the private `process`).
-- `shepr-detect`: `AgentOwnership::with_initial_hook_authority` (CLAIM-025).
+- `shepr-detect`: `AgentOwnership::with_initial_hook_authority` (now held to its one
+  caller by a textlint).
 - `shepr-remote`: `pub use failure::SshFailureDiagnostic` (for one test in
-  `src/preflight.rs`), `pub use ssh_paths::validate_remote_bridge_endpoint_path` (for
-  one test in `shepr-client/src/launch.rs`), and `SshFailureDiagnostic`'s
-  `from_message`, `from_local_setup_error`, `is_ssh_process_failure`,
-  `remote_exit_code`, `is_transient_network_failure`, `needs_attention` and
-  `failed_before_remote_result` (DEAD).
+  `src/preflight.rs`), and seven `SshFailureDiagnostic` queries (`from_message`,
+  `from_local_setup_error`, `is_ssh_process_failure`, `remote_exit_code`,
+  `is_transient_network_failure`, `needs_attention`, `failed_before_remote_result`),
+  now `#[cfg(test)]` inside the production impl: test-only API on a production type.
+  Delete them and assert on `disposition()` and evidence instead.
 
 `shepr-test-fixtures` exists for this; its layering rule does not yet allow
 `shepr-agent` (a one-line change). `scripts/check_dead_test_helpers.py` catches the
@@ -191,18 +124,6 @@ Reported by: restore-resume.
 `"claude-code"`), while `PersistedAgentSession::from_report`, `AgentSource::from_pair`
 and the saved `Agent` deserializer accept only the canonical label. With VAL-008 the
 label leaves reports altogether and the question disappears.
-
-## POL-012 - The two resume entry points disagree about the work after a pass
-
-Reported by: restore-resume.
-
-`server/headless.rs` (the loop) calls `start_pending_agent_resumes` and syncs pane
-focus; `client_views.rs` `finish_shell_workspace_geometry_change` also requests a
-recompute from every client. `start_pending_agent_resumes` already marks the shell
-projection dirty. Either the recompute is needed on both paths or on neither; one
-post-pass helper decides it once. Also, `start_pending_agent_resumes` marks the session
-dirty when a pass only launched (the plan stays until settlement, which marks it dirty
-again), costing an extra save per resumed agent.
 
 ## POL-015 - The pane spawn path reaches the environment and clock directly, and a timer handle is set by call order
 
@@ -225,7 +146,8 @@ deferred-effect ticket order, can wait behind the PTY actor's OSC 7 `stat` on a 
 mount, holding a tokio blocking-pool thread for as long as the mount hangs; the
 watcher's blocking fallback also holds one pool thread per pane for the pane's life. The
 pool is shared with the rest of the server. Bounded by pane count, not by anything the
-server configures.
+server configures. Separately, the shutdown's wait for pane teardown still blocks the
+runtime thread (reported by the save and shutdown fix).
 
 ## POL-017 - Agent evidence is ordered across two clock samplers, and a derived flag is mirrored by two writers
 
@@ -296,35 +218,6 @@ MastraCode) that is the user's prompt text. `mktemp` makes it 0600 and the exit 
 removes it, but a SIGKILL leaves it in `/tmp`. Pipe the payload straight into python3
 instead of staging it.
 
-## POL-024 - Remote discovery and its stdout parsing each have two or three implementations
-
-Reported by: remote.
-
-`installed_remote_shepr_candidates` (used by `fleet::read_status`) sequences
-`path_via_account_shell` then `known_locations` with its own dedupe, outside
-`DiscoveryProgress`: two orderings of one candidate list that must agree (the fleet and
-the TUI must pick the same `shepr` on a host with two installs), tied by nothing. One
-`candidates(steps)` function both call, with `run_remaining` keeping only resume state.
-Separately, `parse_client_status_json` and `fleet::parse_overview` take the last line
-that parses (tolerating noise after the marker), while
-`server_lifecycle::parse_remote_server_status_json` requires the whole trimmed stdout
-to be one JSON document: same wrapper, same noise sources, different verdicts. One
-`last_json_record::<T>(stdout)` helper.
-
-## POL-025 - SSH option sets are assembled at four sites
-
-Reported by: remote.
-
-`RemoteSsh::command`, `bridge_connection`, `MachineSshConnector::wait_for_server` and
-`authentication_command_with_config` each call `ssh_command()` +
-`apply_managed_ssh_options` + some of `apply_batch_ssh_options` /
-`ssh_options::append_shepr_options` + `-T` + target. The interactive login command
-once lacked the connect bound this way; a shared connection-bounds appender now
-covers that one option. Fix: one `SshInvocation { mode: Batch | Interactive, .. }` builder
-owning `-C`, `-F`, `-S`, the control and keepalive options, the connect bound, `-T` and
-the target, formatting the numeric options from `limits.rs` (VAL-062). Enforceable by
-making `ssh_command()` private to the builder.
-
 ## POL-026 - Remote ambient state: random socket names, a process-global teardown registry, and broad watches
 
 Reported by: remote.
@@ -356,29 +249,15 @@ mutate past the reducers (the reason they stay open is commented beside
 through a named reducer. The 1 s timer rebuild stays regardless, for `/proc` cwd
 observations no event reports.
 
-## POL-028 - Label validation is decided at different layers per command
+## POL-029 - `RuntimeGeneration::alloc` is a second process-global counter
 
 Reported by: workspace-model.
 
-Workspace rename takes a validated `Label` at the endpoint; pane rename passes
-`normalized_user_label(...)` (a `Label` turned back into `String`) to
-`AppState::rename_pane(Option<String>)`, which compares raw strings, and
-`TerminalState::set_manual_label` re-validates with `Label::new`. The reducer should take
-`Option<Label>`.
-
-## POL-029 - Layout logic reaches process-global id allocators
-
-Reported by: workspace-model.
-
-`WorkspaceChrome::sole_pane_size` calls `TileLayout::new()`, which calls
-`PaneId::alloc()` on the process-wide counter, just to measure a one-pane layout; every
-workspace creation, every restore fallback and the `prepare_split` fallback burn an id,
-and id sequences in tests depend on how many sizes were computed. `PaneId::alloc` is also
-called in `TreePlan::build`, `prepare_split` and `prepare_workspace`, and as a deliberate
-error-forcing value (`ids.get(&self.focus).copied().unwrap_or_else(PaneId::alloc)` in
-`TreePlan::build` burns an id to make `from_saved` fail). `RuntimeGeneration::alloc` is a
-second global counter. Compute the one-pane content directly, and make the
-error-forcing trick an explicit `TreeRejection`.
+Pane sizing no longer burns pane ids and `TreePlan` refuses a bad focus or root by
+type; pane ids stay process-global on purpose (events and render sources carry no
+workspace id), as commented in `layout.rs`. `RuntimeGeneration::alloc` is a separate
+global counter with about ten call sites in mux; decide whether it needs to be
+global or can be per pane.
 
 ## POL-030 - Every successful launch requests a Git identity refresh with rediscovery
 

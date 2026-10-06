@@ -55,9 +55,10 @@ impl ClientEndpointId {
         self.policy().is_local()
     }
 
-    /// The name the client shows for this endpoint: `local`, the local server's label (its
-    /// `[local]` label or this host's name), or the machine's configured label. The launch
-    /// refuses a machine label that names the local server, so the two never read alike.
+    /// The label the client shows for this endpoint: the local server's configured label (or
+    /// this host's short name) for the local endpoint, and the configured label for a machine.
+    /// A machine entry whose label matches the local label is treated as this host's own entry
+    /// and skipped, so it does not create a second endpoint with the same displayed label.
     pub(crate) fn display_label<'a>(&'a self, local: &'a MachineLabel) -> &'a str {
         match self {
             Self::Local => local.as_str(),

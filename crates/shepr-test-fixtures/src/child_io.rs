@@ -1,7 +1,7 @@
 //! A pane child channel with no child behind it.
 
 use bytes::Bytes;
-use shepr_pty::{ChildBacking, ChildIo, ChildIoSendError};
+use shepr_pty::{ChildIo, ChildIoSendError};
 use tokio::sync::mpsc;
 
 /// Stands in for the PTY actor in a pane runtime built with
@@ -21,10 +21,6 @@ impl ChannelChildIo {
 
 impl ChildIo for ChannelChildIo {
     fn shutdown(&self) {}
-
-    fn child_backing(&self) -> ChildBacking {
-        ChildBacking::NoProcess
-    }
 
     fn resize(
         &self,

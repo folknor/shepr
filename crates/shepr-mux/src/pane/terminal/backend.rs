@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use super::*;
 use crate::limits::{
-    DEFAULT_DETECTION_ROWS, RESIZE_RECOVERY_PROBE_SCREENS, SCAN_CHUNK_ROWS,
+    RESIZE_RECOVERY_MIN_PROBE_ROWS, RESIZE_RECOVERY_PROBE_SCREENS, SCAN_CHUNK_ROWS,
     SYNCHRONIZED_OUTPUT_FLUSH_MARGIN,
 };
 use crate::workspace::SurfaceChange;
@@ -341,7 +341,7 @@ impl PaneTerminal {
         let offset_from_bottom = core.terminal.scrollbar().offset_from_bottom;
         let resize_recovery_probe_lines = usize::from(rows)
             .saturating_mul(RESIZE_RECOVERY_PROBE_SCREENS)
-            .max(DEFAULT_DETECTION_ROWS);
+            .max(RESIZE_RECOVERY_MIN_PROBE_ROWS);
 
         // Alacritty resizes and reflows the grid directly. Replaying history
         // through the parser here could split a sequence the child is still

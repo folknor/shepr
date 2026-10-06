@@ -1,4 +1,4 @@
-use std::io;
+use crate::types::{InstallError, InstallResult};
 use std::path::Path;
 
 /// How the staged file gets its permissions: managed assets are created
@@ -15,6 +15,13 @@ pub(super) enum PermissionPolicy<'a> {
 
 /// A staged replacement, named and collision-checked by the platform's
 /// publication path.
+///
+/// Process exit can leave a staged file behind because destructors do not run.
+/// Do not sweep sibling staging files here: release processes with different
+/// XDG state roots can hold different data-directory leases while sharing agent
+/// directories, and managed-asset writes have no common lock. A sweep could
+/// remove another live installer's file. Reclamation needs
+/// an installer-wide ownership lock shared by managed assets and user configs.
 pub(super) struct AtomicReplace {
     target: std::path::PathBuf,
     prepared: shepr_platform::publish_file::PreparedFile,
@@ -25,7 +32,7 @@ impl AtomicReplace {
         target: &Path,
         policy: PermissionPolicy<'_>,
         contents: &[u8],
-    ) -> io::Result<Self> {
+    ) -> InstallResult<Self> {
         use shepr_platform::publish_file::{Durability, PreparedFile, PublishOptions};
         let existing = match policy {
             PermissionPolicy::ManagedAsset { .. } => None,
@@ -51,16 +58,22 @@ impl AtomicReplace {
         })
     }
 
-    pub(super) fn commit(self) -> io::Result<()> {
-        self.prepared.commit().map(|_| ())
+    pub(super) fn commit(self) -> InstallResult<()> {
+        self.prepared
+            .commit()
+            .map(|_| ())
+            .map_err(InstallError::from)
     }
 
     pub(super) fn commit_after(
         self,
-        before_publish: impl FnOnce(&Path) -> io::Result<()>,
-    ) -> io::Result<()> {
+        before_publish: impl FnOnce(&Path) -> InstallResult<()>,
+    ) -> InstallResult<()> {
         before_publish(&self.target)?;
-        self.prepared.commit().map(|_| ())
+        self.prepared
+            .commit()
+            .map(|_| ())
+            .map_err(InstallError::from)
     }
 }
 

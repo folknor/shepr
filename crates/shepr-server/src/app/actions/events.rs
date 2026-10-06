@@ -134,7 +134,8 @@ impl AppState {
             return;
         };
         record.terminal_mut().begin_agent_resume_launch(command);
-        self.mark_session_dirty();
+        // The saved plan is untouched until the launch settles, so the
+        // persisted session does not change here.
         self.mark_shell_projection_dirty();
     }
 

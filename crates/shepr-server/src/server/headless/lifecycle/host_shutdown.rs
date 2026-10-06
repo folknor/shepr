@@ -130,7 +130,6 @@ impl Shared {
     /// Report that the pending shutdown was called off.
     fn cancel(&self) {
         if self.requested.swap(false, Ordering::AcqRel) {
-            tracing::info!("host shutdown cancelled");
             (self.wake)();
         }
     }
@@ -295,7 +294,12 @@ async fn watch_connection(
         if preparing {
             shared.announce();
             if inhibitor.is_some() && shared.checkpointed(*checkpoints.borrow_and_update()) {
-                tracing::debug!("session checkpointed; releasing the shutdown delay lock");
+                tracing::debug!(
+                    event = "host.shutdown.delay_release",
+                    subsystem = "shutdown",
+                    generation = shared.generation.load(Ordering::Acquire),
+                    "session checkpoint finished; releasing the shutdown delay lock"
+                );
                 inhibitor = None;
             }
         } else {

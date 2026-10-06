@@ -67,7 +67,10 @@ impl PreparedFile {
             let token = crate::unpredictable_token()?;
             let sequence = NEXT_TEMP.fetch_add(1, Ordering::Relaxed);
             Ok(publication_temporary_path(
-                parent, ".shepr", token, sequence,
+                parent,
+                STAGING_PREFIX,
+                token,
+                sequence,
             ))
         })
     }
@@ -203,18 +206,78 @@ impl Drop for PreparedFile {
     }
 }
 
+/// Prepares a private publication with the shared session and metadata-cache
+/// policy: new files use `mode`, replacements use rename and keep a completed
+/// publish if the directory sync fails, and exclusive creates are withdrawn
+/// if that sync fails. The final target component must be absent or regular.
+///
+/// Use [`publish_private`] when no work is needed between staging and commit.
+pub fn prepare_private(
+    target: &Path,
+    source: &mut impl io::Read,
+    mode: u32,
+    existing: PublishTarget,
+) -> io::Result<PreparedFile> {
+    let durability = match existing {
+        PublishTarget::ReplaceExisting => Durability::Directory,
+        PublishTarget::CreateOnly => Durability::DirectoryOrWithdraw,
+    };
+    PreparedFile::prepare(
+        target,
+        source,
+        &PublishOptions {
+            preserve_metadata_from: None,
+            refuse_symlink_target: true,
+            durability,
+            existing,
+            mode,
+        },
+    )
+}
+
+/// Atomically publishes private contents with the common file and directory
+/// durability policy. The staging file is created with `mode`; an existing
+/// target is handled according to `existing`.
+pub fn publish_private(
+    target: &Path,
+    source: &mut impl io::Read,
+    mode: u32,
+    existing: PublishTarget,
+) -> io::Result<Published> {
+    publish_private_with_directory_sync(target, source, mode, existing, crate::sync_directory)
+}
+
+/// Atomically publishes private contents while using the caller's directory
+/// sync operation. This keeps filesystem policy shared and leaves the sync
+/// seam available to callers that need to observe or control that step.
+pub fn publish_private_with_directory_sync(
+    target: &Path,
+    source: &mut impl io::Read,
+    mode: u32,
+    existing: PublishTarget,
+    sync_directory: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<Published> {
+    prepare_private(target, source, mode, existing)?.commit_with_directory_sync(sync_directory)
+}
+
 fn parent(path: &Path) -> &Path {
     path.parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or(Path::new("."))
 }
 fn cleanup(path: &Path) {
+    // This low-level cleanup runs from PreparedFile::drop and reports only
+    // the staging artifact. Session recovery cleanup has a separate
+    // persist-specific event and remains with that caller.
     if let Err(error) = fs::remove_file(path)
         && error.kind() != io::ErrorKind::NotFound
     {
         tracing::warn!(path = %path.display(), %error, "failed to remove publication artifact");
     }
 }
+
+/// The prefix of every staging name [`PreparedFile::prepare`] chooses.
+const STAGING_PREFIX: &str = ".shepr";
 
 /// A sibling staging name: a full-width random token separates processes,
 /// a sequence separates calls, and exclusive creation arbitrates collisions.
@@ -225,6 +288,28 @@ pub fn publication_temporary_path(
     sequence: u64,
 ) -> PathBuf {
     parent.join(format!("{prefix}-{token:016x}-{sequence}.tmp"))
+}
+
+/// Whether `name` has the shape of a staging name [`PreparedFile::prepare`]
+/// chooses. A process that exits mid-publication leaves such a file behind;
+/// only an owner that excludes every other writer of its directory may remove
+/// one, since a live publication uses the same shape.
+pub fn is_staging_name(name: &str) -> bool {
+    let Some(body) = name
+        .strip_prefix(STAGING_PREFIX)
+        .and_then(|name| name.strip_prefix('-'))
+        .and_then(|name| name.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    let Some((token, sequence)) = body.split_once('-') else {
+        return false;
+    };
+    // limits-exempt: the hex width of the u64 token in the staging name format.
+    token.len() == 16
+        && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !sequence.is_empty()
+        && sequence.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 #[cfg(test)]
@@ -359,6 +444,33 @@ mod tests {
             panic!("withdrawal and replacement conflict");
         };
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn staging_names_are_recognized_by_their_shape_only() {
+        let named = publication_temporary_path(Path::new("/d"), STAGING_PREFIX, u64::MAX, 7);
+        let name = named
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("a UTF-8 file name");
+        assert!(is_staging_name(name));
+        let small = publication_temporary_path(Path::new("/d"), STAGING_PREFIX, 1, 0);
+        assert!(is_staging_name(
+            small
+                .file_name()
+                .and_then(|name| name.to_str())
+                .expect("name")
+        ));
+        for other in [
+            "session.json",
+            ".shepr-0123456789abcdef-1.json",
+            ".shepr-0123456789abcde-1.tmp",
+            ".shepr-0123456789abcdeg-1.tmp",
+            ".shepr-0123456789abcdef-.tmp",
+            ".other-0123456789abcdef-1.tmp",
+        ] {
+            assert!(!is_staging_name(other), "{other}");
+        }
     }
 
     #[test]

@@ -608,7 +608,7 @@ impl ClientShellState {
                 .and_then(|workspace| workspace.new_workspace_cwd.clone())
         });
         let suggested_name = cwd.as_ref().map_or_else(String::new, |cwd| {
-            shepr_core::workspace_label::default_workspace_name(cwd.as_path())
+            shepr_core::workspace_label::default_workspace_label(cwd.as_path())
         });
         let machine = self
             .endpoints

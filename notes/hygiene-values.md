@@ -20,17 +20,6 @@ the hunts that reported it and says how the fixed form could be enforced.
 
 ---
 
-## VAL-005 - `NotRegularFile` is defined twice over one platform primitive
-
-Reported by: persistence, integrations.
-
-`shepr-mux/src/persist/files.rs` and `shepr-integration/src/file_ops.rs` each
-define a `NotRegularFile` error over `shepr_platform::open_regular_file`'s
-`Err(FileType)`, with different text and detail; the integration crate also has
-an `InstallErrorKind::NotRegularFile` encoding (DIAG, typed errors through
-`io::Error`). Platform's `open_regular_file` should return the typed error itself.
-Enforceable by a textlint on `struct NotRegularFile` outside platform.
-
 ## VAL-008 - The agent is stored twice in every saved session identity and every report
 
 Reported by: restore-resume.
@@ -77,26 +66,6 @@ the exhaustive-match `const` block `lib.rs` already uses for `AGENTS`. The same
 trick would replace `TARGETS_HAVE_INTEGRATIONS`'s "`Grok` is the last variant"
 comment.
 
-## VAL-012 - The restored-pane spawn size rule exists twice
-
-Reported by: restore-resume.
-
-`restore.rs` `restored_pane_size` (zoomed pane gets its zoomed size, others their
-tiled size, fallback `sole_pane_size`) and `WorkspaceChrome::resume_panes` (used
-by `agent_resume.rs`, the same rule as a list walk). They agree today. Fix: restore
-asks one `spawn_sizes(layout, zoomed)` for every pane; delete the other.
-
-## VAL-013 - The resume candidate rule exists twice
-
-Reported by: restore-resume.
-
-`agent_resume.rs` `has_pending_agent_resume_candidates` and
-`pending_agent_resume_candidates` walk the same rule separately ("Same rules as").
-A test keeps them in step for the cases it builds. Fix: one candidate iterator,
-with the probe as `.next().is_some()`. This also bounds the per-iteration walks
-while resumes are pending (several full pane walks per loop pass during the
-startup window).
-
 ## VAL-014 - The resume timeline's tunables are spread across three crates with nothing naming the set
 
 Reported by: restore-resume.
@@ -121,15 +90,6 @@ Adding or removing a step leaves both stale. The scan time itself is unbounded
 (two full `/proc` walks per round, a `ProcStat` read per pid) and unmeasured, so
 the factor is a guess. Fix: mux exports the scan-inclusive wait (it owns the
 steps), or `PANE_TEARDOWN_STEPS.len()`; reword the docs not to hard-code the count.
-
-## VAL-017 - The app event channel capacity doubles as the stop-path drain limit
-
-Reported by: save-shutdown.
-
-`run` calls `drain_internal_events_with_forwarding_up_to(APP_EVENT_CHANNEL_CAPACITY)`
-on stop, using the channel's capacity to mean "drain everything queued", which
-`drain_all_internal_events_with_forwarding` (`outputs.queued_events()`) already
-expresses. Use the queued count.
 
 ## VAL-019 - Save and shutdown tests restate the constants' current arithmetic
 
@@ -175,31 +135,6 @@ of many app tests, so a slow disk under the harness times many out together. A
 `SavePolicyConfig { debounce, retry, checkpoint }` handed to `SessionSaver::new`
 would let tests drop the hand-set deadlines.
 
-## VAL-023 - The pidfd exit wait has two owners per pane
-
-Reported by: pane-lifecycle.
-
-`child_watcher::spawn` and `launch_status::settle` each `try_clone_pidfd()` the
-same child, each register it with tokio, and each carry a fallback (a blocking
-`waitpid` in the watcher, a `LAUNCH_EXIT_POLL_INTERVAL` poll loop in settle). The
-coordinator re-derives what the watcher already records (`mark_wait_completed`).
-Fix: the watcher sets the fact and `ChildLiveness` carries a `watch` / `Notify` the
-coordinator awaits; the second dup, the poll loop and `LAUNCH_EXIT_POLL_INTERVAL`
-go. Enforceable by a textlint allowing `try_clone_pidfd` only in the watcher.
-
-## VAL-024 - "Is there a process behind this pane?" is answered by two types
-
-Reported by: pane-lifecycle.
-
-`ChildIo::child_backing()` (`ChildBacking::{Process, NoProcess}`) and
-`ChildLiveness`'s `ChildIdentity::{Process, Absent}`. Production `with_child_io`
-already sets `launched_without_child()`, and `shutdown_pane_processes` returns
-early on an absent identity, so `ChildBacking` matters only when a test swaps a
-real `ProcessHandle` into a runtime whose IO is `ChannelChildIo` (the cwd tests in
-`runtime.rs` put the test process's own handle there; without the check, dropping
-that runtime would signal the test binary). Delete `ChildBacking` and give those
-tests a fixture child.
-
 ## VAL-025 - Small duplicated values in the pane lifecycle
 
 Reported by: pane-lifecycle.
@@ -243,16 +178,6 @@ Muse restates its two picker pairs three times; Devin restates its blocker pair 
 a `not` gate five times. Fix: a `[matchers]` table or a `rule = "<id>"` gate kind,
 resolved at compile.
 
-## VAL-030 - Detection timing values coupled across crates in prose
-
-Reported by: agent-state, restore-resume.
-
-- `HOOK_SEQUENCE_REANCHOR_AFTER`'s doc restates the hook assets' seq units
-  (nanoseconds in shell and Python, microseconds in JS); needs a test in the
-  integration crate that reads each asset's seq expression.
-- `AGENT_ABSENCE_STARTUP_HOLD` is an alias of a private
-  `AGENT_RESUME_DETECTION_HOLD` used nowhere else; fold it.
-
 ## VAL-032 - Limits and cadences copied into tests as literals
 
 Reported by: agent-state, workspace-model.
@@ -267,17 +192,6 @@ asserts `1024` (`MAX_RETURNED_MATCHES`); `pane_resize_changes_target_ratio_witho
 asserts `0.55` (`EVEN_SPLIT + DEFAULT_PANE_RESIZE_AMOUNT`); several core layout tests
 assert `0.45` / `0.55`. Reference the constants.
 
-## VAL-034 - The detection tunables are split three ways
-
-Reported by: agent-state.
-
-Arbitration bounds live in `shepr-detect/src/limits.rs`, detector cadence and holds
-in `shepr-mux/src/limits.rs`, and region depths (`bottom_non_empty_lines(12)`,
-`(20)`, `(30)`, `top_non_empty_lines(20)`) in each manifest. Nothing answers "what
-are the detection tunables". At least give mux limits a section that points at the
-detect limits depending on it, or pass `PARKED_START_LIFETIME` and
-`AGENT_PROCESS_EXIT_RELEASE_GRACE` in from mux as parameters.
-
 ## VAL-035 - `SHEPR_DEBUG_OSC_EVIDENCE` is read at the first pane and a bad value only warns
 
 Reported by: agent-state.
@@ -288,14 +202,6 @@ error path). That contradicts the env policy's refusal naming the variable, and 
 typo in a debug switch is found only by reading the log. Read it once at server
 startup and hand it to pane construction like the other settings. See DIAG for the
 second half (it also needs a debug log filter to show anything).
-
-## VAL-036 - `DEFAULT_DETECTION_ROWS` is not what its name and doc say
-
-Reported by: agent-state.
-
-Doc: "Default screen depth sampled for agent detection when no caller supplies
-one". Detection reads `terminal.rows()`; no caller supplies a depth. The const is
-only the floor of the resize recovery probe. Rename and reword.
 
 ## VAL-040 - The Antigravity target has four names
 
@@ -317,29 +223,7 @@ install-name constants), and the server's `SHELL_ASSETS` / `BUN_ASSETS` /
 `bun_trace_name` (plus trace names in `contract_traces.toml`). Kept in step by
 `every_asset_with_a_decoder_is_generated` and the server's `assert_asset_coverage`.
 The `include_str!` copy is forced (it needs a literal); one `macro_rules!` table
-could emit both the `SPECS` rows and the constants. Also: ten install-name
-constants (`CLAUDE_HOOK_INSTALL_NAME`, `CODEX_HOOK_INSTALL_NAME`, ...) all equal
-`"shepr-agent-state.sh"`.
-
-## VAL-043 - `assets/opencode/tui.js` is hand-written outside the generator
-
-Reported by: integrations.
-
-It carries its own `SHEPR_INTEGRATION_ID=opencode-tui-v2` and a
-`SHEPR_INTEGRATION_VERSION=3` restating the TUI spec's version by hand, and none of
-the "managed by shepr" header lines every generated asset has. Generate it from a
-spec row. Relatedly, the hand-bumped `version` numbers in `SPECS` are checked by
-nothing (currentness is exact bytes), so the number in a log line is unverifiable:
-derive it from a content hash or delete it (DEAD).
-
-## VAL-044 - The OpenCode-family argument scanner is written twice
-
-Reported by: integrations.
-
-`ownsLocalLifecycle` in `decoders/opencode.js` and `decoders/kilo.js`: the `--`
-split, the `--attach` test and the `--print-logs` / `--log-level` stripping are
-identical; only the final verdict differs. The shared part belongs in
-`templates/opencode_family.js`, which both include.
+could emit both the `SPECS` rows and the constants.
 
 ## VAL-046 - Integration tunables live as literals in the plugins, with no clock seam
 
@@ -354,21 +238,6 @@ decoder timing from `limits`, and pass a clock and timer object into the kits; t
 Rust clock textlints do not reach `.js` / `.ts`. Also,
 `TOML_BASIC_STRING_DELIMITER_BYTES = 2` (the two quote characters, a `with_capacity`
 hint) poses as a tunable; mark it `limits-exempt` at the use or write `len() + 2`.
-
-## VAL-049 - The default workspace name rule has two halves in two crates, and the client uses one
-
-Reported by: workspace-model.
-
-`shepr_core::workspace_label::default_workspace_name` (file says "label", function
-says "name") gives the directory name or the whole path;
-`shepr_mux::terminal::Label::for_directory` adds the trim-and-fall-back-to-path
-step. Both docs claim to be "the name a workspace gets when it is given none". The
-client's new-workspace prompt prefills with the core half only, so for a directory
-named only with spaces the prompt shows a blank name while the server names the
-workspace after the path. Already diverged. Fix: one function in core returning a
-label-shaped value (the client cannot see `shepr_mux::Label`). The test
-`workspace_rename_trims_defaults_and_renders_what_it_changed` computes its
-expectation with the same function (see the claims document).
 
 ## VAL-051 - `inner_rect` means two different rects
 
@@ -466,14 +335,6 @@ Reported by: server-lifecycle.
 
 Reported by: remote.
 
-- The "probe a candidate" script (`test -x {path} || exit {candidate_missing};
-  {command}`, decoding `SshExit::Remote(CandidateMissing)`) is built in both
-  `discovery.rs` `remote_client_status` and `fleet.rs` `overview_of`; one
-  `candidate_command(exe, args)`.
-- The control-socket name is derived at two sites
-  (`MachineSshConnector::validate_local_setup` via `shared_ssh_control_path`, and
-  `write_managed_ssh_config` via `ssh_control_path_under`); have the managed config
-  return the path it validated.
 - The SSH metadata cache is per-profile by its own `ssh-metadata-{profile.marker()}`
   suffix under the shared client state dir, while `AppPaths::data_dir()` already is
   per-profile: two rules for where dev keeps its own state.
@@ -485,38 +346,3 @@ Reported by: remote.
   asserts `now + Duration::from_secs(30)` where siblings use `ATTENTION_RETRY_DELAY`,
   and `a_reconnecting_machine_retries_within_thirty_seconds` spells 30 again. If
   30 s is a promise, name it and assert `MAX_RETRY_DELAY <= RETRY_PROMISE` once.
-
-## VAL-062 - SSH option values hide numbers in strings, so their couplings cannot be asserted
-
-Reported by: remote.
-
-`SSH_CONNECT_TIMEOUT_OPTION = "ConnectTimeout=10"` must stay below
-`SSH_COMMAND_TIMEOUT` (15 s) or a dead host stops reading as Offline and starts
-reading as `AuthenticationPending` / NeedsLogin (and gets a foreground prompt at
-startup); `ControlPersist=600` relates to `SERVER_WAIT_MAX` and the reconnect
-cadence; the `NumberOfPasswordPrompts` counts likewise. The limits textlint
-explicitly cannot see numbers inside a string. Fix: `Duration` / integer consts in
-`limits.rs` formatted into options by one builder (POL), with
-`const _: () = assert!(SSH_CONNECT_TIMEOUT < SSH_COMMAND_TIMEOUT)`, and a textlint
-banning `=[0-9]` inside string literals in `shepr-remote`.
-
-## VAL-063 - Remote timing values that rarely bind or mix tunables with structure
-
-Reported by: remote.
-
-- `REMOTE_HANDSHAKE_READ_TIMEOUT` (60 s) almost never binds: every machine handshake
-  runs with an attempt deadline at most 25 s out, and
-  `do_handshake_for_endpoint` takes the minimum, so 60 s is reachable only in a
-  Restart whose stop returned quickly. Its doc describes a role the attempt deadline
-  took over. Delete it, or document it as the Restart cap it is.
-- `limits.rs` mixes tunables with structure: `REMOTE_COMMAND_ARGS_INITIAL_CAPACITY`
-  (a `Vec` hint), `SSH_PIPE_DONE_CHANNEL_CAPACITY = 1` and
-  `BRIDGE_FAILURE_CHANNEL_CAPACITY = 1` (one-shot channel protocol) and
-  `BRIDGE_IO_POLL = 1ms` sit beside the real knobs. Mark the structural ones
-  `limits-exempt` at their use so `limits.rs` reads as the operator-relevant list.
-- No injection point: `SshStdioBridge::reported_failure` always waits up to
-  `BRIDGE_FAILURE_REPORT_TIMEOUT` (1 s) of real time; `wait_with_output_timeout`
-  polls at a fixed 50 ms; `MachineSshPreflight::new` and `fleet_ssh` read the clock
-  to build their deadlines.
-- `BRIDGE_IDLE_TIMEOUT` (60 s) equals `SSH_KEEPALIVE` (15 s x 4); harmless but
-  undocumented, and nothing says which is meant to fire first.

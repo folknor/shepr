@@ -97,7 +97,7 @@ pub(crate) struct SessionSaver {
     /// At most one save is in flight: a due save waits for it, so every
     /// capture reaches the persister after the one before it finished.
     in_flight: Option<InFlightSave>,
-    persister: shepr_mux::persist::SessionPersister,
+    persister: Option<shepr_mux::persist::SessionPersister>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,7 +183,7 @@ impl SessionSaver {
             exit: PaneExitCheckpoint::new(),
             host: HostShutdownCheckpoint::new(),
             in_flight: None,
-            persister,
+            persister: Some(persister),
         }
     }
 
@@ -381,7 +381,11 @@ impl App {
     /// once for this loop pass. AppState mutations and App-owned mutations use
     /// the same flag, so a handler cannot schedule the same change twice.
     pub(crate) fn sync_session_save_schedule(&mut self) {
-        if self.state.take_session_dirty() && self.session_saver.policy.allows_saves() {
+        // Keep mutations pending while frozen or stopped: consuming this signal
+        // would incorrectly make a preserved checkpoint authoritative again.
+        // An epoch is unnecessary while event replay is synchronous and this
+        // signal is retained until persistence can observe the mutation.
+        if self.session_saver.policy.allows_saves() && self.state.take_session_dirty() {
             self.session_saver.note_mutation(self.clock.now);
         }
     }
@@ -418,6 +422,10 @@ impl App {
         self.session_saver.policy.is_blocked_on_backup()
     }
 
+    pub(crate) fn session_saves_frozen(&self) -> bool {
+        self.session_saver.policy.frozen
+    }
+
     /// The one place a save's outcome is applied to the autosave backoff and
     /// both checkpoint machines.
     fn finish_session_save(
@@ -426,6 +434,17 @@ impl App {
         result: Result<(), shepr_mux::persist::SaveError>,
     ) {
         let now = self.clock.now;
+        let (save_kind, generation) = match &kind {
+            SaveKind::Autosave => ("autosave", None),
+            SaveKind::Checkpoint(ticket) => (
+                if ticket.host {
+                    "host_checkpoint"
+                } else {
+                    "pane_exit_checkpoint"
+                },
+                ticket.exit.as_ref().map(|exit| exit.generation.0),
+            ),
+        };
         match result {
             Ok(()) => {
                 if let Some(failures) = self.session_saver.autosave.record_success() {
@@ -457,6 +476,8 @@ impl App {
             }
             Err(error) if error.is_blocked_on_backup() => {
                 tracing::error!(
+                    event = "session.save.blocked", subsystem = "persist",
+                    kind = save_kind, generation, directory = %self.paths.data_dir().display(),
                     error = %error,
                     "session saves are blocked because the existing session could not be opened for backup; fix access and restart the server"
                 );
@@ -467,6 +488,8 @@ impl App {
             }
             Err(error) if !error.is_retryable() => {
                 tracing::error!(
+                    event = "session.save.stopped", subsystem = "persist",
+                    kind = save_kind, generation, directory = %self.paths.data_dir().display(),
                     error = %error,
                     "session persistence failed permanently; disabling session saves for this boot"
                 );
@@ -482,19 +505,40 @@ impl App {
                 // retry; a checkpoint's own retry is its machine's, below. A
                 // failed capture submitted nothing, so the last good file
                 // stays. (A refusal or abandonment took the branch above.)
+                if matches!(
+                    &error,
+                    shepr_mux::persist::SaveError::CaptureInconsistent { .. }
+                ) {
+                    // Capture failed before the mux writer received a job; this
+                    // layer owns that diagnostic. Writer failures are logged
+                    // by the mux, and only their retry policy is recorded here.
+                    tracing::warn!(
+                        event = "session.capture.failed", subsystem = "persist",
+                        kind = save_kind, generation, directory = %self.paths.data_dir().display(),
+                        error = %error, "session capture failed; keeping the previous session file"
+                    );
+                }
                 let (failures, delay) = self.session_saver.autosave.record_failure(now);
-                tracing::warn!(error = %error, failures, retry_ms = delay.as_millis(), "session save failed");
+                tracing::debug!(
+                    event = "session.save.retry", subsystem = "persist",
+                    kind = save_kind, generation, directory = %self.paths.data_dir().display(),
+                    error = %error, failures, retry_ms = delay.as_millis(),
+                    "session save retry scheduled"
+                );
                 if let SaveKind::Checkpoint(ticket) = kind {
                     if let Some(exit) = ticket.exit
                         && self.session_saver.exit.failed(exit.generation, now)
                     {
                         tracing::warn!(
+                            event = "session.checkpoint.abandoned", subsystem = "persist",
+                            kind = "pane_exit_checkpoint", generation = exit.generation.0,
+                            directory = %self.paths.data_dir().display(),
                             failures = CHECKPOINT_MAX_FAILURES,
                             "pane exit checkpoint failed repeatedly; removing exited panes without persisting their exit"
                         );
                     }
-                    if ticket.host && self.session_saver.host.failed(now) {
-                        tracing::warn!("host shutdown checkpoint failed repeatedly");
+                    if ticket.host {
+                        self.session_saver.host.failed(now);
                     }
                 }
             }
@@ -575,10 +619,11 @@ impl App {
     }
 
     fn spawn_session_save(&mut self, job: shepr_mux::persist::PersistJob, kind: SaveKind) {
-        let pending = self
-            .session_saver
-            .persister
-            .submit(job, self.clock.wall_now);
+        let Some(persister) = self.session_saver.persister.as_mut() else {
+            self.finish_session_save(kind, Err(shepr_mux::persist::SaveError::Abandoned));
+            return;
+        };
+        let pending = persister.submit(job, self.clock.wall_now);
         self.session_saver.in_flight = Some(InFlightSave { pending, kind });
     }
 
@@ -652,9 +697,11 @@ impl App {
                 // samples it immediately before applying one event and no
                 // other mutation can interleave; a second counter would not
                 // change which layout this synchronous path accepts.
-                self.state.session_dirty = false;
+                self.state.take_session_dirty();
             }
-            self.session_saver.autosave.schedule(self.clock.now);
+            if self.session_saver.policy.allows_saves() {
+                self.session_saver.autosave.schedule(self.clock.now);
+            }
         }
     }
 
@@ -670,11 +717,10 @@ impl App {
             self.session_saver.autosave.clear();
             return Ok(None);
         };
-        Ok(Some(
-            self.session_saver
-                .persister
-                .submit(job, self.clock.wall_now),
-        ))
+        let Some(persister) = self.session_saver.persister.as_mut() else {
+            return Err(shepr_mux::persist::SaveError::Abandoned);
+        };
+        Ok(Some(persister.submit(job, self.clock.wall_now)))
     }
 
     fn finish_final_session_save(
@@ -688,6 +734,7 @@ impl App {
         self.session_saver.autosave.clear();
         if let Err(error) = &result {
             tracing::error!(
+                event = "session.save.final_failure", subsystem = "persist", kind = "final",
                 directory = %self.paths.data_dir().display(),
                 %error,
                 "final session save failed"
@@ -741,6 +788,26 @@ impl App {
         self.finish_final_session_save(result)
     }
 
+    /// Normal async shutdown moves the writer's join off the runtime. Drop
+    /// retains the synchronous backstop for errors and unwinding.
+    pub(crate) async fn retire_session_writer_async(&mut self) -> Result<(), std::io::Error> {
+        if let Some(save) = self.session_saver.in_flight.take() {
+            let result = wait_off_the_runtime(save.pending).await;
+            self.finish_session_save(save.kind, result);
+        }
+        self.session_saver.autosave.clear();
+        if let Some(mut persister) = self.session_saver.persister.take() {
+            let persister = tokio::task::spawn_blocking(move || {
+                persister.retire();
+                persister
+            })
+            .await
+            .map_err(std::io::Error::other)?;
+            self.session_saver.persister = Some(persister);
+        }
+        Ok(())
+    }
+
     /// Ends persistence for this server: the save still in flight finishes
     /// (its failure is logged like any other save's; the retry it schedules
     /// is moot, the deadline is cleared below), then the persister releases
@@ -751,7 +818,9 @@ impl App {
             self.finish_session_save(save.kind, result);
         }
         self.session_saver.autosave.clear();
-        self.session_saver.persister.retire();
+        if let Some(persister) = self.session_saver.persister.as_mut() {
+            persister.retire();
+        }
     }
 }
 
@@ -842,14 +911,16 @@ impl App {
         &mut self,
         save_finished: std::sync::Arc<tokio::sync::Notify>,
     ) {
-        self.session_saver.persister.retire();
+        if let Some(persister) = self.session_saver.persister.as_mut() {
+            persister.retire();
+        }
         let lease = shepr_mux::persist::DataDirLease::acquire(self.paths.data_dir())
             .expect("the test data directory lease is free");
-        self.session_saver.persister = shepr_mux::persist::SessionPersister::spawn(
+        self.session_saver.persister = Some(shepr_mux::persist::SessionPersister::spawn(
             lease,
             shepr_mux::persist::SessionBackupPolicy::NoBackupNeeded,
             save_finished,
-        );
+        ));
         self.session_saver.policy.mode = SaveMode::Persisting;
     }
 
@@ -913,11 +984,57 @@ mod tests {
         App::new(&shepr_config::ServerConfig::default())
     }
 
+    #[test]
+    fn frozen_saves_retain_mutations_until_thawed() {
+        let mut app = test_app();
+        app.freeze_session_saves();
+        app.state.mark_session_dirty();
+        app.sync_session_save_schedule();
+        assert!(app.state.session_dirty());
+        assert!(app.session_saver.autosave_deadline().is_none());
+        app.thaw_session_saves();
+        app.sync_session_save_schedule();
+        assert!(!app.state.session_dirty());
+        assert!(app.session_saver.autosave_deadline().is_some());
+    }
+
+    #[test]
+    fn a_frozen_mutation_invalidates_the_preserved_exit_layout() {
+        let (mut app, exiting, _) = two_pane_app("frozen mutation");
+        let death = interrupted_death(&app, exiting);
+        let _ = app.prepare_pane_exit(death);
+        app.wait_for_session_save();
+        assert!(app.preserves_pane_exit_checkpoint());
+        app.freeze_session_saves();
+        app.state.mark_session_dirty();
+        app.sync_session_save_schedule();
+        assert!(!app.preserves_pane_exit_checkpoint());
+        app.sync_session_save_schedule();
+        assert!(!app.preserves_pane_exit_checkpoint());
+    }
+
+    #[tokio::test]
+    async fn async_retirement_releases_the_data_directory_lease() {
+        let mut app = test_app();
+        let completion = app.session_saver.hold_test_kind(SaveKind::Autosave);
+        let responder = tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            completion.complete(Ok(()));
+        });
+        app.retire_session_writer_async()
+            .await
+            .expect("retired writer");
+        responder.await.expect("runtime served the save completion");
+        assert!(shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir()).is_ok());
+    }
+
     #[tokio::test]
     async fn a_final_save_failure_is_returned_without_arming_an_autosave_retry() {
         let mut app = test_app();
         // Retirement is a real permanent refusal, without a test-only mode.
-        app.session_saver.persister.retire();
+        if let Some(persister) = app.session_saver.persister.as_mut() {
+            persister.retire();
+        }
         let error = app
             .save_session_before_teardown_async()
             .await

@@ -2,7 +2,7 @@
 // managed by shepr; every release shepr server launch on this host rewrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=opencode
-// SHEPR_INTEGRATION_VERSION=4
+// SHEPR_INTEGRATION_VERSION=3328850120
 
 import net from "node:net";
 
@@ -160,6 +160,26 @@ const SESSION_STATE_BY_STATUS = new Map([
   ["working", STATE.working],
 ]);
 
+// OpenCode and Kilo's local-run checks consume the same leading CLI options.
+// Their commands have different ownership rules, so each decoder applies its
+// own verdict after this shared normalization.
+function localLifecycleArgs() {
+  const args = process.argv.slice(2);
+  const separator = args.indexOf("--");
+  if (separator !== -1) args.splice(separator);
+  if (args.some((arg) => arg === "--attach" || arg.startsWith("--attach="))) {
+    return undefined;
+  }
+  while (
+    args[0] === "--print-logs" ||
+    args[0] === "--log-level" ||
+    args[0]?.startsWith("--log-level=")
+  ) {
+    args.splice(0, args[0] === "--log-level" ? 2 : 1);
+  }
+  return args;
+}
+
 // Status arrives either as a bare string or as an object such as
 // `{ type: "busy" }` / `{ type: "retry", ... }`.
 function stateFromSessionStatus(status) {
@@ -202,13 +222,8 @@ function reportSessionOf(sessionID) {
 }
 
 function ownsLocalLifecycle() {
-  const args = process.argv.slice(2);
-  const separator = args.indexOf("--");
-  if (separator !== -1) args.splice(separator);
-  if (args.some((arg) => arg === "--attach" || arg.startsWith("--attach="))) return false;
-  while (args[0] === "--print-logs" || args[0] === "--log-level" || args[0]?.startsWith("--log-level=")) {
-    args.splice(0, args[0] === "--log-level" ? 2 : 1);
-  }
+  const args = localLifecycleArgs();
+  if (!args) return false;
   // These local clients have no TUI plugin. Shared servers and the TUI worker
   // cannot identify their attached panes; their lifecycle belongs to each TUI.
   return args[0] === "run" ||

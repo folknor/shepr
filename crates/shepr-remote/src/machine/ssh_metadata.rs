@@ -16,13 +16,13 @@ struct StoredMetadata {
 /// target share the hint, since the executable belongs to the host. The cache
 /// is kept per build profile inside the shared client state directory, so a dev
 /// and a release client never overwrite each other's hint for a target.
-pub struct SshMetadataCache {
+pub(crate) struct SshMetadataCache {
     path: PathBuf,
     target: SshTarget,
 }
 
 impl SshMetadataCache {
-    pub fn new(paths: &shepr_paths::AppPaths, target: &SshTarget) -> Self {
+    pub(crate) fn new(paths: &shepr_paths::AppPaths, target: &SshTarget) -> Self {
         Self::for_profile(paths, target, shepr_paths::BuildProfile::current())
     }
 
@@ -40,12 +40,12 @@ impl SshMetadataCache {
         }
     }
 
-    pub fn load(&self) -> Option<RemoteExecutable> {
+    pub(crate) fn load(&self) -> Option<RemoteExecutable> {
         load_metadata(&self.path, &self.target)
     }
 
     /// The cache file, for callers naming it when a store or invalidate fails.
-    pub fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.path
     }
 
@@ -54,7 +54,7 @@ impl SshMetadataCache {
     /// untouched. Since this is a disposable hint, a directory-sync failure after
     /// rename keeps the new entry available and does not fail the store; a crash may
     /// still lose that entry, in which case discovery can rebuild it.
-    pub fn store(&self, executable: &RemoteExecutable) -> io::Result<()> {
+    pub(crate) fn store(&self, executable: &RemoteExecutable) -> io::Result<()> {
         let stored = StoredMetadata {
             target: self.target.clone(),
             executable: executable.as_str().to_owned(),
@@ -72,7 +72,7 @@ impl SshMetadataCache {
 
     /// Forgets the remembered executable. An absent cache is already forgotten. A
     /// failure leaves a stale hint that later connections try first.
-    pub fn invalidate(&self) -> io::Result<()> {
+    pub(crate) fn invalidate(&self) -> io::Result<()> {
         match std::fs::remove_file(&self.path) {
             Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
             _ => Ok(()),
@@ -110,19 +110,15 @@ fn store_private_json_with_directory_sync(
         )
     })?;
     shepr_platform::create_private_directory_all(parent)?;
-    let prepared = shepr_platform::publish_file::PreparedFile::prepare(
-        path,
-        &mut io::Cursor::new(content),
-        &shepr_platform::publish_file::PublishOptions {
-            preserve_metadata_from: None,
-            refuse_symlink_target: true,
-            durability: shepr_platform::publish_file::Durability::Directory,
-            existing: shepr_platform::publish_file::PublishTarget::ReplaceExisting,
-            mode: 0o600,
-        },
-    )?;
+    let mut source = io::Cursor::new(content);
     if let shepr_platform::publish_file::Published::NotDurable(error) =
-        prepared.commit_with_directory_sync(sync_directory)?
+        shepr_platform::publish_file::publish_private_with_directory_sync(
+            path,
+            &mut source,
+            0o600,
+            shepr_platform::publish_file::PublishTarget::ReplaceExisting,
+            sync_directory,
+        )?
     {
         tracing::debug!(
             %error,

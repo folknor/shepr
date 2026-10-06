@@ -2,6 +2,12 @@
 
 use std::time::Duration;
 
+// Detection tunables: this section owns process probes, tick cadences and
+// publication holds. crates/shepr-detect/src/limits.rs owns hook arbitration
+// windows and manifest complexity bounds; the bundled manifests own each agent's sampled
+// regions (top/bottom line depths), because those depend on its screen layout.
+// The parked-start window is coupled to this cadence by the assertion below.
+
 // Process probe scheduling: when the detector looks at the pane's process tree.
 
 /// Consecutive process misses required before dropping an identified agent;
@@ -60,17 +66,14 @@ pub(crate) const AGENT_PENDING_IDLE_CAP: Duration = Duration::from_millis(700);
 pub(crate) const STABLE_VISIBLE_SIGNAL_REFRESH: Duration = Duration::from_millis(800);
 /// Startup grace for the first agent signal while a launched shell settles.
 pub(crate) const AGENT_STARTUP_GRACE_WINDOW: Duration = Duration::from_secs(3);
-/// Time allowed for a restored agent to appear after its resume launch.
-const AGENT_RESUME_DETECTION_HOLD: Duration = Duration::from_secs(30);
-/// A restored pane holds absence for the same interval as agent resume, so
-/// detection cannot clear the agent before its process has time to appear.
-pub(crate) const AGENT_ABSENCE_STARTUP_HOLD: Duration = AGENT_RESUME_DETECTION_HOLD;
+/// Time allowed for a restored agent to appear before detection clears its seed.
+pub(crate) const AGENT_ABSENCE_STARTUP_HOLD: Duration = Duration::from_secs(30);
 
 // The pane terminal: detection reads, render pacing and scrollback scans.
 
-/// Default screen depth sampled for agent detection when no caller supplies
-/// one; it covers a conventional terminal viewport.
-pub(crate) const DEFAULT_DETECTION_ROWS: usize = 24;
+/// Minimum history rows searched during resize recovery of a blank viewport.
+/// Agent detection samples the live terminal rows independently.
+pub(crate) const RESIZE_RECOVERY_MIN_PROBE_ROWS: usize = 24;
 /// Slack after synchronized output's deadline before a follow-up render, so
 /// the terminal can finish its batch.
 pub(crate) const SYNCHRONIZED_OUTPUT_FLUSH_MARGIN: Duration = Duration::from_millis(5);
@@ -81,8 +84,8 @@ pub(crate) const SYNCHRONIZED_OUTPUT_FLUSH_MARGIN: Duration = Duration::from_mil
 pub(crate) const SCAN_CHUNK_ROWS: usize = 2048;
 /// Screens of history, at the resized height, a resize may step a blank
 /// scrolled-back viewport toward live output looking for text; never fewer
-/// than `DEFAULT_DETECTION_ROWS` rows. The walk holds the terminal lock, so it
-/// stops here however deep the history is.
+/// than `RESIZE_RECOVERY_MIN_PROBE_ROWS` rows. The walk holds the terminal lock,
+/// so it stops here however deep the history is.
 pub(crate) const RESIZE_RECOVERY_PROBE_SCREENS: usize = 8;
 
 // Copy-mode motions, which read the terminal under its lock.
@@ -129,9 +132,6 @@ pub(crate) const LAUNCH_STATUS_AFTER_EXIT: Duration = Duration::from_secs(1);
 /// before it is settled as unconfirmed. Lets a failure report already sent
 /// arrive, without letting a child stuck in its chdir keep the pane open.
 pub(crate) const LAUNCH_SETTLE_AFTER_PANE_END: Duration = Duration::from_secs(1);
-/// How often a pane launch checks whether its child exited when it cannot
-/// watch the child's pidfd (the dup failed). Only that fallback polls.
-pub(crate) const LAUNCH_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// How long a pane whose terminal closed waits for its child watcher to
 /// report the exit before ending the pane on its own. A child that exits
 /// closes its terminal moments before it is reaped, so this normally runs out

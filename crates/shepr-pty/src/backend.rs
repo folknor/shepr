@@ -27,8 +27,9 @@ use crate::fd;
 use crate::launch::{self, Registration, StatusDelivery};
 use crate::limits::{GETDENTS_READ_BUFFER_BYTES, LAUNCH_STATUS_RECORD_BYTES, MAX_SIGNAL_NUMBER};
 
-// limits-exempt: process exit status protocol, as shells report a failed setup.
-pub const EXIT_SETUP_FAILED: libc::c_int = 126;
+// limits-exempt: process exit status protocol, distinct from a shell's usual
+// 126 for a command that could not be executed.
+pub const EXIT_SETUP_FAILED: libc::c_int = 125;
 // limits-exempt: process exit status protocol, as shells report a failed command.
 pub const EXIT_LAUNCH_FAILED: libc::c_int = 127;
 
@@ -42,6 +43,29 @@ unsafe extern "C" {
 pub(crate) struct OpenedPty {
     pub master: OwnedFd,
     pub slave: OwnedFd,
+}
+
+#[derive(Debug)]
+struct PtyOperationError {
+    stage: &'static str,
+    source: io::Error,
+}
+
+impl std::fmt::Display for PtyOperationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.stage, self.source)
+    }
+}
+
+impl std::error::Error for PtyOperationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn pty_operation_error(stage: &'static str, source: io::Error) -> io::Error {
+    let kind = source.kind();
+    io::Error::new(kind, PtyOperationError { stage, source })
 }
 
 /// A launching child and the parent's only handle on its PTY: the master fd.
@@ -78,10 +102,7 @@ impl PaneChild {
         if self.status.is_some() {
             return Ok(());
         }
-        if !self.handle.signal(shepr_platform::Signal::Kill) {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        self.handle.try_signal(shepr_platform::Signal::Kill)
     }
 
     /// Blocks until the child exits, and reaps it.
@@ -154,13 +175,13 @@ fn detach_reaper(pid: shepr_platform::Pid, wait: impl FnOnce() + Send + 'static)
         .name("shepr-pane-reaper".into())
         .spawn(wait)
     {
-        tracing::warn!(%pid, %error, "could not start pane reaper; child may remain unreaped until server exit");
+        tracing::error!(%pid, %error, "could not start pane reaper; child may remain unreaped until server exit");
     }
 }
 
 fn log_reap_failure(pid: shepr_platform::Pid, result: io::Result<ExitStatus>) {
     if let Err(error) = result {
-        tracing::warn!(%pid, %error, "could not reap abandoned pane child");
+        tracing::error!(%pid, %error, "could not reap abandoned pane child");
     }
 }
 
@@ -182,7 +203,10 @@ pub(crate) fn open_pty_with_geometry(
         )
     };
     if master < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(pty_operation_error(
+            "open /dev/ptmx",
+            io::Error::last_os_error(),
+        ));
     }
     // SAFETY: open succeeded, so `master` is a fresh fd nothing else owns.
     let master = unsafe { OwnedFd::from_raw_fd(master) };
@@ -190,11 +214,11 @@ pub(crate) fn open_pty_with_geometry(
     // SAFETY: grantpt and unlockpt take a live PTY master fd and retain no
     // references to it.
     if unsafe { libc::grantpt(master.as_raw_fd()) } != 0 {
-        return Err(io::Error::last_os_error());
+        return Err(pty_operation_error("grantpt", io::Error::last_os_error()));
     }
     // SAFETY: as above.
     if unsafe { libc::unlockpt(master.as_raw_fd()) } != 0 {
-        return Err(io::Error::last_os_error());
+        return Err(pty_operation_error("unlockpt", io::Error::last_os_error()));
     }
 
     // Open the slave through the master (`TIOCGPTPEER`, Linux 4.13+), as
@@ -212,12 +236,16 @@ pub(crate) fn open_pty_with_geometry(
         )
     };
     if slave < 0 {
-        return Err(io::Error::last_os_error());
+        return Err(pty_operation_error(
+            "TIOCGPTPEER",
+            io::Error::last_os_error(),
+        ));
     }
     // SAFETY: the ioctl succeeded, so `slave` is a fresh fd nothing else owns.
     let slave = unsafe { OwnedFd::from_raw_fd(slave) };
 
-    fd::resize_pty_fd(master.as_raw_fd(), geometry)?;
+    fd::resize_pty_fd(master.as_raw_fd(), geometry)
+        .map_err(|error| pty_operation_error("TIOCSWINSZ", error))?;
     enable_utf8_input(&master);
     Ok(OpenedPty { master, slave })
 }
@@ -265,19 +293,28 @@ pub fn spawn_pty(
     let pid = fork_child(&plan)?;
     drop(slave);
     // No watcher can reap this child yet, so pidfd_open names this fork.
-    let Some(handle) = shepr_platform::ProcessHandle::open(pid) else {
-        // SAFETY: this fork has never been handed to a waiter, so its pid
-        // cannot have been reused. This is only the failed acquisition path.
-        if unsafe { libc::kill(pid.as_pid_t(), libc::SIGKILL) } != 0 {
-            tracing::warn!(pid = %pid, error = %io::Error::last_os_error(), "could not kill failed pane launch");
-        }
-        detach_reaper(pid, move || {
-            let result = wait_for_pid(pid.as_pid_t(), 0).and_then(|status| {
-                status.ok_or_else(|| io::Error::other("a blocking wait returned no status"))
+    let handle = match shepr_platform::ProcessHandle::open_checked(pid) {
+        Ok(Some(handle)) => handle,
+        failed => {
+            let cause = match failed {
+                Err(error) => error.to_string(),
+                Ok(_) => "no process holds the child's pid".to_owned(),
+            };
+            // SAFETY: this fork has never been handed to a waiter, so its pid
+            // cannot have been reused. This is only the failed acquisition path.
+            if unsafe { libc::kill(pid.as_pid_t(), libc::SIGKILL) } != 0 {
+                tracing::warn!(pid = %pid, error = %io::Error::last_os_error(), "could not kill failed pane launch");
+            }
+            detach_reaper(pid, move || {
+                let result = wait_for_pid(pid.as_pid_t(), 0).and_then(|status| {
+                    status.ok_or_else(|| io::Error::other("a blocking wait returned no status"))
+                });
+                log_reap_failure(pid, result);
             });
-            log_reap_failure(pid, result);
-        });
-        return Err(io::Error::other("no process handle for the pane's child"));
+            return Err(io::Error::other(format!(
+                "no process handle for the pane's child: {cause}"
+            )));
+        }
     };
     // Registered right after the fork: a connection that arrives first waits
     // for it.
@@ -431,7 +468,8 @@ fn send_record(channel: RawFd, record: &[u8; LAUNCH_STATUS_RECORD_BYTES]) -> boo
 /// inherited fd but the PTY slave is closed before any filesystem step: a
 /// child stuck in chdir must not hold the server's lease, sockets or other
 /// panes' PTYs. The status channel is connected before chdir, so a hung
-/// chdir is still a launch in progress that the server can see.
+/// chdir is still a launch in progress that the server can see. Once that
+/// channel exists, signal-mask reset failures are reported with their stage.
 ///
 /// # Safety
 ///
@@ -495,11 +533,13 @@ unsafe fn run_child(plan: &ChildPlan<'_>) -> ! {
     }
     // SAFETY: sigset_t is a plain bit array; sigemptyset sets it.
     let mut empty: libc::sigset_t = unsafe { std::mem::zeroed() };
+    // SAFETY: `empty` is a live writable sigset_t.
+    if unsafe { libc::sigemptyset(&mut empty) } != 0 {
+        child_setup_failed(status, launch::ChildSetupStage::InitializeSignalMask);
+    }
     // SAFETY: `empty` is a live sigset_t; the old-mask pointer is null.
-    if unsafe { libc::sigemptyset(&mut empty) } != 0
-        || unsafe { libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) } != 0
-    {
-        child_exit(EXIT_SETUP_FAILED);
+    if unsafe { libc::sigprocmask(libc::SIG_SETMASK, &empty, std::ptr::null_mut()) } != 0 {
+        child_setup_failed(status, launch::ChildSetupStage::RestoreSignalMask);
     }
     let mut selected = None;
     // Only the first candidate's failure is reported: it is the directory the
@@ -532,6 +572,14 @@ unsafe fn run_child(plan: &ChildPlan<'_>) -> ! {
     unsafe { libc::execve(plan.program, plan.argv.as_ptr(), plan.envps[index].as_ptr()) };
     send_record(status, &launch::exec_failed_record(errno()));
     child_exit(EXIT_LAUNCH_FAILED)
+}
+
+fn child_setup_failed(channel: RawFd, stage: launch::ChildSetupStage) -> ! {
+    let error = errno();
+    let error = if error > 0 { error } else { libc::EIO };
+    let record = launch::setup_failed_record(stage, error);
+    send_record(channel, &record);
+    child_exit(EXIT_SETUP_FAILED)
 }
 
 /// Closes every fd from 3 up in the forked child. Kernels before 5.9 lack

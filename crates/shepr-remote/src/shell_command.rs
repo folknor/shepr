@@ -67,7 +67,7 @@ pub(crate) fn posix_shell_command(script: &PosixScript) -> AccountShellCommand {
     ))
 }
 
-pub fn shell_quote(value: &str) -> String {
+pub(crate) fn shell_quote(value: &str) -> String {
     shepr_core::shell_quote::quote(value)
 }
 

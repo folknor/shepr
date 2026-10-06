@@ -6,8 +6,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::limits::{
-    PIPE_DRAIN_GRACE, SSH_CHILD_PROCESS_POLL_INTERVAL, SSH_PIPE_DONE_CHANNEL_CAPACITY,
-    SSH_PIPE_READ_BUFFER_BYTES, SSH_STDERR_CAPTURE_LIMIT, SSH_STDOUT_CAPTURE_LIMIT,
+    PIPE_DRAIN_GRACE, SSH_CHILD_PROCESS_POLL_INTERVAL, SSH_PIPE_READ_BUFFER_BYTES,
+    SSH_STDERR_CAPTURE_LIMIT, SSH_STDOUT_CAPTURE_LIMIT,
 };
 
 #[derive(Clone, Copy)]
@@ -16,9 +16,13 @@ enum CaptureRetention {
     Tail,
 }
 
-/// Reads a child pipe on its own thread. [`PipeCapture::finish`] never waits on
-/// the reader longer than the grace it is given, so a pipe held open by a
-/// process other than the child cannot hang the caller.
+/// Reads a child pipe on its own thread. OpenSSH redirects the detached
+/// ControlPersist master's standard streams, and ProxyCommand stderr, to
+/// `/dev/null` unless debugging is enabled. An enabled user `LocalCommand` runs
+/// before that redirect, though, and a background descendant can retain these
+/// pipes. `finish` bounds the caller's wait and returns a partial capture, but
+/// cannot close a pipe held by that descendant, so its reader thread remains
+/// blocked until the inherited descriptor closes.
 pub(crate) struct PipeCapture {
     captured: Arc<Mutex<VecDeque<u8>>>,
     done: mpsc::Receiver<io::Result<()>>,
@@ -44,7 +48,9 @@ impl PipeCapture {
         // print a few lines, so reserving the limit up front would waste it.
         let captured = Arc::new(Mutex::new(VecDeque::new()));
         let worker_captured = Arc::clone(&captured);
-        let (done_tx, done) = mpsc::sync_channel(SSH_PIPE_DONE_CHANNEL_CAPACITY);
+        // limits-exempt: one-shot completion protocol; the reader sends exactly
+        // one result and must never wait for its consumer to send it.
+        let (done_tx, done) = mpsc::sync_channel(1);
         thread::spawn(move || {
             let result = read_into(reader, &worker_captured, limit, retention);
             // The receiver is gone only when `finish` gave up on this reader after
@@ -65,8 +71,8 @@ impl PipeCapture {
     }
 
     /// Waits up to `grace` for the pipe to reach end of stream and returns what
-    /// was read. When the reader is still blocked after `grace`, the thread is
-    /// left to finish on its own and the partial capture is returned.
+    /// was read. A background descendant that still holds the pipe is left to
+    /// finish on its own, and the partial capture is returned after the grace.
     pub(crate) fn finish(self, grace: Duration) -> io::Result<Vec<u8>> {
         match self.done.recv_timeout(grace) {
             Ok(result) => result?,
@@ -294,13 +300,13 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
-    /// Models a `ControlPersist` master that daemonizes with the command's stderr
-    /// still open: the child exits at once, a background process keeps the pipe.
+    /// Models a configured `LocalCommand` that leaves a background descendant
+    /// holding stderr open while the ssh child itself exits.
     #[test]
     fn a_stderr_pipe_held_by_a_background_process_does_not_block_the_result() {
         let mut command = fixture::command(&[
             Step::Spawn {
-                argv0: "control-master".into(),
+                argv0: "local-command-descendant".into(),
                 sleep: Duration::from_secs(5),
                 held: Held::Stderr,
             },
@@ -310,7 +316,7 @@ mod tests {
         command.stdout(Stdio::piped()).stderr(Stdio::piped());
         // This stand-in intentionally leaves a background fixture holding
         // stderr. Put it and that child in a test-owned group so drop can clean
-        // up and wait for the simulated ControlPersist process tree, even on panic.
+        // up and wait for the simulated LocalCommand process tree, even on panic.
         shepr_platform::detach_server_daemon_command(&mut command);
         let child = command.spawn().expect("test precondition");
         let process_group = libc::pid_t::try_from(child.id()).expect("fixture pid fits");

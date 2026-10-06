@@ -1,3 +1,4 @@
+use crate::types::InstallResult;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -8,9 +9,7 @@ use shepr_agent::IntegrationTarget as Target;
 use super::config_edit::HOOK_COMMAND_FIELDS;
 use super::env::{AgentIntegrationPaths, IntegrationEnvironment};
 use super::registration::{HookEventPolicy, HooksRoot, JsonShape, Registration, RequiredJsonField};
-use super::types::{
-    ArtifactRole, InstallError, InstallErrorKind, InstallIssue, IntegrationOutdatedReason,
-};
+use super::types::{ArtifactRole, InstallError, IntegrationOutdatedReason};
 
 #[derive(Clone, Copy)]
 pub(super) struct ManagedAsset {
@@ -23,7 +22,7 @@ pub(super) struct ManagedAsset {
 #[derive(Clone, Copy)]
 struct IntegrationSpec {
     target: Target,
-    directory: fn(&IntegrationEnvironment) -> io::Result<PathBuf>,
+    directory: fn(&IntegrationEnvironment) -> InstallResult<PathBuf>,
     primary_asset: ManagedAsset,
     additional_assets: &'static [ManagedAsset],
     action_label: Option<&'static str>,
@@ -341,7 +340,7 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
 pub(super) fn resolve_target_directory(
     environment: &IntegrationEnvironment,
     target: Target,
-) -> io::Result<PathBuf> {
+) -> InstallResult<PathBuf> {
     (spec_for(target).directory)(environment)
 }
 
@@ -352,11 +351,11 @@ pub(super) fn registration(target: Target) -> Registration {
 pub(super) fn target_directory(
     paths: &AgentIntegrationPaths,
     target: Target,
-) -> io::Result<PathBuf> {
+) -> InstallResult<PathBuf> {
     paths.directory(target)
 }
 
-pub(super) fn target_path(paths: &AgentIntegrationPaths, target: Target) -> io::Result<PathBuf> {
+pub(super) fn target_path(paths: &AgentIntegrationPaths, target: Target) -> InstallResult<PathBuf> {
     installed_path(paths, spec_for(target))
 }
 
@@ -376,7 +375,7 @@ pub(super) fn managed_assets(target: Target) -> impl Iterator<Item = &'static Ma
 }
 
 /// The primary managed file `spec` installs, whose bundled bytes status checks.
-fn installed_path(paths: &AgentIntegrationPaths, spec: &IntegrationSpec) -> io::Result<PathBuf> {
+fn installed_path(paths: &AgentIntegrationPaths, spec: &IntegrationSpec) -> InstallResult<PathBuf> {
     let mut path = paths.directory(spec.target)?;
     for part in spec.primary_asset.path {
         path.push(part);
@@ -401,25 +400,25 @@ pub(crate) fn integration_status(
 /// shepr's files and subdirectories inside it. Pi and OMP resolve to the
 /// `extensions` directory inside the agent directory, which install creates
 /// when missing, so for them the agent directory is its parent.
-pub(crate) fn agent_present(paths: &AgentIntegrationPaths, target: Target) -> io::Result<bool> {
+pub(crate) fn agent_present(paths: &AgentIntegrationPaths, target: Target) -> InstallResult<bool> {
     super::file_ops::is_dir(&agent_directory(paths, target)?)
 }
 
 pub(super) fn agent_directory(
     paths: &AgentIntegrationPaths,
     target: Target,
-) -> io::Result<PathBuf> {
+) -> InstallResult<PathBuf> {
     let spec = spec_for(target);
     let directory = paths.directory(target)?;
     let agent_directory = match spec.presence_directory {
         PresenceDirectory::TargetDirectory => directory,
         PresenceDirectory::ParentDirectory => {
             directory.parent().map(Path::to_path_buf).ok_or_else(|| {
-                io::Error::other(format!(
+                InstallError::from(io::Error::other(format!(
                     "{} extension directory {} has no parent",
                     target.label(),
                     directory.display()
-                ))
+                )))
             })?
         }
     };
@@ -432,7 +431,7 @@ fn grok_hook_config_is_valid(
     config_path: &Path,
     hook_path: &Path,
     timeout: Duration,
-) -> io::Result<bool> {
+) -> InstallResult<bool> {
     let expected_config = super::targets::grok_hook_config_with_timeout(hook_path, timeout)?;
     let Some(content) = read_config_content(config_path)? else {
         return Ok(false);
@@ -445,7 +444,7 @@ fn grok_hook_config_is_valid(
     Ok(config == expected_config)
 }
 
-fn opencode_tui_integration_is_valid(plugin_path: &Path, state_dir: &Path) -> io::Result<bool> {
+fn opencode_tui_integration_is_valid(plugin_path: &Path, state_dir: &Path) -> InstallResult<bool> {
     let Some(config_dir) = plugin_path.parent().and_then(Path::parent) else {
         return Ok(false);
     };
@@ -481,19 +480,16 @@ fn ancestor(path: &Path, levels: usize) -> Option<&Path> {
 }
 
 // Registration reads use the same regular-file policy as install.
-fn read_config_content(path: &Path) -> io::Result<Option<String>> {
+fn read_config_content(path: &Path) -> InstallResult<Option<String>> {
     super::file_ops::read_if_file(path)
 }
 
-fn read_json(path: &Path) -> io::Result<Option<serde_json::Value>> {
+fn read_json(path: &Path) -> InstallResult<Option<serde_json::Value>> {
     let Some(content) = read_config_content(path)? else {
         return Ok(None);
     };
     serde_json::from_str(&content).map(Some).map_err(|error| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigUnparseable,
-            format!("cannot parse {}: {error}", path.display()),
-        )
+        InstallError::config_unparseable(format!("cannot parse {}: {error}", path.display()))
     })
 }
 
@@ -525,7 +521,7 @@ fn json_hook_commands_registered(
     expected: &serde_json::Map<String, serde_json::Value>,
     required_fields: &[RequiredJsonField],
     hook_path: &Path,
-) -> io::Result<bool> {
+) -> InstallResult<bool> {
     let Some(document) = read_json(config_path)? else {
         return Ok(false);
     };
@@ -611,19 +607,16 @@ fn collect_hook_path_commands(
     }
 }
 
-fn read_toml(path: &Path) -> io::Result<Option<toml::Value>> {
+fn read_toml(path: &Path) -> InstallResult<Option<toml::Value>> {
     let Some(content) = read_config_content(path)? else {
         return Ok(None);
     };
     toml::from_str(&content).map(Some).map_err(|error| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigUnparseable,
-            format!("cannot parse {}: {error}", path.display()),
-        )
+        InstallError::config_unparseable(format!("cannot parse {}: {error}", path.display()))
     })
 }
 
-fn codex_hooks_feature_enabled(config_path: &Path) -> io::Result<bool> {
+fn codex_hooks_feature_enabled(config_path: &Path) -> InstallResult<bool> {
     let feature_enabled = read_toml(config_path)?.and_then(|config| {
         config
             .get("features")
@@ -637,17 +630,14 @@ fn kimi_hooks_registered(
     config_path: &Path,
     hook_path: &Path,
     timeout: Duration,
-) -> io::Result<bool> {
+) -> InstallResult<bool> {
     let Some(content) = read_config_content(config_path)? else {
         return Ok(false);
     };
     // The registration comparison preserves TOML source text. Parse the full
     // file here so syntax errors inside the managed block are surfaced too.
     let _config = toml::from_str::<toml::Value>(&content).map_err(|error| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigUnparseable,
-            format!("cannot parse {}: {error}", config_path.display()),
-        )
+        InstallError::config_unparseable(format!("cannot parse {}: {error}", config_path.display()))
     })?;
     super::config_edit::kimi_config_block_with_timeout_is_current(&content, hook_path, timeout)
 }
@@ -656,7 +646,7 @@ fn hook_registration_is_current(
     spec: &IntegrationSpec,
     hook_path: &Path,
     paths: &AgentIntegrationPaths,
-) -> io::Result<bool> {
+) -> InstallResult<bool> {
     let Some(dir) = ancestor(hook_path, spec.primary_asset.path.len()) else {
         return Ok(false);
     };
@@ -719,21 +709,21 @@ fn hook_registration_is_current(
     Ok(registered)
 }
 
-fn file_matches_asset(path: &Path, asset: &str) -> io::Result<bool> {
+fn file_matches_asset(path: &Path, asset: &str) -> InstallResult<bool> {
     let installed = super::file_ops::is_file(path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
+        InstallError::from(io::Error::new(
+            error.io_kind(),
             format!("cannot stat {}: {error}", path.display()),
-        )
+        ))
     })?;
     if !installed {
         return Ok(false);
     }
     let content = fs::read(path).map_err(|error| {
-        io::Error::new(
+        InstallError::from(io::Error::new(
             error.kind(),
             format!("cannot read {}: {error}", path.display()),
-        )
+        ))
     })?;
     Ok(content.as_slice() == asset.as_bytes())
 }
@@ -741,28 +731,28 @@ fn file_matches_asset(path: &Path, asset: &str) -> io::Result<bool> {
 fn integration_state_for_path(
     path: &Path,
     expected_asset: &str,
-) -> io::Result<(Option<bool>, Option<u32>)> {
+) -> InstallResult<(Option<bool>, Option<u32>)> {
     let installed = super::file_ops::is_file(path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
+        InstallError::from(io::Error::new(
+            error.io_kind(),
             format!("cannot stat {}: {error}", path.display()),
-        )
+        ))
     })?;
     if !installed {
         return Ok((None, None));
     }
 
     let content = fs::read(path).map_err(|error| {
-        io::Error::new(
+        InstallError::from(io::Error::new(
             error.kind(),
             format!("cannot read {}: {error}", path.display()),
-        )
+        ))
     })?;
     let installed_version = std::str::from_utf8(&content)
         .ok()
         .and_then(parse_integration_version);
     // Only release launches install these shared artifacts. Exact bytes detect
-    // edits without trusting a larger version marker or requiring a manual bump.
+    // edits; the version marker is only reported.
     // Dev launches must skip status-driven installation altogether.
     Ok((
         Some(content.as_slice() == expected_asset.as_bytes()),
@@ -835,11 +825,12 @@ fn parse_integration_version(content: &str) -> Option<u32> {
 }
 
 #[cfg(test)]
-pub(crate) fn integration_hook_timeout(target: Target) -> io::Result<Duration> {
-    spec_for(target)
-        .registration
-        .timeout()
-        .ok_or_else(|| io::Error::other(format!("{target:?} does not register timed hooks")))
+pub(crate) fn integration_hook_timeout(target: Target) -> InstallResult<Duration> {
+    spec_for(target).registration.timeout().ok_or_else(|| {
+        InstallError::from(io::Error::other(format!(
+            "{target:?} does not register timed hooks"
+        )))
+    })
 }
 
 #[cfg(test)]
@@ -873,6 +864,7 @@ mod registration_tests {
     use super::super::command::hook_command;
     use super::*;
     use crate::IntegrationStatusKind;
+    use crate::types::InstallErrorKind;
     use shepr_agent::IntegrationTarget;
 
     #[test]
@@ -1113,7 +1105,7 @@ mod registration_tests {
         fs::remove_file(&json_path).expect("test precondition");
         fs::create_dir(&json_path).expect("test precondition");
         let error = read_json(&json_path).expect_err("JSON read failure must be reported");
-        assert!(error.to_string().contains("cannot read"));
+        assert_eq!(error.kind(), InstallErrorKind::NotRegularFile);
     }
 
     fn base(name: &str) -> PathBuf {
@@ -1195,7 +1187,7 @@ mod registration_tests {
         fs::create_dir(&settings_path).expect("test precondition");
         let error = integration_status_at(IntegrationTarget::Claude, hook)
             .expect_err("config read failure must be reported");
-        assert!(error.to_string().contains("cannot read"));
+        assert_eq!(error.kind(), InstallErrorKind::NotRegularFile);
     }
 
     #[test]
@@ -1483,7 +1475,7 @@ mod registration_tests {
     fn install_repairs_every_registration_status_rejects() {
         use super::super::targets;
 
-        type Install = fn(&super::super::env::AgentIntegrationPaths) -> io::Result<()>;
+        type Install = fn(&super::super::env::AgentIntegrationPaths) -> InstallResult<()>;
         let env = shepr_test_support::IsolatedEnv::new();
         let home = env.home();
         let cases: [(IntegrationTarget, &[&str], &str, HooksRoot, Install); 7] = [

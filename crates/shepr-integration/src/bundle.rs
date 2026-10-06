@@ -10,9 +10,11 @@
 //! its language: `templates/hook_kit.py` under `templates/shell_hook.sh` for
 //! the shell hooks, `templates/plugin_kit.js` for the OpenCode and Kilo server
 //! plugins, `templates/tui_kit.js` for the OpenCode TUI plugin and
-//! `templates/extension_kit.ts` for the Pi and OMP extensions. The decoders
-//! under `templates/decoders` differ because the agents' payloads and
-//! lifecycles differ, and they spell none of the envelope.
+//! `templates/extension_kit.ts` for the Pi and OMP extensions. The OpenCode v2
+//! loader entrypoint is another generated asset with its own small decoder
+//! template. The reporting decoders under `templates/decoders` differ because
+//! the agents' payloads and lifecycles differ, and they spell none of the
+//! envelope.
 //!
 //! The assets under `assets/` are the generated output, committed because the
 //! bun tests and the server crate's contract tests run them from disk. The
@@ -81,6 +83,8 @@ enum Kind {
     Plugin,
     /// The OpenCode TUI plugin, which keeps its own selection transport.
     Tui,
+    /// The OpenCode v2 loader entrypoint that re-exports the generated TUI plugin.
+    TuiEntrypoint,
     /// The Pi and OMP extensions: a retry and a coalescing state queue.
     Extension,
 }
@@ -89,7 +93,6 @@ struct AssetSpec {
     target: IntegrationTarget,
     /// The `SHEPR_INTEGRATION_ID` header, the target's name when absent.
     id: Option<&'static str>,
-    version: u32,
     /// The generated file, relative to `assets/`.
     asset: &'static str,
     /// The agent's decoder, relative to `templates/decoders/`.
@@ -105,11 +108,10 @@ const fn shell(gate: Option<&'static str>, early_seq: bool, empty_object: bool) 
     })
 }
 
-const SPECS: [AssetSpec; 15] = [
+const SPECS: [AssetSpec; 16] = [
     AssetSpec {
         target: IntegrationTarget::AntigravityCli,
         id: None,
-        version: 3,
         asset: "antigravity_cli/shepr-agent-state.sh",
         decoder: "antigravity_cli.py",
         kind: shell(None, false, true),
@@ -117,7 +119,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Claude,
         id: None,
-        version: 6,
         asset: "claude/shepr-agent-state.sh",
         decoder: "claude.py",
         kind: shell(Some("claude.gate.sh"), false, false),
@@ -125,7 +126,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Codex,
         id: None,
-        version: 6,
         asset: "codex/shepr-agent-state.sh",
         decoder: "codex.py",
         kind: shell(None, true, false),
@@ -133,7 +133,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Copilot,
         id: None,
-        version: 5,
         asset: "copilot/shepr-agent-state.sh",
         decoder: "copilot.py",
         kind: shell(None, false, false),
@@ -141,7 +140,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Cursor,
         id: None,
-        version: 4,
         asset: "cursor/shepr-agent-state.sh",
         decoder: "cursor.py",
         kind: shell(None, false, false),
@@ -149,7 +147,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Devin,
         id: None,
-        version: 5,
         asset: "devin/shepr-agent-state.sh",
         decoder: "devin.py",
         kind: shell(None, false, false),
@@ -157,7 +154,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Droid,
         id: None,
-        version: 5,
         asset: "droid/shepr-agent-state.sh",
         decoder: "droid.py",
         kind: shell(None, false, false),
@@ -165,7 +161,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Grok,
         id: None,
-        version: 5,
         asset: "grok/shepr-agent-state.sh",
         decoder: "grok.py",
         kind: shell(None, false, false),
@@ -173,7 +168,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Kimi,
         id: None,
-        version: 5,
         asset: "kimi/shepr-agent-state.sh",
         decoder: "kimi.py",
         kind: shell(None, true, false),
@@ -181,7 +175,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Mastracode,
         id: None,
-        version: 7,
         asset: "mastracode/shepr-agent-state.sh",
         decoder: "mastracode.py",
         kind: shell(None, true, false),
@@ -189,7 +182,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Kilo,
         id: None,
-        version: 6,
         asset: "kilo/shepr-agent-state.js",
         decoder: "kilo.js",
         kind: Kind::Plugin,
@@ -197,7 +189,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Opencode,
         id: None,
-        version: 4,
         asset: "opencode/shepr-agent-state.js",
         decoder: "opencode.js",
         kind: Kind::Plugin,
@@ -205,7 +196,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Opencode,
         id: Some("opencode-tui"),
-        version: 3,
         asset: "opencode/shepr-tui-session.js",
         decoder: "opencode_tui.js",
         kind: Kind::Tui,
@@ -213,7 +203,6 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Pi,
         id: None,
-        version: 3,
         asset: "pi/shepr-agent-state.ts",
         decoder: "pi.ts",
         kind: Kind::Extension,
@@ -221,10 +210,16 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Omp,
         id: None,
-        version: 3,
         asset: "omp/shepr-agent-state.ts",
         decoder: "omp.ts",
         kind: Kind::Extension,
+    },
+    AssetSpec {
+        target: IntegrationTarget::Opencode,
+        id: Some("opencode-tui-v2"),
+        asset: "opencode/tui.js",
+        decoder: "opencode_tui_entry.js",
+        kind: Kind::TuiEntrypoint,
     },
 ];
 
@@ -426,7 +421,7 @@ fn common_facts(spec: &AssetSpec) -> Vec<(&'static str, String)> {
     ]
 }
 
-fn js_header(spec: &AssetSpec) -> String {
+fn js_header(spec: &AssetSpec, version: &str) -> String {
     format!(
         "// installed by shepr\n\
          // managed by shepr; every release shepr server launch on this host rewrites this file.\n\
@@ -434,11 +429,11 @@ fn js_header(spec: &AssetSpec) -> String {
          // SHEPR_INTEGRATION_ID={}\n\
          // SHEPR_INTEGRATION_VERSION={}\n",
         integration_id(spec),
-        spec.version
+        version
     )
 }
 
-fn render_shell(spec: &AssetSpec, hook: ShellHook) -> String {
+fn render_shell(spec: &AssetSpec, hook: ShellHook, version: &str) -> String {
     let common = common_facts(spec);
     let python = format!(
         "{}{}",
@@ -464,7 +459,7 @@ fn render_shell(spec: &AssetSpec, hook: ShellHook) -> String {
     let mut values = common;
     values.extend([
         ("ID", integration_id(spec)),
-        ("VERSION", spec.version.to_string()),
+        ("VERSION", version.to_owned()),
         ("FINISH_BODY", finish_body.to_owned()),
         ("EARLY_SEQ", early_seq.to_owned()),
         ("ACTION_GATE", action_gate),
@@ -474,25 +469,46 @@ fn render_shell(spec: &AssetSpec, hook: ShellHook) -> String {
     fill(&template("shell_hook.sh"), &values)
 }
 
+/// The version marker is diagnostic metadata in install logs. Derive it from
+/// the version-neutral generated bytes (FNV-1a), so an edit to a template or
+/// decoder cannot leave a stale marker. Exact asset bytes, not this compact
+/// marker, determine whether an installed integration is current.
+fn content_version(content: &str) -> u32 {
+    let mut hash = 0x811c_9dc5_u32;
+    for byte in content.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
 fn render(spec: &AssetSpec) -> String {
+    let canonical = render_with_version(spec, "0");
+    render_with_version(spec, &content_version(&canonical).to_string())
+}
+
+fn render_with_version(spec: &AssetSpec, version: &str) -> String {
     let text = match spec.kind {
-        Kind::Shell(hook) => render_shell(spec, hook),
+        Kind::Shell(hook) => render_shell(spec, hook, version),
         Kind::Plugin => format!(
             "{}\n{}{}{}",
-            js_header(spec),
+            js_header(spec, version),
             fill(&template("plugin_kit.js"), &common_facts(spec)),
             template("opencode_family.js"),
             fill(&decoder(spec.decoder), &common_facts(spec))
         ),
         Kind::Tui => format!(
             "{}\n{}{}",
-            js_header(spec),
+            js_header(spec, version),
             fill(&template("tui_kit.js"), &common_facts(spec)),
             fill(&decoder(spec.decoder), &common_facts(spec))
         ),
+        Kind::TuiEntrypoint => {
+            format!("{}\n{}", js_header(spec, version), decoder(spec.decoder))
+        }
         Kind::Extension => format!(
             "{}{}{}",
-            js_header(spec),
+            js_header(spec, version),
             fill(&template("extension_kit.ts"), &common_facts(spec)),
             fill(&decoder(spec.decoder), &common_facts(spec))
         ),
@@ -518,6 +534,35 @@ fn bundled_assets_are_current() {
     }
 }
 
+#[test]
+fn generated_versions_come_from_version_neutral_asset_content() {
+    for spec in &SPECS {
+        let canonical = render_with_version(spec, "0");
+        let expected = content_version(&canonical);
+        let rendered = render(spec);
+        let marker = rendered
+            .lines()
+            .find_map(|line| line.split_once("SHEPR_INTEGRATION_VERSION="))
+            .map(|(_, value)| value.trim())
+            .expect("generated assets carry diagnostic version metadata");
+        assert_eq!(marker.parse::<u32>().ok(), Some(expected), "{}", spec.asset);
+    }
+}
+
+#[test]
+fn opencode_v2_tui_entrypoint_is_managed_generated_asset() {
+    let spec = SPECS
+        .iter()
+        .find(|spec| spec.asset == "opencode/tui.js")
+        .expect("the v2 TUI entrypoint has a spec");
+    let asset = render(spec);
+    assert!(asset.contains(
+        "// managed by shepr; every release shepr server launch on this host rewrites this file."
+    ));
+    assert!(asset.contains("// SHEPR_INTEGRATION_ID=opencode-tui-v2\n"));
+    assert!(asset.ends_with("export { default } from \"../shepr-tui-session.js\";\n"));
+}
+
 /// Rewrites the committed assets from the templates. Ignored so the gate never
 /// writes into the tree; a filter naming it runs it.
 #[test]
@@ -532,8 +577,7 @@ fn regenerate_bundled_assets() {
 
 #[test]
 fn every_asset_with_a_decoder_is_generated() {
-    // Everything under `assets/` that reports is generated; the TUI plugin's
-    // one-line V2 entry point re-exports the generated reporter.
+    // Every shipped asset is generated; test files are the only non-assets.
     let generated: Vec<&str> = SPECS.iter().map(|spec| spec.asset).collect();
     let mut files = Vec::new();
     super::tests::collect_asset_files(&assets_dir(), &mut files);
@@ -543,7 +587,7 @@ fn every_asset_with_a_decoder_is_generated() {
             .expect("an asset lies under the assets directory")
             .to_string_lossy()
             .into_owned();
-        if relative.ends_with(".test.ts") || relative == "opencode/tui.js" {
+        if relative.ends_with(".test.ts") {
             continue;
         }
         assert!(
@@ -606,6 +650,9 @@ fn hook_assets_share_one_envelope() {
     let id = regex::Regex::new(r#""id": f"\{SOURCE\}:\{report_seq\}"|id: `\$\{(?:SOURCE|source)\}:\$\{seq\}`|id: `\$\{SOURCE\}:\$\{state === undefined \? seedSeq\(\) : seq\}`"#)
         .expect("test precondition");
     for spec in &SPECS {
+        if matches!(spec.kind, Kind::TuiEntrypoint) {
+            continue;
+        }
         let text = render(spec);
         let name = spec.asset;
         assert!(
@@ -621,6 +668,7 @@ fn hook_assets_share_one_envelope() {
             Kind::Plugin | Kind::Tui | Kind::Extension => {
                 format!("SOCKET_WAIT_MS = {};\n", SOCKET_WAIT.as_millis())
             }
+            Kind::TuiEntrypoint => unreachable!("TUI entrypoints do not report"),
         };
         assert!(
             text.contains(&wait),

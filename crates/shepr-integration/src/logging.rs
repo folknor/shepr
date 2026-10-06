@@ -1,23 +1,11 @@
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum IntegrationActionOutcome {
-    Succeeded,
-    Failed,
-}
-
-pub(crate) fn integration_action(
-    action: &'static str,
-    target: &'static str,
-    outcome: IntegrationActionOutcome,
-    error_kind: Option<crate::InstallErrorKind>,
-) {
+pub(crate) fn artifact_installed(integration: &str, artifact: &super::types::InstallArtifact) {
     tracing::info!(
-        event = "integration.action",
+        event = "integration.artifact_installed",
         subsystem = "integration",
-        outcome = ?outcome,
-        error_kind = ?error_kind,
-        action,
-        target,
-        "integration action finished"
+        integration,
+        role = ?artifact.role,
+        path = %artifact.path.display(),
+        "integration artifact installed"
     );
 }
 

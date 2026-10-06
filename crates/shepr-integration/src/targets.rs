@@ -1,3 +1,4 @@
+use crate::types::{InstallError, InstallResult};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -23,7 +24,7 @@ use super::registry::{
     action_label, agent_directory, agent_present, directory_must_differ_from, managed_assets,
     registration, target_directory, target_path,
 };
-use super::types::{ArtifactRole, InstallErrorKind, InstallIssue, InstallOutcome};
+use super::types::{ArtifactRole, InstallOutcome};
 
 struct ConfigEdit {
     path: PathBuf,
@@ -37,8 +38,8 @@ impl ConfigEdit {
         path: PathBuf,
         paths: &AgentIntegrationPaths,
         default: &str,
-        edit: impl FnOnce(&str, &Path) -> io::Result<String>,
-    ) -> io::Result<Self> {
+        edit: impl FnOnce(&str, &Path) -> InstallResult<String>,
+    ) -> InstallResult<Self> {
         let lock = lock_config_for_update(&path, paths)?;
         let original = read_if_file(&path)?.unwrap_or_else(|| default.to_string());
         let contents = edit(&original, &path)?;
@@ -51,7 +52,7 @@ impl ConfigEdit {
         })
     }
 
-    fn write(self) -> io::Result<()> {
+    fn write(self) -> InstallResult<()> {
         if self.changed {
             write_config_for_update(&self.path, &self.lock, self.contents)?;
         }
@@ -64,7 +65,10 @@ impl ConfigEdit {
 /// Preparing never creates an agent directory or publishes a hook. This is not
 /// a multi-file transaction: a publication error can leave a partial install,
 /// which the next status check and launch repair.
-pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Result<InstallOutcome> {
+pub(super) fn install(
+    paths: &AgentIntegrationPaths,
+    target: Target,
+) -> InstallResult<InstallOutcome> {
     let dir = target_directory(paths, target)?;
     let registration = registration(target);
     for path in registration.config_paths(&dir) {
@@ -79,15 +83,12 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
     if let Some(peer) = directory_must_differ_from(target)
         && dir == target_directory(paths, peer)?
     {
-        return Err(InstallIssue::io_error(
-            InstallErrorKind::ConfigShape,
-            format!(
-                "{} and {} share integration directory {}; set separate agent directories",
-                action_label(peer),
-                action_label(target),
-                dir.display(),
-            ),
-        ));
+        return Err(InstallError::config_shape(format!(
+            "{} and {} share integration directory {}; set separate agent directories",
+            action_label(peer),
+            action_label(target),
+            dir.display(),
+        )));
     }
     let hook_path = target_path(paths, target)?;
     let mut outcome = InstallOutcome::default();
@@ -185,7 +186,7 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
             // (only UTF-8), but its target and lock are checked before assets.
             edits.push(ConfigEdit::prepare(path.clone(), paths, "", |_, _| {
                 serde_json::to_string_pretty(&grok_hook_config_with_timeout(&hook_path, timeout)?)
-                    .map_err(io::Error::other)
+                    .map_err(|error| InstallError::from(io::Error::other(error)))
             })?);
             outcome = outcome.with_artifact(ArtifactRole::HookConfig, path);
         }
@@ -203,7 +204,7 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
                 plugin_edits.push((cli, false));
             } else {
                 outcome = outcome.with_notice(
-                    "OpenCode V2 is not set up yet; start opencode2 once and the next shepr server launch registers it".to_string(),
+                    "OpenCode V2 is not set up yet; start the agent once and the next server launch registers it".to_string(),
                 );
             }
         }
@@ -248,7 +249,7 @@ fn prepare_json(
     required_fields: &'static [RequiredJsonField],
     event_policy: HookEventPolicy,
     hook_path: &Path,
-) -> io::Result<ConfigEdit> {
+) -> InstallResult<ConfigEdit> {
     ConfigEdit::prepare(path, paths, "{}", |content, path| {
         super::json_edit::install_json(
             content,
@@ -262,15 +263,12 @@ fn prepare_json(
     })
 }
 
-fn missing_agent_directory(target: Target, dir: &Path) -> io::Error {
-    InstallIssue::io_error(
-        InstallErrorKind::AgentDirMissing,
-        format!(
-            "{} agent config directory not found at {}",
-            action_label(target),
-            dir.display()
-        ),
-    )
+fn missing_agent_directory(target: Target, dir: &Path) -> super::types::InstallError {
+    InstallError::agent_dir_missing(format!(
+        "{} agent config directory not found at {}",
+        action_label(target),
+        dir.display()
+    ))
 }
 
 /// Builds the Shepr-owned `hooks.json` block for Antigravity CLI.
@@ -280,7 +278,7 @@ fn missing_agent_directory(target: Target, dir: &Path) -> io::Error {
 pub(super) fn antigravity_cli_hook_block_with_timeout(
     hook_path: &Path,
     timeout: std::time::Duration,
-) -> io::Result<Value> {
+) -> InstallResult<Value> {
     let mut block = Map::new();
     let timeout_seconds = timeout.as_secs();
     for hook in Target::AntigravityCli.hook_events() {
@@ -302,7 +300,7 @@ pub(super) fn antigravity_cli_hook_block_with_timeout(
 pub(super) fn grok_hook_config_with_timeout(
     hook_path: &Path,
     timeout: std::time::Duration,
-) -> io::Result<Value> {
+) -> InstallResult<Value> {
     let mut event_groups = BTreeMap::<&'static str, Vec<Value>>::new();
     let timeout_seconds = timeout.as_secs();
     for event in Target::Grok.hook_events() {
@@ -328,7 +326,7 @@ pub(super) fn grok_hook_config_with_timeout(
 }
 
 #[cfg(test)]
-pub(crate) fn grok_hook_config(hook_path: &Path) -> io::Result<Value> {
+pub(crate) fn grok_hook_config(hook_path: &Path) -> InstallResult<Value> {
     grok_hook_config_with_timeout(hook_path, super::HOOK_TIMEOUT)
 }
 

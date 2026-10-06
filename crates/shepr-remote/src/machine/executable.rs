@@ -9,7 +9,7 @@ use crate::shell_command::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteExecutableError {
+pub(crate) enum RemoteExecutableError {
     NotAbsolute,
     TooLong,
     ContainsControlCharacters,
@@ -39,10 +39,10 @@ impl std::error::Error for RemoteExecutableError {}
 
 /// A checked absolute path to the Shepr executable on a remote machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoteExecutable(String);
+pub(crate) struct RemoteExecutable(String);
 
 impl RemoteExecutable {
-    pub fn parse(value: impl Into<String>) -> Result<Self, RemoteExecutableError> {
+    pub(crate) fn parse(value: impl Into<String>) -> Result<Self, RemoteExecutableError> {
         let value = value.into();
         if !Path::new(&value).is_absolute() {
             return Err(RemoteExecutableError::NotAbsolute);
@@ -67,7 +67,7 @@ impl RemoteExecutable {
     }
 
     /// This checked path can be placed in an account-shell command without quoting.
-    pub fn shell_word(&self) -> &str {
+    pub(crate) fn shell_word(&self) -> &str {
         self.as_str()
     }
 

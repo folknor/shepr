@@ -1,6 +1,75 @@
 use std::fmt;
+use std::os::unix::fs::FileTypeExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+
+/// The object opened by [`open_regular_file`] was not a regular file.
+#[derive(Debug)]
+pub struct NotRegularFile {
+    path: PathBuf,
+    file_type: std::fs::FileType,
+    requested_path: Option<PathBuf>,
+}
+
+impl NotRegularFile {
+    /// Describes a non-regular object found at `path`.
+    pub fn new(path: &Path, file_type: std::fs::FileType) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            file_type,
+            requested_path: None,
+        }
+    }
+
+    /// Adds the path the caller originally requested when `path` was resolved
+    /// through one or more symlinks.
+    #[must_use]
+    pub fn with_requested_path(mut self, requested_path: &Path) -> Self {
+        if self.path.as_path() != requested_path {
+            self.requested_path = Some(requested_path.to_path_buf());
+        }
+        self
+    }
+
+    /// The resolved path that names the non-regular object.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// The kind of object found at [`Self::path`].
+    pub fn file_type(&self) -> std::fs::FileType {
+        self.file_type
+    }
+}
+
+impl fmt::Display for NotRegularFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let description = if self.file_type.is_dir() {
+            "a directory"
+        } else if self.file_type.is_fifo() {
+            "a FIFO"
+        } else if self.file_type.is_socket() {
+            "a socket"
+        } else if self.file_type.is_char_device() {
+            "a character device"
+        } else if self.file_type.is_block_device() {
+            "a block device"
+        } else {
+            "something else"
+        };
+        write!(
+            f,
+            "{} is {description}, not a regular file",
+            self.path.display()
+        )?;
+        if let Some(requested_path) = &self.requested_path {
+            write!(f, " (resolved from {})", requested_path.display())?;
+        }
+        f.write_str("; remove it or make it a regular file")
+    }
+}
+
+impl std::error::Error for NotRegularFile {}
 
 #[derive(Debug)]
 pub(crate) struct PrivateFilePolicyError {
@@ -169,7 +238,7 @@ pub fn sync_directory(directory: &Path) -> std::io::Result<()> {
 /// not block and a device sees no open. The regular file is then reopened
 /// through the pin, so what is read is the very object that was checked even
 /// if the path changes meanwhile.
-pub fn open_regular_file(path: &Path) -> std::io::Result<Result<std::fs::File, std::fs::FileType>> {
+pub fn open_regular_file(path: &Path) -> std::io::Result<Result<std::fs::File, NotRegularFile>> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -179,7 +248,7 @@ pub fn open_regular_file(path: &Path) -> std::io::Result<Result<std::fs::File, s
         .open(path)?;
     let metadata = pinned.metadata()?;
     if !metadata.is_file() {
-        return Ok(Err(metadata.file_type()));
+        return Ok(Err(NotRegularFile::new(path, metadata.file_type())));
     }
     // The path is known to exist now, so a failed reopen (no /proc in a
     // sandbox, say) must not read as NotFound: callers take that to mean the
@@ -209,10 +278,12 @@ mod tests {
             unsafe { libc::mkfifo(path.as_ptr(), super::super::limits::PRIVATE_FILE_MODE) },
             0
         );
-        let file_type = open_regular_file(&fifo)
+        let not_regular = open_regular_file(&fifo)
             .expect("the fifo is inspected")
             .expect_err("a fifo is not a regular file");
-        assert!(std::os::unix::fs::FileTypeExt::is_fifo(&file_type));
+        assert!(std::os::unix::fs::FileTypeExt::is_fifo(
+            &not_regular.file_type()
+        ));
         assert!(
             open_regular_file(scratch.path())
                 .expect("the directory is inspected")

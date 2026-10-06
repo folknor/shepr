@@ -1,5 +1,6 @@
 //! Protected writes for user-owned integration configuration, not managed assets.
 
+use crate::types::{InstallError, InstallResult};
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,6 @@ use crate::limits::MAX_CONFIG_SYMLINK_DEPTH;
 
 use super::atomic_replace::{AtomicReplace, PermissionPolicy};
 use super::env::AgentIntegrationPaths;
-use super::types::{InstallErrorKind, InstallIssue};
 
 /// Holds the persistent lock for one user-owned config file.
 pub(super) struct ConfigUpdateLock {
@@ -23,25 +23,27 @@ pub(super) struct ConfigUpdateLock {
 pub(super) fn lock_config_for_update(
     path: &Path,
     paths: &AgentIntegrationPaths,
-) -> io::Result<ConfigUpdateLock> {
+) -> InstallResult<ConfigUpdateLock> {
     check_config_target(path)?;
     let target = resolve_target(path)?;
     let lock_path = config_update_lock_path(&target, paths)?;
     // No lock means no edit: a lock directory that cannot be created or a
     // lock that cannot be taken fails the change instead of editing unlocked.
+    // A busy installer must not stall all later agents in the detached worker.
+    // Skip this target with a logged error; the next launch can retry.
     let lock = shepr_platform::ipc::acquire_flock_lock(
         &lock_path,
-        shepr_platform::ipc::LockWait::UntilFree,
+        shepr_platform::ipc::LockWait::FailIfHeld,
     )
     .map_err(|error| {
-        io::Error::new(
+        InstallError::from(io::Error::new(
             error.kind(),
             format!(
                 "could not lock {} for editing ({}): {error}",
                 target.display(),
                 lock_path.display()
             ),
-        )
+        ))
     })?;
     let contents = read_config_snapshot(&target)?;
     Ok(ConfigUpdateLock {
@@ -51,7 +53,7 @@ pub(super) fn lock_config_for_update(
     })
 }
 
-fn config_update_lock_path(target: &Path, paths: &AgentIntegrationPaths) -> io::Result<PathBuf> {
+fn config_update_lock_path(target: &Path, paths: &AgentIntegrationPaths) -> InstallResult<PathBuf> {
     // Resolve an existing target or parent so two symlinked agent config
     // directories still key the same persistent lock file.
     let key = canonicalize_config_target(target)?;
@@ -63,7 +65,7 @@ fn config_update_lock_path(target: &Path, paths: &AgentIntegrationPaths) -> io::
 
 /// Resolves existing ancestors while allowing the target or its parent to be
 /// absent before the first integration install.
-fn canonicalize_config_target(target: &Path) -> io::Result<PathBuf> {
+fn canonicalize_config_target(target: &Path) -> InstallResult<PathBuf> {
     let mut current = target;
     let mut missing = Vec::new();
     loop {
@@ -76,10 +78,10 @@ fn canonicalize_config_target(target: &Path) -> io::Result<PathBuf> {
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 let Some(file_name) = current.file_name() else {
-                    return Err(io::Error::new(
+                    return Err(InstallError::from(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "integration config target has no file name",
-                    ));
+                    )));
                 };
                 missing.push(PathBuf::from(file_name));
                 current = match current
@@ -90,36 +92,33 @@ fn canonicalize_config_target(target: &Path) -> io::Result<PathBuf> {
                     None => Path::new("."),
                 };
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         }
     }
 }
 
-pub(super) fn check_config_target(path: &Path) -> io::Result<()> {
+pub(super) fn check_config_target(path: &Path) -> InstallResult<()> {
     reject_hard_links(path)?;
     resolve_target(path).map(|_| ())
 }
 
-fn reject_hard_links(path: &Path) -> io::Result<()> {
+fn reject_hard_links(path: &Path) -> InstallResult<()> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     };
     if metadata.is_file() && shepr_platform::config_file_link_count(path)? > 1 {
-        return Err(InstallIssue::io_error(
-            InstallErrorKind::HardLinked,
-            format!(
-                "cannot update {}: config has multiple hard links; use a separate file or a symlink before retrying",
-                path.display()
-            ),
-        ));
+        return Err(InstallError::hard_linked(format!(
+            "cannot update {}: config has multiple hard links; use a separate file or a symlink before retrying",
+            path.display()
+        )));
     }
     Ok(())
 }
 
 // Unlike canonicalize, this also follows dangling symlinks on a first install.
-fn resolve_target(path: &Path) -> io::Result<PathBuf> {
+fn resolve_target(path: &Path) -> InstallResult<PathBuf> {
     let mut current = path.to_path_buf();
     for _ in 0..MAX_CONFIG_SYMLINK_DEPTH {
         match fs::symlink_metadata(&current) {
@@ -132,30 +131,28 @@ fn resolve_target(path: &Path) -> io::Result<PathBuf> {
                 };
             }
             Ok(metadata) if !metadata.is_file() => {
-                return Err(InstallIssue::io_error(
-                    InstallErrorKind::NotRegularFile,
-                    format!(
-                        "cannot update {}: config is not a regular file",
-                        path.display()
-                    ),
-                ));
+                return Err(
+                    shepr_platform::NotRegularFile::new(&current, metadata.file_type())
+                        .with_requested_path(path)
+                        .into(),
+                );
             }
             Ok(_) => return Ok(current),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(current),
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         }
     }
-    Err(InstallIssue::io_error(
-        InstallErrorKind::TooManySymlinks,
-        format!("cannot update {}: too many symbolic links", path.display()),
-    ))
+    Err(InstallError::too_many_symlinks(format!(
+        "cannot update {}: too many symbolic links",
+        path.display()
+    )))
 }
 
 pub(super) fn write_config_for_update(
     path: &Path,
     update_lock: &ConfigUpdateLock,
     contents: impl AsRef<[u8]>,
-) -> io::Result<()> {
+) -> InstallResult<()> {
     check_config_target(path)?;
     let target = resolve_target(path)?;
     if target != update_lock.target {
@@ -175,42 +172,20 @@ pub(super) fn write_config_for_update(
     })
 }
 
-pub(super) fn is_config_changed(error: &io::Error) -> bool {
-    error
-        .get_ref()
-        .and_then(|cause| cause.downcast_ref::<ConfigChanged>())
-        .is_some()
-}
-
-fn read_config_snapshot(path: &Path) -> io::Result<Option<Vec<u8>>> {
+fn read_config_snapshot(path: &Path) -> InstallResult<Option<Vec<u8>>> {
     super::file_ops::read_config_bytes(path)
 }
 
-fn config_changed_error(path: &Path) -> io::Error {
-    io::Error::new(io::ErrorKind::WouldBlock, ConfigChanged(path.to_path_buf()))
+fn config_changed_error(path: &Path) -> super::types::InstallError {
+    InstallError::ConfigChanged(path.to_path_buf())
 }
-
-#[derive(Debug)]
-struct ConfigChanged(PathBuf);
-
-impl std::fmt::Display for ConfigChanged {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "{} changed while Shepr was preparing an update",
-            self.0.display()
-        )
-    }
-}
-
-impl std::error::Error for ConfigChanged {}
 
 struct Replacement {
     inner: AtomicReplace,
 }
 
 impl Replacement {
-    fn prepare(path: &Path, contents: &[u8]) -> io::Result<Self> {
+    fn prepare(path: &Path, contents: &[u8]) -> InstallResult<Self> {
         reject_hard_links(path)?;
         let target = resolve_target(path)?;
         let existing = match fs::metadata(&target) {
@@ -220,7 +195,7 @@ impl Replacement {
                 Some(target.as_path())
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         };
         let inner = AtomicReplace::prepare_with_policy(
             &target,
@@ -230,12 +205,15 @@ impl Replacement {
         Ok(Self { inner })
     }
 
-    fn commit_after(self, before_publish: impl FnOnce(&Path) -> io::Result<()>) -> io::Result<()> {
+    fn commit_after(
+        self,
+        before_publish: impl FnOnce(&Path) -> InstallResult<()>,
+    ) -> InstallResult<()> {
         self.inner.commit_after(before_publish)
     }
 
     #[cfg(test)]
-    fn commit(self) -> io::Result<()> {
+    fn commit(self) -> InstallResult<()> {
         self.inner.commit_after(reject_hard_links)
     }
 }
@@ -251,7 +229,7 @@ impl Replacement {
 }
 
 #[cfg(test)]
-pub(super) fn write_config(path: &Path, contents: impl AsRef<[u8]>) -> io::Result<()> {
+pub(super) fn write_config(path: &Path, contents: impl AsRef<[u8]>) -> InstallResult<()> {
     check_config_target(path)?;
     let target = resolve_target(path)?;
     let replacement = Replacement::prepare(&target, contents.as_ref())?;

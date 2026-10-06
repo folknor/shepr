@@ -830,3 +830,24 @@ fn candidate_mismatch_class_excludes_other_remote_compatibility_errors() {
         assert!(!is_remote_candidate_mismatch(&error), "{message}");
     }
 }
+
+#[test]
+fn candidate_order_prefers_path_and_deduplicates_known_locations() {
+    let path = RemoteExecutable::parse("/path/shepr").expect("path");
+    let cargo = RemoteExecutable::parse("/cargo/shepr").expect("cargo");
+    let local = RemoteExecutable::parse("/local/shepr").expect("local");
+    assert_eq!(
+        ordered_candidates(
+            Some(path.clone()),
+            vec![cargo.clone(), path.clone(), local.clone(), cargo.clone()]
+        ),
+        vec![path, cargo, local],
+    );
+}
+
+#[test]
+fn json_records_skip_noise_and_choose_the_last_matching_record() {
+    let stdout = "banner\n[1]\nnoise\n[2]\ntrailer\n";
+    assert_eq!(last_json_record::<Vec<u32>>(stdout), Some(vec![2]));
+    assert_eq!(last_json_record::<Vec<u32>>("noise"), None);
+}

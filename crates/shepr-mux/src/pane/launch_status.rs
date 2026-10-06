@@ -40,9 +40,7 @@ use tokio::sync::{oneshot, watch};
 use super::exit_arbiter::{PaneExitArbiter, RecordedEnding};
 use super::teardown::ChildLiveness;
 use crate::events::EventSender;
-use crate::limits::{
-    LAUNCH_EXIT_POLL_INTERVAL, LAUNCH_SETTLE_AFTER_PANE_END, LAUNCH_STATUS_AFTER_EXIT,
-};
+use crate::limits::{LAUNCH_SETTLE_AFTER_PANE_END, LAUNCH_STATUS_AFTER_EXIT};
 use crate::terminal::PaneStartFailure;
 use shepr_core::layout::PaneId;
 
@@ -245,21 +243,14 @@ async fn settle(
     child_liveness: &ChildLiveness,
     failure_probe: impl Fn() -> Option<std::io::Error> + Send + Sync + 'static,
 ) -> LaunchOutcome {
-    let exit = child_liveness
-        .leader()
-        .and_then(|leader| leader.try_clone_pidfd().ok())
-        .and_then(|pidfd| AsyncFd::new(pidfd).ok());
-    // Without a watchable pidfd, poll the liveness the watcher also records:
-    // a child that dies before reporting must still settle its launch, or its
-    // death would never be published.
+    let mut wait_completion = child_liveness.wait_completion();
+    // The child watcher owns the one exit wait and publishes its completion
+    // through ChildLiveness, so launch settlement needs no second pidfd or poll.
     let child_exited = async {
-        if let Some(exit) = &exit
-            && exit.readable().await.is_ok()
-        {
-            return;
-        }
-        while !(child_liveness.has_exited() || child_liveness.wait_completed()) {
-            tokio::time::sleep(LAUNCH_EXIT_POLL_INTERVAL).await;
+        while !*wait_completion.borrow_and_update() {
+            if wait_completion.changed().await.is_err() {
+                return;
+            }
         }
     };
     let delivery_lost = || {

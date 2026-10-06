@@ -34,12 +34,17 @@ pub(super) fn pane_exited(
     exit_status: &std::process::ExitStatus,
 ) {
     let status = exit_status.to_string();
+    // The child reserves this status for a failed setup step before exec. A
+    // shell can exit with it too, so the field says what the status means to
+    // shepr, not that setup certainly failed.
+    let setup_failure_status = exit_status.code() == Some(shepr_pty::backend::EXIT_SETUP_FAILED);
     tracing::info!(
         event = "pane.exit",
         subsystem = "pane",
         outcome = "completed",
         %pane_id,
         status = status.as_str(),
+        setup_failure_status,
         "pane child exited"
     );
 }

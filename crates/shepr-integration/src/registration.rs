@@ -1,5 +1,6 @@
 //! Canonical registrations shared by configuration edits and status checks.
 
+use crate::types::{InstallError, InstallResult};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -163,7 +164,7 @@ impl JsonShape {
         target: Target,
         hook_path: &Path,
         policy: HookEventPolicy,
-    ) -> io::Result<Map<String, Value>> {
+    ) -> InstallResult<Map<String, Value>> {
         let mut entries = Map::new();
         let claude_matcher = match policy.matcher_source {
             MatcherSource::Descriptor => None,
@@ -206,9 +207,12 @@ impl JsonShape {
     }
 }
 
-pub(super) fn timeout_millis(timeout: Duration) -> io::Result<u64> {
-    u64::try_from(timeout.as_millis())
-        .map_err(|_| io::Error::other("hook timeout exceeds millisecond configuration range"))
+pub(super) fn timeout_millis(timeout: Duration) -> InstallResult<u64> {
+    u64::try_from(timeout.as_millis()).map_err(|_| {
+        InstallError::from(io::Error::other(
+            "hook timeout exceeds millisecond configuration range",
+        ))
+    })
 }
 
 #[cfg(test)]

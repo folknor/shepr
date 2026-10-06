@@ -5,30 +5,6 @@ use shepr_launch::{EndpointFailure, FailureCause, FailureDisposition};
 use std::io::Read as _;
 use std::time::Duration;
 
-#[test]
-fn bridge_download_drain_timeout_does_not_join_and_shuts_down_the_stream() {
-    let (mut client, bridge) = upload_test_streams();
-    let connection_stop = AtomicBool::new(false);
-    let (release_tx, release_rx) = mpsc::channel();
-    let download = BridgeDownload::spawn(move || {
-        release_rx
-            .recv()
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        Ok(0)
-    });
-
-    let result = download
-        .finish(Duration::from_millis(1), &connection_stop, &bridge)
-        .expect("a drain timeout is an ordinary bounded end");
-    assert!(matches!(result, BridgeDownloadEnd::DrainTimedOut));
-    assert!(connection_stop.load(Ordering::Acquire));
-    let mut byte = [0_u8; 1];
-    release_tx
-        .send(())
-        .expect("download worker is still waiting");
-    assert_eq!(client.read(&mut byte).expect("shutdown reaches peer"), 0);
-}
-
 impl BridgeUpload {
     /// Stop copying. Bytes already read are still written.
     fn cancel(&self) {
@@ -142,6 +118,30 @@ fn upload_test_streams() -> (
     let (client, server) = shepr_platform::ipc::LocalStream::pair().expect("test precondition");
     server.set_nonblocking(true).expect("test precondition");
     (client, server)
+}
+
+#[test]
+fn bridge_download_drain_timeout_does_not_join_and_shuts_down_the_stream() {
+    let (mut client, bridge) = upload_test_streams();
+    let connection_stop = AtomicBool::new(false);
+    let (release_tx, release_rx) = mpsc::channel();
+    let download = BridgeDownload::spawn(move || {
+        release_rx
+            .recv()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(0)
+    });
+
+    let result = download
+        .finish(Duration::from_millis(1), &connection_stop, &bridge)
+        .expect("a drain timeout is an ordinary bounded end");
+    assert!(matches!(result, BridgeDownloadEnd::DrainTimedOut));
+    assert!(connection_stop.load(Ordering::Acquire));
+    let mut byte = [0_u8; 1];
+    release_tx
+        .send(())
+        .expect("download worker is still waiting");
+    assert_eq!(client.read(&mut byte).expect("shutdown reaches peer"), 0);
 }
 
 #[test]
@@ -327,11 +327,21 @@ fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
         ],
     );
     env.set("PATH", &echoing_dir);
+    // The managed config lives under its own root, so the entry count of
+    // `scratch` below sees only the two stand-in directories.
+    let ssh_root = shepr_test_support::ScratchDir::new("bridge-pair-ssh");
+    let ssh_paths = shepr_paths::AppPaths::rooted_at(&ssh_root, Some(&ssh_root), None)
+        .expect("scratch roots fit a socket");
+    let ssh_options = crate::ssh::managed_ssh_options_for_test(
+        &SshTarget::parse("example").expect("target"),
+        &ssh_paths,
+    )
+    .expect("managed ssh options");
 
     let (bridge, mut stream) = SshStdioBridge::start_command(
         SshTarget::parse("example").expect("target"),
         AccountShellCommand::from_account_shell_text("unused"),
-        None,
+        &ssh_options,
     )
     .expect("socket pair bridge");
     stream
@@ -357,7 +367,7 @@ fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
     let (idle_bridge, idle_stream) = SshStdioBridge::start_command(
         SshTarget::parse("example").expect("target"),
         AccountShellCommand::from_account_shell_text("unused"),
-        None,
+        &ssh_options,
     )
     .expect("idle socket pair bridge");
     let started = Instant::now();
@@ -371,7 +381,7 @@ fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
     let (bridge, mut stream) = SshStdioBridge::start_command(
         SshTarget::parse("example").expect("target"),
         AccountShellCommand::from_account_shell_text("unused"),
-        None,
+        &ssh_options,
     )
     .expect("second socket pair bridge");
     stream

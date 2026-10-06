@@ -20,10 +20,6 @@ impl DataDirLease {
     pub fn directory(&self) -> &Path {
         self.inner.directory()
     }
-
-    pub fn release(self) {
-        self.inner.release();
-    }
 }
 
 #[cfg(test)]

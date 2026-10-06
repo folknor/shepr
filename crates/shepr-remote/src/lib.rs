@@ -28,9 +28,8 @@ pub use machine_ssh::{
 };
 pub use preflight::{
     AuthenticationError, MachineCheck, MachineSshPreflight, PreflightOutcome, PreflightSsh,
-    classify_check, preflight,
+    preflight,
 };
 pub use relay::RemoteBridgeOutcome;
 pub use server_wait::{ServerWaitEnd, wait_for_server};
-pub use shell_command::shell_quote;
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command, ssh_check_command};

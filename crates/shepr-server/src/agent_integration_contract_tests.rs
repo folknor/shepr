@@ -111,7 +111,7 @@ const BUN_ASSETS: &[AssetContract] = &[
     AssetContract {
         asset: "pi/shepr-agent-state.ts",
         agent: Agent::Pi,
-        session: ContractSessionRef::Path("/tmp/pi-new.jsonl"),
+        session: ContractSessionRef::Path("/nonexistent/pi-new.jsonl"),
         state: Some(AgentState::Working),
     },
     AssetContract {

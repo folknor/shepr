@@ -5,6 +5,7 @@
 //! document with duplicate keys. Each edit is checked by decoding the result
 //! against the value it was meant to produce.
 
+use crate::types::{InstallError, InstallResult};
 use std::collections::HashSet;
 use std::io;
 use std::path::Path;
@@ -17,7 +18,6 @@ use serde_json::{Map, Value};
 
 use super::command::{hook_command_prefix, is_hook_command_for_path};
 use super::registration::{HooksRoot, RequiredJsonField};
-use super::types::{InstallErrorKind, InstallIssue};
 
 /// Replace shepr's hook entries in a JSON agent config. An entry already equal
 /// to an expected one is kept where it is; every other entry naming this
@@ -34,7 +34,7 @@ pub(super) fn install_json(
     mut expected: Map<String, Value>,
     required_fields: &[RequiredJsonField],
     document_description: &str,
-) -> io::Result<String> {
+) -> InstallResult<String> {
     let mut root = parse_root(content, path)?;
     let mut object = root
         .value()
@@ -132,7 +132,9 @@ pub(super) fn install_json(
                         updated = append_array_element(
                             &updated,
                             ast_array,
-                            &serde_json::to_string(addition)?,
+                            &serde_json::to_string(addition).map_err(|err| {
+                                shape_error(&format!("failed to serialize hook entry: {err}"))
+                            })?,
                         );
                     } else {
                         array.append(input_value(addition));
@@ -161,16 +163,13 @@ pub(super) fn install_json(
     verify_updated(updated, path, &desired)
 }
 
-fn shape_error(message: &str) -> io::Error {
-    InstallIssue::io_error(InstallErrorKind::ConfigShape, message)
+fn shape_error(message: &str) -> super::types::InstallError {
+    InstallError::config_shape(message)
 }
 
-fn parse_root(content: &str, path: &Path) -> io::Result<CstRootNode> {
+fn parse_root(content: &str, path: &Path) -> InstallResult<CstRootNode> {
     let root = CstRootNode::parse(content, &strict_parse_options()).map_err(|err| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigUnparseable,
-            format!("failed to parse {}: {err}", path.display()),
-        )
+        InstallError::config_unparseable(format!("failed to parse {}: {err}", path.display()))
     })?;
     if let Some(value) = root.value() {
         reject_duplicate_keys(&value, path)?;
@@ -198,7 +197,7 @@ fn append_property(
     under_hooks: bool,
     name: &str,
     value: &Value,
-) -> io::Result<String> {
+) -> InstallResult<String> {
     if direct_children_are_compact(&object.children()) {
         let text = root.to_string();
         let ast = parse_ast_root_object(&text, path)?;
@@ -208,7 +207,9 @@ fn append_property(
         } else {
             &ast
         };
-        append_object_property(&text, container, name, &serde_json::to_string(value)?)
+        let value_text = serde_json::to_string(value)
+            .map_err(|err| shape_error(&format!("failed to serialize {name}: {err}")))?;
+        append_object_property(&text, container, name, &value_text)
     } else {
         object.append(name, input_value(value));
         Ok(root.to_string())
@@ -221,7 +222,7 @@ pub(super) fn install_block(
     path: &Path,
     name: &str,
     block: &Value,
-) -> io::Result<String> {
+) -> InstallResult<String> {
     let root = parse_root(content, path)?;
     let object = root
         .value()
@@ -250,13 +251,10 @@ fn remove_managed_hook_commands(
     hooks: &CstObject,
     hook_path: &Path,
     expected: &mut Map<String, Value>,
-) -> io::Result<()> {
+) -> InstallResult<()> {
     for event_property in hooks.properties() {
         let property_event = event_property.decoded_name().ok_or_else(|| {
-            InstallIssue::io_error(
-                InstallErrorKind::ConfigShape,
-                "agent config hooks contain an undecodable event name",
-            )
+            InstallError::config_shape("agent config hooks contain an undecodable event name")
         })?;
         let Some(entries) = event_property.value().and_then(|value| value.as_array()) else {
             return Err(shape_error(&format!(
@@ -395,23 +393,23 @@ pub(super) fn expected_hook_commands(value: &Value) -> Vec<String> {
     commands
 }
 
-fn parse_ast_root_object<'a>(content: &'a str, settings_path: &Path) -> io::Result<AstObject<'a>> {
+fn parse_ast_root_object<'a>(
+    content: &'a str,
+    settings_path: &Path,
+) -> InstallResult<AstObject<'a>> {
     let parsed = parse_to_ast(content, &CollectOptions::default(), &strict_parse_options())
         .map_err(|err| {
-            InstallIssue::io_error(
-                InstallErrorKind::ConfigUnparseable,
-                format!("failed to parse {}: {err}", settings_path.display()),
-            )
+            InstallError::config_unparseable(format!(
+                "failed to parse {}: {err}",
+                settings_path.display()
+            ))
         })?;
     match parsed.value {
         Some(AstValue::Object(object)) => Ok(object),
-        _ => Err(InstallIssue::io_error(
-            InstallErrorKind::ConfigShape,
-            format!(
-                "agent config at {} must be a JSON object",
-                settings_path.display()
-            ),
-        )),
+        _ => Err(InstallError::config_shape(format!(
+            "agent config at {} must be a JSON object",
+            settings_path.display()
+        ))),
     }
 }
 
@@ -420,11 +418,11 @@ fn append_object_property(
     object: &AstObject<'_>,
     name: &str,
     value: &str,
-) -> io::Result<String> {
+) -> InstallResult<String> {
     let key = serde_json::to_string(name).map_err(|err| {
-        io::Error::other(format!(
+        InstallError::from(io::Error::other(format!(
             "failed to encode agent config property name: {err}"
-        ))
+        )))
     })?;
     let key_value_separator = object.properties.first().map_or(":", |property| {
         &content[property.name.range().end..property.value.range().start]
@@ -499,16 +497,13 @@ fn append_to_container(
     updated
 }
 
-fn verify_updated(updated: String, settings_path: &Path, desired: &Value) -> io::Result<String> {
+fn verify_updated(updated: String, settings_path: &Path, desired: &Value) -> InstallResult<String> {
     let actual = parse_value(&updated, settings_path)?;
     if &actual != desired {
-        return Err(InstallIssue::io_error(
-            InstallErrorKind::ConfigShape,
-            format!(
-                "failed to safely update agent config at {}",
-                settings_path.display()
-            ),
-        ));
+        return Err(InstallError::config_shape(format!(
+            "failed to safely update agent config at {}",
+            settings_path.display()
+        )));
     }
     Ok(updated)
 }
@@ -517,42 +512,33 @@ fn direct_children_are_compact(children: &[CstNode]) -> bool {
     !children.iter().any(CstNode::is_newline)
 }
 
-fn parse_value(content: &str, settings_path: &Path) -> io::Result<Value> {
+fn parse_value(content: &str, settings_path: &Path) -> InstallResult<Value> {
     serde_json::from_str(content).map_err(|err| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigUnparseable,
-            format!("failed to parse {}: {err}", settings_path.display()),
-        )
+        InstallError::config_unparseable(format!(
+            "failed to parse {}: {err}",
+            settings_path.display()
+        ))
     })
 }
 
-fn reject_duplicate_keys(node: &CstNode, settings_path: &Path) -> io::Result<()> {
+fn reject_duplicate_keys(node: &CstNode, settings_path: &Path) -> InstallResult<()> {
     if let Some(object) = node.as_object() {
         let mut names = HashSet::new();
         for property in object.properties() {
             let name = property
                 .name()
                 .ok_or_else(|| {
-                    InstallIssue::io_error(
-                        InstallErrorKind::ConfigUnparseable,
-                        "JSON object property is missing a name",
-                    )
+                    InstallError::config_unparseable("JSON object property is missing a name")
                 })?
                 .decoded_value()
                 .map_err(|err| {
-                    InstallIssue::io_error(
-                        InstallErrorKind::ConfigUnparseable,
-                        format!("failed to decode JSON key: {err}"),
-                    )
+                    InstallError::config_unparseable(format!("failed to decode JSON key: {err}"))
                 })?;
             if !names.insert(name.clone()) {
-                return Err(InstallIssue::io_error(
-                    InstallErrorKind::ConfigShape,
-                    format!(
-                        "agent config at {} contains duplicate key {name:?}",
-                        settings_path.display()
-                    ),
-                ));
+                return Err(InstallError::config_shape(format!(
+                    "agent config at {} contains duplicate key {name:?}",
+                    settings_path.display()
+                )));
             }
             if let Some(value) = property.value() {
                 reject_duplicate_keys(&value, settings_path)?;
@@ -589,7 +575,7 @@ pub(crate) fn install_claude_settings(
     settings_path: &Path,
     hook_path: &Path,
     timeout: std::time::Duration,
-) -> io::Result<String> {
+) -> InstallResult<String> {
     install_json(
         content,
         settings_path,
@@ -625,14 +611,14 @@ fn canonical_hook_json(
     matcher: &str,
     action: Option<&str>,
     timeout_seconds: u64,
-) -> io::Result<String> {
+) -> InstallResult<String> {
     serde_json::to_string(&canonical_hook_value(
         hook_path,
         matcher,
         action,
         timeout_seconds,
     ))
-    .map_err(io::Error::other)
+    .map_err(|error| InstallError::from(io::Error::other(error)))
 }
 
 #[cfg(test)]
@@ -648,7 +634,7 @@ mod tests {
         content: &str,
         settings_path: &Path,
         hook_path: &Path,
-    ) -> io::Result<String> {
+    ) -> InstallResult<String> {
         let target = shepr_agent::IntegrationTarget::Claude;
         super::install_claude_settings(
             content,

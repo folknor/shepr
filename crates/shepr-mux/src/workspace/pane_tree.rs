@@ -139,8 +139,10 @@ impl<T> TreePlan<T> {
         self.zoomed
     }
 
-    /// Allocates `PaneId::alloc()` per leaf in tree order and asks
-    /// `terminal_for` for each leaf's terminal.
+    /// Allocates one globally unique `PaneId` per leaf in tree order and asks
+    /// `terminal_for` for each leaf's terminal. Pane IDs cross workspace-less
+    /// event and render boundaries, so materializing a tree needs the shared
+    /// process-wide identity source.
     pub fn build(
         self,
         mut terminal_for: impl FnMut(PaneId, T) -> TerminalState,
@@ -154,11 +156,18 @@ impl<T> TreePlan<T> {
             panes.insert(pane, PaneRecord::new(number, terminal));
             pane
         });
-        // A resolved focus names a leaf. Were it ever missing, a fresh ID is
-        // not a leaf, so the layout refuses it by name.
-        let focus = ids.get(&self.focus).copied().unwrap_or_else(PaneId::alloc);
+        // Plan admission checked these identities. Keep a typed refusal if
+        // construction ever loses either one; never synthesize an unrelated
+        // pane ID to make TileLayout::from_saved reject the plan.
+        let focus = ids
+            .get(&self.focus)
+            .copied()
+            .ok_or(TreeRejection::MissingFocus(self.focus))?;
         let layout = TileLayout::from_saved(node, focus).map_err(TreeRejection::Layout)?;
-        let root = ids.get(&self.root).copied().unwrap_or(focus);
+        let root = ids
+            .get(&self.root)
+            .copied()
+            .ok_or(TreeRejection::MissingRoot(self.root))?;
         Ok(PaneTree {
             layout,
             panes,

@@ -8,8 +8,6 @@ use shepr_platform::Wait;
 
 use crate::limits::WAKE_PIPE_READ_BUFFER_BYTES;
 
-pub(crate) use shepr_platform::set_cloexec;
-
 pub(crate) use shepr_platform::set_nonblocking;
 
 #[derive(Clone)]

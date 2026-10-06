@@ -966,7 +966,10 @@ fn projected_reducers_invalidate_without_an_endpoint_caller() {
     });
     advances(&mut state, |state| {
         assert_eq!(
-            state.rename_pane(root, Some("renamed".into())),
+            state.rename_pane(
+                root,
+                Some(shepr_mux::terminal::Label::new("renamed").expect("label"))
+            ),
             Some(ViewMutation::Metadata)
         );
     });

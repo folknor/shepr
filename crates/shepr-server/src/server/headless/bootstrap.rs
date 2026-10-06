@@ -318,7 +318,7 @@ fn spawn_integration_install() {
             shepr_integration::install_present_integrations(&paths);
         })
     {
-        warn!(%error, "could not start the agent integration install");
+        warn!(event = "integration.worker_start_failed", subsystem = "integration", %error, "could not start the agent integration install");
     }
 }
 

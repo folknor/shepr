@@ -1,8 +1,15 @@
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { expectContractTrace } from "../../contract_traces.ts";
+import { restoreEnvironment, saveEnvironment } from "../../bun_test_support.ts";
 
 const originalArgv = process.argv;
-afterEach(() => { process.argv = originalArgv; });
+const originalEnvironment = saveEnvironment([
+  "SHEPR_ENV", "SHEPR_BUILD_PROFILE", "SHEPR_SOCKET_PATH", "SHEPR_PANE_ID",
+]);
+afterEach(() => {
+  process.argv = originalArgv;
+  restoreEnvironment(originalEnvironment);
+});
 
 const requests: unknown[] = [];
 const clients: FakeClient[] = [];

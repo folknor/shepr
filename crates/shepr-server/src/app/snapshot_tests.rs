@@ -86,7 +86,7 @@ fn refresh_test_view(state: &mut AppState, area: Rect) {
 }
 
 fn capture_from_state(state: &AppState) -> SessionSnapshot {
-    let terminal_runtimes = PaneRuntimeRegistry::new();
+    let terminal_runtimes = PaneRuntimeRegistry::default();
     capture_from_state_with_runtimes(state, &terminal_runtimes)
 }
 
@@ -473,7 +473,7 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
         Some(old.clone()),
         "existing reported-cwd accessor is unchanged"
     );
-    let mut runtimes = PaneRuntimeRegistry::new();
+    let mut runtimes = PaneRuntimeRegistry::default();
     runtimes.insert(pane_id, runtime);
     let before = capture_from_state_with_runtimes(&state, &runtimes);
     assert_eq!(

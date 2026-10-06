@@ -162,12 +162,12 @@ pub(crate) const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
 /// This is an overall deadline for the frame, not a per-read idle timeout.
 ///
 /// A local client talks to an already-connected server, so this deadline only
-/// needs room for the welcome response. A configured machine's endpoint also
-/// waits on a fresh SSH connection, including key exchange and authentication,
-/// which needs more room on high-latency links (`REMOTE_HANDSHAKE_READ_TIMEOUT`).
+/// needs room for the welcome response.
 pub(crate) const LOCAL_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
-/// A starting bridge cannot reply until its daemon is ready. The enclosing
-/// attempt deadline still bounds ordinary attaches and time spent discovering.
+/// Maximum machine Welcome wait, using the operator Connect budget. Ordinary
+/// attaches and Connect are bounded by their attempt deadlines first; Restart
+/// has a longer deadline because it runs the conditional stop first, so this
+/// cap applies to a Restart's handshake after a quick stop.
 pub(crate) const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = shepr_remote::SSH_START_ATTEMPT_BUDGET;
 
 /// Timeout for a client request sent to an endpoint.
@@ -235,9 +235,9 @@ pub(crate) const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
 /// running server's identity, so the connector does not issue a separate server-status
 /// query. Once the executable is verified, an ordinary reconnect uses only the bridge
 /// round trip and handshake.
-/// The case that can overrun is a cache miss or a stale remembered path on a slow link
-/// without connection sharing, where each of discovery's several round trips and the
-/// bridge each need their own cold connect.
+/// The case that can overrun is a cache miss or a stale remembered path on a slow link,
+/// where the first of discovery's several round trips also establishes the shared SSH
+/// master and every round trip, the bridge's included, pays the link's latency.
 /// That case is handled by resuming, not by a larger budget: the machine connector
 /// keeps completed discovery steps when an attempt ends on a transient network failure
 /// or a full-round-trip timeout that may be waiting for authentication. SSH process

@@ -7,5 +7,5 @@ pub mod launch;
 mod limits;
 mod locks;
 
-pub use child_io::{ChildBacking, ChildIo, ChildIoSendError};
+pub use child_io::{ChildIo, ChildIoSendError};
 pub use command::PtyCommand;

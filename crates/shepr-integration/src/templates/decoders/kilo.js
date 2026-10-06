@@ -13,19 +13,8 @@
 // Kilo Cloud sessions) serve sessions that are not this pane's and never
 // anchor to it.
 function ownsLocalLifecycle() {
-  const args = process.argv.slice(2);
-  const separator = args.indexOf("--");
-  if (separator !== -1) args.splice(separator);
-  if (args.some((arg) => arg === "--attach" || arg.startsWith("--attach="))) {
-    return false;
-  }
-  while (
-    args[0] === "--print-logs" ||
-    args[0] === "--log-level" ||
-    args[0]?.startsWith("--log-level=")
-  ) {
-    args.splice(0, args[0] === "--log-level" ? 2 : 1);
-  }
+  const args = localLifecycleArgs();
+  if (!args) return false;
   return !["acp", "attach", "console", "daemon", "remote", "serve", "web"].includes(args[0]);
 }
 

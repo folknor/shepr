@@ -1,9 +1,9 @@
+use crate::types::{InstallError, InstallResult};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::{collections::HashMap, io::ErrorKind};
 
-use super::types::{InstallErrorKind, InstallIssue};
 use shepr_agent::{Agent, IntegrationTarget};
 use shepr_core::env::EnvVar;
 
@@ -22,17 +22,15 @@ impl std::error::Error for DirectoryError {
     }
 }
 
-fn capture_directory(result: io::Result<PathBuf>) -> CapturedDirectory {
-    result.map_err(|error| DirectoryError(std::sync::Arc::new(error)))
+fn capture_directory(result: InstallResult<PathBuf>) -> CapturedDirectory {
+    result.map_err(std::sync::Arc::new)
 }
 
-fn captured_directory(result: &CapturedDirectory) -> io::Result<PathBuf> {
-    result
-        .clone()
-        .map_err(|error| io::Error::new(error.0.kind(), error))
+fn captured_directory(result: &CapturedDirectory) -> InstallResult<PathBuf> {
+    result.clone().map_err(InstallError::Shared)
 }
 
-type CapturedDirectory = Result<PathBuf, DirectoryError>;
+type CapturedDirectory = Result<PathBuf, std::sync::Arc<super::types::InstallError>>;
 type CapturedEnvPath = Result<Option<PathBuf>, DirectoryError>;
 
 #[derive(Clone, Debug)]
@@ -127,26 +125,26 @@ impl AgentIntegrationPaths {
         }
     }
 
-    pub(crate) fn directory(&self, target: IntegrationTarget) -> io::Result<PathBuf> {
+    pub(crate) fn directory(&self, target: IntegrationTarget) -> InstallResult<PathBuf> {
         let directory = self.directories.get(&target).ok_or_else(|| {
-            io::Error::new(
+            InstallError::from(io::Error::new(
                 ErrorKind::NotFound,
                 format!("integration directory for {target:?} was not resolved"),
-            )
+            ))
         })?;
         captured_directory(directory)
     }
 
-    pub(crate) fn opencode_state_directory(&self) -> io::Result<PathBuf> {
+    pub(crate) fn opencode_state_directory(&self) -> InstallResult<PathBuf> {
         captured_directory(&self.opencode_state)
     }
 
-    pub(crate) fn config_update_lock_dir(&self) -> io::Result<PathBuf> {
+    pub(crate) fn config_update_lock_dir(&self) -> InstallResult<PathBuf> {
         captured_directory(&self.config_update_lock_dir)
     }
 }
 
-fn resolve_config_update_lock_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+fn resolve_config_update_lock_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     // Agent configs are shared by dev and release builds. Resolve the shared
     // installer lock directory from the same environment snapshot.
     let xdg_state_home =
@@ -154,11 +152,11 @@ fn resolve_config_update_lock_dir(environment: &IntegrationEnvironment) -> io::R
     Ok(shepr_paths::integration_lock_dir(&xdg_state_home))
 }
 
-pub(super) fn pi_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn pi_extension_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     Ok(config_dir_from_env_or_home(environment, Agent::Pi, &[".pi", "agent"])?.join("extensions"))
 }
 
-pub(super) fn omp_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn omp_extension_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     let config_dir =
         agent_config_override(environment, Agent::Omp)?.unwrap_or_else(|| ".omp".into());
     let config_dir = if config_dir.is_absolute() {
@@ -169,46 +167,43 @@ pub(super) fn omp_extension_dir(environment: &IntegrationEnvironment) -> io::Res
     Ok(config_dir.join("agent").join("extensions"))
 }
 
-pub(super) fn claude_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn claude_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     config_dir_from_env_or_home(environment, Agent::Claude, &[".claude"])
 }
 
-pub(super) fn codex_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn codex_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     config_dir_from_env_or_home(environment, Agent::Codex, &[".codex"])
 }
 
-pub(super) fn kimi_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn kimi_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     config_dir_from_env_or_home(environment, Agent::Kimi, &[".kimi-code"])
 }
 
-pub(super) fn copilot_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn copilot_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     config_dir_from_env_or_home(environment, Agent::GithubCopilot, &[".copilot"])
 }
 
-pub(super) fn devin_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn devin_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     Ok(shepr_core::env::xdg_config_home_with(|variable| environment.path(variable))?.join("devin"))
 }
 
-pub(super) fn droid_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn droid_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     Ok(environment.home_dir()?.join(".factory"))
 }
 
 fn agent_config_override(
     environment: &IntegrationEnvironment,
     agent: Agent,
-) -> io::Result<Option<PathBuf>> {
+) -> InstallResult<Option<PathBuf>> {
     match agent.descriptor().config_dir_override {
         Some(variable) => environment
             .path(variable)?
             .map(|value| {
                 let path = expand_tilde_path_with_environment(value, environment)?;
                 if !path.is_absolute() {
-                    return Err(InstallIssue::io_error(
-                        InstallErrorKind::ConfigShape,
-                        format!(
-                            "{variable} must be an absolute path; use an absolute path or ~/..."
-                        ),
-                    ));
+                    return Err(InstallError::config_shape(format!(
+                        "{variable} must be an absolute path; use an absolute path or ~/..."
+                    )));
                 }
                 Ok(path)
             })
@@ -221,7 +216,7 @@ fn config_dir_from_env_or_home(
     environment: &IntegrationEnvironment,
     agent: Agent,
     home_relative_segments: &[&str],
-) -> io::Result<PathBuf> {
+) -> InstallResult<PathBuf> {
     if let Some(value) = agent_config_override(environment, agent)? {
         return Ok(value);
     }
@@ -233,40 +228,40 @@ fn config_dir_from_env_or_home(
     Ok(path)
 }
 
-pub(super) fn opencode_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn opencode_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     Ok(
         shepr_core::env::xdg_config_home_with(|variable| environment.path(variable))?
             .join("opencode"),
     )
 }
 
-fn opencode_state_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+fn opencode_state_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     Ok(
         shepr_core::env::xdg_state_home_with(|variable| environment.path(variable))?
             .join("opencode"),
     )
 }
 
-pub(super) fn kilo_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn kilo_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     Ok(shepr_core::env::xdg_config_home_with(|variable| environment.path(variable))?.join("kilo"))
 }
 
-pub(super) fn cursor_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn cursor_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     config_dir_from_env_or_home(environment, Agent::Cursor, &[".cursor"])
 }
 
-pub(super) fn mastracode_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn mastracode_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     Ok(environment.home_dir()?.join(".mastracode"))
 }
 
-pub(super) fn antigravity_cli_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn antigravity_cli_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     // Antigravity CLI discovers global customizations (hooks.json included)
     // from ~/.gemini/config; ~/.gemini/antigravity-cli holds runtime data and
     // is never read for hooks.
     config_dir_from_env_or_home(environment, Agent::Antigravity, &[".gemini", "config"])
 }
 
-pub(super) fn grok_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+pub(super) fn grok_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
     // The grok CLI honors GROK_HOME as its config home (config.toml,
     // auth.json, hooks/); mirror it so hook installs land where grok looks.
     config_dir_from_env_or_home(environment, Agent::Grok, &[".grok"])
@@ -275,7 +270,7 @@ pub(super) fn grok_dir(environment: &IntegrationEnvironment) -> io::Result<PathB
 fn expand_tilde_path_with_environment(
     value: PathBuf,
     environment: &IntegrationEnvironment,
-) -> io::Result<PathBuf> {
+) -> InstallResult<PathBuf> {
     let bytes = value.as_os_str().as_bytes();
     let needs_home = bytes == b"~" || bytes.starts_with(b"~/");
     let home = if needs_home {
@@ -284,6 +279,7 @@ fn expand_tilde_path_with_environment(
         None
     };
     shepr_core::pathutil::expand_tilde_path_with_home(value, home.as_deref())
+        .map_err(InstallError::from)
 }
 
 #[cfg(test)]
@@ -302,7 +298,10 @@ mod tests {
         })
     }
 
-    fn directory(paths: &AgentIntegrationPaths, target: IntegrationTarget) -> io::Result<PathBuf> {
+    fn directory(
+        paths: &AgentIntegrationPaths,
+        target: IntegrationTarget,
+    ) -> InstallResult<PathBuf> {
         paths.directory(target)
     }
 

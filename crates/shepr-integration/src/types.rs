@@ -1,5 +1,5 @@
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InstallErrorKind {
@@ -14,95 +14,117 @@ pub(crate) enum InstallErrorKind {
     Io,
 }
 
+/// Installer failures stay typed until the tracing boundary.
 #[derive(Debug)]
-pub(crate) struct InstallIssue {
-    kind: InstallErrorKind,
-    message: String,
+pub(crate) enum InstallError {
+    ConfigUnparseable(String),
+    ConfigShape(String),
+    ManagedBlockConflict(String),
+    HardLinked(String),
+    NotRegularFile(shepr_platform::NotRegularFile),
+    TooManySymlinks(String),
+    AgentDirMissing(String),
+    ConfigChanged(PathBuf),
+    Io(io::Error),
+    Shared(std::sync::Arc<Self>),
 }
 
-impl InstallIssue {
-    pub(crate) fn io_error(kind: InstallErrorKind, message: impl Into<String>) -> io::Error {
-        let error_kind = match kind {
-            InstallErrorKind::ConfigChanged => io::ErrorKind::WouldBlock,
-            InstallErrorKind::ConfigUnparseable
-            | InstallErrorKind::ConfigShape
-            | InstallErrorKind::ManagedBlockConflict
-            | InstallErrorKind::HardLinked
-            | InstallErrorKind::NotRegularFile
-            | InstallErrorKind::TooManySymlinks => io::ErrorKind::InvalidData,
-            InstallErrorKind::AgentDirMissing => io::ErrorKind::NotFound,
-            InstallErrorKind::Io => io::ErrorKind::Other,
-        };
-        io::Error::new(
-            error_kind,
-            Self {
-                kind,
-                message: message.into(),
-            },
-        )
-    }
-}
-
-impl std::fmt::Display for InstallIssue {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for InstallIssue {}
-
-#[derive(Debug)]
-pub(crate) struct InstallError {
-    kind: InstallErrorKind,
-    source: io::Error,
-}
+pub(crate) type InstallResult<T> = Result<T, InstallError>;
 
 impl InstallError {
-    pub(crate) fn kind(&self) -> InstallErrorKind {
-        self.kind
+    pub(crate) fn config_unparseable(message: impl Into<String>) -> Self {
+        Self::ConfigUnparseable(message.into())
     }
 
-    fn source(&self) -> &io::Error {
-        &self.source
+    pub(crate) fn config_shape(message: impl Into<String>) -> Self {
+        Self::ConfigShape(message.into())
+    }
+
+    pub(crate) fn managed_block_conflict(message: impl Into<String>) -> Self {
+        Self::ManagedBlockConflict(message.into())
+    }
+
+    pub(crate) fn hard_linked(message: impl Into<String>) -> Self {
+        Self::HardLinked(message.into())
+    }
+
+    pub(crate) fn too_many_symlinks(message: impl Into<String>) -> Self {
+        Self::TooManySymlinks(message.into())
+    }
+
+    pub(crate) fn agent_dir_missing(message: impl Into<String>) -> Self {
+        Self::AgentDirMissing(message.into())
+    }
+
+    pub(crate) fn kind(&self) -> InstallErrorKind {
+        match self {
+            Self::ConfigUnparseable(_) => InstallErrorKind::ConfigUnparseable,
+            Self::ConfigShape(_) => InstallErrorKind::ConfigShape,
+            Self::ManagedBlockConflict(_) => InstallErrorKind::ManagedBlockConflict,
+            Self::HardLinked(_) => InstallErrorKind::HardLinked,
+            Self::NotRegularFile(_) => InstallErrorKind::NotRegularFile,
+            Self::TooManySymlinks(_) => InstallErrorKind::TooManySymlinks,
+            Self::AgentDirMissing(_) => InstallErrorKind::AgentDirMissing,
+            Self::ConfigChanged(_) => InstallErrorKind::ConfigChanged,
+            Self::Io(_) => InstallErrorKind::Io,
+            Self::Shared(error) => error.kind(),
+        }
+    }
+
+    pub(crate) fn io_kind(&self) -> io::ErrorKind {
+        match self {
+            Self::Io(error) => error.kind(),
+            Self::Shared(error) => error.io_kind(),
+            _ => match self.kind() {
+                InstallErrorKind::ConfigChanged => io::ErrorKind::WouldBlock,
+                InstallErrorKind::AgentDirMissing => io::ErrorKind::NotFound,
+                _ => io::ErrorKind::InvalidData,
+            },
+        }
     }
 }
 
 impl From<io::Error> for InstallError {
-    fn from(source: io::Error) -> Self {
-        if super::config_file::is_config_changed(&source) {
-            return Self {
-                kind: InstallErrorKind::ConfigChanged,
-                source,
-            };
-        }
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
 
-        let kind = source
-            .get_ref()
-            .and_then(|cause| cause.downcast_ref::<InstallIssue>())
-            .map(|issue| issue.kind)
-            .or_else(|| {
-                source
-                    .get_ref()
-                    .and_then(|cause| cause.downcast_ref::<super::file_ops::NotRegularFile>())
-                    .map(|_| InstallErrorKind::NotRegularFile)
-            });
-
-        Self {
-            kind: kind.unwrap_or(InstallErrorKind::Io),
-            source,
-        }
+impl From<shepr_platform::NotRegularFile> for InstallError {
+    fn from(error: shepr_platform::NotRegularFile) -> Self {
+        Self::NotRegularFile(error)
     }
 }
 
 impl std::fmt::Display for InstallError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.source().fmt(formatter)
+        match self {
+            Self::ConfigUnparseable(message)
+            | Self::ConfigShape(message)
+            | Self::ManagedBlockConflict(message)
+            | Self::HardLinked(message)
+            | Self::TooManySymlinks(message)
+            | Self::AgentDirMissing(message) => formatter.write_str(message),
+            Self::ConfigChanged(path) => write!(
+                formatter,
+                "{} changed while Shepr was preparing an update",
+                path.display()
+            ),
+            Self::NotRegularFile(error) => error.fmt(formatter),
+            Self::Io(error) => error.fmt(formatter),
+            Self::Shared(error) => error.fmt(formatter),
+        }
     }
 }
 
 impl std::error::Error for InstallError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.source())
+        match self {
+            Self::NotRegularFile(error) => Some(error),
+            Self::Io(error) => Some(error),
+            Self::Shared(error) => Some(error.as_ref()),
+            _ => None,
+        }
     }
 }
 
@@ -113,15 +135,8 @@ pub(crate) enum IntegrationOutdatedReason {
     AssetAndRegistration,
 }
 
-/// Messages produced by installing an agent integration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InstallOutput {
-    /// Installation and configuration messages, in display order.
-    pub messages: Vec<String>,
-}
-
 /// What a file an integration writes is to the operator. The role picks the
-/// wording of the install message; the file's own format is the target's
+/// structured install log field; the file's own format is the target's
 /// business.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ArtifactRole {
@@ -145,24 +160,6 @@ pub(crate) enum ArtifactRole {
     TuiPlugin,
     /// An opencode TUI config listing the TUI plugin.
     TuiConfig,
-}
-
-impl ArtifactRole {
-    pub(crate) fn install_message(self, label: &str, path: &Path) -> String {
-        let path = path.display();
-        match self {
-            Self::Hook => format!("installed {label} integration hook to {path}"),
-            Self::Extension => format!("installed {label} integration to {path}"),
-            Self::Settings => format!("ensured {label} settings at {path}"),
-            Self::Hooks => format!("ensured {label} hooks at {path}"),
-            Self::UpdatedHooks => format!("updated {label} hooks at {path}"),
-            Self::Config => format!("ensured {label} config at {path}"),
-            Self::HookConfig => format!("registered {label} hook config at {path}"),
-            Self::Plugin => format!("installed {label} integration plugin to {path}"),
-            Self::TuiPlugin => format!("installed {label} tui integration plugin to {path}"),
-            Self::TuiConfig => format!("ensured {label} tui plugin config at {path}"),
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -208,43 +205,13 @@ pub(crate) enum IntegrationStatusKind {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn install_failures_keep_their_category_at_the_log_boundary() {
-        for kind in [
-            InstallErrorKind::ConfigChanged,
-            InstallErrorKind::ConfigUnparseable,
-            InstallErrorKind::ConfigShape,
-            InstallErrorKind::ManagedBlockConflict,
-            InstallErrorKind::HardLinked,
-            InstallErrorKind::NotRegularFile,
-            InstallErrorKind::TooManySymlinks,
-            InstallErrorKind::AgentDirMissing,
-            InstallErrorKind::Io,
-        ] {
-            let raw = InstallIssue::io_error(kind, "settings failure");
-            let expected_kind = match kind {
-                InstallErrorKind::ConfigChanged => io::ErrorKind::WouldBlock,
-                InstallErrorKind::ConfigUnparseable
-                | InstallErrorKind::ConfigShape
-                | InstallErrorKind::ManagedBlockConflict
-                | InstallErrorKind::HardLinked
-                | InstallErrorKind::NotRegularFile
-                | InstallErrorKind::TooManySymlinks => io::ErrorKind::InvalidData,
-                InstallErrorKind::AgentDirMissing => io::ErrorKind::NotFound,
-                InstallErrorKind::Io => io::ErrorKind::Other,
-            };
-            assert_eq!(raw.kind(), expected_kind);
-            let error = InstallError::from(raw);
-            assert_eq!(error.kind(), kind);
-            assert_eq!(error.source().kind(), expected_kind);
+impl InstallError {
+    /// The OS error number of an I/O failure, looking through shared errors.
+    pub(crate) fn raw_os_error(&self) -> Option<i32> {
+        match self {
+            Self::Io(error) => error.raw_os_error(),
+            Self::Shared(error) => error.raw_os_error(),
+            _ => None,
         }
-        let error = InstallError::from(InstallIssue::io_error(
-            InstallErrorKind::ConfigShape,
-            "settings must be an object",
-        ));
-        assert_eq!(error.to_string(), "settings must be an object");
     }
 }

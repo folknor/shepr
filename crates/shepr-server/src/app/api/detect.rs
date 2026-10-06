@@ -160,7 +160,7 @@ impl App {
         let restore_failure = self
             .state
             .terminal(pane_id)
-            .and_then(|terminal| terminal.restore_error());
+            .and_then(|terminal| terminal.start_failure());
         let message = match restore_failure {
             Some(failure) => format!("pane {public_pane_id} has no running terminal: {failure}"),
             None => format!("pane {public_pane_id} has no running terminal"),

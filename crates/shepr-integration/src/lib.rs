@@ -21,25 +21,26 @@ mod types;
 
 pub use actions::install_present_integrations;
 pub use env::AgentIntegrationPaths;
-pub(crate) use types::{InstallErrorKind, IntegrationStatus, IntegrationStatusKind};
+pub(crate) use types::{IntegrationStatus, IntegrationStatusKind};
 
 const PI_EXTENSION_INSTALL_NAME: &str = "shepr-agent-state.ts";
 const PI_EXTENSION_ASSET: &str = include_str!("assets/pi/shepr-agent-state.ts");
 const OMP_EXTENSION_INSTALL_NAME: &str = "shepr-omp-agent-state.ts";
 const OMP_EXTENSION_ASSET: &str = include_str!("assets/omp/shepr-agent-state.ts");
-const CLAUDE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
+const SHELL_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
+const CLAUDE_HOOK_INSTALL_NAME: &str = SHELL_HOOK_INSTALL_NAME;
 const CLAUDE_HOOK_ASSET: &str = include_str!("assets/claude/shepr-agent-state.sh");
-const CODEX_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
+const CODEX_HOOK_INSTALL_NAME: &str = SHELL_HOOK_INSTALL_NAME;
 const CODEX_HOOK_ASSET: &str = include_str!("assets/codex/shepr-agent-state.sh");
-const KIMI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
+const KIMI_HOOK_INSTALL_NAME: &str = SHELL_HOOK_INSTALL_NAME;
 const KIMI_HOOK_ASSET: &str = include_str!("assets/kimi/shepr-agent-state.sh");
 const KIMI_CONFIG_BLOCK_BEGIN: &str = "# >>> shepr kimi integration";
 const KIMI_CONFIG_BLOCK_END: &str = "# <<< shepr kimi integration";
-const COPILOT_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
+const COPILOT_HOOK_INSTALL_NAME: &str = SHELL_HOOK_INSTALL_NAME;
 const COPILOT_HOOK_ASSET: &str = include_str!("assets/copilot/shepr-agent-state.sh");
-const DEVIN_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
+const DEVIN_HOOK_INSTALL_NAME: &str = SHELL_HOOK_INSTALL_NAME;
 const DEVIN_HOOK_ASSET: &str = include_str!("assets/devin/shepr-agent-state.sh");
-const DROID_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
+const DROID_HOOK_INSTALL_NAME: &str = SHELL_HOOK_INSTALL_NAME;
 const DROID_HOOK_ASSET: &str = include_str!("assets/droid/shepr-agent-state.sh");
 const OPENCODE_PLUGIN_INSTALL_NAME: &str = "shepr-agent-state.js";
 const OPENCODE_PLUGIN_ASSET: &str = include_str!("assets/opencode/shepr-agent-state.js");
@@ -51,9 +52,9 @@ const OPENCODE_V2_TUI_PLUGIN_SPEC: &str = "./shepr-opencode";
 const OPENCODE_V2_TUI_PLUGIN_ASSET: &str = include_str!("assets/opencode/tui.js");
 const KILO_PLUGIN_INSTALL_NAME: &str = "shepr-agent-state.js";
 const KILO_PLUGIN_ASSET: &str = include_str!("assets/kilo/shepr-agent-state.js");
-const CURSOR_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
+const CURSOR_HOOK_INSTALL_NAME: &str = SHELL_HOOK_INSTALL_NAME;
 const CURSOR_HOOK_ASSET: &str = include_str!("assets/cursor/shepr-agent-state.sh");
-const ANTIGRAVITY_CLI_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
+const ANTIGRAVITY_CLI_HOOK_INSTALL_NAME: &str = SHELL_HOOK_INSTALL_NAME;
 const ANTIGRAVITY_CLI_HOOK_ASSET: &str =
     include_str!("assets/antigravity_cli/shepr-agent-state.sh");
 /// Antigravity CLI keys `hooks.json` by hook name, so every Shepr entry lives
@@ -62,9 +63,9 @@ const ANTIGRAVITY_CLI_HOOK_BLOCK_NAME: &str = "shepr";
 // The shared asset-name audit accounts for this marker in the bundled hooks;
 // it is diagnostic metadata and never determines whether an install is current.
 const INTEGRATION_VERSION_MARKER: &str = "SHEPR_INTEGRATION_VERSION=";
-const MASTRACODE_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
+const MASTRACODE_HOOK_INSTALL_NAME: &str = SHELL_HOOK_INSTALL_NAME;
 const MASTRACODE_HOOK_ASSET: &str = include_str!("assets/mastracode/shepr-agent-state.sh");
-const GROK_HOOK_INSTALL_NAME: &str = "shepr-agent-state.sh";
+const GROK_HOOK_INSTALL_NAME: &str = SHELL_HOOK_INSTALL_NAME;
 const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
 
 // Hook assets deliver reports best-effort and discard failures, because the

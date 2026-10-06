@@ -74,6 +74,9 @@ impl AgentOwnership {
     /// test in another crate can model an authority no report is accepted
     /// with (persistence tests use it for malformed identities). Production
     /// code never calls it; reports enter through `report_hook_outcome_at`.
+    /// A cross-crate test cannot access a cfg(test) item in its dependency,
+    /// and accepted reports cannot model malformed persisted authority. Keep
+    /// this seam public, with the caller restriction enforced by textlint.
     pub fn with_initial_hook_authority(mut self, authority: Option<HookAuthority>) -> Self {
         let previous_agent = self.effective_agent();
         let previous_state = self.state;

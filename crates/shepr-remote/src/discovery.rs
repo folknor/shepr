@@ -13,9 +13,10 @@ use crate::server_lifecycle::remote_display_value;
 use crate::shell_command::PosixScript;
 use crate::ssh::{RemoteSsh, command_failed};
 
-/// The SSH commands full discovery is made of, one method per remote round trip. Only
-/// [`DiscoveryProgress`] sequences them; the seam exists so that sequencing, and resuming
-/// it, can be tested without a remote host.
+/// The SSH commands full discovery is made of, one method per remote round trip.
+/// [`DiscoveryProgress`] and `installed_remote_shepr_candidates` both order the
+/// candidates through `ordered_candidates`; the seam lets sequencing and resuming
+/// be tested without a remote host.
 pub(crate) trait DiscoverySteps {
     /// `command -v` under `/bin/sh`, started by sshd's non-login account shell so
     /// its environment supplies the PATH. The known-path probe below covers the
@@ -120,12 +121,11 @@ fn path_lookup_result_with_rejected_candidate(
 ///
 /// Discovery is several round trips (an account-shell environment `command -v`, the
 /// known-locations script, then a status probe per candidate until one matches), and
-/// without connection sharing each is a cold SSH connect. On a slow enough link they do
+/// the first command may need to establish the shared SSH master. On a slow link they do
 /// not all fit in one connection attempt's budget. A configured machine's connector keeps
 /// its progress across attempts, so the next attempt resumes with the first round trip
 /// that has not completed instead of starting over. Every round trip is capped well below
-/// the attempt budget, so each attempt completes at least one and discovery finishes after
-/// a bounded number of attempts, each of which still ends within the budget.
+/// the attempt budget; completed work is retained even when a later round trip fails.
 ///
 /// Progress survives failures that produced no remote result while the target
 /// remains trusted, including network losses, round-trip timeouts that may be
@@ -175,15 +175,9 @@ impl DiscoveryProgress {
         }
         let path_candidate = self.account_shell_path.clone().flatten();
         if self.candidates.is_none() {
-            let mut candidates = Vec::new();
-            if let Some(candidate) = path_candidate {
-                push_if_new_remote_binary_candidate(&mut candidates, candidate);
-            }
             let known_locations = steps.known_locations()?;
             self.remember_rejected_candidate(steps);
-            for candidate in known_locations {
-                push_if_new_remote_binary_candidate(&mut candidates, candidate);
-            }
+            let candidates = ordered_candidates(path_candidate, known_locations);
             self.candidates = Some(candidates);
         }
         let candidates = self.candidates.clone().unwrap_or_default();
@@ -272,14 +266,20 @@ pub(crate) fn installed_remote_shepr_candidates(
         ssh,
         rejected_shell_unsafe_candidate: None,
     };
+    let path = steps.path_via_account_shell()?;
+    let known = steps.known_locations()?;
+    Ok(ordered_candidates(path, known))
+}
+
+fn ordered_candidates(
+    path: Option<RemoteExecutable>,
+    known: Vec<RemoteExecutable>,
+) -> Vec<RemoteExecutable> {
     let mut candidates = Vec::new();
-    if let Some(candidate) = steps.path_via_account_shell()? {
+    for candidate in path.into_iter().chain(known) {
         push_if_new_remote_binary_candidate(&mut candidates, candidate);
     }
-    for candidate in steps.known_locations()? {
-        push_if_new_remote_binary_candidate(&mut candidates, candidate);
-    }
-    Ok(candidates)
+    candidates
 }
 
 fn push_if_new_remote_binary_candidate(
@@ -292,8 +292,8 @@ fn push_if_new_remote_binary_candidate(
 }
 
 /// Cargo's bin directory follows the default destination used by `brokkr install`;
-/// the local bin path also covers manual installs. These are checked before falling
-/// back to `command -v`, which misses them when a non-interactive SSH shell has a
+/// the local bin path also covers manual installs. These are checked after
+/// `command -v`, which misses them when a non-interactive SSH shell has a
 /// minimal PATH. Installs elsewhere on a login-profile-only PATH are not discovered.
 pub(crate) fn known_remote_binary_candidate_script() -> String {
     format!(
@@ -366,17 +366,7 @@ fn remote_client_status(
     ssh: &RemoteSsh,
     remote_shepr: &RemoteExecutable,
 ) -> io::Result<Option<shepr_api::schema::ClientStatusJson>> {
-    // Keep a distinct result for the `test -x` leg: a vanished candidate is
-    // ordinary discovery progress, but a started status command that fails is
-    // a diagnostic the operator needs to see.
-    // limits-exempt: a shell exit status chosen for the remote command contract, not a bound.
-    let candidate_missing = RemoteExit::CandidateMissing.code();
-    let status_command = remote_shepr.status_client_command();
-    let command = PosixScript::new(format!(
-        "test -x {} || exit {candidate_missing}; {}",
-        remote_shepr.shell_word(),
-        status_command.as_str(),
-    ));
+    let command = candidate_command(remote_shepr, &remote_shepr.status_client_command());
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
         if SshExit::from_code(output.status.code()) == SshExit::Remote(RemoteExit::CandidateMissing)
@@ -414,12 +404,35 @@ fn remote_client_status_failure(output: &Output) -> io::Error {
 pub(crate) fn parse_client_status_json(
     status: &str,
 ) -> Option<shepr_api::schema::ClientStatusJson> {
-    status
+    json_records::<shepr_api::schema::ClientStatusJson>(status)
+        .find(|status| status.identity.is_some())
+}
+
+/// Status commands emit one JSON record; shell startup or exit noise may surround it.
+pub(crate) fn last_json_record<T: serde::de::DeserializeOwned>(stdout: &str) -> Option<T> {
+    json_records(stdout).next()
+}
+
+fn json_records<'a, T: serde::de::DeserializeOwned + 'a>(
+    stdout: &'a str,
+) -> impl Iterator<Item = T> + 'a {
+    stdout
         .lines()
         .rev()
-        .filter(|line| !line.trim().is_empty())
-        .filter_map(|line| serde_json::from_str::<shepr_api::schema::ClientStatusJson>(line).ok())
-        .find(|status| status.identity.is_some())
+        .filter_map(|line| serde_json::from_str(line).ok())
+}
+
+/// A vanished executable is distinct from a status command that ran and failed.
+pub(crate) fn candidate_command(
+    executable: &RemoteExecutable,
+    command: &PosixScript,
+) -> PosixScript {
+    let missing = RemoteExit::CandidateMissing.code();
+    PosixScript::new(format!(
+        "test -x {} || exit {missing}; {}",
+        executable.shell_word(),
+        command.as_str()
+    ))
 }
 
 fn ensure_remote_client_build(
@@ -439,7 +452,7 @@ fn ensure_remote_client_build(
 
 /// Requires the remote client's sibling server to be this build, so the pair
 /// installed on the host is the pair this client can use. A candidate whose
-/// status does not report a sibling at all is one that predates the report.
+/// status does not report a sibling despite matching this build is an invalid installation report.
 fn ensure_remote_sibling_build(
     target: &SshTarget,
     status: &shepr_api::schema::ClientStatusJson,

@@ -17,12 +17,11 @@ use shepr_api::schema::{ServerStatus, StatusOverviewJson};
 use shepr_launch::restart::StopOutcome;
 
 use crate::args::RemoteCliCommand;
-use crate::discovery::installed_remote_shepr_candidates;
+use crate::discovery::{candidate_command, installed_remote_shepr_candidates, last_json_record};
 use crate::failure::{RemoteExit, SshExit, failure_evidence, remote_compatibility_error};
 use crate::limits::FLEET_STATUS_BUDGET;
 use crate::machine::{MachineConfig, RemoteExecutable};
 use crate::server_lifecycle::stop_remote_server_with_ssh;
-use crate::shell_command::PosixScript;
 use crate::ssh::{RemoteSsh, command_failed};
 
 /// What a machine's own `shepr` reported, and which `shepr` that was.
@@ -102,10 +101,9 @@ pub fn on_every_machine<T: Send>(
 }
 
 fn fleet_ssh(paths: &shepr_paths::AppPaths, machine: &MachineConfig) -> io::Result<RemoteSsh> {
-    let mut ssh = RemoteSsh::new(machine.ssh.clone(), paths)?;
-    // clock-io-ok: the deadline bounds real ssh IO for this machine.
-    ssh.set_attempt_deadline(Some(Instant::now() + FLEET_STATUS_BUDGET));
-    Ok(ssh)
+    // The deadline bounds real ssh IO for this machine.
+    let deadline = Instant::now() + FLEET_STATUS_BUDGET; // clock-io-ok: bounds real ssh IO
+    RemoteSsh::new(machine.ssh.clone(), paths, deadline)
 }
 
 /// The first installed `shepr` that reports a status, and what it reported.
@@ -142,14 +140,10 @@ fn first_answering<T>(
 }
 
 fn overview_of(ssh: &RemoteSsh, candidate: &RemoteExecutable) -> io::Result<StatusOverviewJson> {
-    let candidate_missing = RemoteExit::CandidateMissing.code();
-    let command = PosixScript::new(format!(
-        "test -x {} || exit {candidate_missing}; {}",
-        candidate.shell_word(),
-        candidate
-            .command(&RemoteCliCommand::Overview.args())
-            .as_str(),
-    ));
+    let command = candidate_command(
+        candidate,
+        &candidate.command(&RemoteCliCommand::Overview.args()),
+    );
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
         let context = if SshExit::from_code(output.status.code())
@@ -167,11 +161,7 @@ fn overview_of(ssh: &RemoteSsh, candidate: &RemoteExecutable) -> io::Result<Stat
 /// The last line of `stdout` that is a status overview: a login banner or
 /// other noise before it is skipped.
 fn parse_overview(stdout: &str) -> io::Result<StatusOverviewJson> {
-    stdout
-        .lines()
-        .rev()
-        .filter(|line| !line.trim().is_empty())
-        .find_map(|line| serde_json::from_str::<StatusOverviewJson>(line).ok())
+    last_json_record(stdout)
         .ok_or_else(|| remote_compatibility_error("the remote shepr reported no status JSON"))
 }
 

@@ -8,7 +8,7 @@ use std::time::SystemTime;
 
 use super::error::SaveError;
 use super::files;
-use super::recovery::{self, SessionBackupPolicy, SnapshotFingerprintCache, SnapshotHistoryPlan};
+use super::recovery::{self, SessionBackupPolicy, SnapshotPlan, SnapshotState};
 use super::schema::SessionSnapshot;
 
 // The session save and clear events. These literals are the emitted log
@@ -62,8 +62,9 @@ pub(super) struct SessionWriter {
     path: PathBuf,
     backup_policy: SessionBackupPolicy,
     _lease: super::lock::DataDirLease,
-    /// Reuses parsed layout fingerprints while the writer owns unchanged files.
-    snapshot_fingerprints: SnapshotFingerprintCache,
+    /// The session file's and the newest snapshot's layouts, which the
+    /// snapshot cadence decides from.
+    snapshot_fingerprints: SnapshotState,
 }
 
 impl SessionWriter {
@@ -76,13 +77,8 @@ impl SessionWriter {
             path,
             backup_policy,
             _lease: lease,
-            snapshot_fingerprints: SnapshotFingerprintCache::default(),
+            snapshot_fingerprints: SnapshotState::default(),
         }
-    }
-
-    /// Consumes the writer and releases its data-directory lease.
-    pub(super) fn retire(self) {
-        drop(self);
     }
 
     fn preserve_unloaded(&mut self, now: SystemTime) -> Result<(), SaveError> {
@@ -129,21 +125,17 @@ impl SessionWriter {
             session_save_failed(&self.path, &error.to_string());
             return Err(error);
         }
-        let snapshot_history_plan = recovery::plan_snapshot_history(
-            &self.path,
-            snapshot,
-            now,
-            &mut self.snapshot_fingerprints,
-        );
+        let snapshot_plan =
+            recovery::plan_snapshot(&self.path, snapshot, now, &mut self.snapshot_fingerprints);
         let result = files::save_to_path(&self.path, snapshot);
-        self.finish_save(result, snapshot, snapshot_history_plan, now)
+        self.finish_save(result, snapshot, snapshot_plan, now)
     }
 
     fn finish_save(
         &mut self,
         result: io::Result<files::Published>,
         snapshot: &SessionSnapshot,
-        snapshot_history_plan: SnapshotHistoryPlan,
+        snapshot_plan: SnapshotPlan,
         now: SystemTime,
     ) -> Result<(), SaveError> {
         let failure = match result {
@@ -153,9 +145,10 @@ impl SessionWriter {
             // committed layout, so the unloaded-file guard is released and
             // the snapshot step runs, exactly as for a durable save.
             Ok(files::Published::NotDurable(err)) => {
-                session_save_failed(
-                    &self.path,
-                    &format!("saved, but syncing its directory failed: {err}"),
+                tracing::warn!(
+                    event = "persist.save", subsystem = "persist", outcome = "not_durable",
+                    path = %self.path.display(), error = %err,
+                    "session saved but not confirmed durable"
                 );
                 Some(SaveError::PublishedNotDurable(err))
             }
@@ -164,12 +157,11 @@ impl SessionWriter {
                 return Err(SaveError::Io(err));
             }
         };
-        self.snapshot_fingerprints
-            .remember_current(&self.path, snapshot);
+        self.snapshot_fingerprints.remember_current(snapshot);
         self.backup_policy = SessionBackupPolicy::NoBackupNeeded;
-        recovery::finish_snapshot_history(
+        recovery::finish_snapshot(
             &self.path,
-            snapshot_history_plan,
+            snapshot_plan,
             now,
             &mut self.snapshot_fingerprints,
         );
@@ -197,7 +189,7 @@ impl SessionWriter {
             session_clear_failed(&self.path, &error.to_string());
             return Err(error);
         }
-        recovery::preserve_snapshot_history(&self.path, now, &mut self.snapshot_fingerprints);
+        recovery::preserve_snapshot(&self.path, now, &mut self.snapshot_fingerprints);
         let result = clear(&self.path);
         match result {
             Ok(files::ClearOutcome::Durable) => {
@@ -206,6 +198,7 @@ impl SessionWriter {
                 Ok(())
             }
             Ok(files::ClearOutcome::NotDurable(err)) => {
+                self.snapshot_fingerprints.forget_current();
                 session_clear_failed(
                     &self.path,
                     &format!("session was cleared, but syncing its directory failed: {err}"),
@@ -442,6 +435,13 @@ mod tests {
             .expect("test precondition")
             .set_times(std::fs::FileTimes::new().set_modified(UNIX_EPOCH))
             .expect("test precondition");
+        let path = writer.path.clone();
+        drop(writer);
+        writer = SessionWriter::new(
+            super::super::lock::DataDirLease::acquire(path.parent().expect("directory"))
+                .expect("lease"),
+            SessionBackupPolicy::NoBackupNeeded,
+        );
         writer.save_for_test(&snapshot()).expect("save");
         assert_eq!(snapshots(&writer), vec![(1, old)]);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -483,23 +483,19 @@ mod tests {
     #[test]
     fn snapshot_interval_uses_supplied_clock() {
         let mut writer = writer(false);
-        writer.save_for_test(&snapshot()).expect("initial save");
-        let latest = snapshots(&writer).pop().expect("initial snapshot").1;
-        let modified = std::fs::metadata(latest)
-            .expect("snapshot metadata")
-            .modified()
-            .expect("snapshot mtime");
+        let now = UNIX_EPOCH + std::time::Duration::from_secs(1000);
+        writer.save(&snapshot(), now).expect("initial save");
         let mut changed = snapshot();
         renumber_only_pane(&mut changed);
         writer
             .save(
                 &changed,
-                modified + SNAPSHOT_INTERVAL - std::time::Duration::from_nanos(1),
+                now + SNAPSHOT_INTERVAL - std::time::Duration::from_nanos(1),
             )
             .expect("save inside interval");
         assert_eq!(snapshots(&writer).len(), 1);
         writer
-            .save(&changed, modified + SNAPSHOT_INTERVAL)
+            .save(&changed, now + SNAPSHOT_INTERVAL)
             .expect("save at interval");
         assert_eq!(snapshots(&writer).len(), 2);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -604,7 +600,7 @@ mod tests {
                         "directory sync failed",
                     ))),
                     &snapshot(),
-                    SnapshotHistoryPlan::RetryAfterWrite,
+                    SnapshotPlan::PreserveAfterWrite,
                     UNIX_EPOCH,
                 )
                 .is_err()
@@ -624,7 +620,7 @@ mod tests {
                 .finish_save(
                     Err(io::Error::other("write failed")),
                     &snapshot(),
-                    SnapshotHistoryPlan::RetryAfterWrite,
+                    SnapshotPlan::PreserveAfterWrite,
                     UNIX_EPOCH,
                 )
                 .is_err()
@@ -663,7 +659,7 @@ mod tests {
         ));
         let saved = std::fs::read(&path).expect("test precondition");
 
-        writer.retire();
+        drop(writer);
         lock.try_lock().expect("the next server can take over");
         assert_eq!(std::fs::read(&path).expect("test precondition"), saved);
         drop(lock);

@@ -8,6 +8,7 @@ use shepr_mux::workspace::Workspace;
 
 struct PendingAgentResumeCandidate {
     pane_id: shepr_core::layout::PaneId,
+    public_id: shepr_protocol::PublicPaneId,
     cwd: shepr_core::absolute_path::AbsolutePath,
     plan: shepr_agent::resume::AgentResumePlan,
     /// The PTY geometry the resumed shell starts at: its content grid and the
@@ -18,10 +19,10 @@ struct PendingAgentResumeCandidate {
 /// What one resume pass did.
 #[derive(Debug, Default)]
 pub(crate) struct ResumeOutcome {
-    /// Some plan was consumed (launched or abandoned).
+    /// Some resume was dispatched or abandoned.
     pub(crate) consumed: bool,
-    /// Panes whose runtime a launch replaced; their focus is re-reported.
-    pub(crate) replaced_runtimes: Vec<shepr_core::layout::PaneId>,
+    /// Panes whose runtime a launch installed; their focus is re-reported.
+    pub(crate) installed_runtimes: Vec<shepr_core::layout::PaneId>,
 }
 
 impl App {
@@ -49,9 +50,8 @@ impl App {
     /// Attempts every resume the schedule allows now. The one entry point for
     /// every path that starts resumes (the loop and the geometry callbacks),
     /// so all of them share the schedule's theme wait, spacing and backoff.
-    /// Returns whether any plan was consumed (an agent launched, or the resume
-    /// abandoned) and the panes whose runtime a launch replaced. A consumed
-    /// plan marks the shell projection dirty.
+    /// Reports dispatched or abandoned resumes and newly installed runtimes.
+    /// A changed pass marks the shell projection dirty.
     #[must_use]
     pub(crate) fn start_pending_agent_resumes(&mut self, now: Instant) -> ResumeOutcome {
         // The headless loop calls this on every iteration; skip the per-workspace
@@ -75,14 +75,16 @@ impl App {
         let mut pass = self.resume_schedule.begin_pass(now);
         for PendingAgentResumeCandidate {
             pane_id,
+            public_id,
             cwd,
             plan,
             geometry,
         } in &pending
         {
-            let attempt = self.start_pending_agent_resume(*pane_id, cwd, plan, *geometry, now);
+            let attempt =
+                self.start_pending_agent_resume(*pane_id, *public_id, cwd, plan, *geometry, now);
             if attempt == AttemptOutcome::Launched {
-                outcome.replaced_runtimes.push(*pane_id);
+                outcome.installed_runtimes.push(*pane_id);
             }
             if !pass.record(attempt) {
                 break;
@@ -92,7 +94,7 @@ impl App {
 
         outcome.consumed = pass.changed();
         if outcome.consumed {
-            self.state.mark_session_dirty();
+            // Dispatch keeps the saved plan intact; settlement owns persistence.
             self.state.mark_shell_projection_dirty();
         }
         if !self.has_pending_agent_resumes() {
@@ -101,24 +103,9 @@ impl App {
         outcome
     }
 
-    /// Whether any pane would be a resume candidate right now, without cloning
-    /// plans or collecting them. Same rules as
-    /// `pending_agent_resume_candidates`: a candidate needs its workspace laid
-    /// out (`resume_layout_area`), a pane in the layout, no runtime yet and an
-    /// unconsumed plan.
+    /// Probe the same candidate iterator used by the launch pass.
     fn has_pending_agent_resume_candidates(&self) -> bool {
-        self.state.workspaces.iter().any(|ws| {
-            // A restored pane without usable geometry cannot be launched
-            // yet. Check this first so repeated loop passes do not walk its
-            // pane tree before the first layout or a nonzero resize.
-            Self::resume_layout_area(ws).is_some_and(|area| {
-                self.workspace_has_pending_agent_resume(ws)
-                    && self
-                        .pending_agent_resume_pane_infos(ws, area)
-                        .iter()
-                        .any(|info| self.pane_awaits_agent_resume(ws, info.chrome.id))
-            })
-        })
+        self.pending_agent_resume_candidate_iter().next().is_some()
     }
 
     /// The area a workspace's pending resumes are sized in: the area its PTY
@@ -156,7 +143,6 @@ impl App {
         workspace: &'w Workspace,
         pane_id: shepr_core::layout::PaneId,
     ) -> Option<(
-        &'w shepr_mux::terminal::TerminalState,
         &'w shepr_agent::resume::AgentResumePlan,
         &'w shepr_core::absolute_path::AbsolutePath,
     )> {
@@ -166,25 +152,33 @@ impl App {
             .candidate(self.terminal_runtimes.get(&pane_id).is_some())?;
         // Resume deliberately uses the saved path without probing or filtering
         // it. The child's required chdir owns admission of that directory.
-        Some((terminal, plan, terminal.cwd()))
+        Some((plan, terminal.cwd()))
     }
 
     fn pending_agent_resume_candidates(&self) -> Vec<PendingAgentResumeCandidate> {
-        let mut pending = Vec::new();
-        for ws in self.state.workspaces.iter() {
-            if !self.workspace_has_pending_agent_resume(ws) {
-                continue;
-            }
-            let Some(area) = Self::resume_layout_area(ws) else {
-                continue;
+        self.pending_agent_resume_candidate_iter().collect()
+    }
+
+    fn pending_agent_resume_candidate_iter(
+        &self,
+    ) -> impl Iterator<Item = PendingAgentResumeCandidate> + '_ {
+        self.state.workspaces.iter().flat_map(move |ws| {
+            let infos = match Self::resume_layout_area(ws) {
+                Some(area) if self.workspace_has_pending_agent_resume(ws) => {
+                    self.pending_agent_resume_pane_infos(ws, area)
+                }
+                _ => Default::default(),
             };
             let cell = ws.spawn_geometry().and_then(|geometry| geometry.cell_px());
-            for info in self.pending_agent_resume_pane_infos(ws, area) {
-                let Some((_, plan, cwd)) = self.resume_candidate(ws, info.chrome.id) else {
-                    continue;
-                };
-                pending.push(PendingAgentResumeCandidate {
+            infos.into_iter().filter_map(move |info| {
+                let (plan, cwd) = self.resume_candidate(ws, info.chrome.id)?;
+                let public_id = shepr_protocol::PublicPaneId::new(
+                    &ws.id(),
+                    ws.tree().pane(info.chrome.id)?.number(),
+                );
+                Some(PendingAgentResumeCandidate {
                     pane_id: info.chrome.id,
+                    public_id,
                     cwd: cwd.clone(),
                     plan: plan.clone(),
                     geometry: shepr_core::geometry::PaneGeometry::with_cell(
@@ -192,10 +186,9 @@ impl App {
                         info.content.height,
                         cell,
                     ),
-                });
-            }
-        }
-        pending
+                })
+            })
+        })
     }
 
     /// Every pane of `workspace` laid out in `area`, at the content rect a
@@ -208,12 +201,15 @@ impl App {
         workspace: &Workspace,
         area: shepr_core::geometry::Rect,
     ) -> Vec<shepr_core::chrome::PaneContent> {
-        derived_pending_agent_resume_pane_infos(workspace, self.state.chrome_in(area))
+        self.state
+            .chrome_in(area)
+            .resume_panes(workspace.tree().layout(), workspace.tree().zoomed())
     }
 
     fn start_pending_agent_resume(
         &mut self,
         pane_id: shepr_core::layout::PaneId,
+        public_id: shepr_protocol::PublicPaneId,
         cwd: &shepr_core::absolute_path::AbsolutePath,
         plan: &shepr_agent::resume::AgentResumePlan,
         geometry: shepr_core::geometry::PaneGeometry,
@@ -221,22 +217,9 @@ impl App {
     ) -> AttemptOutcome {
         // Quote the planner's validated command before typing it into the shell.
         let resume_command = plan.to_shell_command();
-        // No public identity only when the pane or its workspace is gone,
-        // which no retry fixes.
-        let Some(public_id) = self.state.pane(pane_id).map(|pane| pane.public_id()) else {
-            tracing::warn!(
-                pane = %pane_id,
-                agent = %plan.agent(),
-                "abandoning deferred agent resume: pane or workspace is gone"
-            );
-            self.abandon_resume(
-                pane_id,
-                shepr_mux::terminal::ResumeUnavailableReason::PaneGone,
-                now,
-            );
-            return AttemptOutcome::Abandoned;
-        };
-
+        // Candidates carry their public identity from this pass's walk of the
+        // state; nothing removes a pane between collection and dispatch.
+        //
         // The launch returns once forked; the child enters the saved directory
         // itself (never falling back), so a directory that is gone or on a
         // hung mount holds only this pane. How it went arrives as the launch's
@@ -251,12 +234,7 @@ impl App {
         ) {
             Ok(runtime) => runtime,
             Err(err) => {
-                tracing::warn!(
-                    pane = %pane_id,
-                    agent = %plan.agent(),
-                    error = %err,
-                    "failed to start shell for deferred agent resume"
-                );
+                // The pane launcher already logged the failure with its stage.
                 self.abandon_agent_resume(
                     pane_id,
                     shepr_mux::terminal::PaneStartFailure::shell_start_failed(&err),
@@ -272,26 +250,6 @@ impl App {
         self.hold_resume_command(pane_id, Bytes::from(input));
         AttemptOutcome::Launched
     }
-
-    fn abandon_resume(
-        &mut self,
-        pane_id: shepr_core::layout::PaneId,
-        reason: shepr_mux::terminal::ResumeUnavailableReason,
-        now: Instant,
-    ) {
-        self.abandon_agent_resume(
-            pane_id,
-            shepr_mux::terminal::PaneStartFailure::resume_unavailable(reason),
-            now,
-        );
-    }
-}
-
-fn derived_pending_agent_resume_pane_infos(
-    workspace: &Workspace,
-    chrome: shepr_mux::workspace::WorkspaceChrome,
-) -> Vec<shepr_core::chrome::PaneContent> {
-    chrome.resume_panes(workspace.tree().layout(), workspace.tree().zoomed())
 }
 
 #[cfg(test)]
@@ -330,7 +288,7 @@ mod tests {
         let outcome = app.start_pending_agent_resumes(Instant::now());
 
         assert!(!outcome.consumed);
-        assert!(outcome.replaced_runtimes.is_empty());
+        assert!(outcome.installed_runtimes.is_empty());
         assert!(app.resume_schedule.is_retired());
         assert!(!app.has_pending_agent_resumes());
         assert_eq!(app.pending_agent_resume_wakeup(), None);
@@ -397,7 +355,7 @@ mod tests {
         assert!(app.terminal_runtimes.values().next().is_none());
         for (_, record) in app.state.workspaces.records() {
             assert!(matches!(
-                record.terminal().restore_error(),
+                record.terminal().start_failure(),
                 Some(shepr_mux::terminal::PaneStartFailure::DirectoryUnavailable { path, .. })
                     if *path == missing
             ));
@@ -493,8 +451,13 @@ mod tests {
                 long_running_test_argv(),
             ));
         report_test_host_theme(&mut app);
+        app.state.test_clear_session_dirty();
 
         assert!(app.start_pending_agent_resumes(Instant::now()).consumed);
+        assert!(
+            !app.state.session_dirty(),
+            "dispatch preserves the saved plan"
+        );
         assert!(app.terminal_runtimes.get(&pane_id).is_some());
         assert!(
             app.state
@@ -595,7 +558,7 @@ mod tests {
                 terminal.ownership().persisted_agent_session(),
                 Some(&session)
             );
-            assert!(terminal.restore_error().is_some());
+            assert!(terminal.start_failure().is_some());
             // No process will ever run here: the seeded detection goes.
             assert_eq!(terminal.ownership().detected_agent(), None);
             assert_eq!(terminal.ownership().effective_agent(), None);
@@ -635,8 +598,10 @@ mod tests {
         // The directory the terminal was saved with disappears before the
         // launch; only the child's chdir finds out.
         std::fs::remove_dir(&cwd).expect("remove resume cwd");
+        let public_id = app.state.pane(pane_id).expect("pane").public_id();
         let outcome = app.start_pending_agent_resume(
             pane_id,
+            public_id,
             &cwd,
             &plan,
             shepr_core::geometry::PaneGeometry::cells_only(80, 24),
@@ -652,7 +617,7 @@ mod tests {
         let terminal = app.state.terminal(pane_id).expect("terminal");
         assert!(!terminal.agent_resume().is_pending());
         assert!(matches!(
-            terminal.restore_error(),
+            terminal.start_failure(),
             Some(shepr_mux::terminal::PaneStartFailure::DirectoryUnavailable { .. })
         ));
     }

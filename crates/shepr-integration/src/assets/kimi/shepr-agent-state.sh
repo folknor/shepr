@@ -3,7 +3,7 @@
 # managed by shepr; every release shepr server launch on this host rewrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=kimi
-# SHEPR_INTEGRATION_VERSION=5
+# SHEPR_INTEGRATION_VERSION=365395850
 
 set -eu
 

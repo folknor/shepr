@@ -31,7 +31,7 @@ mod terminal_environment;
 pub use boot_clock::boot_time_nanos;
 pub use child_io::{
     ChildExitKind, Wait, classify_child_exit, poll_fd_readable, read_fd, remaining_until,
-    set_cloexec, set_fd_nonblocking, set_nonblocking,
+    set_fd_nonblocking, set_nonblocking,
 };
 pub use client_stream::{ClientStreamReader, wait_client_stream_readable, write_client_stream};
 pub use clipboard::{ClipboardRoute, ClipboardSession, read_clipboard_text};
@@ -55,16 +55,16 @@ pub use owned_runtime::{
     DirectoryKind, RuntimeCreateError, create_owned_directory, release_owned_directory,
 };
 pub use private_file::{
-    PrivateDirError, create_private_file, open_regular_file, require_private_directory,
-    sync_directory,
+    NotRegularFile, PrivateDirError, create_private_file, open_regular_file,
+    require_private_directory, sync_directory,
 };
 pub use proc_tree::{
     ForegroundJob, ForegroundProcess, foreground_group_leader_job, foreground_job,
     foreground_process_group_id, process_cwd, suspended_processes,
 };
 pub use process::{
-    Pgid, Pid, ProcStat, ProcState, ProcessHandle, SessionId, Signal, reap_pidfd,
-    session_member_handles, session_members, wait_for_process_exits,
+    Pgid, Pid, ProcStat, ProcState, ProcessHandle, SessionId, Signal, reap_pidfd, session_members,
+    wait_for_process_exits,
 };
 pub use random::unpredictable_token;
 pub use stderr_null::redirect_stderr_to_null;

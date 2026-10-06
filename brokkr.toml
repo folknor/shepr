@@ -520,10 +520,10 @@ message = "ask shepr_paths for the socket lock sidecar path instead of appending
 # the clippy ban, since no site has an escape.
 [[textlint]]
 name = "no-host-temp-dir"
-pattern = '\btemp_dir\s*\('
-paths = ["crates/**/*.rs", "src/**/*.rs", "tests/**/*.rs", "build.rs"]
+pattern = '\b(?:temp_dir|tmpdir)\s*\('
+paths = ["crates/**/*.rs", "crates/**/*.ts", "src/**/*.rs", "tests/**/*.rs", "build.rs"]
 region = "code"
-message = "scratch state lives under the build tree, not the host temp directory; use shepr_test_support::ScratchDir"
+message = "scratch state lives under the build tree, not the host temp directory; use shepr_test_support::ScratchDir in Rust and the asset-test scratch helper in TypeScript"
 
 # Tests spawn the workspace-built fixture program
 # (`shepr_test_support::fixture`), never a program borrowed from the host, so
@@ -1066,3 +1066,22 @@ name = "shepr-server-layer"
 from = "shepr-server"
 allow = ["base64", "bytes", "crossterm", "ctrlc", "futures-util", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-detect", "shepr-git", "shepr-integration", "shepr-mux", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-surface", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width", "zbus"]
 kinds = ["normal"]
+
+# Arbitration consumes observations; screen evaluation stays outside ownership.
+[[textlint]]
+name = "ownership-does-not-run-manifests"
+pattern = '\bmanifest\s*::'
+paths = ["crates/shepr-detect/src/ownership/**/*.rs"]
+region = "code"
+message = "evaluate screen manifests outside ownership and pass observations into arbitration"
+
+[[textlint]]
+name = "hook-authority-fixture-seam-is-test-only"
+pattern = '\bwith_initial_hook_authority\s*\('
+paths = ["crates/**/*.rs", "src/**/*.rs", "tests/**/*.rs"]
+exclude = [
+    "crates/shepr-detect/src/ownership/sessions.rs",
+    "crates/shepr-mux/src/terminal/state/test_support.rs",
+]
+region = "code"
+message = "initial hook authority is only for malformed persistence fixtures; production must arbitrate reports"

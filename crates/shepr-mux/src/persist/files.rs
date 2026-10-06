@@ -27,54 +27,90 @@ pub(super) fn backup_directory(path: &Path) -> PathBuf {
     shepr_paths::session_backup_directory(data_dir)
 }
 
-/// A session path that resolves to something other than a regular file: a
-/// directory, a FIFO, a socket or a device.
-#[derive(Debug, Clone, Copy)]
-enum NotRegularKind {
-    Directory,
-    Fifo,
-    Socket,
-    CharacterDevice,
-    BlockDevice,
-    Other,
-}
+/// Removes the staging files a server that exited mid-publication left in the
+/// data directory and its two recovery directories. Holding `lease` is what
+/// makes this safe: no other writer publishes in those directories, so every
+/// staging name there is a leftover.
+///
+/// The parent of a symlinked session file's target is not swept. It lies
+/// outside the lease (servers with different XDG state roots can share it,
+/// and it may be an agent config directory, where the detached integration
+/// installer stages files with the same names), so a staging file there may
+/// belong to a live publication.
+pub(super) fn sweep_staging_leftovers(lease: &DataDirLease) {
+    let path = session_path(lease.directory());
+    let directories = [
+        lease.directory().to_path_buf(),
+        snapshot_directory(&path),
+        backup_directory(&path),
+    ];
 
-impl NotRegularKind {
-    fn description(self) -> &'static str {
-        match self {
-            Self::Directory => "a directory",
-            Self::Fifo => "a FIFO",
-            Self::Socket => "a socket",
-            Self::CharacterDevice => "a character device",
-            Self::BlockDevice => "a block device",
-            Self::Other => "something else",
+    let mut removed = 0_usize;
+    for directory in directories {
+        let entries = match std::fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                warn!(
+                    event = "persist.cleanup", subsystem = "persist", outcome = "staging_sweep_error",
+                    directory = %directory.display(), %error,
+                    "failed to inspect a session publication directory"
+                );
+                continue;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    warn!(
+                        event = "persist.cleanup", subsystem = "persist", outcome = "staging_sweep_error",
+                        directory = %directory.display(), %error,
+                        "failed to inspect a session publication entry"
+                    );
+                    continue;
+                }
+            };
+            let name = entry.file_name();
+            if !name
+                .to_str()
+                .is_some_and(shepr_platform::publish_file::is_staging_name)
+            {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(file_type) if file_type.is_file() => {}
+                Ok(_) => continue,
+                Err(error) => {
+                    warn!(
+                        event = "persist.cleanup", subsystem = "persist", outcome = "staging_sweep_error",
+                        path = %entry.path().display(), %error,
+                        "failed to inspect a session publication artifact"
+                    );
+                    continue;
+                }
+            }
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => removed = removed.saturating_add(1),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => warn!(
+                    event = "persist.cleanup", subsystem = "persist", outcome = "staging_sweep_error",
+                    path = %entry.path().display(), %error,
+                    "failed to remove an interrupted session publication artifact"
+                ),
+            }
         }
     }
-}
-
-#[derive(Debug)]
-struct NotRegularFile {
-    target: PathBuf,
-    requested: Option<PathBuf>,
-    kind: NotRegularKind,
-}
-
-impl std::fmt::Display for NotRegularFile {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} is {}, not a regular file",
-            self.target.display(),
-            self.kind.description()
-        )?;
-        if let Some(requested) = &self.requested {
-            write!(f, " (resolved from {})", requested.display())?;
-        }
-        f.write_str("; remove it or make it a regular file")
+    if removed > 0 {
+        tracing::info!(
+            event = "persist.cleanup",
+            subsystem = "persist",
+            outcome = "staging_swept",
+            removed,
+            "removed interrupted session publication artifacts"
+        );
     }
 }
-
-impl std::error::Error for NotRegularFile {}
 
 #[derive(Debug)]
 struct SessionPathResolveError {
@@ -121,16 +157,23 @@ fn session_file_size_limit(error: &std::io::Error) -> Option<usize> {
 
 enum SessionPathState {
     Absent,
-    Regular(std::fs::Metadata),
+    Regular,
     NotRegular(std::fs::FileType),
 }
 
 /// The inspected target and state of one session path.
 ///
-/// All persistence operations use this resolver so startup checks, reads,
-/// replacement checks, and metadata stamps classify the same target through
-/// the same bounded symlink walk. Opening still goes through the platform's
+/// All persistence operations use this resolver so startup checks, reads and
+/// replacement checks classify the same target through the same bounded
+/// symlink walk. Opening still goes through the platform's
 /// nonblocking regular-file open, which checks the object actually opened.
+///
+/// The configured path determines recovery placement: snapshots and damaged
+/// backups stay beside the data-directory session path. Writes follow the
+/// resolved symlink target, so staging files, created parent directories and
+/// directory syncs use that target's parent instead. With a symlinked session
+/// file, recovery copies can therefore remain in the data directory while the
+/// live file and its staging file are in the symlink target's directory.
 pub(super) struct SessionPath {
     requested: PathBuf,
     target: PathBuf,
@@ -168,7 +211,7 @@ impl SessionPath {
                 Err(err) => return Err(err),
             };
             if !metadata.file_type().is_symlink() {
-                return Ok(Self::from_metadata(path, target, metadata));
+                return Ok(Self::from_metadata(path, target, &metadata));
             }
             let link = std::fs::read_link(&target)?;
             target = if link.is_absolute() {
@@ -182,7 +225,7 @@ impl SessionPath {
                 std::io::ErrorKind::InvalidInput,
                 "session path still resolves through a symlink after the hop limit",
             )),
-            Ok(metadata) => Ok(Self::from_metadata(path, target, metadata)),
+            Ok(metadata) => Ok(Self::from_metadata(path, target, &metadata)),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self {
                 requested: path.to_path_buf(),
                 target,
@@ -192,9 +235,9 @@ impl SessionPath {
         }
     }
 
-    fn from_metadata(requested: &Path, target: PathBuf, metadata: std::fs::Metadata) -> Self {
+    fn from_metadata(requested: &Path, target: PathBuf, metadata: &std::fs::Metadata) -> Self {
         let state = if metadata.file_type().is_file() {
-            SessionPathState::Regular(metadata)
+            SessionPathState::Regular
         } else {
             SessionPathState::NotRegular(metadata.file_type())
         };
@@ -210,67 +253,32 @@ impl SessionPath {
     }
 
     fn not_regular(&self, file_type: std::fs::FileType) -> std::io::Error {
-        use std::os::unix::fs::FileTypeExt;
-        let kind = if file_type.is_dir() {
-            NotRegularKind::Directory
-        } else if file_type.is_fifo() {
-            NotRegularKind::Fifo
-        } else if file_type.is_socket() {
-            NotRegularKind::Socket
-        } else if file_type.is_char_device() {
-            NotRegularKind::CharacterDevice
-        } else if file_type.is_block_device() {
-            NotRegularKind::BlockDevice
-        } else {
-            NotRegularKind::Other
-        };
-        let requested = (self.requested != self.target).then(|| self.requested.clone());
-        std::io::Error::other(NotRegularFile {
-            target: self.target.clone(),
-            requested,
-            kind,
-        })
+        std::io::Error::other(
+            shepr_platform::NotRegularFile::new(&self.target, file_type)
+                .with_requested_path(&self.requested),
+        )
     }
 
     pub(super) fn ensure_replaceable(&self) -> std::io::Result<()> {
         match &self.state {
             SessionPathState::NotRegular(file_type) => Err(self.not_regular(*file_type)),
-            SessionPathState::Absent | SessionPathState::Regular(_) => Ok(()),
-        }
-    }
-
-    pub(super) fn regular_metadata(&self) -> std::io::Result<Option<&std::fs::Metadata>> {
-        match &self.state {
-            SessionPathState::Absent => Ok(None),
-            SessionPathState::Regular(metadata) => Ok(Some(metadata)),
-            SessionPathState::NotRegular(file_type) => Err(self.not_regular(*file_type)),
+            SessionPathState::Absent | SessionPathState::Regular => Ok(()),
         }
     }
 
     fn open_regular(&self) -> std::io::Result<std::fs::File> {
         self.ensure_replaceable()?;
         shepr_platform::open_regular_file(&self.target)?
-            .map_err(|file_type| self.not_regular(file_type))
+            .map_err(|error| std::io::Error::other(error.with_requested_path(&self.requested)))
     }
 }
 
 /// Opens `path` for reading only if it resolves to a regular file (see
 /// `shepr_platform::open_regular_file`): a FIFO in its place never blocks a
-/// read, and anything other than a regular file is a [`NotRegularFile`] error.
+/// read, and anything other than a regular file is a
+/// [`shepr_platform::NotRegularFile`] error.
 pub(super) fn open_regular(path: &Path) -> std::io::Result<std::fs::File> {
     SessionPath::resolve(path)?.open_regular()
-}
-
-/// The metadata stamp of the regular file `path` resolves to, `None` when it
-/// is absent.
-pub(super) fn regular_file_stamp(
-    path: &Path,
-) -> std::io::Result<Option<shepr_platform::FileStamp>> {
-    let resolved = SessionPath::resolve(path)?;
-    let Some(metadata) = resolved.regular_metadata()? else {
-        return Ok(None);
-    };
-    Ok(Some(shepr_platform::FileStamp::from_metadata(metadata)))
 }
 
 pub(super) fn read_session_file(path: &Path) -> std::io::Result<String> {
@@ -333,7 +341,8 @@ pub(super) use shepr_platform::publish_file::PublishTarget;
 /// directory. A crash leaves either the previous file or the complete new
 /// one, never a truncated one. The staging name is unpredictable and
 /// exclusively created, so a leftover from an interrupted publish is never
-/// reused or removed here.
+/// reused here; `sweep_staging_leftovers` removes those in the data and
+/// recovery directories at the next startup.
 ///
 /// With `PublishTarget::CreateOnly` an existing `target` is atomically refused with `AlreadyExists`,
 /// and a published target is withdrawn again when the directory sync fails,
@@ -351,29 +360,15 @@ pub(super) fn publish_private_file(
     target: &Path,
     existing: PublishTarget,
 ) -> std::io::Result<Published> {
-    use shepr_platform::publish_file::{Durability, PreparedFile, PublishOptions};
-    let replace = existing == PublishTarget::ReplaceExisting;
-    PreparedFile::prepare(
-        target,
-        source,
-        &PublishOptions {
-            preserve_metadata_from: None,
-            refuse_symlink_target: false,
-            durability: if replace {
-                Durability::Directory
-            } else {
-                Durability::DirectoryOrWithdraw
-            },
-            existing,
-            mode: 0o600,
-        },
-    )?
-    .commit()
+    shepr_platform::publish_file::publish_private(target, source, 0o600, existing)
 }
 
 /// Best-effort removal of a file a failed publish left behind. The publish
 /// error is what the caller acts on, so a failed removal is logged rather than
-/// returned; an operator should be able to see the stray private file.
+/// returned; an operator should be able to see the stray private file. Keep
+/// this recovery-copy path's persist event here: platform staging cleanup runs
+/// from `PreparedFile::drop` and cannot report the recovery operation that
+/// caused the artifact.
 pub(super) fn remove_after_failed_publish(path: &Path) {
     match std::fs::remove_file(path) {
         Ok(()) => {}
@@ -596,9 +591,9 @@ mod tests {
 
     /// Whether `error` says a session path is not a regular file.
     fn is_not_regular(error: &std::io::Error) -> bool {
-        error
-            .get_ref()
-            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<NotRegularFile>)
+        error.get_ref().is_some_and(
+            <dyn std::error::Error + Send + Sync>::is::<shepr_platform::NotRegularFile>,
+        )
     }
 
     fn too_large_limit(error: &std::io::Error) -> Option<usize> {
@@ -665,9 +660,38 @@ mod tests {
         let lease = DataDirLease::acquire(&scratch).expect("lease");
         save_to_path(&session_path(lease.directory()), &empty_snapshot()).expect("save");
         assert!(matches!(load(&lease), SessionLoad::Loaded(_)));
-        lease.release();
+        drop(lease);
         let lease = DataDirLease::acquire(&scratch).expect("lease after release");
         assert!(matches!(load(&lease), SessionLoad::Loaded(_)));
+    }
+
+    #[test]
+    fn the_startup_sweep_removes_only_staging_files_in_owned_directories() {
+        let scratch = crate::test_support::ScratchDir::new("staging-sweep");
+        let lease = DataDirLease::acquire(&scratch).expect("lease");
+        let snapshots = snapshot_directory(&session_path(lease.directory()));
+        std::fs::create_dir_all(&snapshots).expect("snapshot directory");
+        let leftover = lease.directory().join(".shepr-0123456789abcdef-3.tmp");
+        let snapshot_leftover = snapshots.join(".shepr-fedcba9876543210-0.tmp");
+        let unrelated = lease.directory().join(".shepr-not-staging.tmp");
+        for file in [&leftover, &snapshot_leftover, &unrelated] {
+            std::fs::write(file, b"partial").expect("test precondition");
+        }
+        let staging_shaped_directory = lease.directory().join(".shepr-00000000000000aa-1.tmp");
+        std::fs::create_dir(&staging_shaped_directory).expect("test precondition");
+
+        sweep_staging_leftovers(&lease);
+
+        assert!(!leftover.try_exists().expect("stat"));
+        assert!(!snapshot_leftover.try_exists().expect("stat"));
+        assert!(
+            unrelated.try_exists().expect("stat"),
+            "only staging names go"
+        );
+        assert!(
+            staging_shaped_directory.try_exists().expect("stat"),
+            "only regular files go"
+        );
     }
 
     #[test]

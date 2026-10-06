@@ -44,13 +44,13 @@ pub(crate) fn remote_server_status(
 /// check: a bridge could neither use nor replace it.
 pub(crate) fn parse_remote_server_status_json(status: &str) -> io::Result<RemoteServerStatus> {
     use shepr_api::schema::ServerStatus;
-    let parsed: shepr_api::schema::ServerStatusJson =
-        serde_json::from_str(status).map_err(|err| {
+    let parsed: shepr_api::schema::ServerStatusJson = crate::discovery::last_json_record(status)
+        .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                EndpointFailure::incompatible(format!(
-                    "could not parse remote server status JSON: {err}"
-                )),
+                EndpointFailure::incompatible(
+                    "remote server status command returned no valid status JSON",
+                ),
             )
         })?;
     match parsed.state {

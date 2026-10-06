@@ -1,3 +1,4 @@
+use crate::types::{InstallError, InstallResult};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -11,33 +12,20 @@ use super::config_file::{
 };
 use super::env::AgentIntegrationPaths;
 use super::file_ops::{is_file, read_if_file};
-use super::types::{InstallErrorKind, InstallIssue};
 
 pub(crate) struct PluginConfigEdit {
     path: PathBuf,
-    updated_contents: Option<String>,
-    _update_lock: Option<ConfigUpdateLock>,
+    update: Option<(String, ConfigUpdateLock)>,
 }
 
 impl PluginConfigEdit {
     fn unchanged(path: PathBuf) -> Self {
-        Self {
-            path,
-            updated_contents: None,
-            _update_lock: None,
-        }
+        Self { path, update: None }
     }
 
-    pub(crate) fn write(self) -> io::Result<PathBuf> {
-        let Self {
-            path,
-            updated_contents,
-            _update_lock,
-        } = self;
-        if let Some(contents) = updated_contents {
-            let update_lock = _update_lock.ok_or_else(|| {
-                io::Error::other("OpenCode config edit is missing its update lock")
-            })?;
+    pub(crate) fn write(self) -> InstallResult<PathBuf> {
+        let Self { path, update } = self;
+        if let Some((contents, update_lock)) = update {
             write_config_for_update(&path, &update_lock, contents)?;
         }
         Ok(path)
@@ -51,14 +39,14 @@ fn tui_config_paths(config_dir: &Path) -> [PathBuf; 2] {
     ]
 }
 
-pub(crate) fn validate_tui_plugin_config(config_dir: &Path) -> io::Result<()> {
+pub(crate) fn validate_tui_plugin_config(config_dir: &Path) -> InstallResult<()> {
     for path in tui_config_paths(config_dir) {
         validate_plugin_config(&path, "plugin")?;
     }
     validate_plugin_config(&config_dir.join(super::OPENCODE_CLI_CONFIG_NAME), "plugins")
 }
 
-fn validate_plugin_config(config_path: &Path, key: &str) -> io::Result<()> {
+fn validate_plugin_config(config_path: &Path, key: &str) -> InstallResult<()> {
     let Some(content) = read_if_file(config_path)? else {
         return Ok(());
     };
@@ -77,7 +65,7 @@ pub(crate) fn prepare_tui_plugin(
     config_dir: &Path,
     plugin_spec: &str,
     paths: &AgentIntegrationPaths,
-) -> io::Result<PluginConfigEdit> {
+) -> InstallResult<PluginConfigEdit> {
     for path in tui_config_paths(config_dir) {
         if plugin_is_configured(&path, "plugin", plugin_spec)? {
             return Ok(PluginConfigEdit::unchanged(path));
@@ -97,7 +85,7 @@ pub(crate) fn prepare_cli_plugin(
     state_dir: &Path,
     plugin_spec: &str,
     paths: &AgentIntegrationPaths,
-) -> io::Result<Option<PluginConfigEdit>> {
+) -> InstallResult<Option<PluginConfigEdit>> {
     let path = config_dir.join(super::OPENCODE_CLI_CONFIG_NAME);
     check_config_target(&path)?;
     // OpenCode imports V1 TUI preferences (`tui.json`, `kv.json`) into cli.json on
@@ -114,12 +102,12 @@ pub(crate) fn prepare_cli_plugin(
 pub(crate) fn cli_plugin_registration_is_deferred(
     config_dir: &Path,
     state_dir: &Path,
-) -> io::Result<bool> {
+) -> InstallResult<bool> {
     let path = config_dir.join(super::OPENCODE_CLI_CONFIG_NAME);
     let cli_config_is_absent = match fs::symlink_metadata(&path) {
         Ok(_) => false,
         Err(error) if error.kind() == io::ErrorKind::NotFound => true,
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     };
     Ok(cli_config_is_absent && cli_migration_pending(config_dir, state_dir)?)
 }
@@ -128,14 +116,14 @@ pub(crate) fn cli_plugin_is_registered_or_deferred(
     config_dir: &Path,
     state_dir: &Path,
     plugin_spec: &str,
-) -> io::Result<bool> {
+) -> InstallResult<bool> {
     if cli_plugin_registration_is_deferred(config_dir, state_dir)? {
         return Ok(true);
     }
     cli_plugin_is_configured(config_dir, plugin_spec)
 }
 
-fn cli_migration_pending(config_dir: &Path, state_dir: &Path) -> io::Result<bool> {
+fn cli_migration_pending(config_dir: &Path, state_dir: &Path) -> InstallResult<bool> {
     Ok(
         is_file(&config_dir.join(super::OPENCODE_LEGACY_TUI_CONFIG_NAME))?
             || is_file(&state_dir.join("kv.json"))?,
@@ -147,7 +135,7 @@ fn prepare_plugin(
     key: &str,
     plugin_spec: &str,
     paths: &AgentIntegrationPaths,
-) -> io::Result<PluginConfigEdit> {
+) -> InstallResult<PluginConfigEdit> {
     check_config_target(&config_path)?;
     let update_lock = lock_config_for_update(&config_path, paths)?;
     let content = read_if_file(&config_path)?.unwrap_or_else(|| "{}\n".to_string());
@@ -178,12 +166,14 @@ fn prepare_plugin(
 
     Ok(PluginConfigEdit {
         path: config_path,
-        updated_contents: Some(root.to_string()),
-        _update_lock: Some(update_lock),
+        update: Some((root.to_string(), update_lock)),
     })
 }
 
-pub(crate) fn tui_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> io::Result<bool> {
+pub(crate) fn tui_plugin_is_configured(
+    config_dir: &Path,
+    plugin_spec: &str,
+) -> InstallResult<bool> {
     for path in tui_config_paths(config_dir) {
         if plugin_is_configured(&path, "plugin", plugin_spec)? {
             return Ok(true);
@@ -192,7 +182,10 @@ pub(crate) fn tui_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> 
     Ok(false)
 }
 
-pub(crate) fn cli_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> io::Result<bool> {
+pub(crate) fn cli_plugin_is_configured(
+    config_dir: &Path,
+    plugin_spec: &str,
+) -> InstallResult<bool> {
     plugin_is_configured(
         &config_dir.join(super::OPENCODE_CLI_CONFIG_NAME),
         "plugins",
@@ -200,7 +193,7 @@ pub(crate) fn cli_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> 
     )
 }
 
-fn plugin_is_configured(config_path: &Path, key: &str, plugin_spec: &str) -> io::Result<bool> {
+fn plugin_is_configured(config_path: &Path, key: &str, plugin_spec: &str) -> InstallResult<bool> {
     let Some(content) = read_if_file(config_path)? else {
         return Ok(false);
     };
@@ -218,19 +211,16 @@ fn plugin_is_configured(config_path: &Path, key: &str, plugin_spec: &str) -> io:
         }))
 }
 
-fn parse_root(content: &str, path: &Path) -> io::Result<CstRootNode> {
+fn parse_root(content: &str, path: &Path) -> InstallResult<CstRootNode> {
     CstRootNode::parse(content, &jsonc_parse_options()).map_err(|err| {
-        InstallIssue::io_error(
-            InstallErrorKind::ConfigUnparseable,
-            format!(
-                "failed to parse OpenCode TUI config at {}: {err}",
-                path.display()
-            ),
-        )
+        InstallError::config_unparseable(format!(
+            "failed to parse OpenCode TUI config at {}: {err}",
+            path.display()
+        ))
     })
 }
 
-fn root_object(root: &CstRootNode, path: &Path) -> io::Result<jsonc_parser::cst::CstObject> {
+fn root_object(root: &CstRootNode, path: &Path) -> InstallResult<jsonc_parser::cst::CstObject> {
     root.value()
         .and_then(|value| value.as_object())
         .ok_or_else(|| invalid_root(path))
@@ -261,28 +251,22 @@ fn plugin_entry_matches(entry: &Value, plugin_spec: &str) -> bool {
             == Some(plugin_spec)
 }
 
-fn invalid_root(path: &Path) -> io::Error {
-    InstallIssue::io_error(
-        InstallErrorKind::ConfigShape,
-        format!(
-            "OpenCode TUI config at {} must be a JSON object",
-            path.display()
-        ),
-    )
+fn invalid_root(path: &Path) -> super::types::InstallError {
+    InstallError::config_shape(format!(
+        "OpenCode TUI config at {} must be a JSON object",
+        path.display()
+    ))
 }
 
-fn invalid_plugin_list(path: &Path) -> io::Error {
-    InstallIssue::io_error(
-        InstallErrorKind::ConfigShape,
-        format!(
-            "OpenCode TUI config plugin list at {} must be an array",
-            path.display()
-        ),
-    )
+fn invalid_plugin_list(path: &Path) -> super::types::InstallError {
+    InstallError::config_shape(format!(
+        "OpenCode TUI config plugin list at {} must be an array",
+        path.display()
+    ))
 }
 
 #[cfg(test)]
-pub(crate) fn add_tui_plugin(config_dir: &Path, plugin_spec: &str) -> io::Result<PathBuf> {
+pub(crate) fn add_tui_plugin(config_dir: &Path, plugin_spec: &str) -> InstallResult<PathBuf> {
     let paths = AgentIntegrationPaths::resolve();
     prepare_tui_plugin(config_dir, plugin_spec, &paths)?.write()
 }
@@ -292,7 +276,7 @@ pub(crate) fn add_cli_plugin(
     config_dir: &Path,
     state_dir: &Path,
     plugin_spec: &str,
-) -> io::Result<Option<PathBuf>> {
+) -> InstallResult<Option<PathBuf>> {
     let paths = AgentIntegrationPaths::resolve();
     prepare_cli_plugin(config_dir, state_dir, plugin_spec, &paths)?
         .map(PluginConfigEdit::write)

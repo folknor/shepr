@@ -1,3 +1,4 @@
+use crate::types::{InstallError, InstallResult};
 use std::fs;
 use std::io::{self, Read};
 use std::path::Path;
@@ -6,37 +7,37 @@ use super::atomic_replace::{AtomicReplace, PermissionPolicy};
 
 /// Whether `path` is a regular file (following symlinks). Absence is `false`;
 /// any other stat error (`EACCES`, `ELOOP`) is returned, not read as absence.
-pub(crate) fn is_file(path: &Path) -> io::Result<bool> {
+pub(crate) fn is_file(path: &Path) -> InstallResult<bool> {
     match fs::metadata(path) {
         Ok(metadata) => Ok(metadata.is_file()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err),
+        Err(err) => Err(err.into()),
     }
 }
 
 /// Whether `path` is a directory (following symlinks). Absence is `false`;
 /// any other stat error is returned, not read as absence.
-pub(crate) fn is_dir(path: &Path) -> io::Result<bool> {
+pub(crate) fn is_dir(path: &Path) -> InstallResult<bool> {
     match fs::metadata(path) {
         Ok(metadata) => Ok(metadata.is_dir()),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err),
+        Err(err) => Err(err.into()),
     }
 }
 
 /// Missing config is empty; every existing non-regular object is an error.
 /// Pin the object before reading so a FIFO never blocks and a concurrent path
 /// replacement cannot swap a checked regular file for a device or pipe.
-pub(super) fn read_config_bytes(path: &Path) -> io::Result<Option<Vec<u8>>> {
+pub(super) fn read_config_bytes(path: &Path) -> InstallResult<Option<Vec<u8>>> {
     let mut file = match shepr_platform::open_regular_file(path) {
         Ok(Ok(file)) => file,
-        Ok(Err(_)) => return Err(io::Error::other(NotRegularFile(path.to_path_buf()))),
+        Ok(Err(error)) => return Err(error.into()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(io::Error::new(
+            return Err(InstallError::from(io::Error::new(
                 error.kind(),
                 format!("cannot read {}: {error}", path.display()),
-            ));
+            )));
         }
     };
     let mut contents = Vec::new();
@@ -44,26 +45,12 @@ pub(super) fn read_config_bytes(path: &Path) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(contents))
 }
 
-#[derive(Debug)]
-pub(super) struct NotRegularFile(pub(super) std::path::PathBuf);
-
-impl std::fmt::Display for NotRegularFile {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            formatter,
-            "cannot read {}: config is not a regular file",
-            self.0.display()
-        )
-    }
-}
-
-impl std::error::Error for NotRegularFile {}
-
-pub(crate) fn read_if_file(path: &Path) -> io::Result<Option<String>> {
+pub(crate) fn read_if_file(path: &Path) -> InstallResult<Option<String>> {
     read_config_bytes(path)?
         .map(|bytes| {
-            String::from_utf8(bytes)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+            String::from_utf8(bytes).map_err(|error| {
+                InstallError::from(io::Error::new(io::ErrorKind::InvalidData, error))
+            })
         })
         .transpose()
 }
@@ -83,12 +70,12 @@ pub(crate) fn write_managed_asset(
     path: &Path,
     contents: &[u8],
     executable: bool,
-) -> io::Result<()> {
+) -> InstallResult<()> {
     if path.file_name().is_none() {
-        return Err(io::Error::other(format!(
+        return Err(InstallError::from(io::Error::other(format!(
             "{} has no file name",
             path.display()
-        )));
+        ))));
     }
 
     let replacement = AtomicReplace::prepare_with_policy(
@@ -140,11 +127,10 @@ mod tests {
         for path in [&directory, &fifo, &socket] {
             let error = read_if_file(path)
                 .expect_err("non-regular config must fail without opening for IO");
-            assert!(
-                error
-                    .get_ref()
-                    .is_some_and(<dyn std::error::Error + Send + Sync>::is::<NotRegularFile>)
-            );
+            match error {
+                InstallError::NotRegularFile(cause) => assert_eq!(cause.path(), path),
+                other => panic!("expected a typed non-regular-file refusal: {other}"),
+            }
             assert!(
                 read_config_bytes(path).is_err(),
                 "snapshot uses the same policy"

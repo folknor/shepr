@@ -191,7 +191,7 @@ impl App {
         let mut app = Self {
             state,
             clock,
-            terminal_runtimes: shepr_mux::pane::PaneRuntimeRegistry::new(),
+            terminal_runtimes: shepr_mux::pane::PaneRuntimeRegistry::default(),
             git_refresh,
             resume_schedule: resume_schedule::ResumeSchedule::new(
                 PENDING_AGENT_RESUME_THEME_WAIT,
@@ -255,9 +255,9 @@ impl App {
     }
 
     /// Block until this app's pane session teardowns have finished, or
-    /// `timeout` passes. Returns whether they all finished.
-    fn wait_for_pane_teardowns(&self, timeout: Duration) -> bool {
-        self.pane_teardowns.wait(timeout)
+    /// `timeout` passes. Returns the unfinished pane identities.
+    fn wait_for_pane_teardowns(&self, timeout: Duration) -> Vec<shepr_core::layout::PaneId> {
+        self.pane_teardowns.wait_unfinished(timeout)
     }
 
     /// Creates the workspace an empty session gets, sized for `geometry`.
@@ -344,8 +344,11 @@ impl App {
         }
     }
 
-    /// Drops every runtime and waits for their teardowns; false on timeout.
-    pub(crate) fn shut_down_pane_runtimes(&mut self, timeout: Duration) -> bool {
+    /// Drops every runtime and returns any unfinished teardown identities.
+    pub(crate) fn shut_down_pane_runtimes(
+        &mut self,
+        timeout: Duration,
+    ) -> Vec<shepr_core::layout::PaneId> {
         self.terminal_runtimes.clear();
         self.wait_for_pane_teardowns(timeout)
     }

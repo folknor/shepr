@@ -700,7 +700,7 @@ mod tests {
         let ws = shepr_mux::workspace::Workspace::test_new("test");
         let pane_id = ws.tree().root();
         state.test_set_workspaces(vec![ws]);
-        let mut registry = shepr_mux::pane::PaneRuntimeRegistry::new();
+        let mut registry = shepr_mux::pane::PaneRuntimeRegistry::default();
 
         assert!(registry.get(&pane_id).is_none());
         registry.insert(

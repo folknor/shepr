@@ -1,6 +1,7 @@
 use super::*;
 use crate::failure::SSH_OWN_FAILURE_EXIT_CODE;
 use crate::preflight::{MachineCheck, classify_check};
+use crate::ssh_paths::ssh_control_path_under;
 use shepr_core::socket_path::fits_unix_socket_path;
 use shepr_launch::SshFailureClass;
 use std::thread;
@@ -45,7 +46,7 @@ fn write_test_managed_ssh_config(
     write_managed_ssh_config_at(
         runtime_dir,
         &remote_ssh_config_paths(paths.home_dir()),
-        Some(control_path),
+        control_path,
     )
 }
 
@@ -79,11 +80,7 @@ fn managed_ssh_config_includes_user_config_then_fallback() {
         write_test_managed_ssh_config(&example_target(), &paths, test_control_dir())
             .expect("write managed config");
     let path = managed_config.options.config_path.clone();
-    let control_path = managed_config
-        .options
-        .control_path
-        .clone()
-        .expect("Unix managed config has a control path");
+    let control_path = managed_config.options.control_path.clone();
     let contents = std::fs::read_to_string(&path).expect("read keepalive config");
 
     // shepr's fallback transport settings are present...
@@ -150,12 +147,8 @@ fn shared_ssh_transport_survives_helper_config_drop() {
         .expect("test precondition");
     let second = write_test_managed_ssh_config(&example_target(), &paths, control_dir)
         .expect("test precondition");
-    let socket = first
-        .options
-        .control_path
-        .clone()
-        .expect("test precondition");
-    assert_eq!(Some(&socket), second.options.control_path.as_ref());
+    let socket = first.options.control_path.clone();
+    assert_eq!(socket, second.options.control_path);
     assert_eq!(socket.parent(), Some(Path::new("/nonexistent/ssh")));
     assert_ne!(socket.parent(), first.options.config_path.parent());
     let config_path = first.options.config_path.clone();
@@ -270,14 +263,26 @@ fn authentication_command_uses_shared_transport_without_askpass_or_host_key_rela
         .collect::<Vec<_>>();
     for required in [
         ssh_options::CONTROL_MASTER,
-        crate::limits::SSH_CONTROL_PERSIST_OPTION,
+        &format!(
+            "ControlPersist={}",
+            crate::limits::SSH_CONTROL_PERSIST.as_secs()
+        ),
         ssh_options::BATCH_MODE_NO,
         ssh_options::STRICT_HOST_KEY_CHECKING,
         ssh_options::REMOTE_COMMAND_NONE,
         ssh_options::LOG_LEVEL_ERROR,
-        crate::limits::SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION,
-        crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
-        crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
+        &format!(
+            "NumberOfPasswordPrompts={}",
+            crate::limits::SSH_AUTHENTICATION_PASSWORD_PROMPTS
+        ),
+        &format!(
+            "ConnectTimeout={}",
+            crate::limits::SSH_CONNECT_TIMEOUT.as_secs()
+        ),
+        &format!(
+            "ConnectionAttempts={}",
+            crate::limits::SSH_CONNECTION_ATTEMPTS
+        ),
     ] {
         assert!(args.iter().any(|arg| arg == required), "missing {required}");
     }
@@ -334,11 +339,7 @@ fn remote_ssh_command_uses_managed_config_when_present() {
         write_test_managed_ssh_config(&example_target(), &paths, test_control_dir())
             .expect("write managed config");
     let config_path = managed_config.options.config_path.clone();
-    let control_path = managed_config
-        .options
-        .control_path
-        .clone()
-        .expect("test precondition");
+    let control_path = managed_config.options.control_path.clone();
     let ssh = RemoteSsh::test_with_state(
         SshTarget::parse("example").expect("test precondition"),
         managed_config,
@@ -361,7 +362,10 @@ fn remote_ssh_command_uses_managed_config_when_present() {
             "-o".to_string(),
             ssh_options::CONTROL_MASTER.to_string(),
             "-o".to_string(),
-            crate::limits::SSH_CONTROL_PERSIST_OPTION.to_string(),
+            format!(
+                "ControlPersist={}",
+                crate::limits::SSH_CONTROL_PERSIST.as_secs()
+            ),
         ]
     );
     assert_eq!(&args[args.len() - 2..], ["-T", "example"]);
@@ -424,12 +428,21 @@ fn ssh_command_cannot_prompt_or_accept_unknown_hosts() {
     for required in [
         "-C",
         ssh_options::BATCH_MODE_YES,
-        crate::limits::SSH_NO_PASSWORD_PROMPTS_OPTION,
+        &format!(
+            "NumberOfPasswordPrompts={}",
+            crate::limits::SSH_NO_PASSWORD_PROMPTS
+        ),
         ssh_options::STRICT_HOST_KEY_CHECKING,
         ssh_options::REMOTE_COMMAND_NONE,
         ssh_options::LOG_LEVEL_ERROR,
-        crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
-        crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
+        &format!(
+            "ConnectTimeout={}",
+            crate::limits::SSH_CONNECT_TIMEOUT.as_secs()
+        ),
+        &format!(
+            "ConnectionAttempts={}",
+            crate::limits::SSH_CONNECTION_ATTEMPTS
+        ),
     ] {
         assert!(args.iter().any(|arg| arg == required), "missing {required}");
     }
@@ -540,21 +553,17 @@ fn local_setup_diagnostics_require_an_explicit_local_boundary() {
 fn an_attempt_deadline_shortens_and_then_refuses_commands() {
     let mut ssh = test_ssh();
     let now = Instant::now();
-    let timeout = ssh.command_timeout(now).expect("no deadline");
-    assert_eq!(timeout.duration, SSH_COMMAND_TIMEOUT);
-    assert!(timeout.authentication_candidate);
-
-    ssh.set_attempt_deadline(Some(now + Duration::from_secs(2)));
+    ssh.set_attempt_deadline(now + Duration::from_secs(2));
     let timeout = ssh.command_timeout(now).expect("time is left");
     assert_eq!(timeout.duration, Duration::from_secs(2));
     assert!(!timeout.authentication_candidate);
 
-    ssh.set_attempt_deadline(Some(now + Duration::from_secs(25)));
+    ssh.set_attempt_deadline(now + Duration::from_secs(25));
     let timeout = ssh.command_timeout(now).expect("a round trip fits");
     assert_eq!(timeout.duration, SSH_COMMAND_TIMEOUT);
     assert!(timeout.authentication_candidate);
 
-    ssh.set_attempt_deadline(Some(now));
+    ssh.set_attempt_deadline(now);
     let error = ssh
         .command_timeout(now)
         .expect_err("no command may start past the deadline");

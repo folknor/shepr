@@ -244,7 +244,7 @@ mod tests {
 
         let terminal = app.state.terminal(pane_id).expect("the pane stays");
         assert!(matches!(
-            terminal.restore_error(),
+            terminal.start_failure(),
             Some(shepr_mux::terminal::PaneStartFailure::LaunchUnobservable { .. })
         ));
         assert!(app.terminal_runtimes.get(&pane_id).is_none());
@@ -263,7 +263,7 @@ mod tests {
 
         let terminal = app.state.terminal(pane_id).expect("the pane stays");
         assert!(matches!(
-            terminal.restore_error(),
+            terminal.start_failure(),
             Some(shepr_mux::terminal::PaneStartFailure::ResumeUnavailable { .. })
         ));
         assert!(terminal.ownership().persisted_agent_session().is_some());
@@ -283,7 +283,7 @@ mod tests {
             "nothing left to retry"
         );
         assert!(matches!(
-            terminal.restore_error(),
+            terminal.start_failure(),
             Some(shepr_mux::terminal::PaneStartFailure::ResumeUnavailable { .. })
         ));
         assert!(terminal.ownership().persisted_agent_session().is_some());
@@ -301,7 +301,7 @@ mod tests {
 
         let terminal = app.state.terminal(pane_id).expect("terminal");
         assert!(terminal.agent_resume().is_launching());
-        assert!(terminal.restore_error().is_none());
+        assert!(terminal.start_failure().is_none());
         assert!(app.terminal_runtimes.get(&pane_id).is_some());
     }
 }

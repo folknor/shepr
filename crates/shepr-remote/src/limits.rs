@@ -60,18 +60,16 @@ pub(crate) const SSH_STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
 /// diagnostics while bounding untrusted remote error output.
 pub(crate) const SSH_STDERR_CAPTURE_LIMIT: usize = 16 * 1024;
 
-/// Time a pipe reader may continue after the SSH child exits. OpenSSH's
-/// ControlPersist master can inherit the pipe, so the grace captures prompt
-/// output and then lets the caller continue instead of waiting indefinitely.
+/// Time a pipe reader may continue after the SSH child exits. OpenSSH points
+/// a detached ControlPersist master's standard streams at `/dev/null`, but a
+/// background descendant of a configured `LocalCommand` can inherit the pipe
+/// and hold it open. The grace captures prompt output and then lets the caller
+/// continue instead of waiting for that descendant.
 pub(crate) const PIPE_DRAIN_GRACE: Duration = Duration::from_millis(500);
 
 /// Read chunk size for draining an SSH child pipe. The chunk limits each
 /// temporary stack buffer while keeping pipe reads efficient.
 pub(crate) const SSH_PIPE_READ_BUFFER_BYTES: usize = 8 * 1024;
-
-/// Capacity for the completion result sent by an SSH pipe reader. This lets
-/// the reader report completion without waiting for its consumer.
-pub(crate) const SSH_PIPE_DONE_CHANNEL_CAPACITY: usize = 1;
 
 /// Grace after bridge stream IO stops before the SSH child is terminated. It
 /// lets EOF and buffered output settle while bounding teardown.
@@ -90,10 +88,6 @@ pub(crate) const BRIDGE_IO_BUFFER_BYTES: usize = 16 * 1024;
 /// operation and leaves the bridge responsive to cancellation between chunks.
 pub(crate) const BRIDGE_WRITE_CHUNK_BYTES: usize = 4 * 1024;
 
-/// Initial capacity reserved for remote CLI arguments. This covers the common
-/// command shape; `Vec` still grows if a command needs more.
-pub(crate) const REMOTE_COMMAND_ARGS_INITIAL_CAPACITY: usize = 6;
-
 /// One cold SSH round trip, including a remote command or status probe: the
 /// budget of every bounded SSH command, retries and discovery alike. This
 /// bounds a slow startup without letting a hung host block the caller.
@@ -101,10 +95,10 @@ pub(crate) const SSH_COMMAND_TIMEOUT: Duration = SSH_CONNECT_TIMEOUT
     .saturating_add(shepr_launch::limits::STATUS_OVERVIEW_TIMEOUT)
     .saturating_add(SSH_STATUS_COMMAND_GRACE);
 
-/// OpenSSH's connection window, `SSH_CONNECT_TIMEOUT_OPTION` (a test holds the
-/// two together); the remote status needs its own window after a cold
+/// OpenSSH's connection window, formatted directly into the command option.
+/// The remote status needs its own window after a cold
 /// connection has used this one.
-const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Scheduling and command startup beyond connection and socket request time.
 const SSH_STATUS_COMMAND_GRACE: Duration = Duration::from_secs(1);
@@ -145,6 +139,12 @@ pub(crate) const FLEET_STATUS_BUDGET: Duration = SSH_CONNECTION_ATTEMPT_BUDGET;
 /// An SSH bridge must outlive several client heartbeat cycles while idle.
 /// This gives a healthy bridge multiple chances to answer endpoint probes;
 /// its minimum cycle ratio is checked below.
+///
+/// It is as long as [`SSH_KEEPALIVE`]'s loss window (interval times count),
+/// but the two govern separate checks: this one is the remote bridge's
+/// watchdog on client traffic, the keepalive is OpenSSH's probe of the
+/// transport. Neither is ordered against the other, so either may fire first
+/// on a dead link.
 pub(crate) const BRIDGE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Minimum number of client heartbeat intervals that a quiet bridge survives.
@@ -169,25 +169,23 @@ pub(crate) const BRIDGE_WATCHDOG_POLL_INTERVAL: Duration = Duration::from_secs(1
 /// read overhead while keeping each stack buffer small.
 pub(crate) const REMOTE_BRIDGE_COPY_BUFFER_BYTES: usize = 16 * 1024;
 
-/// OpenSSH option limiting connection establishment. This
-/// leaves room for ordinary network setup while bounding unreachable hosts.
-pub(crate) const SSH_CONNECT_TIMEOUT_OPTION: &str = "ConnectTimeout=10";
+/// OpenSSH's `ConnectionAttempts`: one, disabling internal retries. The
+/// surrounding shepr retry owns pacing, so SSH does not hide a failed attempt.
+pub(crate) const SSH_CONNECTION_ATTEMPTS: u32 = 1;
 
-/// OpenSSH option disabling internal retries. The surrounding shepr retry owns
-/// pacing, so SSH does not hide a failed attempt.
-pub(crate) const SSH_CONNECTION_ATTEMPTS_OPTION: &str = "ConnectionAttempts=1";
-
-/// OpenSSH option retaining an idle control master. This
+/// OpenSSH's `ControlPersist`: how long an idle control master is kept. This
 /// amortizes repeated SSH setup while bounding how long it remains available.
-pub(crate) const SSH_CONTROL_PERSIST_OPTION: &str = "ControlPersist=600";
+/// It bounds an idle master only; a remote wait for a server keeps its channel
+/// open and so the master in use, so it has no ordering with `SERVER_WAIT_MAX`.
+pub(crate) const SSH_CONTROL_PERSIST: Duration = Duration::from_secs(600);
 
-/// OpenSSH option disabling password prompts in background SSH commands.
+/// OpenSSH's `NumberOfPasswordPrompts` for background SSH commands: none.
 /// They cannot be answered and would otherwise stall the bounded attempt.
-pub(crate) const SSH_NO_PASSWORD_PROMPTS_OPTION: &str = "NumberOfPasswordPrompts=0";
+pub(crate) const SSH_NO_PASSWORD_PROMPTS: u32 = 0;
 
-/// OpenSSH option permitting authentication prompts for the foreground
-/// command, enough for ordinary interactive authentication flows.
-pub(crate) const SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION: &str = "NumberOfPasswordPrompts=3";
+/// OpenSSH's `NumberOfPasswordPrompts` for the foreground login command,
+/// enough for ordinary interactive authentication flows.
+pub(crate) const SSH_AUTHENTICATION_PASSWORD_PROMPTS: u32 = 3;
 
 /// OpenSSH keepalive settings written to the managed SSH config.
 #[derive(Clone, Copy)]
@@ -227,16 +225,7 @@ const _: () = assert!(
             .as_millis()
 );
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The status budget counts the connection window that OpenSSH is told.
-    #[test]
-    fn the_connect_timeout_option_spells_the_budgeted_window() {
-        assert_eq!(
-            SSH_CONNECT_TIMEOUT_OPTION,
-            format!("ConnectTimeout={}", SSH_CONNECT_TIMEOUT.as_secs())
-        );
-    }
-}
+// OpenSSH's connect window must end inside the command budget: a dead host
+// then fails as a connection error (Offline) rather than as a command that used
+// its whole budget, which reads as a possible authentication wait.
+const _: () = assert!(SSH_CONNECT_TIMEOUT.as_millis() < SSH_COMMAND_TIMEOUT.as_millis());

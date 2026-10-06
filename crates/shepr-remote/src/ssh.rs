@@ -16,7 +16,7 @@ use crate::shell_command::{AccountShellCommand, PosixScript, posix_remote_output
 use crate::ssh_paths::{
     RemoteSshConfigPaths, SshControlKey, create_remote_ssh_config_dir,
     release_remote_ssh_config_dir, remote_ssh_config_file_path, remote_ssh_config_paths,
-    ssh_control_path_under, validate_ssh_runtime_dir,
+    shared_ssh_control_path, validate_ssh_runtime_dir,
 };
 
 mod ssh_options {
@@ -29,6 +29,9 @@ mod ssh_options {
     pub(super) const REMOTE_COMMAND_NONE: &str = "RemoteCommand=none";
     pub(super) const LOG_LEVEL_ERROR: &str = "LogLevel=ERROR";
 
+    // Numeric options are formatted from limits, not embedded in string literals.
+    // A blanket `=[0-9]` string ban would also reject remote scripts and protocol
+    // fixtures; enforcing option assembly belongs at this builder boundary.
     /// Appends OpenSSH options using the same `-o` argument shape at each call site.
     pub(super) fn append(command: &mut Command, options: &[&str]) {
         for option in options {
@@ -55,8 +58,14 @@ mod ssh_options {
         append(
             command,
             &[
-                crate::limits::SSH_CONNECT_TIMEOUT_OPTION,
-                crate::limits::SSH_CONNECTION_ATTEMPTS_OPTION,
+                &format!(
+                    "ConnectTimeout={}",
+                    crate::limits::SSH_CONNECT_TIMEOUT.as_secs()
+                ),
+                &format!(
+                    "ConnectionAttempts={}",
+                    crate::limits::SSH_CONNECTION_ATTEMPTS
+                ),
             ],
         );
     }
@@ -65,7 +74,7 @@ mod ssh_options {
 #[derive(Clone)]
 pub(crate) struct ManagedSshOptions {
     pub(crate) config_path: PathBuf,
-    control_path: Option<PathBuf>,
+    control_path: PathBuf,
     // Bridge workers may launch SSH after the helper that created this config
     // has gone away. The last options owner removes only the temporary config.
     _directory: Arc<ManagedSshConfigDirectory>,
@@ -119,13 +128,8 @@ impl TeardownResource {
     }
 }
 
-/// Tracks every live runtime-directory resource so the process can remove them
-/// before it exits.
-///
-/// Their owners normally remove them on drop, but in a client those owners live on
-/// endpoint writer threads and in connection attempts on blocking tasks. Both are
-/// still unwinding when the main thread returns from the client loop, and process
-/// exit does not wait for them, which leaked config directories.
+/// Tracks temporary SSH config directories until their owners release them,
+/// so client finalization can clean up resources whose owners outlive the loop.
 pub(crate) struct TeardownRegistry {
     pending: std::sync::Mutex<Vec<(u64, TeardownResource)>>,
     changed: std::sync::Condvar,
@@ -196,9 +200,8 @@ impl Drop for TeardownRegistration {
     }
 }
 
-/// Removes the temporary SSH config directories this process
-/// still owns. Call it once, after the client loop has returned and immediately
-/// before the process exits (including through `std::process::exit`).
+/// Removes the temporary SSH config directories this process still owns.
+/// Call it once during launch finalization, after the client loop has returned.
 ///
 /// Owners that are mid-teardown get up to `grace` to finish cleanly; anything left
 /// after that is removed directly. SSH children are not waited for: a bridge's ssh
@@ -229,22 +232,10 @@ fn authentication_command_with_config(
     target: &SshTarget,
     config: ManagedSshConfig,
 ) -> SshAuthenticationCommand {
-    let mut command = ssh_command();
-    apply_managed_ssh_options(&mut command, Some(&config.options));
+    let mut command = ssh_invocation(target, &config.options, SshMode::Interactive);
     command
         .env(shepr_core::env::ChildEnv::SshAskpassRequire, "never")
         .env_remove(shepr_core::env::ChildEnv::SshAskpass);
-    ssh_options::append(
-        &mut command,
-        &[
-            ssh_options::BATCH_MODE_NO,
-            crate::limits::SSH_AUTHENTICATION_PASSWORD_PROMPTS_OPTION,
-        ],
-    );
-    ssh_options::append_connection_bounds(&mut command);
-    ssh_options::append_shepr_options(&mut command);
-    command.arg("-T");
-    target.append_to(&mut command);
     command.arg("exit");
     SshAuthenticationCommand {
         command,
@@ -263,12 +254,17 @@ pub(crate) struct RemoteSsh {
     /// each gets the shorter of its own timeout and the time left, and none
     /// starts once it has passed. A machine connection attempt sets it so
     /// discovery cannot outlast its budget.
-    attempt_deadline: Option<Instant>,
+    attempt_deadline: Instant,
 }
 
 impl RemoteSsh {
-    /// For long-lived callers that already hold the launch-time config.
-    pub(crate) fn new(target: SshTarget, paths: &shepr_paths::AppPaths) -> io::Result<Self> {
+    /// Creates the managed transport with a mandatory command deadline.
+    /// A cached transport replaces it at the start of each connection attempt.
+    pub(crate) fn new(
+        target: SshTarget,
+        paths: &shepr_paths::AppPaths,
+        deadline: Instant,
+    ) -> io::Result<Self> {
         let control_dir = SshControlDir::runtime(paths).map_err(|error| {
             local_setup_error("could not prepare local SSH configuration", error)
         })?;
@@ -279,23 +275,18 @@ impl RemoteSsh {
         Ok(Self {
             target,
             managed_config,
-            attempt_deadline: None,
+            attempt_deadline: deadline,
         })
     }
 
-    pub(crate) fn set_attempt_deadline(&mut self, deadline: Option<Instant>) {
+    pub(crate) fn set_attempt_deadline(&mut self, deadline: Instant) {
         self.attempt_deadline = deadline;
     }
 
     /// The timeout for the next command, or `TimedOut` when the attempt
     /// deadline has already passed and no further command may start.
     fn command_timeout(&self, now: Instant) -> io::Result<CommandTimeout> {
-        let Some(deadline) = self.attempt_deadline else {
-            return Ok(CommandTimeout {
-                duration: SSH_COMMAND_TIMEOUT,
-                authentication_candidate: true,
-            });
-        };
+        let deadline = self.attempt_deadline;
         let remaining = deadline.saturating_duration_since(now);
         if remaining.is_zero() {
             return Err(attempt_deadline_passed());
@@ -317,12 +308,7 @@ impl RemoteSsh {
     }
 
     fn command(&self) -> Command {
-        let mut command = ssh_command();
-        apply_managed_ssh_options(&mut command, Some(self.options()));
-        apply_batch_ssh_options(&mut command);
-        command.arg("-T");
-        self.target.append_to(&mut command);
-        command
+        ssh_invocation(&self.target, self.options(), SshMode::Batch)
     }
 
     /// Runs `script` under `/bin/sh` on the remote host. sshd hands the account
@@ -428,42 +414,71 @@ pub(crate) fn normalize_remote_stdout(
     Ok(())
 }
 
-pub(crate) fn apply_batch_ssh_options(command: &mut Command) {
-    ssh_options::append_shepr_options(command);
+/// Whether an ssh command may prompt the operator.
+#[derive(Clone, Copy)]
+pub(crate) enum SshMode {
+    /// A background command: no prompt, no password.
+    Batch,
+    /// The startup login command, which may ask for authentication.
+    Interactive,
+}
+
+/// The one place an `ssh` command line is assembled: the managed config and
+/// shared control master, the mode's prompt policy, the connection bounds,
+/// `-T` and the target. Every ssh child shepr runs is built here; the caller
+/// adds only the remote command and its stdio.
+pub(crate) fn ssh_invocation(
+    target: &SshTarget,
+    options: &ManagedSshOptions,
+    mode: SshMode,
+) -> Command {
+    let mut command = ssh_command();
+    apply_managed_ssh_options(&mut command, options);
+    ssh_options::append_shepr_options(&mut command);
+    match mode {
+        SshMode::Batch => ssh_options::append(
+            &mut command,
+            &[
+                ssh_options::BATCH_MODE_YES,
+                &format!(
+                    "NumberOfPasswordPrompts={}",
+                    crate::limits::SSH_NO_PASSWORD_PROMPTS
+                ),
+            ],
+        ),
+        SshMode::Interactive => ssh_options::append(
+            &mut command,
+            &[
+                ssh_options::BATCH_MODE_NO,
+                &format!(
+                    "NumberOfPasswordPrompts={}",
+                    crate::limits::SSH_AUTHENTICATION_PASSWORD_PROMPTS
+                ),
+            ],
+        ),
+    }
+    ssh_options::append_connection_bounds(&mut command);
+    command.arg("-T");
+    target.append_to(&mut command);
+    command
+}
+
+fn apply_managed_ssh_options(command: &mut Command, options: &ManagedSshOptions) {
+    // Compress the first connection too: multiplexed bridges inherit the master's transport.
+    command.arg("-C");
+    command.arg("-F").arg(&options.config_path);
+    // Never reuse or remove a master belonging to the user's SSH setup.
+    command.arg("-S").arg(&options.control_path);
     ssh_options::append(
         command,
         &[
-            ssh_options::BATCH_MODE_YES,
-            crate::limits::SSH_NO_PASSWORD_PROMPTS_OPTION,
+            ssh_options::CONTROL_MASTER,
+            &format!(
+                "ControlPersist={}",
+                crate::limits::SSH_CONTROL_PERSIST.as_secs()
+            ),
         ],
     );
-    ssh_options::append_connection_bounds(command);
-}
-
-pub(crate) fn apply_managed_ssh_options(
-    command: &mut Command,
-    options: Option<&ManagedSshOptions>,
-) {
-    // Compress the first connection too: multiplexed bridges inherit the master's transport.
-    command.arg("-C");
-    let Some(options) = options else {
-        return;
-    };
-
-    command.arg("-F").arg(&options.config_path);
-    if let Some(control_path) = &options.control_path {
-        // User ControlPaths may be shared across isolated Shepr configs (or
-        // explicitly disabled). Managed auth must use our scoped transport;
-        // never stop or unlink a master belonging to the user's SSH setup.
-        command.arg("-S").arg(control_path);
-        ssh_options::append(
-            command,
-            &[
-                ssh_options::CONTROL_MASTER,
-                crate::limits::SSH_CONTROL_PERSIST_OPTION,
-            ],
-        );
-    }
 }
 
 fn ssh_config_quote(path: &Path) -> io::Result<String> {
@@ -523,7 +538,8 @@ fn ssh_config_include(path: Option<&Path>) -> io::Result<Option<String>> {
 /// An `ssh` child. Every one runs in `/`: shepr passes it only absolute paths,
 /// and a ControlPersist master it forks outlives the command, so inheriting
 /// shepr's working directory would pin that directory for the master's life.
-pub(crate) fn ssh_command() -> Command {
+/// Only [`ssh_invocation`] calls it.
+fn ssh_command() -> Command {
     shepr_platform::child_command("ssh", Path::new("/"))
 }
 
@@ -572,11 +588,12 @@ fn write_managed_ssh_config(
     let config_file = app_paths.client_config_file();
     let runtime_dir = control_dir.path;
     let paths: RemoteSshConfigPaths = remote_ssh_config_paths(app_paths.home_dir());
-    let control_path = Some(ssh_control_path_under(
+    let control_path = shared_ssh_control_path(
         control_dir.path,
         &config_file,
         SshControlKey::for_target(target),
-    )?);
+    )
+    .map_err(ssh_runtime_error)?;
 
     write_managed_ssh_config_at(runtime_dir, &paths, control_path)
 }
@@ -584,7 +601,7 @@ fn write_managed_ssh_config(
 fn write_managed_ssh_config_at(
     runtime_dir: &Path,
     paths: &RemoteSshConfigPaths,
-    control_path: Option<PathBuf>,
+    control_path: PathBuf,
 ) -> io::Result<ManagedSshConfig> {
     let dir = ManagedSshConfigDirectory::new(
         create_remote_ssh_config_dir(runtime_dir).map_err(ssh_runtime_error)?,
@@ -641,13 +658,36 @@ pub fn ssh_check_command(target: &SshTarget) -> String {
     format!("ssh {}", target.shell_word())
 }
 
+/// Managed options for a test that runs a stand-in `ssh`, with the config
+/// directory under `paths`' runtime root. The control socket is never bound,
+/// so it names a short path under no directory.
+#[cfg(test)]
+pub(crate) fn managed_ssh_options_for_test(
+    target: &SshTarget,
+    paths: &shepr_paths::AppPaths,
+) -> io::Result<ManagedSshOptions> {
+    let runtime_dir = ensure_ssh_runtime_dir(paths)?;
+    let control_path = crate::ssh_paths::ssh_control_path_under(
+        Path::new("/nonexistent/ssh"),
+        &paths.client_config_file(),
+        SshControlKey::for_target(target),
+    )?;
+    Ok(write_managed_ssh_config_at(
+        runtime_dir,
+        &remote_ssh_config_paths(paths.home_dir()),
+        control_path,
+    )?
+    .options)
+}
+
 #[cfg(test)]
 impl RemoteSsh {
     fn test_with_state(target: SshTarget, managed_config: ManagedSshConfig) -> Self {
+        let deadline = Instant::now() + SSH_COMMAND_TIMEOUT;
         Self {
             target,
             managed_config,
-            attempt_deadline: None,
+            attempt_deadline: deadline,
         }
     }
 }

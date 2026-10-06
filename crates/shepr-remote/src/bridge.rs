@@ -6,7 +6,7 @@ use std::sync::{
     mpsc,
 };
 use std::thread::{self, JoinHandle};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::failure::{
     REMAPPED_REMOTE_255_EXIT_CODE, RemoteExit, SSH_OWN_FAILURE_EXIT_CODE, SshExit,
@@ -20,9 +20,7 @@ use crate::limits::{
 use crate::machine::{RemoteExecutable, SshTarget};
 use crate::process::{PipeCapture, kill_and_reap, kill_child};
 use crate::shell_command::{AccountShellCommand, REMOTE_OUTPUT_READY_MARKER};
-use crate::ssh::{
-    ManagedSshOptions, apply_batch_ssh_options, apply_managed_ssh_options, ssh_command,
-};
+use crate::ssh::{ManagedSshOptions, SshMode, ssh_invocation};
 
 pub(crate) struct SshStdioBridge {
     should_stop: Arc<AtomicBool>,
@@ -34,7 +32,7 @@ impl SshStdioBridge {
         target: SshTarget,
         remote_shepr: &RemoteExecutable,
         mode: BridgeMode,
-        ssh_options: Option<&ManagedSshOptions>,
+        ssh_options: &ManagedSshOptions,
     ) -> io::Result<(Self, shepr_platform::ipc::LocalStream)> {
         Self::start_command(target, remote_shepr.bridge_command(mode), ssh_options)
     }
@@ -42,22 +40,16 @@ impl SshStdioBridge {
     pub(crate) fn start_command(
         target: SshTarget,
         remote_command: AccountShellCommand,
-        ssh_options: Option<&ManagedSshOptions>,
+        ssh_options: &ManagedSshOptions,
     ) -> io::Result<(Self, shepr_platform::ipc::LocalStream)> {
         let (client, stream) = shepr_platform::ipc::LocalStream::pair()?;
         let should_stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&should_stop);
-        let ssh_options = ssh_options.cloned();
+        let ssh_options = ssh_options.clone();
         // Setup errors return through this same joined worker result;
         // the endpoint supervisor logs the classified transition once.
         let worker = thread::spawn(move || {
-            bridge_connection(
-                stream,
-                &target,
-                &remote_command,
-                ssh_options.as_ref(),
-                &thread_stop,
-            )
+            bridge_connection(stream, &target, &remote_command, &ssh_options, &thread_stop)
         });
         Ok((
             Self {
@@ -69,9 +61,9 @@ impl SshStdioBridge {
     }
 
     /// The connection's failure, joining its worker; `None` once taken. Call
-    /// it only after the stream reached EOF: the worker has then ended the
-    /// connection and only reaps ssh and drains its pipes, each bounded. Called
-    /// earlier, it waits for the connection itself to end.
+    /// it after the endpoint stream closes: the bridge has then ended its
+    /// connection, and only its bounded pipe drains remain before the worker
+    /// returns. Called earlier, it waits for the connection itself to end.
     pub(crate) fn reported_failure(&self) -> Option<io::Error> {
         self.finish().err()
     }
@@ -165,12 +157,14 @@ impl BridgeDownload {
         Self { result, worker }
     }
 
-    /// Waits for the SSH stdout drain only for its grace period. A process
-    /// forked by the SSH connection can inherit stdout and keep this worker
-    /// blocked after the SSH child exits, so an unfinished worker is detached.
+    /// Waits for SSH stdout to drain for `grace`. OpenSSH redirects detached
+    /// master streams, but a configured `LocalCommand` can leave a background
+    /// descendant holding a pipe; timeout shuts down the stream and detaches
+    /// the download worker so it cannot hold bridge teardown open. That worker
+    /// can remain blocked until the descendant closes its inherited descriptor.
     fn finish(
         self,
-        grace: std::time::Duration,
+        grace: Duration,
         connection_stop: &AtomicBool,
         stream: &shepr_platform::ipc::LocalStream,
     ) -> io::Result<BridgeDownloadEnd> {
@@ -273,14 +267,10 @@ fn bridge_connection(
     stream: shepr_platform::ipc::LocalStream,
     target: &SshTarget,
     remote_command: &AccountShellCommand,
-    ssh_options: Option<&ManagedSshOptions>,
+    ssh_options: &ManagedSshOptions,
     bridge_stop: &Arc<AtomicBool>,
 ) -> io::Result<()> {
-    let mut command = ssh_command();
-    apply_managed_ssh_options(&mut command, ssh_options);
-    apply_batch_ssh_options(&mut command);
-    command.arg("-T");
-    target.append_to(&mut command);
+    let mut command = ssh_invocation(target, ssh_options, SshMode::Batch);
     command
         .arg(remote_command.as_str())
         .stdin(Stdio::piped())
@@ -387,8 +377,8 @@ fn bridge_connection(
         client_closed,
     } = upload_end?;
     let download_result = download_result?;
-    // Bounded: a ControlPersist master forked by this ssh can hold its stderr open for
-    // the whole persist timeout after the bridge itself has exited.
+    // Bounded: a descendant from configured ssh local commands can retain
+    // stderr even though OpenSSH redirects its detached master by default.
     let stderr = stderr_reader.finish(PIPE_DRAIN_GRACE)?;
     let status = status_result?;
 

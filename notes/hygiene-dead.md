@@ -37,81 +37,6 @@ migration code, so this is an operator action, not a code change: remove
 `session-backups/session-history-*` by hand where present. Filed because nothing else
 will ever do it.
 
-## DEAD-004 - Recovery copy sequence numbers and a defensive publish branch are almost never used
-
-Reported by: persistence, restore-resume.
-
-`preserve_existing_in` forces the new timestamp past the newest parsed regular-file key
-(`max(now, previous + 1)`), so sequence `0` is always free unless something that is not
-a regular file sits at the exact future name. `RECOVERY_SEQUENCE_LIMIT` (128 attempts),
-`RECOVERY_SEQUENCE_DIGITS`, the compile-time width assertion and the `AlreadyExists`
-backstop loop exist for that case; dropping the sequence (or the loop) changes only
-recovery copy names. `copy_recovery`'s `NotDurable` branch is dead by its own comment (a
-create-only publish cannot return it); the parent-directory sync after it is not dead (it
-covers a freshly created recovery directory) but runs on every copy, where
-`create_private_directory_all` could report whether it created anything, as
-`missing_directory_chain` in `files.rs` does the other way.
-
-## DEAD-005 - Small persistence leftovers
-
-Reported by: persistence.
-
-- `SessionWriter::retire(self) { drop(self) }` and `DataDirLease::release(self)` are
-  names for `drop`.
-- `actor::abandoned()` is a one-line wrapper around an enum constructor.
-
-## DEAD-007 - The pane-gone resume abandonment path cannot run
-
-Reported by: restore-resume.
-
-`agent_resume.rs` `start_pending_agent_resume`'s `let Some(public_id) = ... else` branch,
-`App::abandon_resume` and `ResumeUnavailableReason::PaneGone` ("the pane no longer
-exists"). Candidates are collected from the same state moments before in the same pass,
-with no mutation between, so the branch cannot run; if it did, the reason would be
-recorded through `update_terminal_state`, which does nothing for a missing pane. Delete
-all three.
-
-## DEAD-008 - Small restore and resume leftovers
-
-Reported by: restore-resume.
-
-- `AGENT_RESUME_DETECTION_HOLD`, a private alias whose only reader is
-  `AGENT_ABSENCE_STARTUP_HOLD`.
-- `agent_resume.rs` `derived_pending_agent_resume_pane_infos`, a one-line function with
-  one caller; `resume_candidate` returns a `&TerminalState` both callers discard.
-- `restore.rs` `AgentRestoreState` / `PaneRestoreStartup` / `RestorePlanContext` thread
-  one bool (`resume_agents_on_restore`) through four layers; an
-  `Option<&mut HashSet<..>>` (none when disabled) says the same.
-- `terminal/state/sessions.rs` holds only a test seam (`seed_hook_authority_for_test`);
-  the name suggests session logic.
-- `ResumeOutcome::replaced_runtimes`: a candidate has no runtime by definition, so the
-  launch installs one rather than replacing it.
-- `restore_error` is the field for every start failure, fresh launches included
-  (`PaneStartFailure`'s own doc says so); the name misleads.
-
-## DEAD-010 - Small pane lifecycle leftovers
-
-Reported by: pane-lifecycle.
-
-- `shepr_platform::session_member_handles` is a one-line exported alias of
-  `session_members` with one caller (a mux test).
-- `PaneLaunchEnv::pane_id: Option`: production always calls `with_pane_id`; the `None`
-  branch ("stays unset rather than inheriting") is exercised only by tests. Make the id
-  a constructor argument.
-- `PaneRuntimeRegistry`: `new()` duplicates `Default`; `From<HashMap<..>>` has only test
-  callers; `IntoIterator` has no production caller. Restore builds and returns its own
-  `HashMap<PaneId, PaneRuntime>` (`OpenedSession::terminal_runtimes`) instead of the
-  registry, so the newtype is bypassed for exactly the runtimes created before the app
-  exists.
-- `fd::set_cloexec` on the PTY master in `PtyIoActor::spawn_inner`: every production
-  master is opened `O_CLOEXEC`; the call only matters for test sockets.
-- `PaneTeardownInFlight::drop`'s "completion had no matching start" branch cannot occur
-  (the guard is minted only by `start`).
-- `ChildLiveness::launched_without_child` carries two doc paragraphs for one
-  constructor, the first describing "the public ChildIo constructor" in terms that
-  predate `with_child_io`'s doc.
-- `ChildBacking` (VAL-024) and `SHEPR_BIN_PATH` (BUG-022).
-
 ## DEAD-011 - Agent detection code with no production reader
 
 Reported by: agent-state, workspace-model.
@@ -131,10 +56,10 @@ Reported by: agent-state, workspace-model.
 
 Reported by: integrations.
 
-- `SHEPR_INTEGRATION_ID` (read by nothing), and `SHEPR_INTEGRATION_VERSION` with
-  `installed_version`, `parse_integration_version`, `IntegrationOutdatedReason` and the
-  `NotInstalled` / `Outdated` split: all exist only to be logged, since currentness is
-  exact bytes; the hand-bumped `version` in `SPECS` feeds only these (VAL-043).
+- `SHEPR_INTEGRATION_ID` (read by nothing), and `SHEPR_INTEGRATION_VERSION` (now a
+  content-derived marker) with `installed_version`, `parse_integration_version`,
+  `IntegrationOutdatedReason` and the `NotInstalled` / `Outdated` split: all exist only
+  to be logged, since currentness is exact bytes.
 - The `pi.events.on("shepr:blocked")` listener in `decoders/pi.ts` and
   `decoders/omp.ts`: an inbound event nothing in shepr emits and nothing documents (its
   payload's `label` field is a remnant). Document it as a feature or delete it.
@@ -187,27 +112,9 @@ And:
 
 Reported by: remote.
 
-- `SshFailureDiagnostic`'s `failed_before_remote_result`, `is_ssh_process_failure`,
-  `remote_exit_code`, `is_transient_network_failure`, `needs_attention`, `from_message`
-  and `from_local_setup_error` have no production caller (POL-010); the production
-  interface is `from_error`, `from_ssh_output`, `with_context`, `evidence` and
-  `disposition`.
-- `ManagedSshOptions::control_path: Option<PathBuf>` is always `Some` in production;
-  `apply_managed_ssh_options(_, None)` and `SshStdioBridge::start(.., ssh_options: None)`
-  are `None` only from tests; `RemoteSsh::attempt_deadline: Option<Instant>` is always
-  `Some` before a production command, its `None` branch exercised only by
-  `an_attempt_deadline_shortens_and_then_refuses_commands`. Make the deadline a
-  constructor argument.
 - `ssh_control_path_under` hashes `client_config_file()` into the control socket name,
   justified as "User ControlPaths may be shared across isolated Shepr configs". There is
   no config path override, and the socket already lives in the per-profile runtime
   directory, so the namespace distinguishes nothing in production except two
   `XDG_CONFIG_HOME` values sharing one `XDG_RUNTIME_DIR` (a test setup). Likely a
   leftover of the removed config override; hash the target alone, or say what it is for.
-- `pub use shell_command::shell_quote` and `pub use preflight::classify_check` have no
-  user outside the crate; `pub mod machine` exports `RemoteExecutable`,
-  `RemoteExecutableError` and `SshMetadataCache`, none used outside; `SshRuntimeError`
-  and `UnsafeSshRuntimeDirectory` are `pub` (with a `pub fn new`) only because the
-  test-only export returns them.
-- `EndpointSupervisorEvent::Status { message: EndpointFailure }`: the field is a failure
-  named `message`, a remnant of a string-typed status.

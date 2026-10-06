@@ -1,19 +1,19 @@
 //! A boot's session open: the one sequence from the data directory lease to
 //! the restored session and the persister that owns its files from then on.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::Notify;
 
-use crate::pane::{PaneLauncher, PaneRuntime};
+use crate::pane::{PaneLauncher, PaneRuntimeRegistry};
 use crate::workspace::WorkspaceChrome;
 use crate::workspace::{WorkspaceIdAllocator, WorkspaceSet};
-use shepr_core::layout::PaneId;
 
 use super::actor::SessionPersister;
-use super::files::{SessionLoad, load, session_backup_directory, session_path};
+use super::files::{
+    SessionLoad, load, session_backup_directory, session_path, sweep_staging_leftovers,
+};
 use super::lock::DataDirLease;
 use super::recovery::SessionBackupPolicy;
 use super::restore::{RestoredSession, plan_restore};
@@ -33,7 +33,7 @@ pub struct OpenedSession {
     /// which restore moved past every saved ID before it issued any.
     pub workspaces: WorkspaceSet,
     /// The runtime of each restored pane whose shell launched, keyed by pane.
-    pub terminal_runtimes: HashMap<PaneId, PaneRuntime>,
+    pub terminal_runtimes: PaneRuntimeRegistry,
     /// The saved host theme; the default when no session was loaded.
     pub host_theme: shepr_term::host::TerminalTheme,
     /// The owner of the session's files from here on, holding the lease.
@@ -83,6 +83,9 @@ pub fn open_session(
     save_finished: Arc<Notify>,
 ) -> OpenedSession {
     let path = session_path(lease.directory());
+    // The lease excludes another session writer while stale atomic-publish
+    // staging names are removed from the data and recovery directories.
+    sweep_staging_leftovers(&lease);
     let (opened, summary) = open_and_summarize(lease, options, save_finished);
     if let Some(summary) = summary {
         log_restore(&path, summary);
@@ -184,7 +187,7 @@ fn open_and_summarize(
 
     let opened = OpenedSession {
         workspaces: WorkspaceSet::restored(workspace_ids, workspaces, active),
-        terminal_runtimes,
+        terminal_runtimes: PaneRuntimeRegistry::from(terminal_runtimes),
         host_theme: host_theme.unwrap_or_default(),
         persister,
         restore_notice,
@@ -291,7 +294,7 @@ mod tests {
     fn save(opened: &mut OpenedSession) -> Result<(), SaveError> {
         let job = capture_job(
             &opened.workspaces,
-            &PaneRuntimeRegistry::new(),
+            &PaneRuntimeRegistry::default(),
             &shepr_core::absolute_path::AbsolutePath::root(),
             opened.host_theme,
         )?

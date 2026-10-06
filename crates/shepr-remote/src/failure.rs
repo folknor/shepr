@@ -133,13 +133,6 @@ impl SshFailureDiagnostic {
         Self { failure, origin }
     }
 
-    pub fn from_message(message: impl Into<String>) -> Self {
-        Self {
-            failure: EndpointFailure::unclassified(message),
-            origin: SshFailureOrigin::Message,
-        }
-    }
-
     pub fn from_ssh_output(exit_code: Option<i32>, message: &str) -> Self {
         let exit = SshExit::from_code(exit_code);
         let failure = if exit == SshExit::SshFailed {
@@ -169,39 +162,10 @@ impl SshFailureDiagnostic {
         }
     }
 
-    /// Classifies an error at a boundary that knows its source was local setup.
-    /// The same `ErrorKind` values can describe remote failures, so callers must
-    /// supply this context explicitly instead of relying on `from_error`.
-    pub fn from_local_setup_error(error: &std::io::Error) -> Self {
-        Self {
-            failure: EndpointFailure::local_setup(error.to_string()),
-            origin: SshFailureOrigin::LocalSetup,
-        }
-    }
-
     pub(crate) fn ssh_class(&self) -> Option<SshFailureClass> {
         match self.failure.cause() {
             FailureCause::Ssh(class) => Some(class),
             _ => None,
-        }
-    }
-
-    /// Whether the attempt failed before any remote command produced a result:
-    /// SSH itself failed (whatever the cause, authentication and host key
-    /// included), a bounded SSH command timed out, or a typed IO error says the
-    /// link was never made or was lost. The bridge and the machine check use it
-    /// so no such failure is read as a remote command's answer; discovery
-    /// classifies failures through their evidence instead. It says nothing
-    /// about whether a retry helps.
-    pub fn failed_before_remote_result(&self) -> bool {
-        match self.origin {
-            SshFailureOrigin::Io(kind) => shepr_launch::failure::is_link_error_kind(kind),
-            SshFailureOrigin::SshOutput(exit) => exit == SshExit::SshFailed,
-            SshFailureOrigin::CommandTimeout => true,
-            SshFailureOrigin::LocalSetup
-            | SshFailureOrigin::RemoteCompatibility
-            | SshFailureOrigin::RemoteCandidateMismatch
-            | SshFailureOrigin::Message => false,
         }
     }
 
@@ -245,39 +209,8 @@ impl SshFailureDiagnostic {
         }
     }
 
-    /// Whether OpenSSH exited with its own failure status before returning a
-    /// remote command result.
-    pub fn is_ssh_process_failure(&self) -> bool {
-        matches!(self.origin, SshFailureOrigin::SshOutput(SshExit::SshFailed))
-    }
-
-    /// The remote command's own nonzero exit status, when ssh ran the command
-    /// and it failed (ssh's own exit 255 is not one).
-    pub fn remote_exit_code(&self) -> Option<i32> {
-        match self.origin {
-            SshFailureOrigin::SshOutput(SshExit::Remote(exit)) => Some(exit.code()),
-            SshFailureOrigin::Io(_)
-            | SshFailureOrigin::SshOutput(_)
-            | SshFailureOrigin::CommandTimeout
-            | SshFailureOrigin::LocalSetup
-            | SshFailureOrigin::RemoteCompatibility
-            | SshFailureOrigin::RemoteCandidateMismatch
-            | SshFailureOrigin::Message => None,
-        }
-    }
-
-    /// Whether this failure is a transient connection problem that the client
-    /// should retry without treating the machine as needing operator attention.
-    pub fn is_transient_network_failure(&self) -> bool {
-        self.disposition() == FailureDisposition::Offline
-    }
-
     pub fn disposition(&self) -> FailureDisposition {
         self.failure.disposition()
-    }
-
-    pub fn needs_attention(&self) -> bool {
-        self.disposition().needs_attention()
     }
 }
 
@@ -434,6 +367,63 @@ pub(crate) fn attempt_deadline_passed() -> std::io::Error {
 
 #[cfg(test)]
 impl SshFailureDiagnostic {
+    pub(crate) fn from_message(message: impl Into<String>) -> Self {
+        Self {
+            failure: EndpointFailure::unclassified(message),
+            origin: SshFailureOrigin::Message,
+        }
+    }
+
+    /// Test constructor for an error boundary that already knows its source was local setup.
+    pub(crate) fn from_local_setup_error(error: &std::io::Error) -> Self {
+        Self {
+            failure: EndpointFailure::local_setup(error.to_string()),
+            origin: SshFailureOrigin::LocalSetup,
+        }
+    }
+
+    /// Test query for whether the origin predates a remote command result.
+    /// Runtime policy uses the endpoint failure and its discovery evidence.
+    pub(crate) fn failed_before_remote_result(&self) -> bool {
+        match self.origin {
+            SshFailureOrigin::Io(kind) => shepr_launch::failure::is_link_error_kind(kind),
+            SshFailureOrigin::SshOutput(exit) => exit == SshExit::SshFailed,
+            SshFailureOrigin::CommandTimeout => true,
+            SshFailureOrigin::LocalSetup
+            | SshFailureOrigin::RemoteCompatibility
+            | SshFailureOrigin::RemoteCandidateMismatch
+            | SshFailureOrigin::Message => false,
+        }
+    }
+
+    /// Test query for whether OpenSSH itself returned its failure status.
+    pub(crate) fn is_ssh_process_failure(&self) -> bool {
+        matches!(self.origin, SshFailureOrigin::SshOutput(SshExit::SshFailed))
+    }
+
+    /// Test query for the remote command's exit status.
+    pub(crate) fn remote_exit_code(&self) -> Option<i32> {
+        match self.origin {
+            SshFailureOrigin::SshOutput(SshExit::Remote(exit)) => Some(exit.code()),
+            SshFailureOrigin::Io(_)
+            | SshFailureOrigin::SshOutput(_)
+            | SshFailureOrigin::CommandTimeout
+            | SshFailureOrigin::LocalSetup
+            | SshFailureOrigin::RemoteCompatibility
+            | SshFailureOrigin::RemoteCandidateMismatch
+            | SshFailureOrigin::Message => None,
+        }
+    }
+
+    /// Test query for whether a failure is currently presented as offline.
+    pub(crate) fn is_transient_network_failure(&self) -> bool {
+        self.disposition() == FailureDisposition::Offline
+    }
+
+    pub(crate) fn needs_attention(&self) -> bool {
+        self.disposition().needs_attention()
+    }
+
     pub(crate) fn is_remote_compatibility(&self) -> bool {
         self.disposition() == FailureDisposition::Incompatible
     }

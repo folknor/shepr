@@ -245,13 +245,24 @@ impl ShutdownLifecycle {
             .as_ref()
             .and_then(HostShutdownMonitor::warning_generation);
         if !self.host_shutdown_requested() {
+            let cancelled_generation = self.checkpoint_generation;
             self.checkpoint_generation = None;
             let was_warning = self.phase() == ShutdownPhase::HostShutdownWarning;
+            let was_frozen = matches!(self.phase(), ShutdownPhase::Frozen { .. });
             if self.cancel_host_shutdown() {
                 app.cancel_host_shutdown_checkpoint();
                 self.thaw_after_host_shutdown(app);
             } else if was_warning {
                 app.cancel_host_shutdown_checkpoint();
+            }
+            if was_warning || was_frozen {
+                info!(
+                    event = "host.shutdown.cancel",
+                    subsystem = "shutdown",
+                    generation = cancelled_generation.map(WarningGeneration::as_u64),
+                    outcome = "resumed",
+                    "host shutdown cancelled; session saves resumed"
+                );
             }
             return;
         }
@@ -290,7 +301,6 @@ impl ShutdownLifecycle {
     fn freeze_for_host_shutdown(&mut self, app: &mut app::App) {
         // Only the warning arms of sync_host_shutdown_freeze enter here;
         // the checkpoint result below is the prerequisite for freezing.
-        info!("host shutdown announced; checkpointing the session and freezing saves");
         let generation = self.checkpoint_generation;
         if !app.host_shutdown_checkpoint_result_ready() {
             app.request_host_shutdown_checkpoint();
@@ -300,7 +310,21 @@ impl ShutdownLifecycle {
             return;
         };
         if outcome == app::HostCheckpointOutcome::Unsaved {
-            warn!("host shutdown checkpoint failed repeatedly; releasing the delay lock");
+            warn!(
+                event = "host.shutdown.freeze",
+                subsystem = "shutdown",
+                generation = generation.map(WarningGeneration::as_u64),
+                outcome = "unsaved",
+                "host shutdown checkpoint unavailable; freezing session saves"
+            );
+        } else {
+            info!(
+                event = "host.shutdown.freeze",
+                subsystem = "shutdown",
+                generation = generation.map(WarningGeneration::as_u64),
+                outcome = "saved",
+                "host shutdown checkpoint saved; freezing session saves"
+            );
         }
         app.freeze_session_saves();
         if let (Some(monitor), Some(generation)) = (self.monitor.as_ref(), generation) {
@@ -310,7 +334,6 @@ impl ShutdownLifecycle {
     }
 
     fn thaw_after_host_shutdown(&mut self, app: &mut app::App) {
-        info!("host shutdown cancelled; resuming session saves");
         app.resume_session_saves_after_cancel();
     }
 }

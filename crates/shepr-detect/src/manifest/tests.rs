@@ -537,6 +537,8 @@ fn agents_without_a_screen_manifest_are_unknown_not_idle() {
     assert!(screen_unknown_is_stable(Agent::Codex));
     assert!(screen_unknown_is_stable(Agent::Letta));
     assert!(!screen_unknown_is_stable(Agent::Gemini));
+    // Claude has Unknown-shaped skip rules, but never publishes Unknown.
+    assert!(!screen_unknown_is_stable(Agent::Claude));
 }
 
 #[test]

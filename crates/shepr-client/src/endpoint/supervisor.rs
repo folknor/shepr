@@ -23,7 +23,7 @@ pub(crate) enum EndpointSupervisorEvent {
     Status {
         endpoint_id: ClientEndpointId,
         generation: shepr_protocol::ConnectionGeneration,
-        message: shepr_launch::EndpointFailure,
+        failure: shepr_launch::EndpointFailure,
         connector: Option<OwnedConnector>,
     },
     Connected {
@@ -48,12 +48,12 @@ impl EndpointSupervisorEvent {
             Self::Status {
                 endpoint_id,
                 generation,
-                message,
+                failure,
                 ..
             } => Self::Status {
                 endpoint_id,
                 generation,
-                message,
+                failure,
                 connector,
             },
             Self::Connected {
@@ -397,13 +397,13 @@ impl EndpointSupervisors {
                     Ok((connector, Err(error))) => EndpointSupervisorEvent::Status {
                         endpoint_id: task_endpoint_id,
                         generation,
-                        message: shepr_launch::EndpointFailure::from_error(&error),
+                        failure: shepr_launch::EndpointFailure::from_error(&error),
                         connector,
                     },
                     Err(error) => EndpointSupervisorEvent::Status {
                         endpoint_id: task_endpoint_id,
                         generation,
-                        message: shepr_launch::EndpointFailure::local_setup(format!(
+                        failure: shepr_launch::EndpointFailure::local_setup(format!(
                             "endpoint connection task stopped unexpectedly: {error}"
                         )),
                         connector: None,
@@ -813,11 +813,8 @@ fn establish(
     })
 }
 
-/// Endpoint reconnect backoff: doubling from `INITIAL_RETRY_DELAY` to the
-/// `MAX_RETRY_DELAY` ceiling. This
-/// policy is the client's alone; the other retry loops in the tree (the SSH
-/// agent registration worker, the API accept loop, the CLI's status probe)
-/// answer different failures and deliberately do not share it.
+/// Endpoint reconnect backoff: attempt one uses the initial delay, and each
+/// later attempt doubles it up to the maximum retry delay.
 fn retry_delay(attempt: u32) -> Duration {
     INITIAL_RETRY_DELAY
         .saturating_mul(

@@ -365,7 +365,7 @@ mod tests {
     fn capture_of(workspaces: &WorkspaceSet) -> SessionCapture {
         capture_job(
             workspaces,
-            &PaneRuntimeRegistry::new(),
+            &PaneRuntimeRegistry::default(),
             &AbsolutePath::root(),
             Default::default(),
         )
@@ -396,7 +396,8 @@ mod tests {
         let layout = layout.expect("a save keeps its layout");
         assert_eq!(json(layout.snapshot()), json(&saved.snapshot));
 
-        let Some(PersistJob::Save(again)) = layout.recapture(&PaneRuntimeRegistry::new()) else {
+        let Some(PersistJob::Save(again)) = layout.recapture(&PaneRuntimeRegistry::default())
+        else {
             panic!("every saved pane has its identity");
         };
         assert_eq!(json(&again.snapshot), json(&saved.snapshot));
@@ -408,7 +409,11 @@ mod tests {
         let (_, layout) = capture_of(&workspaces).into_job_with_layout();
         let layout = layout.expect("a save keeps its layout");
         let unpaired = CapturedLayout::new(layout.snapshot().clone(), HashMap::new());
-        assert!(unpaired.recapture(&PaneRuntimeRegistry::new()).is_none());
+        assert!(
+            unpaired
+                .recapture(&PaneRuntimeRegistry::default())
+                .is_none()
+        );
     }
 
     #[test]
@@ -429,7 +434,7 @@ mod tests {
         // good file without the broken one.
         let failed = capture_job_with_workspace_capture(
             &workspaces,
-            &PaneRuntimeRegistry::new(),
+            &PaneRuntimeRegistry::default(),
             &AbsolutePath::root(),
             Default::default(),
             |index, workspace, runtimes, fallback, cwds, pane_ids| {
@@ -491,7 +496,7 @@ mod tests {
 
             let snapshot = capture(
                 &set_of(workspace),
-                &PaneRuntimeRegistry::new(),
+                &PaneRuntimeRegistry::default(),
                 &AbsolutePath::root(),
                 Default::default(),
             )

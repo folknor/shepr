@@ -6,7 +6,9 @@
 //! the same `WorkspaceChrome::visible_panes` (BSP split, chrome, the zoomed case)
 //! and the same `shepr_core::chrome` border and scrollbar gutter math.
 
-use shepr_core::chrome::{PaneChrome, PaneContent, SharedPaneEdges, apply_pane_chrome};
+use shepr_core::chrome::{
+    PaneChrome, PaneContent, SharedPaneEdges, apply_pane_chrome, content_rect, inner_rect,
+};
 use shepr_core::geometry::{CellPx, GridSize, PaneGeometry, Rect};
 use shepr_core::layout::{PaneId, TileLayout};
 
@@ -107,9 +109,9 @@ impl WorkspaceChrome {
 
     /// The content grid for the only pane of a new workspace.
     pub fn sole_pane_size(&self) -> GridSize {
-        let (layout, pane_id) = TileLayout::new();
-        self.pane_size(&layout, false, pane_id)
-            .unwrap_or_else(|| GridSize::clamped(self.area.width, self.area.height))
+        let inner = inner_rect(self.area, SharedPaneEdges::default());
+        let content = content_rect(inner, self.pane_scrollbars, false);
+        PaneGeometry::cells_only(content.width, content.height).grid()
     }
 
     /// The PTY geometry of `pane_id`: its content grid (`pane_size`) with the
@@ -141,7 +143,6 @@ pub fn spawn_geometry(grid: GridSize, cell: Option<CellPx>) -> PaneGeometry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_core::chrome::inner_rect;
     use shepr_core::layout::Direction;
 
     fn geometry(scrollbars: bool) -> WorkspaceChrome {

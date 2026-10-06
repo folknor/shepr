@@ -1,26 +1,32 @@
-import { afterEach, beforeEach, expect, mock, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { afterEach, beforeEach, expect, jest, mock, setSystemTime, test } from "bun:test";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expectContractTrace } from "../../contract_traces.ts";
+import {
+  assetTiming,
+  createAssetScratchDir,
+  flushMicrotasks,
+  removeAssetScratchDir,
+  restoreEnvironment,
+  saveEnvironment,
+} from "../../bun_test_support.ts";
 
 // The plugin's timings are generated from shepr-integration's limits. They are
 // read from the asset's text rather than exported by it: OpenCode-family
 // loaders may treat every export of a plugin module as a plugin.
 const TUI_SOURCE = await readFile(new URL("./shepr-tui-session.js", import.meta.url), "utf8");
-function assetTiming(name: string): string {
-  const match = TUI_SOURCE.match(new RegExp(`^const ${name} = (.+);$`, "m"));
-  if (!match) throw new Error(`shepr-tui-session.js does not define ${name}`);
-  return match[1];
-}
-const ROUTE_POLL_INTERVAL_MS = Number(assetTiming("ROUTE_POLL_INTERVAL_MS"));
-const RETRY_WAIT_MS = Number(assetTiming("RETRY_WAIT_MS"));
-const SELECTION_RETRY_DELAYS_MS: number[] = JSON.parse(assetTiming("SELECTION_RETRY_DELAYS_MS"));
+const ROUTE_POLL_INTERVAL_MS = Number(assetTiming(TUI_SOURCE, "ROUTE_POLL_INTERVAL_MS"));
+const RETRY_WAIT_MS = Number(assetTiming(TUI_SOURCE, "RETRY_WAIT_MS"));
+const SOCKET_WAIT_MS = Number(assetTiming(TUI_SOURCE, "SOCKET_WAIT_MS"));
+const SELECTION_RETRY_DELAYS_MS: number[] = JSON.parse(assetTiming(TUI_SOURCE, "SELECTION_RETRY_DELAYS_MS"));
+const originalEnvironment = saveEnvironment([
+  "SHEPR_ENV", "SHEPR_BUILD_PROFILE", "SHEPR_SOCKET_PATH", "SHEPR_PANE_ID",
+]);
 
 const requests: unknown[] = [];
 const activeDisposers: Array<() => void> = [];
-const activeTempDirs: string[] = [];
+const activeScratchDirs: string[] = [];
 const requestWaiters: Array<() => void> = [];
 const stateWaiters: Array<() => void> = [];
 let importCounter = 0;
@@ -64,6 +70,8 @@ mock.module("node:net", () => ({
 }));
 
 beforeEach(() => {
+  jest.useFakeTimers();
+  probeClock();
   requests.length = 0;
   requestWaiters.length = 0;
   stateWaiters.length = 0;
@@ -81,10 +89,10 @@ afterEach(async () => {
     dispose();
   }
   await Promise.all(
-    activeTempDirs
-      .splice(0)
-      .map((directory) => rm(directory, { recursive: true, force: true })),
+    activeScratchDirs.splice(0).map(removeAssetScratchDir),
   );
+  restoreEnvironment(originalEnvironment);
+  jest.useRealTimers();
 });
 
 async function loadPlugin(entry = "./shepr-tui-session.js") {
@@ -169,12 +177,65 @@ function fakeApi() {
   };
 }
 
-function waitForNextRequest(): Promise<void> {
-  return new Promise((resolve) => requestWaiters.push(resolve));
+// Resolves with the requests sent up to and including the next one, so a
+// report queued right behind it cannot leak into the caller's view.
+function waitForNextRequest(): Promise<unknown[]> {
+  return new Promise((resolve) => requestWaiters.push(() => resolve([...requests])));
 }
 
 function waitForStateReport(): Promise<void> {
   return new Promise((resolve) => stateWaiters.push(resolve));
+}
+
+// Advances fake time in route-poll sized steps, settling the report chains
+// between steps. The plugin reads Date.now() as well as timers, so when the
+// fake timers leave the clock alone it is moved to the end of each step before
+// the timers fire.
+let clockFollowsTimers = false;
+
+function probeClock(): void {
+  const before = Date.now();
+  jest.advanceTimersByTime(10);
+  clockFollowsTimers = Date.now() - before === 10;
+}
+
+function tick(step: number): void {
+  if (clockFollowsTimers) jest.advanceTimersByTime(step);
+  else {
+    setSystemTime(new Date(Date.now() + step));
+    jest.advanceTimersByTime(step);
+  }
+}
+
+async function advanceTimers(milliseconds: number): Promise<void> {
+  for (let elapsed = 0; elapsed < milliseconds; ) {
+    const step = Math.min(ROUTE_POLL_INTERVAL_MS, milliseconds - elapsed);
+    tick(step);
+    elapsed += step;
+    await flushReports();
+  }
+  await flushReports();
+}
+
+// Drives fake time until the awaited report arrives, returning as soon as it
+// does so that reports queued behind it have not yet been sent.
+async function settle<T>(report: Promise<T>, limitMs = 30_000): Promise<T> {
+  let arrived = false;
+  const arrival = report.then((value) => {
+    arrived = true;
+    return value;
+  });
+  await Promise.race([arrival, flushReports()]);
+  for (let waited = 0; !arrived && waited < limitMs; waited += ROUTE_POLL_INTERVAL_MS) {
+    tick(ROUTE_POLL_INTERVAL_MS);
+    await Promise.race([arrival, flushReports()]);
+  }
+  if (!arrived) throw new Error("the expected report never arrived");
+  return arrival;
+}
+
+async function flushReports(): Promise<void> {
+  await flushMicrotasks(16);
 }
 
 test("reports a root session when only the local route changes", async () => {
@@ -185,18 +246,18 @@ test("reports a root session when only the local route changes", async () => {
 
   const dispatched = waitForNextRequest();
   tui.select("session-a");
-  await dispatched;
+  const sent = await settle(dispatched);
 
-  expect(requests).toHaveLength(1);
-  expect(requestParam(requests[0], "agent_session_id")).toBe("session-a");
-  expect(requestParam(requests[0], "session_start_source")).toBe("select");
-  expect(requestParam(requests[0], "seq")).toBeUndefined();
-  expectContractTrace("opencode_tui_v1", requests);
+  expect(sent).toHaveLength(1);
+  expect(requestParam(sent[0], "agent_session_id")).toBe("session-a");
+  expect(requestParam(sent[0], "session_start_source")).toBe("select");
+  expect(requestParam(sent[0], "seq")).toBeUndefined();
+  expectContractTrace("opencode_tui_v1", sent);
 });
 
 test("V2 TUI entry reports its selected root session", async () => {
-  const installedRoot = await mkdtemp(join(tmpdir(), "shepr-opencode-v2-"));
-  activeTempDirs.push(installedRoot);
+  const installedRoot = await createAssetScratchDir("opencode-v2");
+  activeScratchDirs.push(installedRoot);
   const pluginDirectory = join(installedRoot, "shepr-opencode");
   await mkdir(pluginDirectory);
   await writeFile(
@@ -214,12 +275,12 @@ test("V2 TUI entry reports its selected root session", async () => {
 
   const dispatched = waitForNextRequest();
   tui.select("v2-session");
-  await dispatched;
+  const sent = await settle(dispatched);
 
-  expect(requests).toHaveLength(1);
-  expect(requestParam(requests[0], "agent_session_id")).toBe("v2-session");
-  expect(requestParam(requests[0], "session_start_source")).toBe("select");
-  expectContractTrace("opencode_tui_v2", requests);
+  expect(sent).toHaveLength(1);
+  expect(requestParam(sent[0], "agent_session_id")).toBe("v2-session");
+  expect(requestParam(sent[0], "session_start_source")).toBe("select");
+  expectContractTrace("opencode_tui_v2", sent);
   tui.dispose();
 });
 
@@ -230,7 +291,7 @@ test("retries an initial selection while Shepr detects the process", async () =>
   tui.select("session-a");
 
   await plugin.tui(tui.api);
-  await new Promise((resolve) => setTimeout(resolve, 125));
+  await advanceTimers(2 * ROUTE_POLL_INTERVAL_MS);
 
   const selections = requests.filter((request) => requestParam(request, "state") === undefined);
   expect(selections.length).toBeGreaterThanOrEqual(2);
@@ -245,7 +306,7 @@ test("does not report root sessions not selected by this TUI", async () => {
   tui.select("session-a");
   await plugin.tui(tui.api);
 
-  await new Promise((resolve) => setTimeout(resolve, 125));
+  await advanceTimers(ROUTE_POLL_INTERVAL_MS);
 
   expect(requests.length).toBeGreaterThan(0);
   expect(requests.every((request) => requestParam(request, "agent_session_id") === "session-a")).toBe(
@@ -263,7 +324,7 @@ test("does not replace the root session with a selected child session", async ()
   await flushReports();
 
   tui.select("child-session");
-  await new Promise((resolve) => setTimeout(resolve, 125));
+  await advanceTimers(ROUTE_POLL_INTERVAL_MS);
 
   expect(requests.length).toBeGreaterThan(0);
   expect(requests.every((r) => requestParam(r, "agent_session_id") === "root-session")).toBe(true);
@@ -277,7 +338,7 @@ test("stops route polling when the TUI plugin is disposed", async () => {
   tui.dispose();
   tui.select("session-a");
 
-  await new Promise((resolve) => setTimeout(resolve, 125));
+  await advanceTimers(ROUTE_POLL_INTERVAL_MS);
 
   expect(requests).toHaveLength(0);
 });
@@ -332,7 +393,6 @@ function v2Api() {
   };
 }
 
-const flushReports = () => new Promise((resolve) => setTimeout(resolve, 10));
 const states = () => requests.filter((r) => requestParam(r, "state") !== undefined)
   .map((r) => requestParam(r, "state"));
 
@@ -444,7 +504,7 @@ test("V1 retains replies received between failed hydration and its retry", async
   await (await loadPlugin()).tui(tui.api);
   await flushReports();
   tui.emit("permission.replied", { sessionID: "child", requestID: "p" });
-  await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS + 50));
+  await advanceTimers(RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS);
   expect(states().at(-1)).toBe("idle");
   expect(states()).not.toContain("blocked");
 });
@@ -524,7 +584,7 @@ test("V1 unknown tool evidence remains blocked and retries failed message reads"
   await flushReports();
   expect(states().at(-1)).toBe("blocked");
   tui.messages.set("m", { parts: [{ type: "tool", callID: "call", state: { status: "error" } }] });
-  await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS + 50));
+  await advanceTimers(RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS);
   expect(states().at(-1)).toBe("idle");
 });
 
@@ -559,7 +619,7 @@ test("V1 reselecting an aborted request does not resurrect it or poll completed 
   await flushReports();
   expect(states()).not.toContain("blocked");
   const reads = tui.calls.length;
-  await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS + 50));
+  await advanceTimers(RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS);
   expect(tui.calls).toHaveLength(reads);
 });
 
@@ -577,7 +637,7 @@ test("V1 home and selected-session deletion settle authority and retry a dropped
     } else tui.emit("session.deleted", { info: { id: "root" } });
     await flushReports();
     failConnections = false;
-    await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS + 50));
+    await advanceTimers(RETRY_WAIT_MS + ROUTE_POLL_INTERVAL_MS);
     expect(states().at(-1)).toBe("idle");
     tui.dispose();
   }
@@ -676,7 +736,7 @@ test("V2 discards queued reports after selection changes and stops on disposal",
   dispose();
   expect(tui.listeners.size).toBe(0);
   tui.select("a");
-  await new Promise((resolve) => setTimeout(resolve, 250));
+  await advanceTimers(250);
   expect(requests).toHaveLength(0);
 });
 
@@ -687,14 +747,14 @@ test("V2 reconciles late blocker hydration without reviving an already-replied r
   activeDisposers.push(dispose);
   await flushReports();
   tui.permissions.set("child", [{ id: "late" }]);
-  await waitForStateReport();
+  await settle(waitForStateReport());
   expect(states().at(-1)).toBe("blocked");
   tui.emit("permission.replied", { sessionID: "child", requestID: "late" });
-  await waitForStateReport();
+  await settle(waitForStateReport());
   expect(states().at(-1)).toBe("idle");
   tui.permissions.set("child", []);
   tui.forms.set("child", [{ id: "second" }]);
-  await waitForStateReport();
+  await settle(waitForStateReport());
   expect(states().at(-1)).toBe("blocked");
   tui.sessions.delete("child");
   tui.emit("session.deleted", { sessionID: "child" });
@@ -728,10 +788,8 @@ test("V2 settles a connection that never completes", async () => {
   holdConnections = true;
   const dispose = await plugin.setup(tui.api);
   activeDisposers.push(dispose);
-  const started = Date.now();
-  while (connections.length <= 1 && Date.now() - started < 2_000) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
+  await flushReports();
+  await advanceTimers(SOCKET_WAIT_MS);
   expect(connections.length).toBeGreaterThan(1);
   dispose();
 });
@@ -743,16 +801,16 @@ test("V2 resends the latest state after a failed delivery", async () => {
   activeDisposers.push(dispose);
   await flushReports();
   // Exhaust the selection retry schedule so only the event report remains.
-  await new Promise((resolve) => setTimeout(resolve, SELECTION_RETRY_DELAYS_MS.reduce((sum, delay) => sum + delay, 0) + ROUTE_POLL_INTERVAL_MS));
+  await advanceTimers(SELECTION_RETRY_DELAYS_MS.reduce((sum, delay) => sum + delay, 0) + ROUTE_POLL_INTERVAL_MS);
   requests.length = 0;
   tui.emit("session.execution.started", { sessionID: "a" });
   await flushReports();
   failConnections = true;
   tui.emit("session.execution.succeeded", { sessionID: "a" });
   const resend = waitForStateReport();
-  await new Promise((resolve) => setTimeout(resolve, RETRY_WAIT_MS + 2 * ROUTE_POLL_INTERVAL_MS));
+  await advanceTimers(RETRY_WAIT_MS + 2 * ROUTE_POLL_INTERVAL_MS);
   failConnections = false;
-  await resend;
+  await settle(resend);
   expect(states().at(-1)).toBe("idle");
   dispose();
 });

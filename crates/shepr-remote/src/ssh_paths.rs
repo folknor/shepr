@@ -12,7 +12,8 @@ use std::path::{Path, PathBuf};
 /// one regular file named `config`.
 const SSH_CONFIG_DIRECTORY: DirectoryKind = DirectoryKind::regular_file("shepr-ssh-", "config");
 
-/// SSH runtime setup separates policy refusals from operational failures.
+/// Crate-internal SSH setup error, separating policy refusals from operational
+/// failures before callers adapt it to the public `io::Error` boundary.
 #[derive(Debug)]
 pub(crate) enum SshRuntimeError {
     UnsafeDirectory(UnsafeSshRuntimeDirectory),

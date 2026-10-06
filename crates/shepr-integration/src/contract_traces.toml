@@ -15,7 +15,7 @@ source = "shepr:pi"
 agent = "pi"
 seq = 1
 session_start_source = "new"
-agent_session_path = "/tmp/pi-new.jsonl"
+agent_session_path = "/nonexistent/pi-new.jsonl"
 
 [[pi]]
 id = "shepr:pi:2"
@@ -26,7 +26,7 @@ source = "shepr:pi"
 agent = "pi"
 state = "idle"
 seq = 2
-agent_session_path = "/tmp/pi-new.jsonl"
+agent_session_path = "/nonexistent/pi-new.jsonl"
 
 [[pi]]
 id = "shepr:pi:3"
@@ -36,7 +36,7 @@ pane_id = "test:p1"
 source = "shepr:pi"
 agent = "pi"
 seq = 3
-agent_session_path = "/tmp/pi-new.jsonl"
+agent_session_path = "/nonexistent/pi-new.jsonl"
 
 [[pi]]
 id = "shepr:pi:4"
@@ -47,7 +47,7 @@ source = "shepr:pi"
 agent = "pi"
 state = "working"
 seq = 4
-agent_session_path = "/tmp/pi-new.jsonl"
+agent_session_path = "/nonexistent/pi-new.jsonl"
 
 # Oh My Pi: a startup session that is already working.
 [[omp]]

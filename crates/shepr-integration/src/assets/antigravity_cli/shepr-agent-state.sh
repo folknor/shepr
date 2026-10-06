@@ -3,7 +3,7 @@
 # managed by shepr; every release shepr server launch on this host rewrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=antigravity_cli
-# SHEPR_INTEGRATION_VERSION=3
+# SHEPR_INTEGRATION_VERSION=3796486815
 
 set -eu
 

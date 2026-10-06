@@ -7,16 +7,11 @@ use crate::terminal::{Label, PaneStartFailure, TerminalState};
 use crate::workspace::{PaneTree, SavedTreeState, TreePlan, Workspace, WorkspaceChrome};
 use shepr_agent::{AgentState, resume::PersistedAgentSession};
 use shepr_core::absolute_path::AbsolutePath;
-use shepr_core::layout::{PaneId, TileLayout};
+use shepr_core::layout::PaneId;
 use shepr_protocol::{PublicPaneId, WorkspaceId};
 
 use super::schema::PaneSnapshot;
 use super::schema::{SessionSnapshot, WorkspaceSnapshot};
-
-struct AgentRestoreState<'a> {
-    enabled: bool,
-    resumed_sessions: &'a mut HashSet<shepr_agent::resume::AgentResumeKey>,
-}
 
 struct PaneRestoreStartup {
     restore_plan: Option<shepr_agent::resume::AgentResumePlan>,
@@ -26,7 +21,6 @@ struct PaneRestoreStartup {
 struct RestorePlanContext {
     chrome: WorkspaceChrome,
     now: std::time::Instant,
-    resume_agents_on_restore: bool,
 }
 
 /// Validated state plus child launch descriptions. Building this plan requires
@@ -204,11 +198,7 @@ pub(super) fn plan_restore(
     // workspace owns.
     workspace_ids.reserve(snapshot.workspaces.iter().map(|ws| &ws.id));
     let mut used_ids = HashSet::new();
-    let plan_context = RestorePlanContext {
-        chrome,
-        now,
-        resume_agents_on_restore,
-    };
+    let plan_context = RestorePlanContext { chrome, now };
     for (plan, saved) in plans.into_iter().zip(&snapshot.workspaces) {
         let saved_id = saved.id;
         let Some(plan) = plan else {
@@ -234,7 +224,7 @@ pub(super) fn plan_restore(
             workspace_id,
             workspaces.len(),
             &plan_context,
-            &mut resumed_agent_sessions,
+            resume_agents_on_restore.then_some(&mut resumed_agent_sessions),
         );
         if let Some((workspace, restored_launches, dropped_sessions)) = restored {
             if workspace_id != saved_id {
@@ -324,7 +314,7 @@ fn restored_terminal(
 ) -> TerminalState {
     let mut terminal = TerminalState::new(cwd.clone());
     if let Some(label) = label {
-        terminal.set_manual_label(label.as_str().to_owned());
+        terminal.set_manual_label(label.clone());
     }
     let duplicate_agent_session = matches!(
         start,
@@ -372,25 +362,6 @@ fn restored_terminal(
         }
     }
     terminal
-}
-
-/// The `(rows, cols)` a restored pane's shell starts at: its own rect in the
-/// workspace's layout, which is what the first view computation gives it. A
-/// child reads its window size at startup, so any other size would reach it
-/// first and be corrected only by the first resize. A pane hidden behind a
-/// zoomed one gets its tiled size, which it has again once the workspace is
-/// unzoomed.
-fn restored_pane_size(
-    chrome: &WorkspaceChrome,
-    layout: &TileLayout,
-    zoomed: bool,
-    pane: PaneId,
-) -> shepr_core::geometry::GridSize {
-    zoomed
-        .then(|| chrome.pane_size(layout, true, pane))
-        .flatten()
-        .or_else(|| chrome.pane_size(layout, false, pane))
-        .unwrap_or_else(|| chrome.sole_pane_size())
 }
 
 /// One saved workspace, or `None` when a layout defect leaves nothing usable
@@ -456,7 +427,7 @@ fn restore_workspace(
     workspace_id: WorkspaceId,
     workspace_index: usize,
     plan_context: &RestorePlanContext,
-    resumed_agent_sessions: &mut HashSet<shepr_agent::resume::AgentResumeKey>,
+    mut resumed_agent_sessions: Option<&mut HashSet<shepr_agent::resume::AgentResumeKey>>,
 ) -> Option<(Workspace, Vec<RestoredLaunch>, Vec<PublicPaneId>)> {
     let WorkspaceRestorePlan {
         snapshot,
@@ -485,13 +456,7 @@ fn restore_workspace(
         let PaneRestoreStartup {
             restore_plan,
             duplicate_agent_session,
-        } = {
-            let mut agent_restore = AgentRestoreState {
-                enabled: plan_context.resume_agents_on_restore,
-                resumed_sessions: resumed_agent_sessions,
-            };
-            pane_restore_startup(saved.agent_session.as_ref(), &mut agent_restore)
-        };
+        } = pane_restore_startup(saved.agent_session.as_ref(), resumed_agent_sessions.as_deref_mut());
 
         if let Some(resume) = restore_plan {
             return restored_terminal(
@@ -543,16 +508,26 @@ fn restore_workspace(
 
     // Restore runs before any client has attached, so there is no cell
     // size to give the shell; the first client geometry pass supplies it.
+    let spawn_sizes = plan_context
+        .chrome
+        .resume_panes(tree.layout(), tree.zoomed());
     let launches = launches
         .into_iter()
         .map(|launch| {
-            let grid = restored_pane_size(
-                &plan_context.chrome,
-                tree.layout(),
-                tree.zoomed(),
-                launch.pane_id,
-            );
-            launch.sized(crate::workspace::spawn_geometry(grid, None))
+            let grid = match spawn_sizes
+                .iter()
+                .find(|pane| pane.chrome.id == launch.pane_id)
+            {
+                Some(pane) => shepr_core::geometry::PaneGeometry::with_cell(
+                    pane.content.width,
+                    pane.content.height,
+                    None,
+                ),
+                None => {
+                    crate::workspace::spawn_geometry(plan_context.chrome.sole_pane_size(), None)
+                }
+            };
+            launch.sized(grid)
         })
         .collect();
     // The schema already refused a blank or padded name, with the whole file.
@@ -567,16 +542,21 @@ fn restore_workspace(
 
 fn pane_restore_startup(
     session: Option<&PersistedAgentSession>,
-    agent_restore: &mut AgentRestoreState<'_>,
+    resumed_sessions: Option<&mut HashSet<shepr_agent::resume::AgentResumeKey>>,
 ) -> PaneRestoreStartup {
-    let restore_plan =
-        session.and_then(|session| restore_plan_for_snapshot(session, agent_restore.enabled));
+    let Some(resumed_sessions) = resumed_sessions else {
+        return PaneRestoreStartup {
+            restore_plan: None,
+            duplicate_agent_session: false,
+        };
+    };
+    let restore_plan = session.map(PersistedAgentSession::resume_plan);
     // Reserve the session so later panes in the same restore pass cannot
     // launch the same native agent session. A reserving pane always defers its
     // launch, so no restore-time spawn failure can leave a stale reservation.
     let duplicate_agent_session = restore_plan
         .as_ref()
-        .is_some_and(|plan| !agent_restore.resumed_sessions.insert(plan.key().clone()));
+        .is_some_and(|plan| !resumed_sessions.insert(plan.key().clone()));
     // The duplicate is accidental saved state: nothing resumes in this pane,
     // which starts as a plain shell.
     let restore_plan = restore_plan.filter(|_| !duplicate_agent_session);
@@ -585,16 +565,6 @@ fn pane_restore_startup(
         restore_plan,
         duplicate_agent_session,
     }
-}
-
-fn restore_plan_for_snapshot(
-    session: &PersistedAgentSession,
-    resume_agents_on_restore: bool,
-) -> Option<shepr_agent::resume::AgentResumePlan> {
-    if !resume_agents_on_restore {
-        return None;
-    }
-    Some(session.resume_plan())
 }
 
 fn restored_terminal_agent_session(
@@ -650,16 +620,6 @@ fn restore(
         &mut crate::workspace::WorkspaceIdAllocator::new(),
     )
     .launch(&launcher)
-}
-
-#[cfg(test)]
-fn take_restore_plan_for_snapshot(
-    session: &PersistedAgentSession,
-    resume_agents_on_restore: bool,
-    resumed_agent_sessions: &mut HashSet<shepr_agent::resume::AgentResumeKey>,
-) -> Option<shepr_agent::resume::AgentResumePlan> {
-    restore_plan_for_snapshot(session, resume_agents_on_restore)
-        .filter(|plan| resumed_agent_sessions.insert(plan.key().clone()))
 }
 
 #[cfg(test)]
@@ -914,7 +874,7 @@ mod tests {
                 .pane_mut(pane)
                 .expect("a live pane")
                 .terminal_mut()
-                .set_manual_label(label.to_owned());
+                .set_manual_label(Label::new(label).expect("test label"));
         }
         assert!(original.focus_pane(third));
         assert!(original.set_zoomed(true));
@@ -933,7 +893,7 @@ mod tests {
 
         let snapshot = crate::persist::capture(
             &workspaces,
-            &crate::pane::PaneRuntimeRegistry::new(),
+            &crate::pane::PaneRuntimeRegistry::default(),
             &shepr_core::absolute_path::AbsolutePath::root(),
             Default::default(),
         )
@@ -1420,9 +1380,14 @@ mod tests {
                 .expect("test precondition"),
         );
 
-        assert!(restore_plan_for_snapshot(&session, false).is_none());
+        assert!(
+            pane_restore_startup(Some(&session), None)
+                .restore_plan
+                .is_none()
+        );
         assert_eq!(
-            restore_plan_for_snapshot(&session, true)
+            pane_restore_startup(Some(&session), Some(&mut HashSet::new()))
+                .restore_plan
                 .expect("test precondition")
                 .args(),
             &["--session", pi_session_path.as_str()]
@@ -1440,26 +1405,6 @@ mod tests {
     }
 
     #[test]
-    fn restore_plan_selection_suppresses_duplicates() {
-        let pi_session_path = test_session_path("pi-session.jsonl");
-        let session = persisted_test_session(
-            "shepr:pi",
-            shepr_agent::Agent::Pi,
-            shepr_agent::resume::AgentSessionRef::path(pi_session_path.clone())
-                .expect("test precondition"),
-        );
-        let mut resumed = HashSet::new();
-
-        assert!(take_restore_plan_for_snapshot(&session, false, &mut resumed).is_none());
-        assert!(resumed.is_empty());
-
-        let first = take_restore_plan_for_snapshot(&session, true, &mut resumed)
-            .expect("first restore should get a plan");
-        assert_eq!(first.args(), &["--session", pi_session_path.as_str()]);
-        assert!(take_restore_plan_for_snapshot(&session, true, &mut resumed).is_none());
-    }
-
-    #[test]
     fn pane_restore_startup_resumes_a_session_once_and_starts_duplicates_as_shells() {
         let session = persisted_test_session(
             "shepr:pi",
@@ -1468,13 +1413,9 @@ mod tests {
                 .expect("test precondition"),
         );
         let mut resumed = HashSet::new();
-        let mut agent_restore = AgentRestoreState {
-            enabled: true,
-            resumed_sessions: &mut resumed,
-        };
 
-        let first = pane_restore_startup(Some(&session), &mut agent_restore);
-        let duplicate = pane_restore_startup(Some(&session), &mut agent_restore);
+        let first = pane_restore_startup(Some(&session), Some(&mut resumed));
+        let duplicate = pane_restore_startup(Some(&session), Some(&mut resumed));
 
         assert!(first.restore_plan.is_some());
         assert!(!first.duplicate_agent_session);
@@ -1490,17 +1431,10 @@ mod tests {
             shepr_agent::resume::AgentSessionRef::path(test_session_path("pi-session.jsonl"))
                 .expect("test precondition"),
         );
-        let mut resumed = HashSet::new();
-        let mut agent_restore = AgentRestoreState {
-            enabled: false,
-            resumed_sessions: &mut resumed,
-        };
-
-        let startup = pane_restore_startup(Some(&session), &mut agent_restore);
+        let startup = pane_restore_startup(Some(&session), None);
 
         assert!(startup.restore_plan.is_none());
         assert!(!startup.duplicate_agent_session);
-        assert!(resumed.is_empty());
     }
 
     #[test]
@@ -1527,8 +1461,8 @@ mod tests {
                 .expect("test precondition"),
         );
         let mut resumed = HashSet::new();
-        assert!(take_restore_plan_for_snapshot(&session, true, &mut resumed).is_some());
-        assert!(take_restore_plan_for_snapshot(&session, true, &mut resumed).is_none());
+        assert!(!pane_restore_startup(Some(&session), Some(&mut resumed)).duplicate_agent_session);
+        assert!(pane_restore_startup(Some(&session), Some(&mut resumed)).duplicate_agent_session);
 
         assert!(restored_terminal_agent_session(Some(&session), true).is_none());
     }
@@ -1640,7 +1574,7 @@ mod tests {
             if missing_shell {
                 // The launch is refused before any fork.
                 assert!(runtimes.get(&root).is_none());
-                assert!(terminal.restore_error().is_some());
+                assert!(terminal.start_failure().is_some());
             } else {
                 // The child's chdir finds the saved directory gone and the
                 // launch settles as a failure, never in another directory.
@@ -1709,7 +1643,7 @@ mod tests {
             .expect("the root pane is restored");
         assert_eq!(record.number(), number(4));
         let terminal = record.terminal();
-        assert!(terminal.restore_error().is_some());
+        assert!(terminal.start_failure().is_some());
         assert_eq!(terminal.manual_label(), Some("keep me"));
         assert_eq!(terminal.cwd(), &saved_cwd);
         assert_eq!(

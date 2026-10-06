@@ -6,7 +6,7 @@ use shepr_pty::PtyCommand;
 /// server-only names, and every agent descriptor's session markers. A marker
 /// no descriptor lists would pass through, which the policy test refuses.
 /// A pane id belongs to the launch that assigned it, so an enclosing pane's
-/// id is removed even when this launch assigns none.
+/// id is removed before this launch installs its own.
 fn scrubbed_pane_names() -> impl Iterator<Item = RegisteredEnv> {
     RegisteredEnv::all()
         .filter(|variable| {
@@ -52,24 +52,18 @@ pub(super) fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct PaneLaunchEnv {
-    /// The public id of a managed pane. When absent, `SHEPR_PANE_ID` stays
-    /// unset rather than inheriting an enclosing pane's id.
-    pane_id: Option<PublicPaneId>,
+    /// The public id assigned to this pane launch, replacing any enclosing id.
+    pane_id: PublicPaneId,
     /// Resolved server socket exported to every pane.
     socket_path: std::path::PathBuf,
 }
 
 impl PaneLaunchEnv {
-    pub(super) fn new(socket_path: std::path::PathBuf) -> Self {
+    pub(super) fn new(socket_path: std::path::PathBuf, pane_id: PublicPaneId) -> Self {
         Self {
             socket_path,
-            pane_id: None,
+            pane_id,
         }
-    }
-
-    pub(super) fn with_pane_id(mut self, pane_id: PublicPaneId) -> Self {
-        self.pane_id = Some(pane_id);
-        self
     }
 }
 
@@ -97,9 +91,7 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
     if let Some(executable) = launch_executable() {
         cmd.env(ChildEnv::SheprBinPath, executable);
     }
-    if let Some(pane_id) = &launch_env.pane_id {
-        cmd.env(EnvVar::SheprPaneId, pane_id.to_string());
-    }
+    cmd.env(EnvVar::SheprPaneId, launch_env.pane_id.to_string());
 }
 
 /// The path panes are told to run shepr by, resolved once: resolving it stats
@@ -179,7 +171,10 @@ mod tests {
         apply_pane_terminal_env(&mut command);
         apply_pane_launch_env(
             &mut command,
-            &PaneLaunchEnv::new("/run/user/1000/shepr-test.sock".into()),
+            &PaneLaunchEnv::new(
+                "/run/user/1000/shepr-test.sock".into(),
+                shepr_test_fixtures::id("w1:p1"),
+            ),
         );
 
         for (name, policy) in every_policy() {
@@ -191,7 +186,10 @@ mod tests {
                 PaneEnvPolicy::Scrubbed
                 | PaneEnvPolicy::ServerOnly
                 | PaneEnvPolicy::AgentSession => assert!(
-                    command.get_env(name).is_none(),
+                    // The launch installs the id it assigned over any inherited one.
+                    command
+                        .get_env(name)
+                        .is_none_or(|value| value == std::ffi::OsStr::new("w1:p1")),
                     "{name} must not reach pane children"
                 ),
             }
@@ -227,16 +225,13 @@ mod tests {
         let mut command = PtyCommand::interactive_shell(&test_shell("/shell"), false);
         command.env(EnvVar::SheprPaneId, inherited.to_string());
 
-        apply_pane_launch_env(&mut command, &PaneLaunchEnv::new("/run/shepr.sock".into()));
-        assert!(command.get_env(EnvVar::SheprPaneId).is_none());
-
         let assigned = PublicPaneId::new(
             &"w2".parse().expect("test workspace id"),
             shepr_protocol::PanePublicNumber::new(3).expect("nonzero literal"),
         );
         apply_pane_launch_env(
             &mut command,
-            &PaneLaunchEnv::new("/run/shepr.sock".into()).with_pane_id(assigned),
+            &PaneLaunchEnv::new("/run/shepr.sock".into(), assigned),
         );
         assert_eq!(
             command.get_env(EnvVar::SheprPaneId),
@@ -250,7 +245,10 @@ mod tests {
         let mut command = PtyCommand::interactive_shell(&test_shell("/shell"), false);
         command.env(EnvVar::SheprSocketPath, "/inherited/server.sock");
         let socket = std::path::PathBuf::from("/custom/shepr.sock");
-        apply_pane_launch_env(&mut command, &PaneLaunchEnv::new(socket.clone()));
+        apply_pane_launch_env(
+            &mut command,
+            &PaneLaunchEnv::new(socket.clone(), shepr_test_fixtures::id("w1:p1")),
+        );
         assert_eq!(
             command.get_env(EnvVar::SheprSocketPath),
             Some(socket.as_os_str())

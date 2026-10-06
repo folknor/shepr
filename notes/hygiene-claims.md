@@ -55,12 +55,6 @@ Reported by: persistence.
 
 Reported by: restore-resume.
 
-- `restore.rs` `take_restore_plan_for_snapshot` is a `#[cfg(test)]` copy of the
-  duplicate rule, not production `pane_restore_startup`.
-  `restore_plan_selection_suppresses_duplicates` and
-  `restore_does_not_rehydrate_duplicate_agent_session_metadata` test that copy; the
-  latter's last assertion is the function's first `if`. The production rule is
-  covered by two other tests. Delete the copy and its two tests.
 - `restore_rehydrates_agent_session_metadata`: `restored_terminal_agent_session`
   re-validates an already validated session through its own constructor, so the
   assertions compare a value with itself.
@@ -231,20 +225,6 @@ Reported by: integrations.
 - Python hook tests require host `python3` and plugin tests host `bun`; both are
   sanctioned (`host-program-ok`, `check_agent_asset_tests.py`) and are the subject.
 
-## CLAIM-014 - The bun tests use `/tmp`, sleep on the wall clock, and leak environment between files
-
-Reported by: integrations.
-
-`shepr-agent-state.test.ts` binds sockets at `join(tmpdir(), ...)` and
-`shepr-tui-session.test.ts` uses `mkdtemp(join(tmpdir(), ...))`; the repository's
-`no-host-temp-dir` rule is enforced only on `.rs`, so it fails open by extension.
-Negative assertions after `Bun.sleep(25)` pass if the send is merely slow; positive
-ones wait out real 500 ms retries (VAL-046). `opencode/shepr-agent-state.test.ts`
-and `shepr-tui-session.test.ts` set `SHEPR_*` in `beforeEach` and never restore
-them, and three files `mock.module("node:net", ...)`, which bun keeps for the
-process while `shepr-agent-state.test.ts` needs the real `createServer`:
-order-dependent.
-
 ## CLAIM-015 - Workspace model tests with dead setup or expectations that cannot fail
 
 Reported by: workspace-model.
@@ -356,7 +336,7 @@ Reported by: persistence, pane-lifecycle, agent-state, server-lifecycle.
   nothing holding it. Add a mux pane clock rule like `terminal-core-clock-is-injected`,
   with `detection_task.rs` as the marked sampler.
 - `persist-clock-is-injected` forbids `SystemTime::now()` in `persist/`, but the
-  snapshot cadence compares the injected `now` with a file's `modified()` (POL-002),
+  snapshot cadence reads a file's `modified()` for its first decision after startup,
   so the guard fails open for filesystem time. Widen the pattern with an allow marker
   or say so beside the rule.
 - `[gremlins] exclude = ["crates/shepr-detect/src/manifests"]` exempts the manifests'
@@ -364,6 +344,12 @@ Reported by: persistence, pane-lifecycle, agent-state, server-lifecycle.
   comments checked. And `cli/status.rs` has a comment containing U+2026 (horizontal
   ellipsis), a gremlin under the project rule, so either the gremlins check does not
   cover that character or the file is not swept. Checkable by a non-ASCII grep.
+- Textlints with `skip_after = '^[ \t]*#\[cfg\(test\)\]'` stop at the first
+  `#[cfg(test)]` line in a file, so a `#[cfg(test)]` item in the middle of a production
+  impl hides all production code after it. `shepr-remote/src/failure.rs` does this now
+  (`disposition`, `ssh_runtime_error` and later items are invisible to
+  `remote-clock-is-injected` and the limits rules). Move such items into a trailing
+  `#[cfg(test)] impl`, and have `skip-after-scopes` refuse a mid-file test item.
 
 ## CLAIM-019 - Guards keyed on names that become silent no-ops
 
@@ -489,22 +475,6 @@ Reported by: pane-lifecycle.
 - `PtyIoInbox`'s "never held across a syscall" holds today, by review only.
 - `SHEPR_BIN_PATH`'s "set for every pane" (BUG-022) is false today.
 
-## CLAIM-025 - Agent detection claims that are false today or unenforced
-
-Reported by: agent-state.
-
-- `compile_manifest` sets `unknown_is_stable |= rule.state == Unknown`, which counts
-  `skip_state_update` rules (state must be unknown) although a skip rule yields
-  `AgentDetection::Skip`, not Unknown. So Claude (fallback Idle, two skip rules, no
-  Unknown rule) reads as "can report a stable Unknown". Harmless today (unchanged
-  content gives the same Skip), but the field's documented meaning ("Whether an
-  unchanged input can produce `Unknown`") is wrong; rename or exclude skip rules.
-- `AgentOwnership::with_initial_hook_authority`'s "Production code never calls it" is
-  true and unenforced (a plain `pub fn` that bypasses arbitration); its only caller
-  is a mux test. Make it test-only or construct the authority through a report.
-- The ownership module "never runs the manifest engine": true, checkable by a
-  textlint forbidding `manifest::` in `ownership/`.
-
 ## CLAIM-026 - Integration claims that are false today
 
 Reported by: integrations.
@@ -576,42 +546,3 @@ Reported by: server-lifecycle.
   reports).
 - `headless.rs` `handle_scheduled_tasks_headless`: "Similar to the former App
   scheduler", "No resize polling needed" (history, not behaviour).
-
-## CLAIM-031 - Remote layer comments that are false today
-
-Reported by: remote.
-
-- `ClientEndpointId::display_label`: "The launch refuses a machine label that names
-  the local server, so the two never read alike." Such an entry is skipped, not
-  refused (`validated.rs` `is_local_entry`), and its palette becomes the local hue. The
-  same doc lists "`local`" as a name `display_label` returns; it never does (only
-  `Display` writes `local`).
-- `failure.rs` `failed_before_remote_result`: "The bridge and the machine check use
-  it"; production calls it nowhere (DEAD).
-- `discovery.rs` `known_remote_binary_candidate_script`: "These are checked before
-  falling back to `command -v`"; both orderings run `command -v` first (`fleet.rs`
-  says so correctly).
-- `DiscoverySteps`: "Only `DiscoveryProgress` sequences them"; there is a second
-  sequencer (POL-024).
-- `DiscoveryProgress` ("without connection sharing each is a cold SSH connect") and
-  the client's `ATTEMPT_BUDGET` ("a slow link without connection sharing") reason about
-  a configuration production never has (`write_managed_ssh_config` always sets a
-  control path and `ControlMaster=auto`). Reword around the master-less first connect.
-- `PIPE_DRAIN_GRACE`'s premise, that a ControlPersist master forked by ssh keeps the
-  command's stderr or stdout open, is probably stale: current OpenSSH points the
-  backgrounded master's stdio at `/dev/null` unless ssh runs with debug logging. If the
-  premise holds, every ssh command leaks one blocked `PipeCapture` reader for the
-  master's life (up to `ControlPersist=600`), unbounded-ish under a reconnect loop; if
-  not, the grace and its plumbing are dead. Check against the OpenSSH the owner runs
-  and say which.
-- `release_ssh_resources_before_exit`'s doc says "including through
-  `std::process::exit`", which `exits-from-main` and the clippy seal make impossible
-  outside `src/main.rs`.
-- `TeardownRegistry`'s doc ("in a client those owners live on endpoint writer threads
-  ... which leaked sockets and config directories") is history; state the invariant.
-- `ensure_remote_sibling_build`: "a candidate whose status does not report a sibling at
-  all is one that predates the report", a compatibility rationale for older builds that
-  `ensure_remote_client_build` has already rejected by build id. Say the `None` arm is
-  reachable only if this build omits `server`, or make `server` non-optional.
-- `retry_delay`'s doc names "the SSH agent registration worker" as another retry loop;
-  no such worker exists. Drop the enumeration.

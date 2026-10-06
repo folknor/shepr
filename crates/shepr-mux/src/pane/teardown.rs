@@ -1,5 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::watch;
 use tracing::{info, warn};
 
 use shepr_core::layout::PaneId;
@@ -10,6 +11,7 @@ use crate::limits::{PANE_TEARDOWN_BUDGET, PANE_TEARDOWN_STEPS};
 /// has no child; an owned child always has its pidfd-backed identity.
 pub(super) struct ChildLiveness {
     state: Mutex<ChildState>,
+    wait_complete_signal: watch::Sender<bool>,
 }
 
 struct ChildState {
@@ -51,33 +53,17 @@ impl ChildPhase {
 }
 
 impl ChildLiveness {
-    /// The public ChildIo constructor admits externally hosted IO without a
-    /// process owned by this runtime. Absence must carry no signalling or
-    /// observation authority; substituting a numeric pid here could tear down
-    /// an unrelated process when the runtime closes.
-    ///
-    /// A pane whose program is reached through a seam instead of a child
-    /// process (`PaneRuntime::with_child_io`): it counts as launched, so its
-    /// own screen is the pane's content, and it has no process to observe or
-    /// signal.
+    /// A pane whose IO is supplied by `PaneRuntime::with_child_io` has no child
+    /// process to observe or signal. It counts as launched, so its screen is
+    /// the pane's content.
     pub(super) fn launched_without_child() -> Self {
-        Self {
-            state: Mutex::new(ChildState {
-                identity: ChildIdentity::Absent,
-                phase: ChildPhase::Running,
-            }),
-        }
+        Self::new(ChildIdentity::Absent, ChildPhase::Running)
     }
 
     /// A child just forked, not yet past its exec. The handle supplies its
     /// identity; the caller cannot pair it with a different pid.
     pub(super) fn launching(leader: Arc<shepr_platform::ProcessHandle>) -> Self {
-        Self {
-            state: Mutex::new(ChildState {
-                identity: ChildIdentity::Process(leader),
-                phase: ChildPhase::Launching,
-            }),
-        }
+        Self::new(ChildIdentity::Process(leader), ChildPhase::Launching)
     }
 
     pub(super) fn settle_launch(&self, committed: bool) {
@@ -144,8 +130,17 @@ impl ChildLiveness {
     }
 
     pub(super) fn mark_wait_completed(&self) {
-        let mut state = shepr_core::locks::lock_auxiliary(&self.state);
-        state.phase = ChildPhase::WaitEnded(state.phase.launch());
+        {
+            let mut state = shepr_core::locks::lock_auxiliary(&self.state);
+            state.phase = ChildPhase::WaitEnded(state.phase.launch());
+        }
+        self.wait_complete_signal.send_replace(true);
+    }
+
+    /// Subscribe to the child wait owner's completion signal. The watch keeps
+    /// completion visible if it happens before a launch coordinator subscribes.
+    pub(super) fn wait_completion(&self) -> watch::Receiver<bool> {
+        self.wait_complete_signal.subscribe()
     }
 
     pub(super) fn wait_completed(&self) -> bool {
@@ -175,6 +170,14 @@ impl ChildLiveness {
             _ => None,
         }
     }
+
+    fn new(identity: ChildIdentity, phase: ChildPhase) -> Self {
+        let (wait_complete_signal, _) = watch::channel(false);
+        Self {
+            state: Mutex::new(ChildState { identity, phase }),
+            wait_complete_signal,
+        }
+    }
 }
 
 /// Pane session teardowns still running on their background threads, counted
@@ -183,7 +186,7 @@ impl ChildLiveness {
 /// servers in one process never wait on each other's teardowns.
 #[derive(Default)]
 pub struct PaneTeardownTracker {
-    in_flight: Mutex<usize>,
+    in_flight: Mutex<Vec<PaneId>>,
     done: std::sync::Condvar,
 }
 
@@ -191,10 +194,11 @@ impl PaneTeardownTracker {
     /// Three signal grace periods; session scans add work outside this budget.
     pub const BUDGET: Duration = PANE_TEARDOWN_BUDGET;
 
-    fn start(self: &Arc<Self>) -> PaneTeardownInFlight {
-        *shepr_core::locks::lock_auxiliary(&self.in_flight) += 1;
+    fn start(self: &Arc<Self>, pane_id: PaneId) -> PaneTeardownInFlight {
+        shepr_core::locks::lock_auxiliary(&self.in_flight).push(pane_id);
         PaneTeardownInFlight {
             tracker: Arc::clone(self),
+            pane_id,
         }
     }
 
@@ -204,13 +208,21 @@ impl PaneTeardownTracker {
     /// that exits right after dropping its panes would otherwise cut the
     /// SIGTERM/SIGKILL escalation short.
     pub fn wait(&self, timeout: Duration) -> bool {
+        self.wait_unfinished(timeout).is_empty()
+    }
+
+    /// Waits for teardown and returns the pane identities still unfinished at
+    /// the deadline, including panes removed before shutdown began.
+    pub fn wait_unfinished(&self, timeout: Duration) -> Vec<PaneId> {
         let guard = shepr_core::locks::lock_auxiliary(&self.in_flight);
         match self
             .done
-            .wait_timeout_while(guard, timeout, |in_flight| *in_flight > 0)
+            .wait_timeout_while(guard, timeout, |in_flight| !in_flight.is_empty())
         {
-            Ok((guard, _)) => *guard == 0,
-            Err(poisoned) => *shepr_core::locks::recover_auxiliary_poison(poisoned).0 == 0,
+            Ok((guard, _)) => guard.clone(),
+            Err(poisoned) => shepr_core::locks::recover_auxiliary_poison(poisoned)
+                .0
+                .clone(),
         }
     }
 }
@@ -219,17 +231,21 @@ impl PaneTeardownTracker {
 /// panicking teardown does not leak its in-flight count.
 struct PaneTeardownInFlight {
     tracker: Arc<PaneTeardownTracker>,
+    pane_id: PaneId,
 }
 
 impl Drop for PaneTeardownInFlight {
     fn drop(&mut self) {
         let mut in_flight = shepr_core::locks::lock_auxiliary(&self.tracker.in_flight);
-        if *in_flight == 0 {
-            warn!("pane teardown completion had no matching start");
+        let Some(index) = in_flight.iter().position(|pane| *pane == self.pane_id) else {
+            // `start` inserts this pane before constructing the guard. Keep an
+            // invariant-failure fallback so teardown completion cannot panic
+            // or report a different pane as finished if that ownership changes.
+            warn!(pane = %self.pane_id, "pane teardown completion had no matching start");
             return;
-        }
-        *in_flight -= 1;
-        if *in_flight == 0 {
+        };
+        in_flight.swap_remove(index);
+        if in_flight.is_empty() {
             self.tracker.done.notify_all();
         }
     }
@@ -262,7 +278,7 @@ pub(super) fn shutdown_pane_processes(
     {
         leader.signal(shepr_platform::Signal::Hangup);
     }
-    let in_flight = tracker.start();
+    let in_flight = tracker.start(pane_id);
     let worker_child_liveness = Arc::clone(child_liveness);
     let task = Box::new(move || {
         run_pane_teardown(pane_id, in_flight, &worker_child_liveness);
@@ -353,12 +369,7 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
 impl ChildLiveness {
     /// A runtime that has not forked a child yet.
     pub(super) fn absent() -> Self {
-        Self {
-            state: Mutex::new(ChildState {
-                identity: ChildIdentity::Absent,
-                phase: ChildPhase::Launching,
-            }),
-        }
+        Self::new(ChildIdentity::Absent, ChildPhase::Launching)
     }
 
     /// A launched child owned through its process handle.
@@ -367,12 +378,7 @@ impl ChildLiveness {
     }
 
     fn running(identity: ChildIdentity) -> Self {
-        Self {
-            state: Mutex::new(ChildState {
-                identity,
-                phase: ChildPhase::Running,
-            }),
-        }
+        Self::new(identity, ChildPhase::Running)
     }
 }
 
@@ -409,7 +415,7 @@ mod tests {
         child.mark_wait_completed();
         child.settle_launch(true);
         assert_eq!(child.launch_committed(), Some(true));
-        assert!(child.wait_completed());
+        assert!(*child.wait_completion().borrow());
         assert!(child.live_process_id().is_none());
     }
 
@@ -427,7 +433,9 @@ mod tests {
     fn teardown_trackers_wait_independently() {
         let first = Arc::new(PaneTeardownTracker::default());
         let second = Arc::new(PaneTeardownTracker::default());
-        let first_ticket = first.start();
+        let pane = PaneId::from_raw(1);
+        let first_ticket = first.start(pane);
+        assert_eq!(first.wait_unfinished(Duration::ZERO), vec![pane]);
 
         assert!(!first.wait(Duration::ZERO));
         assert!(second.wait(Duration::ZERO));

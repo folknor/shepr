@@ -4,7 +4,6 @@ use shepr_launch::invocation::{
 };
 
 use crate::host::BridgeMode;
-use crate::limits::REMOTE_COMMAND_ARGS_INITIAL_CAPACITY;
 
 /// A `shepr` command line that shepr builds for another `shepr` process, on a
 /// configured machine, to parse. The words come from the invocation grammar
@@ -44,7 +43,9 @@ impl<'a> RemoteCliCommand<'a> {
 
     /// The argv words after the executable name.
     pub fn args(self) -> Vec<&'a str> {
-        let mut args = Vec::with_capacity(REMOTE_COMMAND_ARGS_INITIAL_CAPACITY);
+        // limits-exempt: an allocation hint that every command shape below
+        // fits; the Vec would still grow past it.
+        let mut args = Vec::with_capacity(6);
         match self {
             Self::Overview => args.extend([COMMAND_STATUS, FLAG_JSON]),
             Self::ClientStatus => args.extend([COMMAND_STATUS, COMMAND_CLIENT, FLAG_JSON]),

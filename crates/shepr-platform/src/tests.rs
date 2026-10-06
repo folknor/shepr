@@ -533,7 +533,7 @@ fn session_members_are_found_without_the_leader_and_signalled_by_handle() {
     let leader = child.id();
     let deadline = Instant::now() + Duration::from_secs(5);
     let members = loop {
-        let members = session_member_handles(
+        let members = session_members(
             SessionId::of_leader(Pid::new(leader).expect("session leader")),
             || false,
         );
@@ -565,7 +565,7 @@ fn session_members_are_withheld_when_a_reaped_leaders_pid_is_held_again() {
     let leader = child.id();
     let deadline = Instant::now() + Duration::from_secs(5);
     let members = loop {
-        let members = session_member_handles(
+        let members = session_members(
             SessionId::of_leader(Pid::new(leader).expect("session leader")),
             || false,
         );
@@ -578,7 +578,7 @@ fn session_members_are_withheld_when_a_reaped_leaders_pid_is_held_again() {
     // The leader is alive, so from the point of view of a caller that has
     // already reaped its own leader, pid `leader` belongs to someone else.
     assert!(
-        session_member_handles(
+        session_members(
             SessionId::of_leader(Pid::new(leader).expect("session leader")),
             || true,
         )

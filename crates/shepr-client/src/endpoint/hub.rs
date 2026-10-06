@@ -126,12 +126,12 @@ impl EndpointHub {
             EndpointSupervisorEvent::Status {
                 endpoint_id,
                 generation,
-                message,
+                failure,
                 connector,
             } => {
                 self.supervisors
                     .return_connector(&endpoint_id, generation, connector);
-                self.attempt_failed(shell, &endpoint_id, generation, &message, now)
+                self.attempt_failed(shell, &endpoint_id, generation, &failure, now)
             }
             EndpointSupervisorEvent::Watched {
                 endpoint_id,
@@ -194,24 +194,24 @@ impl EndpointHub {
         shell: &mut ClientShellState,
         endpoint_id: &ClientEndpointId,
         generation: ConnectionGeneration,
-        message: &shepr_launch::EndpointFailure,
+        failure: &shepr_launch::EndpointFailure,
         now: Instant,
     ) -> Vec<HubEffect> {
         let Some(status) = self
             .supervisors
-            .record_failure(endpoint_id, generation, message, now)
+            .record_failure(endpoint_id, generation, failure, now)
         else {
             return Vec::new();
         };
         if status == EndpointFailureStatus::Attention {
-            warn!(endpoint = %endpoint_id, %generation, error = %message, "endpoint needs attention");
+            warn!(endpoint = %endpoint_id, %generation, error = %failure, "endpoint needs attention");
         } else {
-            tracing::info!(endpoint = %endpoint_id, %generation, ?status, error = %message, "endpoint attempt ended");
+            tracing::info!(endpoint = %endpoint_id, %generation, ?status, error = %failure, "endpoint attempt ended");
         }
         shell.set_endpoint_status(endpoint_id, status);
-        shell.set_machine_diagnostic(endpoint_id, message);
+        shell.set_machine_diagnostic(endpoint_id, failure);
         if !self.supervisors.request_pending(endpoint_id) {
-            shell.set_machine_state(endpoint_id, shell::MachineState::after_failure(message));
+            shell.set_machine_state(endpoint_id, shell::MachineState::after_failure(failure));
         }
         // Handshake diagnostics carry only the failing phase; the status line
         // supplies the configured endpoint label once.
@@ -220,7 +220,7 @@ impl EndpointHub {
         .then(|| {
             shell::EndpointNotice::new(
                 endpoint_id.clone(),
-                shell::EndpointNoticeKind::StatusFailure(message.to_string()),
+                shell::EndpointNoticeKind::StatusFailure(failure.to_string()),
             )
         });
         vec![unavailable.map_or(HubEffect::ChromeDirty, HubEffect::Notice)]
@@ -1155,7 +1155,7 @@ mod tests {
             EndpointSupervisorEvent::Status {
                 endpoint_id: id.clone(),
                 generation: attempt,
-                message: shepr_launch::EndpointFailure::no_server("no server"),
+                failure: shepr_launch::EndpointFailure::no_server("no server"),
                 connector: None,
             },
             now,
@@ -1178,7 +1178,7 @@ mod tests {
             EndpointSupervisorEvent::Status {
                 endpoint_id: id.clone(),
                 generation: attempt,
-                message: shepr_launch::EndpointFailure::no_server("no server"),
+                failure: shepr_launch::EndpointFailure::no_server("no server"),
                 connector: None,
             },
             now,

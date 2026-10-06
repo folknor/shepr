@@ -76,7 +76,7 @@ impl MachineCheck {
 }
 
 /// Sorts a check result into the classes the preflight acts on.
-pub fn classify_check(result: io::Result<()>) -> MachineCheck {
+pub(crate) fn classify_check(result: io::Result<()>) -> MachineCheck {
     let error = match result {
         Ok(()) => return MachineCheck::Ready,
         Err(error) => error,

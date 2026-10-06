@@ -8,19 +8,13 @@ use crate::bridge::{SshStdioBridge, ssh_bridge_exit_error};
 use crate::discovery::{
     DiscoveryProgress, resume_installed_remote_shepr_discovery, verify_remote_shepr,
 };
-use crate::failure::{
-    attempt_deadline_passed, failure_evidence, local_setup_error, ssh_runtime_error,
-};
+use crate::failure::{attempt_deadline_passed, failure_evidence, local_setup_error};
 use crate::host::BridgeMode;
 use crate::limits::{PIPE_DRAIN_GRACE, SERVER_WATCH_POLL_INTERVAL, SSH_STDERR_CAPTURE_LIMIT};
 use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
 use crate::process::{PipeCapture, kill_and_reap};
 use crate::server_lifecycle::{remote_server_status, stop_server_of_another_build};
-use crate::ssh::{
-    RemoteSsh, apply_batch_ssh_options, apply_managed_ssh_options, ensure_ssh_runtime_dir,
-    ssh_command,
-};
-use crate::ssh_paths::{SshControlKey, shared_ssh_control_path};
+use crate::ssh::{RemoteSsh, SshMode, ssh_invocation};
 
 /// Rebuilds `ssh`'s managed config when there is none or its file has gone
 /// (a removed temporary directory while the client stayed open), keeping a
@@ -29,13 +23,14 @@ fn ensure_managed_ssh(
     ssh: &mut Option<RemoteSsh>,
     target: &SshTarget,
     paths: &shepr_paths::AppPaths,
+    deadline: std::time::Instant,
 ) -> io::Result<()> {
     let must_rebuild = match ssh.as_ref() {
         Some(ssh) => !ssh.options().config_path.try_exists()?,
         None => true,
     };
     if must_rebuild {
-        *ssh = Some(RemoteSsh::new(target.clone(), paths)?);
+        *ssh = Some(RemoteSsh::new(target.clone(), paths, deadline)?);
     }
     Ok(())
 }
@@ -73,11 +68,11 @@ impl MachineProbe {
         target: &SshTarget,
         deadline: std::time::Instant,
     ) -> io::Result<()> {
-        ensure_managed_ssh(&mut self.ssh, target, paths)?;
+        ensure_managed_ssh(&mut self.ssh, target, paths, deadline)?;
         let Some(mut ssh) = self.ssh.take() else {
             return Err(io::Error::other("machine SSH transport is unavailable"));
         };
-        ssh.set_attempt_deadline(Some(deadline));
+        ssh.set_attempt_deadline(deadline);
         let cache = SshMetadataCache::new(paths, target);
         let result = self.advance(&ssh, &cache).map(|_| ());
         self.ssh = Some(ssh);
@@ -325,10 +320,6 @@ impl MachineSshConnector {
         };
         if connector.state.ssh.is_none() {
             connector.prepare_for_launch();
-        } else if let Err(error) = connector.validate_local_setup()
-            && is_launch_fatal_setup_error(&error)
-        {
-            connector.state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
         }
         connector
     }
@@ -348,20 +339,8 @@ impl MachineSshConnector {
     }
 
     fn prepare_for_launch(&mut self) {
-        if let Err(error) = self.validate_local_setup() {
-            if is_launch_fatal_setup_error(&error) {
-                self.state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
-            } else {
-                tracing::warn!(
-                    %error,
-                    machine = %self.label,
-                    target = %self.target,
-                    "machine SSH path setup failed transiently; it will be retried"
-                );
-            }
-            return;
-        }
-        match RemoteSsh::new(self.target.clone(), &self.paths) {
+        // clock-io-ok: launch validates config only; each attempt replaces this expired deadline.
+        match RemoteSsh::new(self.target.clone(), &self.paths, std::time::Instant::now()) {
             Ok(ssh) => self.state.ssh = Some(ssh),
             Err(error) if is_launch_fatal_setup_error(&error) => {
                 self.state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
@@ -375,23 +354,6 @@ impl MachineSshConnector {
                 );
             }
         }
-    }
-
-    fn validate_local_setup(&self) -> io::Result<()> {
-        // Validate the shared control socket path at launch so an impossible
-        // runtime directory fails before the
-        // endpoint's first scheduled connection attempt.
-        let result = (|| {
-            let runtime_dir = ensure_ssh_runtime_dir(&self.paths)?;
-            shared_ssh_control_path(
-                runtime_dir,
-                &self.paths.client_config_file(),
-                SshControlKey::for_target(&self.target),
-            )
-            .map_err(ssh_runtime_error)?;
-            Ok(())
-        })();
-        result.map_err(|error| local_setup_error("could not prepare local SSH paths", error))
     }
 
     /// The machine's transport, set up when it is missing or its config file
@@ -411,14 +373,14 @@ impl MachineSshConnector {
         // ssh with a path that no longer exists. If logind removed the XDG runtime
         // root itself, the resulting NotFound is shown as Attention and retried;
         // setup rebuilds once that root returns.
-        ensure_managed_ssh(&mut state.ssh, &self.target, &self.paths)?;
+        ensure_managed_ssh(&mut state.ssh, &self.target, &self.paths, deadline)?;
         let ConnectorState { ssh, probe, .. } = &mut *state;
         // Setup above either stored the transport or returned its setup error. Keep
         // this checked arm instead of panicking if the connector state changes later.
         let Some(ssh) = ssh.as_mut() else {
             return Err(io::Error::other("machine SSH transport is unavailable"));
         };
-        ssh.set_attempt_deadline(Some(deadline));
+        ssh.set_attempt_deadline(deadline);
         Ok((&*ssh, probe))
     }
 
@@ -482,11 +444,7 @@ impl MachineSshConnector {
         let target = self.target.clone();
         let (ssh, probe) = self.transport(deadline)?;
         let remote = probe.resolve_remote(ssh, &metadata_cache)?;
-        let mut command = ssh_command();
-        apply_managed_ssh_options(&mut command, Some(ssh.options()));
-        apply_batch_ssh_options(&mut command);
-        command.arg("-T");
-        target.append_to(&mut command);
+        let mut command = ssh_invocation(&target, ssh.options(), SshMode::Batch);
         command
             .arg(remote.wait_for_server_command().as_str())
             .stdin(Stdio::piped())
@@ -542,7 +500,7 @@ impl MachineSshConnector {
             return Err(attempt_deadline_passed());
         }
         let (bridge, stream) =
-            SshStdioBridge::start(target.clone(), remote_shepr, mode, Some(ssh.options()))
+            SshStdioBridge::start(target.clone(), remote_shepr, mode, ssh.options())
                 .map_err(|error| local_setup_error("could not start local SSH bridge", error))?;
         // clock-io-ok: starting the bridge spent real time; establishment has its own bound.
         if std::time::Instant::now() >= deadline {
@@ -586,9 +544,10 @@ mod tests {
 
     #[test]
     fn launch_setup_input_and_runtime_policy_errors_are_fatal() {
-        let policy = ssh_runtime_error(crate::ssh_paths::SshRuntimeError::UnsafeDirectory(
-            crate::ssh_paths::UnsafeSshRuntimeDirectory::new(std::path::Path::new("/runtime")),
-        ));
+        let policy =
+            crate::failure::ssh_runtime_error(crate::ssh_paths::SshRuntimeError::UnsafeDirectory(
+                crate::ssh_paths::UnsafeSshRuntimeDirectory::new(std::path::Path::new("/runtime")),
+            ));
         assert!(is_launch_fatal_setup_error(&policy));
         let ordinary = io::Error::new(io::ErrorKind::PermissionDenied, policy.to_string());
         assert!(!is_launch_fatal_setup_error(&ordinary));
@@ -609,7 +568,7 @@ mod tests {
         let target = SshTarget::parse("build.example").expect("test precondition");
         let mut ssh = None;
 
-        let error = ensure_managed_ssh(&mut ssh, &target, &paths)
+        let error = ensure_managed_ssh(&mut ssh, &target, &paths, std::time::Instant::now())
             .expect_err("missing runtime root prevents SSH setup");
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
         assert!(

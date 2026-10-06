@@ -1,9 +1,18 @@
-import { afterEach, expect, test } from "bun:test";
-import { rm } from "node:fs/promises";
+import { afterEach, expect, jest, test } from "bun:test";
+import { readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expectContractTrace } from "../contract_traces.ts";
+import {
+  assetTiming,
+  createAssetScratchDir,
+  flushMicrotasks,
+  nextEventLoopTurn,
+  removeAssetScratchDir,
+} from "../bun_test_support.ts";
+
+const PI_SOURCE = await readFile(new URL("./pi/shepr-agent-state.ts", import.meta.url), "utf8");
+const SOCKET_WAIT_MS = Number(assetTiming(PI_SOURCE, "SOCKET_WAIT_MS"));
 
 const originalArgv = process.argv;
 const originalEnvironment = {
@@ -16,7 +25,13 @@ const originalEnvironment = {
 
 let server: Server | undefined;
 let socketPath: string | undefined;
+const activeScratchDirs: string[] = [];
+const progressWaiters: Array<() => void> = [];
 let importCounter = 0;
+
+function signalProgress() {
+  for (const resolve of progressWaiters.splice(0)) resolve();
+}
 
 afterEach(async () => {
   await new Promise<void>((resolve, reject) => {
@@ -32,6 +47,9 @@ afterEach(async () => {
     await rm(socketPath, { force: true });
     socketPath = undefined;
   }
+  for (const directory of activeScratchDirs.splice(0)) {
+    await removeAssetScratchDir(directory);
+  }
 
   process.argv = originalArgv;
   for (const [name, value] of Object.entries(originalEnvironment)) {
@@ -41,6 +59,7 @@ afterEach(async () => {
       process.env[name] = value;
     }
   }
+  jest.useRealTimers();
 });
 
 const integrations = [
@@ -85,7 +104,9 @@ function configureIntegrationEnvironment(recordingSocketPath: string) {
 }
 
 async function startRecordingServer(name: string): Promise<unknown[]> {
-  const recordingSocketPath = join(tmpdir(), `shepr-${name}-${process.pid}.sock`);
+  const directory = await createAssetScratchDir(name);
+  activeScratchDirs.push(directory);
+  const recordingSocketPath = join(directory, "s.sock");
   socketPath = recordingSocketPath;
   await rm(recordingSocketPath, { force: true });
 
@@ -100,6 +121,7 @@ async function startRecordingServer(name: string): Promise<unknown[]> {
         return;
       }
       requests.push(JSON.parse(input.slice(0, newline)));
+      signalProgress();
       socket.end("{}\n");
     });
   });
@@ -161,10 +183,7 @@ for (const integration of integrations) {
       return undefined;
     };
 
-    const deadline = Date.now() + 1_000;
-    while (Date.now() < deadline && reportedState() === undefined) {
-      await Bun.sleep(5);
-    }
+    await waitFor(() => reportedState() !== undefined);
 
     expect(reportedState()).toBe("working");
   });
@@ -181,20 +200,17 @@ test("OMP ignores nested sessions launched inside another OMP shell", async () =
   // OMP sets `OMPCODE` on every shell it spawns. A nested `omp` inherits it and
   // must not claim the pane's session for its short-lived conversation.
   expect(handlers.size).toBe(0);
-  await handlers.get("session_start")?.(
+  await assertNoNewRequests(requests, () => handlers.get("session_start")?.(
     { reason: "startup" },
     {
       hasUI: true,
       isIdle: () => true,
       sessionManager: {
-        getSessionFile: () => "/tmp/omp-nested.jsonl",
+        getSessionFile: () => "/nonexistent/omp-nested.jsonl",
         getSessionId: () => "omp-nested",
       },
     },
-  );
-  await Bun.sleep(25);
-
-  expect(requests).toEqual([]);
+  ));
 });
 
 test("Pi reports idle only after the agent settles", async () => {
@@ -216,8 +232,7 @@ test("Pi reports idle only after the agent settles", async () => {
   expect(handlers.has("agent_end")).toBe(false);
 
   const requestCountBeforeStaleSettlement = requests.length;
-  handlers.get("agent_settled")?.({}, context);
-  await Bun.sleep(25);
+  await assertNoNewRequests(requests, () => handlers.get("agent_settled")?.({}, context));
   expect(requests).toHaveLength(requestCountBeforeStaleSettlement);
   expect(requestStates(requests)).toEqual(["idle", "working"]);
 
@@ -240,11 +255,10 @@ test("Pi does not report state without a session reference", async () => {
       getSessionId: () => undefined,
     },
   };
-  await handlers.get("session_start")?.({ reason: "startup" }, context);
-  handlers.get("agent_start")?.({}, context);
-  await Bun.sleep(25);
-
-  expect(requests).toEqual([]);
+  await assertNoNewRequests(requests, async () => {
+    await handlers.get("session_start")?.({ reason: "startup" }, context);
+    handlers.get("agent_start")?.({}, context);
+  });
 });
 
 test("Pi ignores RPC sessions even when UI APIs are available", async () => {
@@ -258,12 +272,11 @@ test("Pi ignores RPC sessions even when UI APIs are available", async () => {
     hasUI: true,
     mode: "rpc",
   };
-  await handlers.get("session_start")?.({ reason: "startup" }, context);
-  handlers.get("agent_start")?.({}, context);
-  handlers.get("agent_settled")?.({}, context);
-  await Bun.sleep(25);
-
-  expect(requests).toEqual([]);
+  await assertNoNewRequests(requests, async () => {
+    await handlers.get("session_start")?.({ reason: "startup" }, context);
+    handlers.get("agent_start")?.({}, context);
+    handlers.get("agent_settled")?.({}, context);
+  });
 });
 
 test("Pi settlement preserves explicit blocked-state precedence", async () => {
@@ -283,8 +296,7 @@ test("Pi settlement preserves explicit blocked-state precedence", async () => {
   await waitFor(() => requestStates(requests).length === 3);
 
   idle = true;
-  handlers.get("agent_settled")?.({}, context);
-  await Bun.sleep(25);
+  await assertNoNewRequests(requests, () => handlers.get("agent_settled")?.({}, context));
   expect(requestStates(requests)).toEqual(["idle", "working", "blocked"]);
 
   eventHandlers.get("shepr:blocked")?.({ active: false }, context);
@@ -304,12 +316,11 @@ test("Pi deduplicates blocked state when prompt labels change", async () => {
 
   eventHandlers.get("shepr:blocked")?.({ active: true, label: "first approval" }, context);
   await waitFor(() => requestStates(requests).length === 2);
-  eventHandlers.get("shepr:blocked")?.({ active: true, label: "second approval" }, context);
-  await Bun.sleep(25);
+  await assertNoNewRequests(requests, () =>
+    eventHandlers.get("shepr:blocked")?.({ active: true, label: "second approval" }, context));
   expect(requestStates(requests)).toEqual(["idle", "blocked"]);
 
-  eventHandlers.get("shepr:blocked")?.({ active: false }, context);
-  await Bun.sleep(25);
+  await assertNoNewRequests(requests, () => eventHandlers.get("shepr:blocked")?.({ active: false }, context));
   expect(requestStates(requests)).toEqual(["idle", "blocked"]);
   eventHandlers.get("shepr:blocked")?.({ active: false }, context);
   await waitFor(() => requestStates(requests).length === 3);
@@ -332,7 +343,7 @@ test("Pi reports the session replacement source", async () => {
       mode: "tui",
       isIdle: () => true,
       sessionManager: {
-        getSessionFile: () => "/tmp/pi-new.jsonl",
+        getSessionFile: () => "/nonexistent/pi-new.jsonl",
         getSessionId: () => "pi-new",
       },
     },
@@ -340,10 +351,7 @@ test("Pi reports the session replacement source", async () => {
 
   const reportedSession = () =>
     requests.find((request) => isRecord(request) && request.method === "pane.report_agent_session");
-  const deadline = Date.now() + 1_000;
-  while (Date.now() < deadline && reportedSession() === undefined) {
-    await Bun.sleep(5);
-  }
+  await waitFor(() => reportedSession() !== undefined);
 
   const request = reportedSession();
   expect(request).toBeDefined();
@@ -352,7 +360,9 @@ test("Pi reports the session replacement source", async () => {
 });
 
 test("Pi serializes its agent-start session report before its working state", async () => {
-  const recordingSocketPath = join(tmpdir(), `shepr-pi-session-order-${process.pid}.sock`);
+  const directory = await createAssetScratchDir("pi-order");
+  activeScratchDirs.push(directory);
+  const recordingSocketPath = join(directory, "s.sock");
   socketPath = recordingSocketPath;
   await rm(recordingSocketPath, { force: true });
 
@@ -371,9 +381,11 @@ test("Pi serializes its agent-start session report before its working state", as
       requests.push(request);
       if (isRecord(request) && request.method === "pane.report_agent_session") {
         acknowledgeSessionReport = () => socket.end("{}\n");
+        signalProgress();
         return;
       }
       socket.end("{}\n");
+      signalProgress();
     });
   });
   server = recordingServer;
@@ -391,7 +403,7 @@ test("Pi serializes its agent-start session report before its working state", as
   const context = {
     ...piContext(() => idle),
     sessionManager: {
-      getSessionFile: () => "/tmp/pi-new.jsonl",
+      getSessionFile: () => "/nonexistent/pi-new.jsonl",
       getSessionId: () => "pi-new",
     },
   };
@@ -402,10 +414,7 @@ test("Pi serializes its agent-start session report before its working state", as
     context,
   );
 
-  const deadline = Date.now() + 1_000;
-  while (Date.now() < deadline && acknowledgeSessionReport === undefined) {
-    await Bun.sleep(5);
-  }
+  await waitFor(() => acknowledgeSessionReport !== undefined);
   expect(acknowledgeSessionReport).toBeDefined();
   expect(
     requests.some((request) => isRecord(request) && request.method === "pane.report_agent"),
@@ -416,13 +425,7 @@ test("Pi serializes its agent-start session report before its working state", as
   acknowledgeStartup?.();
   await sessionStartResult;
 
-  const stateDeadline = Date.now() + 1_000;
-  while (
-    Date.now() < stateDeadline &&
-    !requests.some((request) => isRecord(request) && request.method === "pane.report_agent")
-  ) {
-    await Bun.sleep(5);
-  }
+  await waitFor(() => requests.some((request) => isRecord(request) && request.method === "pane.report_agent"));
   expect(requests.map((request) => (isRecord(request) ? request.method : undefined))).toEqual([
     "pane.report_agent_session",
     "pane.report_agent",
@@ -430,12 +433,9 @@ test("Pi serializes its agent-start session report before its working state", as
 
   idle = false;
   handlers.get("agent_start")?.({}, context);
-  const agentStartDeadline = Date.now() + 1_000;
-  while (Date.now() < agentStartDeadline && acknowledgeSessionReport === undefined) {
-    await Bun.sleep(5);
-  }
+  await waitFor(() => acknowledgeSessionReport !== undefined);
   expect(acknowledgeSessionReport).toBeDefined();
-  await Bun.sleep(25);
+  await nextEventLoopTurn();
   expect(requests.map((request) => (isRecord(request) ? request.method : undefined))).toEqual([
     "pane.report_agent_session",
     "pane.report_agent",
@@ -446,10 +446,7 @@ test("Pi serializes its agent-start session report before its working state", as
   const acknowledgeAgentStart = acknowledgeSessionReport;
   acknowledgeSessionReport = undefined;
   acknowledgeAgentStart?.();
-  const workingDeadline = Date.now() + 1_000;
-  while (Date.now() < workingDeadline && requestStates(requests).length < 2) {
-    await Bun.sleep(5);
-  }
+  await waitFor(() => requestStates(requests).length >= 2);
   expect(requests.map((request) => (isRecord(request) ? request.method : undefined))).toEqual([
     "pane.report_agent_session",
     "pane.report_agent",
@@ -466,7 +463,9 @@ test("Pi serializes its agent-start session report before its working state", as
 });
 
 async function startDroppedFirstResponseServer(name: string) {
-  const recordingSocketPath = join(tmpdir(), `shepr-${name}-${process.pid}.sock`);
+  const directory = await createAssetScratchDir(name);
+  activeScratchDirs.push(directory);
+  const recordingSocketPath = join(directory, "s.sock");
   socketPath = recordingSocketPath;
   await rm(recordingSocketPath, { force: true });
 
@@ -486,6 +485,7 @@ async function startDroppedFirstResponseServer(name: string) {
       }
       const request = JSON.parse(input.slice(0, newline));
       attemptedRequests.push(request);
+      signalProgress();
       if (
         !droppedStateResponse &&
         isRecord(request) &&
@@ -495,6 +495,7 @@ async function startDroppedFirstResponseServer(name: string) {
         return;
       }
       deliveredRequests.push(request);
+      signalProgress();
       socket.end("{}\n");
     });
   });
@@ -513,6 +514,7 @@ async function startDroppedFirstResponseServer(name: string) {
 }
 
 test("Oh My Pi retries working before a queued idle state", async () => {
+  jest.useFakeTimers();
   const { attemptedRequests } = await startDroppedFirstResponseServer("omp-retry");
   const { handlers, pi } = createExtensionHarness();
 
@@ -530,13 +532,13 @@ test("Oh My Pi retries working before a queued idle state", async () => {
   handlers.get("session_start")?.({ reason: "startup" }, context);
   handlers.get("agent_end")?.({ messages: [] }, context);
 
-  const deadline = Date.now() + 2_500;
   const stateAttempts = () => attemptedRequests.filter(
     (request) => isRecord(request) && request.method === "pane.report_agent",
   );
-  while (Date.now() < deadline && stateAttempts().length < 3) {
-    await Bun.sleep(5);
-  }
+  await waitFor(() => stateAttempts().length === 1);
+  jest.advanceTimersByTime(SOCKET_WAIT_MS);
+  await waitFor(() => stateAttempts().length === 2);
+  await waitFor(() => stateAttempts().length === 3);
 
   expect(requestStates(stateAttempts())).toEqual(["working", "working", "idle"]);
   expect(stateAttempts()[1]).toEqual(stateAttempts()[0]);
@@ -569,8 +571,7 @@ test("Oh My Pi keeps working when a turn ends with a scheduled continuation", as
 
   // OMP already scheduled an automatic continuation, so this loop end is not a
   // user-visible settle and must not publish idle.
-  handlers.get("agent_end")?.({ messages: [], willContinue: true }, context);
-  await Bun.sleep(50);
+  await assertNoNewRequests(requests, () => handlers.get("agent_end")?.({ messages: [], willContinue: true }, context));
   expect(requestStates(requests)).toEqual(["idle", "working"]);
 
   // The real terminal end still settles the pane.
@@ -594,11 +595,10 @@ test("Oh My Pi does not report state without a session reference", async () => {
       getSessionId: () => undefined,
     },
   };
-  handlers.get("session_start")?.({ reason: "startup" }, context);
-  handlers.get("agent_start")?.({}, context);
-  await Bun.sleep(25);
-
-  expect(requests).toEqual([]);
+  await assertNoNewRequests(requests, () => {
+    handlers.get("session_start")?.({ reason: "startup" }, context);
+    handlers.get("agent_start")?.({}, context);
+  });
 });
 
 test("Oh My Pi reports session-bound state", async () => {
@@ -668,12 +668,11 @@ test("Oh My Pi deduplicates blocked state when prompt labels change", async () =
 
   handlers.get("tool_approval_requested")?.({ reason: "first approval" }, context);
   await waitFor(() => requestStates(requests).length === 2);
-  handlers.get("tool_approval_requested")?.({ reason: "second approval" }, context);
-  await Bun.sleep(25);
+  await assertNoNewRequests(requests, () =>
+    handlers.get("tool_approval_requested")?.({ reason: "second approval" }, context));
   expect(requestStates(requests)).toEqual(["working", "blocked"]);
 
-  handlers.get("tool_approval_resolved")?.({}, context);
-  await Bun.sleep(25);
+  await assertNoNewRequests(requests, () => handlers.get("tool_approval_resolved")?.({}, context));
   expect(requestStates(requests)).toEqual(["working", "blocked"]);
   handlers.get("tool_approval_resolved")?.({}, context);
   await waitFor(() => requestStates(requests).length === 3);
@@ -681,6 +680,7 @@ test("Oh My Pi deduplicates blocked state when prompt labels change", async () =
 });
 
 test("Pi retries working state after an unanswered socket attempt", async () => {
+  jest.useFakeTimers();
   const { attemptedRequests, deliveredRequests, connectionCount } =
     await startDroppedFirstResponseServer("pi-retry");
   const { handlers, pi } = createExtensionHarness();
@@ -712,17 +712,16 @@ test("Pi retries working state after an unanswered socket attempt", async () => 
       return isRecord(params) && params.state === "working";
     });
 
-  const deadline = Date.now() + 2_500;
-  while (Date.now() < deadline && !reportedWorking()) {
-    await Bun.sleep(5);
-  }
-
-  expect(connectionCount()).toBeGreaterThanOrEqual(2);
-  const stateAttempts = attemptedRequests.filter(
+  const stateAttempts = () => attemptedRequests.filter(
     (request) => isRecord(request) && request.method === "pane.report_agent",
   );
-  expect(stateAttempts.length).toBeGreaterThanOrEqual(2);
-  expect(stateAttempts[1]).toEqual(stateAttempts[0]);
+  await waitFor(() => stateAttempts().length === 1);
+  jest.advanceTimersByTime(SOCKET_WAIT_MS);
+  await waitFor(() => reportedWorking());
+
+  expect(connectionCount()).toBeGreaterThanOrEqual(2);
+  expect(stateAttempts().length).toBeGreaterThanOrEqual(2);
+  expect(stateAttempts()[1]).toEqual(stateAttempts()[0]);
   expect(reportedWorking()).toBe(true);
 });
 
@@ -748,12 +747,26 @@ function requestStates(requests: unknown[]): unknown[] {
     .map(requestState);
 }
 
-async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline && !predicate()) {
-    await Bun.sleep(5);
+async function waitFor(predicate: () => boolean): Promise<void> {
+  while (!predicate()) {
+    await new Promise<void>((resolve) => progressWaiters.push(resolve));
   }
   expect(predicate()).toBe(true);
+}
+
+async function assertNoNewRequests(requests: unknown[], action: () => unknown): Promise<void> {
+  const count = requests.length;
+  jest.useFakeTimers();
+  try {
+    await action();
+    await flushMicrotasks();
+    jest.runAllTimers();
+    await flushMicrotasks();
+  } finally {
+    jest.useRealTimers();
+  }
+  await nextEventLoopTurn();
+  expect(requests).toHaveLength(count);
 }
 
 function requestState(request: unknown): unknown {

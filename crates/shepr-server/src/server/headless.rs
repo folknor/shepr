@@ -25,10 +25,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::app;
-use crate::limits::{
-    APP_EVENT_CHANNEL_CAPACITY, PANE_TEARDOWN_WAIT, SERVER_EVENT_CHANNEL_CAPACITY,
-    SERVER_EVENT_DRAIN_LIMIT,
-};
+use crate::limits::{PANE_TEARDOWN_WAIT, SERVER_EVENT_CHANNEL_CAPACITY, SERVER_EVENT_DRAIN_LIMIT};
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
     ClientConnection, ClientDeparture, ClientRegistry, ClientShellLocationGeneration,
@@ -404,7 +401,7 @@ impl HeadlessServer {
             // after a signal it leaves pane deaths out (see
             // `signal_quit_requested`).
             if self.lifecycle.stop_requested() {
-                self.drain_internal_events_with_forwarding_up_to(APP_EVENT_CHANNEL_CAPACITY);
+                self.drain_all_internal_events_with_forwarding();
                 self.initiate_shutdown();
                 continue;
             }
@@ -582,7 +579,7 @@ impl HeadlessServer {
         // There is deliberately no forced stop. `server.stop` is answered on
         // the API connection thread, so it is accepted even when this loop is
         // stuck, but only this loop acts on it. The final save and
-        // `retire_session_writer` wait for the persister without a deadline.
+        // the writer's retirement wait for the persister without a deadline.
         // Only two things can wedge here: a loop bug (deadlock or spin) and a
         // data directory on a hung filesystem. Against either, a watchdog that
         // exits after a deadline does no more than SIGKILL. A thread blocked in
@@ -600,18 +597,49 @@ impl HeadlessServer {
         // this writes nothing and the checkpoint taken on the warning stands;
         // the writer is still retired.
         self.refresh_app_clock();
-        if let Err(error) = self
+        let final_save_started = self.app.clock().now;
+        let final_save = self
             .app
             .save_session_for_exit(self.lifecycle.signal_quit_at())
-            .await
-        {
+            .await;
+        // The save can take seconds; the duration below and the teardown wait
+        // after it read a fresh sample.
+        self.refresh_app_clock();
+        info!(
+            event = "session.save.final",
+            subsystem = "persist",
+            kind = "final",
+            outcome = if final_save.is_err() {
+                "failed"
+            } else if self.app.session_saves_frozen() {
+                "frozen"
+            } else {
+                "completed"
+            },
+            duration_ms = self
+                .app
+                .clock()
+                .now
+                .saturating_duration_since(final_save_started)
+                .as_millis(),
+            "final session save finished"
+        );
+        if let Err(error) = final_save {
             run_error.get_or_insert(RunServerError::Runtime(error));
         }
-        if !self.app.shut_down_pane_runtimes(PANE_TEARDOWN_WAIT) {
-            warn!("pane session teardown did not finish before server exit");
+        let unfinished = self.app.shut_down_pane_runtimes(PANE_TEARDOWN_WAIT);
+        if !unfinished.is_empty() {
+            warn!(
+                event = "pane.teardown.timeout", subsystem = "shutdown",
+                count = unfinished.len(), panes = ?unfinished,
+                "pane session teardown did not finish before server exit"
+            );
         }
         // The save and the teardown wait can each take seconds.
         self.refresh_app_clock();
+        if let Err(error) = self.app.retire_session_writer_async().await {
+            run_error.get_or_insert(RunServerError::Runtime(error));
+        }
         self.release_socket_after_save();
 
         // A successor can start once the lease is free, while this process
@@ -1425,14 +1453,7 @@ impl HeadlessServer {
         // The resume schedule derives its own wakeup and keeps its theme wait
         // across passes, so running this on every iteration (a pane printing
         // keeps one busy) cannot postpone the first restored agent.
-        let resumed = self.app.start_pending_agent_resumes(now);
-        if resumed.consumed {
-            // A resumed agent runs in a fresh runtime; one whose pane a
-            // client has focused gets its focus-in report now rather than on
-            // the next focus change.
-            self.sync_pane_focus_after(&resumed.replaced_runtimes);
-        }
-        changed | resumed.consumed
+        changed | self.finish_pending_agent_resume_pass(now)
     }
 }
 

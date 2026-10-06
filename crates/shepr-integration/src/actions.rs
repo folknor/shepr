@@ -1,15 +1,13 @@
 use std::ffi::OsStr;
 use std::fs;
-use std::io;
 use std::os::unix::fs::PermissionsExt;
 
 use shepr_agent::IntegrationTarget;
 
-use super::config_file::is_config_changed;
 use super::env::AgentIntegrationPaths;
-use super::registry::{action_label, agent_present, integration_status, managed_assets};
+use super::registry::{agent_present, integration_status, managed_assets};
 use super::targets::install;
-use super::types::{InstallError, InstallOutcome, InstallOutput, IntegrationStatusKind};
+use super::types::{InstallError, InstallOutcome, IntegrationStatusKind};
 
 /// Installs or updates shepr's hooks for every supported agent present on
 /// this host. The server caller decides whether this release-only operation
@@ -29,8 +27,17 @@ pub fn install_present_integrations(paths: &AgentIntegrationPaths) {
         let label = target.label();
         match install_if_present(paths, target, &mut python3_available) {
             Ok(Some(output)) => {
-                for message in output.messages {
-                    tracing::info!(integration = label, "{message}");
+                for artifact in output.artifacts {
+                    crate::logging::artifact_installed(label, &artifact);
+                }
+                for notice in output.notices {
+                    tracing::info!(
+                        event = "integration.notice",
+                        subsystem = "integration",
+                        integration = label,
+                        notice = %notice,
+                        "integration installation notice"
+                    );
                 }
             }
             Ok(None) => {}
@@ -52,19 +59,8 @@ fn install_if_present(
     paths: &AgentIntegrationPaths,
     target: IntegrationTarget,
     python3_available: &mut Option<bool>,
-) -> Result<Option<InstallOutput>, InstallError> {
-    let present = match agent_present(paths, target).map_err(InstallError::from) {
-        Ok(present) => present,
-        Err(error) => {
-            crate::logging::integration_action(
-                "status",
-                target.label(),
-                crate::logging::IntegrationActionOutcome::Failed,
-                Some(error.kind()),
-            );
-            return Err(error);
-        }
-    };
+) -> Result<Option<InstallOutcome>, InstallError> {
+    let present = agent_present(paths, target)?;
     if !present {
         tracing::debug!(
             integration = target.label(),
@@ -79,40 +75,25 @@ fn install_if_present(
             crate::logging::missing_hook_interpreter(target.label());
         }
     }
-    let status = match integration_status(paths, target) {
-        Ok(status) => status,
-        Err(error) => {
-            crate::logging::integration_action(
-                "status",
-                target.label(),
-                crate::logging::IntegrationActionOutcome::Failed,
-                Some(error.kind()),
-            );
-            return Err(error);
+    match integration_status(paths, target) {
+        Ok(status) if status.state == IntegrationStatusKind::Current => {
+            tracing::debug!(integration = target.label(), "integration is current");
+            return Ok(None);
         }
-    };
-    crate::logging::integration_action(
-        "status",
-        target.label(),
-        crate::logging::IntegrationActionOutcome::Succeeded,
-        None,
-    );
-    if status.state == IntegrationStatusKind::Current {
-        tracing::debug!(
-            integration = target.label(),
+        Ok(status) => tracing::debug!(
+            integration = status.target.label(),
             path = %status.path.display(),
-            "integration is current"
-        );
-        return Ok(None);
+            state = ?status.state,
+            outdated_reason = ?status.outdated_reason,
+            installed_version = ?status.installed_version,
+            "integration needs installation"
+        ),
+        Err(error) => {
+            // Status can reject an old registration that install can repair.
+            // Install validates user-owned config again before publishing it.
+            tracing::debug!(integration = target.label(), %error, "integration status unavailable; attempting repair");
+        }
     }
-    tracing::info!(
-        integration = status.target.label(),
-        path = %status.path.display(),
-        state = ?status.state,
-        outdated_reason = ?status.outdated_reason,
-        installed_version = ?status.installed_version,
-        "installing the agent integration"
-    );
     install_target(paths, target).map(Some)
 }
 
@@ -139,42 +120,13 @@ fn python3_available_on_path(path: Option<&OsStr>) -> bool {
 pub(crate) fn install_target(
     paths: &AgentIntegrationPaths,
     target: IntegrationTarget,
-) -> Result<InstallOutput, InstallError> {
-    let result = install_target_inner(paths, target).map_err(InstallError::from);
-    let (outcome, error_kind) = match &result {
-        Ok(_) => (crate::logging::IntegrationActionOutcome::Succeeded, None),
-        Err(error) => (
-            crate::logging::IntegrationActionOutcome::Failed,
-            Some(error.kind()),
-        ),
-    };
-    crate::logging::integration_action("install", target.label(), outcome, error_kind);
-    result
-}
-
-fn install_target_inner(
-    paths: &AgentIntegrationPaths,
-    target: IntegrationTarget,
-) -> io::Result<InstallOutput> {
-    // Agent processes do not honor Shepr's config lock. If an agent changes a
-    // config after the install read it, reload the config and retry once.
-    let outcome = match install(paths, target) {
-        Err(error) if is_config_changed(&error) => install(paths, target)?,
-        result => result?,
-    };
-    Ok(InstallOutput {
-        messages: install_messages(action_label(target), outcome),
-    })
-}
-
-fn install_messages(label: &str, outcome: InstallOutcome) -> Vec<String> {
-    let mut messages = outcome
-        .artifacts
-        .iter()
-        .map(|artifact| artifact.role.install_message(label, &artifact.path))
-        .collect::<Vec<_>>();
-    messages.extend(outcome.notices);
-    messages
+) -> Result<InstallOutcome, InstallError> {
+    // Agent processes do not honor Shepr's config lock. Reload and retry once
+    // if the user config changes between the snapshot and publication.
+    match install(paths, target) {
+        Err(InstallError::ConfigChanged(_)) => install(paths, target),
+        result => result,
+    }
 }
 
 #[cfg(test)]
@@ -183,6 +135,50 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::python3_available_on_path;
+
+    #[test]
+    fn a_status_parse_error_does_not_prevent_repairing_a_managed_kimi_block() {
+        use super::{install_if_present, install_target};
+        use crate::env::AgentIntegrationPaths;
+        use crate::registry::{integration_status, target_directory};
+        use crate::types::{InstallErrorKind, IntegrationStatusKind};
+        use shepr_agent::IntegrationTarget;
+
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let paths = AgentIntegrationPaths::resolve();
+        let target = IntegrationTarget::Kimi;
+        let directory = target_directory(&paths, target).expect("agent directory");
+        fs::create_dir_all(&directory).expect("create agent directory");
+        install_target(&paths, target).expect("initial install");
+        let config = directory.join(crate::KIMI_CONFIG_NAME);
+        fs::write(
+            &config,
+            format!(
+                "user = true\n{}\nbroken = [\n{}\n",
+                crate::KIMI_CONFIG_BLOCK_BEGIN,
+                crate::KIMI_CONFIG_BLOCK_END,
+            ),
+        )
+        .expect("damage only the managed block");
+        let error = integration_status(&paths, target).expect_err("status rejects invalid TOML");
+        assert_eq!(error.kind(), InstallErrorKind::ConfigUnparseable);
+
+        let output = install_if_present(&paths, target, &mut Some(true))
+            .expect("install can remove and rebuild its own block")
+            .expect("repair performed");
+        assert!(!output.artifacts.is_empty());
+        assert!(
+            fs::read_to_string(config)
+                .expect("read config")
+                .starts_with("user = true\n")
+        );
+        assert_eq!(
+            integration_status(&paths, target)
+                .expect("repaired status")
+                .state,
+            IntegrationStatusKind::Current
+        );
+    }
 
     #[test]
     fn python3_probe_uses_the_supplied_path() {

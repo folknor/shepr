@@ -249,8 +249,19 @@ pub struct ProcessHandle {
 
 impl ProcessHandle {
     /// Open a handle on the process that holds `pid` right now. Returns
-    /// `None` if it is absent or a pidfd cannot be opened; the latter is logged.
+    /// `None` if it is absent or a pidfd cannot be opened, without logging:
+    /// a `/proc` scan can meet the same resource failure for every process.
+    /// A caller that must report why uses [`Self::open_checked`].
     pub fn open(pid: Pid) -> Option<Self> {
+        Self::open_checked(pid).ok().flatten()
+    }
+
+    /// [`Self::open`] with the failure kept: `Ok(None)` when no process holds
+    /// `pid` (or it names a thread), `Err` when a pidfd could not be opened
+    /// for a process that may exist. A pid alone is not a safe process
+    /// identity, so either way there is no handle: fd exhaustion must refuse
+    /// it rather than signal through a pid that may have been reused.
+    pub fn open_checked(pid: Pid) -> std::io::Result<Option<Self>> {
         use std::os::fd::FromRawFd;
 
         let raw_pid = pid.as_pid_t();
@@ -261,20 +272,14 @@ impl ProcessHandle {
             let error = std::io::Error::last_os_error();
             return match error.raw_os_error() {
                 // No such process, or `pid` names a thread, not a process.
-                Some(libc::ESRCH | libc::EINVAL) => None,
-                // A pid alone is not a safe process identity. In particular,
-                // fd exhaustion must refuse the handle instead of signalling
-                // through a pid that may have been reused.
-                _ => {
-                    tracing::error!(pid = %pid, %error, "could not open pidfd; refusing process handle");
-                    None
-                }
+                Some(libc::ESRCH | libc::EINVAL) => Ok(None),
+                _ => Err(error),
             };
         }
-        let fd = RawFd::try_from(fd).ok()?;
+        let fd = RawFd::try_from(fd).map_err(std::io::Error::other)?;
         // SAFETY: `fd` was just returned by pidfd_open and nothing else owns it.
         let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
-        Some(Self { pid, pidfd: fd })
+        Ok(Some(Self { pid, pidfd: fd }))
     }
 
     pub fn process_id(&self) -> Pid {
@@ -293,7 +298,7 @@ impl ProcessHandle {
         self.pidfd.as_raw_fd()
     }
 
-    pub(super) fn send(&self, signal: libc::c_int) -> bool {
+    pub(super) fn send(&self, signal: libc::c_int) -> std::io::Result<()> {
         // SAFETY: pidfd_send_signal(2) with a null siginfo and no flags
         // only reads the fd, which `self` keeps open for the call.
         let result = unsafe {
@@ -305,12 +310,26 @@ impl ProcessHandle {
                 0_u32,
             )
         };
-        result == 0
+        if result == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+
+    /// Send `signal` to this process, retaining the syscall error for callers
+    /// that need to report why the signal failed.
+    pub fn try_signal(&self, signal: Signal) -> std::io::Result<()> {
+        self.send(signal_number(signal))
     }
 
     /// Send `signal` to this process. False once it has been reaped.
+    ///
+    /// The pane teardown escalation path consumes a boolean to choose whether
+    /// to advance; callers that log a failure use [`Self::try_signal`] so the
+    /// kernel error is captured at the syscall boundary.
     pub fn signal(&self, signal: Signal) -> bool {
-        self.send(signal_number(signal))
+        self.try_signal(signal).is_ok()
     }
 
     /// Whether the process still holds its pid: running, or a zombie nobody
@@ -422,13 +441,6 @@ fn wait_for_process_exits_with_clock(
 /// and then exits and is reaped while its session lives on, all before this
 /// runs. That needs a full pid wraparound between the pane's leader dying
 /// and its teardown.
-pub fn session_member_handles(
-    session_id: SessionId,
-    leader_reaped: impl Fn() -> bool,
-) -> Vec<ProcessHandle> {
-    session_members(session_id, leader_reaped)
-}
-
 pub fn session_members(wanted: SessionId, leader_reaped: impl Fn() -> bool) -> Vec<ProcessHandle> {
     let session_leader = wanted.leader_pid();
     let mut handles = Vec::new();

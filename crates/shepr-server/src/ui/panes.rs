@@ -92,7 +92,7 @@ pub(super) fn render_panes(
         } else if let Some(reason) = ws
             .tree()
             .pane(info.id)
-            .and_then(|record| record.terminal().restore_error())
+            .and_then(|record| record.terminal().start_failure())
         {
             let mut scratch = Buffer::empty(info.inner_rect);
             Paragraph::new(restore_failure_text(reason))
@@ -528,7 +528,7 @@ mod tests {
             workspace.tree().pane(pane_id).is_some(),
             "test precondition"
         );
-        let mut registry = PaneRuntimeRegistry::new();
+        let mut registry = PaneRuntimeRegistry::default();
         registry.insert(pane_id, runtime);
         registry
     }
@@ -541,7 +541,7 @@ mod tests {
         app.seed_bookmark_index(Some(0));
         let area = Rect::new(0, 0, 100, 30);
 
-        let infos = compute_pane_infos(&app, &PaneRuntimeRegistry::new(), area);
+        let infos = compute_pane_infos(&app, &PaneRuntimeRegistry::default(), area);
 
         assert_eq!(infos.len(), 1);
         assert_eq!(infos[0].scrollbar_rect, None);
@@ -570,7 +570,7 @@ mod tests {
                 path: "/missing".into(),
                 error: std::io::Error::from(std::io::ErrorKind::NotFound),
             });
-        let runtimes = PaneRuntimeRegistry::new();
+        let runtimes = PaneRuntimeRegistry::default();
         // Wide enough that the framed pane's content does not wrap the
         // message mid-sentence.
         let area = Rect::new(0, 0, 100, 24);
@@ -658,7 +658,9 @@ mod tests {
         ws.pane_mut(pane_id)
             .expect("the root pane has a record")
             .terminal_mut()
-            .set_manual_label("1 模块组织（已定）".into());
+            .set_manual_label(
+                shepr_mux::terminal::Label::new("1 模块组织（已定）").expect("test label"),
+            );
 
         let mut frame = FrameData::blank(12, 3).expect("test frame size is valid");
         render_pane_borders(&app, &ws, &pane_infos, &[], &mut frame);
@@ -677,7 +679,7 @@ mod tests {
         ws.pane_mut(pane)
             .expect("root pane")
             .terminal_mut()
-            .set_manual_label("build".to_owned());
+            .set_manual_label(shepr_mux::terminal::Label::new("build").expect("test label"));
         let surface = |is_focused| PaneSurface {
             id: pane,
             rect: Rect::new(0, 0, 12, 3),
@@ -958,7 +960,7 @@ mod tests {
             let root = workspace.tree().root();
             let right = workspace.test_split(shepr_core::layout::Direction::Horizontal);
             workspace.set_zoomed(zoomed);
-            let mut terminal_runtimes = PaneRuntimeRegistry::new();
+            let mut terminal_runtimes = PaneRuntimeRegistry::default();
             for pane in [root, right] {
                 terminal_runtimes.insert(
                     pane,

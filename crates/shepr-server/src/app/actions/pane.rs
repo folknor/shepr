@@ -23,10 +23,10 @@ impl AppState {
     pub(crate) fn rename_pane(
         &mut self,
         pane_id: PaneId,
-        label: Option<String>,
+        label: Option<shepr_mux::terminal::Label>,
     ) -> Option<ViewMutation> {
         let terminal = self.workspaces.pane_mut(pane_id)?.terminal_mut();
-        if terminal.manual_label() == label.as_deref() {
+        if terminal.manual_label_value() == label.as_ref() {
             return Some(ViewMutation::Unchanged);
         }
         match label {

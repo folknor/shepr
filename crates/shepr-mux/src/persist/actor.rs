@@ -85,13 +85,13 @@ impl PendingSave {
         match self.0.try_recv() {
             Ok(result) => Some(result),
             Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => Some(Err(abandoned())),
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(SaveError::Abandoned)),
         }
     }
 
     /// Blocks until the job has finished.
     pub fn wait(self) -> Result<(), SaveError> {
-        self.0.recv().unwrap_or_else(|_| Err(abandoned()))
+        self.0.recv().unwrap_or(Err(SaveError::Abandoned))
     }
 }
 
@@ -119,10 +119,6 @@ impl Drop for SaveCompletion {
             signal.notify_one();
         }
     }
-}
-
-fn abandoned() -> SaveError {
-    SaveError::Abandoned
 }
 
 /// The result of a job that panicked, and of every job after it: the
@@ -186,10 +182,6 @@ impl PersistState {
             }
         }
     }
-
-    fn retire(self) {
-        self.writer.retire();
-    }
 }
 
 /// One unit the worker runs against its state: a submitted job, bound to its
@@ -245,7 +237,7 @@ impl SessionPersister {
                 }
                 // Every sender is gone: the persister was retired or dropped,
                 // after the jobs queued before it were completed or abandoned.
-                state.retire();
+                drop(state);
             });
         let worker = match spawned {
             Ok(thread) => match state_sender.send(state) {
@@ -283,7 +275,7 @@ impl SessionPersister {
         match &mut self.worker {
             Worker::Thread { commands, .. } => {
                 if let Err(mpsc::SendError(command)) = commands.send(Command { work, done }) {
-                    command.done.complete(Err(abandoned()));
+                    command.done.complete(Err(SaveError::Abandoned));
                 }
             }
             Worker::Inline(state) => done.complete(state.run_guarded(work)),
@@ -309,7 +301,7 @@ impl SessionPersister {
                     );
                 }
             }
-            Worker::Inline(state) => (*state).retire(),
+            Worker::Inline(state) => drop(state),
             Worker::Retired => {}
         }
     }

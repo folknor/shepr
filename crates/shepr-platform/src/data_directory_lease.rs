@@ -42,11 +42,6 @@ impl DataDirectoryLease {
         &self.directory
     }
 
-    /// Releases ownership by consuming the lease.
-    pub fn release(self) {
-        drop(self);
-    }
-
     /// Briefly takes and releases the lease at `path`; `false` means held.
     pub fn probe(path: &Path) -> io::Result<bool> {
         Ok(try_acquire(path)?.is_some())

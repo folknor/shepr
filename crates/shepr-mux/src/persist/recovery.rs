@@ -68,12 +68,6 @@ fn append_layout_fingerprint(layout: &LayoutSnapshot, encoding: &mut Vec<u8>) {
     }
 }
 
-struct CachedSnapshotLayout {
-    path: PathBuf,
-    stamp: Option<shepr_platform::FileStamp>,
-    layout: Option<SavedLayout>,
-}
-
 #[derive(Clone, PartialEq, Eq)]
 enum SavedLayout {
     Empty,
@@ -81,86 +75,93 @@ enum SavedLayout {
     Unknown,
 }
 
-/// Parsed layout fingerprints of the session file and of the newest snapshot,
-/// reused while the writer owns unchanged files.
+/// What the leased writer knows about the session file and the newest
+/// snapshot: their layouts, and when that snapshot was taken. Under the lease
+/// the writer is the only process writing either, so they are read from disk
+/// once, at the first snapshot decision after startup (the newest snapshot's
+/// time is then its file's mtime), and from then on updated by the writer's own
+/// publications and copies. The cadence decision is `snapshot_plan`, a pure
+/// function of these facts and `now`.
 #[derive(Default)]
-pub(super) struct SnapshotFingerprintCache {
-    current: Option<CachedSnapshotLayout>,
-    latest: Option<CachedSnapshotLayout>,
+pub(super) struct SnapshotState {
+    initialized: bool,
+    /// The layout of the session file on disk; `None` when there is none.
+    current: Option<SavedLayout>,
+    /// When the newest snapshot was taken, and its layout.
+    latest: Option<(SystemTime, SavedLayout)>,
+    /// The last snapshot failure logged, so a failure that repeats on every
+    /// save is logged once until a copy succeeds or nothing is due.
+    failure: Option<String>,
 }
 
-impl SnapshotFingerprintCache {
-    fn current(&mut self, path: &Path) -> io::Result<Option<SavedLayout>> {
-        Self::read_or_reuse(path, &mut self.current)
-    }
-
-    fn latest(&mut self, path: &Path) -> io::Result<Option<SavedLayout>> {
-        Self::read_or_reuse(path, &mut self.latest)
-    }
-
-    fn read_or_reuse(
-        path: &Path,
-        cached: &mut Option<CachedSnapshotLayout>,
-    ) -> io::Result<Option<SavedLayout>> {
-        let stamp = files::regular_file_stamp(path)?;
-        if let Some(cached) = cached
-            && cached.path.as_path() == path
-            && cached.stamp == stamp
-        {
-            return Ok(cached.layout.clone());
+impl SnapshotState {
+    fn initialize(&mut self, path: &Path) -> io::Result<()> {
+        if self.initialized {
+            return Ok(());
         }
-        // The writer owns the session lease, so its own publications update
-        // these entries directly. Metadata avoids rereading unchanged JSON on
-        // every save after the recovery interval; oversized or malformed
-        // files stay unknown and are handled conservatively by the caller.
-        let layout = if stamp.is_some() {
-            match files::read_session_file(path) {
-                Ok(content) => Some(content),
-                Err(error) if error.kind() == io::ErrorKind::InvalidData => None,
-                Err(error) => return Err(error),
-            }
-        } else {
-            None
+        let directory = files::snapshot_directory(path);
+        let existing = match recovery_files(&directory) {
+            Ok(files) => files,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(error),
         };
-        let layout = match layout {
-            Some(content) => {
-                let snapshot = super::schema::parse_session_file(&content).ok();
-                Some(snapshot.map_or(SavedLayout::Unknown, |snapshot| saved_layout(&snapshot)))
-            }
-            None => stamp.map(|_| SavedLayout::Unknown),
+        self.current = read_saved_layout(path)?;
+        self.latest = match existing.last() {
+            Some((_, latest)) => Some((
+                std::fs::metadata(latest)?.modified()?,
+                read_saved_layout(latest)?.unwrap_or(SavedLayout::Unknown),
+            )),
+            None => None,
         };
-        *cached = Some(CachedSnapshotLayout {
-            path: path.to_path_buf(),
-            stamp,
-            layout: layout.clone(),
-        });
-        Ok(layout)
+        self.initialized = true;
+        Ok(())
     }
 
-    /// The writer just published `snapshot` at `path`.
-    pub(super) fn remember_current(&mut self, path: &Path, snapshot: &SessionSnapshot) {
-        self.current = match files::regular_file_stamp(path) {
-            Ok(Some(stamp)) => Some(CachedSnapshotLayout {
-                path: path.to_path_buf(),
-                stamp: Some(stamp),
-                layout: Some(saved_layout(snapshot)),
-            }),
-            Ok(None) | Err(_) => None,
-        };
+    /// The writer just published `snapshot` as the session file.
+    pub(super) fn remember_current(&mut self, snapshot: &SessionSnapshot) {
+        self.current = Some(saved_layout(snapshot));
     }
 
     pub(super) fn forget_current(&mut self) {
         self.current = None;
     }
 
-    fn forget_latest(&mut self) {
-        self.latest = None;
+    /// The session file on disk was just copied as the newest snapshot.
+    fn copied(&mut self, now: SystemTime) {
+        if let Some(current) = &self.current {
+            self.latest = Some((now, current.clone()));
+        }
+        self.failure = None;
+    }
+
+    fn report_failure(&mut self, path: &Path, error: &io::Error) {
+        let message = error.to_string();
+        if self.failure.as_ref() != Some(&message) {
+            tracing::warn!(
+                event = "persist.snapshot", subsystem = "persist", outcome = "error",
+                path = %path.display(), error = %error,
+                "failed to preserve session snapshot"
+            );
+            self.failure = Some(message);
+        }
     }
 }
 
-/// What snapshot history needs around one write of the session file.
+fn read_saved_layout(path: &Path) -> io::Result<Option<SavedLayout>> {
+    match files::read_session_file(path) {
+        Ok(content) => Ok(Some(
+            super::schema::parse_session_file(&content)
+                .map_or(SavedLayout::Unknown, |snapshot| saved_layout(&snapshot)),
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::InvalidData => Ok(Some(SavedLayout::Unknown)),
+        Err(error) => Err(error),
+    }
+}
+
+/// What the recovery snapshots need around one write of the session file.
 #[derive(Clone, Copy)]
-pub(super) enum SnapshotHistoryPlan {
+pub(super) enum SnapshotPlan {
     /// Nothing to preserve: the newest copy is inside the snapshot interval,
     /// or both layouts already match it.
     Skip,
@@ -169,8 +170,6 @@ pub(super) enum SnapshotHistoryPlan {
     /// Only the replacement layout differs from the newest copy: preserve it
     /// once it is committed.
     PreserveAfterWrite,
-    /// The decision could not be made before the write; make it again after.
-    RetryAfterWrite,
 }
 
 // limits-exempt: a filename field width of the recovery-copy name format.
@@ -260,45 +259,41 @@ const _: () = {
 /// disk is the replacement and only `PreserveBeforeWrite` ("the layout on disk
 /// differs from the newest copy") is meaningful, whatever the write order. One
 /// function with an optional replacement keeps both decisions on the same rules.
-fn snapshot_history_decision(
+fn snapshot_decision(
     path: &Path,
     replacement: Option<&SessionSnapshot>,
     now: SystemTime,
-    fingerprints: &mut SnapshotFingerprintCache,
-) -> io::Result<SnapshotHistoryPlan> {
-    let directory = RecoveryKind::Snapshot.directory(path);
-    let existing = match recovery_files(&directory) {
-        Ok(files) => files,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
-        Err(err) => return Err(err),
-    };
-    let latest = existing.last().map(|(_, path)| path);
-    if let Some(latest) = latest {
-        let modified = std::fs::metadata(latest)?.modified()?;
-        if now
-            .duration_since(modified)
+    fingerprints: &mut SnapshotState,
+) -> io::Result<SnapshotPlan> {
+    fingerprints.initialize(path)?;
+    Ok(snapshot_plan(
+        fingerprints.current.as_ref(),
+        fingerprints.latest.as_ref(),
+        replacement.map(saved_layout).as_ref(),
+        now,
+    ))
+}
+
+fn snapshot_plan(
+    previous: Option<&SavedLayout>,
+    latest: Option<&(SystemTime, SavedLayout)>,
+    replacement: Option<&SavedLayout>,
+    now: SystemTime,
+) -> SnapshotPlan {
+    if latest.is_some_and(|(when, _)| {
+        now.duration_since(*when)
             .is_ok_and(|age| age < SNAPSHOT_INTERVAL)
-        {
-            return Ok(SnapshotHistoryPlan::Skip);
-        }
-    }
-    let latest_layout = match latest {
-        Some(latest) => fingerprints.latest(latest)?,
-        None => None,
-    };
-    let previous = fingerprints.current(path)?;
-    if previous
-        .as_ref()
-        .is_some_and(|layout| layout_differs_from_latest(layout, latest_layout.as_ref()))
-    {
-        return Ok(SnapshotHistoryPlan::PreserveBeforeWrite);
-    }
-    if replacement.is_some_and(|snapshot| {
-        layout_differs_from_latest(&saved_layout(snapshot), latest_layout.as_ref())
     }) {
-        return Ok(SnapshotHistoryPlan::PreserveAfterWrite);
+        return SnapshotPlan::Skip;
     }
-    Ok(SnapshotHistoryPlan::Skip)
+    let latest_layout = latest.map(|(_, layout)| layout);
+    if previous.is_some_and(|layout| layout_differs_from_latest(layout, latest_layout)) {
+        return SnapshotPlan::PreserveBeforeWrite;
+    }
+    if replacement.is_some_and(|snapshot| layout_differs_from_latest(snapshot, latest_layout)) {
+        return SnapshotPlan::PreserveAfterWrite;
+    }
+    SnapshotPlan::Skip
 }
 
 fn saved_layout(snapshot: &SessionSnapshot) -> SavedLayout {
@@ -325,90 +320,78 @@ fn layout_differs_from_latest(layout: &SavedLayout, latest: Option<&SavedLayout>
 /// `replacement`: decides whether a snapshot is due, and preserves the layout
 /// on disk now when it is the one that differs. What remains to do after the
 /// write is the returned plan.
-pub(super) fn plan_snapshot_history(
+pub(super) fn plan_snapshot(
     path: &Path,
     replacement: &SessionSnapshot,
     now: SystemTime,
-    fingerprints: &mut SnapshotFingerprintCache,
-) -> SnapshotHistoryPlan {
+    fingerprints: &mut SnapshotState,
+) -> SnapshotPlan {
     // Preserve snapshot errors as their own tracing events; the platform's
     // session helpers emit through tracing too but label save outcomes.
-    match snapshot_history_decision(path, Some(replacement), now, fingerprints) {
-        Ok(SnapshotHistoryPlan::PreserveBeforeWrite) => {
+    match snapshot_decision(path, Some(replacement), now, fingerprints) {
+        Ok(SnapshotPlan::PreserveBeforeWrite) => {
             match preserve_existing_in(path, RecoveryKind::Snapshot, now) {
-                Ok(_) => {
-                    fingerprints.forget_latest();
-                    SnapshotHistoryPlan::Skip
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        event = "persist.snapshot", subsystem = "persist", outcome = "error",
-                        path = %path.display(), error = %err,
-                        "failed to preserve session snapshot"
-                    );
-                    SnapshotHistoryPlan::RetryAfterWrite
-                }
+                Ok(true) => fingerprints.copied(now),
+                // The file the writer last published is gone, so there is no
+                // layout on disk to preserve or to compare later.
+                Ok(false) => fingerprints.forget_current(),
+                Err(err) => fingerprints.report_failure(path, &err),
             }
+            SnapshotPlan::Skip
         }
-        Ok(plan) => plan,
+        Ok(plan) => {
+            // A pending copy after the write may still fail the same way, so
+            // only a decision with nothing due ends a reported failure.
+            if matches!(plan, SnapshotPlan::Skip) {
+                fingerprints.failure = None;
+            }
+            plan
+        }
         Err(err) => {
-            tracing::warn!(
-                event = "persist.snapshot", subsystem = "persist", outcome = "error",
-                path = %path.display(),
-                error = %err, "failed to inspect session snapshot history"
-            );
-            SnapshotHistoryPlan::RetryAfterWrite
+            fingerprints.report_failure(path, &err);
+            SnapshotPlan::Skip
         }
     }
 }
 
 /// The snapshot step after the session file at `path` was replaced (or
 /// cleared), as `plan` left it.
-pub(super) fn finish_snapshot_history(
+pub(super) fn finish_snapshot(
     path: &Path,
-    plan: SnapshotHistoryPlan,
+    plan: SnapshotPlan,
     now: SystemTime,
-    fingerprints: &mut SnapshotFingerprintCache,
+    fingerprints: &mut SnapshotState,
 ) {
     match plan {
-        SnapshotHistoryPlan::Skip | SnapshotHistoryPlan::PreserveBeforeWrite => {}
-        SnapshotHistoryPlan::PreserveAfterWrite | SnapshotHistoryPlan::RetryAfterWrite => {
-            preserve_snapshot_history(path, now, fingerprints);
+        SnapshotPlan::Skip | SnapshotPlan::PreserveBeforeWrite => {}
+        SnapshotPlan::PreserveAfterWrite => {
+            preserve_snapshot(path, now, fingerprints);
         }
     }
 }
 
 /// Preserves the layout on disk as a snapshot when one is due, logging a
 /// failure as its own event.
-pub(super) fn preserve_snapshot_history(
-    path: &Path,
-    now: SystemTime,
-    fingerprints: &mut SnapshotFingerprintCache,
-) {
+pub(super) fn preserve_snapshot(path: &Path, now: SystemTime, fingerprints: &mut SnapshotState) {
     if let Err(err) = preserve_snapshot_after_write(path, now, fingerprints) {
-        // The platform's session helpers also emit tracing events, but
-        // cover save, clear and restore outcomes only. Keep this distinct
-        // so a snapshot failure is not mislabeled as a failed session save.
-        // The event literal is also the log schema category used to query this path.
-        tracing::warn!(
-            event = "persist.snapshot", subsystem = "persist", outcome = "error",
-            path = %path.display(),
-            error = %err, "failed to preserve session snapshot"
-        );
+        fingerprints.report_failure(path, &err);
     }
 }
 
 fn preserve_snapshot_after_write(
     path: &Path,
     now: SystemTime,
-    fingerprints: &mut SnapshotFingerprintCache,
+    fingerprints: &mut SnapshotState,
 ) -> io::Result<()> {
-    if matches!(
-        snapshot_history_decision(path, None, now, fingerprints)?,
-        SnapshotHistoryPlan::PreserveBeforeWrite
-    ) && preserve_existing_in(path, RecoveryKind::Snapshot, now)?
-    {
-        fingerprints.forget_latest();
+    match snapshot_decision(path, None, now, fingerprints)? {
+        SnapshotPlan::PreserveBeforeWrite => {
+            if preserve_existing_in(path, RecoveryKind::Snapshot, now)? {
+                fingerprints.copied(now);
+            } else {
+                fingerprints.forget_current();
+            }
+        }
+        SnapshotPlan::Skip | SnapshotPlan::PreserveAfterWrite => fingerprints.failure = None,
     }
     Ok(())
 }
@@ -437,7 +420,7 @@ pub(super) fn preserve_existing(path: &Path, now: SystemTime) -> Result<bool, Ba
 }
 
 /// The bool is whether a session file existed to copy. The snapshot caller
-/// needs it to know whether to forget its newest-copy fingerprint, and the
+/// needs it to know whether the copy is now the newest snapshot, and the
 /// backup caller passes it on, so a named type would only rename it.
 fn preserve_existing_in(path: &Path, kind: RecoveryKind, now: SystemTime) -> io::Result<bool> {
     // The source is opened once, through its type check, and the copy is read
@@ -490,7 +473,9 @@ fn preserve_opened_source(
             continue;
         }
 
-        // The `AlreadyExists` arm below is a backstop: under the data
+        // Non-regular entries are excluded from `older`, so one may occupy
+        // the timestamp chosen above. The bounded sequence skips those names
+        // without replacing them. The `AlreadyExists` arm is a backstop under the data
         // directory lease there is one writer, and the existence check above
         // already skips a taken name, so only a file appearing in between
         // (which the lease rules out) reaches it. A refused copy has read the
@@ -550,9 +535,9 @@ fn log_recovery_prune_failure(kind: RecoveryKind, path: &Path, directory: &Path,
 }
 
 fn copy_recovery(source: &mut impl io::Read, backup: &Path) -> io::Result<()> {
-    // A create-only publish withdraws the copy when the directory sync fails
-    // and comes back as an error, so `NotDurable` cannot happen here; treat it
-    // as a failure anyway rather than count an unsynced copy as a recovery copy.
+    // The publish API shares the replacement outcome type with create-only
+    // writes. Keep this check until that API exposes create-only success as
+    // `()`: an unsynced copy must never count as a recovery point.
     if let files::Published::NotDurable(err) =
         files::publish_private_file(source, backup, files::PublishTarget::CreateOnly)?
     {
@@ -626,6 +611,37 @@ fn recovery_filename(timestamp: u128, sequence: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cadence_uses_owned_time_and_recovers_from_rollback() {
+        let original = SavedLayout::Known(LayoutFingerprint(vec![1]));
+        let changed = SavedLayout::Known(LayoutFingerprint(vec![2]));
+        let now = UNIX_EPOCH + SNAPSHOT_INTERVAL;
+        let latest = (now, original.clone());
+        assert!(matches!(
+            snapshot_plan(
+                Some(&changed),
+                Some(&latest),
+                None,
+                now + SNAPSHOT_INTERVAL - std::time::Duration::from_nanos(1)
+            ),
+            SnapshotPlan::Skip
+        ));
+        assert!(matches!(
+            snapshot_plan(Some(&changed), Some(&latest), None, now + SNAPSHOT_INTERVAL),
+            SnapshotPlan::PreserveBeforeWrite
+        ));
+        let rollback = now - std::time::Duration::from_secs(1);
+        assert!(matches!(
+            snapshot_plan(Some(&changed), Some(&latest), None, rollback),
+            SnapshotPlan::PreserveBeforeWrite
+        ));
+        let copied = (rollback, changed.clone());
+        assert!(matches!(
+            snapshot_plan(Some(&original), Some(&copied), None, rollback),
+            SnapshotPlan::Skip
+        ));
+    }
 
     #[test]
     fn an_unreadable_layout_is_not_treated_as_identical() {

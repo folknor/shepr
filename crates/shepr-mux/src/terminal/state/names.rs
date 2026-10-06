@@ -12,22 +12,16 @@ impl Label {
         (!value.is_empty()).then(|| Self(value.to_owned()))
     }
 
-    /// The name a workspace in `cwd` gets when it has no other: its
-    /// directory's name (`default_workspace_name`), or the whole path when that
-    /// name is blank once trimmed (a directory named only with spaces). An
-    /// absolute path always has a nonblank form, so `/` is only a backstop.
+    /// The name a workspace in `cwd` gets when it has no other, using the
+    /// core default label policy for both a blank directory name and its
+    /// fallback path.
     pub fn for_directory(cwd: &std::path::Path) -> Self {
-        Self::new(shepr_core::workspace_label::default_workspace_name(cwd))
-            .or_else(|| Self::new(cwd.display().to_string()))
-            .unwrap_or_else(|| Self("/".to_owned()))
+        Self::new(shepr_core::workspace_label::default_workspace_label(cwd))
+            .expect("core default workspace labels are nonempty and trimmed")
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
-    }
-
-    pub fn into_string(self) -> String {
-        self.0
     }
 }
 
@@ -47,8 +41,9 @@ impl<'de> Deserialize<'de> for Label {
 }
 
 impl TerminalState {
-    pub fn set_manual_label(&mut self, label: String) {
-        self.manual_label = Label::new(label);
+    /// Stores a label its caller validated at its input boundary.
+    pub fn set_manual_label(&mut self, label: Label) {
+        self.manual_label = Some(label);
     }
 
     pub fn clear_manual_label(&mut self) {

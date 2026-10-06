@@ -6,6 +6,7 @@ use super::registry::*;
 use super::targets::*;
 use super::types::*;
 use super::*;
+use crate::types::InstallResult;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,14 +21,14 @@ use shepr_test_support::IsolatedEnv;
 
 use super::test_support::StatPath;
 
-fn install_target_for_test(target: Target) -> std::io::Result<InstallOutcome> {
+fn install_target_for_test(target: Target) -> InstallResult<InstallOutcome> {
     install_target_at_paths_for_test(target, &AgentIntegrationPaths::resolve())
 }
 
 fn install_target_at_paths_for_test(
     target: Target,
     paths: &AgentIntegrationPaths,
-) -> std::io::Result<InstallOutcome> {
+) -> InstallResult<InstallOutcome> {
     super::targets::install(paths, target)
 }
 
@@ -3123,12 +3124,10 @@ fn status_of(target: shepr_agent::IntegrationTarget) -> IntegrationStatusKind {
         .state
 }
 
-/// The messages an install logs, one target per artifact wording, and the
-/// status the install leaves behind.
+/// An install reports every file it wrote, each with its role, and leaves the
+/// integration current.
 #[test]
-fn install_messages_name_every_artifact() {
-    use shepr_agent::IntegrationTarget as Target;
-
+fn install_outcomes_name_every_artifact() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     let home = base.join("home");
@@ -3141,83 +3140,66 @@ fn install_messages_name_every_artifact() {
     env.set(EnvVar::GrokHome, &grok_dir);
     let paths = AgentIntegrationPaths::resolve();
     let claude = home.join(".claude");
-    let pi = home
-        .join(".pi/agent/extensions")
-        .join(PI_EXTENSION_INSTALL_NAME);
     let droid = home.join(".factory");
     let grok = grok_dir.join("hooks");
-    let shown = |path: PathBuf| path.display().to_string();
 
     let cases = [
         (
             Target::Claude,
             vec![
-                format!(
-                    "installed claude integration hook to {}",
-                    shown(claude.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME))
+                (
+                    ArtifactRole::Hook,
+                    claude.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME),
                 ),
-                format!(
-                    "ensured claude settings at {}",
-                    shown(claude.join("settings.json"))
-                ),
+                (ArtifactRole::Settings, claude.join("settings.json")),
             ],
         ),
         (
             Target::Pi,
-            vec![format!("installed pi integration to {}", shown(pi.clone()))],
+            vec![(
+                ArtifactRole::Extension,
+                home.join(".pi/agent/extensions")
+                    .join(PI_EXTENSION_INSTALL_NAME),
+            )],
         ),
         (
             Target::Droid,
             vec![
-                format!(
-                    "installed droid integration hook to {}",
-                    shown(droid.join("hooks").join(DROID_HOOK_INSTALL_NAME))
+                (
+                    ArtifactRole::Hook,
+                    droid.join("hooks").join(DROID_HOOK_INSTALL_NAME),
                 ),
-                format!(
-                    "ensured droid hooks at {}",
-                    shown(droid.join("settings.json"))
-                ),
+                (ArtifactRole::Hooks, droid.join("settings.json")),
             ],
         ),
         (
             Target::Grok,
             vec![
-                format!(
-                    "installed grok integration hook to {}",
-                    shown(grok.join(GROK_HOOK_INSTALL_NAME))
-                ),
-                format!(
-                    "registered grok hook config at {}",
-                    shown(grok.join(GROK_HOOK_CONFIG_NAME))
-                ),
+                (ArtifactRole::Hook, grok.join(GROK_HOOK_INSTALL_NAME)),
+                (ArtifactRole::HookConfig, grok.join(GROK_HOOK_CONFIG_NAME)),
             ],
         ),
     ];
 
-    for (target, installed) in cases {
+    for (target, expected) in cases {
         assert_eq!(
             status_of(target),
             IntegrationStatusKind::NotInstalled,
             "{target:?}"
         );
-        let install_output = install_target(&paths, target).expect("install succeeds");
-        assert_eq!(install_output.messages, installed, "{target:?}");
+        let output = install_target(&paths, target).expect("install succeeds");
+        let artifacts = output
+            .artifacts
+            .into_iter()
+            .map(|artifact| (artifact.role, artifact.path))
+            .collect::<Vec<_>>();
+        assert_eq!(artifacts, expected, "{target:?}");
         assert_eq!(
             status_of(target),
             IntegrationStatusKind::Current,
             "{target:?}"
         );
     }
-}
-
-/// The wordings that only some targets print.
-#[test]
-fn install_messages_keep_target_specific_lines() {
-    let path = Path::new("/shepr-test/file");
-    assert_eq!(
-        ArtifactRole::UpdatedHooks.install_message("cursor", path),
-        "updated cursor hooks at /shepr-test/file"
-    );
 }
 
 /// `SHEPR_*` names the shipped assets spell that no shepr process reads or

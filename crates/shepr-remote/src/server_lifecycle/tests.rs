@@ -135,3 +135,13 @@ fn shared_remote_text_filter_keeps_printable_lines_and_rejects_controls() {
         "unknown"
     );
 }
+
+#[test]
+fn server_status_skips_shell_noise_before_and_after_the_record() {
+    let status = status_json("running", true);
+    assert_eq!(
+        parse_remote_server_status_json(&format!("banner\n{status}\ntrailer\n"))
+            .expect("status record"),
+        parse_remote_server_status_json(&status).expect("plain status"),
+    );
+}

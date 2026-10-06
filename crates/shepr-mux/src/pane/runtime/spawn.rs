@@ -86,8 +86,33 @@ struct StartedPty {
     launch: super::launch_status::LaunchStatus,
 }
 
+#[derive(Debug)]
+struct PtySetupFailure {
+    stage: &'static str,
+    source: std::io::Error,
+}
+
+impl std::fmt::Display for PtySetupFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.stage, self.source)
+    }
+}
+
+impl std::error::Error for PtySetupFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+impl PtySetupFailure {
+    fn into_io_error(self) -> std::io::Error {
+        let kind = self.source.kind();
+        std::io::Error::new(kind, self)
+    }
+}
+
 impl PtySetup<'_> {
-    fn start(self) -> std::io::Result<StartedPty> {
+    fn start(self) -> Result<StartedPty, PtySetupFailure> {
         let Self {
             pane_id,
             geometry,
@@ -112,7 +137,10 @@ impl PtySetup<'_> {
                 status_sender.send(channel).ok();
             }),
         )
-        .inspect_err(|err| error!(pane = %pane_id, error = %err, "failed to spawn shell"))?;
+        .map_err(|source| PtySetupFailure {
+            stage: "pty_spawn",
+            source,
+        })?;
 
         let child = spawned.child;
         let master_fd = spawned.master_fd;
@@ -181,7 +209,10 @@ impl PtySetup<'_> {
                         child,
                         Some(startup_child_liveness),
                     );
-                    return Err(err);
+                    return Err(PtySetupFailure {
+                        stage: "pty_actor_spawn",
+                        source: err,
+                    });
                 }
             };
             // `timer_writer` was created empty above and this is its only
@@ -283,8 +314,7 @@ impl PaneLauncher {
             kind: launch_kind,
             presentation,
         } = request;
-        let launch_env =
-            PaneLaunchEnv::new(self.handles.socket_path.clone()).with_pane_id(public_id);
+        let launch_env = PaneLaunchEnv::new(self.handles.socket_path.clone(), public_id);
         let (host_terminal_theme, host_terminal_appearance) = match presentation {
             LaunchPresentation::Live { theme, appearance } => (theme, appearance),
             LaunchPresentation::Saved(theme) => (theme, None),
@@ -327,12 +357,7 @@ impl PaneLauncher {
         // The pane's render-coalescing state, shared by its read effects and
         // its detection task; the terminal does not hold it.
         let pty_render = PaneRenderSlot::default();
-        let StartedPty {
-            child,
-            child_liveness,
-            io,
-            launch,
-        } = PtySetup {
+        let started = PtySetup {
             pane_id,
             geometry,
             cmd: &cmd,
@@ -345,7 +370,30 @@ impl PaneLauncher {
             teardown_tracker: &teardown_tracker,
             exit_arbiter: &exit_arbiter,
         }
-        .start()?;
+        .start();
+        let StartedPty {
+            child,
+            child_liveness,
+            io,
+            launch,
+        } = match started {
+            Ok(started) => started,
+            Err(failure) => {
+                error!(
+                    event = "pane.spawn.failure",
+                    subsystem = "pane",
+                    outcome = "error",
+                    pane = %pane_id,
+                    public_pane = %public_id,
+                    kind = ?launch_kind,
+                    cwd = %cwd.display(),
+                    stage = failure.stage,
+                    error = %failure.source,
+                    "failed to start pane"
+                );
+                return Err(failure.into_io_error());
+            }
+        };
 
         // Actor setup failures reap the child above without publishing an exit
         // for a pane that was never constructed: the coordinator, the pane's

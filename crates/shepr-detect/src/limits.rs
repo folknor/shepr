@@ -46,6 +46,9 @@ pub(crate) const MAX_REGION_LINE_COUNT: usize = u16::MAX as usize;
 /// Hook reports are ordered per source by the `seq` each hook process takes
 /// from its own wall clock (nanoseconds for the shell/python hooks,
 /// microseconds for the JS plugins; only ever compared within one source).
+/// These units do not set the reanchor threshold: it compares server wall
+/// and monotonic elapsed durations, never a seq delta. Asset-expression tests
+/// would couple arbitration to spellings it neither reads nor depends on.
 /// A report whose `seq` is not above the last accepted one is normally a
 /// straggler from a racing hook process and is dropped, however late it
 /// arrives: silence is not evidence of anything. When the host's wall clock
