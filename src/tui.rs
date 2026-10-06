@@ -74,13 +74,22 @@ fn auto_detect_launch<T>(
         server_ready_timeout,
         shepr_launch::local_server::BuildCheck::BeforeAttach,
     );
-    if let Err(error) = startup {
-        if config.machines().is_empty() {
-            return Err(error);
+    match startup {
+        // A server this launch started that wrote to its boot log has no log
+        // of its own, usually; say so before the TUI takes the terminal.
+        Ok(ready) => {
+            if let Some(notice) = ready.boot_notice {
+                crate::cli::print_notice(&notice);
+            }
         }
-        // Keep the full refusal visible even though the client will remain open
-        // for the configured machines; the endpoint state omits this startup detail.
-        crate::cli::print_notice(&local_startup_notice(&error));
+        Err(error) => {
+            if config.machines().is_empty() {
+                return Err(error);
+            }
+            // Keep the full refusal visible even though the client will remain open
+            // for the configured machines; the endpoint state omits this startup detail.
+            crate::cli::print_notice(&local_startup_notice(&error));
+        }
     }
 
     Ok(run_client(config, paths, connectors))

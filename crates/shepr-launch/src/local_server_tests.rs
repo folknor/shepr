@@ -1076,8 +1076,9 @@ fn a_running_server_of_this_build_is_used_without_a_launch() {
         shepr_protocol::BUILD_ID,
     );
 
-    ensure_running(&paths, Duration::from_secs(1), BuildCheck::BeforeAttach)
+    let ready = ensure_running(&paths, Duration::from_secs(1), BuildCheck::BeforeAttach)
         .expect("a healthy server of this build is used");
+    assert!(ready.boot_notice.is_none(), "nothing was launched");
     server.join().expect("fake server thread");
     assert_nothing_was_launched(&paths);
 }
@@ -1137,13 +1138,14 @@ fn ensure_running_hands_back_a_running_mismatch_for_the_bridge() {
         other_build_id(),
     );
 
-    let status = ensure_running(
+    let ready = ensure_running(
         &paths,
         Duration::from_secs(1),
         BuildCheck::AtClientHandshake,
     )
     .expect("the typed handshake reports the mismatch, not the launcher");
-    assert_eq!(status.build_id.to_string(), other_build_id());
+    assert_eq!(ready.status.build_id.to_string(), other_build_id());
+    assert!(ready.boot_notice.is_none(), "nothing was launched");
     server.join().expect("fake server thread");
     assert_nothing_was_launched(&paths);
 }
@@ -1322,4 +1324,14 @@ fn a_ready_daemon_keeps_what_it_left_in_the_boot_log() {
     result.expect("the daemon answers");
     let kept = std::fs::read_to_string(&boot_log).expect("read the boot log");
     assert!(kept.contains("logs: unavailable"), "{kept}");
+    // What ensure_running hands the TUI to print before it takes the terminal.
+    let notice = ready_boot_notice(&boot_log).expect("a non-empty boot log is reported");
+    assert!(notice.contains("logs: unavailable"), "{notice}");
+    assert!(notice.contains(&boot_log.display().to_string()), "{notice}");
+    std::fs::write(&boot_log, b"").expect("empty the boot log");
+    assert_eq!(
+        ready_boot_notice(&boot_log),
+        None,
+        "an empty boot log says nothing"
+    );
 }

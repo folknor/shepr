@@ -612,29 +612,38 @@ impl HeadlessServer {
         // The save can take seconds; the duration below and the teardown wait
         // after it read a fresh sample.
         self.refresh_app_clock();
-        shepr_platform::structured_log!(
-            INFO,
-            event = persist.save,
-            outcome = (if final_save.is_err() {
-                shepr_platform::Outcome::Error
-            } else if self.app.session_saves_stopped() {
-                shepr_platform::Outcome::Stopped
-            } else if self.app.session_saves_blocked_on_backup() {
-                shepr_platform::Outcome::BlockedOnBackup
-            } else if self.app.session_saves_frozen() {
-                shepr_platform::Outcome::Frozen
-            } else {
-                shepr_platform::Outcome::Ok
-            }),
-            kind = "final",
-            duration_ms = self
-                .app
-                .clock()
-                .now
-                .saturating_duration_since(final_save_started)
-                .as_millis(),
-            "final session save finished"
-        );
+        // One event per final save: its failure at error level with the cause,
+        // anything else at info level.
+        let duration_ms = self
+            .app
+            .clock()
+            .now
+            .saturating_duration_since(final_save_started)
+            .as_millis();
+        if let Err(error) = &final_save {
+            shepr_platform::structured_log!(
+                ERROR, event = persist.save, outcome = Error,
+                kind = "final", duration_ms, %error,
+                "final session save failed"
+            );
+        } else {
+            shepr_platform::structured_log!(
+                INFO,
+                event = persist.save,
+                outcome = (if self.app.session_saves_stopped() {
+                    shepr_platform::Outcome::Stopped
+                } else if self.app.session_saves_blocked_on_backup() {
+                    shepr_platform::Outcome::BlockedOnBackup
+                } else if self.app.session_saves_frozen() {
+                    shepr_platform::Outcome::Frozen
+                } else {
+                    shepr_platform::Outcome::Ok
+                }),
+                kind = "final",
+                duration_ms,
+                "final session save finished"
+            );
+        }
         if let Err(error) = final_save {
             run_error.get_or_insert(RunServerError::Runtime(error));
         }

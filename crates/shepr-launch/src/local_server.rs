@@ -168,9 +168,21 @@ pub enum BuildCheck {
     AtClientHandshake,
 }
 
+/// The server [`ensure_running`] accepted.
+#[derive(Debug)]
+pub struct ServerReady {
+    /// The status of the server: the one probed, or the one launched and
+    /// verified.
+    pub status: RuntimeStatus,
+    /// What a server this call launched wrote to its boot log before it was
+    /// ready, for the operator: usually that it could not open its own log
+    /// file, so the boot log is its only record. `None` when this call
+    /// launched nothing or the boot log was empty. This crate does not print.
+    pub boot_notice: Option<String>,
+}
+
 /// Ensures a server is listening, with the caller's build-check policy, and
-/// returns the status of the server it accepted: the one probed, or the one
-/// it launched and verified.
+/// returns the server it accepted.
 ///
 /// A server this call starts is verified to be this build before it returns,
 /// whatever the policy: the policy governs only a server that was already
@@ -182,15 +194,19 @@ pub fn ensure_running(
     paths: &shepr_paths::AppPaths,
     timeout: Duration,
     build_check: BuildCheck,
-) -> Result<RuntimeStatus, LaunchError> {
+) -> Result<ServerReady, LaunchError> {
+    let already_running = |status| ServerReady {
+        status,
+        boot_notice: None,
+    };
     match probe_server(paths)? {
         Probed::Running(status) => {
             shepr_platform::structured_log!(INFO, event = launch.server_start, outcome = Unchanged, socket = %paths.server_address().socket().display(), build_id = %status.build_id, boot_id = %status.boot_id, "server already running");
-            return accept_running(paths, status, build_check);
+            return accept_running(paths, status, build_check).map(already_running);
         }
         Probed::Unresponsive => return Err(unresponsive_error(paths)),
         Probed::Starting | Probed::Stopping if !paths.server_address().is_runtime_address() => {
-            return wait_for_overridden_server(paths, timeout, build_check);
+            return wait_for_overridden_server(paths, timeout, build_check).map(already_running);
         }
         Probed::NoServer | Probed::Starting | Probed::Stopping => {}
     }
@@ -207,7 +223,7 @@ pub fn ensure_running(
         match probed {
             Probed::Running(status) => {
                 shepr_platform::structured_log!(INFO, event = launch.server_start, outcome = Unchanged, socket = %paths.server_address().socket().display(), build_id = %status.build_id, boot_id = %status.boot_id, "server started by another client");
-                return accept_running(paths, status, build_check);
+                return accept_running(paths, status, build_check).map(already_running);
             }
             Probed::Unresponsive => return Err(unresponsive_error(paths)),
             Probed::NoServer => break,
@@ -238,7 +254,23 @@ pub fn ensure_running(
     let server = server_executable().map_err(LaunchError::Executable)?;
     shepr_platform::structured_log!(INFO, event = launch.server_start, outcome = Started, server = %server.display(), "no server running, starting the server daemon");
     let status = launch_daemon(paths, &server, timeout)?;
-    accept_running(paths, status, build_check)
+    let status = accept_running(paths, status, build_check)?;
+    Ok(ServerReady {
+        status,
+        boot_notice: ready_boot_notice(&paths.boot_log_path()),
+    })
+}
+
+/// The operator notice for a boot log a ready server left non-empty, or `None`
+/// when it is empty or absent. `launch_with` keeps the file for this.
+fn ready_boot_notice(boot_log: &Path) -> Option<String> {
+    std::fs::metadata(boot_log)
+        .is_ok_and(|metadata| metadata.len() > 0)
+        .then(|| {
+            let tail = shepr_platform::read_boot_log_tail(boot_log)
+                .unwrap_or_else(|error| format!("(unreadable: {error})"));
+            crate::guidance::ready_boot_log_notice(boot_log, &tail)
+        })
 }
 
 /// What is running at the local server address, without ever starting a server:

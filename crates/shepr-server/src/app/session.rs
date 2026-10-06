@@ -786,16 +786,8 @@ impl App {
         // Clear the deadline here even if retirement is delayed by teardown;
         // callers of the final save observe the same terminal scheduling state.
         // Keep the previous atomic save on failure and report an unclean exit.
+        // The caller logs the final save once, its failure included.
         self.session_saver.autosave.clear();
-        if let Err(error) = &result {
-            shepr_platform::structured_log!(
-                ERROR, event = persist.save, outcome = Error,
-                kind = "final",
-                directory = %self.paths.data_dir().display(),
-                %error,
-                "final session save failed"
-            );
-        }
         result
     }
 

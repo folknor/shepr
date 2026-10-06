@@ -514,6 +514,18 @@ pub fn server_boot_notice(notice: ServerBootNotice) -> String {
     }
 }
 
+/// What the operator is told when a server this launch started was ready but
+/// had written to its boot log, usually because it could not open its own log
+/// file and keeps the boot log instead.
+pub fn ready_boot_log_notice(boot_log: &Path, tail: &str) -> String {
+    format!(
+        "shepr: the local server started, but reported this before it was ready \
+         (kept in {}):\n{}",
+        boot_log.display(),
+        tail.trim_end()
+    )
+}
+
 pub fn append_boot_log_notice(
     message: &mut String,
     boot_log: &Path,

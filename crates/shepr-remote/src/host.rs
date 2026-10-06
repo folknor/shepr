@@ -128,7 +128,10 @@ fn attached_server_status(paths: &shepr_paths::AppPaths) -> io::Result<RuntimeSt
 /// host must repair needs attention, a timeout is retried), keeping the
 /// launch's diagnostic as its message.
 fn ensure_remote_server_running(paths: &shepr_paths::AppPaths) -> io::Result<RuntimeStatus> {
+    // A boot notice cannot reach this host's operator through the bridge; the
+    // launcher has already logged it.
     local_server::ensure_running(paths, SERVER_READY_TIMEOUT, BuildCheck::AtClientHandshake)
+        .map(|ready| ready.status)
         .map_err(|error| {
             classified_bridge_failure(error.remote_failure_class(), error.kind(), &error)
         })

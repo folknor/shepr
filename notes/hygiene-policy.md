@@ -49,21 +49,3 @@ Reported by: workspace-model.
 - The global `LayoutEpoch` starts at 0 for every tree, restore included; fine because a
   client's epoch is always from the current boot's projection, but a client reconnecting
   to a new boot with a cached epoch could match a different tree by accident.
-
-## POL-042 - Wave 12 laterals
-
-Reported by: the wave 12 fixers.
-
-- Hook commands need a POSIX shell (`;`, `case`, `${VAR:-...}`, quoting). Confirmed from
-  source: Claude Code and Kimi run them with `sh -c`, Codex with `$SHELL -lc` (POSIX in
-  a shepr pane). Grok and Devin are reported by third parties to use a shell. Cursor
-  (closed source) and MastraCode (executor not found) only document hooks as shell
-  commands. Checkable by hand: register a hook such as `echo "$HOME" > /some/file` in
-  each and see whether the file holds the expanded path. An agent that execs directly
-  needs the old absolute `sh '<path>' action` form for its registration.
-- The boot log a ready server leaves behind is now kept and logged as a WARN by the
-  launcher, but nothing shows it on the operator's screen; that needs `ensure_running`
-  to return it to its callers.
-- The final save's summary `persist.save` logs outcome `error` at INFO, beside the
-  separate error-level event that carries the cause; split it if level-based filtering of
-  save failures matters.
