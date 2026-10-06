@@ -203,12 +203,7 @@ impl DetectorState {
             return None;
         };
         self.last_published = Some(detection);
-        self.last_visible_signal_refresh =
-            if detection.visible_blocker() || detection.visible_working() {
-                Some(tick.now)
-            } else {
-                None
-            };
+        self.last_visible_signal_refresh = detection.visible_blocker().then_some(tick.now);
         if process_exited {
             self.exit_phase.report();
         }
@@ -345,7 +340,7 @@ mod tests {
         let now = Instant::now();
         let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
-        detector.last_published = Some(Detection::Working { visible: false });
+        detector.last_published = Some(Detection::Working);
 
         let update = detector.publish_screen(
             &tick(now, 1),

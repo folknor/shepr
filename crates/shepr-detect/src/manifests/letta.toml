@@ -33,7 +33,6 @@ id = "osc_title_working"
 state = "working"
 priority = 900
 region = "osc_title"
-visible_working = true
 regex = ['(?:^| ){dots_spinner}(?: |$)']
 
 [[rules]]
@@ -41,7 +40,6 @@ id = "active_status"
 state = "working"
 priority = 850
 region = "bottom_non_empty_lines(8)"
-visible_working = true
 line_regex = ['^\s*(?:\S+\s+)+is(?: \S+)*… \((?:esc to interrupt(?: · .*)?|interrupting)\)\s*$']
 
 [[rules]]
@@ -49,7 +47,6 @@ id = "running_tool"
 state = "working"
 priority = 800
 region = "bottom_non_empty_lines(8)"
-visible_working = true
 line_regex = ['^\s*(?:└\s*)?Running\.\.\.\s*(?:\(.*\))?$']
 
 [[rules]]

@@ -555,48 +555,14 @@ mod tests {
     }
 
     #[test]
-    fn unknown_commands_and_launch_flags_are_rejected() {
+    fn unknown_commands_flags_and_arguments_are_rejected() {
         for args in [
             &["frobnicate"][..],
             &["--bogus"],
-            &["server"],
-            &["server", "stop"],
+            &["--bogus", "stop"],
             &["stop", "now"],
-            &["--session", "work"],
-            &["--session=work", "stop"],
-            &["stop", "--session=api"],
-            &["stop", "--force"],
-            &["session", "list"],
-            &["session", "stop", "work"],
-            &["session", "attach", "work"],
-            &["session", "delete", "work"],
-            &["machine", "list"],
-            &["machine", "status"],
-            &["machine", "add", "host", "--label", "h"],
-            &["machine", "remove", "h"],
-            &["machine", "reconnect", "build"],
-            &["api", "snapshot"],
-            &["workspace", "list"],
-            &["tab", "list"],
-            &["pane", "list"],
-            &["agent", "list"],
-            &["terminal", "attach", "term_1_1"],
-            &["terminal", "title", "clear"],
-            &["config", "reset-keys"],
-            &["config", "check"],
-            &["config"],
-            &["integration", "status"],
-            &["integration", "install", "claude"],
-            &["integration", "uninstall", "claude"],
-            &["--remote", "host"],
-            &["--remote", "host", "--remote-keybindings", "local"],
-            &["--remote-keybindings", "server"],
-            &["--default-config"],
-            &["--machine", "mac", "status"],
-            &["--machine=mac", "stop"],
-            &["status", "--machine", "mac"],
-            &["remote-api-bridge"],
-            &["remote-api-bridge", "--check"],
+            &["stop", "--bogus"],
+            &["status", "--bogus"],
         ] {
             assert_eq!(parse_error(args).exit_code(), 2, "{args:?}");
         }

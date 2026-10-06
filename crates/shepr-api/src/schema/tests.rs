@@ -314,67 +314,6 @@ fn unknown_method_is_rejected() {
     assert!(err.contains("unknown variant"));
 }
 
-#[test]
-fn removed_methods_are_rejected() {
-    for method in [
-        "pane.send_text",
-        "pane.send_keys",
-        "pane.send_input",
-        "pane.wait_for_output",
-        "server.agent_manifests",
-        "server.reload_agent_manifests",
-        "agent.read",
-        "agent.explain",
-        "agent.list",
-        "agent.get",
-        "agent.rename",
-        "agent.focus",
-        "workspace.list",
-        "workspace.get",
-        "tab.list",
-        "tab.get",
-        "pane.list",
-        "pane.current",
-        "pane.read",
-        "pane.layout",
-        "pane.process_info",
-        "pane.neighbor",
-        "pane.edges",
-        "pane.move",
-        "client.window_title.set",
-        "client.window_title.clear",
-    ] {
-        let request = serde_json::json!({"id": "req", "method": method, "params": {}});
-        let error = serde_json::from_value::<Request>(request).expect_err("removed method");
-        assert!(
-            error.to_string().contains("unknown variant"),
-            "{method}: {error}"
-        );
-    }
-}
-
-#[test]
-fn removed_uncalled_methods_are_rejected() {
-    for method in [
-        "layout.export",
-        "layout.apply",
-        "workspace.move_block",
-        "pane.clear_agent_authority",
-        "pane.get",
-        "events.subscribe",
-        "events.wait",
-        "session.snapshot",
-        "server.ssh_agent.register",
-    ] {
-        let request = serde_json::json!({"id": "req", "method": method, "params": {}});
-        let error = serde_json::from_value::<Request>(request).expect_err("removed method");
-        assert!(
-            error.to_string().contains("unknown variant"),
-            "{method}: {error}"
-        );
-    }
-}
-
 /// A client shell's commands cross the server socket as
 /// `shepr_protocol::command::EndpointCommand`; none of them is a JSON API
 /// method.

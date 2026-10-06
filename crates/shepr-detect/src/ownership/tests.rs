@@ -1501,10 +1501,10 @@ fn fallback_idle_does_not_override_full_lifecycle_hook_working() {
 }
 
 #[test]
-fn visible_working_does_not_override_hook_idle_for_same_agent() {
+fn detected_working_does_not_override_hook_idle_for_same_agent() {
     let now = Instant::now();
     let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
+    terminal.set_detected_state_at(Some(Agent::Codex), AgentState::Idle, now);
     terminal.set_hook_authority_at(
         "shepr:codex",
         AgentState::Idle,
@@ -1527,10 +1527,10 @@ fn visible_working_does_not_override_hook_idle_for_same_agent() {
 }
 
 #[test]
-fn visible_working_does_not_override_full_lifecycle_hook_idle() {
+fn detected_working_does_not_override_full_lifecycle_hook_idle() {
     let now = Instant::now();
     let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Kimi), AgentState::Idle);
+    terminal.set_detected_state_at(Some(Agent::Kimi), AgentState::Idle, now);
     anchor_full_lifecycle_session(
         &mut terminal,
         Agent::Kimi,
@@ -1562,7 +1562,7 @@ fn visible_working_does_not_override_full_lifecycle_hook_idle() {
 fn detected_working_fallback_is_ignored_under_full_lifecycle_hook_authority() {
     let now = Instant::now();
     let mut terminal = test_terminal();
-    terminal.set_detected_state_at(Some(Agent::Kilo), AgentState::Idle, Instant::now());
+    terminal.set_detected_state_at(Some(Agent::Kilo), AgentState::Idle, now);
     anchor_full_lifecycle_session(
         &mut terminal,
         Agent::Kilo,
@@ -1591,7 +1591,7 @@ fn detected_working_fallback_is_ignored_under_full_lifecycle_hook_authority() {
 }
 
 #[test]
-fn visible_working_does_not_hold_against_newer_hook_idle() {
+fn detected_working_does_not_hold_against_newer_hook_idle() {
     let now = Instant::now();
     let mut terminal = test_terminal();
     terminal.set_detected_state_with_screen_signals_at(
@@ -1622,7 +1622,7 @@ fn visible_working_does_not_hold_against_newer_hook_idle() {
 }
 
 #[test]
-fn refreshed_visible_working_does_not_override_newer_hook_blocked() {
+fn repeated_detected_working_does_not_override_newer_hook_blocked() {
     let now = Instant::now();
     let mut terminal = test_terminal();
     terminal.set_detected_state_with_screen_signals_at(

@@ -341,14 +341,6 @@ impl PaneRuntime {
         self.exit_arbiter.ending().is_some() || self.child_liveness.has_exited()
     }
 
-    /// Whether a panic broke the pane's terminal core. The server skips the
-    /// exit checkpoint of a pane whose core is broken when it decides, whatever
-    /// ended the pane: the watcher can report an ordinary exit before the
-    /// reader notices the panic.
-    pub fn terminal_core_broken(&self) -> bool {
-        self.terminal.core_poisoned()
-    }
-
     /// The shell's process id while it is launched and unreaped.
     pub fn child_pid(&self) -> Option<shepr_platform::Pid> {
         self.child_liveness.live_process_id()

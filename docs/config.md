@@ -345,8 +345,8 @@ keys and must not include `prefix+`.
 |---|---|---|
 | `navigate_back` | `esc` | leave navigate mode |
 | `navigate_up` | `up` | move the selection up through the agents, then the workspaces above them |
-| `navigate_down` | `down` | move the selection down the workspaces, then the agents below them; a machine's Connect or Restart entry is a stop in place of its workspaces |
-| `navigate_open` | `enter` | open the selected workspace, focus the selected agent's pane, or choose the selected Connect or Restart entry |
+| `navigate_down` | `down` | move the selection down the workspaces, then the agents below them; a machine's Connect, Restart or Needs SSH login entry is a stop in place of its workspaces |
+| `navigate_open` | `enter` | open the selected workspace, focus the selected agent's pane, or choose the selected machine entry |
 
 Navigate keys may reuse keys that actions use, but not each other's keys or
 the prefix.
@@ -414,7 +414,7 @@ its workspaces or agents:
 | Starting... / Stopping... | The machine's server is starting or stopping. |
 | Restart (other build) | The machine's server is another shepr build. Choosing it asks first: restarting ends every pane process on that machine, and the saved layout is restored with fresh shells and agents resumed. |
 | Offline | The machine did not answer. The badge on the machine's row shows why; the client keeps trying. |
-| Needs SSH login | SSH refused the client. Run `shepr` again to be prompted, or ssh to the machine yourself. |
+| Needs SSH login | SSH refused the client. The client does not retry by itself, because repeated refused logins can get your address banned by the machine. Fix access (ssh to the machine yourself to check), then choose the entry to try again, or run `shepr` again to be prompted. |
 | Unavailable | The machine answered but cannot be used until it is fixed there. The badge on its row shows why. |
 
 Choose an entry with a click, or in navigate mode (`prefix+w`) by moving onto
@@ -524,13 +524,15 @@ shepr draws with the terminal's own default and ANSI colours.
 | `new_cwd` | string | `"follow"` | Where new panes and workspaces start. |
 
 **`default_shell`** is a path or a bare name looked up on `PATH`. It must
-resolve to an executable that shepr recognizes as a shell by its file name:
-`sh`, `bash`, `dash`, `zsh`, `fish`, `ksh`, `mksh`, `csh`, `tcsh`, `elvish`,
-`xonsh` or `nu`. A value with leading or trailing whitespace is refused.
+resolve to an executable that is a POSIX shell by its file name: `sh`, `bash`,
+`dash`, `zsh`, `ksh` or `mksh`. Agent resume types the agent's command into the
+pane's shell quoted for POSIX shells, so fish, csh, tcsh, elvish, xonsh and nu
+are refused (you can still start them inside a pane). A value with leading or
+trailing whitespace is refused.
 
 When it is unset, the server uses `SHELL` from its environment, held to the
 same rules: a `SHELL` that does not exist, is not executable or is not a
-recognized shell fails the launch rather than falling back. Only an unset or
+POSIX shell fails the launch rather than falling back. Only an unset or
 empty `SHELL` means `/bin/sh`.
 
 **`new_cwd`** takes:

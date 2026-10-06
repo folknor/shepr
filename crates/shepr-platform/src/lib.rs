@@ -44,7 +44,8 @@ pub use daemon::{
 pub use data_directory_lease::{DataDirectoryLease, DataDirectoryLeaseHeld, LeaseAcquireError};
 pub use dir_watch::{DirectoryWake, DirectoryWatch};
 pub use executable::{
-    ExecutableStatus, classify_executable, has_execute_access, is_pane_shell_process_name,
+    ExecutableStatus, classify_executable, has_execute_access, is_pane_shell_name,
+    is_shell_process_name,
 };
 pub use file_stamp::FileStamp;
 pub use host::{

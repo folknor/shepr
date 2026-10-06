@@ -103,6 +103,9 @@ pub(crate) enum ClientShellAction {
     /// The operator's confirmed Restart of a configured machine running
     /// another build: stop that server, start this build's and attach.
     RestartMachine(ClientEndpointId),
+    /// The operator's Retry on a configured machine whose SSH refused the
+    /// client's credentials: attach again, once.
+    RetryMachine(ClientEndpointId),
 }
 
 #[derive(Default)]

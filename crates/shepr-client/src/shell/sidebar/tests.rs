@@ -914,7 +914,7 @@ fn every_machine_state_has_its_own_entry() {
         (MachineState::DifferentBuild, "Restart (other build)", true),
         (MachineState::Restarting, "Restarting...", false),
         (MachineState::Offline, "Offline", false),
-        (MachineState::NeedsLogin, "Needs SSH login", false),
+        (MachineState::NeedsLogin, "Needs SSH login", true),
         (MachineState::Unavailable, "Unavailable", false),
     ] {
         state.set_machine_state(&endpoint_id, machine_state);
@@ -935,9 +935,8 @@ fn every_machine_state_has_its_own_entry() {
             let hint = (entry.rect.x..entry.rect.right())
                 .map(|x| frame_cell(&frame, (x, entry.rect.y + 1)).symbol.as_str())
                 .collect::<String>();
-            // The hint names this build's entry point (a dev build's is a long
-            // path) and the sidebar clips it, so only its opening is checked.
-            assert!(hint.trim_start().starts_with("run "), "{hint:?}");
+            // The sidebar clips the hint, so only its opening is checked.
+            assert!(hint.trim_start().starts_with("select to retry"), "{hint:?}");
         }
     }
 }
@@ -970,6 +969,34 @@ fn clicking_a_connect_entry_emits_a_start_request() {
         state.machine_state(&endpoint_id),
         Some(crate::shell::MachineState::NotRunning)
     );
+}
+
+#[test]
+fn clicking_a_login_entry_emits_a_retry_request() {
+    let (mut state, endpoint_id) = state_with_remote();
+    state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Attention);
+    state.set_machine_state(&endpoint_id, crate::shell::MachineState::NeedsLogin);
+    state
+        .compose(100, 28)
+        .expect("remote refusing the client's login");
+    let entry = state
+        .drawn()
+        .machine_entries()
+        .find(|hit| hit.location.endpoint == endpoint_id)
+        .expect("the remote's entry")
+        .rect;
+
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: entry.x + 4,
+        row: entry.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::RetryMachine(retried)] if *retried == endpoint_id
+    ));
 }
 
 /// Restart asks first: the click only opens the question, and only its answer sends the

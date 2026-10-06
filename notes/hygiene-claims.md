@@ -37,34 +37,3 @@ produces exactly the JSON `detect explain --file` reads. Fix: commit captures pe
 agent state under the detect crate and a test running each through
 `explain_with_input` against its expected rule. This is what makes BUG-034 and
 VAL-027 safe to change.
-
-## CLAIM-011 - Detection tests that reimplement the path, cannot fail, or name a configuration they do not run
-
-Reported by: agent-state.
-
-- `visible_working_does_not_override_hook_idle_for_same_agent` and
-  `visible_working_does_not_override_full_lifecycle_hook_idle` pass no visible-working
-  flag; ownership has no such input (BUG-031). They wait on that decision, and so does
-  the clock-reading `set_detected_state` helper they use (CLAIM-012).
-
-## CLAIM-012 - Detection tests that depend on wall-clock timing
-
-Reported by: agent-state.
-
-Every ownership seam now takes its instant except the no-time `set_detected_state`
-helper, which still calls `Instant::now()` because the two pending visible-working
-tests (CLAIM-011) use it; the exception is commented at the seam.
-
-## CLAIM-016 - Server lifecycle tests that assert the absence of removed names
-
-Reported by: server-lifecycle, remote.
-
-Banned-word assertions for removed features (`"--session"`, `"--force"`,
-`"SHEPR_SESSION"` in `guidance.rs` and `tui.rs`; `"capabilities"`, `"status"`,
-`"running"` keys in `server_status_json_reports_the_running_boot`) assert the absence
-of strings no code produces. Waits on the owner decision about removed-name tests
-(DEAD-015).
-
-## Guards that fail open
-
-## Claims nothing enforces

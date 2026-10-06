@@ -37,7 +37,6 @@ id = "status_bar_spinner_working"
 state = "working"
 priority = 900
 region = "bottom_non_empty_lines(1)"
-visible_working = true
 line_regex = ['^( {spinner}){1,2} \[(BUILD|PLAN|BASH)\]']
 
 [[rules]]

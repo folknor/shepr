@@ -20,7 +20,6 @@ id = "osc_title_working"
 state = "working"
 priority = 1100
 region = "osc_title"
-visible_working = true
 regex = ['^\x{25D0}\x{FE0E}? ']
 
 [[rules]]
@@ -81,7 +80,6 @@ id = "cancel_hint_working"
 state = "working"
 priority = 900
 region = "bottom_non_empty_lines(8)"
-visible_working = true
 line_regex = ['^\s*(?:{spinner}|\.{1,2})\s+.*\(\d+(?:m(?:\s+\d+s)?|s).*\s·\sesc to cancel\)\s*$']
 
 [[rules]]
@@ -89,7 +87,6 @@ id = "narrow_cancel_hint_working"
 state = "working"
 priority = 890
 region = "bottom_non_empty_lines(8)"
-visible_working = true
 line_regex = ['^\s*\(\d+(?:m(?:\s+\d+s)?|s)\s·\sesc to cancel\)\s*$']
 
 [[rules]]
@@ -97,7 +94,6 @@ id = "osc_tool_progress_working"
 state = "working"
 priority = 850
 region = "osc_progress"
-visible_working = true
 regex = ['^4;3(?:;|$)']
 
 [[rules]]

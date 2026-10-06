@@ -13,7 +13,7 @@ pub use limits::PARKED_START_LIFETIME;
 use shepr_agent::{
     AGENT_EXECUTABLE_SUFFIXES, Agent, AgentState, normalized_agent_lookup_name, parse_agent_label,
 };
-use shepr_platform::{ForegroundJob, ForegroundProcess, Pid, is_pane_shell_process_name};
+use shepr_platform::{ForegroundJob, ForegroundProcess, Pid, is_shell_process_name};
 pub use title_activity::is_title_activity_glyph;
 
 /// A screen state with evidence that can only belong to that state.
@@ -23,18 +23,19 @@ pub enum Detection {
     Unknown,
     /// Visible live idle chrome bypasses the working-to-idle confirmation hold.
     Idle { visible: bool },
-    /// Visible working chrome refreshes screen evidence, but never overrides hooks.
-    Working { visible: bool },
+    /// Working never overrides hooks, and carries no visibility.
+    Working,
     /// Visible input controls may override a non-blocked integration report.
     Blocked { visible: bool },
 }
 
 impl Detection {
+    /// `visible` is ignored for Working and Unknown, which carry no visibility.
     pub const fn new(state: AgentState, visible: bool) -> Self {
         match state {
             AgentState::Unknown => Self::Unknown,
             AgentState::Idle => Self::Idle { visible },
-            AgentState::Working => Self::Working { visible },
+            AgentState::Working => Self::Working,
             AgentState::Blocked => Self::Blocked { visible },
         }
     }
@@ -43,7 +44,7 @@ impl Detection {
         match self {
             Self::Unknown => AgentState::Unknown,
             Self::Idle { .. } => AgentState::Idle,
-            Self::Working { .. } => AgentState::Working,
+            Self::Working => AgentState::Working,
             Self::Blocked { .. } => AgentState::Blocked,
         }
     }
@@ -54,10 +55,6 @@ impl Detection {
 
     pub const fn visible_blocker(self) -> bool {
         matches!(self, Self::Blocked { visible: true })
-    }
-
-    pub const fn visible_working(self) -> bool {
-        matches!(self, Self::Working { visible: true })
     }
 }
 
@@ -94,10 +91,6 @@ impl AgentDetection {
 
     pub const fn visible_blocker(self) -> bool {
         matches!(self, Self::State(Detection::Blocked { visible: true }))
-    }
-
-    pub const fn visible_working(self) -> bool {
-        matches!(self, Self::State(Detection::Working { visible: true }))
     }
 }
 
@@ -216,7 +209,7 @@ impl Runtime {
             Some(Self::Bun)
         } else if is_python_runtime(name) {
             Some(Self::Python)
-        } else if is_pane_shell_process_name(name) {
+        } else if is_shell_process_name(name) {
             Some(Self::Shell)
         } else {
             None

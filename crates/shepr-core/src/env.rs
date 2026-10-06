@@ -261,9 +261,6 @@ env_vocabulary! {
         Shell => EnvVar::Shell.name(), EnvVar::Shell.pane_policy(),
         /// `PATH`: the child's executable search path.
         Path => EnvVar::Path.name(), EnvVar::Path.pane_policy(),
-        /// `SHEPR_BIN_PATH`: the shepr executable, set for every pane so
-        /// programs in it can call back into shepr.
-        SheprBinPath => "SHEPR_BIN_PATH", PaneEnvPolicy::Allowed,
         /// `SHEPR_PANE_ID`: the public id of the pane, installed by the
         /// server into each managed child after inherited values are scrubbed.
         /// Pane ids vary per pane, so the child boundary preserves it as text.
@@ -1026,7 +1023,6 @@ mod tests {
                 "TERM_PROGRAM_VERSION",
                 "SHELL",
                 "PATH",
-                "SHEPR_BIN_PATH",
                 "SHEPR_PANE_ID",
                 "PWD",
                 "OLDPWD",

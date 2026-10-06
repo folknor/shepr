@@ -350,11 +350,11 @@ mod tests {
 
         let toml = r#"
 [terminal]
-default_shell = "nu"
+default_shell = "zsh"
 login_shell = true
 "#;
         let config: ServerConfig = toml::from_str(toml).expect("test precondition");
-        assert_eq!(config.terminal.default_shell.as_deref(), Some("nu"));
+        assert_eq!(config.terminal.default_shell.as_deref(), Some("zsh"));
         assert!(config.terminal.login_shell);
     }
 

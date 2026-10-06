@@ -507,7 +507,7 @@ mod tests {
         let now = Instant::now();
         let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Claude));
-        detector.last_published = Some(Detection::Working { visible: false });
+        detector.last_published = Some(Detection::Working);
         detector.last_screen_scan_detection_content_seq = Some(1);
         detector.scheduler.probe_started(now);
         detector.scheduler.last_foreground_group = Some(pgid(25));
@@ -522,10 +522,7 @@ mod tests {
         let output = screen.resume(&mut detector, None);
 
         assert!(output.state_changed.is_none());
-        assert_eq!(
-            detector.last_published,
-            Some(Detection::Working { visible: false })
-        );
+        assert_eq!(detector.last_published, Some(Detection::Working));
         assert_eq!(detector.last_screen_scan_detection_content_seq, None);
     }
 

@@ -257,7 +257,7 @@ fn resolve_default_shell(
             |error| {
                 format!(
                     "{error}; no shell was configured, so panes use SHELL={}. \
-                     Set it to a shell shepr recognizes, or fix SHELL",
+                     Set it to a POSIX shell, or fix SHELL",
                     inherited.to_string_lossy()
                 )
             },
@@ -292,10 +292,11 @@ fn resolve_recognized_shell(
         if !resolved
             .file_name()
             .and_then(OsStr::to_str)
-            .is_some_and(shepr_platform::is_pane_shell_process_name)
+            .is_some_and(shepr_platform::is_pane_shell_name)
         {
             return Err(format!(
-                "{source} resolves to a shell name shepr does not recognize: {}",
+                "{source} resolves to {}, which is not a POSIX shell shepr can run \
+                 panes in (sh, bash, dash, zsh, ksh or mksh)",
                 resolved.display()
             ));
         }
@@ -934,6 +935,7 @@ mod tests {
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
             .expect("scratch roots fit a socket");
         let not_a_shell = shepr_test_support::fixture::stand_in(scratch.path(), "not-a-shell", &[]);
+        let nu = shepr_test_support::fixture::stand_in(scratch.path(), "nu", &[]);
         let non_executable_shell = scratch.join("zsh");
         std::fs::write(&non_executable_shell, "not launched").expect("test precondition");
         {
@@ -948,7 +950,8 @@ mod tests {
         for (shell, expected) in [
             (scratch.join("missing/zsh"), "terminal.default_shell"),
             (non_executable_shell, "is not executable"),
-            (not_a_shell, "does not recognize"),
+            (not_a_shell, "is not a POSIX shell"),
+            (nu, "is not a POSIX shell"),
         ] {
             let mut config = ServerConfig::default();
             config.terminal.default_shell = Some(shell.to_string_lossy().into_owned());
@@ -1060,9 +1063,11 @@ mod tests {
         assert_eq!(validated.terminal().default_shell.path(), zsh.as_path());
 
         let not_a_shell = shepr_test_support::fixture::stand_in(scratch.path(), "not-a-shell", &[]);
+        let fish = shepr_test_support::fixture::stand_in(scratch.path(), "fish", &[]);
         for (shell, expected) in [
             (scratch.join("missing/zsh"), "does not exist"),
-            (not_a_shell, "does not recognize"),
+            (not_a_shell, "is not a POSIX shell"),
+            (fish, "is not a POSIX shell"),
         ] {
             env.set("SHELL", &shell);
             let errors = validate().expect_err("an unusable SHELL fails the launch");
@@ -1072,9 +1077,7 @@ mod tests {
                     message.to_string().contains("terminal.default_shell")
                         && message.to_string().contains(expected)
                         && message.to_string().contains(&format!("SHELL={shell}"))
-                        && message
-                            .to_string()
-                            .contains("Set it to a shell shepr recognizes")
+                        && message.to_string().contains("Set it to a POSIX shell")
                 }),
                 "expected a SHELL diagnostic with {expected:?} in {errors:?}"
             );

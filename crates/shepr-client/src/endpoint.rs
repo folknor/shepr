@@ -111,10 +111,6 @@ impl EndpointPolicy {
         matches!(self, Self::Local)
     }
 
-    pub(crate) fn uses_ssh_heartbeat(self) -> bool {
-        matches!(self, Self::Machine)
-    }
-
     pub(crate) fn handshake_read_timeout(self) -> std::time::Duration {
         match self {
             Self::Local => crate::limits::LOCAL_HANDSHAKE_READ_TIMEOUT,

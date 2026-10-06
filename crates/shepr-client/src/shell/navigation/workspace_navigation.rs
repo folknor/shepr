@@ -237,7 +237,8 @@ impl ClientShellState {
 
     /// Activates a configured machine's entry, as Enter on it in navigate mode or a
     /// click on it (or on its machine row) does: Connect starts the machine's server
-    /// and attaches; Restart asks first. False when the entry offers no action.
+    /// and attaches; Restart asks first; Retry attaches again after a login. False
+    /// when the entry offers no action.
     pub(in crate::shell) fn activate_machine_entry(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -250,6 +251,11 @@ impl ClientShellState {
                     .push(ClientShellAction::ConnectMachine(endpoint_id.clone()));
             }
             Some(MachineAction::Restart) => self.open_confirm_restart_overlay(endpoint_id),
+            Some(MachineAction::Retry) => {
+                outcome
+                    .actions
+                    .push(ClientShellAction::RetryMachine(endpoint_id.clone()));
+            }
             None => return false,
         }
         outcome.repaint = true;

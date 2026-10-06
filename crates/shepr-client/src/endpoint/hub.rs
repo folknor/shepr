@@ -608,6 +608,14 @@ impl EndpointHub {
                         repaint = shell::Repaint::Needed;
                     }
                 }
+                shell::ClientShellAction::RetryMachine(endpoint_id) => {
+                    let mode = shepr_remote::ConnectMode::Attach;
+                    if self.supervisors.request(&endpoint_id, mode, now)
+                        && shell.machine_request_accepted(&endpoint_id, mode)
+                    {
+                        repaint = shell::Repaint::Needed;
+                    }
+                }
                 shell::ClientShellAction::ActivateEndpoint(destination) => {
                     let endpoint_id = destination.endpoint.clone();
                     match crate::endpoint::choice_mut(shell).select(destination) {

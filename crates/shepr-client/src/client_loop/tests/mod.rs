@@ -89,7 +89,8 @@ impl Fixture {
         );
         let local = RecordingTransport::default();
         let target = RecordingTransport::default();
-        let mut registry = EndpointRegistry::new_at(local.clone(), test_generation(1), now);
+        let mut registry =
+            EndpointRegistry::new_synthetic_at(local.clone(), test_generation(1), now);
         registry.insert(remote(), target.clone(), test_generation(7), false, now);
         let supervisors = endpoint::EndpointSupervisors::new(
             endpoint::EndpointSupervisors::fresh_connectors(config.paths(), &machines),

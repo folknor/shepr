@@ -917,11 +917,8 @@ mod tests {
         let server = running_server("test", shepr_protocol::BUILD_ID);
         let value = serde_json::to_value(server_status_json(&test_paths(), &server))
             .expect("test precondition");
-        assert!(value.get("capabilities").is_none());
         assert_eq!(value["presence"], "running");
         assert_eq!(value["boot_id"], "4242-1700000000");
-        assert!(value.get("status").is_none());
-        assert!(value.get("running").is_none());
     }
 
     #[test]

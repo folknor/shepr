@@ -76,19 +76,11 @@ type Handler = (event: unknown, context: unknown) => unknown;
 
 function createExtensionHarness() {
   const handlers = new Map<string, Handler>();
-  const eventHandlers = new Map<string, Handler>();
   return {
     handlers,
-    eventHandlers,
     pi: {
       on(event: string, handler: Handler) {
         handlers.set(event, handler);
-      },
-      events: {
-        on(event: string, handler: Handler) {
-          eventHandlers.set(event, handler);
-          return () => {};
-        },
       },
     },
   };
@@ -277,54 +269,6 @@ test("Pi ignores RPC sessions even when UI APIs are available", async () => {
     handlers.get("agent_start")?.({}, context);
     handlers.get("agent_settled")?.({}, context);
   });
-});
-
-test("Pi settlement preserves explicit blocked-state precedence", async () => {
-  const requests = await startRecordingServer("pi-settled-blocked");
-  const { eventHandlers, handlers, pi } = createExtensionHarness();
-  const { default: install } = await importFresh("./pi/shepr-agent-state.ts");
-  install(pi);
-
-  let idle = true;
-  const context = piContext(() => idle);
-  await handlers.get("session_start")?.({ reason: "startup" }, context);
-  await waitFor(() => requestStates(requests).length === 1);
-  idle = false;
-  handlers.get("agent_start")?.({}, context);
-  await waitFor(() => requestStates(requests).length === 2);
-  eventHandlers.get("shepr:blocked")?.({ active: true, label: "approval" }, context);
-  await waitFor(() => requestStates(requests).length === 3);
-
-  idle = true;
-  await assertNoNewRequests(requests, () => handlers.get("agent_settled")?.({}, context));
-  expect(requestStates(requests)).toEqual(["idle", "working", "blocked"]);
-
-  eventHandlers.get("shepr:blocked")?.({ active: false }, context);
-  await waitFor(() => requestStates(requests).length === 4);
-  expect(requestStates(requests)).toEqual(["idle", "working", "blocked", "idle"]);
-});
-
-test("Pi deduplicates blocked state when prompt labels change", async () => {
-  const requests = await startRecordingServer("pi-blocked-dedup");
-  const { eventHandlers, handlers, pi } = createExtensionHarness();
-  const { default: install } = await importFresh("./pi/shepr-agent-state.ts");
-  install(pi);
-
-  const context = piContext(() => true);
-  await handlers.get("session_start")?.({ reason: "startup" }, context);
-  await waitFor(() => requestStates(requests).length === 1);
-
-  eventHandlers.get("shepr:blocked")?.({ active: true, label: "first approval" }, context);
-  await waitFor(() => requestStates(requests).length === 2);
-  await assertNoNewRequests(requests, () =>
-    eventHandlers.get("shepr:blocked")?.({ active: true, label: "second approval" }, context));
-  expect(requestStates(requests)).toEqual(["idle", "blocked"]);
-
-  await assertNoNewRequests(requests, () => eventHandlers.get("shepr:blocked")?.({ active: false }, context));
-  expect(requestStates(requests)).toEqual(["idle", "blocked"]);
-  eventHandlers.get("shepr:blocked")?.({ active: false }, context);
-  await waitFor(() => requestStates(requests).length === 3);
-  expect(requestStates(requests)).toEqual(["idle", "blocked", "idle"]);
 });
 
 test("Pi reports the session replacement source", async () => {

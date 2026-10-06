@@ -2341,8 +2341,12 @@ mod tests {
             );
         }
 
+        /// A checkpoint reads nothing from the terminal core, so a pane whose
+        /// core a panic broke is checkpointed before removal like any other
+        /// unrequested ending, and its agent session survives for resume.
         #[test]
-        fn reader_panic_removes_the_pane_without_a_checkpoint() {
+        fn reader_panic_checkpoints_the_pane_before_removing_it() {
+            use crate::test_support::PaneRuntimeFixture;
             let mut server = crate::server::headless::tests::test_headless_server();
             server.install_test_app(test_app());
 
@@ -2351,6 +2355,7 @@ mod tests {
             server.app.state.test_set_workspaces(vec![workspace]);
             server.app.state.seed_bookmark_index(Some(0));
             server.app.insert_idle_test_runtime(pane_id);
+            server.app.test_runtime(pane_id).test_break_terminal_core();
 
             server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
                 &server.app,
@@ -2361,9 +2366,10 @@ mod tests {
 
             assert!(server.app.state.workspaces().is_empty());
             assert!(
-                !shepr_mux::persist::session_path(server.app.paths.data_dir())
+                shepr_mux::persist::session_path(server.app.paths.data_dir())
                     .try_exists()
-                    .expect("test stat")
+                    .expect("test stat"),
+                "the exit was checkpointed"
             );
         }
 

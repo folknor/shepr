@@ -144,7 +144,6 @@ impl PaneRuntimeFixture for PaneRuntime {
         })
         .join();
         assert!(outcome.is_err(), "the core holder panicked");
-        assert!(self.terminal_core_broken(), "the panic broke the core");
     }
 
     fn current_size(&self) -> (u16, u16) {

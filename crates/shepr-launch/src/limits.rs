@@ -7,8 +7,8 @@ use std::time::Duration;
 // limits cannot all move here without reversing the crate dependency graph;
 // exported worst-case budgets below let higher layers assert their ordering.
 
-/// A connected client probes an endpoint that keeps a heartbeat after this
-/// much silence, and the server answers. The interval leaves room for routine
+/// A connected client probes each endpoint, local or SSH, after this much
+/// silence, and the server answers. The interval leaves room for routine
 /// SSH and server scheduling delays. It is the one timing fact both ends of a
 /// connection share: anything that relays the connection and expires it when
 /// no byte moves, as the remote host's SSH bridge does, must wait several of

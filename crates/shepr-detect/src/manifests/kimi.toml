@@ -53,7 +53,6 @@ id = "background_agent_status_working"
 state = "working"
 priority = 120
 region = "bottom_non_empty_lines(3)"
-visible_working = true
 line_regex = ['(?i)\bkimi[-\w.]*\s+thinking\b.*\[[1-9][0-9]*\s+agents?\s+running\]']
 
 [[rules]]
@@ -61,7 +60,6 @@ id = "moon_spinner_working"
 state = "working"
 priority = 100
 region = "whole_recent"
-visible_working = true
 line_regex = ['^\s*(🌕|🌖|🌗|🌘|🌑|🌒|🌓|🌔)\s*$']
 
 [[rules]]
@@ -69,5 +67,4 @@ id = "braille_spinner_working"
 state = "working"
 priority = 90
 region = "whole_recent"
-visible_working = true
 line_regex = ['(?i)^\s*{spinner_run}\s*(thinking\.\.\.|working\.\.\.|using )']

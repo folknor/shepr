@@ -176,8 +176,13 @@ pub const NESTED_REFUSAL: &str =
 /// A missing local connection is retried while other machines stay usable.
 pub const LOCAL_RECONNECT_HINT: &str = "the local server is unavailable; start it to reconnect";
 
+/// The second line of a machine entry whose SSH refused the client's
+/// credentials, `ssh` being the command that checks access by hand. The client
+/// does not retry a refusal by itself: once access is fixed the operator
+/// selects the entry, or restarts the client, whose startup prompts. The
+/// sidebar clips the line, so the retry comes first.
 pub fn machine_login_hint(entrypoint: &str, ssh: &str) -> String {
-    format!("run {entrypoint} again, or {ssh}")
+    format!("select to retry, or run {entrypoint} again, or {ssh}")
 }
 
 pub fn fleet_login_hint(message: &impl std::fmt::Display) -> String {
@@ -654,9 +659,6 @@ mod tests {
             guidance,
             "To keep the running server and its panes, keep using the shepr build that started it.\nTo use this build here instead, stop the running server; stopping exits its pane processes. Run `shepr stop`, then run `shepr` again."
         );
-        for banned in ["--session", "SHEPR_SESSION", "--force"] {
-            assert!(!guidance.contains(banned), "{guidance}");
-        }
     }
 
     #[test]

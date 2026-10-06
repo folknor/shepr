@@ -321,6 +321,8 @@ impl AgentResumePlan {
         &self.session
     }
 
+    /// The command typed into the pane's shell, as POSIX words. Config
+    /// validation admits only POSIX-family pane shells for this reason.
     pub fn to_shell_command(&self) -> String {
         shepr_core::shell_quote::join_argv(&self.argv)
     }

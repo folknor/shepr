@@ -46,51 +46,38 @@ impl From<shepr_platform::ChildExitKind> for PaneEndReason {
     }
 }
 
-/// How a pane ended and whether its terminal core can still be read: the one
-/// place that answers whether the exit is checkpointed before the pane is
-/// removed.
+/// How a pane ended: the one place that answers whether the exit is
+/// checkpointed before the pane is removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PaneEnding {
     reason: PaneEndReason,
-    core_intact: bool,
 }
 
 impl PaneEnding {
-    /// An ending whose terminal core is intact unless the reader panicked.
     pub fn new(reason: PaneEndReason) -> Self {
-        Self {
-            reason,
-            core_intact: reason != PaneEndReason::ReaderPanicked,
-        }
+        Self { reason }
     }
 
     pub fn reason(self) -> PaneEndReason {
         self.reason
     }
 
-    /// The ending with the terminal core's condition as the caller found it
-    /// when it decided. An ending stays broken once it is.
-    pub fn with_core_intact(self, core_intact: bool) -> Self {
-        Self {
-            core_intact: self.core_intact && core_intact,
-            ..self
-        }
-    }
-
     /// Whether the exit needs a final session checkpoint before pane removal:
-    /// a signal exit, a reader IO failure or a closed terminal, while the
-    /// terminal core is intact, since a broken core has nothing new to give
-    /// the checkpoint. shepr-generated teardown signals follow pane removal,
-    /// or happen during startup failure before any pane exit event, so they
+    /// every ending the user did not ask for (a signal, a reader panic or IO
+    /// failure, a closed terminal), so its agent session is kept for resume.
+    /// A checkpoint reads layout, labels, the cwd and agent identity, none of
+    /// them from the terminal core, so a core a panic broke does not exempt
+    /// the pane. shepr-generated teardown signals follow pane removal, or
+    /// happen during startup failure before any pane exit event, so they
     /// cannot skip a checkpoint for a pane that is still live.
     pub fn needs_checkpoint(self) -> bool {
-        self.core_intact
-            && matches!(
-                self.reason,
-                PaneEndReason::Signalled
-                    | PaneEndReason::ReaderIoFailed
-                    | PaneEndReason::TerminalClosed
-            )
+        matches!(
+            self.reason,
+            PaneEndReason::Signalled
+                | PaneEndReason::ReaderPanicked
+                | PaneEndReason::ReaderIoFailed
+                | PaneEndReason::TerminalClosed
+        )
     }
 }
 
@@ -216,24 +203,18 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_follows_the_reason_and_an_intact_core() {
+    fn checkpoint_follows_the_reason() {
         use PaneEndReason::*;
         for (reason, expected) in [
             (Exited, false),
             (Signalled, true),
             (WaitFailed, false),
-            (ReaderPanicked, false),
+            (ReaderPanicked, true),
             (ReaderIoFailed, true),
             (TerminalClosed, true),
         ] {
-            let ending = PaneEnding::new(reason);
-            assert_eq!(ending.needs_checkpoint(), expected, "{reason:?}");
-            assert!(
-                !ending.with_core_intact(false).needs_checkpoint(),
-                "{reason:?}"
-            );
             assert_eq!(
-                ending.with_core_intact(true).needs_checkpoint(),
+                PaneEnding::new(reason).needs_checkpoint(),
                 expected,
                 "{reason:?}"
             );

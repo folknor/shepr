@@ -2384,17 +2384,6 @@ impl AgentOwnership {
 
 #[cfg(test)]
 impl AgentOwnership {
-    /// Convenience for the two visible-working fixtures whose expected behavior
-    /// is pending an owner decision. Time-sensitive ownership tests use the
-    /// explicit `set_detected_state_at` seam below.
-    pub fn set_detected_state(
-        &mut self,
-        agent: Option<Agent>,
-        fallback_state: AgentState,
-    ) -> Option<EffectiveStateChange> {
-        self.set_detected_state_at(agent, fallback_state, Instant::now())
-    }
-
     pub fn set_detected_state_at(
         &mut self,
         agent: Option<Agent>,

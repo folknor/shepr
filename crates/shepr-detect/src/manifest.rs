@@ -218,15 +218,14 @@ struct ManifestRule {
     priority: i32,
     #[serde(default = "default_region")]
     region: String,
-    /// `visible_idle`, `visible_blocker` and `visible_working`: the matched
-    /// screen visibly shows that state's live chrome. Validation requires the
-    /// rule's `state` to be the corresponding one.
+    /// `visible_idle` and `visible_blocker`: the matched screen visibly shows
+    /// that state's live chrome. Validation requires the rule's `state` to be
+    /// the corresponding one. Working has no such flag: nothing treats visible
+    /// working chrome differently from any other working evidence.
     #[serde(default)]
     visible_idle: bool,
     #[serde(default)]
     visible_blocker: bool,
-    #[serde(default)]
-    visible_working: bool,
     /// The screen is an agent-owned viewer (a transcript, a picker) that says
     /// nothing about the live state, so the pane keeps its previous state.
     /// Requires `state = "unknown"` and no `visible_*` flag.
@@ -1118,12 +1117,6 @@ fn compile_rule(
             rule.id
         ));
     }
-    if rule.visible_working && rule.state != AgentState::Working {
-        return Err(format!(
-            "rule {} uses visible_working without state = \"working\"",
-            rule.id
-        ));
-    }
     if rule.skip_state_update {
         if rule.state != AgentState::Unknown {
             return Err(format!(
@@ -1131,7 +1124,7 @@ fn compile_rule(
                 rule.id
             ));
         }
-        if rule.visible_idle || rule.visible_blocker || rule.visible_working {
+        if rule.visible_idle || rule.visible_blocker {
             return Err(format!(
                 "rule {} uses skip_state_update with visible state evidence",
                 rule.id
@@ -1160,7 +1153,7 @@ fn compile_rule(
         } else {
             AgentDetection::State(Detection::new(
                 rule.state,
-                rule.visible_idle || rule.visible_blocker || rule.visible_working,
+                rule.visible_idle || rule.visible_blocker,
             ))
         },
         priority: rule.priority,

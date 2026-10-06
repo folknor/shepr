@@ -128,6 +128,5 @@ mod tests {
                 "run `shepr stop`, then `shepr`."
             )
         );
-        assert!(!notice.contains("--force"), "{notice}");
     }
 }

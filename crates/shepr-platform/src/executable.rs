@@ -47,23 +47,43 @@ pub fn classify_executable(path: &Path) -> ExecutableStatus {
     }
 }
 
-/// Every shell shepr recognises, as a process name. One list serves the pane
-/// shell check in config validation and, in detection, pane-shell
-/// recognition, the generic-runtime ranking and `-c` unwrapping: each of these
-/// shells takes its command string as `-c <command>`.
+/// The shells a pane may run. Agent resume types a command into the pane's
+/// shell quoted as POSIX words (`shepr_core::shell_quote`), which only the
+/// POSIX family parses as written: nu has no `'\''` concatenation and csh
+/// expands `!` inside single quotes. So config validation admits these alone.
+const POSIX_SHELL_NAMES: &[&str] = &["sh", "bash", "dash", "zsh", "ksh", "mksh"];
+
+/// Every shell detection recognises in a pane's process tree, as a process
+/// name: pane-shell recognition, the generic-runtime ranking and `-c`
+/// unwrapping. Each of these shells takes its command string as
+/// `-c <command>`. Wider than [`POSIX_SHELL_NAMES`] because an agent may be
+/// started through any shell inside a pane.
 const SHELL_NAMES: &[&str] = &[
     "sh", "bash", "dash", "zsh", "fish", "ksh", "mksh", "csh", "tcsh", "elvish", "xonsh", "nu",
 ];
 
-/// Whether a process name (a path, or a login shell's `-`-prefixed argv0) names
-/// a shell from [`SHELL_NAMES`].
-pub fn is_pane_shell_process_name(name: &str) -> bool {
-    let normalized = name
-        .rsplit('/')
+/// A process name (a path, or a login shell's `-`-prefixed argv0) reduced to
+/// the bare program name.
+fn bare_program_name(name: &str) -> &str {
+    name.rsplit('/')
         .next()
         .unwrap_or(name)
-        .trim_start_matches('-');
+        .trim_start_matches('-')
+}
+
+/// Whether a process name names a shell from [`SHELL_NAMES`].
+pub fn is_shell_process_name(name: &str) -> bool {
+    let normalized = bare_program_name(name);
     SHELL_NAMES
+        .iter()
+        .any(|shell| shell.eq_ignore_ascii_case(normalized))
+}
+
+/// Whether a program name names a shell a pane may run, from
+/// [`POSIX_SHELL_NAMES`].
+pub fn is_pane_shell_name(name: &str) -> bool {
+    let normalized = bare_program_name(name);
+    POSIX_SHELL_NAMES
         .iter()
         .any(|shell| shell.eq_ignore_ascii_case(normalized))
 }
@@ -73,12 +93,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pane_shell_process_names_reject_exec_replacement_programs() {
-        for shell in ["bash", "-zsh", "/bin/fish"] {
-            assert!(is_pane_shell_process_name(shell), "{shell}");
+    fn shell_process_names_reject_exec_replacement_programs() {
+        for shell in ["bash", "-zsh", "/bin/fish", "nu"] {
+            assert!(is_shell_process_name(shell), "{shell}");
         }
         for program in ["vim", "nvim", "cargo", "test-runner", "opencode"] {
-            assert!(!is_pane_shell_process_name(program), "{program}");
+            assert!(!is_shell_process_name(program), "{program}");
+        }
+    }
+
+    #[test]
+    fn pane_shells_are_the_posix_family_only() {
+        for shell in POSIX_SHELL_NAMES {
+            assert!(SHELL_NAMES.contains(shell), "{shell} is also recognised");
+            assert!(is_pane_shell_name(shell), "{shell}");
+        }
+        for shell in [
+            "fish",
+            "csh",
+            "tcsh",
+            "elvish",
+            "xonsh",
+            "nu",
+            "/usr/bin/fish",
+        ] {
+            assert!(!is_pane_shell_name(shell), "{shell}");
         }
     }
 }

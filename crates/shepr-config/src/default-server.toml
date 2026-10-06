@@ -9,9 +9,10 @@
 # fails the launch.
 
 [terminal]
-# Executable used for new interactive panes.
+# Executable used for new interactive panes: a POSIX shell (sh, bash, dash, zsh,
+# ksh or mksh), because agent resume types its command into it as POSIX words.
 # Unset means $SHELL, or /bin/sh when SHELL is unset or empty. A SHELL that is not
-# a usable shell shepr recognizes fails the launch, like a bad value here.
+# a usable POSIX shell fails the launch, like a bad value here.
 # Surrounding whitespace, here or in the shell environment variable, fails the launch too.
 # default_shell = "/bin/sh"
 

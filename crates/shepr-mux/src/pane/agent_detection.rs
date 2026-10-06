@@ -532,7 +532,7 @@ mod tests {
     }
 
     #[test]
-    fn screen_publish_keeps_visible_working_without_pty_activity() {
+    fn screen_publish_keeps_working_without_pty_activity() {
         let now = std::time::Instant::now();
         let mut pending_idle = PendingIdleConfirmation::default();
 
@@ -542,7 +542,7 @@ mod tests {
                 &mut pending_idle,
             ),
             DetectionPublishDecision::Publish {
-                detection: Detection::Working { visible: true },
+                detection: Detection::Working,
                 process_exited: false,
             }
         );

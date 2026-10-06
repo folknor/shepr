@@ -294,7 +294,7 @@ not = [
     };
     assert_eq!(
         manifests.detect_input(working),
-        AgentDetection::State(Detection::Working { visible: false })
+        AgentDetection::State(Detection::Working)
     );
     let dialog = DetectionInput {
         screen: "Do you want to proceed?\nEsc to cancel",
@@ -308,7 +308,7 @@ not = [
     assert_eq!(manifests.detect_input(dialog), gated.verdict);
     assert_ne!(
         manifests.detect_input(dialog),
-        AgentDetection::State(Detection::Working { visible: false })
+        AgentDetection::State(Detection::Working)
     );
     let stale_dialog = DetectionInput {
         screen: "Do you want to proceed?\nEsc to cancel\nlater output\nmore output",
@@ -317,7 +317,7 @@ not = [
     };
     assert_eq!(
         manifests.detect_input(stale_dialog),
-        AgentDetection::State(Detection::Working { visible: false })
+        AgentDetection::State(Detection::Working)
     );
     assert!(
         parse_manifest(&rules_manifest(
@@ -883,7 +883,6 @@ id = "title"
 state = "working"
 priority = 20
 region = "osc_title"
-visible_working = true
 regex = ['^title-marker$']
 
 [[rules]]
@@ -936,7 +935,6 @@ regex = ['^progress-marker$']
             let detection = manifests.detect_input(input);
             assert_eq!(detection.state(), state);
             assert_eq!(detection.visible_idle(), state == AgentState::Idle);
-            assert_eq!(detection.visible_working(), state == AgentState::Working);
             assert_eq!(detection.visible_blocker(), state == AgentState::Blocked);
         }
         let swapped = manifests.explain_input(
@@ -960,7 +958,6 @@ fn skip_rule_suppresses_state_update_without_visible_state_evidence() {
 id = "activity"
 state = "working"
 priority = 10
-visible_working = true
 contains = ["activity-marker"]
 
 [[rules]]
@@ -982,7 +979,6 @@ contains = ["overlay-marker"]
             })
         );
         assert!(!result.verdict.visible_idle());
-        assert!(!result.verdict.visible_working());
         assert!(!result.verdict.visible_blocker());
         assert!(manifests.detect(screen).skip_state_update());
     }

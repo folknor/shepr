@@ -191,7 +191,7 @@ pub(crate) const HEARTBEAT_INTERVAL: Duration = shepr_launch::limits::HEARTBEAT_
 /// Expire an endpoint after this much transport silence, measured when the reader receives a
 /// complete frame rather than when the client loop processes it.
 ///
-/// The timeout allows ordinary network delay before marking a machine endpoint offline.
+/// The timeout allows ordinary network delay before marking an endpoint offline.
 pub(crate) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
 
 const _: () = assert!(HEARTBEAT_INTERVAL.as_millis() < HEARTBEAT_TIMEOUT.as_millis());

@@ -11,43 +11,21 @@ export default function (pi) {
   }
 
   let agentActive = false;
-  let blockedCount = 0;
   let lastState: AgentState | undefined;
   let rootSession = false;
 
   function desiredState() {
-    if (blockedCount > 0) {
-      return STATE.blocked;
-    }
-    if (agentActive) {
-      return STATE.working;
-    }
-    return STATE.idle;
+    return agentActive ? STATE.working : STATE.idle;
   }
 
   function publishState(force = false) {
     const next = desiredState();
-    // Reports carry only state, so changed local prompt labels add no new information.
     if (!force && next === lastState) {
       return;
     }
     lastState = next;
     queueState(next);
   }
-
-  pi.events.on("shepr:blocked", (data) => {
-    if (!rootSession) {
-      return;
-    }
-    if (!data?.active) {
-      blockedCount = Math.max(0, blockedCount - 1);
-      publishState();
-      return;
-    }
-
-    blockedCount += 1;
-    publishState();
-  });
 
   pi.on("session_start", async (event, ctx) => {
     // TUI only: RPC/JSON/print modes are headless (no PTY shepr can display),

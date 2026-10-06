@@ -67,6 +67,10 @@ pub(in crate::shell) enum MachineAction {
     Connect,
     /// Ask, then stop the server of another build and start this build's.
     Restart,
+    /// Try to attach again, for a machine whose SSH refused the client's
+    /// credentials: a refusal is not retried by itself, since repeated refused
+    /// logins can get the client's address banned (fail2ban, `MaxAuthTries`).
+    Retry,
 }
 
 impl MachineState {
@@ -98,12 +102,12 @@ impl MachineState {
         match self {
             Self::NotRunning => Some(MachineAction::Connect),
             Self::DifferentBuild => Some(MachineAction::Restart),
+            Self::NeedsLogin => Some(MachineAction::Retry),
             Self::Connecting
             | Self::Starting
             | Self::Stopping
             | Self::Restarting
             | Self::Offline
-            | Self::NeedsLogin
             | Self::Unavailable => None,
         }
     }
@@ -545,7 +549,7 @@ impl ClientShellState {
         let state = match mode {
             shepr_remote::ConnectMode::Start => MachineState::Starting,
             shepr_remote::ConnectMode::Restart => MachineState::Restarting,
-            shepr_remote::ConnectMode::Attach => return false,
+            shepr_remote::ConnectMode::Attach => MachineState::Connecting,
         };
         if self.machine_state(endpoint_id).is_none() {
             return false;
@@ -1290,7 +1294,7 @@ mod tests {
                 ),
                 MachineState::NeedsLogin,
                 "Needs SSH login",
-                None,
+                Some(MachineAction::Retry),
             ),
             (
                 EndpointFailure::ssh(SshFailureClass::HostKey, "Host key verification failed"),

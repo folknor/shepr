@@ -5,7 +5,6 @@ id = "osc_title_working"
 state = "working"
 priority = 1100
 region = "osc_title"
-visible_working = true
 # Braille covers <= 2.1.227; half-circles are the 2.1.228 busy spinner.
 # This classifies Claude's working title; cross-agent title cleanup strips a
 # broader set and does not decide whether a marker means working or idle.
@@ -29,7 +28,6 @@ id = "live_turn_working"
 state = "working"
 priority = 970
 region = "bottom_non_empty_lines(12)"
-visible_working = true
 any = [
   { line_regex = ['^\s*[⏸⏵].*esc to interrupt(?:\s|·|$)'] },
   { line_regex = ['^\s*{claude_live_glyph}\s+\S.*…(?:\s+\(\d+[smh](?:\s|·)|\s*$)'] },
@@ -42,7 +40,6 @@ id = "background_agents_working"
 state = "working"
 priority = 965
 region = "claude_last_non_empty_above_prompt_box"
-visible_working = true
 line_regex = ['^\s*{claude_background_glyph}\s+Waiting for [1-9]\d* background agents? to finish\s*$']
 
 [[rules]]
@@ -50,7 +47,6 @@ id = "background_mcp_task_working"
 state = "working"
 priority = 965
 region = "bottom_non_empty_lines(12)"
-visible_working = true
 # Claude renders activity summaries at column zero; wrapped continuations are indented.
 # Keeping that shape prevents user prompt text from impersonating this signal.
 regex = ['(?m)^{claude_background_glyph}[ \t]+\S[^\n]*?(?:\n[ \t]+[^\n]*?){0,3}·(?:[ \t]+|\n[ \t]*)[1-9]\d*(?:[ \t]+|\n[ \t]*)MCP(?:[ \t]+|\n[ \t]*)tasks?(?:[ \t]+|\n[ \t]*)still(?:[ \t]+|\n[ \t]*)running[ \t]*$']
@@ -68,7 +64,6 @@ id = "btw_overlay_working"
 state = "working"
 priority = 975
 region = "bottom_non_empty_lines(5)"
-visible_working = true
 line_regex = [
   '^\s*/btw(?:\s|$)',
   '(?i)esc to close\s*$',

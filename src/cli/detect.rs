@@ -276,8 +276,8 @@ pub(super) fn print_explain_text(explain: &DetectionExplanation, verbose: bool) 
         return;
     }
     println!(
-        "visible: idle={} blocker={} working={}",
-        explain.visible_idle, explain.visible_blocker, explain.visible_working
+        "visible: idle={} blocker={}",
+        explain.visible_idle, explain.visible_blocker
     );
     if !explain.evaluated_rules.is_empty() {
         println!("evaluated_rules:");

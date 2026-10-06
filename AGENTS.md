@@ -180,9 +180,11 @@ build; activating it asks first, with the same facts as the local restart
 question, then stops that server by the boot its status named and starts this
 build's), Offline (unreachable; the machine row's diagnostic badge carries the
 reason, and it is retried with the reconnect backoff), or a login entry for a
-machine whose SSH needs authentication (startup prompts for it; after startup
-the entry says to run `shepr` again or ssh to it). Navigate mode steps onto a
-Connect or Restart entry in its place among the workspaces and Enter opens it;
+machine whose SSH refused authentication (startup prompts for it; after
+startup a refusal is never retried by itself, since repeated refused logins
+can get the client's address banned, and activating the entry attaches once
+more). Navigate mode steps onto a Connect, Restart or login entry in its place
+among the workspaces and Enter opens it;
 a click on the entry, or on its machine row, does the same, and the collapsed
 sidebar strip shows each machine's state as the glyph on its machine row. A
 machine that answers with no server is not polled: the client keeps
@@ -466,8 +468,8 @@ every agent integration reports through it.
   in `shepr-git`, and the logind shutdown monitor and session checkpoint
   lifecycle live in `shepr-server`. `shepr-platform` only tells whether a
   reaped child exited with a code or was signalled; `PaneEnding` in
-  `shepr-mux`, next to the pane exit arbiter, carries why a pane ended and
-  whether its terminal core is intact, and its `needs_checkpoint()` is the one
+  `shepr-mux`, next to the pane exit arbiter, carries why a pane ended, and
+  its `needs_checkpoint()` is the one
   answer to whether the exit gets a final session checkpoint. There is no
   per-OS layer and no shims standing in for other platforms.
 - **Detection is decoupled.** The detector reads a screen snapshot and never

@@ -33,7 +33,6 @@ id = "stop_hint_working"
 state = "working"
 priority = 100
 region = "bottom_non_empty_lines(6)"
-visible_working = true
 contains = ["ctrl+c to stop"]
 
 [[rules]]
@@ -41,7 +40,6 @@ id = "background_task_status_working"
 state = "working"
 priority = 95
 region = "bottom_non_empty_lines(5)"
-visible_working = true
 line_regex = ['(?i)\b[1-9][0-9]*\s+background\s+tasks?\b']
 
 [[rules]]
@@ -49,5 +47,4 @@ id = "spinner_working"
 state = "working"
 priority = 90
 region = "bottom_non_empty_lines(8)"
-visible_working = true
 line_regex = ['^\s*(⬡|⬢|{spinner_run})\s+\p{Alphabetic}+\w*ing\b']

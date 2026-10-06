@@ -17,7 +17,6 @@ id = "spinner_working"
 state = "working"
 priority = 100
 region = "whole_recent"
-visible_working = true
 line_regex = ['^\s*{spinner_run}\s+\p{Alphabetic}+\w*ing\b']
 
 [[rules]]
@@ -25,5 +24,4 @@ id = "background_tasks_working"
 state = "working"
 priority = 90
 region = "bottom_non_empty_lines(5)"
-visible_working = true
 line_regex = ['(?i)·\s*[1-9][0-9]*\s+task']

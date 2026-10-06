@@ -309,22 +309,14 @@ impl App {
 
     fn decide_pane_exit(&mut self, death: PaneDeath) -> PreparedPaneExit {
         let pane_id = death.pane_id;
-        // A core that broke after the pane ended has nothing new to give a
-        // checkpoint. The ending carries that answer from here on: a prepared
-        // exit decides once and keeps it through the checkpoint decision.
-        let core_intact = !self
-            .terminal_runtimes
-            .get(&pane_id)
-            .is_some_and(shepr_mux::pane::PaneRuntime::terminal_core_broken);
-        let ending = death.ending.with_core_intact(core_intact);
+        let ending = death.ending;
         // Published before the checkpoint is requested: resolving the pane's
         // saved identity (its own, or one a detector release took just
         // before) marks the session dirty, so no older checkpoint can settle
         // this exit without it.
         self.publish_pane_process_exit(pane_id, ending, death.ended_at);
         // This probe decides whether to checkpoint before removal is allowed.
-        // The ending itself says whether it asks for one (it records whether
-        // the terminal core could still be read). The removal itself happens
+        // The ending itself says whether it asks for one. The removal itself happens
         // when the event is applied, since a held exit can outlive
         // intervening workspace changes.
         let decision = if ending.needs_checkpoint() && self.state.pane(pane_id).is_some() {

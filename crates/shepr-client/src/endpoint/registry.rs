@@ -24,12 +24,23 @@ pub(crate) struct EndpointConnection {
     transport: Box<dyn EndpointTransport>,
     pub(crate) generation: shepr_protocol::ConnectionGeneration,
     pub(crate) viewed: bool,
-    health: Option<EndpointHealth>,
+    health: EndpointHealth,
     /// Frame arrivals as the reader thread stamps them; a connection that has one takes
-    /// its health from it rather than from the client loop's processing.
+    /// its health from it rather than from the client loop's processing. Only synthetic
+    /// test transports have none.
     read_activity: Option<Arc<EndpointReadActivity>>,
     // Explicit detach paths use send_to before the registry is dropped.
     detach_sent: bool,
+}
+
+impl EndpointConnection {
+    fn sync_reader_activity(&mut self) {
+        if let Some(read_activity) = &self.read_activity {
+            let observation = read_activity.observed();
+            self.health
+                .sync_reader_activity(observation.last_frame_at, observation.snapshot_seen);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -73,12 +84,12 @@ impl EndpointRegistry {
 
     /// A registry whose Local slot is a server socket on this host, connected at `now`.
     pub(crate) fn new_at(
-        local: impl EndpointTransport + 'static,
+        local: NativeEndpointTransport,
         generation: ConnectionGeneration,
         now: Instant,
     ) -> Self {
         let mut registry = Self::empty();
-        registry.insert(ClientEndpointId::Local, local, generation, true, now);
+        registry.insert_native(ClientEndpointId::Local, local, generation, true, now);
         registry
     }
 
@@ -98,19 +109,6 @@ impl EndpointRegistry {
     /// as `set_viewed` later records. A bool rather than an enum: it is the only
     /// bool among these parameters, so a call site cannot swap it with another,
     /// and it mirrors the wire field and the `viewed` query.
-    pub(crate) fn insert(
-        &mut self,
-        endpoint_id: ClientEndpointId,
-        transport: impl EndpointTransport + 'static,
-        generation: ConnectionGeneration,
-        viewed: bool,
-        now: Instant,
-    ) {
-        // Local has no health heartbeat, and synthetic test transports have no reader stamp;
-        // production SSH endpoints use `insert_native` to retain reader-owned activity.
-        self.insert_with_activity(endpoint_id, transport, generation, viewed, None, now);
-    }
-
     pub(crate) fn insert_native(
         &mut self,
         endpoint_id: ClientEndpointId,
@@ -139,19 +137,17 @@ impl EndpointRegistry {
         read_activity: Option<Arc<EndpointReadActivity>>,
         now: Instant,
     ) {
-        // Machine readers timestamp complete frames before queueing them, so health deadlines
-        // measure transport silence. Local reports a dead server as a socket transport error.
-        let health = endpoint_id
-            .policy()
-            .uses_ssh_heartbeat()
-            .then(|| EndpointHealth::new(now));
+        // Every endpoint, local or SSH, keeps a heartbeat: a server that is alive but wedged
+        // (stopped, or its connection stuck) leaves its socket open and silent, which no
+        // transport error reports. Readers timestamp complete frames before queueing them, so
+        // health deadlines measure transport silence.
         if let Some(mut previous) = self.connections.insert(
             endpoint_id,
             EndpointConnection {
                 transport: Box::new(transport),
                 generation,
                 viewed,
-                health,
+                health: EndpointHealth::new(now),
                 read_activity,
                 detach_sent: false,
             },
@@ -175,13 +171,12 @@ impl EndpointRegistry {
         endpoint_id: &ClientEndpointId,
         generation: ConnectionGeneration,
     ) {
-        if let Some(health) = self
+        if let Some(connection) = self
             .connections
             .get_mut(endpoint_id)
             .filter(|connection| connection.generation == generation)
-            .and_then(|connection| connection.health.as_mut())
         {
-            health.ready();
+            connection.health.ready();
         }
     }
 
@@ -196,14 +191,9 @@ impl EndpointRegistry {
         }
         self.connections
             .values_mut()
-            .filter_map(|connection| {
-                let health = connection.health.as_mut()?;
-                if let Some(read_activity) = &connection.read_activity {
-                    let observation = read_activity.observed();
-                    health
-                        .sync_reader_activity(observation.last_frame_at, observation.snapshot_seen);
-                }
-                Some(health.next_deadline())
+            .map(|connection| {
+                connection.sync_reader_activity();
+                connection.health.next_deadline()
             })
             .min()
     }
@@ -212,14 +202,9 @@ impl EndpointRegistry {
         let actions = self
             .connections
             .iter_mut()
-            .filter_map(|(endpoint_id, connection)| {
-                let health = connection.health.as_mut()?;
-                if let Some(read_activity) = &connection.read_activity {
-                    let observation = read_activity.observed();
-                    health
-                        .sync_reader_activity(observation.last_frame_at, observation.snapshot_seen);
-                }
-                Some((endpoint_id.clone(), health.action(now)))
+            .map(|(endpoint_id, connection)| {
+                connection.sync_reader_activity();
+                (endpoint_id.clone(), connection.health.action(now))
             })
             .filter(|(_, action)| *action != HealthAction::None)
             .collect::<Vec<_>>();
@@ -229,15 +214,12 @@ impl EndpointRegistry {
                 HealthAction::Ping => {
                     let ping = ClientMessage::HealthPing;
                     if self.send_to(&endpoint_id, &ping) == EndpointSendOutcome::Sent
-                        && let Some(health) = self
-                            .connections
-                            .get_mut(&endpoint_id)
-                            .and_then(|connection| connection.health.as_mut())
+                        && let Some(connection) = self.connections.get_mut(&endpoint_id)
                     {
                         // Native transports queue the frame before this marker, so reader stamps
                         // observed during the earlier sync remain pre-probe activity.
                         // clock-io-ok: the reader thread stamps frames with the real clock.
-                        health.ping_sent(Instant::now().max(now));
+                        connection.health.ping_sent(Instant::now().max(now));
                     }
                 }
                 HealthAction::Expired => self.record_failure(
@@ -437,10 +419,33 @@ impl EndpointRegistry {
             .get_mut(endpoint_id)
             .filter(|connection| connection.generation == generation)
             .filter(|connection| connection.read_activity.is_none())
-            && let Some(health) = connection.health.as_mut()
         {
-            health.received(now);
+            connection.health.received(now);
         }
+    }
+
+    /// Inserts a synthetic transport, which has no reader stamps: its health
+    /// follows `received` instead.
+    pub(crate) fn insert(
+        &mut self,
+        endpoint_id: ClientEndpointId,
+        transport: impl EndpointTransport + 'static,
+        generation: ConnectionGeneration,
+        viewed: bool,
+        now: Instant,
+    ) {
+        self.insert_with_activity(endpoint_id, transport, generation, viewed, None, now);
+    }
+
+    /// [`Self::new_at`] over a synthetic Local transport.
+    pub(crate) fn new_synthetic_at(
+        local: impl EndpointTransport + 'static,
+        generation: ConnectionGeneration,
+        now: Instant,
+    ) -> Self {
+        let mut registry = Self::empty();
+        registry.insert(ClientEndpointId::Local, local, generation, true, now);
+        registry
     }
 
     pub(crate) fn new(
@@ -448,7 +453,7 @@ impl EndpointRegistry {
         generation: ConnectionGeneration,
     ) -> Self {
         // clock-io-ok: this test-only constructor stands in for the client launch.
-        Self::new_at(local, generation, Instant::now())
+        Self::new_synthetic_at(local, generation, Instant::now())
     }
 
     pub(crate) fn disconnect(&mut self, endpoint_id: &ClientEndpointId) {
@@ -668,52 +673,35 @@ mod tests {
         assert!(registry.viewed(&ssh_id));
     }
 
+    /// A local server that is alive but silent (stopped, or stuck) keeps its
+    /// socket open, so no transport error reports it: the heartbeat probes it
+    /// and expires the connection like a machine's.
     #[test]
-    fn recovered_local_uses_transport_failure_not_remote_health_probes() {
-        let mut registry = EndpointRegistry::empty();
+    fn a_silent_local_server_is_probed_then_expired() {
         let sent = Arc::new(Mutex::new(Vec::new()));
-        registry.insert(
-            ClientEndpointId::Local,
-            FakeTransport {
-                sent: Arc::clone(&sent),
-                error: None,
-            },
-            generation(2),
-            false,
-            Instant::now(),
-        );
-        registry.tick_health(Instant::now() + std::time::Duration::from_secs(300));
-        assert!(registry.connection(&ClientEndpointId::Local).is_some());
-        assert!(sent.lock().expect("test precondition").is_empty());
-        assert!(registry.take_failures().is_empty());
-    }
-
-    #[test]
-    fn a_local_slot_is_not_health_tracked() {
-        let sent = Arc::new(Mutex::new(Vec::new()));
-        let mut socket = EndpointRegistry::new(
+        let now = Instant::now();
+        let mut registry = EndpointRegistry::new_synthetic_at(
             FakeTransport {
                 sent: Arc::clone(&sent),
                 error: None,
             },
             generation(1),
+            now,
         );
-        assert!(
-            socket
-                .connection(&ClientEndpointId::Local)
-                .is_some_and(|connection| connection.health.is_none())
-        );
-
-        // Taken after the insert, so the connection's health clock started earlier.
-        let now = Instant::now();
+        registry.mark_ready(&ClientEndpointId::Local, generation(1));
         let ping_at = now + crate::limits::HEARTBEAT_INTERVAL;
-        let expire_at = ping_at + crate::limits::HEARTBEAT_TIMEOUT;
 
-        socket.tick_health(ping_at);
-        socket.tick_health(expire_at);
-        assert!(sent.lock().expect("test precondition").is_empty());
-        assert!(socket.connection(&ClientEndpointId::Local).is_some());
-        assert!(socket.take_failures().is_empty());
+        registry.tick_health(ping_at);
+        assert!(matches!(
+            sent.lock().expect("test precondition").as_slice(),
+            [ClientMessage::HealthPing]
+        ));
+        registry.tick_health(ping_at + crate::limits::HEARTBEAT_TIMEOUT);
+        assert!(registry.connection(&ClientEndpointId::Local).is_none());
+        let failures = registry.take_failures();
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].endpoint_id, ClientEndpointId::Local);
+        assert_eq!(failures[0].kind, io::ErrorKind::TimedOut);
     }
 
     #[test]
@@ -878,9 +866,9 @@ mod tests {
 
     #[test]
     fn a_queued_failure_makes_the_service_deadline_due() {
-        // Local has no heartbeat, so only the queued failure can wake an idle loop.
+        // A queued failure wakes the loop at once, ahead of the heartbeat deadline.
         let now = Instant::now();
-        let mut registry = EndpointRegistry::new_at(
+        let mut registry = EndpointRegistry::new_synthetic_at(
             FakeTransport {
                 sent: Arc::new(Mutex::new(Vec::new())),
                 error: Some(io::ErrorKind::BrokenPipe),
@@ -888,7 +876,10 @@ mod tests {
             generation(1),
             now,
         );
-        assert_eq!(registry.next_service_deadline(now), None);
+        assert_eq!(
+            registry.next_service_deadline(now),
+            Some(now + crate::limits::HEARTBEAT_INTERVAL)
+        );
         assert_eq!(
             registry.send_to(
                 &ClientEndpointId::Local,

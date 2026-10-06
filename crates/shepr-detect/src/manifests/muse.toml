@@ -69,7 +69,6 @@ id = "working_esc_interrupt"
 state = "working"
 priority = 900
 region = "bottom_non_empty_lines(8)"
-visible_working = true
 contains = ["esc to interrupt"]
 not = [
   { matcher = "single_select_picker" },

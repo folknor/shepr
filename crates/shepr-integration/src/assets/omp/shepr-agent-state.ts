@@ -360,18 +360,6 @@ export default function (pi, options: { idleDebounceMs?: number; retryGraceMs?: 
     publishState();
   }
 
-  pi.events.on("shepr:blocked", (data) => {
-    if (!rootSession) {
-      return;
-    }
-    if (!data?.active) {
-      deactivateBlocked();
-      return;
-    }
-
-    activateBlocked();
-  });
-
   pi.on("session_start", (event, ctx) => {
     // Use Pi's reported reason when present; a bare session_start event marks
     // the root startup needed to establish this pane's initial session.

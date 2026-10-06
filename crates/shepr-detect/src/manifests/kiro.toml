@@ -73,7 +73,6 @@ id = "live_working_footer"
 state = "working"
 priority = 950
 region = "bottom_non_empty_lines(4)"
-visible_working = true
 contains = ["kiro is working", "type to steer", "ctrl+s to queue"]
 
 [[rules]]
@@ -81,7 +80,6 @@ id = "osc_title_working"
 state = "working"
 priority = 900
 region = "osc_title"
-visible_working = true
 regex = ['(?i)^[◐◓◑◒/|\\-]\s+kiro:']
 
 [[rules]]
@@ -89,5 +87,4 @@ id = "osc_progress_working"
 state = "working"
 priority = 890
 region = "osc_progress"
-visible_working = true
 regex = ['^4;3;?$']

@@ -496,6 +496,16 @@ impl EndpointSupervisors {
         if !self.record_status(endpoint_id, generation, status.into(), now) {
             return None;
         }
+        if failure.disposition() == shepr_launch::FailureDisposition::Authentication
+            && let Some(state) = self.endpoints.get_mut(endpoint_id)
+        {
+            // A refused login is not retried by itself: each attempt offers every key
+            // and is refused, and on a host counting refusals (fail2ban, `MaxAuthTries`)
+            // that bans this client's address, turning a login problem into an outage
+            // for every client there. The machine's entry offers Retry instead.
+            shepr_platform::structured_log!(INFO, event = endpoint.attempt, outcome = "awaiting_login", endpoint = %endpoint_id, %generation, "endpoint refused authentication; waiting for the operator's retry");
+            state.next_attempt = None;
+        }
         if failure.cause() == shepr_launch::FailureCause::NoServer
             && let Some(state) = self.endpoints.get_mut(endpoint_id)
             && matches!(state.target, ConnectTarget::Ssh { .. })
@@ -612,8 +622,9 @@ impl EndpointSupervisors {
             }
             ClientEndpointStatus::Attention => {
                 state.online_since = None;
-                // Authentication, configuration or a server version may be repaired outside
-                // this client, and the client UI has no manual reconnect. Local is included:
+                // Configuration or a server version may be repaired outside this client,
+                // and the client UI has no manual reconnect for them (a refused login has
+                // one, and `record_failure` unschedules this retry for it). Local is included:
                 // restarting or upgrading its server is exactly such a repair, and with no
                 // retry a Local in attention stayed dead until the client restarted.
                 state.next_attempt = Some(retry_base + ATTENTION_RETRY_DELAY);
@@ -1087,6 +1098,46 @@ mod tests {
             Some(retry_at + INITIAL_RETRY_DELAY)
         );
         assert!(supervisors.supervises(&id));
+    }
+
+    /// A refused login is retried only when the operator asks: each automatic
+    /// attempt would be another refused login on the machine's books.
+    #[test]
+    fn a_refused_login_waits_for_the_operators_retry() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let now = Instant::now();
+        let machine = machine();
+        let id = ClientEndpointId::Ssh(machine.label.clone());
+        let mut supervisors = supervisors_for(&env, &[machine], now);
+        supervisors
+            .endpoints
+            .get_mut(&id)
+            .expect("test precondition")
+            .generation = Some(generation(9));
+
+        let refused = shepr_launch::EndpointFailure::ssh(
+            shepr_launch::SshFailureClass::Authentication,
+            "Permission denied (publickey)",
+        );
+        assert_eq!(
+            supervisors.record_failure(&id, generation(9), &refused, now),
+            Some(EndpointFailureStatus::Attention)
+        );
+        assert_eq!(supervisors.endpoints[&id].next_attempt, None);
+        assert_eq!(supervisors.next_retry_deadline(), None);
+        assert!(supervisors.supervises(&id));
+
+        let retry_at = now + ATTENTION_RETRY_DELAY;
+        assert!(supervisors.request(&id, shepr_remote::ConnectMode::Attach, retry_at));
+        assert_eq!(supervisors.next_retry_deadline(), Some(retry_at));
+        assert_eq!(
+            supervisors
+                .endpoints
+                .get_mut(&id)
+                .expect("test precondition")
+                .due_operation(retry_at),
+            Some(Operation::Connect(shepr_remote::ConnectMode::Attach))
+        );
     }
 
     #[test]
