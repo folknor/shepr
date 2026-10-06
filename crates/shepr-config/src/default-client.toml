@@ -97,7 +97,7 @@
 # While unset, mouse or key changes to the collapsed state are remembered by the client.
 # Once set, this value wins at every launch.
 
-# Capture mouse input for Shepr's mouse UI.
+# Capture mouse input for shepr's mouse UI.
 # Set false to let the terminal handle normal clicks, such as clicking URLs.
 # Pane apps like lazygit and btop can still receive mouse when they request it.
 # mouse_capture = true
@@ -137,7 +137,7 @@
 # own entry and is skipped, so one client.toml listing every host can be copied
 # to all of them; its palette is the local server's hue, the accent of
 # everything shepr draws. Without such an entry the local server's hue is blue.
-# Shepr runs ssh for a machine through a generated config that includes your
+# shepr runs ssh for a machine through a generated config that includes your
 # ~/.ssh/config first and adds ServerAliveInterval/ServerAliveCountMax as
 # fallbacks (values you set yourself win), and reuses the first authenticated
 # connection through a private OpenSSH control socket. Linux's Unix socket path
@@ -146,7 +146,7 @@
 # suffix, that machine's setup fails.
 # palette is a hue name (red, orange, yellow, green, cyan, blue, purple or
 # magenta) the expanded sidebar draws this machine's workspace and agent
-# entries in. Shepr derives the colours from the background and foreground your
+# entries in. shepr derives the colours from the background and foreground your
 # terminal reports, so they fit its theme: a tinted background (stronger on the
 # focused entry), first-line text, dimmer second-line text and an accent (the
 # workspace number, the machine name in agent entries), each kept readable

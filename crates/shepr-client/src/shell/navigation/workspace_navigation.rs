@@ -1,6 +1,6 @@
 use crate::endpoint::ClientEndpointId;
 use crate::limits::WORKSPACE_HIGHLIGHT_TIMEOUT;
-use crate::shell::endpoints::{ClientShellEndpoint, MachineAction, MachineState};
+use crate::shell::endpoints::{ClientShellEndpoint, MachineAction};
 use crate::shell::ledger::Ticket;
 use crate::shell::navigation::location::{Location, LocationTarget, PinnedLocation};
 use crate::shell::state::{ClientShellAction, ClientShellMode};
@@ -245,7 +245,6 @@ impl ClientShellState {
     ) -> bool {
         match self.machine_entry_action(endpoint_id) {
             Some(MachineAction::Connect) => {
-                self.set_machine_state(endpoint_id, MachineState::Starting);
                 outcome
                     .actions
                     .push(ClientShellAction::ConnectMachine(endpoint_id.clone()));

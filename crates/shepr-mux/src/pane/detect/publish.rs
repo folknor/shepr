@@ -163,6 +163,9 @@ impl DetectorState {
         // the agent rejected its session. This pure detector has neither the
         // public pane identity nor the saved session reference, so it logs
         // nothing here; a log of the expiry belongs to a caller holding both.
+        // Wiring that observation requires the runtime to carry the resume
+        // session and public pane id, not reconstruct them from screen text.
+        // An identified process also cannot confirm that it accepted a session.
         if withhold_agent_absence(agent, &mut self.agent_absence_hold_until, tick.now) {
             self.pending_idle.clear();
             return None;
@@ -280,7 +283,7 @@ mod tests {
     use super::super::probe::AgentDetectionPresence;
     use super::*;
     use crate::events::AppEvent;
-    use crate::limits::AGENT_STARTUP_GRACE_WINDOW;
+    use crate::limits::{AGENT_STARTUP_GRACE_WINDOW, PROCESS_RECHECK_NO_AGENT};
     use crate::pane::detect::DetectorGateDiagnostics;
     use crate::pane::launch::LaunchKind;
     use std::future::Future;
@@ -297,10 +300,7 @@ mod tests {
         let now = Instant::now();
         let mut detector = DetectorState::new(now, LaunchKind::AgentResume);
         assert_eq!(detector.current_agent(), None);
-        assert_eq!(
-            detector.tick_interval(now, false),
-            Duration::from_millis(500)
-        );
+        assert_eq!(detector.tick_interval(now, false), PROCESS_RECHECK_NO_AGENT);
         assert!(withhold_agent_absence(
             None,
             &mut detector.agent_absence_hold_until,
@@ -344,7 +344,7 @@ mod tests {
         let diagnostics = DetectorGateDiagnostics::default();
         diagnostics.update(&detector);
         assert_eq!(
-            diagnostics.active_gate(),
+            diagnostics.active_gate(now),
             Some(crate::pane::detect::DetectorGate::PendingIdleConfirmation)
         );
     }

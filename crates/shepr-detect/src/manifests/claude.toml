@@ -35,7 +35,7 @@ any = [
   { line_regex = ['^\s*{claude_live_glyph}\s+\S.*…(?:\s+\(\d+[smh](?:\s|·)|\s*$)'] },
 ]
 
-# Claude's background summaries omit ✳, its idle title marker. The live-turn
+# Claude's background summaries omit U+2733, its idle title marker. The live-turn
 # rule can include it because the rest of that line supplies separate evidence.
 [[rules]]
 id = "background_agents_working"
@@ -178,7 +178,7 @@ any = [
 # Claude marks the selected option with "❯", so every option branch has to allow
 # that prefix. Numbered branches that omit it only match options the cursor has
 # moved away from, which would leave the resting layout below unmatched:
-#   ❯ 1. Yes / 2. Yes, and don't ask again for: <cmd> / 3. No
+#   `❯ 1. Yes / 2. Yes, and don't ask again for: <cmd> / 3. No`
 # Cover both the two-option and "don't ask again" three-option shapes so this
 # rule, not the narrower generic_permission_prompt, claims Bash approvals.
 all = [

@@ -7,6 +7,7 @@ pub use shepr_protocol::AgentStatus;
 /// answers `invalid_pane_id` for text that is not a pane ID and
 /// `pane_not_found` for an ID that names no pane.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PaneTarget {
     pub pane_id: String,
 }

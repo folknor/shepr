@@ -242,9 +242,9 @@ pub fn no_server_at_override(address: &ServerAddress, runtime_dir: &Path) -> Str
     )
 }
 
-pub fn stop_timeout(label: &str, timeout: std::time::Duration, socket: &Path) -> String {
+pub fn stop_timeout(timeout: std::time::Duration, socket: &Path) -> String {
     format!(
-        "{label} did not stop within {}ms; the socket at {} is still reachable. \
+        "the server did not stop within {}ms; the socket at {} is still reachable. \
          The server may still be saving its layout; wait for shutdown to finish and \
          inspect the server log before retrying. Forcing the process to exit can lose \
          the final save",

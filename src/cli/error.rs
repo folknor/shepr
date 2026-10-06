@@ -240,7 +240,6 @@ mod tests {
     #[test]
     fn a_refused_conditional_stop_has_its_own_exit_code() {
         let refused = CliError::ServerStop(shepr_launch::stop::ServerStopError::BootMismatch {
-            label: "the server".into(),
             expected_boot_id: "1-1".parse().expect("boot identity"),
             detail: "this server is boot 2-2".into(),
         });
@@ -249,7 +248,6 @@ mod tests {
             ProcessExit::Stop(shepr_launch::stop::ServerStopExit::BootMismatch).code()
         );
         let replaced = CliError::ServerStop(shepr_launch::stop::ServerStopError::OccupantChanged {
-            label: "the server".into(),
             expected_boot_id: "1-1".parse().expect("expected boot identity"),
             actual_boot_id: "2-2".parse().expect("replacement boot identity"),
         });
@@ -298,7 +296,6 @@ mod tests {
     #[test]
     fn a_stop_with_no_server_has_its_own_exit_code() {
         let none = CliError::ServerStop(shepr_launch::stop::ServerStopError::NotRunning {
-            label: "server".into(),
             path: "/run/shepr/shepr.sock".into(),
             source: std::io::Error::from(std::io::ErrorKind::NotFound),
         });

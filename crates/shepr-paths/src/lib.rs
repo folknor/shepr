@@ -3,8 +3,10 @@
 //! [`AppPaths`] resolves the XDG directories, the build profile's runtime and
 //! data directories, the launch working directory and the [`ServerAddress`]
 //! once at the process boundary. [`BuildProfile`] decides which of those
-//! directories a build uses, and the pane markers (`SHEPR_BUILD_PROFILE`,
-//! `SHEPR_ENV`) decide whether an inherited `SHEPR_SOCKET_PATH` applies.
+//! directories a build uses. Of the pane markers, `SHEPR_BUILD_PROFILE`
+//! decides whether an inherited `SHEPR_SOCKET_PATH` applies; `SHEPR_ENV` says
+//! the process runs in a pane at all, which with the profile decides whether
+//! the TUI is refused there.
 //! Nothing here reads a config file, so crates that only need the layout
 //! (the API client, the SSH machinery, the CLI) do not link the settings.
 

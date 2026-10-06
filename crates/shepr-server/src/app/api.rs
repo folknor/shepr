@@ -73,9 +73,9 @@ impl App {
         &mut self,
         apply: impl FnOnce(&mut Self) -> T,
     ) -> (T, bool) {
-        let before = self.state.shell_projection_revision;
+        let before = self.state.shell_projection_revision();
         let result = apply(self);
-        (result, self.state.shell_projection_revision != before)
+        (result, self.state.shell_projection_revision() != before)
     }
 
     pub(crate) fn handle_api_request_with_render(
@@ -113,10 +113,10 @@ impl App {
     fn server_summary(&self) -> shepr_api::schema::ResponseResult {
         let agents = self.collect_agent_infos();
         shepr_api::schema::ResponseResult::ServerSummary {
-            workspaces: self.state.workspaces.len(),
+            workspaces: self.state.workspaces().len(),
             panes: self
                 .state
-                .workspaces
+                .workspaces()
                 .iter()
                 .map(|workspace| workspace.tree().len())
                 .sum(),
@@ -351,7 +351,7 @@ mod tests {
             .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("rename")]);
         let workspace_id = app.state.ws(0).id();
         let mut rename = |label: &str| {
-            let before = app.state.shell_projection_revision;
+            let before = app.state.shell_projection_revision();
             let outcome = app.handle_endpoint_command_with_render(
                 EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
                     workspace_id,
@@ -366,7 +366,7 @@ mod tests {
                 outcome.effects,
                 view_changed,
                 before,
-                app.state.shell_projection_revision,
+                app.state.shell_projection_revision(),
             )
         };
 
@@ -450,7 +450,7 @@ mod tests {
 
         report_runtime_exit(&mut app, dead_pane);
 
-        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces().len(), 1);
         assert_eq!(app.state.ws(0).tree().len(), 1);
     }
 
@@ -465,11 +465,11 @@ mod tests {
         let second_root = app.state.ws(1).tree().root();
 
         report_runtime_exit(&mut app, first_root);
-        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces().len(), 1);
         assert_eq!(app.state.ws(0).tree().root(), second_root);
 
         report_runtime_exit(&mut app, second_root);
-        assert!(app.state.workspaces.is_empty());
+        assert!(app.state.workspaces().is_empty());
     }
 
     /// The pane's process exit, reported by a runtime installed for it.

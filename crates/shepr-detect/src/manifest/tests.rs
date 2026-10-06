@@ -1188,7 +1188,7 @@ fn manifest_validation_rejects_excessive_rule_count() {
 id = "codex"
 "#,
     );
-    for index in 0..129 {
+    for index in 0..=MAX_RULES_PER_MANIFEST {
         manifest.push_str(&format!(
             r#"
 [[rules]]
@@ -1232,7 +1232,7 @@ contains = ["ready"]
 
 #[test]
 fn manifest_validation_rejects_excessive_matchers() {
-    let matchers = (0..33)
+    let matchers = (0..=MAX_MATCHERS_PER_GATE)
         .map(|index| format!(r#""m{index}""#))
         .collect::<Vec<_>>()
         .join(", ");
@@ -1315,4 +1315,28 @@ fn explained_regions_use_the_parsed_canonical_spelling() {
             .iter()
             .all(|rule| rule.region.to_string() == "whole_recent")
     );
+}
+
+#[test]
+fn every_region_spelling_round_trips() {
+    for region in RegionSpec::spelling_examples() {
+        assert_eq!(RegionSpec::parse(&region.to_string()), Some(region));
+    }
+}
+
+#[test]
+fn fallback_reason_spellings_round_trip() {
+    for value in FallbackReason::ALL {
+        let spelling = value.to_string();
+        assert_eq!(
+            toml::Value::try_from(value).expect("serialize enum"),
+            toml::Value::String(spelling.clone())
+        );
+        assert_eq!(
+            toml::Value::String(spelling)
+                .try_into::<FallbackReason>()
+                .expect("deserialize enum"),
+            *value
+        );
+    }
 }

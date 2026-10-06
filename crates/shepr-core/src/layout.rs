@@ -67,6 +67,11 @@ impl RatioDelta {
         Self(value)
     }
 
+    /// The signed fraction of the parent extent.
+    pub const fn get(self) -> f32 {
+        self.0
+    }
+
     const fn negated(self) -> Self {
         Self(-self.0)
     }
@@ -864,6 +869,8 @@ fn split_extent(total: u16, ratio: SplitRatio) -> (u16, u16) {
 
 #[cfg(test)]
 mod tests {
+    // Layout accepts an explicit delta; the server owns its keyboard step policy.
+    const RESIZE_DELTA: super::RatioDelta = super::RatioDelta::new(0.05);
     use super::*;
 
     #[test]
@@ -1029,7 +1036,7 @@ mod tests {
         assert!(layout.resize_pane(
             pane(1),
             NavDirection::Right,
-            RatioDelta::new(0.05),
+            RESIZE_DELTA,
             Rect::new(0, 0, 100, 40),
         ));
 
@@ -1046,12 +1053,12 @@ mod tests {
         let mut layout = sample_layout();
         let area = Rect::new(0, 0, 100, 40);
         for _ in 0..40 {
-            layout.resize_pane(pane(1), NavDirection::Right, RatioDelta::new(0.05), area);
+            layout.resize_pane(pane(1), NavDirection::Right, RESIZE_DELTA, area);
         }
         assert_eq!(split_snapshot(&layout)[0].1, MAX_SPLIT_RATIO);
 
-        assert!(!layout.resize_pane(pane(1), NavDirection::Right, RatioDelta::new(0.05), area));
-        assert!(!layout.resize_pane(pane(99), NavDirection::Right, RatioDelta::new(0.05), area));
+        assert!(!layout.resize_pane(pane(1), NavDirection::Right, RESIZE_DELTA, area));
+        assert!(!layout.resize_pane(pane(99), NavDirection::Right, RESIZE_DELTA, area));
     }
 
     #[test]
@@ -1109,13 +1116,13 @@ mod tests {
         assert!(layout.resize_pane(
             right,
             NavDirection::Left,
-            RatioDelta::new(0.05),
+            RESIZE_DELTA,
             Rect::new(0, 0, 100, 40),
         ));
 
         let split = split_snapshot(&layout)[0];
         assert_eq!(split.0, Direction::Horizontal);
-        assert!((split.1 - 0.45).abs() < f32::EPSILON);
+        assert!((split.1 - (EVEN_SPLIT - RESIZE_DELTA.get())).abs() < f32::EPSILON);
         assert_eq!(layout.focused(), root);
     }
 
@@ -1132,12 +1139,12 @@ mod tests {
         assert!(horizontal.resize_pane(
             left,
             NavDirection::Left,
-            RatioDelta::new(0.05),
+            RESIZE_DELTA,
             Rect::new(0, 0, 100, 40),
         ));
         let split = split_snapshot(&horizontal)[0];
         assert_eq!(split.0, Direction::Horizontal);
-        assert!((split.1 - 0.45).abs() < f32::EPSILON);
+        assert!((split.1 - (EVEN_SPLIT - RESIZE_DELTA.get())).abs() < f32::EPSILON);
 
         let (mut horizontal, left) = TileLayout::new();
         let right = PaneId::alloc();
@@ -1146,12 +1153,12 @@ mod tests {
         assert!(horizontal.resize_pane(
             right,
             NavDirection::Right,
-            RatioDelta::new(0.05),
+            RESIZE_DELTA,
             Rect::new(0, 0, 100, 40),
         ));
         let split = split_snapshot(&horizontal)[0];
         assert_eq!(split.0, Direction::Horizontal);
-        assert!((split.1 - 0.55).abs() < f32::EPSILON);
+        assert!((split.1 - (EVEN_SPLIT + RESIZE_DELTA.get())).abs() < f32::EPSILON);
 
         let (mut vertical, top) = TileLayout::new();
         assert!(vertical.split_pane(top, Direction::Vertical, SplitRatio::EVEN, PaneId::alloc()));
@@ -1159,12 +1166,12 @@ mod tests {
         assert!(vertical.resize_pane(
             top,
             NavDirection::Up,
-            RatioDelta::new(0.05),
+            RESIZE_DELTA,
             Rect::new(0, 0, 100, 40),
         ));
         let split = split_snapshot(&vertical)[0];
         assert_eq!(split.0, Direction::Vertical);
-        assert!((split.1 - 0.45).abs() < f32::EPSILON);
+        assert!((split.1 - (EVEN_SPLIT - RESIZE_DELTA.get())).abs() < f32::EPSILON);
 
         let (mut vertical, top) = TileLayout::new();
         let bottom = PaneId::alloc();
@@ -1173,12 +1180,12 @@ mod tests {
         assert!(vertical.resize_pane(
             bottom,
             NavDirection::Down,
-            RatioDelta::new(0.05),
+            RESIZE_DELTA,
             Rect::new(0, 0, 100, 40),
         ));
         let split = split_snapshot(&vertical)[0];
         assert_eq!(split.0, Direction::Vertical);
-        assert!((split.1 - 0.55).abs() < f32::EPSILON);
+        assert!((split.1 - (EVEN_SPLIT + RESIZE_DELTA.get())).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1202,7 +1209,7 @@ mod tests {
         assert!(layout.resize_pane(
             pane(1),
             NavDirection::Left,
-            RatioDelta::new(0.05),
+            RESIZE_DELTA,
             Rect::new(0, 0, 100, 40),
         ));
 
@@ -1211,7 +1218,7 @@ mod tests {
         assert!(after.width < before.width);
         let splits = split_snapshot(&layout);
         assert_eq!(splits[0].0, Direction::Horizontal);
-        assert!((splits[0].1 - 0.55).abs() < f32::EPSILON);
+        assert!((splits[0].1 - (0.6 - RESIZE_DELTA.get())).abs() < f32::EPSILON);
         assert_eq!(splits[1], (Direction::Vertical, 0.5));
     }
 
@@ -1236,7 +1243,7 @@ mod tests {
         assert!(layout.resize_pane(
             pane(1),
             NavDirection::Up,
-            RatioDelta::new(0.05),
+            RESIZE_DELTA,
             Rect::new(0, 0, 100, 40),
         ));
 
@@ -1245,7 +1252,7 @@ mod tests {
         assert!(after.height < before.height);
         let splits = split_snapshot(&layout);
         assert_eq!(splits[0].0, Direction::Vertical);
-        assert!((splits[0].1 - 0.55).abs() < f32::EPSILON);
+        assert!((splits[0].1 - (0.6 - RESIZE_DELTA.get())).abs() < f32::EPSILON);
         assert_eq!(splits[1], (Direction::Horizontal, 0.5));
     }
 
@@ -1274,7 +1281,7 @@ mod tests {
         assert!(layout.resize_pane(
             pane(3),
             NavDirection::Right,
-            RatioDelta::new(0.05),
+            RESIZE_DELTA,
             Rect::new(0, 0, 100, 40),
         ));
 
@@ -1282,7 +1289,7 @@ mod tests {
         assert_eq!(splits[0], (Direction::Vertical, 0.5));
         assert_eq!(splits[1], (Direction::Horizontal, 0.5));
         assert_eq!(splits[2].0, Direction::Horizontal);
-        assert!((splits[2].1 - 0.55).abs() < f32::EPSILON);
+        assert!((splits[2].1 - (EVEN_SPLIT + RESIZE_DELTA.get())).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1397,7 +1404,7 @@ mod tests {
         layout.resize_pane(
             pane(1),
             NavDirection::Right,
-            RatioDelta::new(0.05),
+            RESIZE_DELTA,
             Rect::new(0, 0, 100, 40),
         );
 

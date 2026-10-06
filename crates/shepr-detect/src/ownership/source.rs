@@ -46,6 +46,7 @@ impl AgentOwnership {
     /// selection paths discard it themselves. A parked start promoted by
     /// process evidence is a selection.
     fn apply_source_effect(&mut self, effect: HookSourceEffects) {
+        let was_active = self.full_lifecycle_hook_authority_active();
         match effect {
             HookSourceEffects::Commit {
                 authority,
@@ -67,6 +68,19 @@ impl AgentOwnership {
                 }
             }
             _ => {}
+        }
+        if !was_active && self.full_lifecycle_hook_authority_active() {
+            // Screen detection pauses for this authority interval. Withdraw
+            // its old verdict once, so releasing authority cannot resurrect
+            // evidence from before activation. Repeated reports keep this
+            // watermark, rather than pretending the detector observed again.
+            self.fallback_state = AgentState::Unknown;
+            self.fallback_visible_blocker = false;
+            self.fallback_observed_at = self
+                .fallback_observed_at
+                .into_iter()
+                .chain(self.hook_authority.as_ref().map(|hook| hook.reported_at))
+                .max();
         }
     }
 
@@ -977,6 +991,11 @@ struct StaleFullLifecycleHookSession {
 }
 
 impl AgentOwnership {
+    // Both samples use the process monotonic clock. The detector stamps the
+    // start of its probe, so delayed probe results cannot retire a hook that
+    // was admitted after that probe began. Sharing a sampling function would
+    // not make these asynchronous observations simultaneous; stamping at
+    // completion would instead let old process evidence defeat newer hooks.
     fn hook_authority_not_newer_than(&self, observed_at: Instant) -> bool {
         self.hook_authority
             .as_ref()

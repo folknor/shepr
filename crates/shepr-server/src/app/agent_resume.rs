@@ -31,7 +31,7 @@ impl App {
             return false;
         }
         self.state
-            .workspaces
+            .workspaces()
             .records()
             .any(|(_, record)| record.terminal().agent_resume().is_pending())
     }
@@ -51,7 +51,6 @@ impl App {
     /// every path that starts resumes (the loop and the geometry callbacks),
     /// so all of them share the schedule's theme wait, spacing and backoff.
     /// Reports dispatched or abandoned resumes and newly installed runtimes.
-    /// A changed pass marks the shell projection dirty.
     #[must_use]
     pub(crate) fn start_pending_agent_resumes(&mut self, now: Instant) -> ResumeOutcome {
         // The headless loop calls this on every iteration; skip the per-workspace
@@ -92,11 +91,10 @@ impl App {
         }
         self.resume_schedule.finish(&pass);
 
+        // A launched attempt goes through `begin_agent_resume_launch` and an
+        // abandoned one through `abandon_pane_agent_resume`; those reducers
+        // invalidate the projection themselves.
         outcome.consumed = pass.changed();
-        if outcome.consumed {
-            // Dispatch keeps the saved plan intact; settlement owns persistence.
-            self.state.mark_shell_projection_dirty();
-        }
         if !self.has_pending_agent_resumes() {
             self.resume_schedule.observe(now, ResumePlans::None);
         }
@@ -162,7 +160,7 @@ impl App {
     fn pending_agent_resume_candidate_iter(
         &self,
     ) -> impl Iterator<Item = PendingAgentResumeCandidate> + '_ {
-        self.state.workspaces.iter().flat_map(move |ws| {
+        self.state.workspaces().iter().flat_map(move |ws| {
             let infos = match Self::resume_layout_area(ws) {
                 Some(area) if self.workspace_has_pending_agent_resume(ws) => {
                     self.pending_agent_resume_pane_infos(ws, area)
@@ -277,7 +275,7 @@ mod tests {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         while app
             .state
-            .workspaces
+            .workspaces()
             .records()
             .any(|(_, record)| record.terminal().agent_resume().is_launching())
         {
@@ -339,7 +337,7 @@ mod tests {
         let missing =
             crate::test_support::ScratchDir::new("resume-cwd").join("__missing_resume_cwd__");
         assert!(!missing.try_exists().expect("stat missing resume cwd"));
-        for (pane, record) in app.state.workspaces.records_mut() {
+        for (pane, record) in app.state.test_workspaces_mut().records_mut() {
             let terminal = record.terminal_mut();
             // Restore builds a terminal from its saved cwd, which may have
             // disappeared; a live pane never reports a missing one.
@@ -361,9 +359,12 @@ mod tests {
         settle_resume_launches(&mut app).await;
         assert!(!app.has_pending_agent_resumes());
         assert!(app.terminal_runtimes.values().next().is_none());
-        for (_, record) in app.state.workspaces.records() {
+        for (_, record) in app.state.workspaces().records() {
             assert!(matches!(
-                record.terminal().start_failure(),
+                record.terminal().start_failure().map(|failure| match failure {
+                    shepr_mux::terminal::PaneStartFailure::ResumeFailed { failure, .. } => failure.as_ref(),
+                    other => other,
+                }),
                 Some(shepr_mux::terminal::PaneStartFailure::DirectoryUnavailable { path, .. })
                     if *path == missing
             ));
@@ -388,10 +389,7 @@ mod tests {
         assert!(app.pending_agent_resume_candidates().is_empty());
 
         app.state.terminal_mut(pending_pane).plan_agent_resume(
-            crate::test_support::test_codex_plan(
-                "shepr:codex\0codex\0Id\0probe-session",
-                long_running_test_argv(),
-            ),
+            crate::test_support::test_codex_plan("probe-session", long_running_test_argv()),
         );
         assert!(app.has_pending_agent_resume_candidates());
         let candidates = app.pending_agent_resume_candidates();
@@ -429,10 +427,7 @@ mod tests {
         unlaid.state.test_set_workspaces(vec![workspace]);
         unlaid.state.seed_bookmark_index(Some(0));
         unlaid.state.terminal_mut(unlaid_pane).plan_agent_resume(
-            crate::test_support::test_codex_plan(
-                "shepr:codex\0codex\0Id\0probe-session",
-                long_running_test_argv(),
-            ),
+            crate::test_support::test_codex_plan("probe-session", long_running_test_argv()),
         );
         assert!(!unlaid.has_pending_agent_resume_candidates());
         assert!(unlaid.pending_agent_resume_candidates().is_empty());
@@ -455,7 +450,7 @@ mod tests {
         app.state
             .terminal_mut(pane_id)
             .plan_agent_resume(crate::test_support::test_codex_plan(
-                "shepr:codex\0codex\0Id\0dispatched-session",
+                "dispatched-session",
                 long_running_test_argv(),
             ));
         report_test_host_theme(&mut app);
@@ -624,7 +619,11 @@ mod tests {
         let terminal = app.state.terminal(pane_id).expect("terminal");
         assert!(!terminal.agent_resume().is_pending());
         assert!(matches!(
-            terminal.start_failure(),
+            terminal.start_failure().map(|failure| match failure {
+                shepr_mux::terminal::PaneStartFailure::ResumeFailed { failure, .. } =>
+                    failure.as_ref(),
+                other => other,
+            }),
             Some(shepr_mux::terminal::PaneStartFailure::DirectoryUnavailable { .. })
         ));
     }
@@ -640,7 +639,7 @@ mod tests {
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
         let terminal = app.state.terminal_mut(pane_id);
         terminal.plan_agent_resume(crate::test_support::test_codex_plan(
-            "shepr:codex\0codex\0Id\0codex-session",
+            "codex-session",
             marker_resume_test_argv(),
         ));
 
@@ -691,7 +690,7 @@ mod tests {
         app.state
             .terminal_mut(pane_id)
             .plan_agent_resume(crate::test_support::test_codex_plan(
-                "shepr:codex\0codex\0Id\0codex-session",
+                "codex-session",
                 long_running_test_argv(),
             ));
 
@@ -725,7 +724,7 @@ mod tests {
             app.state
                 .terminal_mut(pane)
                 .plan_agent_resume(crate::test_support::test_codex_plan(
-                    &format!("shepr:codex\0codex\0Id\0{pane}"),
+                    &format!("{pane}"),
                     long_running_test_argv(),
                 ));
         }
@@ -768,10 +767,7 @@ mod tests {
         app.state.seed_bookmark_index(Some(0));
         report_test_host_theme(&mut app);
         app.state.terminal_mut(hidden_pane).plan_agent_resume(
-            crate::test_support::test_codex_plan(
-                "shepr:codex\0codex\0Id\0zoom-hidden-session",
-                long_running_test_argv(),
-            ),
+            crate::test_support::test_codex_plan("zoom-hidden-session", long_running_test_argv()),
         );
 
         assert!(app.start_pending_agent_resumes(Instant::now()).consumed);
@@ -804,10 +800,7 @@ mod tests {
         app.state.seed_bookmark_index(Some(1));
         report_test_host_theme(&mut app);
         app.state.terminal_mut(previous_pane).plan_agent_resume(
-            crate::test_support::test_codex_plan(
-                "shepr:codex\0codex\0Id\0codex-session",
-                long_running_test_argv(),
-            ),
+            crate::test_support::test_codex_plan("codex-session", long_running_test_argv()),
         );
 
         assert!(app.start_pending_agent_resumes(Instant::now()).consumed);
@@ -834,7 +827,7 @@ mod tests {
     #[tokio::test]
     async fn pending_agent_resume_launches_at_the_size_its_first_resize_keeps() {
         let mut app = test_app();
-        app.state.settings.pane_scrollbars = true;
+        app.state.settings_mut().pane_scrollbars = true;
         let mut workspace = shepr_mux::workspace::Workspace::test_new("split");
         let pane_id = workspace.test_split(shepr_core::layout::Direction::Horizontal);
         let area = ratatui::layout::Rect::new(0, 0, 100, 30);
@@ -864,7 +857,7 @@ mod tests {
         app.state
             .terminal_mut(pane_id)
             .plan_agent_resume(crate::test_support::test_codex_plan(
-                "shepr:codex\0codex\0Id\0codex-session",
+                "codex-session",
                 long_running_test_argv(),
             ));
 

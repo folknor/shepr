@@ -11,10 +11,9 @@ impl App {
         &mut self,
         report: super::HostAppearanceReport,
     ) -> bool {
-        if self.state.host_terminal_appearance == report {
+        if !self.state.record_host_appearance(report) {
             return false;
         }
-        self.state.host_terminal_appearance = report;
         for runtime in self.terminal_runtimes.values() {
             runtime.apply_host_terminal_appearance(report.appearance());
         }
@@ -35,11 +34,9 @@ impl App {
             return false;
         }
         self.resume_schedule.note_live_theme();
-        if theme == self.state.host_terminal_theme {
+        if !self.state.record_host_theme(theme) {
             return false;
         }
-        self.state.host_terminal_theme = theme;
-        self.state.mark_session_dirty();
         for runtime in self.terminal_runtimes.values() {
             runtime.apply_host_terminal_theme(theme);
         }

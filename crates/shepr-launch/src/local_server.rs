@@ -112,9 +112,8 @@ impl LaunchError {
             Self::TransitionTimeout { .. } | Self::BootTimeout { .. } => Retry,
             Self::DaemonFailed { class, .. } => match class {
                 DaemonExit::ConfigRefused | DaemonExit::Failed => Repair,
-                // `launch_with` waits out a daemon that gave way to another
-                // server rather than failing on it; were one to fail the
-                // launch, the occupant it met is what the next attempt finds.
+                // A clean boot exit can be transient; an AlreadyRunning exit
+                // means the next attempt can probe the competing occupant.
                 DaemonExit::Clean | DaemonExit::AlreadyRunning => Retry,
             },
             // A timeout, or a peer that went away mid-answer (a server dying
@@ -187,7 +186,7 @@ pub fn ensure_running(
 ) -> Result<RuntimeStatus, LaunchError> {
     match probe_server(paths)? {
         Probed::Running(status) => {
-            info!("server already running");
+            info!(socket = %paths.server_address().socket().display(), build_id = %status.build_id, boot_id = %status.boot_id, "server already running");
             return accept_running(paths, status, build_check);
         }
         Probed::Unresponsive => return Err(unresponsive_error(paths)),
@@ -208,7 +207,7 @@ pub fn ensure_running(
     loop {
         match probed {
             Probed::Running(status) => {
-                info!("server started by another client");
+                info!(socket = %paths.server_address().socket().display(), build_id = %status.build_id, boot_id = %status.boot_id, "server started by another client");
                 return accept_running(paths, status, build_check);
             }
             Probed::Unresponsive => return Err(unresponsive_error(paths)),
@@ -247,12 +246,15 @@ pub fn ensure_running(
 /// [`LaunchError::TransitionTimeout`]. A live listener that does not answer,
 /// or a socket that cannot be judged, is an error, as it is for a launch, and
 /// the same [`LaunchError`] a launch would report: `Unresponsive` for the
-/// silent listener, `Io` for the socket.
+/// silent listener, `Io` for the socket. `on_starting` runs once before that
+/// wait, so the CLI can say why it pauses; this crate does not print.
 pub fn running_server_status(
     paths: &shepr_paths::AppPaths,
+    on_starting: impl FnOnce(),
 ) -> Result<Option<RuntimeStatus>, LaunchError> {
     let probed = match probe_server(paths)? {
         Probed::Starting => {
+            on_starting();
             // The launcher's readiness budget. A boot that cannot settle
             // within it gets no restart offer: the error says so, and the
             // launch that follows waits for it under its own budget.
@@ -542,12 +544,22 @@ pub fn sibling_server_status() -> SiblingServerJson {
 
 /// Kills and reaps a version probe being abandoned. The caller returns the
 /// probe's own failure; a cleanup failure is only logged beside it.
-fn reap_version_child(child: &mut Child, server: &Path) {
+fn reap_version_child(mut child: Child, server: &Path) {
     if let Err(error) = child.kill() {
         tracing::warn!(%error, server = %server.display(), "could not kill server version probe");
     }
-    if let Err(error) = child.wait() {
-        tracing::warn!(%error, server = %server.display(), "could not reap server version probe");
+    let server = server.to_path_buf();
+    // Reaping can block even after SIGKILL if the child is uninterruptible.
+    // Keep that wait off the caller's expired probe deadline.
+    if let Err(error) = std::thread::Builder::new()
+        .name("shepr-version-reaper".into())
+        .spawn(move || {
+            if let Err(error) = child.wait() {
+                tracing::warn!(%error, server = %server.display(), "could not reap server version probe");
+            }
+        })
+    {
+        tracing::warn!(%error, "could not start server version probe cleanup");
     }
 }
 
@@ -574,12 +586,12 @@ fn read_server_version_line(server: &Path, timeout: Duration) -> io::Result<Stri
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(error) => {
-                reap_version_child(&mut child, server);
+                reap_version_child(child, server);
                 return Err(error);
             }
         }
         if real_now() >= deadline {
-            reap_version_child(&mut child, server);
+            reap_version_child(child, server);
             return Err(io::Error::new(
                 io::ErrorKind::TimedOut,
                 format!(
@@ -831,8 +843,10 @@ fn launch_with(
         let nothing_listens = matches!(probed, Probed::NoServer);
         if let Probed::Running(status) = probed {
             if status.build_id.is_this_build() {
-                // Nothing in the boot log matters once the daemon is up, and
-                // the daemon keeps the descriptor for its whole life.
+                // Empty startup diagnostics after readiness. This is not a
+                // lifetime cap: a daemon whose file logging failed may keep
+                // stderr here. Capping that stream needs a bounded stderr
+                // sink owned by the server, beyond this launch-time guard.
                 if let Err(error) = boot_log_handle.set_len(0) {
                     tracing::debug!(%error, "could not empty the server boot log");
                 }
@@ -949,7 +963,7 @@ fn sibling_build_mismatch(files: &LaunchFiles<'_>, status: &RuntimeStatus) -> La
 /// directory stays referenced). The directory the user launched from still
 /// reaches the server, as `SHEPR_STARTUP_CWD`, and is the server's resolved
 /// current directory (`AppPaths::resolve_for_server`): new terminals,
-/// `new_terminal_cwd = "current"` and a relative `new_terminal_cwd` resolve
+/// `terminal.new_cwd = "current"` and a relative `terminal.new_cwd` resolve
 /// against it, not against this working directory. Home rather than `/` in
 /// case a launch hands over no directory, since the server then falls back
 /// to its own.
@@ -964,8 +978,8 @@ fn server_daemon_working_dir(paths: &shepr_paths::AppPaths) -> PathBuf {
 ///   leads a process group the launch guard can kill as a whole;
 /// - stdin and stdout are `/dev/null`; stderr is `/dev/null` here and the
 ///   launch replaces it with the boot log;
-/// - inherits the surrounding environment and gets the already-resolved socket
-///   target, including removals for inherited overrides that were superseded.
+/// - inherits the surrounding environment with `SHEPR_SOCKET_PATH` removed;
+///   the daemon resolves its own profile runtime address.
 fn build_server_daemon_command(
     exe: &Path,
     working_dir: &Path,

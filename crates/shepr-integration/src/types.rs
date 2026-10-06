@@ -107,7 +107,7 @@ impl std::fmt::Display for InstallError {
             | Self::AgentDirMissing(message) => formatter.write_str(message),
             Self::ConfigChanged(path) => write!(
                 formatter,
-                "{} changed while Shepr was preparing an update",
+                "{} changed while shepr was preparing an update",
                 path.display()
             ),
             Self::NotRegularFile(error) => error.fmt(formatter),

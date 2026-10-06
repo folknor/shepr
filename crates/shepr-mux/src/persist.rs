@@ -9,13 +9,6 @@
 //! server retires that persister, preventing another server from restoring
 //! stale files while this one still owns live panes.
 //!
-//! The files of this module, by job: `schema` is the on-disk schema, `capture`
-//! reads the live session into it, `files` is path policy, publication and
-//! reading, `recovery` makes and prunes recovery copies, and `writer` is the
-//! save sequence over them. `open` is a boot's open sequence (load, restore,
-//! the loss and backup decisions, the persister that takes the lease), which
-//! the server calls once and builds its state from.
-
 mod actor;
 mod capture;
 mod error;

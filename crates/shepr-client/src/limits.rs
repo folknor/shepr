@@ -187,7 +187,7 @@ pub(crate) const ENDPOINT_MOVE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Endpoint heartbeat interval, the connection-health cadence the remote
 /// host's SSH bridge expiry is checked against.
-pub(crate) const HEARTBEAT_INTERVAL: Duration = shepr_launch::connection_health::HEARTBEAT_INTERVAL;
+pub(crate) const HEARTBEAT_INTERVAL: Duration = shepr_launch::limits::HEARTBEAT_INTERVAL;
 /// Expire an endpoint after this much transport silence, measured when the reader receives a
 /// complete frame rather than when the client loop processes it.
 ///

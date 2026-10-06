@@ -33,8 +33,8 @@ pub(crate) struct ClientShellEndpoint {
 
 /// What a configured machine's sidebar entry says while the machine is not
 /// connected. A failed attempt sets it from what the failure says
-/// ([`MachineState::after_failure`]); the operator's Connect and Restart set the
-/// state their attempt is in.
+/// ([`MachineState::after_failure`]); a Connect or Restart entry changes only
+/// after its request is accepted by the endpoint supervisor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MachineState {
     /// Being reached: the first attempt, a retry after a transient failure, or
@@ -522,6 +522,26 @@ impl ClientShellState {
         self.reconcile_navigate_machine_entry();
     }
 
+    /// Records a Connect or Restart only after its endpoint supervisor accepted
+    /// the request. The shell's action handlers emit the request without
+    /// changing the entry optimistically.
+    pub(crate) fn machine_request_accepted(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        mode: shepr_remote::ConnectMode,
+    ) -> bool {
+        let state = match mode {
+            shepr_remote::ConnectMode::Start => MachineState::Starting,
+            shepr_remote::ConnectMode::Restart => MachineState::Restarting,
+            shepr_remote::ConnectMode::Attach => return false,
+        };
+        if self.machine_state(endpoint_id).is_none() {
+            return false;
+        }
+        self.set_machine_state(endpoint_id, state);
+        true
+    }
+
     /// A handshake starts a new presentation generation. Until its own snapshot arrives,
     /// the previous generation is retained only as stale display data.
     pub(crate) fn endpoint_connected(
@@ -875,6 +895,17 @@ pub(in crate::shell) fn local_endpoint() -> ClientShellEndpoint {
     }
 }
 
+impl ClientShellState {
+    /// What a configured machine's entry says, `None` for an endpoint that is not
+    /// configured.
+    pub(crate) fn machine_state(&self, endpoint_id: &ClientEndpointId) -> Option<MachineState> {
+        self.endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .map(|endpoint| endpoint.machine)
+    }
+}
+
 #[cfg(test)]
 impl ClientShellState {
     pub(in crate::shell) fn set_snapshot(&mut self, snapshot: Box<ClientShellSnapshot>) {
@@ -1022,18 +1053,6 @@ impl ClientShellState {
 
     pub(in crate::shell) fn active_endpoint_id(&self) -> &ClientEndpointId {
         self.endpoints.presented()
-    }
-}
-
-#[cfg(test)]
-impl ClientShellState {
-    /// What a configured machine's entry says, `None` for an endpoint that is not
-    /// configured.
-    pub(crate) fn machine_state(&self, endpoint_id: &ClientEndpointId) -> Option<MachineState> {
-        self.endpoints
-            .iter()
-            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-            .map(|endpoint| endpoint.machine)
     }
 }
 

@@ -291,7 +291,7 @@ fn bookmark_repair_has_a_restore_card_without_claiming_data_loss() {
     let boot = crate::tests::test_boot_id("bookmark-repaired");
     let notice = shepr_protocol::SessionRestoreNotice {
         loss: shepr_protocol::SessionRestoreLoss::Damaged(shepr_protocol::SessionRestoreDamage {
-            repaired_bookmarks: 1,
+            repaired_bookmark: true,
             ..Default::default()
         }),
         backup_dir: "/state/session-backups".into(),

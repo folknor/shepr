@@ -239,7 +239,7 @@ mod tests {
         use super::super::test_support::shutdown_test_runtimes;
 
         let mut app = app();
-        app.state.settings.pane_scrollbars = false;
+        app.state.settings_mut().pane_scrollbars = false;
         let geometry = SpawnGeometry {
             area: shepr_core::geometry::Rect::new(0, 0, 100, 30),
             cell: shepr_core::geometry::CellPx::new(9, 18),
@@ -349,14 +349,14 @@ mod tests {
         app.state.close_workspace(&anchor);
         let order = app
             .state
-            .workspaces
+            .workspaces()
             .iter()
             .map(|ws| ws.name().to_owned())
             .collect::<Vec<_>>();
         assert!(app.handle_workspace_move(&command).is_err());
         assert_eq!(
             app.state
-                .workspaces
+                .workspaces()
                 .iter()
                 .map(|ws| ws.name().to_owned())
                 .collect::<Vec<_>>(),
@@ -378,7 +378,7 @@ mod tests {
             .expect("the workspace closes");
 
         assert_eq!(handled.reply, EndpointReply::Done);
-        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces().len(), 1);
         assert_eq!(app.state.ws(0).name(), "survivor");
     }
 
@@ -387,7 +387,7 @@ mod tests {
         let mut app = app();
         app.state
             .test_set_workspaces(vec![Workspace::test_new("one"), Workspace::test_new("two")]);
-        app.state.session_dirty = false;
+        app.state.test_clear_session_dirty();
         let target = app.state.ws(1).id();
 
         let handled = app
@@ -401,7 +401,7 @@ mod tests {
             panic!("expected workspace info");
         };
         assert_eq!(workspace.workspace_id, target);
-        assert!(!app.state.session_dirty, "nothing was mutated");
+        assert!(!app.state.session_dirty(), "nothing was mutated");
 
         // The same again, as when the requester already views it.
         let again = app
@@ -490,10 +490,10 @@ mod tests {
         })
         .expect("the workspace is renamed");
 
-        assert!(app.state.session_dirty);
+        assert!(app.state.session_dirty());
         assert_eq!(app.session_saver.autosave_deadline(), None);
         app.sync_session_save_schedule();
-        assert!(!app.state.session_dirty);
+        assert!(!app.state.session_dirty());
         assert_eq!(
             app.session_saver.autosave_deadline(),
             Some(sample.now + crate::limits::SESSION_SAVE_DEBOUNCE)

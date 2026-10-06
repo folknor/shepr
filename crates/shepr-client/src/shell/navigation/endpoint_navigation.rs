@@ -308,7 +308,7 @@ mod tests {
     /// The machine row of a machine that offers Connect acts as its entry, in the
     /// collapsed strip as in the expanded sidebar.
     #[test]
-    fn a_machine_row_that_offers_connect_connects() {
+    fn a_machine_row_that_offers_connect_emits_a_request() {
         let (mut state, id) = not_running_machine();
         state
             .presentation
@@ -326,7 +326,7 @@ mod tests {
         ));
         assert_eq!(
             state.machine_state(&id),
-            Some(crate::shell::MachineState::Starting)
+            Some(crate::shell::MachineState::NotRunning)
         );
     }
 }

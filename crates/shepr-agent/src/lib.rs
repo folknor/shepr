@@ -1219,31 +1219,36 @@ mod tests {
             FullLifecycle, IdentityOnly, PartialState, ScreenOwnedSession,
         };
         let expected = [
-            Some(FullLifecycle),
-            Some(ScreenOwnedSession),
-            Some(PartialState),
-            None,
-            Some(ScreenOwnedSession),
-            Some(ScreenOwnedSession),
-            Some(IdentityOnly),
-            None,
-            Some(FullLifecycle),
-            Some(FullLifecycle),
-            Some(FullLifecycle),
-            Some(ScreenOwnedSession),
-            Some(FullLifecycle),
-            None,
-            Some(ScreenOwnedSession),
-            None,
-            Some(ScreenOwnedSession),
-            Some(FullLifecycle),
-            None,
-            None,
-            None,
-            None,
-            None,
+            (Agent::Pi, Some(FullLifecycle)),
+            (Agent::Claude, Some(ScreenOwnedSession)),
+            (Agent::Codex, Some(PartialState)),
+            (Agent::Gemini, None),
+            (Agent::Cursor, Some(ScreenOwnedSession)),
+            (Agent::Devin, Some(ScreenOwnedSession)),
+            (Agent::Antigravity, Some(IdentityOnly)),
+            (Agent::Cline, None),
+            (Agent::Omp, Some(FullLifecycle)),
+            (Agent::Mastracode, Some(FullLifecycle)),
+            (Agent::OpenCode, Some(FullLifecycle)),
+            (Agent::GithubCopilot, Some(ScreenOwnedSession)),
+            (Agent::Kimi, Some(FullLifecycle)),
+            (Agent::Kiro, None),
+            (Agent::Droid, Some(ScreenOwnedSession)),
+            (Agent::Amp, None),
+            (Agent::Grok, Some(ScreenOwnedSession)),
+            (Agent::Kilo, Some(FullLifecycle)),
+            (Agent::Qodercli, None),
+            (Agent::Qwen, None),
+            (Agent::Letta, None),
+            (Agent::Maki, None),
+            (Agent::Muse, None),
         ];
-        for (descriptor, expected) in AGENTS.iter().zip(expected) {
+        assert_eq!(expected.len(), AGENTS.len());
+        for descriptor in &AGENTS {
+            let expected = expected
+                .iter()
+                .find_map(|(agent, capability)| (*agent == descriptor.agent).then_some(*capability))
+                .expect("every agent has an expected integration capability");
             assert_eq!(
                 descriptor
                     .integration

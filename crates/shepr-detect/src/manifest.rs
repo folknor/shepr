@@ -86,23 +86,13 @@ fn expand_named_regex_classes(pattern: &str) -> String {
         })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FallbackReason {
-    DefaultKnownAgentIdleFallback,
-    NoScreenManifest,
-    ManifestUnknownFallback,
-    UnknownAgent,
-}
-
-impl std::fmt::Display for FallbackReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::DefaultKnownAgentIdleFallback => "default_known_agent_idle_fallback",
-            Self::NoScreenManifest => "no_screen_manifest",
-            Self::ManifestUnknownFallback => "manifest_unknown_fallback",
-            Self::UnknownAgent => "unknown_agent",
-        })
+shepr_core::named_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub enum FallbackReason {
+        DefaultKnownAgentIdleFallback => "default_known_agent_idle_fallback",
+        NoScreenManifest => "no_screen_manifest",
+        ManifestUnknownFallback => "manifest_unknown_fallback",
+        UnknownAgent => "unknown_agent",
     }
 }
 
@@ -445,91 +435,95 @@ struct CompiledRegion {
     spec: RegionSpec,
 }
 
-/// The text a rule or gate reads, named in a manifest by the spelling
-/// [`RegionSpec::parse`] accepts.
-///
-/// The Codex prompt regions share one structure: a prompt line is `›` or
-/// starts with `› `, a block marker line starts with `•`, `■`, a cross mark
-/// (U+2717) or a check mark (U+2713), and the current prompt is the last prompt
-/// line with no block marker below it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RegionSpec {
-    /// `whole_recent`: the whole detection snapshot.
-    WholeRecent,
-    /// `codex_after_last_prompt_marker`: text after Codex's last `›` prompt line.
-    CodexAfterLastPromptMarker,
-    /// `codex_before_current_prompt_marker`: text before Codex's current `›` prompt line.
-    CodexBeforeCurrentPromptMarker,
-    /// `codex_whole_recent_without_current_prompt_marker`: empty while a current
-    /// Codex prompt exists.
-    CodexWholeRecentWithoutCurrentPromptMarker,
-    /// `claude_prompt_box_body`: lines inside Claude's bottom-most prompt box.
-    ClaudePromptBoxBody,
-    /// `claude_last_non_empty_above_prompt_box`: the last non-empty line before
-    /// Claude's bottom-most prompt box, or the last non-empty screen line without one.
-    ClaudeLastNonEmptyAbovePromptBox,
-    /// `after_last_horizontal_rule`: text after the last `─` rule line.
-    AfterLastHorizontalRule,
-    /// `osc_title`: the last OSC window title, not the screen.
-    OscTitle,
-    /// `osc_progress`: the last OSC 9;4 progress report as `4;state[;percent]`,
-    /// not the screen.
-    OscProgress,
-    /// `bottom_non_empty_lines(N)` and `top_non_empty_lines(N)`: bounded by
-    /// `MIN_REGION_LINE_COUNT..=MAX_REGION_LINE_COUNT`, written without a leading zero.
-    BottomNonEmptyLines(usize),
-    TopNonEmptyLines(usize),
+// A region declaration generates both directions, including parameter prefixes.
+macro_rules! region_specs {
+    ($(#[$attr:meta])* pub enum $name:ident {
+        $($(#[$unit_attr:meta])* $unit:ident => $unit_name:literal,)*
+        ;
+        $($(#[$count_attr:meta])* $count:ident(usize) => $count_name:literal),* $(,)?
+    }) => {
+        $(#[$attr])*
+        pub enum $name {
+            $($(#[$unit_attr])* $unit,)*
+            $($(#[$count_attr])* $count(usize)),*
+        }
+
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $(Self::$unit => f.write_str($unit_name),)*
+                    $(Self::$count(count) => write!(f, "{}({count})", $count_name)),*
+                }
+            }
+        }
+
+        impl $name {
+            fn parse(spec: &str) -> Option<Self> {
+                let trimmed = spec.trim();
+                match trimmed {
+                    $($unit_name => Some(Self::$unit),)*
+                    _ => {
+                        $(if let Some(count) = region_count(trimmed, $count_name) {
+                            return Some(Self::$count(count));
+                        })*
+                        None
+                    }
+                }
+            }
+
+            // Not gated on a test cfg: one here would put the rest of this
+            // file below a test cfg, which the skip-after-scopes check refuses.
+            #[cfg_attr(
+                not(test),
+                expect(dead_code, reason = "only the round-trip test enumerates every spelling")
+            )]
+            fn spelling_examples() -> Vec<Self> {
+                vec![$(Self::$unit,)* $(Self::$count(MIN_REGION_LINE_COUNT), Self::$count(MAX_REGION_LINE_COUNT)),*]
+            }
+        }
+    };
 }
 
-impl std::fmt::Display for RegionSpec {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::WholeRecent => f.write_str("whole_recent"),
-            Self::CodexAfterLastPromptMarker => f.write_str("codex_after_last_prompt_marker"),
-            Self::CodexBeforeCurrentPromptMarker => {
-                f.write_str("codex_before_current_prompt_marker")
-            }
-            Self::CodexWholeRecentWithoutCurrentPromptMarker => {
-                f.write_str("codex_whole_recent_without_current_prompt_marker")
-            }
-            Self::ClaudePromptBoxBody => f.write_str("claude_prompt_box_body"),
-            Self::ClaudeLastNonEmptyAbovePromptBox => {
-                f.write_str("claude_last_non_empty_above_prompt_box")
-            }
-            Self::AfterLastHorizontalRule => f.write_str("after_last_horizontal_rule"),
-            Self::OscTitle => f.write_str("osc_title"),
-            Self::OscProgress => f.write_str("osc_progress"),
-            Self::BottomNonEmptyLines(count) => write!(f, "bottom_non_empty_lines({count})"),
-            Self::TopNonEmptyLines(count) => write!(f, "top_non_empty_lines({count})"),
-        }
+region_specs! {
+    /// The text a rule or gate reads, named in a manifest by the spelling
+    /// [`RegionSpec::parse`] accepts.
+    ///
+    /// The Codex prompt regions share one structure: a prompt line is `›` or
+    /// starts with `› `, a block marker line starts with `•`, `■`, a cross mark
+    /// (U+2717) or a check mark (U+2713), and the current prompt is the last prompt
+    /// line with no block marker below it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum RegionSpec {
+        /// `whole_recent`: the whole detection snapshot.
+        WholeRecent => "whole_recent",
+        /// `codex_after_last_prompt_marker`: text after Codex's last `›` prompt line.
+        CodexAfterLastPromptMarker => "codex_after_last_prompt_marker",
+        /// `codex_before_current_prompt_marker`: text before Codex's current `›` prompt line.
+        CodexBeforeCurrentPromptMarker => "codex_before_current_prompt_marker",
+        /// `codex_whole_recent_without_current_prompt_marker`: empty while a current
+        /// Codex prompt exists.
+        CodexWholeRecentWithoutCurrentPromptMarker => "codex_whole_recent_without_current_prompt_marker",
+        /// `claude_prompt_box_body`: lines inside Claude's bottom-most prompt box.
+        ClaudePromptBoxBody => "claude_prompt_box_body",
+        /// `claude_last_non_empty_above_prompt_box`: the last non-empty line before
+        /// Claude's bottom-most prompt box, or the last non-empty screen line without one.
+        ClaudeLastNonEmptyAbovePromptBox => "claude_last_non_empty_above_prompt_box",
+        /// `after_last_horizontal_rule`: text after the last `─` rule line.
+        AfterLastHorizontalRule => "after_last_horizontal_rule",
+        /// `osc_title`: the last OSC window title, not the screen.
+        OscTitle => "osc_title",
+        /// `osc_progress`: the last OSC 9;4 progress report as `4;state[;percent]`,
+        /// not the screen.
+        OscProgress => "osc_progress",
+        ;
+        /// `bottom_non_empty_lines(N)` and `top_non_empty_lines(N)`: bounded by
+        /// `MIN_REGION_LINE_COUNT..=MAX_REGION_LINE_COUNT`, written without a leading zero.
+        BottomNonEmptyLines(usize) => "bottom_non_empty_lines",
+        TopNonEmptyLines(usize) => "top_non_empty_lines",
     }
 }
 
 impl RegionSpec {
-    fn parse(spec: &str) -> Option<Self> {
-        let trimmed = spec.trim();
-        Some(match trimmed {
-            "whole_recent" => Self::WholeRecent,
-            "codex_after_last_prompt_marker" => Self::CodexAfterLastPromptMarker,
-            "codex_before_current_prompt_marker" => Self::CodexBeforeCurrentPromptMarker,
-            "codex_whole_recent_without_current_prompt_marker" => {
-                Self::CodexWholeRecentWithoutCurrentPromptMarker
-            }
-            "claude_prompt_box_body" => Self::ClaudePromptBoxBody,
-            "claude_last_non_empty_above_prompt_box" => Self::ClaudeLastNonEmptyAbovePromptBox,
-            "after_last_horizontal_rule" => Self::AfterLastHorizontalRule,
-            "osc_title" => Self::OscTitle,
-            "osc_progress" => Self::OscProgress,
-            _ => {
-                if let Some(count) = region_count(trimmed, "bottom_non_empty_lines") {
-                    Self::BottomNonEmptyLines(count)
-                } else {
-                    Self::TopNonEmptyLines(region_count(trimmed, "top_non_empty_lines")?)
-                }
-            }
-        })
-    }
-
     /// Extract this region without building a line index for a detection tick.
     fn extract<'a>(self, input: DetectionInput<'a>) -> &'a str {
         match self {

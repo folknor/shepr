@@ -46,11 +46,14 @@ impl SshStdioBridge {
         let should_stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&should_stop);
         let ssh_options = ssh_options.clone();
-        // Setup errors return through this same joined worker result;
-        // the endpoint supervisor logs the classified transition once.
-        let worker = thread::spawn(move || {
-            bridge_connection(stream, &target, &remote_command, &ssh_options, &thread_stop)
-        });
+        // Worker setup errors return immediately; connection setup errors
+        // return through its joined result. The supervisor logs the transition.
+        let worker = thread::Builder::new()
+            .name("shepr-ssh-bridge".into())
+            .spawn(move || {
+                bridge_connection(stream, &target, &remote_command, &ssh_options, &thread_stop)
+            })
+            .map_err(|error| local_setup_error("could not start local ssh bridge worker", error))?;
         Ok((
             Self {
                 should_stop,

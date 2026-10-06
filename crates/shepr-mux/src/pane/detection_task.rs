@@ -73,6 +73,7 @@ impl DetectionTask {
             if !launch.launched().await {
                 return;
             }
+            // clock-io-ok: detection samples elapsed time at its observation boundary.
             let detector = DetectorState::new(Instant::now(), launch_purpose);
             handles.detector_gate_diagnostics.update(&detector);
             let task = Self {
@@ -132,6 +133,7 @@ impl DetectionTask {
                             agent: last_agent,
                             detection: shepr_detect::Detection::Unknown,
                             process_exited: false,
+                            // clock-io-ok: a failed worker withdraws evidence at this boundary.
                             observed_at: Instant::now(),
                         },
                     )
@@ -162,7 +164,16 @@ impl DetectionTask {
     async fn blocking_tick(
         mut self,
     ) -> Result<(Self, Option<(Instant, TickOutput)>), tokio::task::JoinError> {
+        // One process-wide cap (`DETECTOR_TICK_CONCURRENCY`, which says why
+        // it is large) over ticks a pane already runs one at a time. Acquire
+        // before spawning, and retain the permit in the job: aborting its
+        // async waiter cannot free capacity while /proc I/O still runs.
+        static TICKS: tokio::sync::Semaphore =
+            tokio::sync::Semaphore::const_new(crate::limits::DETECTOR_TICK_CONCURRENCY);
+        let permit = TICKS.acquire().await;
         tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            // clock-io-ok: stamp before probing, never after a potentially stalled read.
             let now = Instant::now();
             let output = self.tick(now).map(|output| (now, output));
             self.handles

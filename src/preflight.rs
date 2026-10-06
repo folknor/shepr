@@ -51,11 +51,7 @@ pub(crate) fn run(
     } else {
         None
     };
-    let outcomes = if machines.is_empty() {
-        Vec::new()
-    } else {
-        shepr_remote::preflight(machines, &ssh, authentication_prompt)
-    };
+    let (outcomes, connectors) = ssh.run(machines, authentication_prompt);
 
     let mut decide_local = |status: &RuntimeStatus| {
         if confirm(&local_offer(status)) {
@@ -81,32 +77,30 @@ pub(crate) fn run(
     {
         crate::cli::print_notice(&notice);
     }
-    ssh.into_connectors(machines)
+    connectors
 }
 
 /// The status of a running local server of any build, when this client can
 /// start its replacement. A socket override names an existing server but is
 /// not an address this client can launch for, so it gets no restart offer. A
-/// server that cannot be read is also left for the launch that follows to
-/// report: it probes the same socket and prints the full refusal, guidance
-/// included, so the log line here only names the failure.
+/// server that cannot be read is reported here, since a multi-machine TUI
+/// can continue without the local endpoint.
 fn local_server_status(paths: &shepr_paths::AppPaths) -> Option<RuntimeStatus> {
-    use shepr_launch::local_server::LaunchError;
-
     if !paths.server_address().is_runtime_address() {
         return None;
     }
-    match shepr_launch::local_server::running_server_status(paths) {
+    let announce_wait = || {
+        crate::cli::print_notice(
+            &"shepr: the local server is starting; waiting for it to be ready.",
+        );
+    };
+    match shepr_launch::local_server::running_server_status(paths, announce_wait) {
         Ok(status) => status,
-        Err(LaunchError::Unresponsive { .. }) => {
-            tracing::warn!(
-                "no restart offer: the local server is listening but not answering status requests"
-            );
-            None
-        }
-        // The probe's own socket error: short, and carrying no guidance.
         Err(error) => {
-            tracing::warn!(error_kind = ?error.kind(), %error, "no restart offer: cannot read the local server");
+            tracing::warn!(socket = %paths.server_address().socket().display(), error_kind = ?error.kind(), %error, "no restart offer: cannot read the local server");
+            crate::cli::print_notice(&format!(
+                "shepr: cannot check the local server for a restart: {error}"
+            ));
             None
         }
     }
@@ -512,7 +506,6 @@ mod tests {
 
     fn boot_mismatch() -> ServerStopError {
         ServerStopError::BootMismatch {
-            label: "server".into(),
             expected_boot_id: "1-1".parse().expect("boot identity"),
             detail: "it is boot 2-2".into(),
         }
@@ -679,7 +672,6 @@ mod tests {
         let mut script = LocalScript::new(
             vec![Some(status(other_build(), "1-1"))],
             vec![Err(ServerStopError::NotRunning {
-                label: "server".into(),
                 path: "/run/shepr/server.sock".into(),
                 source: std::io::Error::from(std::io::ErrorKind::NotFound),
             })],

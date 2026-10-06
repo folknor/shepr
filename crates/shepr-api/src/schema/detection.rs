@@ -5,19 +5,11 @@ use shepr_agent::AgentState;
 use shepr_detect::manifest::{DetectionExplain, FallbackReason, SkippedUpdateReason};
 use shepr_detect::ownership::HookRejection;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ScreenDetectionSkipReason {
-    HookAuthority,
-    FullLifecycleHookAuthority,
-}
-
-impl std::fmt::Display for ScreenDetectionSkipReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::HookAuthority => "hook_authority",
-            Self::FullLifecycleHookAuthority => "full_lifecycle_hook_authority",
-        })
+shepr_core::named_enum! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum ScreenDetectionSkipReason {
+        HookAuthority => "hook_authority",
+        FullLifecycleHookAuthority => "full_lifecycle_hook_authority",
     }
 }
 
@@ -107,20 +99,21 @@ pub enum UnappliedHookReportKind {
     },
 }
 
-/// The start source a session start report carried.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ReportedStartSource {
-    Startup,
-    Resume,
-    Clear,
-    Compact,
-    New,
-    Load,
-    Fork,
-    Select,
-    /// A start source this build does not know.
-    Unrecognized,
+shepr_core::named_enum! {
+    /// The start source a session start report carried.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum ReportedStartSource {
+        Startup => "startup",
+        Resume => "resume",
+        Clear => "clear",
+        Compact => "compact",
+        New => "new",
+        Load => "load",
+        Fork => "fork",
+        Select => "select",
+        /// A start source this build does not know.
+        Unrecognized => "unrecognized",
+    }
 }
 
 impl ReportedStartSource {
@@ -139,22 +132,6 @@ impl ReportedStartSource {
                 AgentSessionStartSource::Fork => Self::Fork,
                 AgentSessionStartSource::Select => Self::Select,
             },
-        })
-    }
-}
-
-impl std::fmt::Display for ReportedStartSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Startup => "startup",
-            Self::Resume => "resume",
-            Self::Clear => "clear",
-            Self::Compact => "compact",
-            Self::New => "new",
-            Self::Load => "load",
-            Self::Fork => "fork",
-            Self::Select => "select",
-            Self::Unrecognized => "unrecognized",
         })
     }
 }
@@ -548,30 +525,6 @@ mod tests {
     }
 
     #[test]
-    fn every_rejection_reason_displays_as_its_json_spelling() {
-        for reason in [
-            HookRejection::MissingSession,
-            HookRejection::InvalidSession,
-            HookRejection::ReplacedSession,
-            HookRejection::ProcessExited,
-            HookRejection::DetectedAgentConflict,
-            HookRejection::OwnerConflict,
-            HookRejection::LifecycleGate,
-            HookRejection::RetiredSession,
-            HookRejection::CrossTalk,
-            HookRejection::UnrecognizedStart,
-            HookRejection::MissingSequence,
-            HookRejection::OutOfOrder,
-            HookRejection::ProcessRequired,
-        ] {
-            assert_eq!(
-                serde_json::to_value(reason).expect("encode reason"),
-                serde_json::Value::String(reason.to_string())
-            );
-        }
-    }
-
-    #[test]
     fn unknown_agent_label_has_a_closed_fallback_reason() {
         let explain: DetectionExplanation = shepr_detect::manifest::explain_for_label(
             "not-yet-known",
@@ -587,5 +540,39 @@ mod tests {
         let mut json = serde_json::to_value(&explain).expect("encode explanation");
         json["fallback_reason"] = serde_json::json!("misspelled_reason");
         assert!(serde_json::from_value::<DetectionExplanation>(json).is_err());
+    }
+
+    #[test]
+    fn screen_detection_skip_reason_spellings_round_trip() {
+        for value in ScreenDetectionSkipReason::ALL {
+            let spelling = value.to_string();
+            assert_eq!(
+                serde_json::to_value(value).expect("serialize enum"),
+                serde_json::Value::String(spelling.clone())
+            );
+            assert_eq!(
+                serde_json::from_value::<ScreenDetectionSkipReason>(serde_json::Value::String(
+                    spelling
+                ))
+                .expect("deserialize enum"),
+                *value
+            );
+        }
+    }
+
+    #[test]
+    fn reported_start_source_spellings_round_trip() {
+        for value in ReportedStartSource::ALL {
+            let spelling = value.to_string();
+            assert_eq!(
+                serde_json::to_value(value).expect("serialize enum"),
+                serde_json::Value::String(spelling.clone())
+            );
+            assert_eq!(
+                serde_json::from_value::<ReportedStartSource>(serde_json::Value::String(spelling))
+                    .expect("deserialize enum"),
+                *value
+            );
+        }
     }
 }

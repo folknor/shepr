@@ -7,7 +7,7 @@ use shepr_mux::events::RuntimeEvent;
 use shepr_mux::git::WorkspaceGitStatus;
 use shepr_mux::workspace::PaneRemovalScope;
 
-use super::state::AppState;
+use super::AppState;
 
 /// Committed presentation changes shared by the small state mutators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

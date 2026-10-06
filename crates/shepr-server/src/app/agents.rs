@@ -4,7 +4,7 @@ use super::api::session::SnapshotAgent;
 impl App {
     pub(super) fn collect_agent_infos(&self) -> Vec<SnapshotAgent> {
         self.state
-            .workspaces
+            .workspaces()
             .iter()
             .flat_map(|ws| {
                 ws.tree()

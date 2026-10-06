@@ -91,7 +91,7 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
     if let Some(executable) = launch_executable() {
         cmd.env(ChildEnv::SheprBinPath, executable);
     }
-    cmd.env(EnvVar::SheprPaneId, launch_env.pane_id.to_string());
+    cmd.env(ChildEnv::SheprPaneId, launch_env.pane_id.to_string());
 }
 
 /// The path panes are told to run shepr by, resolved once: resolving it stats
@@ -223,7 +223,7 @@ mod tests {
             shepr_protocol::PanePublicNumber::new(17).expect("nonzero literal"),
         );
         let mut command = PtyCommand::interactive_shell(&test_shell("/shell"), false);
-        command.env(EnvVar::SheprPaneId, inherited.to_string());
+        command.env(ChildEnv::SheprPaneId, inherited.to_string());
 
         let assigned = PublicPaneId::new(
             &"w2".parse().expect("test workspace id"),
@@ -234,7 +234,7 @@ mod tests {
             &PaneLaunchEnv::new("/run/shepr.sock".into(), assigned),
         );
         assert_eq!(
-            command.get_env(EnvVar::SheprPaneId),
+            command.get_env(ChildEnv::SheprPaneId),
             Some(std::ffi::OsStr::new(assigned.to_string().as_str()))
         );
     }

@@ -470,7 +470,7 @@ def main() -> int:
         print("\n".join(failures))
         print(
             f"{len(failures)} production line(s) released by skip_after; move the test item to the end of the "
-            "file, or fix the line"
+            "file; fixing a current violation alone does not restore coverage"
         )
         return 1
     print(f"{len(scoped)} skip_after rules, {files_walked} files with a test cfg walked")

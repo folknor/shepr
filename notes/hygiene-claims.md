@@ -23,45 +23,6 @@ and says how the fixed form could be enforced.
 
 ## Tests
 
-## CLAIM-003 - Restore tests that exercise a test-only copy or cannot fail
-
-Reported by: restore-resume.
-
-- `restore_rehydrates_agent_session_metadata`: `restored_terminal_agent_session`
-  re-validates an already validated session through its own constructor, so the
-  assertions compare a value with itself.
-- `complete_restore_planning_needs_no_runtime_or_directory_access`: planning a
-  missing directory succeeds whether or not planning stats it, so the test cannot
-  observe the access its name rules out. Only a seam (an injected filesystem, or a
-  path that hangs) makes it observable; otherwise rename it.
-- `resume.rs` `ids_are_data_not_shell_text` asserts the argv vector, never the
-  shell text that is typed.
-- `test_support.rs` `test_codex_plan(identity, argv)` keeps only the text after the
-  last NUL and always builds a Codex session; callers pass
-  `"shepr:codex\0codex\0Id\0probe-session"`, a leftover of an older NUL-joined key, so
-  `"shepr:pi\0pi\0Path\0..."` would still give a Codex plan. Take a session id only.
-- `restore.rs` `failed_cold_restore_preserves_panes_and_saved_directories` writes
-  `/tmp/shepr-restore-test-a` and `-b` into its JSON and overwrites them at once;
-  the literals mean nothing and read as a `/tmp` use.
-- `restore.rs` tests hard-code `TEST_SOCKET = "/run/user/1000/shepr-test.sock"`, one
-  developer's uid; use a scratch path.
-- `invalid_session_kind_and_conflicting_owner_do_not_change_arbitration` lost its
-  conflicting-label case when reports stopped carrying a label; its last assertion
-  now checks a Kimi report with no session ref. Rename it or restore a real
-  conflicting-owner case through the source.
-
-## CLAIM-004 - Tests assert positional tables zipped against a list that can grow
-
-Reported by: restore-resume, agent-state, integrations.
-
-`shepr-agent` `integration_classes_preserve_authority_for_every_agent` zips a
-23-entry positional `expected` array with `AGENTS`; `zip` stops at the shorter side,
-so an appended agent is silently untested, and reordering both hides a swap. Key it
-by agent and assert lengths. `bundle.rs` `shell_hook_gates_follow_the_descriptor_events`
-picks specs by index (`SPECS[2]`, `SPECS[5]`, `SPECS[3]`), so reordering the table
-silently retargets the assertions. `every_rejection_reason_displays_as_its_json_spelling`
-lists variants by hand (VAL-010).
-
 ## CLAIM-005 - Tests depend on the host's `/bin/sh` through a fixture constant the textlint cannot see
 
 Reported by: restore-resume, workspace-model.
@@ -198,58 +159,10 @@ Reported by: server-lifecycle, remote.
 
 ## Guards that fail open
 
-## CLAIM-018 - Exclude lists and markers that keep approving things that no longer exist
-
-Reported by: persistence, pane-lifecycle, agent-state, server-lifecycle.
-
-- `brokkr.toml` `disallowed-escapes-are-allowlisted` excludes
-  `crates/shepr-mux/src/persist/writer.rs`, which has no `clippy::disallowed_*`
-  escape any more, and `crates/shepr-mux/src/pane/terminal/migration_tests.rs`, which
-  does not exist. Each stale entry pre-approves a future escape there without review.
-  Checkable: a script check that every path in a textlint `exclude` list exists and,
-  for this rule, contains an escape.
-- `clock-io-ok` markers in `shepr-mux/src/pane/` are decoration: no textlint covers
-  mux outside `persist/`, yet `spawn.rs`, `exit_arbiter.rs` and `child_watcher.rs`
-  carry the marker while unmarked clock reads sit beside them
-  (`runtime/read_effects.rs` three times, `PaneOutputWrite::write`,
-  `terminal/backend.rs`). The detector state machine (`pane/detect/**`,
-  `agent_detection.rs`) is likewise I/O-free and fake-time-testable today with
-  nothing holding it. Add a mux pane clock rule like `terminal-core-clock-is-injected`,
-  with `detection_task.rs` as the marked sampler.
-- `persist-clock-is-injected` forbids `SystemTime::now()` in `persist/`, but the
-  snapshot cadence reads a file's `modified()` for its first decision after startup,
-  so the guard fails open for filesystem time. Widen the pattern with an allow marker
-  or say so beside the rule.
-- `[gremlins] exclude = ["crates/shepr-detect/src/manifests"]` exempts the manifests'
-  comments too, not only the screen text they match; a narrower exception keeps the
-  comments checked. And `cli/status.rs` has a comment containing U+2026 (horizontal
-  ellipsis), a gremlin under the project rule, so either the gremlins check does not
-  cover that character or the file is not swept. Checkable by a non-ASCII grep.
-- Textlints with `skip_after = '^[ \t]*#\[cfg\(test\)\]'` stop at the first
-  `#[cfg(test)]` line in a file, so a `#[cfg(test)]` item in the middle of a production
-  impl hides all production code after it. `shepr-remote/src/failure.rs` does this now
-  (`disposition`, `ssh_runtime_error` and later items are invisible to
-  `remote-clock-is-injected` and the limits rules). Move such items into a trailing
-  `#[cfg(test)] impl`, and have `skip-after-scopes` refuse a mid-file test item.
-
 ## CLAIM-019 - Guards keyed on names that become silent no-ops
 
 Reported by: integrations, server-lifecycle, remote.
 
-- `regenerate_bundled_assets` is `#[ignore]` "so the gate never writes into the
-  tree", which holds for `brokkr check`, but `brokkr test` always passes
-  `--include-ignored`, so any `brokkr test -p shepr-integration <filter>` matching
-  `bundle`, `bundled`, `assets` or `regenerate` silently rewrites every committed asset
-  from the templates, reverting a hand edit under investigation. Make regeneration a
-  script, or gate the writer on an explicit environment variable read through
-  `shepr_core::env`.
-- `hook_assets_share_one_envelope` forbids transport by name (`createConnection`,
-  lowercase `settimeout`, `AF_UNIX`, `Math.random`, `import random`); a decoder using
-  `net.connect`, Node's `setTimeout` or `socket.create_connection` passes.
-- `cli.rs` `parse_launch` reads `--start` with `matches::flag`, which turns a
-  spec/handler mismatch into `false`; `matches.rs` reserves that read for root help and
-  version. A rename of `FLAG_START` in the spec only silently makes every Connect and
-  Restart attach-only. Use `try_flag` and refuse.
 - `brokkr.toml` `endpoint-moves-are-driven-from-the-endpoint-module` matches
   `choice\s*\.\s*(select|...)`, keyed on the binding name; `let c = &mut
   shell.endpoints.choice; c.commit()` or a direct field assignment (which test code
@@ -257,60 +170,6 @@ Reported by: integrations, server-lifecycle, remote.
   field private behind an accessor, and the compiler is the guard.
 
 ## Claims nothing enforces
-
-## CLAIM-021 - Persistence doc comments that are false today
-
-Reported by: persistence.
-
-- `SessionBackupPolicy::NoBackupNeeded` is documented as "Restore used the file in
-  full, or there is no source file to preserve", but `open_and_summarize` leaves a
-  `Missing` load at `PreserveExisting`, so a file that appears later is still backed
-  up (pinned by `first_clear_preserves_an_unloaded_file_even_after_an_earlier_missing_clear`).
-  `SessionPersister::spawn`'s doc likewise names only two backup reasons. The code is
-  the safer one; fix the docs.
-- `recovery.rs`, three sites (`plan_snapshot_history`, `preserve_snapshot_history`,
-  `preserve_existing_in`): "the platform's session helpers emit through tracing too
-  but label save outcomes" and variants. `shepr-platform` has no session helpers and
-  emits no persist events.
-- `shepr-paths/src/app_paths.rs` (`state_dir`: "the saved layout and history live in
-  data_dir") and `shepr-paths/src/profile.rs` ("its saved layout and history"): pane
-  history is gone.
-- `persist.rs`'s module doc lists the files "by job" and omits `restore`, `error`,
-  `actor` and `lock` from the list: a hand-restated file list nothing checks. Drop it
-  in favour of each file's own module doc.
-- `files.rs` `load`'s parse-error log says "failed to parse session file, ignoring";
-  the file is protected and backed up, not ignored.
-- `SNAPSHOT_LIMIT`'s "covers an overnight failure" holds only if a copy is made every
-  interval; copies are made only on saves whose fingerprint changed, so the 48 copies
-  span much longer than 12 hours in practice.
-- `publish_private_file`'s doc and the recovery directories resolved from the link
-  path while staging uses the target's directory: see POL-003 for the unstated rule.
-
-## CLAIM-022 - Restore and resume doc comments that are false today
-
-Reported by: restore-resume, agent-state, workspace-model.
-
-- `AGENT_ABSENCE_STARTUP_HOLD` (mux limits): "A restored pane holds absence for the
-  same interval as agent resume". `DetectorState::new` gives `LaunchKind::Fresh |
-  LaunchKind::Restored => None`; only `AgentResume` holds.
-- `restore.rs` `restored_terminal` doc: "cwd, label and launch argv: always kept".
-  `PaneSnapshot` has no launch argv.
-- `PaneStartFailure::ResumeUnavailable` doc: "(no command to run, the pane gone from
-  under the attempt)". A plan always has a command, and the reasons that occur
-  (`ShellLaunchUnconfirmed`, `CommandSendFailed`) are not named.
-- `resume_schedule.rs` `AttemptOutcome::Abandoned` doc: "(PTY could not be opened,
-  missing launch env)". The code abandons on a `launch_pane` error and an unreachable
-  pane-gone branch; "missing launch env" names nothing.
-- `app/events.rs` `decide_pane_exit`: "since history capture leaves an unreadable
-  terminal's cached history as it was"; there is no history capture (BUG-027).
-- `App::open`: "Restored workspaces get their Git identity (label and status) from
-  the first background Git refresh"; a refresh never sets the name.
-- `ResumeSchedule.retired`: "plans are minted only by session restore, before the
-  first pass. Once set, nothing scans." Nothing enforces it:
-  `TerminalState::plan_agent_resume` is a `pub` production method only tests call,
-  and a production caller after retirement would plan a resume that never runs.
-  Delete it (restore uses `with_pending_agent_resume_plan`) or textlint
-  `plan_agent_resume(` outside tests.
 
 ## CLAIM-023 - Save and shutdown doc comments that are false today, and invariants held by call order
 
@@ -335,26 +194,6 @@ Reported by: save-shutdown.
 - The final save before the lease is ordered in `run` but no test runs `run()` with a
   persisting server and checks the file exists when the socket goes;
   `server_stop.rs`'s re-exec test could (write a mutation, stop, check the file).
-
-## CLAIM-024 - Pane lifecycle claims that are false today or held only by review
-
-Reported by: pane-lifecycle.
-
-- `shepr-platform/src/child_io.rs`: "The only place this becomes poll(2)'s int
-  milliseconds is `Wait::poll_millis`". False: `shepr-pty/src/launch.rs`
-  `accept_loop` computes `wake_ms` from `LAUNCH_PARKED_CONNECTION_TTL.as_millis()` and
-  calls `libc::poll` directly; `process.rs` `has_exited` and `stream_wake.rs` pass
-  literals. Checkable by a textlint on `libc::poll\(` outside `child_io.rs`.
-- `run_child`'s contract ("no allocation, no lock, no destructor, no panic") has one
-  bounds-checked index, `plan.envps[index]`, which would panic (unwinding in a forked
-  child of a multithreaded process) if `dirs` and `envps` diverged. They cannot today;
-  use `get` and `child_exit`, or one `Vec<(dir, envp)>`.
-- `coordinate`'s "nothing here indexes unchecked or unwraps" is the safety argument
-  for the pane's only publisher; a module-level `#![deny(clippy::indexing_slicing,
-  clippy::unwrap_used, clippy::expect_used, clippy::panic)]` on `launch_status.rs`
-  outside tests makes it a build fact.
-- `PtyIoInbox`'s "never held across a syscall" holds today, by review only.
-- `SHEPR_BIN_PATH`'s "set for every pane" (BUG-022) is false today.
 
 ## CLAIM-026 - Integration claims that are false today
 
@@ -383,47 +222,3 @@ Reported by: integrations.
   the 500 ms number: two copies of one paragraph no test reads.
 - True and unenforced: `opencode.js`'s "it never runs alongside this server plugin"
   (rests on `ownsLocalLifecycle` and OpenCode's launch shapes).
-
-## CLAIM-029 - The environment registry claims every variable a shepr process interprets
-
-Reported by: workspace-model.
-
-`EnvVar` is documented as "every environment variable a shepr process interprets",
-with a declared kind; `SHEPR_PANE_ID` is only written (`pane/launch.rs`) and read by
-hook assets, so its `EnvKind::Text` is a claim nothing exercises; it belongs in
-`ChildEnv`. A test that every `EnvVar` variant has a production `env::read*` site
-would catch it. `RegisteredEnv` "contains each name once" by convention only: its
-variants are public, so `RegisteredEnv::Child(ChildEnv::Shell)` is constructible and
-`pane_policy` carries arms for that second spelling. Make the variants private behind
-the `From` impls.
-
-## CLAIM-030 - Server lifecycle comments that are false today
-
-Reported by: server-lifecycle.
-
-- `api_service.rs`'s conditional-stop comment names `ServerStopParams` where the
-  validation it explains is `ServerStopIfBootParams`'.
-- `local_server.rs` `server_daemon_working_dir` names `new_terminal_cwd = "current"`;
-  the setting is `terminal.new_cwd`.
-- `local_server.rs` `build_server_daemon_command`: the child "gets the
-  already-resolved socket target"; it only removes `SHEPR_SOCKET_PATH`, and the daemon
-  re-resolves from its own environment.
-- `LaunchError::remote_failure_class`: "`launch_with` waits out a daemon that gave way
-  to another server rather than failing on it" is given as why `DaemonExit::Clean` is
-  `Retry`; `launch_with` only exempts `AlreadyRunning`, and a daemon exiting 0 during
-  boot fails the launch at once. The classification may still be right; its stated
-  reason is false.
-- `shepr_core::env::EnvVar::SheprBuildProfile` speaks of "the socket variables" and
-  "the socket overrides", plural; there is one.
-- `shepr-paths/src/lib.rs` says both pane markers decide whether an inherited
-  `SHEPR_SOCKET_PATH` applies; only `SHEPR_BUILD_PROFILE` does (`SHEPR_ENV` decides the
-  TUI refusal).
-- `cli/spec.rs` module doc: typed parsers read ids "spelled from shepr-launch's
-  `COMMAND_` and `FLAG_` constants"; the `detect` subcommands and options are
-  literals.
-- `headless.rs` `dispatch_api_request`: "API handlers read each workspace's recorded
-  layout area for directional focus, resize steps, layout snapshots and spawn sizes";
-  none of those API methods exists (the API is ping, stops, summary, detect, two
-  reports).
-- `headless.rs` `handle_scheduled_tasks_headless`: "Similar to the former App
-  scheduler", "No resize polling needed" (history, not behaviour).

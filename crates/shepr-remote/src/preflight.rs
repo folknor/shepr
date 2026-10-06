@@ -14,20 +14,18 @@
 //! The check starts nothing on a machine, and a machine's server of another
 //! build is not handled here: the client shows it with a Restart entry.
 //!
-//! The orchestration talks to ssh only through [`PreflightSsh`], so its
-//! parallelism, prompt serialization and classification are tested without a
-//! host. This crate does not print or read the terminal: the caller announces
-//! each prompt through the `before_authentication` callback and reports the
-//! returned outcomes.
+//! [`PreflightSsh`] is the seam for testing parallel checks, prompt
+//! serialization and classification without a host. Production checks borrow
+//! each machine's probe directly into its scoped worker. This crate does not
+//! print or read the terminal: the caller announces each prompt through the
+//! `before_authentication` callback and reports the returned outcomes.
 
-use std::collections::HashMap;
 use std::io;
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use shepr_launch::{EndpointFailure, FailureCause, FailureDisposition, SshFailureClass};
 
-use crate::machine::{MachineConfig, MachineLabel};
+use crate::machine::MachineConfig;
 use crate::machine_ssh::{MachineProbe, MachineSshConnector};
 use crate::ssh::ssh_authentication_command;
 
@@ -150,11 +148,28 @@ pub struct PreflightOutcome {
 pub fn preflight(
     machines: &[MachineConfig],
     ssh: &dyn PreflightSsh,
+    before_authentication: Option<&mut dyn FnMut(&MachineConfig)>,
+) -> Vec<PreflightOutcome> {
+    preflight_with_checks(
+        machines,
+        |indices| {
+            let round: Vec<&MachineConfig> =
+                indices.iter().map(|&index| &machines[index]).collect();
+            check_concurrently(ssh, &round)
+        },
+        |machine| ssh.authenticate(machine),
+        before_authentication,
+    )
+}
+
+fn preflight_with_checks(
+    machines: &[MachineConfig],
+    mut check_round: impl FnMut(&[usize]) -> Vec<MachineCheck>,
+    mut authenticate: impl FnMut(&MachineConfig) -> Result<(), AuthenticationError>,
     mut before_authentication: Option<&mut dyn FnMut(&MachineConfig)>,
 ) -> Vec<PreflightOutcome> {
-    let all: Vec<&MachineConfig> = machines.iter().collect();
-    let checks = check_concurrently(ssh, &all);
-
+    let all: Vec<usize> = (0..machines.len()).collect();
+    let checks = check_round(&all);
     let mut outcomes: Vec<PreflightOutcome> = machines
         .iter()
         .zip(checks)
@@ -162,7 +177,7 @@ pub fn preflight(
             let authentication = if check.needs_authentication() {
                 if let Some(before_authentication) = before_authentication.as_deref_mut() {
                     before_authentication(machine);
-                    Some(ssh.authenticate(machine))
+                    Some(authenticate(machine))
                 } else {
                     None
                 }
@@ -186,11 +201,7 @@ pub fn preflight(
         .map(|(index, _)| index)
         .collect();
     if !authenticated.is_empty() {
-        let rechecked: Vec<&MachineConfig> = authenticated
-            .iter()
-            .map(|&index| &outcomes[index].machine)
-            .collect();
-        let checks = check_concurrently(ssh, &rechecked);
+        let checks = check_round(&authenticated);
         for (index, check) in authenticated.into_iter().zip(checks) {
             outcomes[index].check = check_after_authentication(check);
         }
@@ -239,89 +250,83 @@ fn check_concurrently(ssh: &dyn PreflightSsh, machines: &[&MachineConfig]) -> Ve
     })
 }
 
-/// The real ssh behind [`PreflightSsh`]: one retained probe per configured machine,
-/// under one shared deadline per round, and `ssh_authentication_command` on
-/// shepr's control socket. [`Self::into_connectors`] hands each probe to the
-/// client's connector.
+/// The real SSH preflight: each retained probe is mutably borrowed by exactly
+/// one scoped worker per round, and `ssh_authentication_command` uses shepr's
+/// control socket. The launch hands each probe to its client's connector.
 pub struct MachineSshPreflight<'a> {
     paths: &'a shepr_paths::AppPaths,
-    // The public preflight contract calls `check` through `&dyn PreflightSsh`
-    // on scoped workers. Replacing this deadline mutex and the probe map with
-    // disjoint `&mut MachineProbe` borrows requires changing that ownership API
-    // and the client launch caller; keep the locks here until that cross-scope
-    // change can be made together. The per-machine lock protects resumable
-    // discovery progress that is later transferred to its connector; the map
-    // and deadline locks are brief lookups before SSH IO and do not serialize
-    // network checks.
-    deadline: Mutex<Instant>,
-    probes: Mutex<HashMap<MachineLabel, Arc<Mutex<MachineProbe>>>>,
 }
 
 impl<'a> MachineSshPreflight<'a> {
-    /// The deadline for the first round of checks starts now.
+    /// Creates a preflight whose checks use this process's resolved paths.
     pub fn new(paths: &'a shepr_paths::AppPaths) -> Self {
-        Self {
-            paths,
-            deadline: Mutex::new(round_deadline()),
-            probes: Mutex::new(HashMap::new()),
-        }
+        Self { paths }
     }
 
-    /// Transfers resolution progress and verified transports to the client.
-    pub fn into_connectors(self, machines: &[MachineConfig]) -> Vec<MachineSshConnector> {
-        let mut probes = self
-            .probes
-            .into_inner()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        machines
-            .iter()
-            .map(|machine| {
-                let probe = probes
-                    .remove(&machine.label)
-                    .map_or_else(Default::default, |probe| {
-                        let mut probe = probe
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        std::mem::take(&mut *probe)
-                    });
-                MachineSshConnector::from_preflight(self.paths, machine, probe)
-            })
-            .collect()
-    }
-}
-
-fn round_deadline() -> Instant {
-    // clock-io-ok: the deadline bounds real ssh IO for one round of checks.
-    Instant::now() + crate::limits::PREFLIGHT_CHECK_BUDGET
-}
-
-impl PreflightSsh for MachineSshPreflight<'_> {
-    fn start_round(&self) {
-        let mut deadline = self
-            .deadline
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *deadline = round_deadline();
-    }
-
-    fn check(&self, machine: &MachineConfig) -> io::Result<()> {
-        let deadline = *self
-            .deadline
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Hold the map only while finding this machine's state. Different machines
-        // keep independent locks, so their SSH checks still run concurrently.
-        let probe = Arc::clone(
-            self.probes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry(machine.label.clone())
-                .or_default(),
+    /// Checks the configured machines and transfers each retained probe to its
+    /// client connector. Scoped workers borrow distinct probe slots directly,
+    /// so no lock is held around SSH or needed to hand state back afterward.
+    pub fn run(
+        self,
+        machines: &[MachineConfig],
+        before_authentication: Option<&mut dyn FnMut(&MachineConfig)>,
+    ) -> (Vec<PreflightOutcome>, Vec<MachineSshConnector>) {
+        let mut probes: Vec<MachineProbe> = (0..machines.len())
+            .map(|_| MachineProbe::default())
+            .collect();
+        let outcomes = preflight_with_checks(
+            machines,
+            |indices| self.check_round(machines, &mut probes, indices),
+            |machine| self.authenticate(machine),
+            before_authentication,
         );
-        let mut probe = probe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        probe.check(self.paths, &machine.ssh, deadline)
+        let connectors = machines
+            .iter()
+            .zip(probes)
+            .map(|(machine, probe)| MachineSshConnector::from_preflight(self.paths, machine, probe))
+            .collect();
+        (outcomes, connectors)
+    }
+
+    fn check_round(
+        &self,
+        machines: &[MachineConfig],
+        probes: &mut [MachineProbe],
+        indices: &[usize],
+    ) -> Vec<MachineCheck> {
+        let deadline = round_deadline();
+        std::thread::scope(|scope| {
+            let mut selected = indices.iter().copied().peekable();
+            let mut handles = Vec::with_capacity(indices.len());
+            for (index, (machine, probe)) in machines.iter().zip(probes.iter_mut()).enumerate() {
+                if selected.peek() == Some(&index) {
+                    selected.next();
+                    let paths = self.paths;
+                    handles.push(
+                        scope.spawn(move || {
+                            classify_check(probe.check(paths, &machine.ssh, deadline))
+                        }),
+                    );
+                }
+            }
+            let mut checks = Vec::with_capacity(handles.len());
+            let mut panic_payload = None;
+            for handle in handles {
+                match handle.join() {
+                    Ok(check) => checks.push(check),
+                    Err(payload) => {
+                        if panic_payload.is_none() {
+                            panic_payload = Some(payload);
+                        }
+                    }
+                }
+            }
+            if let Some(payload) = panic_payload {
+                // Finish joining all workers before unwinding through the caller.
+                std::panic::resume_unwind(payload);
+            }
+            checks
+        })
     }
 
     fn authenticate(&self, machine: &MachineConfig) -> Result<(), AuthenticationError> {
@@ -337,6 +342,11 @@ impl PreflightSsh for MachineSshPreflight<'_> {
     }
 }
 
+fn round_deadline() -> Instant {
+    // clock-io-ok: the deadline bounds real ssh IO for one round of checks.
+    Instant::now() + crate::limits::PREFLIGHT_CHECK_BUDGET
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,6 +356,7 @@ mod tests {
     };
     use crate::machine::{MachineLabel, SshTarget};
     use std::collections::HashMap;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 

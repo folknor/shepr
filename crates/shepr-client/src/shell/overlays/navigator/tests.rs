@@ -302,7 +302,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     projected.panes.push(second);
     let first_agent = ClientShellAgent {
         pane_id: test_pane_id("w1:p1"),
-        agent: Some(shepr_config::ConfigAgent::Pi),
+        agent: shepr_config::ConfigAgent::Pi,
         terminal_title: None,
         terminal_title_stripped: None,
         agent_status: AgentStatus::Working,
@@ -310,7 +310,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     };
     let mut second_agent = first_agent.clone();
     second_agent.pane_id = "w1:p2".parse().expect("test precondition");
-    second_agent.agent = Some(shepr_config::ConfigAgent::Claude);
+    second_agent.agent = shepr_config::ConfigAgent::Claude;
     second_agent.terminal_title_stripped = Some("checking navigation".into());
     second_agent.agent_status = AgentStatus::Blocked;
     projected.agents = vec![first_agent, second_agent];

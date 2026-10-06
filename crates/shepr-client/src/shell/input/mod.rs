@@ -827,7 +827,7 @@ impl ClientShellState {
 
 /// The notice shown for a paste over the server's per-message input limit.
 fn paste_rejected_notice(size: usize, max: usize) -> String {
-    format!("Paste is {size} bytes; Shepr's limit is {max} bytes")
+    format!("Paste is {size} bytes; shepr's limit is {max} bytes")
 }
 
 #[cfg(test)]

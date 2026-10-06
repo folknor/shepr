@@ -20,7 +20,7 @@
 
 # CWD policy for new interactive panes and workspaces.
 # Use "follow" to inherit the source pane/workspace, "home" for $HOME,
-# "current" for the directory Shepr was launched from, or a fixed path such as
+# "current" for the directory shepr was launched from, or a fixed path such as
 # "~/Projects". Fixed paths must name an existing directory. Relative paths
 # resolve against the launch directory; an empty path is an error.
 # new_cwd = "follow"
@@ -41,7 +41,7 @@
 
 [session]
 # Resume supported AI-agent panes into their native conversation sessions after
-# a Shepr server restart. Needs the agent's hooks, which the server installs at
+# a shepr server restart. Needs the agent's hooks, which the server installs at
 # launch for every agent present on its host.
 # resume_agents_on_restore = true
 # Time between automatic agent resumes on restore. Fresh shells start together;

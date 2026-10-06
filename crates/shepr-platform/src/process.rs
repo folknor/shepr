@@ -363,7 +363,7 @@ impl ProcessHandle {
             revents: 0,
         };
         // SAFETY: one pollfd that lives on this stack frame; zero timeout.
-        let ready = unsafe { libc::poll(&mut descriptor, 1, 0) };
+        let ready = unsafe { libc::poll(&mut descriptor, 1, Wait::Now.poll_millis()) };
         ready > 0 && descriptor.revents & (libc::POLLIN | libc::POLLHUP) != 0
     }
 }

@@ -20,6 +20,7 @@ pub use detect::{DetectorGate, DetectorGateDiagnostics};
 pub use exit_arbiter::{PaneEndReason, PaneEnding};
 pub use launch::{LaunchKind, PaneShellConfig, init_pane_launches};
 pub use launch_status::{LaunchOutcome, LaunchSettlement};
+pub use osc_debug::init_osc_evidence_capture;
 pub use runtime::PaneCwdProbe;
 pub use runtime::{
     AgentDetectionReadError, PaneOutputWrite, PaneOutputWriter, PaneRead, PaneRuntime,

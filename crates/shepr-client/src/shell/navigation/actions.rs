@@ -219,7 +219,7 @@ impl ClientShellState {
         // pane identities through the same boot-scoped restore card.
         let title = match &notice.loss {
             shepr_protocol::SessionRestoreLoss::Damaged(damage)
-                if !damage.loses_data() && damage.repaired_bookmarks == 0 =>
+                if !damage.loses_data() && !damage.repaired_bookmark =>
             {
                 "saved session IDs repaired"
             }

@@ -27,6 +27,13 @@ pub enum AgentResumeState {
 }
 
 impl AgentResumeState {
+    pub fn plan(&self) -> Option<&shepr_agent::resume::AgentResumePlan> {
+        match self {
+            Self::Planned(plan) | Self::Launching { plan, .. } => Some(plan),
+            Self::None => None,
+        }
+    }
+
     pub fn is_pending(&self) -> bool {
         !matches!(self, Self::None)
     }
@@ -82,8 +89,13 @@ pub enum PaneStartFailure {
     /// The launch's status channel failed while its child lived, so the
     /// child could not be observed and was ended.
     LaunchUnobservable { error: std::io::Error },
-    /// The saved agent's resume could not be issued to its shell.
+    /// The shell launch was unconfirmed or its resume command could not be sent.
     ResumeUnavailable { reason: ResumeUnavailableReason },
+    /// A failed resume retains the validated plan for manual recovery.
+    ResumeFailed {
+        plan: shepr_agent::resume::AgentResumePlan,
+        failure: Box<PaneStartFailure>,
+    },
 }
 
 /// Why an agent session's resume attempt could not be completed.
@@ -130,8 +142,8 @@ impl PaneStartFailure {
     }
 
     /// What the operator should do about the failure.
-    /// Agent-specific manual commands belong to the caller owning the saved
-    /// plan. This layer has neither the build profile nor selected socket,
+    /// Failed resumes carry their manual command in `cause`.
+    /// This layer has neither the build profile nor selected socket,
     /// so it names pane actions rather than inventing a restart command.
     pub fn guidance(&self) -> &'static str {
         match self {
@@ -147,7 +159,7 @@ impl PaneStartFailure {
             Self::LaunchUnobservable { .. } => {
                 "Could not confirm that the pane shell started, so it was stopped. Close this pane and open a new one."
             }
-            Self::ResumeUnavailable { .. } => {
+            Self::ResumeUnavailable { .. } | Self::ResumeFailed { .. } => {
                 "Could not resume the saved agent. Open a new pane and resume it with the agent's own resume command."
             }
         }
@@ -168,6 +180,15 @@ impl PaneStartFailure {
                 error,
             } => Some(format!("{}: {error}", program.display()).into()),
             Self::ResumeUnavailable { reason } => Some(reason.as_str().into()),
+            Self::ResumeFailed { plan, failure } => Some(
+                format!(
+                    "{failure} Agent: {}. Session: {}. Manual resume: {}",
+                    plan.agent().label(),
+                    plan.key().session_ref().value_str(),
+                    plan.to_shell_command(),
+                )
+                .into(),
+            ),
         }
     }
 }
@@ -181,7 +202,8 @@ impl std::fmt::Display for PaneStartFailure {
             }
             Self::ShellStartFailed { .. }
             | Self::LaunchUnobservable { .. }
-            | Self::ResumeUnavailable { .. } => {}
+            | Self::ResumeUnavailable { .. }
+            | Self::ResumeFailed { .. } => {}
         }
         if let Some(cause) = self.cause() {
             write!(formatter, " Error: {cause}")?;
@@ -233,6 +255,9 @@ impl TerminalState {
     pub fn agent_resume(&self) -> &AgentResumeState {
         &self.agent_resume
     }
+    /// Fixture seam for seeding a pending plan in dependent crates' tests.
+    /// Production restore uses the consuming constructor before scheduling;
+    /// injecting a plan after the server schedule retires will not run it.
     pub fn plan_agent_resume(&mut self, plan: shepr_agent::resume::AgentResumePlan) {
         self.agent_resume = AgentResumeState::Planned(plan);
     }
@@ -259,9 +284,10 @@ mod hooks;
 mod init;
 mod names;
 mod resume;
+mod titles;
+
 #[cfg(test)]
 mod test_support;
-mod titles;
 
 #[cfg(test)]
 mod start_failure_tests {

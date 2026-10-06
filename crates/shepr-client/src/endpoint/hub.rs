@@ -587,16 +587,21 @@ impl EndpointHub {
                     }
                 }
                 shell::ClientShellAction::ClipboardWrite(bytes) => clipboard.push(bytes),
-                // These actions currently arrive after the shell optimistically
-                // changes its entry. Refusal must eventually be fed back to that
-                // reducer; merely setting the entry here cannot undo its change.
                 shell::ClientShellAction::ConnectMachine(endpoint_id) => {
-                    self.supervisors
-                        .request(&endpoint_id, shepr_remote::ConnectMode::Start, now);
+                    let mode = shepr_remote::ConnectMode::Start;
+                    if self.supervisors.request(&endpoint_id, mode, now)
+                        && shell.machine_request_accepted(&endpoint_id, mode)
+                    {
+                        repaint = shell::Repaint::Needed;
+                    }
                 }
                 shell::ClientShellAction::RestartMachine(endpoint_id) => {
-                    self.supervisors
-                        .request(&endpoint_id, shepr_remote::ConnectMode::Restart, now);
+                    let mode = shepr_remote::ConnectMode::Restart;
+                    if self.supervisors.request(&endpoint_id, mode, now)
+                        && shell.machine_request_accepted(&endpoint_id, mode)
+                    {
+                        repaint = shell::Repaint::Needed;
+                    }
                 }
                 shell::ClientShellAction::ActivateEndpoint(destination) => {
                     let endpoint_id = destination.endpoint.clone();
@@ -1106,14 +1111,18 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let machine = build_machine();
         let id = ClientEndpointId::Ssh(machine.label.clone());
-        for (action, mode) in [
+        for (action, mode, initial, accepted) in [
             (
                 shell::ClientShellAction::ConnectMachine(id.clone()),
                 shepr_remote::ConnectMode::Start,
+                shell::MachineState::NotRunning,
+                shell::MachineState::Starting,
             ),
             (
                 shell::ClientShellAction::RestartMachine(id.clone()),
                 shepr_remote::ConnectMode::Restart,
+                shell::MachineState::DifferentBuild,
+                shell::MachineState::Restarting,
             ),
         ] {
             let now = Instant::now();
@@ -1126,9 +1135,43 @@ mod tests {
             );
             let mut shell = shell_with(EndpointChoice::showing(ClientEndpointId::Local));
             shell.set_machines(std::slice::from_ref(&machine));
+            shell.set_machine_state(&id, initial);
             assert_eq!(hub.supervisors.pending_request(&id), None);
             hub.dispatch(&mut shell, vec![action], now);
             assert_eq!(hub.supervisors.pending_request(&id), Some(mode));
+            assert_eq!(shell.machine_state(&id), Some(accepted));
+        }
+    }
+
+    #[test]
+    fn a_refused_operator_request_leaves_the_machine_entry_actionable() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let machine = build_machine();
+        let id = ClientEndpointId::Ssh(machine.label.clone());
+        for (action, initial) in [
+            (
+                shell::ClientShellAction::ConnectMachine(id.clone()),
+                shell::MachineState::NotRunning,
+            ),
+            (
+                shell::ClientShellAction::RestartMachine(id.clone()),
+                shell::MachineState::DifferentBuild,
+            ),
+        ] {
+            let now = Instant::now();
+            let mut hub = EndpointHub::new(
+                EndpointRegistry::new(RecordingTransport::default(), test_generation(1)),
+                EndpointSupervisors::new(Vec::new(), now).expect("empty supervisors"),
+                LocalFailurePolicy::Reconnect,
+            );
+            let mut shell = shell_with(EndpointChoice::showing(ClientEndpointId::Local));
+            shell.set_machines(std::slice::from_ref(&machine));
+            shell.set_machine_state(&id, initial);
+
+            hub.dispatch(&mut shell, vec![action], now);
+
+            assert_eq!(hub.supervisors.pending_request(&id), None);
+            assert_eq!(shell.machine_state(&id), Some(initial));
         }
     }
 
@@ -1170,7 +1213,10 @@ mod tests {
             vec![shell::ClientShellAction::ConnectMachine(id.clone())],
             now,
         );
-        shell.set_machine_state(&id, shell::MachineState::Starting);
+        assert_eq!(
+            shell.machine_state(&id),
+            Some(shell::MachineState::Starting)
+        );
         let attempt = test_generation(3);
         hub.supervisors.mark_in_flight(&id, attempt, now);
         hub.supervisor_event(

@@ -426,7 +426,8 @@ async fn copy_search_uses_endpoint_terminal_matches_and_wraps() {
 async fn copy_search_bounds_returned_matches_but_keeps_exact_total() {
     let (mut app, public_pane_id) = app_with_test_workspace();
     let pane_id = app.state.ws(0).tree().root();
-    let text = "a ".repeat(1500);
+    let total = crate::limits::MAX_RETURNED_MATCHES + 1;
+    let text = "a ".repeat(total);
     app.insert_test_runtime(
         pane_id,
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(200, 20, 4000, text.as_bytes()),
@@ -446,8 +447,8 @@ async fn copy_search_bounds_returned_matches_but_keeps_exact_total() {
     let EndpointReply::PaneCopySearch { search, .. } = handled.reply else {
         panic!("expected copy search");
     };
-    assert_eq!(search.total, 1500);
-    assert_eq!(search.matches.len(), 1024);
+    assert_eq!(search.total, total);
+    assert_eq!(search.matches.len(), crate::limits::MAX_RETURNED_MATCHES);
 }
 
 #[test]
@@ -539,7 +540,7 @@ fn pane_close_of_last_pane_closes_workspace() {
 
     assert_eq!(handled.reply, EndpointReply::Done);
     assert_eq!(handled.navigate, None);
-    assert!(app.state.workspaces.is_empty());
+    assert!(app.state.workspaces().is_empty());
 }
 
 #[test]
@@ -556,7 +557,7 @@ fn pane_close_keeps_the_workspace_when_other_panes_remain() {
     })
     .expect("the pane closes");
 
-    assert_eq!(app.state.workspaces.len(), 1);
+    assert_eq!(app.state.workspaces().len(), 1);
     assert_eq!(app.state.ws(0).tree().len(), 1);
     assert!(app.state.ws(0).tree().contains(survivor));
 }
@@ -820,7 +821,8 @@ fn pane_resize_changes_target_ratio_without_changing_focus_or_navigating() {
     assert_eq!(handled.navigate, None);
     let area = app.state.layout_area(app.state.ws(0));
     let splits = app.state.ws(0).tree().layout().splits(area);
-    assert!((splits[0].ratio.get() - 0.55).abs() < 1e-6);
+    let expected = shepr_core::layout::EVEN_SPLIT + crate::limits::PANE_RESIZE_STEP.get();
+    assert!((splits[0].ratio.get() - expected).abs() < 1e-6);
     assert_eq!(app.state.ws(0).tree().focused(), right);
 }
 
@@ -915,7 +917,7 @@ fn pane_focus_on_the_focused_pane_still_navigates() {
         .pane(pane_id)
         .expect("test precondition")
         .public_id();
-    app.state.session_dirty = false;
+    app.state.test_clear_session_dirty();
 
     let handled = app
         .handle_pane_focus(&PaneTarget {
@@ -924,7 +926,7 @@ fn pane_focus_on_the_focused_pane_still_navigates() {
         .expect("the pane is focused");
 
     assert_eq!(handled.navigate, Some(app.state.ws(0).id()));
-    assert!(!app.state.session_dirty, "nothing was mutated");
+    assert!(!app.state.session_dirty(), "nothing was mutated");
     let EndpointReply::PaneInfo { pane } = handled.reply else {
         panic!("expected pane info");
     };
@@ -1172,7 +1174,7 @@ async fn a_split_sizes_against_the_recorded_geometry_and_only_then_the_requester
     let _env = IsolatedEnv::new();
 
     let mut app = test_app();
-    app.state.settings.pane_scrollbars = false;
+    app.state.settings_mut().pane_scrollbars = false;
     app.state.test_set_workspaces(vec![
         Workspace::test_new("recorded"),
         Workspace::test_new("unrecorded"),
@@ -1246,7 +1248,7 @@ fn pane_close_request_closes_only_the_target_pane_when_others_remain() {
     }));
 
     assert!(matches!(result, Ok(EndpointReply::Done)));
-    assert_eq!(app.state.workspaces.len(), 1);
+    assert_eq!(app.state.workspaces().len(), 1);
     assert_eq!(app.state.ws(0).tree().len(), 1);
     assert_eq!(app.state.ws(0).name(), "api-pane-close");
 }
@@ -1269,5 +1271,5 @@ fn pane_close_request_closes_workspace_when_it_removes_the_last_pane() {
     }));
 
     assert!(matches!(result, Ok(EndpointReply::Done)));
-    assert!(app.state.workspaces.is_empty());
+    assert!(app.state.workspaces().is_empty());
 }

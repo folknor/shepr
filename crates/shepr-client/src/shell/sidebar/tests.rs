@@ -943,7 +943,7 @@ fn every_machine_state_has_its_own_entry() {
 }
 
 #[test]
-fn clicking_a_connect_entry_starts_the_machine_and_attaches() {
+fn clicking_a_connect_entry_emits_a_start_request() {
     let (mut state, endpoint_id) = state_with_remote();
     state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Reconnecting);
     state.set_machine_state(&endpoint_id, crate::shell::MachineState::NotRunning);
@@ -968,7 +968,7 @@ fn clicking_a_connect_entry_starts_the_machine_and_attaches() {
     ));
     assert_eq!(
         state.machine_state(&endpoint_id),
-        Some(crate::shell::MachineState::Starting)
+        Some(crate::shell::MachineState::NotRunning)
     );
 }
 
@@ -1019,7 +1019,7 @@ fn a_restart_entry_asks_before_it_restarts() {
     assert!(state.overlay.is_none());
     assert_eq!(
         state.machine_state(&endpoint_id),
-        Some(crate::shell::MachineState::Restarting)
+        Some(crate::shell::MachineState::DifferentBuild)
     );
 }
 

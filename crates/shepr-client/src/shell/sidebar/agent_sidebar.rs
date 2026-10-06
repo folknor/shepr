@@ -144,9 +144,9 @@ impl<'a> AgentRowIndex<'a> {
     ) -> Option<AgentRow> {
         let workspace = self.workspace(agent.pane_id.workspace_id())?;
         let pane = self.pane(&agent.pane_id);
-        let agent_label = agent.agent.map(shepr_config::ConfigAgent::label);
+        let agent_label = Some(shepr_config::ConfigAgent::label(agent.agent));
         let state_text = status_text(agent.agent_status);
-        let canonical_agent = agent.agent;
+        let canonical_agent = Some(agent.agent);
         let rows = sidebar_agent_rows(
             &config.agents,
             &AgentTokenContext {

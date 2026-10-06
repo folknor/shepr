@@ -2,6 +2,8 @@ project = "shepr"
 
 # Detection manifests match text agents actually draw on screen (prompt
 # glyphs, check marks, spinners); escaping it would make captures unreadable.
+# The manifest-comments script checks their non-string text independently;
+# only TOML strings and quoted screen examples in comments are exempt there.
 [gremlins]
 exclude = ["crates/shepr-detect/src/manifests"]
 
@@ -40,9 +42,23 @@ allow_marker = "toml-only-serde-shape"
 allow_marker_above = 1
 message = "positional wire types cannot use skip_serializing_if, flatten, untagged or tagged serde enums"
 
+# User-facing string literals spell the product name as lowercase `shepr`.
+# Ignore test modules and test-only files, where it can be deliberate fixture text.
 [[textlint]]
+name = "product-name-is-lowercase-in-string-literals"
+pattern = '"[^"\n]*\bShepr\b'
+paths = ["crates/**/*.rs", "src/**/*.rs"]
+exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+message = "spell the product name as lowercase `shepr` in user-facing string literals"
+
+[[textlint]]
+# Snapshot startup must recover the newest saved timestamp from disk; it is
+# not an operation clock sample. Keep that one metadata read visible and
+# narrowly excepted; any other filesystem timestamp read needs review.
 name = "persist-clock-is-injected"
-pattern = '\b(?:SystemTime|Instant)::now\s*\('
+pattern = '\b(?:SystemTime|Instant)::now\s*\(|\.\s*(?:modified|created|accessed)\s*\('
+except = ['^\s*std::fs::metadata\(latest\)\?\.modified\(\)\?,\s*$']
 paths = ["crates/shepr-mux/src/persist/**/*.rs"]
 skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
@@ -192,6 +208,18 @@ allow_marker = "clock-io-ok"
 allow_marker_above = 3
 message = "pass the time in from the read or IO boundary; mark that boundary"
 
+# Pane state receives time from IO adapters; the detection task samples its probes.
+[[textlint]]
+name = "mux-pane-clock-is-injected"
+pattern = '\b(?:Instant|SystemTime)::now\b'
+paths = ["crates/shepr-mux/src/pane.rs", "crates/shepr-mux/src/pane/**/*.rs"]
+exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "clock-io-ok"
+allow_marker_above = 3
+message = "pass time into pane state; mark the IO adapter or detection sampler"
+
 # Server transport outside the app and the headless loop: the client
 # handshake, writer and socket plumbing. Its deadlines bound real socket IO.
 [[textlint]]
@@ -256,12 +284,9 @@ exclude = [
     "crates/shepr-core/src/env.rs",
     "crates/shepr-git/src/refresh.rs",
     "crates/shepr-integration/src/config_file/tests.rs",
-    "crates/shepr-integration/src/env.rs",
     "crates/shepr-integration/src/opencode_config.rs",
-    "crates/shepr-mux/src/pane/terminal/migration_tests.rs",
     "crates/shepr-mux/src/persist/actor.rs",
     "crates/shepr-mux/src/persist/recovery.rs",
-    "crates/shepr-mux/src/persist/writer.rs",
     "crates/shepr-platform/src/host.rs",
     "crates/shepr-platform/src/resize_signal_tests.rs",
     "crates/shepr-pty/src/actor.rs",
@@ -289,7 +314,7 @@ message = "a new clippy seal escape; use the sanctioned alternative the seal's r
 name = "library-crates-do-not-print"
 pattern = '\b(?:print|println|eprint|eprintln)!\s*[\(\[\{]'
 paths = ["crates/*/src/**/*.rs"]
-exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**", "crates/shepr-daemon/**", "crates/shepr-palette-preview/**"]
+exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**", "crates/shepr-daemon/**", "crates/shepr-palette-preview/**", "crates/shepr-integration/src/bundle.rs"]
 skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 message = "a print macro panics on a closed pipe and reaches no log file; log through tracing, or return the text to the CLI to print"
@@ -615,7 +640,6 @@ exclude = [
     "crates/shepr-test-support/**",
     "crates/shepr-test-fixtures/**",
     "**/test_support.rs",
-    "**/test_support/**",
     "**/tests/**",
     "**/tests.rs",
     "**/*_tests.rs",
@@ -636,7 +660,6 @@ exclude = [
     "crates/shepr-test-support/**",
     "crates/shepr-test-fixtures/**",
     "**/test_support.rs",
-    "**/test_support/**",
     "**/tests/**",
     "**/tests.rs",
     "**/*_tests.rs",
@@ -689,6 +712,20 @@ message = "key a failure on a tracing event `error` (error = %err), not `err`"
 name = "cited-paths"
 command = "python3 scripts/check_cited_paths.py"
 expect = "cited paths ok"
+match = "last-line"
+stage = "pre-clippy"
+
+[[script_check]]
+name = "textlint-excludes"
+command = "python3 scripts/check_textlint_excludes.py"
+expect = "textlint excludes ok"
+match = "last-line"
+stage = "pre-clippy"
+
+[[script_check]]
+name = "manifest-comments"
+command = "python3 scripts/check_manifest_comments.py"
+expect = "manifest comments ok"
 match = "last-line"
 stage = "pre-clippy"
 

@@ -129,6 +129,7 @@ pub(super) fn handle_connection(
             // Recover correlation without relaxing typed request validation or accepting
             // ambiguous duplicate IDs. Invalid JSON and non-string IDs stay uncorrelated.
             let id = request_id_from_line(line);
+            tracing::warn!(event = "api.request.invalid", request_id = ?id, error_category = ?request_error.classify(), line = request_error.line(), column = request_error.column(), "invalid API request");
             let response = ErrorResponse {
                 id,
                 error: crate::error::ApiError::new(
@@ -268,7 +269,7 @@ fn stop_server(
     // ignoring a guard and treating the request as an unconditional stop. A
     // guard sent anywhere but that method's params (for example beside
     // `server.stop`) never reaches this function: `Request` refuses unknown
-    // top-level keys and repeated keys inside params, and `ServerStopParams`
+    // top-level keys and repeated keys inside params, and `ServerStopIfBootParams`
     // refuses unknown params, so a stop is conditional only when its one
     // guard is where this method reads it.
     if let Some(expected) = expected_boot_id {
@@ -284,6 +285,7 @@ fn stop_server(
             );
         }
     }
+    tracing::info!(event = "server.stop.accepted", request_id = id, boot_id = %actual, expected_boot_id = ?expected_boot_id, "server stop accepted");
     server_stop.request();
     let response = SuccessResponse {
         id: id.to_owned(),

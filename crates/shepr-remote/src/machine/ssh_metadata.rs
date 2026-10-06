@@ -14,8 +14,9 @@ struct StoredMetadata {
 
 /// The remembered remote executable for one SSH target. Machines that share a
 /// target share the hint, since the executable belongs to the host. The cache
-/// is kept in this build profile's data directory, so a dev and a release
-/// client never overwrite each other's hint for a target.
+/// is kept in this build profile's client-owned state directory, outside the
+/// server's leased data tree, so a dev and a release client never overwrite
+/// each other's hint for a target.
 pub(crate) struct SshMetadataCache {
     path: PathBuf,
     target: SshTarget,
@@ -24,7 +25,8 @@ pub(crate) struct SshMetadataCache {
 impl SshMetadataCache {
     pub(crate) fn new(paths: &shepr_paths::AppPaths, target: &SshTarget) -> Self {
         Self {
-            path: shepr_paths::ssh_metadata_directory(paths.data_dir())
+            path: paths
+                .ssh_metadata_directory()
                 .join(format!("{:016x}.json", target_file_key(target))),
             target: target.clone(),
         }
@@ -173,11 +175,14 @@ mod tests {
         let other = SshMetadataCache::new(&paths, &target("dev@other.example"));
         assert_eq!(build.path(), again.path());
         assert_ne!(build.path(), other.path());
+        assert!(
+            !build.path().starts_with(paths.data_dir()),
+            "client metadata stays outside the server's leased data directory"
+        );
         assert_eq!(
             build.path(),
             paths
-                .data_dir()
-                .join("client/ssh-metadata")
+                .ssh_metadata_directory()
                 .join(format!("{:016x}.json", target_file_key(&build_target)))
         );
     }

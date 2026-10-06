@@ -14,14 +14,9 @@ pub struct ClientShellSnapshot {
     pub revision: ProjectionRevision,
     /// Incomplete saved-session restore for this boot, repeated on every projection.
     pub restore_notice: Option<SessionRestoreNotice>,
-    /// The server stopped saving its session for the rest of this boot (its
-    /// persister refused a save it can never run): layout changes from then
-    /// on are not restored when it next starts. Repeated on every projection.
-    pub session_saves_stopped: bool,
-    /// The saved session source could not be opened for its required backup.
-    /// The server stops saving until its access is fixed and it is restarted.
-    /// Repeated on every projection.
-    pub session_saves_blocked_on_backup: bool,
+    /// Whether session saves are ready, stopped, or blocked on a recovery
+    /// backup. Repeated on every projection.
+    pub session_save_status: SessionSaveStatus,
     pub focused_workspace_id: Option<WorkspaceId>,
     pub focused_pane_id: Option<PublicPaneId>,
     /// Ordered workspaces. The client derives one-based display positions
@@ -29,6 +24,19 @@ pub struct ClientShellSnapshot {
     pub workspaces: Vec<ClientShellWorkspace>,
     pub panes: Vec<ClientShellPane>,
     pub agents: Vec<ClientShellAgent>,
+}
+
+/// The mutually exclusive session-save condition projected by a server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionSaveStatus {
+    /// Session saves can proceed normally.
+    Ready,
+    /// The persister refused a save it cannot run; layout changes from then
+    /// on are not restored when the server next starts.
+    Stopped,
+    /// The saved session source could not be opened for its required backup;
+    /// saving remains blocked until its access is fixed and the server restarts.
+    BlockedOnBackup,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,10 +66,9 @@ pub struct ClientShellPane {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellAgent {
     pub pane_id: PublicPaneId,
-    /// The bundled agent the pane runs, if any. The server accepts hook
-    /// reports only from shepr's own integrations, each of which names a
-    /// bundled agent, so there is no free-label agent to project.
-    pub agent: Option<shepr_agent::Agent>,
+    /// The bundled agent the pane runs. The server accepts hook reports only
+    /// from shepr's own integrations, each of which names a bundled agent.
+    pub agent: shepr_agent::Agent,
     pub terminal_title: Option<String>,
     pub terminal_title_stripped: Option<String>,
     pub agent_status: AgentStatus,

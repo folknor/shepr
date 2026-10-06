@@ -101,7 +101,15 @@ pub(crate) fn parse_launch(args: &[String]) -> Result<Launch, i32> {
                 None => Launch::Tui,
                 Some((COMMAND_CLIENT, _)) => Launch::Client,
                 Some((COMMAND_REMOTE_CLIENT_BRIDGE, bridge)) => {
-                    if matches::flag(bridge, option_name_from_flag(FLAG_START)) {
+                    let start = matches::try_flag(bridge, option_name_from_flag(FLAG_START))
+                        .map_err(|error| {
+                            shepr_platform::begin_cli_output();
+                            eprintln!(
+                                "error: remote bridge start flag does not match its parser: {error}"
+                            );
+                            shepr_launch::process_status::ProcessStatus::Usage as i32
+                        })?;
+                    if start {
                         Launch::StartingClientBridge
                     } else {
                         Launch::ClientBridge

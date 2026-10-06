@@ -22,6 +22,7 @@ pub(super) fn reader_exit_callback(
     let ending = |reason| RecordedEnding::Observed {
         ending: PaneEnding::new(reason),
         child_exit_confirmed: false,
+        // clock-io-ok: timestamp the actual reader ending at the IO callback.
         ended_at: std::time::Instant::now(),
     };
     Box::new(move |exit| match exit {
@@ -157,42 +158,45 @@ impl PtySetup<'_> {
             // Failure cleanup and read effects use the same child identity.
             let startup_child_liveness = Arc::clone(&child_liveness);
             let health_terminal = Arc::clone(terminal);
-            let effects = Arc::new(PaneReadEffects {
-                pane_id,
-                terminal: Arc::clone(terminal),
-                render_notify: Arc::clone(render_notify),
-                render_dirty: Arc::clone(render_dirty),
-                pty_render: pty_render.clone(),
-                cwd: Arc::clone(cwd_state),
-                events: events.clone(),
-                child_liveness: Arc::clone(&child_liveness),
-                sync_timeout_render: SyncTimeoutRender::default(),
-                deferred_effect_order: Arc::default(),
-                timer_writer: std::sync::OnceLock::new(),
-                timer_reply_drop_reported: AtomicBool::new(false),
-                rt: tokio::runtime::Handle::current(),
+            let actor = PtyIoActor::spawn_prepared(pane_id, |timer_writer| {
+                let effects = Arc::new(PaneReadEffects {
+                    pane_id,
+                    terminal: Arc::clone(terminal),
+                    render_notify: Arc::clone(render_notify),
+                    render_dirty: Arc::clone(render_dirty),
+                    pty_render: pty_render.clone(),
+                    cwd: Arc::clone(cwd_state),
+                    events: events.clone(),
+                    child_liveness: Arc::clone(&child_liveness),
+                    sync_timeout_render: SyncTimeoutRender::default(),
+                    deferred_effect_order: Arc::default(),
+                    timer_writer: TimerReplyRoute::Actor(timer_writer),
+                    rt: tokio::runtime::Handle::current(),
+                    // clock-io-ok: the actor and timer are the terminal IO adapters.
+                    now: Arc::new(std::time::Instant::now),
+                });
+                let read_effects = Arc::clone(&effects);
+                let output = PaneOutputWriter {
+                    pane_id,
+                    terminal: Arc::clone(terminal),
+                };
+                let on_read = move |bytes: &[u8]| read_effects.read(&output, bytes);
+                let on_reader_exit = reader_exit_callback(
+                    pane_id,
+                    Arc::clone(exit_arbiter),
+                    TERMINAL_CLOSED_EXIT_GRACE,
+                );
+                PtyIoActorConfig::new(
+                    pane_id,
+                    master_fd,
+                    on_read,
+                    on_reader_exit,
+                    // A render, detection or API read that panicked while holding
+                    // the core lock breaks it for good; end the pane within the
+                    // actor's idle poll even if the child never prints again.
+                    move || health_terminal.core_poisoned(),
+                )
             });
-            let read_effects = Arc::clone(&effects);
-            let output = PaneOutputWriter {
-                pane_id,
-                terminal: Arc::clone(terminal),
-            };
-            let on_read = move |bytes: &[u8]| read_effects.read(&output, bytes);
-            let on_reader_exit = reader_exit_callback(
-                pane_id,
-                Arc::clone(exit_arbiter),
-                TERMINAL_CLOSED_EXIT_GRACE,
-            );
-            let actor = PtyIoActor::spawn(PtyIoActorConfig::new(
-                pane_id,
-                master_fd,
-                on_read,
-                on_reader_exit,
-                // A render, detection or API read that panicked while holding
-                // the core lock breaks it for good; end the pane within the
-                // actor's idle poll even if the child never prints again.
-                move || health_terminal.core_poisoned(),
-            ));
             let actor = match actor {
                 Ok(actor) => actor,
                 Err(err) => {
@@ -215,9 +219,6 @@ impl PtySetup<'_> {
                     });
                 }
             };
-            // `timer_writer` was created empty above and this is its only
-            // `set`, so it cannot already hold a handle.
-            effects.timer_writer.set(actor.clone()).ok();
             Box::new(actor)
         };
 
@@ -235,8 +236,9 @@ impl PtySetup<'_> {
 #[derive(Clone)]
 pub struct PaneLauncher {
     handles: PaneSpawnHandles,
-    shell: shepr_core::shell::ResolvedShell,
-    login_shell: bool,
+    // Captured once per launcher, including HOME; clones and shell changes
+    // preserve it while later server instances sample their own environment.
+    inherited_command: shepr_pty::PtyCommand,
     scrollback: shepr_core::scrollback::ScrollbackBudget,
     /// The server's host names, resolved once at its startup (`None` when
     /// they could not be), which every pane matches OSC 7 `file://` reports
@@ -284,8 +286,7 @@ impl PaneLauncher {
     ) -> Self {
         Self {
             handles,
-            shell: shell.default_shell.clone(),
-            login_shell: shell.login_shell,
+            inherited_command: pane_shell_command_builder(shell, LaunchKind::Fresh),
             scrollback,
             local_host,
         }
@@ -297,9 +298,19 @@ impl PaneLauncher {
     /// in step.
     #[must_use]
     pub fn with_shell(mut self, shell: PaneShellConfig<'_>) -> Self {
-        self.shell = shell.default_shell.clone();
-        self.login_shell = shell.login_shell;
+        self.inherited_command = self
+            .inherited_command
+            .clone()
+            .with_shell(shell.default_shell, shell.login_shell);
         self
+    }
+
+    fn shell_command(&self, launch_kind: LaunchKind) -> shepr_pty::PtyCommand {
+        let mut cmd = self.inherited_command.clone();
+        if launch_kind.requires_cwd() {
+            cmd.require_cwd();
+        }
+        cmd
     }
 
     /// Starts the pane's shell. Returns once the child is forked: nothing on
@@ -322,10 +333,7 @@ impl PaneLauncher {
         let scrollback = self.scrollback;
         let render_notify = &self.handles.render_notify;
         let render_dirty = &self.handles.render_dirty;
-        let mut cmd = pane_shell_command_builder(
-            PaneShellConfig::new(&self.shell, self.login_shell),
-            launch_kind,
-        );
+        let mut cmd = self.shell_command(launch_kind);
         cmd.cwd(cwd);
         apply_pane_terminal_env(&mut cmd);
         apply_pane_launch_env(&mut cmd, &launch_env);
@@ -342,7 +350,7 @@ impl PaneLauncher {
             scrollback,
             launch_kind,
             cwd,
-            self.shell.path(),
+            std::path::Path::new(self.inherited_command.program()),
         );
 
         let terminal = prepare_terminal(
@@ -457,5 +465,54 @@ impl PaneLauncher {
             detector_gate_diagnostics,
             detect_handle,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn launcher_environment_is_stable_but_a_new_launcher_samples_again() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("launcher-environment");
+        let shell =
+            shepr_test_support::fixture::resolved_shell(shepr_test_support::fixture::path_str());
+        let make = || {
+            let (events, _) = mpsc::channel(1);
+            PaneLauncher::new(
+                PaneSpawnHandles {
+                    events,
+                    render_notify: Arc::new(Notify::new()),
+                    render_dirty: Arc::new(RenderSignal::new()),
+                    pane_teardowns: Arc::default(),
+                    socket_path: scratch.join("server.sock"),
+                },
+                PaneShellConfig::new(&shell, false),
+                shepr_core::scrollback::ScrollbackBudget::new(0),
+                None,
+            )
+        };
+        env.set(shepr_core::env::EnvVar::Home, "/first");
+        let first = make();
+        env.set(shepr_core::env::EnvVar::Home, "/second");
+        let second = make();
+        for launcher in [
+            first.clone().with_shell(PaneShellConfig::new(&shell, true)),
+            first,
+        ] {
+            assert_eq!(
+                launcher
+                    .shell_command(LaunchKind::Fresh)
+                    .get_env(shepr_core::env::EnvVar::Home),
+                Some(std::ffi::OsStr::new("/first")),
+            );
+        }
+        assert_eq!(
+            second
+                .shell_command(LaunchKind::Fresh)
+                .get_env(shepr_core::env::EnvVar::Home),
+            Some(std::ffi::OsStr::new("/second")),
+        );
     }
 }

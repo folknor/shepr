@@ -986,7 +986,7 @@ mod tests {
             .test_state_mut()
             .terminal_mut(pane_id)
             .plan_agent_resume(crate::test_support::test_codex_plan(
-                "shepr:codex\0codex\0Id\0codex-session",
+                "codex-session",
                 vec![crate::app::exiting_test_command().into()],
             ));
 

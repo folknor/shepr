@@ -161,15 +161,19 @@ impl ClientLoop {
                         .shell
                         .receive_restore_notice(endpoint_id, &snapshot.boot_id, kind);
                 }
-                if snapshot.session_saves_stopped {
-                    state
-                        .shell
-                        .receive_session_saves_stopped(endpoint_id, &snapshot.boot_id);
-                }
-                if snapshot.session_saves_blocked_on_backup {
-                    state
-                        .shell
-                        .receive_session_saves_blocked_on_backup(endpoint_id, &snapshot.boot_id);
+                match snapshot.session_save_status {
+                    shepr_protocol::SessionSaveStatus::Ready => {}
+                    shepr_protocol::SessionSaveStatus::Stopped => {
+                        state
+                            .shell
+                            .receive_session_saves_stopped(endpoint_id, &snapshot.boot_id);
+                    }
+                    shepr_protocol::SessionSaveStatus::BlockedOnBackup => {
+                        state.shell.receive_session_saves_blocked_on_backup(
+                            endpoint_id,
+                            &snapshot.boot_id,
+                        );
+                    }
                 }
                 match hub.install_snapshot(&mut state.shell, endpoint_id, snapshot, role) {
                     Some(SnapshotDirty::Pane) => state.mark_pane_dirty(),

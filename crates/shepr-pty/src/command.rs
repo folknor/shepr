@@ -61,6 +61,17 @@ impl PtyCommand {
         }
     }
 
+    /// Select another shell while preserving the inherited environment snapshot.
+    pub fn with_shell(
+        mut self,
+        default_shell: &shepr_core::shell::ResolvedShell,
+        login: bool,
+    ) -> Self {
+        self.program = default_shell.clone();
+        self.login = login;
+        self
+    }
+
     /// Supply an explicit inherited environment snapshot before applying
     /// registered launch edits. This is also the seam for testing arbitrary
     /// inherited variables without making them shepr-owned names.
@@ -210,9 +221,8 @@ impl PtyCommand {
 /// decision per registered variable. Shell selection and validation happen once
 /// when server config is loaded.
 ///
-/// It is copied per command, not snapshotted at launch init the way the passwd
-/// home is (`launch::init`): the server never edits its own environment, so the
-/// two reads agree, while a process-wide snapshot would freeze the first
+/// Pane launchers snapshot this once per server instance. Standalone commands
+/// sample it on construction. A process-global snapshot would freeze the first
 /// initializing test's isolated environment for every later test in its binary.
 #[expect(
     clippy::disallowed_methods,

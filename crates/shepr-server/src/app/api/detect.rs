@@ -93,7 +93,7 @@ impl App {
         };
 
         let detector_gate = if owner == shepr_detect::ownership::EffectiveStateSource::Screen {
-            pane.active_detector_gate().map(screen_detection_gate)
+            pane.active_detector_gate(now).map(screen_detection_gate)
         } else {
             None
         };

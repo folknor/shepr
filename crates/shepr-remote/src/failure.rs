@@ -365,6 +365,7 @@ pub(crate) fn attempt_deadline_passed() -> std::io::Error {
     )
 }
 
+// Keep test helpers after all production items: textlint skip_after is file-wide.
 #[cfg(test)]
 impl SshFailureDiagnostic {
     pub(crate) fn from_message(message: impl Into<String>) -> Self {

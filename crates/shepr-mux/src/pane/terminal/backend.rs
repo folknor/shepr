@@ -961,6 +961,7 @@ impl PaneTerminal {
     }
 
     pub(crate) fn process_pty_bytes(&self, pane_id: PaneId, bytes: &[u8]) -> ProcessBytesEffects {
+        // clock-io-ok: fixture adapter; production reads supply their timestamp.
         self.process_pty_bytes_at(pane_id, bytes, Instant::now())
     }
 }

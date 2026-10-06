@@ -88,12 +88,8 @@ impl SessionRestorePlan {
                     terminal_runtimes.insert(launch.pane_id, runtime);
                 }
                 Err(err) => {
-                    warn!(
-                        public_pane_id = %launch.public_id,
-                        pane = %launch.pane_id,
-                        error = %err,
-                        "failed to restore pane"
-                    );
+                    // Every launcher refusal logs its stage and both pane identities.
+                    // Keep this restore path silent to avoid reporting it twice.
                     // The planned terminal is replaced, in place, by one that
                     // keeps the saved state verbatim, including a saved agent
                     // session a running duplicate would have withdrawn. Only a
@@ -246,7 +242,7 @@ pub(super) fn plan_restore(
     }
     let active = snapshot.active.and_then(|active| {
         if active >= restored_index.len() {
-            damage.repaired_bookmarks += 1;
+            damage.repaired_bookmark = true;
             warn!(
                 saved_index = active,
                 saved_workspaces = restored_index.len(),
@@ -298,11 +294,11 @@ fn restored_workspace_id(
     workspace_ids.try_allocate()
 }
 
-/// The terminal state of one restored pane. Every saved `PaneSnapshot` field
-/// is carried forward here, once, whichever way the pane comes back; `start`
-/// only decides the parts that genuinely differ:
+/// The terminal metadata of one restored pane, whichever way it comes back.
+/// Layout and public identity belong to its pane record; `start` decides
+/// the metadata that differs:
 ///
-/// - cwd, label and launch argv: always kept.
+/// - cwd and label: always kept.
 /// - agent session: always kept, except by a running duplicate whose session
 ///   an earlier pane of this restore resumes.
 fn restored_terminal(
@@ -586,6 +582,8 @@ fn restored_terminal_agent_session(
     if duplicate_agent_session {
         return None;
     }
+    // Snapshot decoding already validated this identity. Preserve it verbatim;
+    // re-validation here would duplicate the schema boundary without new input.
     session.cloned()
 }
 
@@ -673,9 +671,6 @@ mod tests {
     fn test_restore_now() -> std::time::Instant {
         std::time::Instant::now()
     }
-
-    /// A resolved server socket for restored test panes; nothing listens on it.
-    const TEST_SOCKET: &str = "/run/user/1000/shepr-test.sock";
 
     fn restore_test_path(name: &str) -> PathBuf {
         RESTORE_TEST_SCRATCH.with(|scratch| scratch.join(name))
@@ -806,8 +801,9 @@ mod tests {
     }
 
     #[test]
-    fn complete_restore_planning_needs_no_runtime_or_directory_access() {
-        let cwd = Path::new("/__shepr_plan_missing_directory__");
+    fn complete_restore_planning_keeps_a_missing_directory_and_launch_geometry() {
+        // This checks the returned plan; it cannot observe filesystem reads.
+        let cwd = Path::new("/nonexistent/shepr-plan-directory");
         let snapshot = one_pane_session_in(cwd);
         let plan = plan_restore(
             &snapshot,
@@ -1008,7 +1004,7 @@ mod tests {
                     }),
                     false,
                 ),
-                std::path::Path::new(TEST_SOCKET),
+                &restore_test_path("server.sock"),
                 resume,
                 &events,
                 &Arc::new(Notify::new()),
@@ -1090,7 +1086,7 @@ mod tests {
         );
 
         assert_eq!(plan.active, Some(1));
-        assert_eq!(plan.damage.repaired_bookmarks, 1);
+        assert!(plan.damage.repaired_bookmark);
         assert!(!plan.damage.loses_data());
     }
 
@@ -1141,7 +1137,7 @@ mod tests {
                 &test_shell("/__shepr_refused_restore_shell__\0"),
                 false,
             ),
-            std::path::Path::new(TEST_SOCKET),
+            &restore_test_path("server.sock"),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -1453,7 +1449,18 @@ mod tests {
             shepr_agent::resume::AgentSessionRef::id("codex-session").expect("test precondition"),
         );
 
-        let preserved = restored_terminal_agent_session(Some(&session), false)
+        let terminal = restored_terminal(
+            &abs(restore_test_path("metadata")),
+            None,
+            Some(&session),
+            RestoredPaneStart::Running {
+                duplicate_agent_session: false,
+            },
+            test_restore_now(),
+        );
+        let preserved = terminal
+            .ownership()
+            .persisted_agent_session()
             .expect("restore should preserve metadata");
         assert_eq!(preserved.source().as_str(), "shepr:codex");
         assert_eq!(preserved.agent().label(), "codex");
@@ -1485,7 +1492,7 @@ mod tests {
                         "id": "w1",
                         "name": "a",
                         "next_public_pane_number": 2,
-                        "layout": { "Pane": { "cwd": "/tmp/shepr-restore-test-a", "public_number": 1, "label": null } },
+                        "layout": { "Pane": { "cwd": restore_test_path("cold-a"), "public_number": 1, "label": null } },
                         "zoomed": false,
                         "focused": 1,
                         "root_pane": 1
@@ -1494,7 +1501,7 @@ mod tests {
                         "id": "w2",
                         "name": "b",
                         "next_public_pane_number": 2,
-                        "layout": { "Pane": { "cwd": "/tmp/shepr-restore-test-b", "public_number": 1, "label": null } },
+                        "layout": { "Pane": { "cwd": restore_test_path("cold-b"), "public_number": 1, "label": null } },
                         "zoomed": false,
                         "focused": 1,
                         "root_pane": 1
@@ -1535,7 +1542,7 @@ mod tests {
                     }),
                     false,
                 ),
-                std::path::Path::new(TEST_SOCKET),
+                &restore_test_path("server.sock"),
                 false,
                 &events,
                 &Arc::new(Notify::new()),
@@ -1685,7 +1692,7 @@ mod tests {
             test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
-            std::path::Path::new(TEST_SOCKET),
+            &restore_test_path("server.sock"),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -1727,7 +1734,7 @@ mod tests {
             test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
-            std::path::Path::new(TEST_SOCKET),
+            &restore_test_path("server.sock"),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -1790,7 +1797,7 @@ mod tests {
             test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
-            std::path::Path::new(TEST_SOCKET),
+            &restore_test_path("server.sock"),
             false,
             &events,
             &Arc::new(Notify::new()),
@@ -1838,7 +1845,7 @@ mod tests {
             test_geometry(24, 80),
             0,
             crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
-            std::path::Path::new(TEST_SOCKET),
+            &restore_test_path("server.sock"),
             true,
             &events,
             &Arc::new(Notify::new()),
@@ -1895,7 +1902,7 @@ mod tests {
                 test_geometry(24, 80),
                 0,
                 crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
-                std::path::Path::new(TEST_SOCKET),
+                &restore_test_path("server.sock"),
                 false,
                 &events,
                 &Arc::new(Notify::new()),

@@ -212,9 +212,11 @@ pub struct SessionPersister {
 }
 
 impl SessionPersister {
-    /// Takes over the data directory `lease` guards. `backup_policy`: the
-    /// first save must copy the session file aside before replacing it (it
-    /// could not be loaded, or restore dropped part of it). `finished` is
+    /// Takes over the data directory `lease` guards. `backup_policy` says
+    /// whether the first save copies any session file it finds aside before
+    /// replacing it; `open` arms that unless restore used the file in full, so
+    /// a file that was missing, unreadable or partly dropped at startup (or
+    /// that appeared since) is preserved. `finished` is
     /// fired each time a submitted job ends, once its result can be read.
     pub fn spawn(
         lease: DataDirLease,

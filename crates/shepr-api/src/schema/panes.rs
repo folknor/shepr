@@ -12,6 +12,11 @@ pub enum PaneReportAgentState {
     Idle,
 }
 
+/// Params of `pane.report_agent`.
+///
+/// This is the one API params type that ignores unknown fields. Integration
+/// reports may carry extra annotations, but this API only consumes the state
+/// and known identity fields and never stores or returns those annotations.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneReportAgentParams {
     pub pane_id: String,
@@ -31,6 +36,7 @@ pub struct PaneReportAgentParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PaneReportAgentSessionParams {
     pub pane_id: String,
     /// The same bundled source validation as a state report.
@@ -111,7 +117,7 @@ mod tests {
     }
 
     #[test]
-    fn state_report_ignores_extra_message_without_storing_or_serializing_it() {
+    fn state_report_ignores_extra_annotation_without_storing_or_serializing_it() {
         let params: PaneReportAgentParams = serde_json::from_value(serde_json::json!({
             "pane_id": "w1:p1",
             "source": "shepr:codex",

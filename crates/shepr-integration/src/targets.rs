@@ -21,8 +21,8 @@ use super::opencode_config::{
 };
 use super::registration::{HookEventPolicy, HooksRoot, JsonShape, Registration, RequiredJsonField};
 use super::registry::{
-    action_label, agent_directory, agent_present, directory_must_differ_from, managed_assets,
-    registration, target_directory, target_path,
+    agent_directory, agent_present, directory_must_differ_from, managed_assets, registration,
+    target_directory, target_path,
 };
 use super::types::{ArtifactRole, InstallOutcome};
 
@@ -85,8 +85,8 @@ pub(super) fn install(
     {
         return Err(InstallError::config_shape(format!(
             "{} and {} share integration directory {}; set separate agent directories",
-            action_label(peer),
-            action_label(target),
+            peer.label(),
+            target.label(),
             dir.display(),
         )));
     }
@@ -266,7 +266,7 @@ fn prepare_json(
 fn missing_agent_directory(target: Target, dir: &Path) -> super::types::InstallError {
     InstallError::agent_dir_missing(format!(
         "{} agent config directory not found at {}",
-        action_label(target),
+        target.label(),
         dir.display()
     ))
 }

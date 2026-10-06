@@ -157,11 +157,11 @@ impl HeadlessServer {
     /// one current source. A rebuild advances the generation, so existing
     /// clients see that change too. Afterwards the cache is always present.
     pub(super) fn refresh_stale_shell_session_cache(&mut self) {
-        let app_revision = self.app.state().shell_projection_revision();
+        let state = self.app.state();
         let cache_is_current = self
             .shell_session_cache
             .as_ref()
-            .is_some_and(|cache| cache.revision == app_revision);
+            .is_some_and(|cache| state.shell_projection_is_current(cache.revision));
         if !cache_is_current {
             self.rebuild_shell_session_cache();
             self.shell_session_generation.advance();
@@ -865,7 +865,7 @@ impl HeadlessServer {
             .iter()
             .map(|agent| shepr_protocol::ClientShellAgent {
                 pane_id: agent.pane_id,
-                agent: Some(agent.agent),
+                agent: agent.agent,
                 terminal_title: agent.terminal_title.clone(),
                 terminal_title_stripped: agent.terminal_title_stripped.clone(),
                 agent_status: agent.agent_status,
@@ -877,8 +877,7 @@ impl HeadlessServer {
             boot_id: boot_id.clone(),
             revision,
             restore_notice: app.restore_notice().cloned(),
-            session_saves_stopped: app.session_saves_stopped(),
-            session_saves_blocked_on_backup: app.session_saves_blocked_on_backup(),
+            session_save_status: app.session_save_status(),
             focused_workspace_id,
             focused_pane_id,
             workspaces,

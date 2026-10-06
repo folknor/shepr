@@ -12,7 +12,7 @@ use std::time::Duration;
 
 // Every client bridge runs this watchdog. The client health-checks the endpoint
 // on the far side of the bridge: it sends HealthPing after
-// `shepr_launch::connection_health::HEARTBEAT_INTERVAL` without received data,
+// `shepr_launch::limits::HEARTBEAT_INTERVAL` without received data,
 // and the server answers HealthPong. The timing relation is asserted beside
 // `BRIDGE_IDLE_TIMEOUT` in this crate's limits. That heartbeat renews this
 // byte-level watchdog, so a healthy idle bridge stays connected while a dead

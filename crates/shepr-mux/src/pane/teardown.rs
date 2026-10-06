@@ -272,6 +272,15 @@ pub(super) fn shutdown_pane_processes(
     child_liveness: &Arc<ChildLiveness>,
     tracker: &Arc<PaneTeardownTracker>,
 ) {
+    shutdown_pane_processes_with_steps(pane_id, child_liveness, tracker, PANE_TEARDOWN_STEPS);
+}
+
+pub(super) fn shutdown_pane_processes_with_steps(
+    pane_id: PaneId,
+    child_liveness: &Arc<ChildLiveness>,
+    tracker: &Arc<PaneTeardownTracker>,
+    steps: [(shepr_platform::Signal, std::time::Duration); 3],
+) {
     if child_liveness.process_id().is_none() {
         return;
     }
@@ -284,7 +293,7 @@ pub(super) fn shutdown_pane_processes(
     let in_flight = tracker.start(pane_id);
     let worker_child_liveness = Arc::clone(child_liveness);
     let task = Box::new(move || {
-        run_pane_teardown(pane_id, in_flight, &worker_child_liveness);
+        run_pane_teardown(pane_id, in_flight, &worker_child_liveness, steps);
     });
     let spawned = std::thread::Builder::new()
         // Linux thread names have a short kernel limit; keep the useful role
@@ -312,18 +321,23 @@ fn run_pane_teardown(
     pane_id: PaneId,
     _in_flight: PaneTeardownInFlight,
     child_liveness: &ChildLiveness,
+    steps: [(shepr_platform::Signal, std::time::Duration); 3],
 ) {
-    terminate_pane_session(pane_id, child_liveness);
+    terminate_pane_session(pane_id, child_liveness, steps);
 }
 
-fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
+fn terminate_pane_session(
+    pane_id: PaneId,
+    child_liveness: &ChildLiveness,
+    steps: [(shepr_platform::Signal, std::time::Duration); 3],
+) {
     let Some(leader_pid) = child_liveness.process_id() else {
         return;
     };
     let session_id = shepr_platform::SessionId::of_leader(leader_pid);
     let leader_reaped = || child_liveness.is_reaped();
     let leader = child_liveness.leader();
-    for (signal, grace) in PANE_TEARDOWN_STEPS {
+    for (signal, grace) in steps {
         // Rescan every round: a process that forked while being hung up is
         // still in the session and must not escape the next signal.
         let members = shepr_platform::session_members(session_id, leader_reaped);

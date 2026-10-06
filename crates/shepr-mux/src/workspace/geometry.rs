@@ -107,7 +107,8 @@ impl WorkspaceChrome {
         Some(PaneGeometry::cells_only(content.width, content.height).grid())
     }
 
-    /// The content grid for the only pane of a new workspace.
+    /// The content grid for the only pane of a new workspace. `cells_only`
+    /// applies the shared pane minimum when the available area is smaller.
     pub fn sole_pane_size(&self) -> GridSize {
         let border_inner = border_inner_rect(self.area, SharedPaneEdges::default());
         let content = content_rect(border_inner, self.pane_scrollbars, false);

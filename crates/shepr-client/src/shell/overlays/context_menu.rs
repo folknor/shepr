@@ -102,7 +102,7 @@ impl ContextMenuOverlay {
                     },
                     item(
                         if *right_click_passthrough {
-                            "Use Shepr right-click menu"
+                            "Use shepr right-click menu"
                         } else {
                             "Send right-clicks to pane"
                         },
@@ -533,7 +533,7 @@ mod tests {
                 "Split right",
                 "Split down",
                 "Zoom in",
-                "Use Shepr right-click menu",
+                "Use shepr right-click menu",
                 "Close pane"
             ]
         );

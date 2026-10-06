@@ -145,7 +145,7 @@ fn config_update_preserves_a_change_from_an_agent_after_the_lock_snapshot() {
     assert!(
         error
             .to_string()
-            .contains("changed while Shepr was preparing")
+            .contains("changed while shepr was preparing")
     );
     assert_eq!(fs::read(&path).expect("test precondition"), b"agent update");
 }

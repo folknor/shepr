@@ -67,7 +67,7 @@ pub(super) fn command_hook_group(command: &str, timeout: u64, matcher: Option<&s
 }
 
 /// The description MastraCode's flat hook entries carry; status matches it.
-pub(crate) const MASTRACODE_HOOK_DESCRIPTION: &str = "Report MastraCode agent state to Shepr";
+pub(crate) const MASTRACODE_HOOK_DESCRIPTION: &str = "Report MastraCode agent state to shepr";
 
 // These helpers build the canonical entries of one agent's hook shape, which
 // install merges into the user's file through `json_edit` and status matches.
@@ -190,7 +190,7 @@ pub(super) fn build_kimi_config_with_timeout(
     // Only the marked block is safe to rewrite without reformatting user TOML.
     if kimi_config_uses_hook_path(&unmarked_content, hook_path)? {
         return Err(InstallError::managed_block_conflict(
-            "kimi config.toml registers the Shepr hook outside its managed block; remove that hook and retry",
+            "kimi config.toml registers the shepr hook outside its managed block; remove that hook and retry",
         ));
     }
     let separator = kimi_line_ending(content);

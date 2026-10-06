@@ -97,7 +97,7 @@ fn workspaces_and_agents_snapshot(
     value.agents = (1..=agents)
         .map(|number| shepr_protocol::ClientShellAgent {
             pane_id: test_pane_id(&format!("w1:p{number}")),
-            agent: Some(shepr_config::ConfigAgent::Pi),
+            agent: shepr_config::ConfigAgent::Pi,
             terminal_title: None,
             terminal_title_stripped: None,
             agent_status: shepr_protocol::AgentStatus::Idle,

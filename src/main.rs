@@ -125,8 +125,8 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<ProcessExit> {
         cli::Launch::ClientBridge => launch_bridge(shepr_remote::BridgeMode::Attach),
         cli::Launch::StartingClientBridge => launch_bridge(shepr_remote::BridgeMode::Start),
         cli::Launch::WaitForServer => {
-            let paths = resolve_bridge_paths()?;
-            init_client_logging(&paths)?;
+            let paths = resolve_bridge_paths().map_err(|error| remote_setup_failure(&error))?;
+            init_client_logging(&paths).map_err(|error| remote_setup_failure(&error))?;
             // However the wait ended, the client that ran it checks the
             // machine again next; only a failure to wait at all is an error.
             let end = shepr_remote::wait_for_server(&paths)?;
@@ -175,8 +175,8 @@ fn launch_client(mode: ClientLaunch) -> CliResult<ProcessExit> {
 /// failure does, so the client shows a host that must be repaired instead of
 /// retrying it quietly.
 fn launch_bridge(mode: shepr_remote::BridgeMode) -> CliResult<ProcessExit> {
-    let paths = resolve_bridge_paths().map_err(|error| bridge_setup_failure(&error))?;
-    init_client_logging(&paths).map_err(|error| bridge_setup_failure(&error))?;
+    let paths = resolve_bridge_paths().map_err(|error| remote_setup_failure(&error))?;
+    init_client_logging(&paths).map_err(|error| remote_setup_failure(&error))?;
     finish_bridge(shepr_remote::run_remote_client_bridge(&paths, mode)?)
 }
 
@@ -223,10 +223,10 @@ fn resolve_bridge_paths() -> CliResult<shepr_paths::AppPaths> {
     shepr_paths::AppPaths::resolve().map_err(CliError::from)
 }
 
-/// The remote bridge could not resolve its paths or start its logging. Both
-/// come from this host's environment and filesystem, which a retry does not
-/// change, so the host needs repair.
-fn bridge_setup_failure(error: &dyn std::fmt::Display) -> CliError {
+/// A remote bridge or server wait could not resolve its paths or start its
+/// logging. These failures come from the host's environment and filesystem,
+/// which a retry does not change, so the host needs repair.
+fn remote_setup_failure(error: &dyn std::fmt::Display) -> CliError {
     CliError::Io(shepr_remote::classified_bridge_failure(
         shepr_launch::RemoteFailureClass::Repair,
         io::ErrorKind::Other,

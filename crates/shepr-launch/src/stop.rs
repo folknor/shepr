@@ -65,24 +65,20 @@ impl ServerStopExit {
 #[derive(Debug)]
 pub enum ServerStopError {
     NotRunning {
-        label: String,
         path: PathBuf,
         source: io::Error,
     },
     Unreachable {
-        label: String,
         path: PathBuf,
         source: io::Error,
     },
     TimedOut {
-        label: String,
         timeout: Duration,
         socket: PathBuf,
     },
     /// The server no longer answers, or its socket disappeared, but a process
     /// still holds the data directory lease.
     LeaseHeld {
-        label: String,
         timeout: Duration,
         path: PathBuf,
     },
@@ -95,7 +91,6 @@ pub enum ServerStopError {
     /// it was refused and the server keeps running. The occupant of the socket
     /// changed after it was observed (it stopped and another server started).
     BootMismatch {
-        label: String,
         expected_boot_id: BootId,
         /// The server's own words, naming the boot it is.
         detail: String,
@@ -103,7 +98,6 @@ pub enum ServerStopError {
     /// A conditional stop was accepted for one boot, but a different boot
     /// answered while the requested boot was shutting down.
     OccupantChanged {
-        label: String,
         expected_boot_id: BootId,
         actual_boot_id: BootId,
     },
@@ -131,57 +125,45 @@ impl std::fmt::Display for ServerStopError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Protocol(message) => f.write_str(message),
-            Self::NotRunning {
-                label,
-                path,
-                source,
-            } => {
-                write!(f, "{label} is not running at {}: {source}", path.display())
-            }
-            Self::Unreachable {
-                label,
-                path,
-                source,
-            } => {
+            Self::NotRunning { path, source } => {
                 write!(
                     f,
-                    "{label} cannot be reached at {}: {source}",
+                    "the server is not running at {}: {source}",
+                    path.display()
+                )
+            }
+            Self::Unreachable { path, source } => {
+                write!(
+                    f,
+                    "the server cannot be reached at {}: {source}",
                     path.display()
                 )
             }
             // The final save has no bounded duration. A caller's expired wait
             // budget is not evidence that the saving server is wedged.
-            Self::TimedOut {
-                label,
-                timeout,
-                socket,
-            } => f.write_str(&crate::guidance::stop_timeout(label, *timeout, socket)),
-            Self::LeaseHeld {
-                label,
-                timeout,
-                path,
-            } => write!(
+            Self::TimedOut { timeout, socket } => {
+                f.write_str(&crate::guidance::stop_timeout(*timeout, socket))
+            }
+            Self::LeaseHeld { timeout, path } => write!(
                 f,
-                "the data directory lease at {} was still held {}ms after {label} stopped answering or its socket disappeared; another process may still be using it",
+                "the data directory lease at {} was still held {}ms after the server stopped answering or its socket disappeared; another process may still be using it",
                 path.display(),
                 timeout.as_millis()
             ),
             Self::Io { context, source } => write!(f, "{context}: {source}"),
             Self::BootMismatch {
-                label,
                 expected_boot_id,
                 detail,
             } => write!(
                 f,
-                "{label} was not stopped: it is not the server instance that was expected (boot {expected_boot_id}); it may have been restarted since. {detail}"
+                "the server was not stopped: it is not the server instance that was expected (boot {expected_boot_id}); it may have been restarted since. {detail}"
             ),
             Self::OccupantChanged {
-                label,
                 expected_boot_id,
                 actual_boot_id,
             } => write!(
                 f,
-                "{label} stopped answering as boot {expected_boot_id}, but boot {actual_boot_id} now answers; no stop was sent to the new occupant"
+                "the server stopped answering as boot {expected_boot_id}, but boot {actual_boot_id} now answers; no stop was sent to the new occupant"
             ),
         }
     }
@@ -224,6 +206,9 @@ pub fn stop_active_server(
 ) -> Result<(), ServerStopError> {
     stop_active_server_with_timeout(
         paths,
+        // Without `expected_boot_id` the stop targets whatever answers, on
+        // purpose (`shepr stop`, and the local leg of `stop --all`); a caller
+        // that observed a boot passes it to make the stop conditional.
         StopOrigin::Operator,
         expected_boot_id,
         STOP_WAIT_TIMEOUT,
@@ -267,14 +252,23 @@ fn stop_active_server_with_timeout(
 ) -> Result<(), ServerStopError> {
     let address = paths.server_address();
     let socket_path = address.socket().to_path_buf();
-    stop_socket_with_timeout(
+    tracing::info!(socket = %socket_path.display(), ?origin, expected_boot_id = ?expected_boot_id, "server stop requested");
+    let result = stop_socket_with_timeout(
         &socket_path,
         Some((&paths.data_dir_lease_path(), STOP_LEASE_WAIT_TIMEOUT)),
         timeout,
-        "server",
         origin,
         expected_boot_id,
-    )
+    );
+    match &result {
+        Ok(()) => {
+            tracing::info!(socket = %socket_path.display(), ?origin, expected_boot_id = ?expected_boot_id, "server stop completed");
+        }
+        Err(error) => {
+            tracing::warn!(socket = %socket_path.display(), ?origin, expected_boot_id = ?expected_boot_id, %error, "server stop failed");
+        }
+    }
+    result
 }
 
 /// Stops the server at `socket_path` and waits for the named boot to stop
@@ -286,7 +280,6 @@ fn stop_socket_with_timeout(
     socket_path: &Path,
     lease: Option<(&Path, Duration)>,
     timeout: Duration,
-    label: &str,
     origin: StopOrigin,
     expected_boot_id: Option<&BootId>,
 ) -> Result<(), ServerStopError> {
@@ -294,13 +287,12 @@ fn stop_socket_with_timeout(
     // and the server process's exit, so it must share their real clock.
     let deadline = Instant::now() + timeout;
     let request = server_stop_request(origin, expected_boot_id);
-    send_stop_request(socket_path, &request, deadline, label, expected_boot_id)?;
+    send_stop_request(socket_path, &request, deadline, expected_boot_id)?;
     let stopped = if let Some(expected_boot_id) = expected_boot_id {
-        match wait_until_boot_stops(socket_path, expected_boot_id, deadline, label)? {
+        match wait_until_boot_stops(socket_path, expected_boot_id, deadline)? {
             BootStopWait::Gone => true,
             BootStopWait::Changed(actual_boot_id) => {
                 return Err(ServerStopError::OccupantChanged {
-                    label: label.into(),
                     expected_boot_id: expected_boot_id.clone(),
                     actual_boot_id,
                 });
@@ -309,13 +301,12 @@ fn stop_socket_with_timeout(
         }
     } else {
         wait_until_stopped_until(socket_path, deadline).map_err(|source| ServerStopError::Io {
-            context: format!("could not check whether {label} stopped"),
+            context: "could not check whether the server stopped".to_owned(),
             source,
         })?
     };
     if !stopped {
         return Err(ServerStopError::TimedOut {
-            label: label.into(),
             timeout,
             socket: socket_path.to_path_buf(),
         });
@@ -330,13 +321,11 @@ fn stop_socket_with_timeout(
                 lease_deadline,
                 socket_path,
                 expected_boot_id,
-                label,
             )? {
                 LeaseWait::Released => true,
                 LeaseWait::Held => false,
                 LeaseWait::NewBoot(actual_boot_id) => {
                     return Err(ServerStopError::OccupantChanged {
-                        label: label.into(),
                         expected_boot_id: expected_boot_id.clone(),
                         actual_boot_id,
                     });
@@ -346,7 +335,7 @@ fn stop_socket_with_timeout(
             wait_for_lease_release(lease_path, lease_deadline).map_err(|source| {
                 ServerStopError::Io {
                     context: format!(
-                        "could not check whether {label} released {}",
+                        "could not check whether the server released {}",
                         lease_path.display()
                     ),
                     source,
@@ -355,7 +344,6 @@ fn stop_socket_with_timeout(
         };
         if !released {
             return Err(ServerStopError::LeaseHeld {
-                label: label.into(),
                 timeout: lease_timeout,
                 path: lease_path.into(),
             });
@@ -365,23 +353,17 @@ fn stop_socket_with_timeout(
         socket_deadline = socket_deadline.max(lease_deadline);
     }
     if let Some(expected_boot_id) = expected_boot_id {
-        match wait_until_socket_stopped_or_new_boot(
-            socket_path,
-            expected_boot_id,
-            socket_deadline,
-            label,
-        )? {
+        match wait_until_socket_stopped_or_new_boot(socket_path, expected_boot_id, socket_deadline)?
+        {
             BootStopWait::Gone => {}
             BootStopWait::Changed(actual_boot_id) => {
                 return Err(ServerStopError::OccupantChanged {
-                    label: label.into(),
                     expected_boot_id: expected_boot_id.clone(),
                     actual_boot_id,
                 });
             }
             BootStopWait::TimedOut => {
                 return Err(ServerStopError::TimedOut {
-                    label: label.into(),
                     timeout,
                     socket: socket_path.to_path_buf(),
                 });
@@ -389,32 +371,28 @@ fn stop_socket_with_timeout(
         }
         // clock-io-ok: the final probe is one real socket request.
         let final_probe_deadline = Instant::now() + STOP_STATUS_PROBE_TIMEOUT;
-        match probe_boot(socket_path, expected_boot_id, label, final_probe_deadline)? {
+        match probe_boot(socket_path, expected_boot_id, final_probe_deadline)? {
             BootProbe::Gone => {}
             BootProbe::Changed(actual_boot_id) => {
                 return Err(ServerStopError::OccupantChanged {
-                    label: label.into(),
                     expected_boot_id: expected_boot_id.clone(),
                     actual_boot_id,
                 });
             }
-            BootProbe::Expected => {
+            BootProbe::Expected | BootProbe::Unanswered => {
                 // The lease wait may have extended the socket deadline beyond
                 // the original stop budget; keep using that later budget if
-                // the expected boot reappears during this final probe.
-                match wait_until_boot_stops(socket_path, expected_boot_id, socket_deadline, label)?
-                {
+                // the expected boot answers or this final probe times out.
+                match wait_until_boot_stops(socket_path, expected_boot_id, socket_deadline)? {
                     BootStopWait::Gone => {}
                     BootStopWait::Changed(actual_boot_id) => {
                         return Err(ServerStopError::OccupantChanged {
-                            label: label.into(),
                             expected_boot_id: expected_boot_id.clone(),
                             actual_boot_id,
                         });
                     }
                     BootStopWait::TimedOut => {
                         return Err(ServerStopError::TimedOut {
-                            label: label.into(),
                             timeout,
                             socket: socket_path.to_path_buf(),
                         });
@@ -459,6 +437,8 @@ fn data_dir_lease_is_free(lease_path: &Path) -> io::Result<bool> {
 enum BootProbe {
     Gone,
     Expected,
+    /// A timeout proves neither absence nor the identity of the occupant.
+    Unanswered,
     Changed(BootId),
 }
 
@@ -477,7 +457,6 @@ enum LeaseWait {
 fn probe_boot(
     socket_path: &Path,
     expected_boot_id: &BootId,
-    label: &str,
     deadline: Instant,
 ) -> Result<BootProbe, ServerStopError> {
     // clock-io-ok: bounds one real status request on the socket.
@@ -485,8 +464,20 @@ fn probe_boot(
     match crate::status::read_runtime_status_until(socket_path, probe_deadline) {
         Ok(status) if &status.boot_id == expected_boot_id => Ok(BootProbe::Expected),
         Ok(status) => Ok(BootProbe::Changed(status.boot_id)),
+        // A busy listener can miss a probe budget without exiting. Keep
+        // polling until the stop deadline; a timeout is not evidence of exit.
+        Err(
+            ApiClientDeadlineError::Connect(error)
+            | ApiClientDeadlineError::Request(ApiClientError::Io(error)),
+        ) if matches!(
+            shepr_platform::ipc::classify_stream_error(error.kind()),
+            shepr_platform::ipc::StreamFailure::TimedOut
+        ) =>
+        {
+            Ok(BootProbe::Unanswered)
+        }
         Err(error) if crate::status::status_probe_has_no_answer(&error) => Ok(BootProbe::Gone),
-        Err(error) => Err(status_probe_error(error, label)),
+        Err(error) => Err(status_probe_error(error)),
     }
 }
 
@@ -494,19 +485,18 @@ fn wait_until_boot_stops(
     socket_path: &Path,
     expected_boot_id: &BootId,
     deadline: Instant,
-    label: &str,
 ) -> Result<BootStopWait, ServerStopError> {
     loop {
         // clock-io-ok: the wait bounds real status probes of a shutting-down server.
         if deadline.saturating_duration_since(Instant::now()).is_zero() {
             return Ok(BootStopWait::TimedOut);
         }
-        match probe_boot(socket_path, expected_boot_id, label, deadline)? {
+        match probe_boot(socket_path, expected_boot_id, deadline)? {
             BootProbe::Gone => return Ok(BootStopWait::Gone),
             BootProbe::Changed(actual_boot_id) => {
                 return Ok(BootStopWait::Changed(actual_boot_id));
             }
-            BootProbe::Expected => {}
+            BootProbe::Expected | BootProbe::Unanswered => {}
         }
         // clock-io-ok: polls the server status while its real shutdown proceeds.
         let remaining = deadline.saturating_duration_since(Instant::now());
@@ -523,18 +513,17 @@ fn wait_until_socket_stopped_or_new_boot(
     socket_path: &Path,
     expected_boot_id: &BootId,
     deadline: Instant,
-    label: &str,
 ) -> Result<BootStopWait, ServerStopError> {
     loop {
-        match probe_boot(socket_path, expected_boot_id, label, deadline)? {
-            BootProbe::Gone | BootProbe::Expected => {}
+        match probe_boot(socket_path, expected_boot_id, deadline)? {
+            BootProbe::Gone | BootProbe::Expected | BootProbe::Unanswered => {}
             BootProbe::Changed(actual_boot_id) => {
                 return Ok(BootStopWait::Changed(actual_boot_id));
             }
         }
         let socket_stopped =
             server_socket_is_stopped(socket_path).map_err(|source| ServerStopError::Io {
-                context: format!("could not check whether {label} stopped"),
+                context: "could not check whether the server stopped".to_owned(),
                 source,
             })?;
         if socket_stopped {
@@ -554,13 +543,12 @@ fn wait_for_lease_release_or_new_boot(
     deadline: Instant,
     socket_path: &Path,
     expected_boot_id: &BootId,
-    label: &str,
 ) -> Result<LeaseWait, ServerStopError> {
     if !lease_path
         .try_exists()
         .map_err(|source| ServerStopError::Io {
             context: format!(
-                "could not check whether {label} released {}",
+                "could not check whether the server released {}",
                 lease_path.display()
             ),
             source,
@@ -571,7 +559,7 @@ fn wait_for_lease_release_or_new_boot(
     loop {
         let free = data_dir_lease_is_free(lease_path).map_err(|source| ServerStopError::Io {
             context: format!(
-                "could not check whether {label} released {}",
+                "could not check whether the server released {}",
                 lease_path.display()
             ),
             source,
@@ -584,21 +572,21 @@ fn wait_for_lease_release_or_new_boot(
         if remaining.is_zero() {
             return Ok(LeaseWait::Held);
         }
-        match probe_boot(socket_path, expected_boot_id, label, deadline)? {
+        match probe_boot(socket_path, expected_boot_id, deadline)? {
             BootProbe::Changed(actual_boot_id) => {
                 return Ok(LeaseWait::NewBoot(actual_boot_id));
             }
-            BootProbe::Gone | BootProbe::Expected => {}
+            BootProbe::Gone | BootProbe::Expected | BootProbe::Unanswered => {}
         }
         std::thread::sleep(STOP_WAIT_POLL.min(remaining));
     }
 }
 
-fn status_probe_error(error: ApiClientDeadlineError, label: &str) -> ServerStopError {
+fn status_probe_error(error: ApiClientDeadlineError) -> ServerStopError {
     match error {
         ApiClientDeadlineError::Connect(source)
         | ApiClientDeadlineError::Request(ApiClientError::Io(source)) => ServerStopError::Io {
-            context: format!("could not check whether {label} stopped"),
+            context: "could not check whether the server stopped".to_owned(),
             source,
         },
         ApiClientDeadlineError::Request(error) => ServerStopError::Protocol(error.to_string()),
@@ -609,13 +597,12 @@ fn send_stop_request(
     socket_path: &Path,
     request: &Request,
     deadline: Instant,
-    label: &str,
     expected_boot_id: Option<&BootId>,
 ) -> Result<(), ServerStopError> {
     // clock-io-ok: the deadline is the one the real socket reader below keeps.
     if deadline.saturating_duration_since(Instant::now()).is_zero() {
         return Err(ServerStopError::Io {
-            context: format!("could not send stop request to {label}"),
+            context: "could not send stop request to the server".to_owned(),
             source: io::Error::new(
                 io::ErrorKind::TimedOut,
                 "stop deadline expired before the request was sent",
@@ -631,7 +618,7 @@ fn send_stop_request(
             )),
         },
         Err(ApiClientDeadlineError::Connect(error)) => {
-            Err(stop_socket_io_error(socket_path, label, error))
+            Err(stop_socket_io_error(socket_path, error))
         }
         // A connection closed without an answer is ambiguous. The server may
         // have begun stopping before it wrote one, or it may have dropped the
@@ -652,7 +639,7 @@ fn send_stop_request(
         Err(ApiClientDeadlineError::Request(ApiClientError::Io(source))) => {
             Err(ServerStopError::Io {
                 context: format!(
-                    "could not send the stop request to {label} at {}",
+                    "could not send the stop request to the server at {}",
                     socket_path.display()
                 ),
                 source,
@@ -665,7 +652,6 @@ fn send_stop_request(
             match expected_boot_id {
                 Some(expected) if response.error.code == ApiErrorCode::ServerBootMismatch => {
                     Err(ServerStopError::BootMismatch {
-                        label: label.into(),
                         expected_boot_id: expected.clone(),
                         detail: response.error.message,
                     })
@@ -679,21 +665,19 @@ fn send_stop_request(
     }
 }
 
-fn stop_socket_io_error(socket_path: &Path, label: &str, error: io::Error) -> ServerStopError {
+fn stop_socket_io_error(socket_path: &Path, error: io::Error) -> ServerStopError {
     match shepr_platform::ipc::socket_is_live(socket_path) {
         Ok(false) => ServerStopError::NotRunning {
-            label: label.into(),
             path: socket_path.into(),
             source: error,
         },
         Ok(true) => ServerStopError::Unreachable {
-            label: label.into(),
             path: socket_path.into(),
             source: error,
         },
         Err(probe_error) => ServerStopError::Io {
             context: format!(
-                "could not connect to {label} at {} ({error}); could not determine socket liveness",
+                "could not connect to the server at {} ({error}); could not determine socket liveness",
                 socket_path.display()
             ),
             source: probe_error,
@@ -762,11 +746,7 @@ mod tests {
         let scratch = ScratchDir::new("stop-probe-error");
         let socket = scratch.join("loop.sock");
         std::os::unix::fs::symlink(&socket, &socket).expect("symlink loop");
-        let error = stop_socket_io_error(
-            &socket,
-            "server",
-            io::Error::other("original connect failure"),
-        );
+        let error = stop_socket_io_error(&socket, io::Error::other("original connect failure"));
         assert!(matches!(error, ServerStopError::Io { .. }));
         let message = error.to_string();
         assert!(message.contains("original connect failure"));
@@ -778,13 +758,12 @@ mod tests {
     #[test]
     fn stop_error_display_names_the_one_reachable_socket() {
         let error = ServerStopError::TimedOut {
-            label: "test server".into(),
             timeout: Duration::from_millis(75),
             socket: PathBuf::from("/run/test.sock"),
         };
         assert_eq!(
             error.to_string(),
-            "test server did not stop within 75ms; the socket at /run/test.sock is still \
+            "the server did not stop within 75ms; the socket at /run/test.sock is still \
              reachable. The server may still be saving its layout; wait for shutdown to finish and \
              inspect the server log before retrying. Forcing the process to exit can lose \
              the final save"
@@ -834,7 +813,6 @@ mod tests {
             &socket_path,
             &request,
             Instant::now() + Duration::from_millis(100),
-            "test server",
             Some(&"17-23".parse().expect("boot identity")),
         )
         .expect("test precondition");
@@ -964,6 +942,19 @@ mod tests {
     }
 
     #[test]
+    fn a_live_listener_missing_the_boot_probe_deadline_is_not_gone() {
+        let scratch = ScratchDir::new("stop-silent-boot-probe");
+        let socket = scratch.join("server.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket)
+            .expect("bind a live but silent listener");
+        let boot = "1-1".parse().expect("boot identity");
+        let result = probe_boot(&socket, &boot, Instant::now() + STOP_STATUS_PROBE_TIMEOUT)
+            .expect("a missed probe budget keeps the stop waiting");
+        assert!(matches!(result, BootProbe::Unanswered));
+        drop(listener);
+    }
+
+    #[test]
     fn a_conditional_stop_refused_by_another_boot_reports_the_changed_occupant() {
         let (_env, paths) = isolated_config_env();
         let socket_path = paths.server_address().socket().to_path_buf();
@@ -1043,7 +1034,6 @@ mod tests {
             &socket_path,
             None,
             Duration::from_secs(2),
-            "test server",
             StopOrigin::Operator,
             Some(&"17-23".parse().expect("boot identity")),
         )
@@ -1104,7 +1094,6 @@ mod tests {
             &socket_path,
             &request,
             Instant::now() + Duration::from_secs(1),
-            "test server",
             None,
         )
         .expect_err("a pong is not a stop acceptance");
@@ -1237,7 +1226,6 @@ mod tests {
                     &path,
                     None,
                     Duration::from_secs(2),
-                    "test server",
                     StopOrigin::Operator,
                     Some(&"17-23".parse().expect("boot identity")),
                 ))
@@ -1266,9 +1254,14 @@ mod tests {
             shepr_platform::ipc::LockWait::FailIfHeld,
         )
         .expect("lease");
-        // Answers the stop, then keeps listening without answering a ping.
+        // Answers the stop, then keeps listening and closes every later
+        // connection unanswered: the boot reads as gone while the socket
+        // still accepts, until the test lets the listener go. (A listener
+        // that merely stays silent is not evidence of exit; the stop keeps
+        // waiting on it within its own budget.)
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind socket");
         let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let answer = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("stop");
             let mut request = String::new();
@@ -1278,7 +1271,14 @@ mod tests {
             stream
                 .write_all(operator_stop_ok().as_bytes())
                 .expect("answer");
-            held_tx.send(listener).expect("retain listener");
+            drop(stream);
+            listener.set_nonblocking(true).expect("nonblocking");
+            held_tx.send(()).expect("listener retained");
+            while release_rx.try_recv().is_err() {
+                // Dropping the accepted stream closes it without an answer.
+                drop(listener.accept());
+                std::thread::sleep(Duration::from_millis(2));
+            }
         });
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let stop = std::thread::spawn(move || {
@@ -1287,13 +1287,12 @@ mod tests {
                     &path,
                     Some((&lease_path, Duration::from_millis(500))),
                     Duration::from_millis(75),
-                    "test server",
                     StopOrigin::Operator,
                     Some(&"17-23".parse().expect("boot identity")),
                 ))
                 .expect("result");
         });
-        let held = held_rx
+        held_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("listener retained");
         assert!(done_rx.recv_timeout(Duration::from_millis(125)).is_err());
@@ -1302,7 +1301,7 @@ mod tests {
             done_rx.recv_timeout(Duration::from_millis(75)).is_err(),
             "lease release alone must not finish the stop"
         );
-        drop(held);
+        release_tx.send(()).expect("release the listener");
         done_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("stop completes")

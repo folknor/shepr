@@ -29,6 +29,17 @@
 //! with nothing published. The task outlives pane removal; reaping never waits
 //! on it, and shutdown does not wait for it.
 
+// The sole publisher must not acquire a panic path in production.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::indexing_slicing,
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic
+    )
+)]
+
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -141,6 +152,7 @@ pub(super) fn spawn(
             },
             settling,
             registration,
+            LAUNCH_SETTLE_AFTER_PANE_END,
         )
         .await;
     });
@@ -171,6 +183,7 @@ async fn coordinate<Claim>(
     coordinator: Coordinator<'_>,
     settling: impl std::future::Future<Output = LaunchOutcome>,
     claim: Claim,
+    settle_after_end: std::time::Duration,
 ) {
     let Coordinator {
         pane_id,
@@ -192,7 +205,7 @@ async fn coordinate<Claim>(
             RecordedEnding::Silent => return,
             RecordedEnding::Observed { child_exit_confirmed: true, .. } => settling.await,
             RecordedEnding::Observed { child_exit_confirmed: false, .. } => {
-                tokio::time::timeout(LAUNCH_SETTLE_AFTER_PANE_END, settling)
+                tokio::time::timeout(settle_after_end, settling)
                     .await
                     .unwrap_or(LaunchOutcome::Unconfirmed)
             }
@@ -435,6 +448,14 @@ mod tests {
         arbiter: &PaneExitArbiter,
         settling: impl std::future::Future<Output = LaunchOutcome>,
     ) -> Vec<Told> {
+        run_within(arbiter, settling, std::time::Duration::from_millis(1)).await
+    }
+
+    async fn run_within(
+        arbiter: &PaneExitArbiter,
+        settling: impl std::future::Future<Output = LaunchOutcome>,
+        settle_after_end: std::time::Duration,
+    ) -> Vec<Told> {
         let (tx, mut rx) = mpsc::channel(8);
         let events = EventSender::runtime(
             tx,
@@ -454,6 +475,7 @@ mod tests {
             },
             settling,
             (),
+            settle_after_end,
         )
         .await;
         told(&mut rx)
@@ -579,9 +601,6 @@ mod tests {
         );
     }
 
-    // Waits out the real `LAUNCH_SETTLE_AFTER_PANE_END`: this crate's tests do
-    // not enable tokio's paused clock (`test-util`), and one second is cheap
-    // enough not to add the feature for.
     #[tokio::test]
     async fn a_hung_launch_does_not_keep_a_failed_reader_from_ending_the_pane() {
         let arbiter = PaneExitArbiter::default();
@@ -615,7 +634,7 @@ mod tests {
             failed()
         };
         assert_eq!(
-            run(&arbiter, settling).await,
+            run_within(&arbiter, settling, Duration::from_secs(5)).await,
             [
                 Told::Settled("failed"),
                 Told::Died(PaneEndReason::TerminalClosed)
@@ -670,6 +689,7 @@ mod tests {
             },
             std::future::ready(failed()),
             (),
+            std::time::Duration::from_millis(1),
         );
         tokio::pin!(coordinating);
         // Run until the settlement is out and the task waits for an ending.

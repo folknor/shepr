@@ -382,6 +382,10 @@ macro_rules! define_methods {
     };
 }
 
+// API params policy: every method rejects unknown params except
+// `pane.report_agent`. That state hook deliberately ignores extra report
+// annotations; it neither stores nor acts on them. Keep this exception and
+// the strict routes covered together in `schema/tests.rs`.
 define_methods! {
     socket {
         Ping(PingParams) => "ping" {

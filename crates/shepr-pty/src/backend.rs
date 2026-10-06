@@ -567,10 +567,14 @@ unsafe fn run_child(plan: &ChildPlan<'_>) -> ! {
         status,
         &launch::chdir_ok_record(u32::try_from(index).unwrap_or(u32::MAX), first_failure),
     );
+    let Some(envp) = plan.envps.get(index) else {
+        // Refuse an inconsistent pre-fork plan without unwinding in the child.
+        child_exit(EXIT_LAUNCH_FAILED);
+    };
     // SAFETY: program, argv and the selected envp are NUL-terminated strings
     // and null-terminated pointer arrays the fork copied. execve only returns
     // on failure.
-    unsafe { libc::execve(plan.program, plan.argv.as_ptr(), plan.envps[index].as_ptr()) };
+    unsafe { libc::execve(plan.program, plan.argv.as_ptr(), envp.as_ptr()) };
     send_record(status, &launch::exec_failed_record(errno()));
     child_exit(EXIT_LAUNCH_FAILED)
 }

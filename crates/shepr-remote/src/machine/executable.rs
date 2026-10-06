@@ -20,16 +20,16 @@ impl fmt::Display for RemoteExecutableError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotAbsolute => {
-                formatter.write_str("remote Shepr executable path must be absolute")
+                formatter.write_str("remote shepr executable path must be absolute")
             }
             Self::TooLong => write!(
                 formatter,
-                "remote Shepr executable path must be at most {MAX_REMOTE_EXECUTABLE_BYTES} bytes"
+                "remote shepr executable path must be at most {MAX_REMOTE_EXECUTABLE_BYTES} bytes"
             ),
             Self::ContainsControlCharacters => formatter
-                .write_str("remote Shepr executable path must not contain control characters"),
+                .write_str("remote shepr executable path must not contain control characters"),
             Self::NeedsShellQuoting => formatter.write_str(
-                "remote Shepr executable path must contain only unquoted shell-safe characters",
+                "remote shepr executable path must contain only unquoted shell-safe characters",
             ),
         }
     }
@@ -37,7 +37,7 @@ impl fmt::Display for RemoteExecutableError {
 
 impl std::error::Error for RemoteExecutableError {}
 
-/// A checked absolute path to the Shepr executable on a remote machine.
+/// A checked absolute path to the shepr executable on a remote machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemoteExecutable(String);
 

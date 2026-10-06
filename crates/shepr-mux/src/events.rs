@@ -78,6 +78,10 @@ pub struct RuntimeGeneration(u64);
 
 impl RuntimeGeneration {
     pub fn alloc() -> Self {
+        // A pane can replace its runtime while producers of the old runtime
+        // still hold senders. Keep this identity process-global: a counter
+        // inside the replacement runtime would restart and admit stale events;
+        // a per-pane allocator would need another owner surviving teardown.
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
     }

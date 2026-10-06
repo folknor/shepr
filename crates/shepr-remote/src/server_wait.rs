@@ -10,6 +10,7 @@ use std::os::fd::RawFd;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use shepr_launch::RemoteFailureClass;
 use shepr_launch::local_server;
 use shepr_launch::status::ServerPresence;
 use shepr_platform::{DirectoryWake, DirectoryWatch};
@@ -39,10 +40,12 @@ pub enum ServerWaitEnd {
 /// and a runtime directory that does not exist yet.
 pub fn wait_for_server(paths: &shepr_paths::AppPaths) -> io::Result<ServerWaitEnd> {
     let stdin = std::os::fd::AsRawFd::as_raw_fd(&std::io::stdin());
-    let socket_name =
-        paths.server_address().socket().file_name().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "server socket has no name")
-        })?;
+    let socket_name = paths
+        .server_address()
+        .socket()
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "server socket has no name"))
+        .map_err(|error| classified_wait_failure(&error))?;
     wait_for_server_with(
         paths.runtime_dir(),
         socket_name,
@@ -76,6 +79,15 @@ pub fn wait_for_server(paths: &shepr_paths::AppPaths) -> io::Result<ServerWaitEn
             max: SERVER_WAIT_MAX,
         },
     )
+    .map_err(|error| classified_wait_failure(&error))
+}
+
+/// A failure that prevents the remote wait from checking or waiting for the
+/// selected server is a host setup failure, like the bridge's path and logger
+/// setup failures. The client reads this record from SSH stderr and marks the
+/// machine for repair instead of retrying the wait as a transient connection.
+fn classified_wait_failure(error: &io::Error) -> io::Error {
+    crate::host::classified_bridge_failure(RemoteFailureClass::Repair, error.kind(), error)
 }
 
 /// What one check of the host's server found.

@@ -534,7 +534,7 @@ fn the_running_server_status_never_starts_a_server() {
     let _env = IsolatedEnv::new();
     let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
     assert!(
-        running_server_status(&paths)
+        running_server_status(&paths, || {})
             .expect("an absent server is no error")
             .is_none()
     );
@@ -545,7 +545,7 @@ fn the_running_server_status_never_starts_a_server() {
         UnixListener::bind(&socket).expect("test precondition"),
         other_build_id(),
     );
-    let status = running_server_status(&paths)
+    let status = running_server_status(&paths, || {})
         .expect("a live server answers")
         .expect("a server is running");
     server.join().expect("fake server thread");
@@ -557,7 +557,7 @@ fn a_silent_listener_reads_as_the_launchs_unresponsive_error() {
     let _env = IsolatedEnv::new();
     let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
     let _listener = UnixListener::bind(runtime_socket(&paths)).expect("test precondition");
-    let error = running_server_status(&paths).expect_err("a silent listener is no absence");
+    let error = running_server_status(&paths, || {}).expect_err("a silent listener is no absence");
     assert!(
         matches!(error, LaunchError::Unresponsive { .. }),
         "{error:?}"
@@ -578,7 +578,7 @@ fn a_stopping_server_is_offered_no_restart() {
         true,
         false,
     );
-    let status = running_server_status(&paths).expect("a stopping server answers");
+    let status = running_server_status(&paths, || {}).expect("a stopping server answers");
     server.join().expect("fake server thread");
     assert!(status.is_none(), "it is already going: {status:?}");
     assert_nothing_was_launched(&paths);

@@ -57,7 +57,7 @@ mod tests {
         app.set_test_shell(exiting_test_command());
         app.state
             .test_set_workspaces(vec![Workspace::test_new("relative-cwd")]);
-        let pane_count = app.state.workspaces.records().count();
+        let pane_count = app.state.workspaces().records().count();
 
         let response = app.handle_workspace_create(
             WorkspaceCreateParams {
@@ -72,9 +72,9 @@ mod tests {
             "message names the offending cwd: {error}"
         );
 
-        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces().len(), 1);
         assert_eq!(app.state.ws(0).tree().len(), 1);
-        assert_eq!(app.state.workspaces.records().count(), pane_count);
+        assert_eq!(app.state.workspaces().records().count(), pane_count);
         shutdown_test_runtimes(&mut app);
     }
 }

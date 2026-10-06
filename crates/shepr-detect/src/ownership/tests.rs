@@ -141,7 +141,7 @@ fn hook_authority_overrides_fallback_for_same_agent() {
     );
 
     assert_eq!(terminal.detected_agent, Some(Agent::Pi));
-    assert_eq!(terminal.fallback_state, AgentState::Idle);
+    assert_eq!(terminal.fallback_state, AgentState::Unknown);
     assert_eq!(terminal.effective_agent(), Some(Agent::Pi));
     assert_eq!(terminal.state, AgentState::Working);
 }
@@ -208,7 +208,7 @@ fn omp_hook_authority_overrides_detected_fallback() {
         Instant::now(),
     );
 
-    assert_eq!(terminal.fallback_state, AgentState::Idle);
+    assert_eq!(terminal.fallback_state, AgentState::Unknown);
     assert_eq!(terminal.state, AgentState::Working);
     assert!(change.is_none());
 }
@@ -1400,7 +1400,7 @@ fn visible_blocker_does_not_override_full_lifecycle_hook_authority() {
         Instant::now(),
     );
 
-    assert_eq!(terminal.fallback_state, AgentState::Idle);
+    assert_eq!(terminal.fallback_state, AgentState::Unknown);
     assert_eq!(terminal.state, AgentState::Working);
     assert!(change.is_none());
 }
@@ -1493,7 +1493,7 @@ fn fallback_idle_does_not_override_full_lifecycle_hook_working() {
         now + Duration::from_secs(10),
     );
 
-    assert_eq!(terminal.fallback_state, AgentState::Working);
+    assert_eq!(terminal.fallback_state, AgentState::Unknown);
     assert_eq!(terminal.state, AgentState::Working);
 }
 
@@ -1550,7 +1550,7 @@ fn visible_working_does_not_override_full_lifecycle_hook_idle() {
         now + Duration::from_millis(1),
     );
 
-    assert_eq!(terminal.fallback_state, AgentState::Idle);
+    assert_eq!(terminal.fallback_state, AgentState::Unknown);
     assert_eq!(terminal.state, AgentState::Idle);
     assert!(change.effective_state_change.is_none());
 }
@@ -1582,7 +1582,7 @@ fn detected_working_fallback_is_ignored_under_full_lifecycle_hook_authority() {
         now + Duration::from_millis(1),
     );
 
-    assert_eq!(terminal.fallback_state, AgentState::Idle);
+    assert_eq!(terminal.fallback_state, AgentState::Unknown);
     assert_eq!(terminal.state, AgentState::Idle);
     assert!(change.effective_state_change.is_none());
 }
@@ -1758,7 +1758,7 @@ fn full_lifecycle_hook_authority_ignores_detected_agent_clear_without_process_ex
 
     assert!(terminal.hook_authority.is_some());
     assert_eq!(terminal.detected_agent, Some(Agent::Pi));
-    assert_eq!(terminal.fallback_state, AgentState::Idle);
+    assert_eq!(terminal.fallback_state, AgentState::Unknown);
     assert_eq!(terminal.state, AgentState::Working);
     assert!(change.effective_state_change.is_none());
 }
@@ -2927,7 +2927,9 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
         AgentState::Idle,
         false,
         false,
-        now,
+        // Activating the opencode authority withdrew the screen verdict at the
+        // hook's report time, so an older observation would be refused.
+        now + Duration::from_millis(1),
     );
 
     let mutation = terminal
@@ -3482,7 +3484,7 @@ fn refused_session_replacement_preserves_authority_and_source_ordering() {
 }
 
 #[test]
-fn invalid_session_kind_and_conflicting_owner_do_not_change_arbitration() {
+fn invalid_session_kind_another_source_and_a_missing_session_do_not_change_arbitration() {
     let mut terminal = test_terminal();
     let old = shepr_agent::resume::AgentSessionRef::id("old").expect("session");
     anchor_full_lifecycle_session(&mut terminal, Agent::Kimi, "shepr:kimi", old.clone());
@@ -4239,4 +4241,45 @@ fn a_report_after_a_backwards_clock_step_rides_the_start_it_followed() {
     assert_eq!(authority.state, AgentState::Working);
     assert_eq!(authority.session_ref, kimi_root());
     assert_eq!(terminal.last_unapplied_hook_report(stepped.monotonic), None);
+}
+
+#[test]
+fn repeated_full_lifecycle_reports_preserve_activation_watermark() {
+    let mut terminal = test_terminal();
+    terminal.set_detected_state_at(Some(Agent::Pi), AgentState::Blocked, Instant::now());
+    anchor_full_lifecycle_session(
+        &mut terminal,
+        Agent::Pi,
+        "shepr:pi",
+        pi_root_session_ref().expect("test session"),
+    );
+    terminal.set_hook_authority_with_session_ref(
+        "shepr:pi",
+        AgentState::Working,
+        pi_root_session_ref(),
+        None,
+        Instant::now(),
+    );
+    let activated_at = terminal.fallback_observed_at;
+    assert_eq!(terminal.fallback_state, AgentState::Unknown);
+    assert!(!terminal.fallback_visible_blocker);
+    terminal.set_hook_authority_with_session_ref(
+        "shepr:pi",
+        AgentState::Idle,
+        pi_root_session_ref(),
+        None,
+        Instant::now() + Duration::from_secs(1),
+    );
+    assert_eq!(terminal.fallback_observed_at, activated_at);
+    assert_eq!(terminal.state, AgentState::Idle);
+    let outcome = terminal.report_session_start_outcome_at(
+        &ReportOrigin::parse("shepr:pi").expect("test origin"),
+        shepr_agent::resume::AgentSessionRef::path(test_session_path("replacement.jsonl")),
+        None,
+        ReportedSessionStart::Known(AgentSessionStartSource::New),
+        Instant::now() + Duration::from_secs(2),
+    );
+    assert!(matches!(outcome, HookOutcome::Applied(_)), "{outcome:?}");
+    assert!(!terminal.full_lifecycle_hook_authority_active());
+    assert_eq!(terminal.state, AgentState::Unknown);
 }

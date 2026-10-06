@@ -56,7 +56,7 @@ fn first_pane_snapshot(workspace: &WorkspaceSnapshot) -> &PaneSnapshot {
 fn state_with_workspaces(names: &[&str]) -> AppState {
     let mut state = AppState::test_new();
     state.test_set_workspaces(names.iter().map(|name| Workspace::test_new(name)).collect());
-    if !state.workspaces.is_empty() {
+    if !state.workspaces().is_empty() {
         state.seed_bookmark_index(Some(0));
     }
     state
@@ -95,10 +95,10 @@ fn capture_from_state_with_runtimes(
     terminal_runtimes: &PaneRuntimeRegistry,
 ) -> SessionSnapshot {
     capture(
-        &state.workspaces,
+        state.workspaces(),
         terminal_runtimes,
         &shepr_core::absolute_path::AbsolutePath::root(),
-        state.host_terminal_theme,
+        state.host_terminal_theme(),
     )
     .expect("fixture workspace trees capture consistently")
 }
@@ -146,7 +146,10 @@ fn saved_host_theme_round_trips() {
 fn capture_keeps_the_theme_for_a_headless_resume() {
     let mut state = AppState::test_new();
     let color = shepr_term::host::RgbColor { r: 2, g: 4, b: 8 };
-    state.host_terminal_theme.background = Some(color);
+    state.record_host_theme(shepr_term::host::TerminalTheme {
+        background: Some(color),
+        ..state.host_terminal_theme()
+    });
     let snapshot = capture_from_state(&state);
     assert_eq!(snapshot.host_theme.to_theme().background, Some(color));
 }
@@ -228,11 +231,11 @@ fn capture_contract_tracks_workspace_order_and_the_bookmark() {
     let mut state = state_with_workspaces(&["a", "b", "c"]);
     state.seed_bookmark_index(Some(1));
 
-    let before: Vec<_> = state.workspaces.iter().map(Workspace::id).collect();
+    let before: Vec<_> = state.workspaces().iter().map(Workspace::id).collect();
     state.move_workspace(&before[1], Some(&before[0]));
 
     let snapshot = capture_from_state(&state);
-    let ids: Vec<_> = state.workspaces.iter().map(Workspace::id).collect();
+    let ids: Vec<_> = state.workspaces().iter().map(Workspace::id).collect();
     let captured_ids: Vec<_> = snapshot.workspaces.iter().map(|ws| ws.id).collect();
     assert_eq!(captured_ids, ids);
     assert_eq!(snapshot.active, state.bookmark_index());

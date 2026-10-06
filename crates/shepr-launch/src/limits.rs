@@ -3,8 +3,12 @@
 
 use std::time::Duration;
 
-/// A connected client probes an endpoint after this much silence.
-/// The interval leaves room for routine SSH and server scheduling delays.
+/// A connected client probes an endpoint that keeps a heartbeat after this
+/// much silence, and the server answers. The interval leaves room for routine
+/// SSH and server scheduling delays. It is the one timing fact both ends of a
+/// connection share: anything that relays the connection and expires it when
+/// no byte moves, as the remote host's SSH bridge does, must wait several of
+/// these intervals before it gives up, and asserts that against this value.
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How often a launching client checks its spawned server and the launch lock.
@@ -19,10 +23,9 @@ pub(crate) const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// is not asked every poll.
 pub(crate) const DAEMON_RESTART_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Time allowed for one status request to a local server, the response
-/// deadline of every launch probe. The timeout bounds an unavailable or
-/// overloaded local server check.
-pub const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+/// Time allowed for one status request to a local server. This uses the API
+/// client's shared ping budget, which bounds connect, write and response.
+pub const STATUS_REQUEST_TIMEOUT: Duration = shepr_api::client::STATUS_REQUEST_TIMEOUT;
 
 /// The most a launched server's boot log may hold. A launch that finds more
 /// (a server printing without end while it boots) fails and kills the server,

@@ -1,3 +1,7 @@
+// The reducers live beneath this module so they reach its private fields;
+// everything else in `app` goes through accessors and named reducers.
+pub(crate) mod actions;
+
 use shepr_config::NewTerminalCwd;
 use shepr_core::geometry::Rect;
 use shepr_protocol::WorkspaceId;
@@ -42,8 +46,8 @@ impl HostAppearanceReport {
 /// Everything is addressed by identity: a workspace by its `WorkspaceId`, a
 /// pane by its `PaneId`. Positions survive only where order is the subject
 /// (moving a workspace, the bookmark, the sidebar order). The fields are
-/// `pub(super)`, so the `app` module's files read them directly and everything
-/// outside goes through the methods.
+/// private to this module and its reducers (`actions`); the rest of `app`
+/// reads through accessors and commits changes through named reducers.
 pub(crate) struct AppState {
     /// The session's workspaces in display order, with the allocator their IDs
     /// come from, the bookmark (the workspace saved with the session and where
@@ -51,28 +55,27 @@ pub(crate) struct AppState {
     /// surface is active, and not a mirror of any client's view) and, through
     /// each workspace, the geometry its PTYs were last laid out in and the
     /// panes with their terminal state.
-    // App siblings still read this directly (including session capture and
-    // title/resume observation). Making it private requires moving reducers
-    // beneath this module and converting those callers together. Until then,
-    // projected mutations must use named reducers, which own invalidation.
-    pub(super) workspaces: WorkspaceSet,
+    workspaces: WorkspaceSet,
     /// Immutable settings resolved from the launch configuration.
-    pub(super) settings: AppSettings,
-    pub(super) next_agent_state_change_seq: shepr_agent::StateChangeSeq,
+    settings: AppSettings,
+    next_agent_state_change_seq: shepr_agent::StateChangeSeq,
     /// Panes whose terminal ownership an update touched since `App` last
     /// mirrored full-lifecycle authority into their runtimes. It holds ids, not
     /// values: the drain reads the live authority, so a change no mutation
     /// reported is still delivered. A set, so it stays bounded by the pane
     /// count when no `App` drains it. `App` looks the runtime up by the pane.
-    pub(super) lifecycle_authority_dirty: std::collections::HashSet<shepr_core::layout::PaneId>,
+    lifecycle_authority_dirty: std::collections::HashSet<shepr_core::layout::PaneId>,
     /// Last known foreground host terminal appearance and how it was learned.
-    pub(super) host_terminal_appearance: HostAppearanceReport,
+    host_terminal_appearance: HostAppearanceReport,
     /// Resolved host terminal default colors for theming embedded panes.
-    pub(super) host_terminal_theme: TerminalTheme,
+    host_terminal_theme: TerminalTheme,
     /// Set when a persisted session snapshot would change.
-    pub(super) session_dirty: bool,
+    session_dirty: bool,
     /// Invalidates the shell projection after state changes that can affect chrome.
-    pub(super) shell_projection_revision: shepr_protocol::ProjectionRevision,
+    shell_projection_revision: shepr_protocol::ProjectionRevision,
+    /// The session saver's last reported condition, which every projection
+    /// carries. The saver owns the policy; this is its projected copy.
+    session_save_status: shepr_protocol::SessionSaveStatus,
 }
 
 /// Runtime-ready settings copied once from the immutable launch config.
@@ -175,7 +178,67 @@ impl AppState {
             host_terminal_theme: host_theme,
             session_dirty: false,
             shell_projection_revision: shepr_protocol::ProjectionRevision::ZERO,
+            session_save_status: shepr_protocol::SessionSaveStatus::Ready,
         }
+    }
+
+    /// Observes the persistence worker's policy for the shared projection.
+    /// Runtime policy stays with the saver; this is its last reported state.
+    pub(crate) fn record_session_save_status(&mut self, status: shepr_protocol::SessionSaveStatus) {
+        if self.session_save_status != status {
+            self.session_save_status = status;
+            self.mark_shell_projection_dirty();
+        }
+    }
+
+    pub(crate) fn session_save_status(&self) -> shepr_protocol::SessionSaveStatus {
+        self.session_save_status
+    }
+
+    /// Saturation is a permanent cache miss, so exhaustion cannot hide a
+    /// later mutation behind a revision a cache has already retained.
+    pub(crate) fn shell_projection_is_current(
+        &self,
+        revision: shepr_protocol::ProjectionRevision,
+    ) -> bool {
+        self.shell_projection_revision.checked_next().is_some()
+            && revision == self.shell_projection_revision
+    }
+
+    pub(crate) fn record_host_appearance(&mut self, report: HostAppearanceReport) -> bool {
+        if self.host_terminal_appearance == report {
+            return false;
+        }
+        self.host_terminal_appearance = report;
+        true
+    }
+
+    pub(crate) fn record_host_theme(&mut self, theme: TerminalTheme) -> bool {
+        if theme.is_empty() || self.host_terminal_theme == theme {
+            return false;
+        }
+        self.host_terminal_theme = theme;
+        self.mark_session_dirty();
+        true
+    }
+
+    pub(crate) fn sync_terminal_titles(
+        &mut self,
+        observations: impl IntoIterator<Item = (shepr_core::layout::PaneId, Option<String>)>,
+    ) -> shepr_mux::terminal::state::TerminalTitleChange {
+        let mut changes = shepr_mux::terminal::state::TerminalTitleChange::default();
+        for (pane_id, title) in observations {
+            let Some(record) = self.workspaces.pane_mut(pane_id) else {
+                continue;
+            };
+            let change = record.terminal_mut().set_terminal_title(title);
+            changes.raw_changed |= change.raw_changed;
+            changes.stripped_changed |= change.stripped_changed;
+        }
+        if changes.raw_changed || changes.stripped_changed {
+            self.mark_shell_projection_dirty();
+        }
+        changes
     }
 
     /// The session's workspaces, their order, IDs and bookmark.
@@ -216,10 +279,7 @@ impl AppState {
     }
 
     /// The workspace that holds `pane_id`, for mutation.
-    pub(super) fn workspace_of_mut(
-        &mut self,
-        pane_id: shepr_core::layout::PaneId,
-    ) -> Option<&mut Workspace> {
+    fn workspace_of_mut(&mut self, pane_id: shepr_core::layout::PaneId) -> Option<&mut Workspace> {
         let id = self.workspaces.pane(pane_id)?.workspace().id();
         self.workspaces.get_mut(&id)
     }
@@ -285,12 +345,12 @@ impl AppState {
     }
 
     pub(crate) fn mark_shell_projection_dirty(&mut self) {
-        // Exhaustion is an internal error: retaining the revision would leave
-        // every client silently stale.
+        // Cache users must use shell_projection_is_current: saturation forces
+        // a rebuild instead of panicking in the event loop.
         self.shell_projection_revision = self
             .shell_projection_revision
             .checked_next()
-            .expect("shell projection revision exhausted");
+            .unwrap_or(self.shell_projection_revision);
     }
 
     /// The area `workspace` is laid out in: the geometry the server last
@@ -330,6 +390,10 @@ use crate::test_support::{ValidatedServerConfigFixture as _, WorkspaceFixture as
 
 #[cfg(test)]
 impl AppState {
+    pub(crate) fn test_workspaces_mut(&mut self) -> &mut WorkspaceSet {
+        &mut self.workspaces
+    }
+
     /// Bookmarks the workspace at `index` (or nothing), without marking the
     /// session changed: tests seed it this way.
     pub(crate) fn seed_bookmark_index(&mut self, index: Option<usize>) {
@@ -721,6 +785,29 @@ mod tests {
     }
 
     #[test]
+    fn persistence_status_observation_invalidates_only_when_it_changes() {
+        use shepr_protocol::SessionSaveStatus;
+        let mut state = AppState::test_new();
+        let initial = state.shell_projection_revision();
+        state.record_session_save_status(SessionSaveStatus::Ready);
+        assert_eq!(state.shell_projection_revision(), initial);
+        assert!(state.shell_projection_is_current(initial));
+        state.record_session_save_status(SessionSaveStatus::BlockedOnBackup);
+        let blocked = state.shell_projection_revision();
+        assert_ne!(blocked, initial);
+        assert_eq!(
+            state.session_save_status(),
+            SessionSaveStatus::BlockedOnBackup
+        );
+        state.record_session_save_status(SessionSaveStatus::BlockedOnBackup);
+        assert_eq!(state.shell_projection_revision(), blocked);
+        state.record_session_save_status(SessionSaveStatus::Stopped);
+        assert_ne!(state.shell_projection_revision(), blocked);
+        assert_eq!(state.session_save_status(), SessionSaveStatus::Stopped);
+        assert!(!state.session_dirty());
+    }
+
+    #[test]
     fn shell_projection_revision_is_explicit_and_monotonic() {
         let mut state = AppState::test_new();
         assert_eq!(
@@ -740,13 +827,13 @@ mod tests {
         assert_eq!(state.shell_projection_revision, max);
     }
 
-    /// An exhausted revision is an internal error, not a revision that stops
-    /// advancing and leaves every client silently stale.
     #[test]
-    #[should_panic(expected = "shell projection revision exhausted")]
-    fn an_exhausted_shell_projection_revision_panics() {
+    fn an_exhausted_shell_projection_revision_forces_a_cache_miss() {
         let mut state = AppState::test_new();
-        state.shell_projection_revision = shepr_test_fixtures::counter_at(u64::MAX);
+        let max = shepr_test_fixtures::counter_at(u64::MAX);
+        state.shell_projection_revision = max;
         state.mark_shell_projection_dirty();
+        assert_eq!(state.shell_projection_revision(), max);
+        assert!(!state.shell_projection_is_current(max));
     }
 }

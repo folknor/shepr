@@ -116,9 +116,9 @@ pub struct SessionRestoreDamage {
     pub dropped_workspaces: usize,
     /// Saved workspaces restored under a fresh ID, their saved one repeated.
     pub renamed_workspaces: usize,
-    /// Saved workspace bookmarks beyond the saved workspace list, redirected
+    /// Whether the saved workspace bookmark was out of range and redirected
     /// to the last restored workspace (or cleared when none survived).
-    pub repaired_bookmarks: usize,
+    pub repaired_bookmark: bool,
     /// Restored panes whose saved agent session was unusable or duplicated:
     /// each came back as a plain shell, without its session.
     pub dropped_agent_sessions: Vec<crate::PublicPaneId>,
@@ -128,7 +128,7 @@ impl SessionRestoreDamage {
     pub fn is_empty(&self) -> bool {
         self.dropped_workspaces == 0
             && self.renamed_workspaces == 0
-            && self.repaired_bookmarks == 0
+            && !self.repaired_bookmark
             && self.dropped_agent_sessions.is_empty()
     }
 
@@ -181,7 +181,7 @@ impl std::fmt::Display for SessionRestoreDamage {
                 self.renamed_workspaces
             ));
         }
-        if self.repaired_bookmarks > 0 {
+        if self.repaired_bookmark {
             sentences
                 .push("The saved workspace bookmark was out of range and was repaired.".to_owned());
         }
@@ -237,7 +237,7 @@ impl std::fmt::Display for NoticeKind {
             Self::LimitExceeded(error) => match error.limit.kind() {
                 crate::LimitKind::InputPayloadBytes => write!(
                     f,
-                    "Paste rejected: Input message is {} bytes; Shepr's limit is {} bytes",
+                    "Paste rejected: Input message is {} bytes; shepr's limit is {} bytes",
                     error.actual,
                     error.limit.max()
                 ),
@@ -277,7 +277,7 @@ pub enum ServerMessage {
 
     /// Whether the client should currently capture host mouse input.
     MouseCapture {
-        /// `Cells` when Shepr mouse UI is enabled or the focused pane app requests mouse
+        /// `Cells` when shepr mouse UI is enabled or the focused pane app requests mouse
         /// reporting; `Pixels` only when this client may also address that pane in pixels.
         mode: shepr_term::mouse::HostMouseCapture,
     },
@@ -344,7 +344,7 @@ mod tests {
             rendered(SessionRestoreLoss::Damaged(SessionRestoreDamage {
                 dropped_workspaces,
                 renamed_workspaces,
-                repaired_bookmarks: 0,
+                repaired_bookmark: false,
                 dropped_agent_sessions,
             }))
         };
@@ -358,7 +358,7 @@ mod tests {
         ));
         assert!(
             SessionRestoreDamage {
-                repaired_bookmarks: 1,
+                repaired_bookmark: true,
                 ..Default::default()
             }
             .to_string()

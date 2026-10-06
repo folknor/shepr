@@ -110,8 +110,9 @@ fn log_restore(path: &std::path::Path, summary: SessionRestoreSummary) {
     );
 }
 
-/// [`open_session`] without its log: the session, and the summary the log
-/// reports.
+/// [`open_session`] without its log. A missing or unusable session keeps the
+/// first-write backup guard armed. Any readable source then found is copied
+/// before replacement, including a file that appeared after startup.
 fn open_and_summarize(
     lease: DataDirLease,
     options: &SessionOpenOptions<'_>,
@@ -169,7 +170,7 @@ fn open_and_summarize(
                     tracing::warn!(
                         dropped_workspaces = damage.dropped_workspaces,
                         renamed_workspaces = damage.renamed_workspaces,
-                        repaired_bookmarks = damage.repaired_bookmarks,
+                        repaired_bookmark = damage.repaired_bookmark,
                         dropped_agent_sessions = damage.dropped_agent_sessions.len(),
                         backup_dir = %backup_dir(),
                         "session restore dropped or repaired saved data; the session backup is made before the first save"

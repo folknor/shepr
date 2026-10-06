@@ -344,10 +344,20 @@ impl ShutdownLifecycle {
 impl HeadlessServer {
     /// Marks terminal server shutdown from any quit source.
     pub(super) fn initiate_shutdown(&mut self) {
+        let cause = if self.lifecycle.signal_quit_requested() {
+            "termination_signal"
+        } else if self.lifecycle.stop_signal().is_requested() {
+            "stop_request"
+        } else {
+            "event_loop_exit"
+        };
         if !self.lifecycle.begin_stopping() {
             return;
         }
-        info!("server shutdown initiated");
+        info!(
+            event = "server.shutdown.begin",
+            cause, "server shutdown initiated"
+        );
 
         // Hand every held reply to its client's FIFO control lane before
         // shutdown cleanup queues the notice. The flush barrier must cover the

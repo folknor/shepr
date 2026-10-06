@@ -53,24 +53,25 @@ pub enum HookOutcome {
     Rejected(HookRejection),
 }
 
-/// Why a hook report was dropped. The snake_case spelling is the detect
-/// explain payload's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HookRejection {
-    MissingSession,
-    InvalidSession,
-    ReplacedSession,
-    ProcessExited,
-    DetectedAgentConflict,
-    OwnerConflict,
-    LifecycleGate,
-    RetiredSession,
-    CrossTalk,
-    UnrecognizedStart,
-    MissingSequence,
-    OutOfOrder,
-    ProcessRequired,
+shepr_core::named_enum! {
+    /// Why a hook report was dropped. The snake_case spelling is the detect
+    /// explain payload's.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub enum HookRejection {
+        MissingSession => "missing_session",
+        InvalidSession => "invalid_session",
+        ReplacedSession => "replaced_session",
+        ProcessExited => "process_exited",
+        DetectedAgentConflict => "detected_agent_conflict",
+        OwnerConflict => "owner_conflict",
+        LifecycleGate => "lifecycle_gate",
+        RetiredSession => "retired_session",
+        CrossTalk => "cross_talk",
+        UnrecognizedStart => "unrecognized_start",
+        MissingSequence => "missing_sequence",
+        OutOfOrder => "out_of_order",
+        ProcessRequired => "process_required",
+    }
 }
 
 impl HookRejection {
@@ -84,26 +85,6 @@ impl HookRejection {
                 | Self::MissingSequence
                 | Self::UnrecognizedStart
         )
-    }
-}
-
-impl std::fmt::Display for HookRejection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::MissingSession => "missing_session",
-            Self::InvalidSession => "invalid_session",
-            Self::ReplacedSession => "replaced_session",
-            Self::ProcessExited => "process_exited",
-            Self::DetectedAgentConflict => "detected_agent_conflict",
-            Self::OwnerConflict => "owner_conflict",
-            Self::LifecycleGate => "lifecycle_gate",
-            Self::RetiredSession => "retired_session",
-            Self::CrossTalk => "cross_talk",
-            Self::UnrecognizedStart => "unrecognized_start",
-            Self::MissingSequence => "missing_sequence",
-            Self::OutOfOrder => "out_of_order",
-            Self::ProcessRequired => "process_required",
-        })
     }
 }
 
@@ -285,5 +266,27 @@ impl From<Instant> for HookClockSample {
                     - origin.duration_since(monotonic)
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod spelling_tests {
+    use super::*;
+
+    #[test]
+    fn hook_rejection_spellings_round_trip() {
+        for value in HookRejection::ALL {
+            let spelling = value.to_string();
+            assert_eq!(
+                toml::Value::try_from(value).expect("serialize enum"),
+                toml::Value::String(spelling.clone())
+            );
+            assert_eq!(
+                toml::Value::String(spelling)
+                    .try_into::<HookRejection>()
+                    .expect("deserialize enum"),
+                *value
+            );
+        }
     }
 }

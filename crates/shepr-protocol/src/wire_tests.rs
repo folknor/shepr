@@ -457,7 +457,7 @@ mod tests {
                 loss: crate::SessionRestoreLoss::Damaged(crate::SessionRestoreDamage {
                     dropped_workspaces: 2,
                     renamed_workspaces: 1,
-                    repaired_bookmarks: 1,
+                    repaired_bookmark: true,
                     dropped_agent_sessions: vec![crate::PublicPaneId::new(
                         &crate::WorkspaceId::from_number(1).ok_or("nonzero workspace number")?,
                         crate::PanePublicNumber::new(3).ok_or("nonzero pane number")?,
@@ -465,8 +465,7 @@ mod tests {
                 }),
                 backup_dir: "/state/session-backups".into(),
             }),
-            session_saves_stopped: true,
-            session_saves_blocked_on_backup: false,
+            session_save_status: SessionSaveStatus::Stopped,
             revision: crate::revision::at(1),
             focused_workspace_id: Some("w1".into()),
             focused_pane_id: Some("w1:p1".into()),
@@ -490,7 +489,7 @@ mod tests {
                 pane_id: "w1:p1"
                     .parse()
                     .map_err(|_| std::io::Error::other("invalid test pane id"))?,
-                agent: Some(shepr_agent::Agent::Codex),
+                agent: shepr_agent::Agent::Codex,
                 terminal_title: None,
                 terminal_title_stripped: None,
                 agent_status: crate::AgentStatus::Working,
@@ -499,6 +498,18 @@ mod tests {
         };
         let decoded: ClientShellSnapshot = roundtrip(&msg)?;
         assert_eq!(msg, decoded);
+        Ok(())
+    }
+
+    #[test]
+    fn every_session_save_status_roundtrips_as_a_unit_enum() -> TestResult {
+        for status in [
+            SessionSaveStatus::Ready,
+            SessionSaveStatus::Stopped,
+            SessionSaveStatus::BlockedOnBackup,
+        ] {
+            assert_eq!(roundtrip(&status)?, status);
+        }
         Ok(())
     }
 

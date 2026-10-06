@@ -17,7 +17,7 @@ use crate::limits::{BACKUP_LIMIT, RECOVERY_SEQUENCE_LIMIT, SNAPSHOT_INTERVAL, SN
 pub enum SessionBackupPolicy {
     /// Preserve the existing session file before the first replacement.
     PreserveExisting,
-    /// Restore used the file in full, or there is no source file to preserve.
+    /// No recovery copy is needed before the next replacement.
     NoBackupNeeded,
 }
 
@@ -326,8 +326,7 @@ pub(super) fn plan_snapshot(
     now: SystemTime,
     fingerprints: &mut SnapshotState,
 ) -> SnapshotPlan {
-    // Preserve snapshot errors as their own tracing events; the platform's
-    // session helpers emit through tracing too but label save outcomes.
+    // Keep snapshot planning failures in this subsystem's tracing events.
     match snapshot_decision(path, Some(replacement), now, fingerprints) {
         Ok(SnapshotPlan::PreserveBeforeWrite) => {
             match preserve_existing_in(path, RecoveryKind::Snapshot, now) {
@@ -486,8 +485,8 @@ fn preserve_opened_source(
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(err),
         }
-        // Recovery-copy events use their own labels; the platform's session
-        // helpers emit through tracing too but only cover session mutations.
+        // Persist owns the recovery event labels; publication returns I/O
+        // errors without assigning them a session-level outcome.
         log_recovery_preserved(kind, path, &backup);
         if let Err(err) = prune_recovery_copies(&older, keep) {
             // The new copy is durable, so preserve it and let the caller

@@ -199,7 +199,7 @@ impl NavigatorIndex {
                     let status = agent.map_or(shepr_protocol::AgentStatus::Idle, |agent| {
                         agent.agent_status
                     });
-                    let agent_kind = agent.and_then(|agent| agent.agent);
+                    let agent_kind = agent.map(|agent| agent.agent);
                     let title = agent.and_then(|agent| agent.terminal_title_stripped.as_deref());
                     let meta = pane
                         .foreground_cwd

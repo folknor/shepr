@@ -2837,7 +2837,7 @@ fn install_antigravity_cli_errors_when_config_dir_missing() {
     let err = install_target_for_test(Target::AntigravityCli).expect_err("test precondition");
     assert!(
         err.to_string()
-            .contains("antigravity-cli agent config directory not found")
+            .contains("agy agent config directory not found")
     );
     assert!(
         !agy_dir.try_exists().expect("stat"),
@@ -3273,7 +3273,7 @@ fn every_shepr_name_in_the_shipped_assets_is_owned_or_asset_internal() {
     for contract in [
         shepr_core::env::EnvVar::SheprEnv.name(),
         shepr_core::env::EnvVar::SheprSocketPath.name(),
-        shepr_core::env::EnvVar::SheprPaneId.name(),
+        shepr_core::env::ChildEnv::SheprPaneId.name(),
     ] {
         assert!(seen.contains(contract), "no asset reads {contract}");
     }

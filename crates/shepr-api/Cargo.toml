@@ -8,6 +8,7 @@ publish = false
 serde = { workspace = true }
 serde_json = { workspace = true }
 shepr-agent = { path = "../shepr-agent" }
+shepr-core = { path = "../shepr-core" }
 shepr-detect = { path = "../shepr-detect" }
 shepr-paths = { path = "../shepr-paths" }
 shepr-platform = { path = "../shepr-platform" }
@@ -16,7 +17,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
-shepr-core = { path = "../shepr-core" }
 shepr-test-support = { path = "../shepr-test-support" }
 
 [lints]

@@ -1,15 +1,16 @@
-/// The detected state of a terminal pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentState {
-    /// Agent finished, prompt visible, nothing happening.
-    Idle,
-    /// Agent is actively working/processing.
-    Working,
-    /// Agent needs human input and is blocked on a response.
-    Blocked,
-    /// Plain shell or unrecognized program.
-    Unknown,
+shepr_core::named_enum! {
+    /// The detected state of a terminal pane.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    pub enum AgentState {
+        /// Agent finished, prompt visible, nothing happening.
+        Idle => "idle",
+        /// Agent is actively working/processing.
+        Working => "working",
+        /// Agent needs human input and is blocked on a response.
+        Blocked => "blocked",
+        /// Plain shell or unrecognized program.
+        Unknown => "unknown",
+    }
 }
 
 pub use shepr_core::agent_state::PresentedAgentState;
@@ -61,18 +62,6 @@ impl AgentState {
     }
 }
 
-/// The snake_case spelling serde uses, for operator text.
-impl std::fmt::Display for AgentState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Idle => "idle",
-            Self::Working => "working",
-            Self::Blocked => "blocked",
-            Self::Unknown => "unknown",
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,5 +78,21 @@ mod tests {
             AgentState::Unknown.attention_rank(),
             AgentState::Idle.attention_rank()
         );
+    }
+
+    #[test]
+    fn agent_state_spellings_round_trip() {
+        for value in AgentState::ALL {
+            let spelling = value.to_string();
+            assert_eq!(
+                serde_json::to_value(value).expect("serialize enum"),
+                serde_json::Value::String(spelling.clone())
+            );
+            assert_eq!(
+                serde_json::from_value::<AgentState>(serde_json::Value::String(spelling))
+                    .expect("deserialize enum"),
+                *value
+            );
+        }
     }
 }

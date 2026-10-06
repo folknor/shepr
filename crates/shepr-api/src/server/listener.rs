@@ -105,6 +105,8 @@ impl Dispatch {
     fn serve(&self, stream: LocalStream, accepted: Instant, service: Service) {
         match service {
             Service::Api(slot) => {
+                let connection_fd = stream.as_raw_fd();
+                let peer = stream.peer_addr().ok();
                 if let Err(error) = handle_connection(
                     stream,
                     accepted + INITIAL_REQUEST_TIMEOUT,
@@ -115,7 +117,7 @@ impl Dispatch {
                     &self.boot_id,
                     &self.gate,
                 ) {
-                    debug!(%error, "api connection failed");
+                    warn!(event = "api.connection.failed", connection_fd, ?peer, error_kind = ?error.kind(), %error, "api connection failed before a response could be completed");
                 }
             }
             Service::Client(handler, slot) => handler.serve(stream, slot, accepted),

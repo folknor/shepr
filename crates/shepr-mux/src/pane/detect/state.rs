@@ -90,9 +90,9 @@ struct DetectorGateSnapshot {
 
 impl DetectorGateDiagnostics {
     /// The active gate from the detector's latest state, with timed holds
-    /// checked against the current time.
-    pub fn active_gate(&self) -> Option<DetectorGate> {
-        self.0.lock().ok()?.active_gate(Instant::now())
+    /// checked against `now`, the caller's clock sample.
+    pub fn active_gate(&self, now: Instant) -> Option<DetectorGate> {
+        self.0.lock().ok()?.active_gate(now)
     }
 
     pub(in crate::pane) fn update(&self, detector: &DetectorState) {
@@ -385,14 +385,17 @@ mod tests {
         let resume = DetectorState::new(now, LaunchKind::AgentResume);
         diagnostics.update(&resume);
         assert_eq!(
-            diagnostics.active_gate(),
+            diagnostics.active_gate(now),
             Some(DetectorGate::ResumeAbsenceHold)
         );
 
         let mut startup = DetectorState::new(now, LaunchKind::Fresh);
         startup.agent_startup_grace_until = Some(now + AGENT_STARTUP_GRACE_WINDOW);
         diagnostics.update(&startup);
-        assert_eq!(diagnostics.active_gate(), Some(DetectorGate::StartupGrace));
+        assert_eq!(
+            diagnostics.active_gate(now),
+            Some(DetectorGate::StartupGrace)
+        );
     }
 
     fn step_done(step: Step) -> TickOutput {

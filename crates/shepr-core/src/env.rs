@@ -133,20 +133,15 @@ env_vocabulary! {
         /// `SHEPR_SOCKET_PATH`: the socket of the server to target. Written
         /// into every pane as the socket of the server that owns it.
         SheprSocketPath => "SHEPR_SOCKET_PATH", PaneEnvPolicy::Allowed,
-        /// `SHEPR_PANE_ID`: the public id of the pane a process runs in,
-        /// written into every managed pane. Pane ids vary per pane, so this
-        /// environment boundary preserves the opaque identifier as text
-        /// instead of treating it as a closed set.
-        SheprPaneId => "SHEPR_PANE_ID", PaneEnvPolicy::ServerOnly,
         /// `SHEPR_ENV`: marks a process as running inside a shepr pane; the
         /// value is [`SHEPR_ENV_IN_PANE`].
         SheprEnv => "SHEPR_ENV", PaneEnvPolicy::Allowed,
         /// `SHEPR_BUILD_PROFILE`: the build profile (`release` or `dev`) of the
         /// server that owns a pane, written into every pane next to the socket
-        /// variables. A process whose own profile differs ignores the socket
-        /// overrides, so a dev build run inside a release server's pane does
-        /// not target that server. Absent means the overrides were set by a
-        /// user or a script and apply as given.
+        /// variable. A process whose own profile differs ignores the socket
+        /// override, so a dev build run inside a release server's pane does
+        /// not target that server. Absent means the override was set by a
+        /// user or a script and applies as given.
         SheprBuildProfile => "SHEPR_BUILD_PROFILE", PaneEnvPolicy::Allowed,
         /// `SHEPR_STARTUP_CWD`: the directory the user launched `shepr` from,
         /// handed to the server daemon it spawns to seed the first workspace.
@@ -273,6 +268,10 @@ env_vocabulary! {
         /// `SHEPR_BIN_PATH`: the shepr executable, set for every pane so
         /// programs in it can call back into shepr.
         SheprBinPath => "SHEPR_BIN_PATH", PaneEnvPolicy::Allowed,
+        /// `SHEPR_PANE_ID`: the public id of the pane, installed by the
+        /// server into each managed child after inherited values are scrubbed.
+        /// Pane ids vary per pane, so the child boundary preserves it as text.
+        SheprPaneId => "SHEPR_PANE_ID", PaneEnvPolicy::ServerOnly,
         /// `PWD`: the directory entered by the pane child.
         Pwd => "PWD", PaneEnvPolicy::Allowed,
         /// `OLDPWD`: the enclosing shell's previous directory, removed.
@@ -325,17 +324,22 @@ env_vocabulary! {
     }
 }
 
-/// A registered child environment name. Shell and PATH use their interpreted
-/// identity, so the registry contains each name once.
+/// The representations stay private so callers can only obtain a registered
+/// name through conversions that canonicalize shared shell inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RegisteredEnv {
+enum RegisteredEnvKind {
     Interpreted(EnvVar),
     Child(ChildEnv),
 }
 
+/// A registered child environment name. Shell and PATH use their interpreted
+/// identity, so the registry contains each name once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegisteredEnv(RegisteredEnvKind);
+
 impl From<EnvVar> for RegisteredEnv {
     fn from(value: EnvVar) -> Self {
-        Self::Interpreted(value)
+        Self(RegisteredEnvKind::Interpreted(value))
     }
 }
 
@@ -344,7 +348,7 @@ impl From<ChildEnv> for RegisteredEnv {
         match value {
             ChildEnv::Shell => EnvVar::Shell.into(),
             ChildEnv::Path => EnvVar::Path.into(),
-            _ => Self::Child(value),
+            _ => Self(RegisteredEnvKind::Child(value)),
         }
     }
 }
@@ -361,18 +365,18 @@ impl RegisteredEnv {
     }
 
     pub const fn name(self) -> &'static str {
-        match self {
-            Self::Interpreted(value) => value.name(),
-            Self::Child(value) => value.name(),
+        match self.0 {
+            RegisteredEnvKind::Interpreted(value) => value.name(),
+            RegisteredEnvKind::Child(value) => value.name(),
         }
     }
 
     pub fn pane_policy(self) -> PaneEnvPolicy {
-        match self {
-            Self::Interpreted(value) => value.pane_policy(),
-            Self::Child(ChildEnv::Shell) => EnvVar::Shell.pane_policy(),
-            Self::Child(ChildEnv::Path) => EnvVar::Path.pane_policy(),
-            Self::Child(value) => value.pane_policy(),
+        match self.0 {
+            RegisteredEnvKind::Interpreted(value) => value.pane_policy(),
+            RegisteredEnvKind::Child(ChildEnv::Shell) => EnvVar::Shell.pane_policy(),
+            RegisteredEnvKind::Child(ChildEnv::Path) => EnvVar::Path.pane_policy(),
+            RegisteredEnvKind::Child(value) => value.pane_policy(),
         }
     }
 }
@@ -440,9 +444,7 @@ impl EnvVar {
     pub const fn kind(self) -> EnvKind {
         match self {
             Self::SheprDebugOscEvidence => EnvKind::Flag,
-            Self::SheprPaneId | Self::SheprEnv | Self::SheprBuildProfile | Self::SheprLog => {
-                EnvKind::Text
-            }
+            Self::SheprEnv | Self::SheprBuildProfile | Self::SheprLog => EnvKind::Text,
             Self::PiCodingAgentDir
             | Self::PiConfigDir
             | Self::ClaudeConfigDir
@@ -905,12 +907,14 @@ mod tests {
     use super::*;
 
     /// The table: every interpreted variable's name and kind, spelled out.
+    /// There is no source-mention check for read callsites: several production
+    /// readers accept `EnvVar` through shared parameters, and spelling presence
+    /// cannot distinguish those reads from child environment writes.
     #[test]
     fn every_variable_has_its_documented_name_and_kind() {
         use EnvKind::{AbsolutePath, Flag, Handoff, Path, Presence, Raw, SelectorPath, Text};
         let table: &[(EnvVar, &str, EnvKind)] = &[
             (EnvVar::SheprSocketPath, "SHEPR_SOCKET_PATH", SelectorPath),
-            (EnvVar::SheprPaneId, "SHEPR_PANE_ID", Text),
             (EnvVar::SheprEnv, "SHEPR_ENV", Text),
             (EnvVar::SheprBuildProfile, "SHEPR_BUILD_PROFILE", Text),
             (EnvVar::SheprStartupCwd, "SHEPR_STARTUP_CWD", Handoff),
@@ -1027,6 +1031,7 @@ mod tests {
                 "SHELL",
                 "PATH",
                 "SHEPR_BIN_PATH",
+                "SHEPR_PANE_ID",
                 "PWD",
                 "OLDPWD",
                 "SSH_ASKPASS",
@@ -1058,6 +1063,10 @@ mod tests {
             .filter(|name| interpreted.contains(name))
             .collect();
         assert_eq!(shared, ["SHELL", "PATH"]);
+        assert_eq!(
+            ChildEnv::SheprPaneId.pane_policy(),
+            PaneEnvPolicy::ServerOnly
+        );
         let mut all: Vec<&str> = EnvVar::ALL
             .iter()
             .copied()
@@ -1068,6 +1077,15 @@ mod tests {
         all.sort_unstable();
         all.dedup();
         assert_eq!(all.len(), total - shared.len(), "only shell inputs overlap");
+    }
+
+    #[test]
+    fn registered_environment_names_are_unique() {
+        let mut names: Vec<&str> = RegisteredEnv::all().map(RegisteredEnv::name).collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "every registered spelling appears once");
     }
 
     /// The shared policy, over every variable: unset is unset and so is empty

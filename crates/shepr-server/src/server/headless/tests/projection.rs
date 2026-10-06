@@ -581,7 +581,7 @@ async fn every_client_of_a_partly_restored_boot_gets_the_notice_in_its_seed() {
         loss: shepr_protocol::SessionRestoreLoss::Damaged(shepr_protocol::SessionRestoreDamage {
             dropped_workspaces: 1,
             renamed_workspaces: 1,
-            repaired_bookmarks: 0,
+            repaired_bookmark: false,
             dropped_agent_sessions: Vec::new(),
         }),
         backup_dir: "/state/shepr/session-backups".into(),

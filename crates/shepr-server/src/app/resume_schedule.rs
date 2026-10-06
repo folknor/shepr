@@ -24,8 +24,8 @@ pub(crate) enum AttemptOutcome {
     /// Its shell launch was dispatched. Spaces the next launch out, from the
     /// dispatch: the launch itself settles later, possibly out of order.
     Launched,
-    /// The plan was consumed without starting an agent (PTY could not be
-    /// opened, missing launch env). Nothing to space out.
+    /// Shell launch was refused before a runtime was installed. The plan
+    /// becomes a failure placeholder; there is no launch to space out.
     Abandoned,
 }
 
@@ -56,6 +56,8 @@ pub(crate) struct ResumeSchedule {
     live_theme_reported: bool,
     /// No plan is pending and none can appear: plans are minted only by
     /// session restore, before the first pass. Once set, nothing scans.
+    /// The public terminal fixture seam must not inject plans after this point;
+    /// it stays available to dependent crates' tests without a test feature.
     retired: bool,
 }
 

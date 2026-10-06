@@ -8,7 +8,7 @@ use crate::profile::{PaneMarker, PaneOwner};
 use crate::{
     BuildProfile, PathsError, ServerAddress, boot_log_path, client_log_path, data_dir_lease_path,
     launch_lock_path, server_log_path, session_backup_directory, session_file_path,
-    session_snapshot_directory,
+    session_snapshot_directory, ssh_metadata_directory,
 };
 
 /// Paths and the local target resolved once at the process boundary and
@@ -19,6 +19,7 @@ pub struct AppPaths {
     config_dir: PathBuf,
     state_dir: PathBuf,
     data_dir: PathBuf,
+    client_state_dir: PathBuf,
     xdg_runtime_dir: PathBuf,
     runtime_dir: PathBuf,
     home_dir: Option<AbsolutePath>,
@@ -35,9 +36,9 @@ impl AppPaths {
         &self.config_dir
     }
 
-    /// The state directory shared by every build profile. It holds the
-    /// client-owned state; the saved layout and
-    /// history live in [`data_dir`](Self::data_dir).
+    /// The state directory shared by every build profile. It holds
+    /// client-owned state; the saved layout and its recovery files live in
+    /// [`data_dir`](Self::data_dir).
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
     }
@@ -48,6 +49,11 @@ impl AppPaths {
     /// gets a `shepr-dev` sibling of it.
     pub fn data_dir(&self) -> &Path {
         &self.data_dir
+    }
+
+    /// The client's remembered remote-executable cache for this profile.
+    pub fn ssh_metadata_directory(&self) -> PathBuf {
+        ssh_metadata_directory(&self.client_state_dir)
     }
 
     /// The server log in this build profile's data directory.
@@ -205,6 +211,7 @@ impl AppPaths {
             config_dir: root.join("config"),
             state_dir: root.join("state"),
             data_dir: root.join("state"),
+            client_state_dir: root.join("state-client"),
             xdg_runtime_dir: root.to_path_buf(),
             runtime_dir: root.join("runtime"),
             home_dir,
@@ -374,10 +381,13 @@ fn resolve_paths_from_env_with_marker(
             // The saved layout sits beside the shared state directory under the
             // profile's directory name: the state directory itself for release.
             let data_dir = state_dir.with_file_name(profile.app_dir_name());
+            let client_state_dir =
+                state_dir.with_file_name(format!("{}-client", profile.app_dir_name()));
             Ok(AppPaths {
                 config_dir,
                 state_dir,
                 data_dir,
+                client_state_dir,
                 xdg_runtime_dir,
                 runtime_dir,
                 home_dir: Some(home_dir),
@@ -585,6 +595,10 @@ mod tests {
         // Release: exactly the locations every release install has used.
         assert_eq!(release.data_dir(), state.join("shepr"));
         assert_eq!(release.data_dir(), release.state_dir());
+        assert_eq!(
+            release.ssh_metadata_directory(),
+            state.join("shepr-client/ssh-metadata")
+        );
         assert_eq!(release.runtime_dir(), runtime.join("shepr"));
         assert_eq!(
             release.server_address().socket(),
@@ -593,6 +607,10 @@ mod tests {
 
         // Dev: its own runtime and saved layout, distinct sockets.
         assert_eq!(dev.data_dir(), state.join("shepr-dev"));
+        assert_eq!(
+            dev.ssh_metadata_directory(),
+            state.join("shepr-dev-client/ssh-metadata")
+        );
         assert_eq!(dev.runtime_dir(), runtime.join("shepr-dev"));
         assert_eq!(
             dev.server_address().socket(),

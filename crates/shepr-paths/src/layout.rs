@@ -42,10 +42,10 @@ pub fn session_backup_directory(data_dir: &Path) -> PathBuf {
     data_dir.join(BACKUP_DIRECTORY_NAME)
 }
 
-/// The client's remembered-remote-executable cache directory, in the session
-/// data directory.
-pub fn ssh_metadata_directory(data_dir: &Path) -> PathBuf {
-    data_dir.join("client").join("ssh-metadata")
+/// The client's remembered-remote-executable cache directory, under its
+/// profile-owned state directory and outside the server's leased data tree.
+pub fn ssh_metadata_directory(client_state_dir: &Path) -> PathBuf {
+    client_state_dir.join("ssh-metadata")
 }
 
 /// The launch lock in the profile's runtime directory.

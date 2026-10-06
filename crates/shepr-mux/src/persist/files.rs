@@ -341,8 +341,11 @@ pub(super) use shepr_platform::publish_file::PublishTarget;
 /// directory. A crash leaves either the previous file or the complete new
 /// one, never a truncated one. The staging name is unpredictable and
 /// exclusively created, so a leftover from an interrupted publish is never
-/// reused here; `sweep_staging_leftovers` removes those in the data and
-/// recovery directories at the next startup.
+/// reused here. Startup sweeps staging names in the leased data and recovery
+/// directories. A live session path that resolves through a symlink may stage
+/// beside a target outside those directories; that target parent is not swept
+/// because the lease does not own it. Recovery paths are derived from the
+/// configured session path and remain in its recovery directories.
 ///
 /// With `PublishTarget::CreateOnly` an existing `target` is atomically refused with `AlreadyExists`,
 /// and a published target is withdrawn again when the directory sync fails,
@@ -569,7 +572,8 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
         Err(err) => {
             warn!(
                 event = "persist.restore", subsystem = "persist", outcome = "parse_error",
-                path = %path.display(), error = %err, "failed to parse session file, ignoring"
+                path = %path.display(), error = %err,
+                "failed to parse session file; retaining it for first-save recovery"
             );
             SessionLoad::Unusable(shepr_protocol::SessionRestoreFailure {
                 path: shepr_protocol::RemotePath::from(path.as_path()),

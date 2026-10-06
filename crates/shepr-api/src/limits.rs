@@ -18,6 +18,12 @@ const ORDINARY_RESPONSE_GRACE: Duration = Duration::from_secs(5);
 pub(crate) const ORDINARY_RESPONSE_TIMEOUT: Duration =
     Duration::from_secs(ORDINARY_REQUEST_TIMEOUT.as_secs() + ORDINARY_RESPONSE_GRACE.as_secs());
 
+/// One overall connect, write and response budget for a status ping. `ping`
+/// is answered on the connection thread and never waits for the app loop, so
+/// it needs none of the ordinary response window. Launch probes and
+/// `ApiClient::ping` share this bound.
+pub const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Deadline for a client to send its first request line after connecting.
 /// It gives local clients time to serialize while bounding idle peers.
 pub(crate) const INITIAL_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);

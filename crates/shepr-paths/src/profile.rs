@@ -3,7 +3,7 @@ use shepr_core::env::{EnvVar, SHARED_APP_DIR_NAME};
 include!(concat!(env!("OUT_DIR"), "/build_profile.rs"));
 
 /// The build profile a binary was compiled with, which decides where it keeps
-/// its runtime sockets and its saved layout and history.
+/// its runtime sockets, saved layout and recovery files.
 ///
 /// A release build uses the default XDG locations. Every other build (the
 /// cargo dev profile) uses `shepr-dev` in place of `shepr` for the runtime

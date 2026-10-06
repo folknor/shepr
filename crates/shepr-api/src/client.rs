@@ -9,6 +9,8 @@ use crate::limits::ORDINARY_RESPONSE_TIMEOUT;
 use crate::schema::{ErrorResponse, Request, ResponseResult, SuccessResponse};
 use shepr_platform::ipc::{LocalStreamDeadlineReader, TrustedServerStream};
 
+pub use crate::limits::STATUS_REQUEST_TIMEOUT;
+
 /// A decoded `ping` answer: the identity the server reports and its readiness
 /// flags, as they crossed the wire. What they mean for a launch or a stop is
 /// the caller's to decide.
@@ -141,11 +143,21 @@ impl ApiClient {
         parse_response_value(value).map_err(ApiClientDeadlineError::Request)
     }
 
-    /// Asks the server for its identity and readiness with the ordinary
-    /// response bound.
+    /// Asks the server for its identity and readiness within one status window.
     pub fn ping(&self) -> Result<Pong, ApiClientError> {
-        let response = self.request(&Request::ping())?;
-        pong(response)
+        // clock-io-ok: one deadline bounds connect, write and response read.
+        let deadline = Instant::now()
+            .checked_add(STATUS_REQUEST_TIMEOUT)
+            .ok_or_else(|| {
+                ApiClientError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "api status timeout is too large",
+                ))
+            })?;
+        self.ping_until(deadline).map_err(|error| match error {
+            ApiClientDeadlineError::Connect(error) => ApiClientError::Io(error),
+            ApiClientDeadlineError::Request(error) => error,
+        })
     }
 
     /// [`Self::ping`] bounded by one `deadline`.

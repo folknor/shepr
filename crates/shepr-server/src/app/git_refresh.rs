@@ -129,7 +129,7 @@ fn lost_refresh_check_after(now: Instant) -> Instant {
 impl App {
     pub(crate) fn start_git_status_refresh_if_due(&mut self, now: Instant) {
         self.git_refresh.observe_worker(now);
-        if self.state.workspaces.is_empty() {
+        if self.state.workspaces().is_empty() {
             self.git_refresh.worker.clear();
             return;
         }
@@ -201,7 +201,8 @@ impl App {
     /// While a refresh is in flight this is the next check for a lost or
     /// stalled refresh.
     pub(crate) fn git_refresh_deadline(&self) -> Option<Instant> {
-        self.git_refresh.deadline(!self.state.workspaces.is_empty())
+        self.git_refresh
+            .deadline(!self.state.workspaces().is_empty())
     }
 
     /// One target per workspace: its resolved cwd and, unless repositories
@@ -212,7 +213,7 @@ impl App {
         refresh_repo_discovery: bool,
     ) -> Vec<shepr_git::RefreshTarget<WorkspaceId>> {
         self.state
-            .workspaces
+            .workspaces()
             .iter()
             .map(|ws| {
                 let cwd = ws
@@ -785,7 +786,7 @@ mod tests {
         fn a_changed_git_status_reports_a_view_change() {
             let mut app = test_app();
             app.state.test_push_workspace(Workspace::test_new("one"));
-            let revision = app.state.shell_projection_revision;
+            let revision = app.state.shell_projection_revision();
             let workspace_id = app.state.ws(0).id();
             let resolved_identity_cwd = app.state.ws(0).identity_cwd().to_path_buf();
 
@@ -809,7 +810,7 @@ mod tests {
                 });
 
             assert!(changed);
-            assert_ne!(app.state.shell_projection_revision, revision);
+            assert_ne!(app.state.shell_projection_revision(), revision);
         }
     }
 }

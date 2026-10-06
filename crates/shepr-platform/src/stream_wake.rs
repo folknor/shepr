@@ -49,7 +49,14 @@ impl StreamWake {
         ];
         loop {
             // SAFETY: both descriptors remain borrowed and the array has two entries.
-            if unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) } >= 0 {
+            if unsafe {
+                libc::poll(
+                    descriptors.as_mut_ptr(),
+                    2,
+                    crate::Wait::Forever.poll_millis(),
+                )
+            } >= 0
+            {
                 return Ok(());
             }
             let error = std::io::Error::last_os_error();

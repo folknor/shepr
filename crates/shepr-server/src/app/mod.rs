@@ -3,7 +3,7 @@
 //! `AppState` holds pure application data. `App` coordinates it with live
 //! runtime concerns across focused modules under `app/`.
 
-pub(crate) mod actions;
+pub(crate) use state::actions;
 mod agent_resume;
 mod agents;
 mod api;
@@ -41,6 +41,9 @@ pub(crate) struct AppClock {
 
 impl AppClock {
     /// The same sample as the pair hook reports are ordered by.
+    /// This is the app pass's admission time, not detector completion time.
+    /// Detector probes independently stamp their start on the same monotonic
+    /// clock; queued observations retain that stamp when this pass handles them.
     pub(crate) fn hook_sample(self) -> shepr_detect::ownership::HookClockSample {
         shepr_detect::ownership::HookClockSample {
             monotonic: self.now,
@@ -182,9 +185,9 @@ impl App {
         );
 
         let state = AppState::new(settings, workspaces, host_theme);
-        // Restored workspaces get their Git identity (label and status)
-        // from the first background Git refresh, not from a synchronous walk
-        // here. The scheduler starts due immediately and discovers every
+        // Restored workspaces get their checkout identity and Git status
+        // from the first background Git refresh; their saved names stay intact.
+        // The scheduler starts due immediately and discovers every
         // workspace whose resolved cwd differs from its cached identity.
 
         let git_refresh = git_refresh::GitRefreshScheduler::new(clock.now, event_tx.clone());
@@ -265,7 +268,7 @@ impl App {
     /// and settles the clients' locations and geometry controllers
     /// (`create_automatic_workspace` on the server loop).
     pub(crate) fn create_default_workspace(&mut self, geometry: SpawnGeometry) -> DefaultWorkspace {
-        if !self.state.workspaces.is_empty() {
+        if !self.state.workspaces().is_empty() {
             return DefaultWorkspace::Exists;
         }
 
@@ -274,9 +277,6 @@ impl App {
 
         match self.create_workspace(&cwd, geometry) {
             Ok(_workspace_id) => {
-                // Callers include non-mutating API requests and client
-                // connects, so the shell projection is invalidated here.
-                self.state.mark_shell_projection_dirty();
                 if preserve_checkpoint {
                     // Automatic replacement is part of pane removal, not a new user mutation.
                     self.finish_checkpointed_pane_exit();
@@ -516,13 +516,13 @@ mod tests {
             app.create_default_workspace(geometry),
             DefaultWorkspace::Created
         );
-        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces().len(), 1);
         assert_eq!(app.state.ws(0).spawn_geometry(), Some(geometry));
         assert_eq!(
             app.create_default_workspace(geometry),
             DefaultWorkspace::Exists
         );
-        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces().len(), 1);
     }
 
     #[test]

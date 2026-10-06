@@ -20,7 +20,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .test_state_mut()
         .terminal_mut(pane_id)
         .plan_agent_resume(crate::test_support::test_codex_plan(
-            "shepr:codex\0codex\0Id\0codex-session",
+            "codex-session",
             vec![crate::app::exiting_test_command().into()],
         ));
 
@@ -72,7 +72,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         .test_state_mut()
         .terminal_mut(pane_id)
         .plan_agent_resume(crate::test_support::test_codex_plan(
-            "shepr:codex\0codex\0Id\0codex-session",
+            "codex-session",
             vec![crate::app::exiting_test_command().into()],
         ));
     server.render_now();

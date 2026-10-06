@@ -52,25 +52,27 @@ pub(super) struct OscDebugEvent {
     pub(super) payload: String,
 }
 
-/// `SHEPR_DEBUG_OSC_EVIDENCE`, read once per process under the environment
-/// policy (exactly `1`, `0`, `true` or `false`). Pane construction has no
-/// error path, so this optional debug-only capture flag warns and fails closed
-/// when refused; it cannot affect pane behavior.
-/// Evidence is logged at info level because opting into this environment flag
-/// is the privacy and volume control; no debug filter is required.
-/// The flag is not among the settings pane construction takes from the
-/// server, so it is read at the first pane rather than at server startup.
+static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Validate the server-only capture flag before any pane is constructed.
+/// Evidence logs at info level: opting in is its privacy and volume control.
 /// Pane children never see the variable (`pane::launch` scrubs it).
+pub fn init_osc_evidence_capture() -> std::io::Result<()> {
+    if ENABLED.get().is_some() {
+        return Ok(());
+    }
+    let enabled = shepr_core::env::read_flag(shepr_core::env::EnvVar::SheprDebugOscEvidence)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?
+        .unwrap_or(false);
+    // A racing initializer set the same startup value first; that is fine.
+    ENABLED.get_or_init(|| enabled);
+    Ok(())
+}
+
+/// Pane construction only consumes the startup setting. Parser-only test
+/// terminals, which have no server startup, default to capture off.
 pub(super) fn enabled() -> bool {
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        shepr_core::env::read_flag(shepr_core::env::EnvVar::SheprDebugOscEvidence)
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "OSC evidence capture stays off");
-                None
-            })
-            .unwrap_or(false)
-    })
+    ENABLED.get().copied().unwrap_or(false)
 }
 
 /// The reportable events among the OSC bodies a terminal collected. A body

@@ -16,10 +16,10 @@
 //! - [`guidance`] names the commands that reach a server.
 //! - [`failure`] is the endpoint failure vocabulary and its one disposition
 //!   table, for every endpoint, local or SSH.
-//! - [`connection_health`] is the heartbeat cadence a connected client keeps,
-//!   which anything relaying the connection must outlast.
+//! - [`limits`] holds the launch, probe and stop bounds, and
+//!   [`limits::HEARTBEAT_INTERVAL`], the heartbeat cadence a connected client
+//!   keeps, which anything relaying the connection must outlast.
 
-pub mod connection_health;
 pub mod daemon_exit;
 pub mod failure;
 pub mod guidance;

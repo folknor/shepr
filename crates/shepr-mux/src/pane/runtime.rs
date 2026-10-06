@@ -132,6 +132,7 @@ impl PaneOutputWrite<'_> {
     /// Effects produced by the parser are intentionally not dispatched here;
     /// this seam is for tests that need to seed or mutate terminal contents.
     pub fn write(self, bytes: &[u8]) {
+        // clock-io-ok: this fixture adapter seeds a terminal without live IO.
         self.process(bytes, std::time::Instant::now()).ok();
     }
 
@@ -238,9 +239,9 @@ impl PaneRuntime {
     }
 
     /// The active mux detector gate, if its latest observations are holding a
-    /// screen verdict back.
-    pub fn active_detector_gate(&self) -> Option<super::DetectorGate> {
-        self.detector_gate_diagnostics.active_gate()
+    /// screen verdict back at `now`.
+    pub fn active_detector_gate(&self, now: std::time::Instant) -> Option<super::DetectorGate> {
+        self.detector_gate_diagnostics.active_gate(now)
     }
 
     pub fn grid_size(&self) -> shepr_core::geometry::GridSize {
@@ -1109,10 +1110,12 @@ mod tests {
 
         let tracker = Arc::new(PaneTeardownTracker::default());
         let started = std::time::Instant::now();
-        shutdown_pane_processes(
+        super::super::teardown::shutdown_pane_processes_with_steps(
             shepr_test_fixtures::fixed_pane_id(1),
             &child_liveness,
             &tracker,
+            crate::limits::PANE_TEARDOWN_STEPS
+                .map(|(signal, _)| (signal, std::time::Duration::from_millis(10))),
         );
         assert!(
             started.elapsed() < std::time::Duration::from_millis(200),
@@ -1175,9 +1178,9 @@ mod tests {
             child_liveness: Arc::new(ChildLiveness::absent()),
             sync_timeout_render: SyncTimeoutRender::default(),
             deferred_effect_order: Arc::default(),
-            timer_writer: std::sync::OnceLock::new(),
-            timer_reply_drop_reported: AtomicBool::new(false),
+            timer_writer: TimerReplyRoute::NoActor,
             rt: tokio::runtime::Handle::current(),
+            now: Arc::new(std::time::Instant::now),
         });
 
         let begin = terminal.process_pty_bytes(pane_id, b"\x1b[?2026hframe");

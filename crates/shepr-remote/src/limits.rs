@@ -156,7 +156,7 @@ const BRIDGE_IDLE_MIN_HEARTBEAT_CYCLES: u32 = 3;
 // bridge expiry must comfortably exceed the cadence the client probes at.
 const _: () = assert!(
     BRIDGE_IDLE_TIMEOUT.as_millis()
-        >= shepr_launch::connection_health::HEARTBEAT_INTERVAL
+        >= shepr_launch::limits::HEARTBEAT_INTERVAL
             .saturating_mul(BRIDGE_IDLE_MIN_HEARTBEAT_CYCLES)
             .as_millis()
 );

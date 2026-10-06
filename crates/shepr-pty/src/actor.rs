@@ -143,7 +143,10 @@ pub struct PtyIoActorHandle {
 /// Producers only push to the back of `entries` (or replace
 /// `latest_resize`); only the actor removes or inserts, so an index it takes
 /// stays valid across a moment with the lock released. The lock is never
-/// held across a syscall.
+/// held across a syscall. Keep IO in the runner after extracting owned work;
+/// this private data type has no fd or IO capability of its own. Rust cannot
+/// statically forbid arbitrary syscalls while a mutex guard lives; retaining
+/// this narrow data-only inbox avoids a misleading lexical syscall ban.
 #[derive(Default)]
 struct PtyIoInbox {
     entries: VecDeque<PtyIoInboxEntry>,
@@ -501,20 +504,37 @@ impl PtyIoActor {
         config: PtyIoActorConfig,
         io: I,
     ) -> std::io::Result<PtyIoActorHandle> {
+        Self::spawn_prepared_inner(config.pane_id, |_| config, io)
+    }
+
+    /// Build read effects with their inbox route before the actor can run.
+    pub fn spawn_prepared(
+        pane_id: PaneId,
+        prepare: impl FnOnce(PtyIoActorHandle) -> PtyIoActorConfig,
+    ) -> std::io::Result<PtyIoActorHandle> {
+        Self::spawn_prepared_inner(pane_id, prepare, SystemPtyIo)
+    }
+
+    fn spawn_prepared_inner<I: PtyIo + Send + 'static>(
+        pane_id: PaneId,
+        prepare: impl FnOnce(PtyIoActorHandle) -> PtyIoActorConfig,
+        io: I,
+    ) -> std::io::Result<PtyIoActorHandle> {
         // Production masters come from open_pty_with_geometry with
         // O_CLOEXEC set atomically. The injected actor seam may use other fds
         // in tests, but it does not own their child-inheritance policy.
-        fd::set_nonblocking(config.master_fd.as_raw_fd())?;
-
         let wake_pipe = fd::create_wake_pipe()?;
         let inbox = Arc::new(Mutex::new(PtyIoInbox::default()));
         let response_order = Arc::new(Mutex::new(()));
         let handle = PtyIoActorHandle {
-            pane_id: config.pane_id,
+            pane_id,
             wake: wake_pipe.writer,
             inbox: Arc::clone(&inbox),
             response_order: Arc::clone(&response_order),
         };
+
+        let config = prepare(handle.clone());
+        fd::set_nonblocking(config.master_fd.as_raw_fd())?;
 
         let runner = PtyIoActorRunner {
             pane_id: config.pane_id,
@@ -1175,6 +1195,30 @@ mod tests {
         }
         .expect("actor spawn");
         (handle, peer, read_rx)
+    }
+
+    #[test]
+    fn prepared_actor_accepts_work_before_its_thread_exists() {
+        use std::io::Read;
+        let (actor_socket, mut peer) = UnixStream::pair().expect("socket pair");
+        peer.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("read timeout");
+        let handle = PtyIoActor::spawn_prepared(test_pane_id(), |route| {
+            route.write_terminal_responses(|| vec![Bytes::from_static(b"prepared")]);
+            PtyIoActorConfig::new(
+                test_pane_id(),
+                actor_socket.into(),
+                |_| PtyReadResult::empty(),
+                |_| {},
+                || false,
+            )
+        })
+        .expect("prepared actor");
+        let mut received = [0; 8];
+        peer.read_exact(&mut received)
+            .expect("queued pre-spawn reply");
+        assert_eq!(&received, b"prepared");
+        handle.shutdown();
     }
 
     fn actor_test_parts(

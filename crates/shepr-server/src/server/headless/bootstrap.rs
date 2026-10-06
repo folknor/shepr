@@ -179,6 +179,7 @@ fn start_server(
         -> Result<shepr_platform::logging::FileLoggingOutcome, RunServerError>,
     mut on_step: impl FnMut(StartupStep),
 ) -> Result<StartedServer, RunServerError> {
+    shepr_mux::pane::init_osc_evidence_capture().map_err(RunServerError::PaneLaunch)?;
     let socket = paths.server_address().socket().to_path_buf();
 
     // AppPaths validated and retained the one-time startup handoff. Pane

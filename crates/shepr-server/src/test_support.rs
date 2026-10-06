@@ -292,15 +292,14 @@ pub(crate) fn test_workspace_id(id: &str) -> shepr_protocol::WorkspaceId {
         .unwrap_or_else(|_| panic!("{id:?} is not a canonical workspace id"))
 }
 
-/// A Codex resume plan for the session named by the last NUL-separated field
-/// of `identity`, launching `argv` instead of the real resume command.
+/// A Codex resume plan for `session_id`, launching `argv` instead of the real
+/// resume command. The validated id rejects obsolete composite identities.
 pub(crate) fn test_codex_plan(
-    identity: &str,
+    session_id: &str,
     argv: Vec<String>,
 ) -> shepr_agent::resume::AgentResumePlan {
     use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
     use shepr_agent::{AgentSource, IntegrationTarget};
-    let session_id = identity.rsplit('\0').next().unwrap_or(identity);
     let session = PersistedAgentSession::new(
         AgentSource::new(IntegrationTarget::Codex),
         AgentSessionRef::id(session_id).expect("test session id is valid"),

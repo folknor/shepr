@@ -25,20 +25,7 @@ impl App {
             observations.push((*pane_id, runtime.read().terminal_title()));
         }
 
-        let mut changes = TerminalTitleChange::default();
-        for (pane_id, title) in observations {
-            let Some(record) = self.state.workspaces.pane_mut(pane_id) else {
-                continue;
-            };
-            let change = record.terminal_mut().set_terminal_title(title);
-            changes.raw_changed |= change.raw_changed;
-            changes.stripped_changed |= change.stripped_changed;
-        }
-        if changes.raw_changed || changes.stripped_changed {
-            self.state.mark_shell_projection_dirty();
-        }
-
-        changes
+        self.state.sync_terminal_titles(observations)
     }
 }
 
@@ -131,11 +118,11 @@ mod tests {
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
         runtime.test_process_pty_bytes(b"\x1b]0;building\x07");
         app.terminal_runtimes.insert(pane_id, runtime);
-        let revision = app.state.shell_projection_revision;
+        let revision = app.state.shell_projection_revision();
 
         let changes = app.sync_terminal_titles(&HashSet::from([pane_id]));
 
         assert!(changes.stripped_changed);
-        assert_ne!(app.state.shell_projection_revision, revision);
+        assert_ne!(app.state.shell_projection_revision(), revision);
     }
 }

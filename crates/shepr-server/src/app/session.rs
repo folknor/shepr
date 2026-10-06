@@ -161,12 +161,13 @@ impl SavePolicy {
         !self.frozen
     }
 
-    fn is_stopped(self) -> bool {
-        self.mode == SaveMode::Stopped
-    }
-
-    fn is_blocked_on_backup(self) -> bool {
-        self.mode == SaveMode::BlockedOnBackup
+    /// The condition every client projection carries.
+    fn save_status(self) -> shepr_protocol::SessionSaveStatus {
+        match self.mode {
+            SaveMode::Persisting => shepr_protocol::SessionSaveStatus::Ready,
+            SaveMode::Stopped => shepr_protocol::SessionSaveStatus::Stopped,
+            SaveMode::BlockedOnBackup => shepr_protocol::SessionSaveStatus::BlockedOnBackup,
+        }
     }
 
     fn is_unavailable(self) -> bool {
@@ -437,14 +438,19 @@ impl App {
     /// persister refused a save it can never run, so later layout changes
     /// are not restored on the next start.
     pub(crate) fn session_saves_stopped(&self) -> bool {
-        self.session_saver.policy.is_stopped()
+        self.session_save_status() == shepr_protocol::SessionSaveStatus::Stopped
     }
 
     /// Whether the saved source could not be opened for the backup required
     /// before a replacement. The server stops saving for this boot so the
     /// client can tell the operator to fix access and restart.
     pub(crate) fn session_saves_blocked_on_backup(&self) -> bool {
-        self.session_saver.policy.is_blocked_on_backup()
+        self.session_save_status() == shepr_protocol::SessionSaveStatus::BlockedOnBackup
+    }
+
+    /// The session save condition every client projection carries.
+    pub(crate) fn session_save_status(&self) -> shepr_protocol::SessionSaveStatus {
+        self.state.session_save_status()
     }
 
     pub(crate) fn session_saves_frozen(&self) -> bool {
@@ -506,10 +512,9 @@ impl App {
                     error = %error,
                     "session saves are blocked because the existing session could not be opened for backup; fix access and restart the server"
                 );
-                if !self.session_saver.policy.is_blocked_on_backup() {
-                    self.state.mark_shell_projection_dirty();
-                }
                 self.session_saver.block_persistence_on_backup();
+                self.state
+                    .record_session_save_status(self.session_saver.policy.save_status());
             }
             Err(error) if !error.is_retryable() => {
                 tracing::error!(
@@ -518,12 +523,9 @@ impl App {
                     error = %error,
                     "session persistence failed permanently; disabling session saves for this boot"
                 );
-                if !self.session_saver.policy.is_stopped() {
-                    // Every client's snapshot carries the stop, so the user
-                    // learns that later layout changes will not be restored.
-                    self.state.mark_shell_projection_dirty();
-                }
                 self.session_saver.stop_persistence();
+                self.state
+                    .record_session_save_status(self.session_saver.policy.save_status());
             }
             Err(error) => {
                 // A retryable write or capture failure re-arms the normal
@@ -583,7 +585,7 @@ impl App {
         &self,
     ) -> Result<shepr_mux::persist::SessionCapture, shepr_mux::persist::SaveError> {
         shepr_mux::persist::capture_job(
-            &self.state.workspaces,
+            self.state.workspaces(),
             &self.terminal_runtimes,
             self.paths.fallback_cwd(),
             self.state.host_terminal_theme(),
@@ -1092,7 +1094,10 @@ mod tests {
             .expect_err("the retired persister cannot save");
         assert!(error.get_ref().is_some());
         assert!(app.session_saver.autosave_deadline().is_none());
-        assert!(!app.session_saver.policy.is_stopped());
+        assert_ne!(
+            app.session_saver.policy.save_status(),
+            shepr_protocol::SessionSaveStatus::Stopped
+        );
     }
 
     #[test]
@@ -1104,7 +1109,10 @@ mod tests {
         assert!(!policy.takes_host_checkpoint());
         policy.stop();
         policy.thaw();
-        assert!(policy.is_stopped());
+        assert_eq!(
+            policy.save_status(),
+            shepr_protocol::SessionSaveStatus::Stopped
+        );
         assert!(!policy.allows_saves());
         assert!(policy.takes_host_checkpoint());
     }
@@ -1321,7 +1329,7 @@ mod tests {
         let mut app = test_app();
         app.persist();
         let generation = app.session_saver.exit.request(true).expect("held");
-        let projection_before = app.state.shell_projection_revision;
+        let projection_before = app.state.shell_projection_revision();
         assert!(!app.session_saves_stopped());
 
         app.finish_session_save(
@@ -1332,7 +1340,7 @@ mod tests {
         );
 
         assert!(app.session_saves_stopped());
-        assert_ne!(app.state.shell_projection_revision, projection_before);
+        assert_ne!(app.state.shell_projection_revision(), projection_before);
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
         assert_eq!(app.request_pane_exit_checkpoint(), None);
         assert_eq!(app.session_saver.deadline(), None);
@@ -1343,7 +1351,7 @@ mod tests {
         let mut app = test_app();
         app.persist();
         let generation = app.session_saver.exit.request(true).expect("held");
-        let projection_before = app.state.shell_projection_revision;
+        let projection_before = app.state.shell_projection_revision();
 
         app.finish_session_save(
             exit_kind(generation),
@@ -1354,7 +1362,7 @@ mod tests {
 
         assert!(app.session_saves_blocked_on_backup());
         assert!(!app.session_saves_stopped());
-        assert_ne!(app.state.shell_projection_revision, projection_before);
+        assert_ne!(app.state.shell_projection_revision(), projection_before);
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
         assert_eq!(app.session_saver.deadline(), None);
         assert!(!app.session_saver.policy.allows_saves());
@@ -1827,7 +1835,7 @@ mod tests {
             App::open(&config, &paths, lease, super::super::tests::test_clock());
         assert_eq!(
             app.state
-                .workspaces
+                .workspaces()
                 .iter()
                 .map(shepr_mux::workspace::Workspace::name)
                 .collect::<Vec<_>>(),
@@ -1908,11 +1916,11 @@ mod tests {
                 wall_now: app.clock.wall_now,
             };
             app.set_clock(sample);
-            app.state.session_dirty = true;
+            app.state.mark_session_dirty();
 
             app.sync_session_save_schedule();
 
-            assert!(!app.state.session_dirty);
+            assert!(!app.state.session_dirty());
             assert_eq!(
                 app.session_saver.autosave_deadline(),
                 Some(sample.now + SESSION_SAVE_DEBOUNCE)
@@ -2010,7 +2018,7 @@ mod tests {
                 shepr_mux::pane::PaneEndReason::Signalled,
                 std::time::Instant::now(),
             ));
-            assert!(server.app.state.workspaces.is_empty());
+            assert!(server.app.state.workspaces().is_empty());
             let geometry = server.app.headless_spawn_geometry();
             assert_eq!(
                 server.app.create_default_workspace(geometry),
@@ -2271,7 +2279,7 @@ mod tests {
                 std::time::Instant::now(),
             ));
             assert!(
-                server.app.state.workspaces.is_empty(),
+                server.app.state.workspaces().is_empty(),
                 "the exit was applied"
             );
             // The app still holds the data-dir lease, so the checkpoint is parsed
@@ -2324,7 +2332,7 @@ mod tests {
                 std::time::Instant::now(),
             ));
 
-            assert!(server.app.state.workspaces.is_empty());
+            assert!(server.app.state.workspaces().is_empty());
             assert!(
                 !shepr_mux::persist::session_path(server.app.paths.data_dir())
                     .try_exists()
@@ -2351,7 +2359,7 @@ mod tests {
                     std::time::Instant::now(),
                 ));
                 assert!(
-                    server.app.state.workspaces.is_empty(),
+                    server.app.state.workspaces().is_empty(),
                     "the first exit was applied"
                 );
                 server
@@ -2370,7 +2378,7 @@ mod tests {
                         std::time::Instant::now(),
                     ));
                     assert!(
-                        server.app.state.workspaces.is_empty(),
+                        server.app.state.workspaces().is_empty(),
                         "the second exit was applied"
                     );
                 }

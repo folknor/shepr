@@ -611,6 +611,10 @@ impl HeadlessServer {
             kind = "final",
             outcome = if final_save.is_err() {
                 "failed"
+            } else if self.app.session_saves_stopped() {
+                "stopped"
+            } else if self.app.session_saves_blocked_on_backup() {
+                "blocked_on_backup"
             } else if self.app.session_saves_frozen() {
                 "frozen"
             } else {
@@ -1402,9 +1406,6 @@ impl HeadlessServer {
         let mut changed = self.drain_all_internal_events_with_forwarding();
         changed |= self.sync_pending_terminal_titles();
 
-        // API handlers read each workspace's recorded layout area for directional
-        // focus, resize steps, layout snapshots and spawn sizes; the geometry
-        // paths keep it current, so there is nothing to project first.
         let outcome = self.app.handle_api_request_with_render(msg.request);
         changed |= outcome.view_changed;
         shepr_api::send_api_response(&msg.respond_to, &request_id, method, outcome.response);
@@ -1414,14 +1415,9 @@ impl HeadlessServer {
         changed
     }
 
-    /// Handle scheduled tasks for the headless server.
-    ///
-    /// Similar to the former App scheduler but without terminal resize polling.
+    /// Services Git refresh, session saves and pending pane resizes.
     fn handle_scheduled_tasks_headless(&mut self, now: Instant) -> bool {
         let mut changed = false;
-
-        // No resize polling needed - server has no terminal.
-        // Client resize messages drive size changes instead.
 
         if self.has_app_client() {
             self.app.start_git_status_refresh_if_due(now);

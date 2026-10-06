@@ -211,7 +211,7 @@ impl App {
         &self,
         workspace_id: &shepr_protocol::WorkspaceId,
     ) -> Option<std::path::PathBuf> {
-        let workspace = self.state.workspaces.get(workspace_id)?;
+        let workspace = self.state.workspaces().get(workspace_id)?;
         Some(
             workspace
                 .resolved_identity_cwd(&self.terminal_runtimes)
@@ -311,8 +311,7 @@ impl App {
         let pane_id = death.pane_id;
         // A core that broke after the pane ended has nothing new to give a
         // checkpoint. The ending carries that answer from here on: a prepared
-        // exit decides once and keeps it, since history capture leaves an
-        // unreadable terminal's cached history as it was.
+        // exit decides once and keeps it through the checkpoint decision.
         let core_intact = !self
             .terminal_runtimes
             .get(&pane_id)
@@ -412,12 +411,12 @@ impl App {
         let terminal_cwd_reported = matches!(event, StateEvent::TerminalCwdReported { .. });
         // A cwd report changes only the projection (the state update reports
         // Unchanged), so the projection revision is what says the cwd moved.
-        let projection_before = self.state.shell_projection_revision;
+        let projection_before = self.state.shell_projection_revision();
         let state_changed =
             self.state.handle_state_event(event) != super::actions::StateUpdate::Unchanged;
         self.apply_lifecycle_authority_changes();
         let cwd_moved =
-            terminal_cwd_reported && self.state.shell_projection_revision != projection_before;
+            terminal_cwd_reported && self.state.shell_projection_revision() != projection_before;
         if cwd_moved {
             self.request_git_identity_refresh(self.clock.now);
         }
@@ -460,6 +459,10 @@ impl App {
     /// both read the live `full_lifecycle_hook_authority_active()`. Writing an
     /// unchanged value is cheap: the runtime only notifies on a transition.
     pub(super) fn apply_lifecycle_authority_changes(&mut self) {
+        // Keep the runtime mirror: ownership is plain app-thread state, while
+        // detection must read its pause gate without an app lock. Installation
+        // seeds a new runtime from existing ownership; this drain propagates
+        // later mutations. Neither can replace the other, including on restore.
         for pane_id in self.state.drain_lifecycle_authority_dirty() {
             if let (Some(terminal), Some(runtime)) = (
                 self.state.terminal(pane_id),
@@ -578,7 +581,7 @@ mod pane_exit_event_tests {
         let mut app = App::new(&shepr_config::ServerConfig::default());
         app.state
             .test_set_workspaces(names.iter().map(|name| Workspace::test_new(name)).collect());
-        if !app.state.workspaces.is_empty() {
+        if !app.state.workspaces().is_empty() {
             app.state.seed_bookmark_index(Some(0));
         }
         app
@@ -603,11 +606,11 @@ mod pane_exit_event_tests {
         let mut app = app_with_workspaces(&["a", "dying", "c"]);
         app.state.seed_bookmark_index(Some(2));
         let pane_id = app.state.ws(1).tree().root();
-        app.state.session_dirty = false;
+        app.state.test_clear_session_dirty();
 
         report_pane_exit(&mut app, pane_id);
 
-        assert_eq!(app.state.workspaces.len(), 2);
+        assert_eq!(app.state.workspaces().len(), 2);
         assert_eq!(
             app.state
                 .ws(app.state.bookmark_index().expect("active"))
@@ -615,7 +618,7 @@ mod pane_exit_event_tests {
             "c"
         );
         assert!(app.state.terminal(pane_id).is_none());
-        assert!(app.state.session_dirty);
+        assert!(app.state.session_dirty());
     }
 
     #[test]
@@ -625,7 +628,7 @@ mod pane_exit_event_tests {
 
         report_pane_exit(&mut app, pane_id);
 
-        assert!(app.state.workspaces.is_empty());
+        assert!(app.state.workspaces().is_empty());
         assert_eq!(app.state.workspaces().bookmark(), None);
     }
 
@@ -636,7 +639,7 @@ mod pane_exit_event_tests {
 
         report_pane_exit(&mut app, second_id);
 
-        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces().len(), 1);
         assert_eq!(app.state.ws(0).tree().len(), 1);
     }
 
@@ -657,7 +660,7 @@ mod pane_exit_event_tests {
             )
         );
 
-        assert_eq!(app.state.workspaces.len(), 1);
+        assert_eq!(app.state.workspaces().len(), 1);
     }
 }
 

@@ -46,8 +46,7 @@ mod tests {
         ClientShellSnapshot {
             boot_id: "1-1".into(),
             restore_notice: None,
-            session_saves_stopped: false,
-            session_saves_blocked_on_backup: false,
+            session_save_status: crate::SessionSaveStatus::Ready,
             revision: crate::revision::at(1),
             focused_workspace_id: None,
             focused_pane_id: None,

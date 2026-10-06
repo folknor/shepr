@@ -93,11 +93,6 @@ Reported by: workspace-model.
 
 Reported by: server-lifecycle.
 
-- `connection_health.rs` exists only to re-export `HEARTBEAT_INTERVAL` from `limits`.
-- `stop.rs`: the `label` parameter of `stop_socket_with_timeout` and of every
-  `ServerStopError` variant has one value, `"server"`.
-
-And:
 - The removed-method and removed-command test lists (`schema/tests.rs`
   `removed_methods_are_rejected`, `removed_uncalled_methods_are_rejected`, `cli.rs`
   `unknown_commands_and_launch_flags_are_rejected` with `--session`, `machine`,

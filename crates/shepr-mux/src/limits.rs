@@ -66,7 +66,8 @@ pub(crate) const AGENT_PENDING_IDLE_CAP: Duration = Duration::from_millis(700);
 pub(crate) const STABLE_VISIBLE_SIGNAL_REFRESH: Duration = Duration::from_millis(800);
 /// Startup grace for the first agent signal while a launched shell settles.
 pub(crate) const AGENT_STARTUP_GRACE_WINDOW: Duration = Duration::from_secs(3);
-/// Time allowed for a restored agent to appear before detection clears its seed.
+/// Time allowed after an AgentResume launch for an agent to appear before
+/// detection clears its seed. Fresh and ordinary restored shells have no hold.
 pub(crate) const AGENT_ABSENCE_STARTUP_HOLD: Duration = Duration::from_secs(30);
 
 // The pane terminal: detection reads, render pacing and scrollback scans.
@@ -81,6 +82,16 @@ pub(crate) const SYNCHRONIZED_OUTPUT_FLUSH_MARGIN: Duration = Duration::from_mil
 /// Tokio's blocking pool. These flushes can wait for ordered filesystem
 /// effects, so they must leave pool capacity for unrelated server work.
 pub(crate) const SYNCHRONIZED_OUTPUT_FLUSH_LIMIT: usize = 8;
+/// Maximum number of detector ticks running in Tokio's blocking pool at once,
+/// across every pane. A pane never holds more than one: its detection task
+/// awaits each tick before scheduling the next, so a tick stalled on a hung
+/// mount holds one permit and stalls only its own pane. The cap is therefore
+/// set well above the handful of panes one hung mount is likely to stall, so
+/// those cannot starve detection everywhere else, and well below Tokio's
+/// default blocking-pool ceiling (512 threads), so stalled ticks leave room
+/// for the server's other blocking work. A lower cap trades that isolation
+/// for fewer threads; it is not a throughput setting.
+pub(crate) const DETECTOR_TICK_CONCURRENCY: usize = 64;
 /// Rows a chunked scrollback scan (copy-mode search) reads per hold of the
 /// terminal lock. Between chunks the lock is released so the PTY reader,
 /// rendering and detection are never stalled behind a scan of the whole
@@ -184,10 +195,12 @@ pub(crate) const PANE_TEARDOWN_WAIT: Duration =
 /// Interval between layout snapshots; this gives recovery points without
 /// writing a new file for every save.
 pub(crate) const SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15 * 60);
-/// Recovery span retained at the snapshot cadence; this covers an overnight
-/// failure while keeping the snapshot directory bounded.
+/// Nominal span used to derive the maximum number of recovery points, assuming
+/// one eligible changed-layout copy per interval.
 const SNAPSHOT_RECOVERY_WINDOW: Duration = Duration::from_secs(12 * 60 * 60);
-/// Number of recovery points retained across the bounded recovery span.
+/// Maximum number of recovery points retained. At the 15-minute interval this
+/// allows about 12 hours when a changed layout is copied each interval;
+/// unchanged layouts are not copied, so the retained points can span longer.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "the snapshot count is a few dozen, which fits any usize"

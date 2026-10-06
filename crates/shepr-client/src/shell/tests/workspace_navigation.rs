@@ -1370,7 +1370,7 @@ fn navigate_mode_selects_and_opens_a_connect_entry() {
     assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
     assert_eq!(
         state.machine_state(&remote),
-        Some(crate::shell::MachineState::Starting)
+        Some(crate::shell::MachineState::NotRunning)
     );
 }
 

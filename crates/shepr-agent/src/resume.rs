@@ -848,6 +848,10 @@ mod tests {
         )
         .expect("test precondition");
         assert_eq!(codex_plan.argv, vec!["codex", "resume", id]);
+        assert_eq!(
+            codex_plan.to_shell_command(),
+            "codex resume 'abc; rm -rf /'"
+        );
 
         let copilot_plan = plan_for_source(
             "shepr:copilot",
@@ -855,6 +859,10 @@ mod tests {
         )
         .expect("test precondition");
         assert_eq!(copilot_plan.argv, vec!["copilot", "--resume=abc; rm -rf /"]);
+        assert_eq!(
+            copilot_plan.to_shell_command(),
+            "copilot '--resume=abc; rm -rf /'"
+        );
 
         let devin_plan = plan_for_source(
             "shepr:devin",
@@ -862,6 +870,10 @@ mod tests {
         )
         .expect("test precondition");
         assert_eq!(devin_plan.argv, vec!["devin", "--resume", id]);
+        assert_eq!(
+            devin_plan.to_shell_command(),
+            "devin --resume 'abc; rm -rf /'"
+        );
     }
 
     #[test]

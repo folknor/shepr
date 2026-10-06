@@ -25,7 +25,6 @@ struct IntegrationSpec {
     directory: fn(&IntegrationEnvironment) -> InstallResult<PathBuf>,
     primary_asset: ManagedAsset,
     additional_assets: &'static [ManagedAsset],
-    action_label: Option<&'static str>,
     presence_directory: PresenceDirectory,
     different_directory_from: Option<Target>,
     registration: Registration,
@@ -56,7 +55,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Extension),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::ParentDirectory,
             different_directory_from: None,
         },
@@ -71,7 +69,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Extension),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::ParentDirectory,
             different_directory_from: Some(Target::Pi),
         },
@@ -94,7 +91,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -118,7 +114,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -141,7 +136,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -164,7 +158,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -187,7 +180,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -205,7 +197,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -233,7 +224,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                     role: None,
                 },
             ],
-            action_label: None,
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -248,7 +238,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Plugin),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -271,7 +260,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -294,7 +282,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -312,7 +299,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            action_label: Some("antigravity-cli"),
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -330,7 +316,6 @@ const fn spec_for(target: Target) -> &'static IntegrationSpec {
                 role: Some(ArtifactRole::Hook),
             },
             additional_assets: &[],
-            action_label: None,
             presence_directory: PresenceDirectory::TargetDirectory,
             different_directory_from: None,
         },
@@ -357,12 +342,6 @@ pub(super) fn target_directory(
 
 pub(super) fn target_path(paths: &AgentIntegrationPaths, target: Target) -> InstallResult<PathBuf> {
     installed_path(paths, spec_for(target))
-}
-
-pub(crate) fn action_label(target: Target) -> &'static str {
-    spec_for(target)
-        .action_label
-        .unwrap_or_else(|| target.label())
 }
 
 pub(super) fn directory_must_differ_from(target: Target) -> Option<Target> {
@@ -1374,7 +1353,7 @@ mod registration_tests {
             IntegrationStatusKind::Outdated
         );
         let error = super::super::targets::install(&paths, IntegrationTarget::Kimi)
-            .expect_err("an unmarked Shepr hook must not be installed twice")
+            .expect_err("an unmarked shepr hook must not be installed twice")
             .to_string();
         assert!(error.contains("outside its managed block"), "{error}");
         assert_eq!(

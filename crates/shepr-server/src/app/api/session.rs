@@ -41,7 +41,7 @@ impl App {
     pub(crate) fn projection_input(&self) -> ProjectionInput {
         let mut workspaces = Vec::new();
         let mut panes = Vec::new();
-        for ws in self.state.workspaces.iter() {
+        for ws in self.state.workspaces().iter() {
             workspaces.extend(self.workspace_info(&ws.id()));
             panes.extend(
                 ws.tree()

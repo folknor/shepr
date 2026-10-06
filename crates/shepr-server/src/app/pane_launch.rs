@@ -143,7 +143,14 @@ impl App {
         let pane = self.state.pane(pane_id);
         let public_id = pane.map(|pane| pane.public_id());
         let session = pane.and_then(|pane| pane.terminal().ownership().persisted_agent_session());
+        let command = pane
+            .and_then(|pane| pane.terminal().agent_resume().plan())
+            .map(shepr_agent::resume::AgentResumePlan::to_shell_command);
         tracing::warn!(
+            event = "agent.resume.failure",
+            subsystem = "agent",
+            outcome = "unavailable",
+            command = command.as_deref(),
             workspace = ?public_id.map(|id| *id.workspace_id()),
             public_pane_id = ?public_id,
             pane = %pane_id,
@@ -309,7 +316,7 @@ mod tests {
         let terminal = app.state.terminal(pane_id).expect("the pane stays");
         assert!(matches!(
             terminal.start_failure(),
-            Some(shepr_mux::terminal::PaneStartFailure::ResumeUnavailable { .. })
+            Some(shepr_mux::terminal::PaneStartFailure::ResumeFailed { .. })
         ));
         assert!(terminal.ownership().persisted_agent_session().is_some());
         assert!(!app.has_pending_agent_resumes());
@@ -329,7 +336,7 @@ mod tests {
         );
         assert!(matches!(
             terminal.start_failure(),
-            Some(shepr_mux::terminal::PaneStartFailure::ResumeUnavailable { .. })
+            Some(shepr_mux::terminal::PaneStartFailure::ResumeFailed { .. })
         ));
         assert!(terminal.ownership().persisted_agent_session().is_some());
         assert!(!app.has_pending_agent_resumes());

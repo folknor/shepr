@@ -101,18 +101,31 @@ fn request_refuses_unknown_top_level_keys() {
 }
 
 #[test]
-fn server_method_params_refuse_unknown_fields() {
+fn every_api_params_type_except_state_reports_refuses_unknown_fields() {
     for request in [
         r#"{"id":"p","method":"ping","params":{"extra":1}}"#,
         r#"{"id":"s","method":"server.stop","params":{"extra":1}}"#,
         r#"{"id":"s","method":"server.stop_if_boot","params":{"expected_boot_id":"17-23","extra":1}}"#,
         r#"{"id":"s","method":"server.summary","params":{"extra":1}}"#,
+        r#"{"id":"d","method":"detect.capture","params":{"pane_id":"w1:p1","extra":1}}"#,
+        r#"{"id":"d","method":"detect.explain","params":{"pane_id":"w1:p1","extra":1}}"#,
+        r#"{"id":"a","method":"pane.report_agent_session","params":{"pane_id":"w1:p1","source":"shepr:pi","extra":1}}"#,
     ] {
         assert!(
             serde_json::from_str::<Request>(request).is_err(),
             "unexpected params were accepted: {request}"
         );
     }
+}
+
+#[test]
+fn state_report_params_ignore_unknown_annotations() {
+    let request: Request = serde_json::from_str(
+        r#"{"id":"a","method":"pane.report_agent","params":{"pane_id":"w1:p1","source":"shepr:codex","state":"working","message":"unused annotation"}}"#,
+    )
+    .expect("state reports deliberately accept unused annotations");
+    let value = serde_json::to_value(request).expect("serialize state report");
+    assert!(value["params"].get("message").is_none());
 }
 
 #[test]

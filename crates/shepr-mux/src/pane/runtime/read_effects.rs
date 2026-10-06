@@ -73,11 +73,23 @@ pub(super) struct PaneReadEffects {
     pub(super) child_liveness: Arc<ChildLiveness>,
     pub(super) sync_timeout_render: SyncTimeoutRender,
     pub(super) deferred_effect_order: Arc<DeferredEffectOrder>,
-    /// The PTY actor's handle, set once the actor exists; the timer queues
-    /// the replies of a flushed frame through it.
-    pub(super) timer_writer: std::sync::OnceLock<PtyIoActorHandle>,
-    pub(super) timer_reply_drop_reported: AtomicBool,
+    /// The PTY actor's route is supplied before spawning its thread. Empty
+    /// only in tests that exercise flush effects without a PTY actor.
+    pub(super) timer_writer: TimerReplyRoute,
     pub(super) rt: tokio::runtime::Handle,
+    pub(super) now: Arc<dyn Fn() -> std::time::Instant + Send + Sync>,
+}
+
+/// Production effects always have a route; standalone flush tests do not run an actor.
+// `NoActor` is not gated on a test cfg: one here would put the rest of this
+// file below a test cfg, which the skip-after-scopes check refuses.
+pub(super) enum TimerReplyRoute {
+    Actor(PtyIoActorHandle),
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "only flush tests without a PTY actor build it")
+    )]
+    NoActor,
 }
 
 /// The effects of a terminal write that may block: the `/proc` scan for the
@@ -195,7 +207,7 @@ impl PaneReadEffects {
         let write = output.begin();
         // Ticks an expired synchronized update first, then parses; the
         // core lock is released when this returns.
-        let mut result = match write.process(bytes, std::time::Instant::now()) {
+        let mut result = match write.process(bytes, (self.now)()) {
             Ok(result) => result,
             Err(_) => return PtyReadResult::CoreBroken,
         };
@@ -300,10 +312,7 @@ impl PaneReadEffects {
     /// update it never ends still gets its frame shown and its queries
     /// answered. One task per pane serves every read's request.
     pub(super) fn arm_sync_timeout(self: &Arc<Self>, delay: std::time::Duration) {
-        let Some(first_wake) = self
-            .sync_timeout_render
-            .arm(std::time::Instant::now() + delay)
-        else {
+        let Some(first_wake) = self.sync_timeout_render.arm((self.now)() + delay) else {
             return;
         };
         let effects = Arc::downgrade(self);
@@ -353,7 +362,7 @@ impl PaneReadEffects {
     pub(super) fn flush_expired_synchronized_output(&self) {
         let mut tick_result: Option<ProcessBytesResult> = None;
         let mut deferred_ticket = None;
-        let mut tick = || match self.terminal.tick(std::time::Instant::now()) {
+        let mut tick = || match self.terminal.tick((self.now)()) {
             Ok(mut result) => {
                 deferred_ticket = self.reserve_deferred(&result);
                 let replies = std::mem::take(&mut result.terminal_responses);
@@ -365,24 +374,10 @@ impl PaneReadEffects {
                 Vec::new()
             }
         };
-        match self.timer_writer.get() {
-            Some(writer) => writer.write_terminal_responses(tick),
-            // The actor is set right after it spawns, so this is only a timer
-            // that beat that store. Flush anyway: the frame must not stay
-            // hidden until the child's next output. Its replies have no route.
-            None => {
-                let replies = tick();
-                if !replies.is_empty()
-                    && !self.timer_reply_drop_reported.swap(true, Ordering::Relaxed)
-                {
-                    warn!(
-                        pane = %self.pane_id,
-                        dropped_replies = replies.len(),
-                        "synchronized update replies had no PTY actor route"
-                    );
-                }
-                drop(replies);
-            }
+        match &self.timer_writer {
+            TimerReplyRoute::Actor(writer) => writer.write_terminal_responses(tick),
+            // Flush tests have no PTY to answer; the frame still flushes.
+            TimerReplyRoute::NoActor => drop(tick()),
         }
         let Some(Ok(result)) = tick_result else {
             // The PTY actor checks the poisoned core on every loop, including

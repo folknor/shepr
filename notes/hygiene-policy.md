@@ -116,35 +116,6 @@ extending it to report non-`cfg(test)` public items whose only callers are test 
 would enforce this. A textlint banning `\btest_from_pane\b|\bPaneId::from_raw\b`
 outside test files and `cfg(test)` regions is the cheaper half.
 
-## POL-015 - The pane spawn path reaches the environment and clock directly, and a timer handle is set by call order
-
-Reported by: pane-lifecycle.
-
-The spawn path reads the process environment (`base_env`) and the clock (read effects,
-the reader-exit callback, `decide_after`) directly; the platform crate has the
-clock-injection rule, mux's pane code does not (CLAIM-018). `PaneReadEffects::timer_writer`
-is a `OnceLock` set after the actor spawns, and the timer path handles the gap by
-dropping replies with a warning: documented, not structural. Creating the inbox and wake
-pipe first, then spawning the actor with the effects already holding a handle, removes
-the window.
-
-## POL-017 - Agent evidence is ordered across two clock samplers, and a derived flag is mirrored by two writers
-
-Reported by: agent-state.
-
-Hook reports are stamped with the loop's per-pass `AppClock` sample, detector
-observations with the detector task's own `Instant::now()` before its probe;
-`fallback_not_older_than_hook`, `hook_authority_not_newer_than` and
-`detector_observation_allows` compare the two. The bias currently favours hooks, so no
-wrong outcome was found, but the safety rests on where the loop calls
-`refresh_app_clock`, which nothing ties to these comparisons. `lifecycle_authority` is
-derived (`full_lifecycle_hook_authority_active()`) and mirrored into an `AtomicBool` by
-two writers (`apply_lifecycle_authority_changes` and `install_runtime`), kept fresh by
-every `update_terminal_state` marking the pane dirty: correct today, by call order.
-Child-controlled data reaching logs (OSC evidence payloads, documented, opt-in,
-truncated; the `/proc` comm in `info!("agent changed", process = ..)`) is acceptable and
-noted for completeness.
-
 ## POL-021 - Three hand-written delivery retry policies in the plugin kits
 
 Reported by: integrations.
@@ -181,38 +152,6 @@ Every shell hook copies the agent's payload to `mktemp
 MastraCode) that is the user's prompt text. `mktemp` makes it 0600 and the exit trap
 removes it, but a SIGKILL leaves it in `/tmp`. Pipe the payload straight into python3
 instead of staging it.
-
-## POL-026 - Preflight probe locks
-
-Reported by: remote.
-
-- `MachineSshPreflight::check` holds a machine's probe mutex for the whole bounded SSH
-  check (up to 25 s); fine because each machine has its own, but the map lock and the
-  deadline lock are two more mutexes around what could be a `Vec<MachineProbe>` handed
-  to scoped threads by `&mut`, removing all three.
-
-## POL-027 - Some projection invalidation is still manual, and `AppState` fields are still open
-
-Reported by: workspace-model.
-
-The `AppState` reducers now advance the projection revision themselves and
-`EndpointEffects` no longer carries a projection flag. What remains: manual
-invalidation in `app/mod.rs`, `terminal_titles.rs`, `agent_resume.rs` and
-`app/session.rs`; and `AppState`'s `pub(super)` fields, which let callers in `app/`
-mutate past the reducers (the reason they stay open is commented beside
-`AppState.workspaces`). Making the fields private to `state.rs` forces every mutation
-through a named reducer. The 1 s timer rebuild stays regardless, for `/proc` cwd
-observations no event reports.
-
-## POL-029 - `RuntimeGeneration::alloc` is a second process-global counter
-
-Reported by: workspace-model.
-
-Pane sizing no longer burns pane ids and `TreePlan` refuses a bad focus or root by
-type; pane ids stay process-global on purpose (events and render sources carry no
-workspace id), as commented in `layout.rs`. `RuntimeGeneration::alloc` is a separate
-global counter with about ten call sites in mux; decide whether it needs to be
-global or can be per pane.
 
 ## POL-031 - Workspace model laterals
 
@@ -259,13 +198,12 @@ CLI: `main.rs` `random_nested_message` reads the wall clock and pid for randomne
 `cli/status.rs` reads `SystemTime::now()` twice for one report (`overview.now` and the
 machines section), so local and machine uptimes can be computed against different instants.
 
-## POL-034 - Wire strictness and "server busy" are decided per type and per branch
+## POL-034 - "Server busy" is refused with two codes, and abandoned requests fill the channel
 
 Reported by: server-lifecycle.
 
-Every server-route params type now refuses unknown keys, while
-`PaneReportAgentParams` deliberately accepts extra keys (tested); no single stated rule
-says which API types are strict. The same condition (the app loop saturated) is refused with
+(The wire strictness half is done: seven routes refuse unknown params, with
+`pane.report_agent` the one stated exception.) The same condition (the app loop saturated) is refused with
 two codes: `EndpointBusy` when app-slot admission is full, and `ServerUnavailable`
 ("server is busy handling API requests; retry later") when the channel is full, so a
 caller retrying on one and giving up on the other behaves differently for one cause. And
@@ -275,54 +213,45 @@ what is queued: abandoned requests occupy channel capacity (the same 64) that li
 requests then meet as `ServerUnavailable`. That is the only way the channel-full branch is
 reachable, which no comment says.
 
-## POL-035 - Stop and launch edge cases: probe timeouts read as gone, and an uncapped boot log
+## POL-035 - A daemon that never redirected stderr grows the boot log without bound
 
 Reported by: server-lifecycle.
 
-- `status_probe_has_no_answer` treats a `TimedOut` probe as gone. During a stop, a
-  server whose 64 ingress slots are full answers no probe within 250 ms and reads as
-  gone; the later lease and socket waits catch it, so the stop does not report success
-  falsely, but it reports `LeaseHeld` or `TimedOut` for a server that was merely busy.
 - `launch_with` empties the boot log with `set_len(0)` once its daemon is up; a daemon
   from a different launch that never redirected stderr (its log file could not be
   opened, `ServerReady.log_file_unavailable`) keeps the boot log as stderr for life, and
   nothing caps it once `BOOT_LOG_MAX_BYTES` stops being checked, so its later stderr
-  (panics included) grows a tmpfs file without bound.
-- `stop --all` stops the local server unconditionally while every remote one is stopped
-  by boot. AGENTS.md states exactly this, so it is not a defect, but a server that
-  replaced the local one between `status` and the stop is stopped without being named.
+  (panics included) grows a tmpfs file without bound. Capping it needs a bounded
+  stderr sink; the gap is commented at `launch_with`.
 
-## POL-036 - Detector ticks run on the shared blocking pool, unbounded overall
-
-Reported by: the blocking-pool fix.
-
-Synchronized-output flushes are now capped and the child watcher's fallback is async,
-but `pane/detection_task.rs` still runs each detector tick through `spawn_blocking`.
-A tick that stalls (a `/proc` read on a hung mount) holds a pool thread shared with
-the rest of the server; bounded by pane count only. Cap it like the flushes, or give
-detection its own bounded pool.
-
-## POL-018 - A stale fallback state is presented after hook authority ends
-
-Reported by: agent-state.
-
-The detector's `reset()` (on authority activation) and the end of authority leave
-ownership's `fallback_state` at whatever the detector last published before the
-authority, possibly long ago. When a session-start replacement clears authority
-without an exit, that stale fallback is presented until the next publication (about
-one tick). A first attempt reset the fallback on every accepted full-lifecycle report
-(`AuthorityEffect::Set`) rather than only when authority activates, and changed what
-`hook_authority_overrides_fallback_for_same_agent`,
-`omp_hook_authority_overrides_detected_fallback` and
-`visible_blocker_does_not_override_full_lifecycle_hook_authority` assert; it was
-reverted. Reset only on activation, and decide the tests' expectations deliberately.
-
-## POL-037 - The client writes its ssh metadata cache into the server's leased data directory
+## POL-037 - The client log lives in the server's leased data directory
 
 Reported by: the wave review.
 
-The ssh metadata cache moved to `<data>/client/ssh-metadata`, inside the data
-directory the server holds a lease on and sweeps at startup. Harmless today (the
-sweep removes only staging-named files), but the client now writes into a
-server-owned tree; a client-owned per-profile directory would keep the ownership
-clean.
+The ssh metadata cache moved to a client-owned per-profile directory, but the client
+log is still at `client_log_path(data_dir)`, inside the data directory the server
+holds a lease on and sweeps at startup. Move it beside the metadata cache.
+
+## POL-038 - Wave 7 laterals
+
+Reported by: the wave review.
+
+- `shepr_remote::preflight` and the `PreflightSsh` trait are exercised only by that
+  crate's tests; production uses `MachineSshPreflight::run` (a public test-only seam).
+  `RatioDelta::get` is likewise a new `pub` accessor only tests call, and
+  `PtyIoActor::spawn` may now have no production caller.
+- The OSC evidence flag is a process-global `OnceLock`: the first server started in a
+  process fixes it, and a later one never validates its own value (test binaries).
+- `remote-wait-for-server` now classifies every wait failure as Repair, including
+  presence-probe IO errors, which is broader than "setup failure".
+- With no machines configured, a local status failure in preflight is printed and
+  then the launch prints the same refusal again.
+- `api.connection.failed` moved from debug to warn; idle or slow clients that hit the
+  first-line timeout now warn.
+- `pane/launch.rs` tests still use `/run/user/1000/...` literals.
+- `every_session_save_status_roundtrips_as_a_unit_enum` lists the variants by hand.
+- `reader_exit_callback` in `pane/runtime/spawn.rs` carries two `clock-io-ok` markers
+  for one read.
+- `api.rs` and `events.rs` detect a projection change by `revision != before`, which a
+  saturated revision hides (unreachable in practice; render uses
+  `shell_projection_is_current`).

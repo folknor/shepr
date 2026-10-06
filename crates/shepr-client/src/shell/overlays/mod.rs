@@ -537,10 +537,6 @@ impl ClientShellState {
                 if self.machine_entry_action(&endpoint_id)
                     == Some(crate::shell::endpoints::MachineAction::Restart)
                 {
-                    self.set_machine_state(
-                        &endpoint_id,
-                        crate::shell::endpoints::MachineState::Restarting,
-                    );
                     outcome
                         .actions
                         .push(crate::shell::state::ClientShellAction::RestartMachine(
