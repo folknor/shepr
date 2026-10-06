@@ -1007,7 +1007,27 @@ const TARGETS_HAVE_INTEGRATIONS: () = {
         }
         index += 1;
     }
-    // `Grok` is the last `IntegrationTarget` variant.
+    // Exhaustive on purpose, just like the agent table guard above: its true arm
+    // must be the last declared target, so a new target needs classification.
+    const fn is_last_target(target: IntegrationTarget) -> bool {
+        match target {
+            IntegrationTarget::Grok => true,
+            IntegrationTarget::Pi
+            | IntegrationTarget::Omp
+            | IntegrationTarget::Claude
+            | IntegrationTarget::Codex
+            | IntegrationTarget::Copilot
+            | IntegrationTarget::Devin
+            | IntegrationTarget::Droid
+            | IntegrationTarget::Kimi
+            | IntegrationTarget::Opencode
+            | IntegrationTarget::Kilo
+            | IntegrationTarget::Cursor
+            | IntegrationTarget::Mastracode
+            | IntegrationTarget::AntigravityCli => false,
+        }
+    }
+    assert!(is_last_target(IntegrationTarget::Grok));
     assert!(integrations == IntegrationTarget::Grok as usize + 1);
 };
 
@@ -1027,13 +1047,6 @@ impl AgentSource {
         Agent::parse_source(value)
             .and_then(Agent::integration_target)
             .map(Self)
-    }
-
-    /// An exact source and canonical agent label pair, as persisted string
-    /// inputs and resume constructors carry it.
-    pub fn from_pair(source: &str, agent_label: &str) -> Option<Self> {
-        let target = Agent::parse_canonical_label(agent_label)?.integration_target()?;
-        (target.source() == source).then_some(Self(target))
     }
 
     pub const fn as_str(self) -> &'static str {
@@ -1154,6 +1167,7 @@ mod tests {
     fn official_sources_round_trip_with_nonempty_names() {
         for target in IntegrationTarget::all() {
             let source = AgentSource::new(target);
+            assert_eq!(target.source(), format!("shepr:{}", target.label()));
             assert!(!source.as_str().is_empty());
             assert_eq!(AgentSource::parse(source.as_str()), Some(source));
             assert_eq!(target.agent().integration_source(), Some(target.source()));
@@ -1186,7 +1200,7 @@ mod tests {
             // Official sources identify installable integration targets.
             if let Some(source) = agent.integration_source() {
                 assert_eq!(
-                    AgentSource::from_pair(source, descriptor.label),
+                    AgentSource::parse(source),
                     agent.integration_target().map(AgentSource::new)
                 );
             }

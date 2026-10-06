@@ -19,6 +19,12 @@ use tokio::sync::{Notify, mpsc};
 pub(crate) use shepr_test_fixtures::{AppPathsFixture, ValidatedServerConfigFixture};
 pub(crate) use shepr_test_support::{IsolatedEnv, ScratchDir};
 
+/// How long a test waits on a real session write before it fails. It only
+/// caps a wedged writer so that no test can hang without bound; it is not a
+/// disk-speed expectation, so it sits far above any healthy write, and a slow
+/// disk does not fail tests that merely wait for their saves.
+pub(crate) const SESSION_WRITE_TEST_BOUND: Duration = Duration::from_secs(120);
+
 /// Pane runtimes with no child: what the pane writes to its child arrives on
 /// the returned receiver (`shepr_test_fixtures::ChannelChildIo`).
 pub(crate) trait PaneRuntimeFixture: Sized {
@@ -297,7 +303,6 @@ pub(crate) fn test_codex_plan(
     let session_id = identity.rsplit('\0').next().unwrap_or(identity);
     let session = PersistedAgentSession::new(
         AgentSource::new(IntegrationTarget::Codex),
-        Agent::Codex,
         AgentSessionRef::id(session_id).expect("test session id is valid"),
     )
     .expect("test session is a Codex session");

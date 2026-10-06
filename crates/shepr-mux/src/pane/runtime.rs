@@ -1067,6 +1067,7 @@ mod tests {
 
     #[test]
     fn pane_teardown_reaches_background_jobs_after_the_leader_is_reaped() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         // The common close path: the pane's child has exited and been reaped,
         // but it left a job behind in its session that ignores SIGHUP and
         // SIGTERM, as a daemonised dev server might.
@@ -1341,6 +1342,7 @@ mod tests {
 
     #[test]
     fn login_shell_builder_uses_one_resolved_path_for_exec_and_shell_env() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = crate::test_support::ScratchDir::new("pane-login-shell");
         let shell = fixture::stand_in(
             scratch.path(),
@@ -1386,6 +1388,7 @@ mod tests {
 
     #[test]
     fn non_login_shell_builder_execs_configured_shell_without_login_argv0() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = crate::test_support::ScratchDir::new("pane-non-login-shell");
         let shell = fixture::stand_in(
             scratch.path(),
@@ -1429,6 +1432,7 @@ mod tests {
 
     #[test]
     fn a_missing_configured_shell_fails_in_the_child_not_at_the_fork() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let shell = fixture::resolved_shell("/__shepr_missing_shell__");
         let cmd = pane_shell_command_builder(
             PaneShellConfig::new(&shell, true),
@@ -1469,6 +1473,7 @@ mod tests {
 
     #[test]
     fn pane_terminal_identity_overrides_outer_terminal_env() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let output = capture_terminal_identity();
         assert_eq!(
             output,
@@ -1703,7 +1708,7 @@ mod tests {
             pane_id,
             terminal,
             io: Box::new(io),
-            current_size: shepr_core::geometry::PaneGeometry::cells_only(24, 80),
+            current_size: shepr_core::geometry::PaneGeometry::cells_only(80, 24),
             child_liveness: Arc::new(ChildLiveness::absent()),
             teardown_tracker: Arc::default(),
             exit_arbiter: Arc::default(),
@@ -1735,7 +1740,7 @@ mod tests {
             pane_id,
             terminal,
             io: Box::new(io),
-            current_size: shepr_core::geometry::PaneGeometry::cells_only(24, 80),
+            current_size: shepr_core::geometry::PaneGeometry::cells_only(80, 24),
             child_liveness: Arc::new(ChildLiveness::absent()),
             teardown_tracker: Arc::default(),
             exit_arbiter: Arc::default(),

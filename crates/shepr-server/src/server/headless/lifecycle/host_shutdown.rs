@@ -223,12 +223,7 @@ async fn take_inhibitor(manager: &zbus::Proxy<'_>) -> zbus::Result<zbus::zvarian
     manager
         .call(
             "Inhibit",
-            &(
-                "shutdown",
-                "Shepr",
-                "Save terminal workspace layout",
-                "delay",
-            ),
+            &("shutdown", "shepr", "Save shepr workspace layout", "delay"),
         )
         .await
 }

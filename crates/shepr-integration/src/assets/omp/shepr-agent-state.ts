@@ -2,7 +2,7 @@
 // managed by shepr; every release shepr server launch on this host rewrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=omp
-// SHEPR_INTEGRATION_VERSION=1393500067
+// SHEPR_INTEGRATION_VERSION=627737121
 // @ts-nocheck
 
 import net from "node:net";
@@ -12,7 +12,6 @@ const SHEPR_ENV = process.env.SHEPR_ENV;
 const socketPath = process.env.SHEPR_SOCKET_PATH;
 const paneId = process.env.SHEPR_PANE_ID;
 const source = "shepr:omp";
-const AGENT = "omp";
 const METHOD_SESSION = "pane.report_agent_session";
 const METHOD_STATE = "pane.report_agent";
 const START = { startup: "startup", resume: "resume", select: "select" };
@@ -159,7 +158,6 @@ function reportSession(sessionStartSource?: string): Promise<void> {
     params: {
       pane_id: paneId,
       source,
-      agent: AGENT,
       seq,
       ...(sessionStartSource ? { session_start_source: sessionStartSource } : {}),
       ...sessionRef,
@@ -178,7 +176,6 @@ function sendState(state: AgentState, seq = nextReportSeq()): Promise<void> {
     params: withSessionRef({
       pane_id: paneId,
       source,
-      agent: AGENT,
       state,
       seq,
     }),

@@ -139,7 +139,7 @@ pub(super) fn draw_frame(state: &ClientShellState, view: &ShellView) -> Option<D
                     crate::shell::presentation::selection_render::render_selection_highlight(
                         state.mouse_selection.selection.as_ref(),
                         &hit.pane_id,
-                        hit.inner_rect,
+                        hit.content_rect,
                         hit.scroll,
                         palette,
                         shepr_term::host::TerminalTheme {
@@ -299,11 +299,11 @@ fn render_client_copy_search_highlights(
     let Some(search) = copy_mode.search.as_ref() else {
         return;
     };
-    if hit.inner_rect.is_empty() {
+    if hit.content_rect.is_empty() {
         return;
     }
     let top = copy_mode.viewport_top();
-    let bottom = top.saturating_add(usize::from(hit.inner_rect.height.saturating_sub(1)));
+    let bottom = top.saturating_add(usize::from(hit.content_rect.height.saturating_sub(1)));
     let patch = StylePatch::from_style(if current_only {
         Style::default()
             .fg(panel_contrast_fg(palette))
@@ -336,16 +336,16 @@ fn render_client_copy_search_highlights(
             let end_col = if absolute_row == text_match.end.row.0 {
                 text_match.end.col
             } else {
-                hit.inner_rect.width.saturating_sub(1)
+                hit.content_rect.width.saturating_sub(1)
             };
-            let end_col = end_col.min(hit.inner_rect.width.saturating_sub(1));
+            let end_col = end_col.min(hit.content_rect.width.saturating_sub(1));
             // The hit comes from the pane surface, whose geometry may have been produced for
             // a different layout than this frame (see where `resolve_frame` builds pane
             // hits). `Canvas::patch_cell` skips positions outside the frame.
             for col in start_col..=end_col {
                 let (Some(x), Some(y)) = (
-                    hit.inner_rect.x.checked_add(col),
-                    hit.inner_rect.y.checked_add(viewport_row),
+                    hit.content_rect.x.checked_add(col),
+                    hit.content_rect.y.checked_add(viewport_row),
                 ) else {
                     continue;
                 };
@@ -681,7 +681,7 @@ mod tests {
         // and must be skipped instead of panicking on `Buffer` indexing.
         let hit = PaneHit {
             rect: Rect::new(0, 0, 6, 4),
-            inner_rect: Rect::new(0, 0, 6, 4),
+            content_rect: Rect::new(0, 0, 6, 4),
             scrollbar_rect: None,
             scroll: Some(shepr_term::ScrollMetrics::new(
                 0,
@@ -713,7 +713,7 @@ mod tests {
             width: 6,
             height: 4,
         };
-        pane_surface.panes[0].inner_rect = pane_surface.panes[0].rect;
+        pane_surface.panes[0].content_rect = pane_surface.panes[0].rect;
         pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
             0,
             0,

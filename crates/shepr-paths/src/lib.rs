@@ -22,7 +22,7 @@ pub use self::layout::{
     LAUNCH_LOCK_FILE_NAME, SERVER_LOG_FILE_NAME, SERVER_SOCKET_FILE_NAME, SESSION_FILE_NAME,
     SNAPSHOT_DIRECTORY_NAME, boot_log_path, client_log_path, data_dir_lease_path, launch_lock_path,
     server_log_path, server_socket_path, session_backup_directory, session_file_path,
-    session_snapshot_directory, socket_startup_lock_path,
+    session_snapshot_directory, socket_startup_lock_path, ssh_metadata_directory,
 };
 pub use self::profile::BuildProfile;
 

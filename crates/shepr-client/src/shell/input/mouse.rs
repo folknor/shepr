@@ -285,7 +285,7 @@ impl ClientShellState {
         let Some(metrics) = metrics else {
             return;
         };
-        let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
+        let (viewport_row, col) = selection_cell(column, row, hit.content_rect);
         let absolute_row = metrics.absolute_row_at_viewport(viewport_row);
         if self.mouse_selection.word_gesture.is_some() {
             self.drag_word_selection(shepr_term::Point::new(absolute_row, col), outcome, now);
@@ -314,11 +314,11 @@ impl ClientShellState {
             .as_ref()
             .is_some_and(|selection| {
                 let anchor = selection.anchor_position();
-                let anchor_col = hit.inner_rect.x.saturating_add(anchor.col).clamp(
-                    hit.inner_rect.x,
-                    hit.inner_rect
+                let anchor_col = hit.content_rect.x.saturating_add(anchor.col).clamp(
+                    hit.content_rect.x,
+                    hit.content_rect
                         .x
-                        .saturating_add(hit.inner_rect.width.saturating_sub(1)),
+                        .saturating_add(hit.content_rect.width.saturating_sub(1)),
                 );
                 let row_moved = metrics.map_or_else(
                     || {
@@ -329,15 +329,15 @@ impl ClientShellState {
                                 .as_ref()
                                 .filter(|click| selection.belongs_to(&click.pane_id))
                                 .is_some_and(|click| {
-                                    hit.inner_rect.y.saturating_add(click.viewport_row) != row
+                                    hit.content_rect.y.saturating_add(click.viewport_row) != row
                                 })
                     },
                     |metrics| match anchor.row.viewport_row(metrics.viewport_top_row()) {
                         shepr_term::ViewportPosition::Above
                         | shepr_term::ViewportPosition::Below => true,
                         shepr_term::ViewportPosition::At(anchor_row) => {
-                            anchor_row.0 >= hit.inner_rect.height
-                                || hit.inner_rect.y.checked_add(anchor_row.0) != Some(row)
+                            anchor_row.0 >= hit.content_rect.height
+                                || hit.content_rect.y.checked_add(anchor_row.0) != Some(row)
                         }
                     },
                 );
@@ -366,11 +366,11 @@ impl ClientShellState {
             self.stop_selection_autoscroll();
             return;
         };
-        let top = hit.inner_rect.y;
+        let top = hit.content_rect.y;
         let bottom = hit
-            .inner_rect
+            .content_rect
             .y
-            .saturating_add(hit.inner_rect.height.saturating_sub(1));
+            .saturating_add(hit.content_rect.height.saturating_sub(1));
         let (direction, immediate_lines) = if row < top {
             (
                 ClientSelectionAutoscrollDirection::Up,
@@ -416,7 +416,7 @@ impl ClientShellState {
             direction,
             last_mouse_column: column,
             last_mouse_row: row,
-            inner_rect: hit.inner_rect,
+            content_rect: hit.content_rect,
             offset_from_bottom,
             max_offset_from_bottom: metrics.max_offset_from_bottom,
         });
@@ -527,7 +527,7 @@ impl ClientShellState {
             self.stop_selection_autoscroll();
             return outcome;
         };
-        if hit.inner_rect != autoscroll.inner_rect {
+        if hit.content_rect != autoscroll.content_rect {
             self.stop_selection_autoscroll();
             return outcome;
         }
@@ -1107,7 +1107,7 @@ impl ClientShellState {
                     .presentation
                     .pane_hits()
                     .iter()
-                    .find(|hit| crate::shell::input::hit_test::contains(hit.inner_rect, point))
+                    .find(|hit| crate::shell::input::hit_test::contains(hit.content_rect, point))
                     .cloned();
                 if let Some(hit) = pane_hit {
                     let pane_owns_right_click = self
@@ -1474,7 +1474,7 @@ impl ClientShellState {
                     .cloned();
                 if let Some(hit) = pane_hit {
                     if hit.mouse_reporting
-                        && crate::shell::input::hit_test::contains(hit.inner_rect, point)
+                        && crate::shell::input::hit_test::contains(hit.content_rect, point)
                     {
                         self.push_pane_mouse_event(
                             &hit,
@@ -1489,11 +1489,11 @@ impl ClientShellState {
                             button: MouseButton::Left,
                             last_event: mouse,
                         });
-                    } else if crate::shell::input::hit_test::contains(hit.inner_rect, point) {
+                    } else if crate::shell::input::hit_test::contains(hit.content_rect, point) {
                         let click = ClientPaneClick {
                             pane_id: hit.pane_id,
-                            viewport_row: mouse.row.saturating_sub(hit.inner_rect.y),
-                            col: mouse.column.saturating_sub(hit.inner_rect.x),
+                            viewport_row: mouse.row.saturating_sub(hit.content_rect.y),
+                            col: mouse.column.saturating_sub(hit.content_rect.x),
                             at: now,
                         };
                         if let Some(metrics) = hit.scroll {
@@ -1517,7 +1517,7 @@ impl ClientShellState {
                                     (self.focused_pane_id().as_ref() != Some(&hit.pane_id))
                                         .then_some(hit.pane_id);
                                 let (viewport_row, col) =
-                                    selection_cell(mouse.column, mouse.row, hit.inner_rect);
+                                    selection_cell(mouse.column, mouse.row, hit.content_rect);
                                 let absolute_row = metrics.absolute_row_at_viewport(viewport_row);
                                 self.mouse_selection.selection =
                                     Some(shepr_term::selection::Selection::anchor(
@@ -1548,7 +1548,7 @@ impl ClientShellState {
                     .pane_hits()
                     .iter()
                     .find(|hit| {
-                        crate::shell::input::hit_test::contains(hit.inner_rect, point)
+                        crate::shell::input::hit_test::contains(hit.content_rect, point)
                             && hit.mouse_reporting
                     })
                     .cloned()
@@ -1568,7 +1568,7 @@ impl ClientShellState {
                     .pane_hits()
                     .iter()
                     .find(|hit| {
-                        crate::shell::input::hit_test::contains(hit.inner_rect, point)
+                        crate::shell::input::hit_test::contains(hit.content_rect, point)
                             && hit.mouse_reporting
                     })
                     .cloned()
@@ -1584,7 +1584,7 @@ impl ClientShellState {
                     .presentation
                     .pane_hits()
                     .iter()
-                    .find(|hit| crate::shell::input::hit_test::contains(hit.inner_rect, point))
+                    .find(|hit| crate::shell::input::hit_test::contains(hit.content_rect, point))
                     .cloned()
                 {
                     if self.focused_pane_id().as_ref() != Some(&hit.pane_id) {
@@ -1607,8 +1607,8 @@ impl ClientShellState {
     }
 
     fn pane_mouse_position(&self, hit: &PaneHit, mouse: MouseEvent) -> ClientMousePosition {
-        let column = mouse.column.saturating_sub(hit.inner_rect.x);
-        let row = mouse.row.saturating_sub(hit.inner_rect.y);
+        let column = mouse.column.saturating_sub(hit.content_rect.x);
+        let row = mouse.row.saturating_sub(hit.content_rect.y);
         let cell = ClientMousePosition::Cell { column, row };
         let Some(pixels) = self.pointer.host_mouse_pixels else {
             return cell;
@@ -1622,7 +1622,7 @@ impl ClientShellState {
             return cell;
         };
         pixels
-            .pane_position(hit.inner_rect, extent)
+            .pane_position(hit.content_rect, extent)
             .map_or(cell, |(x, y)| ClientMousePosition::Pixels {
                 column,
                 row,

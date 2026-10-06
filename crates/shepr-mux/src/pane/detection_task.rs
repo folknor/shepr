@@ -8,8 +8,8 @@ use tokio::sync::Notify;
 use tracing::info;
 
 use super::detect::{
-    DetectorGateDiagnostics, DetectorState, Step, Tick, TickContext, TickOutput,
-    publish_agent_process_detected_event, publish_state_changed_event,
+    DetectorGateDiagnostics, DetectorState, StateChangedUpdate, Step, Tick, TickContext,
+    TickOutput, publish_agent_process_detected_event, publish_state_changed_event,
 };
 use super::exit_arbiter::PaneExitArbiter;
 use super::launch::LaunchKind;
@@ -104,18 +104,42 @@ impl DetectionTask {
                 () = self.handles.exit_arbiter.cancelled() => return,
             }
             let pane_id = self.pane_id;
+            // The blocking tick owns the detector, so a panic loses it; keep
+            // what a failed tick needs to publish.
+            let events = self.handles.events.clone();
+            let last_agent = self.detector.current_agent();
             let (task, output) = match self.blocking_tick().await {
                 Ok(result) => result,
-                Err(error) => {
-                    // The blocking job owns the detector and can panic after
-                    // terminal mutations or while holding the core mutex.
-                    // Recreating only DetectorState cannot repair a poisoned
-                    // terminal or roll back those effects. Do not blindly
-                    // retry or publish Unknown over live hook authority; a
-                    // pane/runtime failure policy must resolve that boundary.
-                    tracing::error!(pane_id = %pane_id, ?error, "pane detection stopped after tick failure");
+                Err(error) if error.is_panic() => {
+                    // A detector bug must not end the operator's shell or
+                    // agent, so the pane keeps running without detection. Its
+                    // last published state would otherwise stand forever
+                    // (Working stays Working), so it is withdrawn to Unknown
+                    // against the agent last identified, which keeps the
+                    // agent and its session. A panic that poisoned the
+                    // terminal core already ends the pane: the PTY actor
+                    // checks the core on every loop (`core_broken`).
+                    tracing::error!(
+                        pane = %pane_id,
+                        agent = ?last_agent,
+                        ?error,
+                        "pane detection tick panicked; detection stopped for this pane \
+                         and its agent state is now unknown"
+                    );
+                    publish_state_changed_event(
+                        events,
+                        StateChangedUpdate {
+                            agent: last_agent,
+                            detection: shepr_detect::Detection::Unknown,
+                            process_exited: false,
+                            observed_at: Instant::now(),
+                        },
+                    )
+                    .await;
                     return;
                 }
+                // Cancelled with the runtime: the pane is going away.
+                Err(_) => return,
             };
             self = task;
             let Some((now, mut output)) = output else {

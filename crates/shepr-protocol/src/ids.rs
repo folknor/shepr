@@ -120,7 +120,7 @@ impl PanePublicNumber {
 }
 impl fmt::Display for PanePublicNumber {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.get().fmt(f)
+        f.write_str(&encode_public_number(self.get()))
     }
 }
 
@@ -169,24 +169,41 @@ impl fmt::Debug for PublicPaneId {
 
 /// Text that is not a canonical public pane ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PublicIdParseError;
+pub struct PublicIdParseError {
+    expected: &'static str,
+}
+
+impl PublicIdParseError {
+    const PUBLIC_PANE: Self = Self {
+        expected: "w<workspace>:p<pane>",
+    };
+
+    pub const fn expected(&self) -> &'static str {
+        self.expected
+    }
+}
+
 impl fmt::Display for PublicIdParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("invalid public pane id")
+        write!(f, "invalid public pane id; expected {}", self.expected)
     }
 }
 impl std::error::Error for PublicIdParseError {}
 impl FromStr for PublicPaneId {
     type Err = PublicIdParseError;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let (workspace, pane) = value.split_once(':').ok_or(PublicIdParseError)?;
+        let (workspace, pane) = value
+            .split_once(':')
+            .ok_or(PublicIdParseError::PUBLIC_PANE)?;
         let number = pane
             .strip_prefix('p')
             .and_then(parse_public_number)
             .and_then(PanePublicNumber::new)
-            .ok_or(PublicIdParseError)?;
+            .ok_or(PublicIdParseError::PUBLIC_PANE)?;
         Ok(Self::new(
-            &workspace.parse().map_err(|_| PublicIdParseError)?,
+            &workspace
+                .parse()
+                .map_err(|_| PublicIdParseError::PUBLIC_PANE)?,
             number,
         ))
     }
@@ -289,8 +306,12 @@ mod public_pane_id_tests {
         assert_eq!(pane_id.to_string(), "wA:p11");
         assert_eq!(pane_id.workspace_id(), &workspace_id);
         assert_eq!(pane_id.number().get(), 33);
+        assert_eq!(pane_id.number().to_string(), "11");
         assert_eq!("wA:p11".parse::<PublicPaneId>(), Ok(pane_id));
-        assert!("wA:t0".parse::<PublicPaneId>().is_err());
+        let error = "wA:t0"
+            .parse::<PublicPaneId>()
+            .expect_err("invalid pane id");
+        assert_eq!(error.expected(), "w<workspace>:p<pane>");
 
         let pane_wire = crate::codec::to_vec(&pane_id).expect("pane id encoding");
         assert_eq!(

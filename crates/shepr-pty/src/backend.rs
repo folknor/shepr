@@ -172,7 +172,8 @@ fn wait_for_pid(pid: libc::pid_t, flags: libc::c_int) -> io::Result<Option<ExitS
 
 fn detach_reaper(pid: shepr_platform::Pid, wait: impl FnOnce() + Send + 'static) {
     if let Err(error) = std::thread::Builder::new()
-        .name("shepr-pane-reaper".into())
+        // Linux exposes at most 15 bytes through `pthread_setname_np`.
+        .name("pty-reaper".into())
         .spawn(wait)
     {
         tracing::error!(%pid, %error, "could not start pane reaper; child may remain unreaped until server exit");
@@ -543,8 +544,8 @@ unsafe fn run_child(plan: &ChildPlan<'_>) -> ! {
     }
     let mut selected = None;
     // Only the first candidate's failure is reported: it is the directory the
-    // pane was meant to open in, and the one the user can fix. The rest are
-    // fallbacks tried because of it.
+    // pane was meant to open in, and the one the user can fix. A successful
+    // fallback carries that errno with its candidate index.
     let mut first_failure = None;
     for (index, dir) in plan.dirs.iter().enumerate() {
         // SAFETY: `dir` points at a NUL-terminated string the fork copied.
@@ -564,7 +565,7 @@ unsafe fn run_child(plan: &ChildPlan<'_>) -> ! {
     };
     send_record(
         status,
-        &launch::chdir_ok_record(u32::try_from(index).unwrap_or(u32::MAX)),
+        &launch::chdir_ok_record(u32::try_from(index).unwrap_or(u32::MAX), first_failure),
     );
     // SAFETY: program, argv and the selected envp are NUL-terminated strings
     // and null-terminated pointer arrays the fork copied. execve only returns
@@ -684,12 +685,19 @@ fn close_inherited_fds() -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn pty_fd_test_lock() -> &'static std::sync::Mutex<()> {
+    // PTY allocation changes `/proc/self/fd`; every PTY-opening unit test
+    // shares this guard with the process-wide descriptor-count assertion.
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::launch::{LaunchRecord, RecordRead};
     use shepr_test_support::fixture::{self, Step};
     use std::io::Read;
-    use std::sync::{Mutex, OnceLock};
 
     fn fixture_command(steps: &[Step]) -> PtyCommand {
         let scratch = shepr_test_support::ScratchDir::new("pty-backend-fixture");
@@ -735,13 +743,6 @@ mod tests {
         (spawned, records)
     }
 
-    fn pty_fd_test_lock() -> &'static Mutex<()> {
-        // PTY allocation changes /proc/self/fd, so every test that opens a
-        // PTY uses this guard while process-wide fd counts are asserted.
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
     fn parent_pty_fd_targets() -> Vec<String> {
         let Ok(entries) = std::fs::read_dir("/proc/self/fd") else {
             return Vec::new();
@@ -762,6 +763,7 @@ mod tests {
 
     #[test]
     fn detached_reaper_collects_the_owned_child_and_reports_its_status() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let cmd = fixture_command(&[Step::Exit(7)]);
         let (spawned, _) = spawn_and_read_status(&cmd);
@@ -780,13 +782,10 @@ mod tests {
 
     #[test]
     fn pty_spawn_leaves_one_parent_pty_fd() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let before = parent_pty_fd_count();
-        let mut cmd = fixture_command(&[Step::Cat]);
-        cmd.env(
-            shepr_core::env::EnvVar::SheprEnv,
-            shepr_core::env::SHEPR_ENV_IN_PANE,
-        );
+        let cmd = fixture_command(&[Step::Cat]);
 
         let mut spawned =
             spawn_pty(test_geometry(), &cmd, ignore_status()).expect("pty setup succeeds");
@@ -806,6 +805,7 @@ mod tests {
 
     #[test]
     fn child_is_session_leader_with_pty_as_controlling_terminal() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
         let mut spawned =
@@ -832,6 +832,7 @@ mod tests {
 
     #[test]
     fn child_output_reaches_master_and_exit_status_is_reported() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let cmd = fixture_command(&[Step::Print("shepr-pty-ok".into()), Step::Exit(7)]);
         let mut spawned =
@@ -859,6 +860,7 @@ mod tests {
 
     #[test]
     fn first_window_size_carries_the_pixel_dimensions() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
         let mut spawned = spawn_pty(
@@ -890,12 +892,19 @@ mod tests {
 
     #[test]
     fn a_launched_shell_reports_its_cwd_then_closes_the_channel_at_exec() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let scratch = shepr_test_support::ScratchDir::new("pty-launch-ok");
         let mut cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
         cmd.cwd(&shepr_core::absolute_path::AbsolutePath::new(scratch.path()).expect("absolute"));
         let (mut spawned, records) = spawn_and_read_status(&cmd);
-        assert_eq!(records, [LaunchRecord::ChdirOk(0)]);
+        assert_eq!(
+            records,
+            [LaunchRecord::ChdirOk {
+                index: 0,
+                first_candidate_errno: None,
+            }]
+        );
         assert!(
             spawned.child.try_wait().expect("check the child").is_none(),
             "the channel closed at exec while the shell kept running"
@@ -907,6 +916,7 @@ mod tests {
 
     #[test]
     fn a_missing_required_cwd_is_reported_without_a_fallback() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let scratch = shepr_test_support::ScratchDir::new("pty-launch-missing-cwd");
         let mut cmd = fixture_command(&[Step::Exit(0)]);
@@ -922,6 +932,7 @@ mod tests {
 
     #[test]
     fn a_missing_cwd_falls_back_to_home() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let scratch = shepr_test_support::ScratchDir::new("pty-launch-home");
         let mut cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
@@ -931,7 +942,13 @@ mod tests {
                 .expect("absolute"),
         );
         let (mut spawned, records) = spawn_and_read_status(&cmd);
-        assert_eq!(records, [LaunchRecord::ChdirOk(1)]);
+        assert_eq!(
+            records,
+            [LaunchRecord::ChdirOk {
+                index: 1,
+                first_candidate_errno: Some(libc::ENOENT),
+            }]
+        );
         assert_eq!(spawned.cwd_candidates[1], scratch.path());
         spawned.child.kill().expect("kill the shell");
         spawned.child.wait().expect("reap the shell");
@@ -939,6 +956,7 @@ mod tests {
 
     #[test]
     fn a_missing_shell_is_reported_as_an_exec_failure() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let cmd = PtyCommand::interactive_shell(
             &fixture::resolved_shell("/__shepr_missing_program__"),
@@ -946,7 +964,7 @@ mod tests {
         );
         let (mut spawned, records) = spawn_and_read_status(&cmd);
         assert!(matches!(records.as_slice(), [
-            LaunchRecord::ChdirOk(_),
+            LaunchRecord::ChdirOk { .. },
             LaunchRecord::ExecFailed(errno)
         ] if *errno == libc::ENOENT));
         spawned.child.wait().expect("reap the failed launch");
@@ -954,11 +972,35 @@ mod tests {
 
     #[test]
     fn the_child_keeps_no_inherited_descriptor() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
-        // A server fd without close-on-exec must not reach the shell.
-        // SAFETY: dup(2) of stdin returns a new fd or -1.
-        let leaked = unsafe { libc::dup(0) };
-        assert!(leaked > 2, "test precondition");
+        // A pipe without O_CLOEXEC creates the descriptor this test asks the
+        // child launch path to close, independent of whether stdin is open.
+        let mut pipe_fds = [-1; 2];
+        // SAFETY: `pipe_fds` is a live two-element output array.
+        assert_eq!(
+            unsafe { libc::pipe(pipe_fds.as_mut_ptr()) },
+            0,
+            "pipe opens"
+        );
+        // SAFETY: successful pipe(2) returned two fresh, owned descriptors.
+        let read_end = unsafe { OwnedFd::from_raw_fd(pipe_fds[0]) };
+        // SAFETY: successful pipe(2) returned two fresh, owned descriptors.
+        let write_end = unsafe { OwnedFd::from_raw_fd(pipe_fds[1]) };
+        let leaked_owner = if read_end.as_raw_fd() > 2 {
+            read_end
+        } else {
+            // F_DUPFD makes a test-owned descriptor above stdio even when
+            // this runner started with one or more standard fds closed.
+            // SAFETY: fcntl reads the live fd and returns a new descriptor.
+            let duplicate = unsafe { libc::fcntl(read_end.as_raw_fd(), libc::F_DUPFD, 3) };
+            assert!(duplicate >= 3, "duplicate pipe fd above stdio");
+            drop(read_end);
+            // SAFETY: successful F_DUPFD returned a fresh owned descriptor.
+            unsafe { OwnedFd::from_raw_fd(duplicate) }
+        };
+        drop(write_end);
+        let leaked = leaked_owner.as_raw_fd();
         let cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
         let (mut spawned, _) = spawn_and_read_status(&cmd);
         let fds: Vec<String> =
@@ -969,8 +1011,6 @@ mod tests {
                 .collect();
         spawned.child.kill().expect("kill the shell");
         spawned.child.wait().expect("reap the shell");
-        // SAFETY: closes the fd duplicated above.
-        unsafe { libc::close(leaked) };
         assert!(
             !fds.contains(&leaked.to_string()),
             "the shell inherited fd {leaked}: {fds:?}"

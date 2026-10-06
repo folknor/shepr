@@ -79,9 +79,6 @@ pub fn parse_server_version_line(line: &str) -> Option<(String, shepr_protocol::
 /// command a release build's guidance names.
 pub const PROGRAM_NAME: &str = "shepr";
 
-/// The executable name installed on remote hosts, which discovery searches for.
-pub const REMOTE_INSTALL_NAME: &str = "shepr";
-
 pub const FLAG_JSON: &str = "--json";
 
 /// The hidden `stop` option that makes the stop conditional: the named

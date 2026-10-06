@@ -125,6 +125,8 @@ impl ServerStopError {
     }
 }
 
+// Transport and boot-identity details describe the observed failure here.
+// Instructions about waiting or forcing shutdown belong to guidance.
 impl std::fmt::Display for ServerStopError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -153,15 +155,7 @@ impl std::fmt::Display for ServerStopError {
                 label,
                 timeout,
                 socket,
-            } => write!(
-                f,
-                "{label} did not stop within {}ms; the socket at {} is still reachable. \
-                 The server may still be saving its layout; wait for shutdown to finish and \
-                 inspect the server log before retrying. Forcing the process to exit can lose \
-                 the final save",
-                timeout.as_millis(),
-                socket.display()
-            ),
+            } => f.write_str(&crate::guidance::stop_timeout(label, *timeout, socket)),
             Self::LeaseHeld {
                 label,
                 timeout,

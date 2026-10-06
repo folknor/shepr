@@ -3,7 +3,7 @@
 //! Every asset reports to the server socket in one envelope: the pane gate
 //! (a release pane of a shepr server, with a socket and a pane id), one JSON
 //! request line whose `id` is `<source>:<seq>`, the method and parameter
-//! names, the action vocabulary, the descriptor's source and label, and a
+//! names, the action vocabulary, the descriptor's source, and a
 //! bounded wait on the socket. Those facts live here and in the agent
 //! descriptor table, and nowhere else. An asset is its agent's decoder
 //! (what the agent's own payload means) appended to a preamble generated for
@@ -39,7 +39,6 @@ fn method_state() -> &'static str {
     Method::PaneReportAgent(PaneReportAgentParams {
         pane_id: String::new(),
         source: String::new(),
-        agent: String::new(),
         state: PaneReportAgentState::Idle,
         seq: None,
         agent_session_id: None,
@@ -53,7 +52,6 @@ fn method_session() -> &'static str {
     Method::PaneReportAgentSession(PaneReportAgentSessionParams {
         pane_id: String::new(),
         source: String::new(),
-        agent: String::new(),
         seq: None,
         agent_session_id: None,
         agent_session_path: None,
@@ -397,6 +395,8 @@ fn common_facts(spec: &AssetSpec) -> Vec<(&'static str, String)> {
             "OMP_GRACE_MS",
             crate::limits::OMP_RETRY_GRACE.as_millis().to_string(),
         ),
+        // The label names the shell hook's staging file; reports identify the
+        // agent solely by their source.
         ("LABEL", spec.target.label().to_owned()),
         ("SOURCE", spec.target.source().to_owned()),
         ("METHOD_SESSION", method_session().to_owned()),

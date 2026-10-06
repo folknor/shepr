@@ -65,7 +65,8 @@ pub use self::pane_tree::{
     SplitRefused, TreePlan, TreeRejection,
 };
 pub use self::set::{
-    PaneRef, PaneRemoval, PaneRemovalScope, PreparedWorkspace, WorkspaceIdAllocator, WorkspaceSet,
+    InsertRefusal, InsertRefusalReason, PaneRef, PaneRemoval, PaneRemovalScope, PreparedWorkspace,
+    WorkspaceIdAllocator, WorkspaceSet,
 };
 pub use self::shape::Shape;
 

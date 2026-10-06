@@ -324,12 +324,12 @@ fn client_copy_cursor_cell(copy_mode: &CopySession, hits: &[PaneHit]) -> Option<
         .checked_sub(copy_mode.viewport_top().0)?;
     let viewport_row = u16::try_from(viewport_row)
         .ok()
-        .filter(|row| *row < hit.inner_rect.height)?;
-    if copy_mode.cursor.col >= hit.inner_rect.width {
+        .filter(|row| *row < hit.content_rect.height)?;
+    if copy_mode.cursor.col >= hit.content_rect.width {
         return None;
     }
     Some((
-        hit.inner_rect.x.saturating_add(copy_mode.cursor.col),
-        hit.inner_rect.y.saturating_add(viewport_row),
+        hit.content_rect.x.saturating_add(copy_mode.cursor.col),
+        hit.content_rect.y.saturating_add(viewport_row),
     ))
 }

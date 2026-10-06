@@ -46,7 +46,7 @@ pub(crate) fn launch(
 /// local startup failure does not end the launch, so the remote machines stay
 /// reachable. It is still refused, not swallowed: the failure is printed to
 /// stderr before the TUI takes the terminal, where it is on screen again once
-/// the TUI exits, and the Local endpoint's handshake reports a build mismatch
+/// the TUI exits, and the local endpoint's handshake reports a build mismatch
 /// with the same guidance as its status in the sidebar.
 ///
 /// A launch failure before the client runs is the error; once the client has
@@ -67,7 +67,7 @@ fn auto_detect_launch<T>(
 
     // The running server is checked whether or not machines are
     // configured. With configured machines a mismatch does not end the launch below,
-    // so they stay reachable; the Local endpoint's own handshake then rejects
+    // so they stay reachable; the local endpoint's own handshake then rejects
     // the different build and shows the same guidance.
     let startup = shepr_launch::local_server::ensure_running(
         paths,
@@ -94,7 +94,7 @@ fn ensure_terminal_geometry() -> io::Result<()> {
         .map_err(|err| {
             io::Error::new(
                 err.kind(),
-                format!("cannot attach without a usable terminal: {err}; run inside a terminal"),
+                shepr_launch::guidance::terminal_geometry_failure(&err),
             )
         })
 }
@@ -102,7 +102,7 @@ fn ensure_terminal_geometry() -> io::Result<()> {
 /// What the operator is told when the local server fails to start or is
 /// refused while configured machines keep the client running.
 fn local_startup_notice(error: &shepr_launch::local_server::LaunchError) -> String {
-    format!("shepr: the local server is unavailable; configured machines stay available.\n{error}")
+    shepr_launch::guidance::local_startup_notice(error)
 }
 
 #[cfg(test)]

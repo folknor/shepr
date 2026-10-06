@@ -16,7 +16,7 @@ use shepr_protocol::PanePublicNumber;
 #[serde(transparent)]
 pub struct SnapshotVersion(u32);
 
-pub const SNAPSHOT_VERSION: SnapshotVersion = SnapshotVersion(2);
+pub const SNAPSHOT_VERSION: SnapshotVersion = SnapshotVersion(3);
 
 impl<'de> Deserialize<'de> for SnapshotVersion {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
@@ -244,8 +244,8 @@ pub struct PaneSnapshot {
 /// What restore needs to report a saved agent session it drops.
 #[derive(Clone, Debug)]
 pub struct UnusableAgentSession {
-    /// The entry's `agent` text, when it has one.
-    pub agent: Option<String>,
+    /// The entry's integration `source` text, when it has one.
+    pub source: Option<String>,
     /// Why it did not decode.
     pub error: String,
 }
@@ -311,12 +311,12 @@ where
 {
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
     Ok(value.map(|value| {
-        let agent = value
-            .get("agent")
+        let source = value
+            .get("source")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
         serde_json::from_value(value).map_err(|error| UnusableAgentSession {
-            agent,
+            source,
             error: error.to_string(),
         })
     }))
@@ -467,7 +467,7 @@ mod tests {
         // which is when the version is bumped and the file named for it.
         let fixture = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/persist/fixtures/session-v2.json"),
+                .join("src/persist/fixtures/session-v3.json"),
         )
         .expect("the golden session file");
         let fixture = fixture.as_str();
@@ -480,6 +480,16 @@ mod tests {
         assert_eq!(
             saved, fixture_value,
             "update the golden file and bump the version when the schema changes"
+        );
+
+        let old_fixture = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src/persist/fixtures/session-v2.json"),
+        )
+        .expect("the previous golden session file");
+        assert!(
+            super::parse_session_file(&old_fixture).is_err(),
+            "old formats have no migration"
         );
 
         let mut wrong_version = fixture_value;
@@ -619,14 +629,14 @@ mod tests {
 
     #[test]
     fn invalid_saved_agent_sessions_decode_as_unusable_and_keep_the_pane() {
-        for (session, agent) in [
+        for (session, source) in [
             (
-                serde_json::json!({"source": "shepr:codex", "agent": "removed-agent", "session_ref": {"id": "session"}}),
-                Some("removed-agent"),
+                serde_json::json!({"source": "shepr:codex", "session_ref": {"id": "session"}}),
+                Some("shepr:codex"),
             ),
             (
-                serde_json::json!({"source": "invalid source", "agent": "codex", "session_ref": {"id": "session"}}),
-                Some("codex"),
+                serde_json::json!({"source": "invalid source", "session_ref": {"id": "session"}}),
+                Some("invalid source"),
             ),
             (serde_json::json!(42), None),
         ] {
@@ -638,12 +648,12 @@ mod tests {
             let unusable = pane
                 .unusable_agent_session
                 .expect("the unusable session is kept for restore to report");
-            assert_eq!(unusable.agent.as_deref(), agent);
+            assert_eq!(unusable.source.as_deref(), source);
         }
         // A save never writes it back.
         let mut pane = saved_pane(1);
         pane.unusable_agent_session = Some(super::UnusableAgentSession {
-            agent: None,
+            source: None,
             error: "test".into(),
         });
         let written = serde_json::to_value(&pane).expect("serialize");

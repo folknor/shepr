@@ -627,7 +627,17 @@ impl HeadlessServer {
         if let Err(error) = final_save {
             run_error.get_or_insert(RunServerError::Runtime(error));
         }
-        let unfinished = self.app.shut_down_pane_runtimes(PANE_TEARDOWN_WAIT);
+        // The production headless runtime is multi-threaded. Hand this worker
+        // back to Tokio while the tracker waits on its condition variable, so
+        // child watchers can still reap processes and signal teardown workers.
+        // Direct current-thread runtime drives cannot use `block_in_place`.
+        let unfinished = if tokio::runtime::Handle::current().runtime_flavor()
+            == tokio::runtime::RuntimeFlavor::MultiThread
+        {
+            tokio::task::block_in_place(|| self.app.shut_down_pane_runtimes(PANE_TEARDOWN_WAIT))
+        } else {
+            self.app.shut_down_pane_runtimes(PANE_TEARDOWN_WAIT)
+        };
         if !unfinished.is_empty() {
             warn!(
                 event = "pane.teardown.timeout", subsystem = "shutdown",
@@ -826,7 +836,7 @@ impl HeadlessServer {
         pane_id: &shepr_protocol::PublicPaneId,
         failures: &crate::server::pane_input::PaneInputFailures,
     ) {
-        warn!(?client_id, pane_id = %pane_id, error = %failures, "targeted client shell input failed");
+        warn!(?client_id, public_pane_id = %pane_id, error = %failures, "targeted client shell input failed");
         let dropped = failures.dropped_for_backpressure();
         if dropped == 0 {
             return;

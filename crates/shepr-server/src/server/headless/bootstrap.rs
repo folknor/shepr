@@ -313,7 +313,8 @@ fn spawn_integration_install() {
     }
     let paths = shepr_integration::AgentIntegrationPaths::resolve();
     if let Err(error) = std::thread::Builder::new()
-        .name("integration-install".into())
+        // Linux exposes at most 15 bytes through `pthread_setname_np`.
+        .name("agent-install".into())
         .spawn(move || {
             shepr_integration::install_present_integrations(&paths);
         })

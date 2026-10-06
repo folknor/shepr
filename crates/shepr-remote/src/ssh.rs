@@ -137,9 +137,12 @@ pub(crate) struct TeardownRegistry {
 }
 
 // The client has one process exit sweep, but bridge/config owners can still be
-// unwinding on other threads when it runs. A per-endpoint registry would require
-// the client supervisor to own and pass a tracker through every bridge and
-// managed config, then sweep those trackers before process exit.
+// unwinding on other threads when it runs. Normal cleanup belongs to each
+// managed directory's RAII owner; the final sweep covers owners that have not
+// dropped yet. A per-endpoint registry would require the client supervisor to
+// own and pass a tracker through every bridge and managed config, then retain
+// and sweep those trackers at process exit too, so it would move the registry
+// without removing the required finalization step.
 pub(crate) static SSH_TEARDOWN: TeardownRegistry = TeardownRegistry::new();
 
 impl TeardownRegistry {
@@ -585,15 +588,10 @@ fn write_managed_ssh_config(
     app_paths: &shepr_paths::AppPaths,
     control_dir: SshControlDir<'_>,
 ) -> io::Result<ManagedSshConfig> {
-    let config_file = app_paths.client_config_file();
     let runtime_dir = control_dir.path;
     let paths: RemoteSshConfigPaths = remote_ssh_config_paths(app_paths.home_dir());
-    let control_path = shared_ssh_control_path(
-        control_dir.path,
-        &config_file,
-        SshControlKey::for_target(target),
-    )
-    .map_err(ssh_runtime_error)?;
+    let control_path = shared_ssh_control_path(control_dir.path, SshControlKey::for_target(target))
+        .map_err(ssh_runtime_error)?;
 
     write_managed_ssh_config_at(runtime_dir, &paths, control_path)
 }
@@ -669,7 +667,6 @@ pub(crate) fn managed_ssh_options_for_test(
     let runtime_dir = ensure_ssh_runtime_dir(paths)?;
     let control_path = crate::ssh_paths::ssh_control_path_under(
         Path::new("/nonexistent/ssh"),
-        &paths.client_config_file(),
         SshControlKey::for_target(target),
     )?;
     Ok(write_managed_ssh_config_at(

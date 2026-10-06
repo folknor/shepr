@@ -53,12 +53,14 @@ impl App {
         (shepr_protocol::PublicPaneId, shepr_core::layout::PaneId),
         shepr_api::error::ApiError,
     > {
-        let public_id = raw.parse::<shepr_protocol::PublicPaneId>().map_err(|_| {
-            shepr_api::error::ApiError::new(
-                shepr_api::error::ApiErrorCode::InvalidPaneId,
-                format!("invalid pane id {raw:?}; expected w<workspace>:p<pane>"),
-            )
-        })?;
+        let public_id = raw
+            .parse::<shepr_protocol::PublicPaneId>()
+            .map_err(|error| {
+                shepr_api::error::ApiError::new(
+                    shepr_api::error::ApiErrorCode::InvalidPaneId,
+                    format!("invalid pane id {raw:?}; expected {}", error.expected()),
+                )
+            })?;
         self.state
             .resolve_pane(&public_id)
             .map(|pane| (public_id, pane.id()))
@@ -348,9 +350,6 @@ mod tests {
         app.state
             .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("rename")]);
         let workspace_id = app.state.ws(0).id();
-        let directory_name = shepr_core::workspace_label::default_workspace_label(
-            app.state.ws(0).identity_cwd().as_path(),
-        );
         let mut rename = |label: &str| {
             let before = app.state.shell_projection_revision;
             let outcome = app.handle_endpoint_command_with_render(
@@ -385,13 +384,13 @@ mod tests {
 
         // A blank name names the workspace after its directory.
         let (name, effects, render, before, after) = rename("   ");
-        assert_eq!(name, directory_name);
+        assert_eq!(name, "/");
         assert_eq!(effects, EndpointEffects::default());
         assert!(render);
         assert_ne!(after, before);
 
         let (name, effects, render, before, after) = rename("");
-        assert_eq!(name, directory_name);
+        assert_eq!(name, "/");
         assert_eq!(effects, EndpointEffects::default());
         assert!(!render);
         assert_eq!(after, before);
@@ -499,7 +498,7 @@ mod tests {
         let observed_at = std::time::Instant::now();
         terminal
             .set_hook_report_at(
-                shepr_agent::ReportOrigin::parse("shepr:codex", "codex").expect("test origin"),
+                shepr_agent::ReportOrigin::parse("shepr:codex").expect("test origin"),
                 AgentState::Working,
                 shepr_agent::resume::AgentSessionRef::id("codex-session"),
                 Some(1),

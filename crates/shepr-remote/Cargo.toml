@@ -19,6 +19,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 libc = { workspace = true }
+shepr-test-fixtures = { path = "../shepr-test-fixtures" }
 shepr-test-support = { path = "../shepr-test-support" }
 
 [lints]

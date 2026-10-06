@@ -180,8 +180,8 @@ impl App {
             (
                 pane.id,
                 PaneGeometry::with_cell(
-                    pane.inner_rect.width,
-                    pane.inner_rect.height,
+                    pane.content_rect.width,
+                    pane.content_rect.height,
                     geometry.cell,
                 ),
             )

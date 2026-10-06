@@ -1,0 +1,54 @@
+{
+  "version": 3,
+  "host_theme": {
+    "foreground": null,
+    "background": null,
+    "palette": [
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null,
+      null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null
+    ]
+  },
+  "workspaces": [
+    {
+      "id": "w1",
+      "name": "w",
+      "next_public_pane_number": 3,
+      "layout": {
+        "Split": {
+          "direction": "Horizontal",
+          "ratio": 0.5,
+          "first": {
+            "Pane": {
+              "cwd": "/",
+              "public_number": 1,
+              "label": null,
+              "agent_session": {
+                "source": "shepr:codex",
+                "session_ref": { "kind": "id", "value": "session" }
+              }
+            }
+          },
+          "second": { "Pane": { "cwd": "/", "public_number": 2, "label": null } }
+        }
+      },
+      "zoomed": false,
+      "focused": 1,
+      "root_pane": 1
+    }
+  ],
+  "active": null
+}

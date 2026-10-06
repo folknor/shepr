@@ -11,16 +11,16 @@ pub struct UsableCwd(AbsolutePath);
 
 impl UsableCwd {
     /// `None` for a relative path, a non-directory, an absent path, or one
-    /// that cannot be stat'd: none of them is usable. The last is traced
-    /// with its error, so an unreadable directory is not mistaken for a
-    /// missing one when a pane's cwd is not picked up.
+    /// that cannot be stat'd: none of them is usable. The last is logged at
+    /// debug level with its error, so an unreadable directory is not mistaken
+    /// for a missing one when a pane's cwd is not picked up.
     pub fn new(path: PathBuf) -> Option<Self> {
         let path = AbsolutePath::new(path).ok()?;
         match std::fs::metadata(&path) {
             Ok(metadata) => metadata.is_dir().then_some(Self(path)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
-                tracing::trace!(path = %path.display(), %error, "cwd cannot be stat'd");
+                tracing::debug!(path = %path.display(), %error, "cwd cannot be stat'd");
                 None
             }
         }

@@ -126,7 +126,7 @@ pub(crate) fn surface(
                 width: size.cols,
                 height: size.rows,
             },
-            inner_rect: shepr_protocol::SurfaceRect {
+            content_rect: shepr_protocol::SurfaceRect {
                 x: 0,
                 y: 0,
                 width: size.cols,

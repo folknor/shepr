@@ -1,5 +1,15 @@
 use super::*;
 
+fn synchronized_output_flush_slots() -> &'static std::sync::Arc<tokio::sync::Semaphore> {
+    static SLOTS: std::sync::OnceLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::OnceLock::new();
+    SLOTS.get_or_init(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(
+            crate::limits::SYNCHRONIZED_OUTPUT_FLUSH_LIMIT,
+        ))
+    })
+}
+
 /// The render a pane needs once a synchronized update (mode 2026) that never
 /// ended is force-flushed by its timeout. Every PTY read inside the update
 /// asks for it; one sleeping task per pane serves all of those requests
@@ -311,11 +321,23 @@ impl PaneReadEffects {
                     }
                     None => {
                         // The weak reference keeps the pane alive only while
-                        // the timer is actively flushing, not while it sleeps.
+                        // the timer is actively flushing, not while it sleeps
+                        // or waits for one of the bounded flush slots.
+                        drop(current_effects);
+                        let slots = std::sync::Arc::clone(synchronized_output_flush_slots());
+                        let Ok(permit) = slots.acquire_owned().await else {
+                            return;
+                        };
+                        let Some(current_effects) = effects.upgrade() else {
+                            return;
+                        };
                         // Once queued, this blocking flush cannot be aborted.
-                        // It may tick a detached terminal; late events are
-                        // rejected by generation after runtime removal.
+                        // Its permit bounds how many such closures can occupy
+                        // the shared pool, even if ordered work waits on a
+                        // slow filesystem. It may tick a detached terminal;
+                        // late events are rejected by generation after removal.
                         tokio::task::spawn_blocking(move || {
+                            let _permit = permit;
                             current_effects.flush_expired_synchronized_output();
                         });
                         return;

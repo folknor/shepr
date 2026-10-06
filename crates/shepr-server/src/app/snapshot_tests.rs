@@ -537,14 +537,13 @@ fn capture_contract_tracks_hook_authority_agent_session() {
     terminal.ownership_mut().set_persisted_agent_session(
         shepr_agent::resume::PersistedAgentSession::new(
             shepr_agent::AgentSource::parse("shepr:pi").expect("bundled source"),
-            shepr_agent::Agent::Pi,
             shepr_agent::resume::AgentSessionRef::path(session_path.clone())
                 .expect("test precondition"),
         )
         .expect("test session is valid"),
     );
     terminal.set_hook_report_at(
-        shepr_agent::ReportOrigin::parse("shepr:pi", "pi").expect("test origin"),
+        shepr_agent::ReportOrigin::parse("shepr:pi").expect("test origin"),
         shepr_agent::AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
@@ -579,7 +578,6 @@ fn capture_contract_preserves_restored_agent_session() {
         .set_persisted_agent_session(
             shepr_agent::resume::PersistedAgentSession::new(
                 shepr_agent::AgentSource::parse("shepr:opencode").expect("bundled source"),
-                shepr_agent::Agent::OpenCode,
                 shepr_agent::resume::AgentSessionRef::id("opencode-session")
                     .expect("test precondition"),
             )

@@ -2,7 +2,7 @@ use std::io;
 use std::process::Output;
 
 use shepr_launch::EndpointFailure;
-use shepr_launch::invocation::REMOTE_INSTALL_NAME;
+use shepr_launch::invocation::PROGRAM_NAME as REMOTE_INSTALL_NAME;
 
 use crate::failure::{
     RemoteExit, SshExit, failure_evidence, remote_candidate_mismatch_error,
@@ -210,10 +210,9 @@ impl DiscoveryProgress {
                     candidate.path, candidate.reason
                 )
             });
-        Err(remote_compatibility_error(format!(
-            "matching Shepr is not ready on {}{rejection}; install or update it there manually and retry",
-            steps.target(),
-        )))
+        Err(remote_compatibility_error(
+            shepr_launch::guidance::remote_install_not_ready(steps.target(), &rejection),
+        ))
     }
 
     fn remember_rejected_candidate(&mut self, steps: &mut impl DiscoverySteps) {
@@ -457,34 +456,23 @@ fn ensure_remote_sibling_build(
     target: &SshTarget,
     status: &shepr_api::schema::ClientStatusJson,
 ) -> io::Result<()> {
-    let install_hint =
-        "Install shepr and shepr-server together from the same build on the host and retry";
-    let Some(sibling) = status.server.as_ref() else {
-        return Err(remote_candidate_mismatch(format!(
-            "remote Shepr installation error on {target}: shepr did not report a shepr-server beside it. {install_hint}"
-        )));
+    use shepr_launch::guidance::{RemoteInstallationFailure, remote_sibling_mismatch};
+    let cause = match status.server.as_ref() {
+        None => RemoteInstallationFailure::MissingSibling,
+        Some(sibling) => match &sibling.identity {
+            Err(error) => RemoteInstallationFailure::UnusableSibling {
+                binary: sibling.binary.as_deref(),
+                error,
+            },
+            Ok(identity) if identity.build_id.is_this_build() => return Ok(()),
+            Ok(identity) => RemoteInstallationFailure::DifferentSibling {
+                version: &identity.version,
+                build_id: identity.build_id,
+            },
+        },
     };
-    let identity = match &sibling.identity {
-        Ok(identity) => identity,
-        Err(error) => {
-            let binary = sibling
-                .binary
-                .as_deref()
-                .map_or_else(String::new, |binary| format!(" ({binary})"));
-            return Err(remote_candidate_mismatch(format!(
-                "remote Shepr installation error on {target}: shepr-server{binary} is unusable: {error}. {install_hint}"
-            )));
-        }
-    };
-    if identity.build_id.is_this_build() {
-        return Ok(());
-    }
-    let version = remote_display_value(Some(&identity.version));
-    let build_id = identity.build_id;
-    Err(remote_candidate_mismatch(format!(
-        "remote Shepr installation error on {target}: the shepr-server beside shepr is version {version} build {build_id}; this client is version {} build {}. {install_hint}",
-        shepr_protocol::build_version(),
-        shepr_protocol::BUILD_ID
+    Err(remote_candidate_mismatch(remote_sibling_mismatch(
+        target, cause,
     )))
 }
 
@@ -498,15 +486,8 @@ fn client_build_mismatch(
         || "unknown".into(),
         |identity| identity.build_id.to_string(),
     );
-    let advice = if shepr_paths::BuildProfile::current() == shepr_paths::BuildProfile::Dev {
-        "This is a dev client, which needs a dev build of shepr on the remote host; discovery only finds installed builds (normally release), so install a dev build there and retry"
-    } else {
-        "Install the same Shepr build on the host and retry"
-    };
-    remote_candidate_mismatch(format!(
-        "remote Shepr compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. {advice}",
-        shepr_protocol::build_version(),
-        shepr_protocol::BUILD_ID
+    remote_candidate_mismatch(shepr_launch::guidance::remote_client_mismatch(
+        target, &version, &build_id,
     ))
 }
 

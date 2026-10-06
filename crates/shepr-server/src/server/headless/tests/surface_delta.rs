@@ -481,8 +481,8 @@ async fn mode_geometry_is_settled_before_the_render_plan() {
     assert_eq!(
         geometry,
         (
-            surface.panes[0].inner_rect.height,
-            surface.panes[0].inner_rect.width
+            surface.panes[0].content_rect.height,
+            surface.panes[0].content_rect.width
         )
     );
 }

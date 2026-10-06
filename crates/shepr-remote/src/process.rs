@@ -259,8 +259,8 @@ mod tests {
 
     impl Drop for FixtureProcessGroupGuard {
         fn drop(&mut self) {
-            // SAFETY: the test fixture was started in a new session below, so
-            // its pid is the process group id for it and its spawned fixture.
+            // SAFETY: the test fixture is started in a new process group below,
+            // so its pid is the group id for it and its spawned fixture.
             let result = unsafe { libc::kill(-self.0, libc::SIGKILL) };
             if result != 0 {
                 let error = io::Error::last_os_error();
@@ -317,7 +317,7 @@ mod tests {
         // This stand-in intentionally leaves a background fixture holding
         // stderr. Put it and that child in a test-owned group so drop can clean
         // up and wait for the simulated LocalCommand process tree, even on panic.
-        shepr_platform::detach_server_daemon_command(&mut command);
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
         let child = command.spawn().expect("test precondition");
         let process_group = libc::pid_t::try_from(child.id()).expect("fixture pid fits");
         let fixture_group = FixtureProcessGroupGuard(process_group);

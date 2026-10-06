@@ -18,9 +18,6 @@ pub struct PaneReportAgentParams {
     /// The source of a bundled integration (`shepr:<agent>`). Any other
     /// source is refused with `invalid_agent`.
     pub source: String,
-    /// The agent the source belongs to, resolved and validated with source
-    /// before internal dispatch; a label naming another agent is refused.
-    pub agent: String,
     pub state: PaneReportAgentState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
@@ -36,10 +33,8 @@ pub struct PaneReportAgentParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneReportAgentSessionParams {
     pub pane_id: String,
-    /// The same source and agent validation as a state report.
+    /// The same bundled source validation as a state report.
     pub source: String,
-    /// Resolved and validated with source before internal dispatch.
-    pub agent: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,16 +92,16 @@ mod tests {
             let params = serde_json::from_value::<PaneReportAgentParams>(serde_json::json!({
                 "pane_id": "w1:p1",
                 "source": "shepr:codex",
-                "agent": "codex",
                 "state": state
             }));
-            assert!(params.is_ok(), "{state} should be accepted");
+            let params = params.expect("a source-only integration report is accepted");
+            let value = serde_json::to_value(params).expect("serialize report");
+            assert!(value.get("agent").is_none());
         }
 
         let unknown = serde_json::from_value::<PaneReportAgentParams>(serde_json::json!({
             "pane_id": "w1:p1",
             "source": "shepr:codex",
-            "agent": "codex",
             "state": "unknown"
         }));
         assert!(
@@ -120,7 +115,6 @@ mod tests {
         let params: PaneReportAgentParams = serde_json::from_value(serde_json::json!({
             "pane_id": "w1:p1",
             "source": "shepr:codex",
-            "agent": "codex",
             "state": "working",
             "message": "unused integration annotation"
         }))
@@ -134,7 +128,6 @@ mod tests {
         let params: PaneReportAgentSessionParams = serde_json::from_value(serde_json::json!({
             "pane_id": "w1:p1",
             "source": "shepr:pi",
-            "agent": "pi",
             "session_start_source": "future-source"
         }))
         .expect("unknown source is retained for server diagnostics");
@@ -152,7 +145,6 @@ mod tests {
         let params: PaneReportAgentSessionParams = serde_json::from_value(serde_json::json!({
             "pane_id": "w1:p1",
             "source": "shepr:pi",
-            "agent": "pi",
             "session_start_source": " resume "
         }))
         .expect("unknown source is retained for server diagnostics");

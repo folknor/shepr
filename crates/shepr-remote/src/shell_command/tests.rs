@@ -103,7 +103,11 @@ fn remote_executable_rejects_paths_that_need_shell_quoting() {
         "/home/$literal/shepr",
         "/opt/shepr bin/shepr",
     ] {
-        assert!(RemoteExecutable::parse(path).is_err(), "{path}");
+        assert_eq!(
+            RemoteExecutable::parse(path),
+            Err(crate::machine::RemoteExecutableError::NeedsShellQuoting),
+            "{path}"
+        );
     }
     let path = "/home/user/.local/bin/shepr-0.1+dev";
     let resolved = RemoteExecutable::parse(path).expect("test precondition");
@@ -166,11 +170,22 @@ fn bridge_command_is_one_quoted_word_for_bin_sh_that_frames_its_output() {
 /// wrapper must stay valid shell for them and keep 255 for ssh's own failures.
 #[test]
 fn remote_output_wrapper_accepts_newline_scripts_and_remaps_exit_255() {
+    let scratch = shepr_test_support::ScratchDir::new("remote-output-candidates");
+    let home = scratch.join("home");
+    let candidate_directory = home.join(".cargo/bin");
+    std::fs::create_dir_all(&candidate_directory).expect("create fake remote cargo bin");
+    let candidate = shepr_test_support::fixture::stand_in(
+        &candidate_directory,
+        "shepr",
+        &[shepr_test_support::fixture::Step::Exit(0)],
+    );
     let run = |script: &str| {
         // host-program-ok: the generated remote script is the subject, run as sshd runs it
         let mut child =
             shepr_test_support::command_in_scratch("/bin/sh", "remote-output-wrapper-sh")
                 .arg("-s")
+                .env("HOME", &home)
+                .env_remove("CARGO_HOME")
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -195,10 +210,11 @@ fn remote_output_wrapper_accepts_newline_scripts_and_remaps_exit_255() {
     normalize_remote_stdout(&mut stdout, true).expect("marker line present");
     assert_eq!(stdout, b"payload");
 
-    assert_eq!(
-        run(&known_remote_binary_candidate_script()).status.code(),
-        Some(0)
-    );
+    let candidates = run(&known_remote_binary_candidate_script());
+    assert!(candidates.status.success(), "{candidates:?}");
+    let mut stdout = candidates.stdout;
+    normalize_remote_stdout(&mut stdout, true).expect("marker line is present");
+    assert_eq!(stdout, format!("{}\n", candidate.display()).as_bytes());
     assert_eq!(run("exit 3\n").status.code(), Some(3));
     let remote_ssh_status = format!("(exit {SSH_OWN_FAILURE_EXIT_CODE})\n");
     assert_eq!(

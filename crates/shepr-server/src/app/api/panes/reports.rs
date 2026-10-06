@@ -9,7 +9,6 @@ impl App {
         let pane_id = self.json_pane(&params.pane_id)?;
         let (origin, session_ref) = Self::parse_agent_report_identity(
             &params.source,
-            &params.agent,
             params.agent_session_id,
             params.agent_session_path,
         )?;
@@ -36,7 +35,6 @@ impl App {
         let pane_id = self.json_pane(&params.pane_id)?;
         let (origin, session_ref) = Self::parse_agent_report_identity(
             &params.source,
-            &params.agent,
             params.agent_session_id,
             params.agent_session_path,
         )?;
@@ -50,8 +48,12 @@ impl App {
             Some(Ok(source)) => ReportedSessionStart::Known(source),
             Some(Err(source)) => {
                 tracing::warn!(
-                    pane_id = %params.pane_id,
-                    source = source.as_str(),
+                    pane = %pane_id,
+                    public_pane_id = %params.pane_id,
+                    agent = %origin.agent(),
+                    reported_start_source = source.as_str(),
+                    seq = ?params.seq,
+                    session_ref = ?session_ref,
                     "agent integration reported an unknown session start source; \
                      recording the session without letting it replace one"
                 );
@@ -81,7 +83,6 @@ impl App {
     /// Decode the wire identity once; internal events carry its resolved owner.
     fn parse_agent_report_identity(
         source_text: &str,
-        agent_text: &str,
         id: Option<String>,
         path: Option<String>,
     ) -> Result<
@@ -91,19 +92,12 @@ impl App {
         ),
         shepr_api::error::ApiError,
     > {
-        let origin = match shepr_agent::ReportOrigin::parse(source_text, agent_text) {
+        let origin = match shepr_agent::ReportOrigin::parse(source_text) {
             Ok(origin) => origin,
-            Err(shepr_agent::ReportOriginError::EmptyAgent) => return invalid_agent(),
             Err(shepr_agent::ReportOriginError::UnsupportedSource) => {
                 return failure(
                     ApiErrorCode::InvalidAgent,
                     "report source is not a bundled shepr integration",
-                );
-            }
-            Err(shepr_agent::ReportOriginError::MismatchedAgent) => {
-                return failure(
-                    ApiErrorCode::InvalidAgent,
-                    "report source does not match agent label",
                 );
             }
         };
@@ -138,11 +132,10 @@ fn parse_origin_session_ref(
 #[cfg(test)]
 fn parse_report_session_ref(
     source: &str,
-    agent_label: &str,
     id: Option<String>,
     path: Option<String>,
 ) -> Result<Option<shepr_agent::resume::AgentSessionRef>, shepr_api::error::ApiError> {
-    let (_, session) = App::parse_agent_report_identity(source, agent_label, id, path)?;
+    let (_, session) = App::parse_agent_report_identity(source, id, path)?;
     Ok(session)
 }
 
@@ -172,7 +165,6 @@ mod tests {
     fn a_report_cannot_select_two_session_reference_kinds() {
         let error = App::parse_agent_report_identity(
             "shepr:pi",
-            "pi",
             Some("session-id".into()),
             Some("/sessions/pi.jsonl".into()),
         )
@@ -182,13 +174,8 @@ mod tests {
 
     #[test]
     fn unsupported_sources_fail_before_dispatch() {
-        for (source, label) in [
-            ("shepr:claud", "claude"),
-            ("custom:status", "status-agent"),
-            ("custom:pi", "pi"),
-            ("myagent", "myagent"),
-        ] {
-            let error = App::parse_agent_report_identity(source, label, Some("id".into()), None)
+        for source in ["shepr:claud", "custom:status", "custom:pi", "myagent"] {
+            let error = App::parse_agent_report_identity(source, Some("id".into()), None)
                 .expect_err("only bundled integrations report");
             assert_eq!(error.code, ApiErrorCode::InvalidAgent, "{source}");
             assert!(
@@ -203,33 +190,20 @@ mod tests {
     #[test]
     fn missing_session_ref_is_distinct_from_invalid_supplied_ref() {
         assert!(
-            parse_report_session_ref("shepr:kimi", "kimi", None, None)
+            parse_report_session_ref("shepr:kimi", None, None)
                 .expect("state-only report")
                 .is_none()
         );
-        assert!(parse_report_session_ref("shepr:kimi", "kimi", Some(String::new()), None).is_err());
+        assert!(parse_report_session_ref("shepr:kimi", Some(String::new()), None).is_err());
         assert!(
-            parse_report_session_ref("shepr:kimi", "kimi", None, Some("/session.jsonl".into()))
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn official_source_cannot_claim_another_agent() {
-        assert!(
-            parse_report_session_ref("shepr:kimi", "kilo", Some("session".into()), None).is_err()
-        );
-        assert!(
-            parse_report_session_ref("shepr:kimi", "kimi", Some("session".into()), None)
-                .expect("official identity")
-                .is_some()
+            parse_report_session_ref("shepr:kimi", None, Some("/session.jsonl".into())).is_err()
         );
     }
 
     #[test]
     fn official_report_accepts_a_supported_path_session() {
         let session_ref =
-            parse_report_session_ref("shepr:pi", "pi", None, Some("/sessions/pi.jsonl".into()))
+            parse_report_session_ref("shepr:pi", None, Some("/sessions/pi.jsonl".into()))
                 .expect("supported path session")
                 .expect("report carries a session reference");
 
@@ -247,7 +221,7 @@ mod tests {
         let asset = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../shepr-integration/src/assets/claude/shepr-agent-state.sh");
         let source = std::fs::read_to_string(&asset).expect("read Claude integration asset");
-        let broken = source.replacen("AGENT = \"claude\"", "AGENT = \"codex\"", 1);
+        let broken = source.replacen("SOURCE = \"shepr:claude\"", "SOURCE = \"custom:claude\"", 1);
         assert_ne!(broken, source, "mutation probe must change the asset");
         let broken_path = scratch.join("broken-claude-state.sh");
         std::fs::write(&broken_path, broken).expect("write broken asset copy in scratch");
@@ -275,9 +249,9 @@ mod tests {
                     wall: detected.wall + std::time::Duration::from_millis(1),
                 },
             )
-            .expect_err("report handler rejects an official source with another agent label");
+            .expect_err("report handler rejects an unsupported source");
         assert_eq!(error.code, ApiErrorCode::InvalidAgent);
-        assert!(error.into_message().contains("does not match"));
+        assert!(error.into_message().contains("not a bundled"));
         assert!(
             app.terminal_state()
                 .expect("the test pane keeps its terminal")

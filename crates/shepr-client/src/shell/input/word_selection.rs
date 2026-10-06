@@ -64,7 +64,7 @@ impl ClientShellState {
             anchor: shepr_term::Point::new(row, col),
             anchor_bounds: None,
             cursor: shepr_term::Point::new(row, col),
-            end_col: hit.inner_rect.width.saturating_sub(1),
+            end_col: hit.content_rect.width.saturating_sub(1),
             cached_row: None,
             pending: None,
             dragged: false,

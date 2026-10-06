@@ -51,6 +51,11 @@ fn parse_file_uri_cwd(uri: &str, local_host: Option<&HostNames>) -> Option<PathB
     } else {
         rest
     };
+    // URI queries and fragments are metadata, not part of the reported cwd.
+    // Strip their raw delimiters before percent decoding so encoded `%3F` and
+    // `%23` remain valid path characters.
+    let path_end = path.find(['?', '#']).unwrap_or(path.len());
+    let path = &path[..path_end];
     let path = percent_decode_utf8(path)?;
     Some(PathBuf::from(path))
 }

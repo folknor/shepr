@@ -456,15 +456,13 @@ mod tests {
     #[test]
     fn invalid_live_hook_authority_falls_back_to_persisted_agent_session() {
         use shepr_agent::resume::AgentSessionRef;
-        for (source, label, live_ref) in [
+        for (source, live_ref) in [
             (
                 "shepr:codex",
-                "codex",
                 AgentSessionRef::path("/codex-session").expect("test session ref"),
             ),
             (
                 "shepr:claude",
-                "claude",
                 AgentSessionRef::path("/session.jsonl").expect("test session ref"),
             ),
         ] {
@@ -472,14 +470,13 @@ mod tests {
                 .expect("test session ref");
             let mut terminal = TerminalState::new(AbsolutePath::root());
             terminal.seed_hook_authority_for_test(Some(crate::terminal::state::HookAuthority {
-                origin: shepr_agent::ReportOrigin::parse(source, label).expect("test origin"),
+                origin: shepr_agent::ReportOrigin::parse(source).expect("test origin"),
                 state: shepr_agent::AgentState::Working,
                 reported_at: std::time::Instant::now(),
                 session_ref: Some(live_ref),
             }));
             let expected = shepr_agent::resume::PersistedAgentSession::new(
                 shepr_agent::AgentSource::new(shepr_agent::IntegrationTarget::Claude),
-                shepr_agent::Agent::Claude,
                 saved_ref.clone(),
             )
             .expect("test session is valid");

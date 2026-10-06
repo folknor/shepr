@@ -246,7 +246,10 @@ mod tests {
     }
 
     fn writer(preserve_existing: bool) -> SessionWriter {
-        let directory = crate::test_support::ScratchDir::new("session-recovery");
+        // Dropping the handle at the end of this helper leaves the tree in
+        // place (a scratch tree is cleared only when it is next handed out),
+        // so the writer keeps using it through its lease.
+        let directory = shepr_test_support::ScratchDir::new("session-recovery");
         SessionWriter::new(
             super::super::lock::DataDirLease::acquire(&directory).expect("lease"),
             if preserve_existing {
@@ -321,8 +324,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let mut writer = writer(false);
+        let now = SystemTime::now();
         let original = snapshot();
-        writer.save_for_test(&original).expect("save");
+        writer.save(&original, now).expect("save");
         let files = snapshots(&writer);
         assert_eq!(files.len(), 1);
         let snapshot_directory = super::super::files::snapshot_directory(&writer.path);
@@ -335,10 +339,26 @@ mod tests {
             0o700
         );
         let saved = std::fs::read(&files[0].1).expect("test precondition");
+        // A restarted writer reads the newest snapshot's file mtime, which is
+        // after the first save's clock reading; the burst below must be timed
+        // after it for the cadence to see the snapshot as recent.
+        let now = SystemTime::now();
         for i in 0..100 {
-            let mut shrinking = snapshot();
-            shrinking.workspaces[0].name = test_name(&format!("remaining pane {i}"));
-            writer.save_for_test(&shrinking).expect("save");
+            let mut changed = snapshot();
+            let number =
+                shepr_protocol::PanePublicNumber::new(i + 2).expect("nonzero fixture number");
+            let super::super::schema::LayoutSnapshot::Pane(pane) =
+                &mut changed.workspaces[0].layout
+            else {
+                panic!("the fixture is a single pane");
+            };
+            pane.public_number = number;
+            changed.workspaces[0].next_public_pane_number =
+                number.checked_next().expect("successor");
+            changed.workspaces[0].focused = number;
+            changed.workspaces[0].root_pane = number;
+            changed.workspaces[0].name = test_name(&format!("remaining pane {i}"));
+            writer.save(&changed, now).expect("save");
             let path = writer.path.clone();
             drop(writer);
             writer = SessionWriter::new(
@@ -347,7 +367,7 @@ mod tests {
                 SessionBackupPolicy::NoBackupNeeded,
             );
         }
-        writer.clear_for_test().expect("clear");
+        writer.clear(now).expect("clear");
         assert!(
             !writer.path.try_exists().expect("test stat"),
             "intentional clear must still persist"
@@ -358,8 +378,6 @@ mod tests {
             saved
         );
         assert!(backups(&writer).is_empty());
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -444,8 +462,6 @@ mod tests {
         );
         writer.save_for_test(&snapshot()).expect("save");
         assert_eq!(snapshots(&writer), vec![(1, old)]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -476,8 +492,6 @@ mod tests {
             2,
             "new mtime restores cadence across restart"
         );
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -498,8 +512,6 @@ mod tests {
             .save(&changed, now + SNAPSHOT_INTERVAL)
             .expect("save at interval");
         assert_eq!(snapshots(&writer).len(), 2);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -511,8 +523,6 @@ mod tests {
         assert!(writer.path.try_exists().expect("test stat"));
         writer.clear_for_test().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -529,8 +539,6 @@ mod tests {
             writer.clear_for_test().expect("clear");
             assert!(!writer.path.try_exists().expect("test stat"));
             assert!(backups(&writer).is_empty());
-            std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-                .expect("test precondition");
         }
     }
 
@@ -560,8 +568,6 @@ mod tests {
         writer.clear_for_test().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
         assert_eq!(backups(&writer), vec![original.to_vec()]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -584,8 +590,6 @@ mod tests {
         );
         assert_eq!(writer.backup_policy, SessionBackupPolicy::PreserveExisting);
         assert!(backups(&writer).is_empty());
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test cleanup");
     }
 
     #[test]
@@ -626,13 +630,11 @@ mod tests {
                 .is_err()
         );
         assert_eq!(failed.backup_policy, SessionBackupPolicy::PreserveExisting);
-        std::fs::remove_dir_all(path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
     fn writer_requires_an_acquired_lease() {
-        let scratch = crate::test_support::ScratchDir::new("writer-lease");
+        let scratch = shepr_test_support::ScratchDir::new("writer-lease");
         let directory = scratch.join("data");
         let _writer = SessionWriter::new(
             super::super::lock::DataDirLease::acquire(&directory).expect("lease"),
@@ -663,8 +665,6 @@ mod tests {
         lock.try_lock().expect("the next server can take over");
         assert_eq!(std::fs::read(&path).expect("test precondition"), saved);
         drop(lock);
-        std::fs::remove_dir_all(path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -689,8 +689,6 @@ mod tests {
                 .count(),
             4
         );
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -702,8 +700,6 @@ mod tests {
         writer.clear_for_test().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
         assert_eq!(backups(&writer), vec![b"late layout".to_vec()]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -731,7 +727,7 @@ mod tests {
             std::fs::remove_file(&probe).expect("test cleanup");
             std::fs::set_permissions(&data_directory, std::fs::Permissions::from_mode(0o700))
                 .expect("test cleanup");
-            return;
+            panic!("permission test requires a runner without DAC override privileges");
         }
         writer
             .save_for_test(&snapshot())
@@ -747,8 +743,6 @@ mod tests {
         );
         writer.save_for_test(&snapshot()).expect("save");
         assert_eq!(backups(&writer), vec![b"original".to_vec()]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -770,8 +764,6 @@ mod tests {
             writer.save_for_test(&snapshot()).expect("save");
         }
         assert_eq!(backups(&writer), vec![vec![1], vec![2], vec![3]]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -786,8 +778,6 @@ mod tests {
         writer.save_for_test(&snapshot()).expect("save");
         writer.clear_for_test().expect("clear");
         assert_eq!(backups(&writer), vec![vec![2], vec![3], vec![4]]);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-            .expect("test precondition");
     }
 
     #[test]
@@ -845,8 +835,6 @@ mod tests {
                     .is_symlink()
             );
             assert!(target.try_exists().expect("test stat"));
-            std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
-                .expect("test precondition");
         }
     }
 }

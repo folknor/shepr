@@ -87,7 +87,7 @@ pub(in crate::shell) fn surface() -> PaneSurfaceFrame {
                 width: 4,
                 height: 2,
             },
-            inner_rect: SurfaceRect {
+            content_rect: SurfaceRect {
                 x: 0,
                 y: 0,
                 width: 4,

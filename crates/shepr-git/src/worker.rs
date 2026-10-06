@@ -513,7 +513,8 @@ impl<T: Send + 'static> GitStatusWorker<T> {
         let shared = Arc::new(ThreadShared::new());
         let thread_shared = Arc::clone(&shared);
         let handle = std::thread::Builder::new()
-            .name("shepr-git-refresh".into())
+            // Linux exposes at most 15 bytes through `pthread_setname_np`.
+            .name("git-refresh".into())
             .spawn(move || {
                 run(
                     &receiver,

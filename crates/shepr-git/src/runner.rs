@@ -279,7 +279,8 @@ fn hand_to_reaper(child: Child) {
     }
     reaper.running = true;
     if let Err(error) = std::thread::Builder::new()
-        .name("shepr-git-reaper".into())
+        // Linux exposes at most 15 bytes through `pthread_setname_np`.
+        .name("git-reaper".into())
         .spawn(reap_until_empty)
     {
         // The children stay queued; the next hand-over starts the thread again.

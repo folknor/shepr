@@ -30,7 +30,26 @@ impl App {
         }
         let kind = settlement.kind;
         match settlement.outcome {
-            LaunchOutcome::Launched { cwd } => {
+            LaunchOutcome::Launched {
+                cwd,
+                requested_cwd,
+                candidate_index,
+                first_candidate_error,
+            } => {
+                if let Some(error) = first_candidate_error {
+                    tracing::warn!(
+                        event = "pane.cwd.fallback",
+                        subsystem = "pane",
+                        outcome = "fallback",
+                        pane = %pane_id,
+                        kind = ?kind,
+                        requested_cwd = %requested_cwd.display(),
+                        cwd = %cwd.as_path().display(),
+                        cwd_candidate_index = candidate_index,
+                        error = %error,
+                        "pane launched in fallback working directory"
+                    );
+                }
                 self.state
                     .handle_state_event(super::events::StateEvent::TerminalCwdReported {
                         pane_id,
@@ -43,14 +62,16 @@ impl App {
                     if let Some(command) = command {
                         self.send_resume_command(pane_id, command);
                     } else {
-                        tracing::error!(
-                            pane = %pane_id,
-                            "agent resume launch settled without a pending command"
+                        self.fail_agent_resume(
+                            pane_id,
+                            ResumeUnavailableReason::CommandSendFailed,
+                            Some(&"the launch settled without a pending resume command"),
                         );
-                        self.fail_agent_resume(pane_id, ResumeUnavailableReason::CommandSendFailed);
                     }
                 }
-                self.request_git_identity_refresh(self.clock.now);
+                // A launched shell is a new Git status target or a moved one;
+                // other workspaces keep the checkouts they already know.
+                self.request_git_launch_refresh(self.clock.now);
                 true
             }
             LaunchOutcome::Failed(failure) => {
@@ -74,7 +95,11 @@ impl App {
                 if kind != LaunchKind::AgentResume {
                     return false;
                 }
-                self.fail_agent_resume(pane_id, ResumeUnavailableReason::ShellLaunchUnconfirmed);
+                self.fail_agent_resume(
+                    pane_id,
+                    ResumeUnavailableReason::ShellLaunchUnconfirmed,
+                    None,
+                );
                 true
             }
             // The child may be alive, but with its status unreadable it never
@@ -87,6 +112,7 @@ impl App {
                     self.fail_agent_resume(
                         pane_id,
                         ResumeUnavailableReason::ShellLaunchUnconfirmed,
+                        None,
                     );
                     return true;
                 }
@@ -105,16 +131,26 @@ impl App {
     /// so a save writes it back and the next restore resumes it. The failure
     /// is drawn only on a pane without a runtime; a live shell's rows are its
     /// own, and its PTY patches would repaint any notice laid over them.
-    fn fail_agent_resume(&mut self, pane_id: PaneId, reason: ResumeUnavailableReason) {
-        let agent = self
-            .state
-            .terminal(pane_id)
-            .and_then(|terminal| terminal.ownership().persisted_agent_session())
-            .map(shepr_agent::resume::PersistedAgentSession::agent);
+    ///
+    /// The one log line for the failure: `detail` carries the cause a caller
+    /// observed (a send error), so the caller does not log it again.
+    fn fail_agent_resume(
+        &mut self,
+        pane_id: PaneId,
+        reason: ResumeUnavailableReason,
+        detail: Option<&dyn std::fmt::Display>,
+    ) {
+        let pane = self.state.pane(pane_id);
+        let public_id = pane.map(|pane| pane.public_id());
+        let session = pane.and_then(|pane| pane.terminal().ownership().persisted_agent_session());
         tracing::warn!(
+            workspace = ?public_id.map(|id| *id.workspace_id()),
+            public_pane_id = ?public_id,
             pane = %pane_id,
-            ?agent,
+            agent = ?session.map(shepr_agent::resume::PersistedAgentSession::agent),
+            session_ref = ?session.map(|session| session.session_ref().value_str()),
             reason = reason.as_str(),
+            detail = detail.map(tracing::field::display),
             "deferred agent resume failed; keeping the pane as a placeholder with its saved session"
         );
         self.terminal_runtimes.remove(&pane_id);
@@ -135,22 +171,21 @@ impl App {
                 self.state.finish_agent_resume_launch(pane_id);
             }
             Some(Err(error)) => {
-                tracing::warn!(
-                    pane = %pane_id,
-                    %error,
-                    "failed to send deferred agent resume command to shell"
+                self.fail_agent_resume(
+                    pane_id,
+                    ResumeUnavailableReason::CommandSendFailed,
+                    Some(&error),
                 );
-                self.fail_agent_resume(pane_id, ResumeUnavailableReason::CommandSendFailed);
             }
             // Admission of the settlement requires the runtime's current
             // generation, so this is unreachable today; it still fails the
             // resume rather than leave it pending forever.
             None => {
-                tracing::error!(
-                    pane = %pane_id,
-                    "cannot send deferred agent resume command: pane has no live runtime"
+                self.fail_agent_resume(
+                    pane_id,
+                    ResumeUnavailableReason::CommandSendFailed,
+                    Some(&"the pane has no live runtime to type the resume command into"),
                 );
-                self.fail_agent_resume(pane_id, ResumeUnavailableReason::CommandSendFailed);
             }
         }
     }
@@ -210,7 +245,12 @@ mod tests {
             &mut app,
             pane_id,
             LaunchKind::Fresh,
-            LaunchOutcome::Launched { cwd: cwd.clone() },
+            LaunchOutcome::Launched {
+                cwd: cwd.clone(),
+                requested_cwd: cwd.as_absolute().clone(),
+                candidate_index: 0,
+                first_candidate_error: None,
+            },
         ));
         assert_eq!(
             app.state.terminal(pane_id).expect("pane").cwd(),
@@ -225,7 +265,12 @@ mod tests {
             &mut app,
             pane_id,
             LaunchKind::Fresh,
-            LaunchOutcome::Launched { cwd },
+            LaunchOutcome::Launched {
+                cwd: cwd.clone(),
+                requested_cwd: cwd.as_absolute().clone(),
+                candidate_index: 0,
+                first_candidate_error: None,
+            },
         ));
         assert_eq!(app.state.shell_projection_revision(), before);
         assert!(!app.state.session_dirty());

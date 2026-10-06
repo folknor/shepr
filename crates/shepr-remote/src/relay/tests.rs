@@ -190,9 +190,11 @@ fn bridge_preserves_one_way_progress_and_drains_after_stdin_eof() {
                     .write_all(b"output")
                     .expect("test precondition");
             }
-            // Keep this end-to-end check on the real boot-time clock: each
-            // transfer must renew the watchdog while less than the timeout
-            // passes.
+            // Twelve 60 ms gaps exceed this subprocess test's 300 ms idle
+            // timeout, while each gap stays well below it. Keeping the real
+            // boot-time clock exercises renewal across the stdio relay; a
+            // scheduler stall longer than the timeout is a valid expiry here,
+            // and the fake-clock watchdog tests cover the exact deadline.
             std::thread::sleep(Duration::from_millis(60));
             assert!(
                 bridge

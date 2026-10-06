@@ -212,7 +212,7 @@ pub fn pane_geometry_matches(
 ) -> bool {
     existing.pane_id == updated.pane_id
         && existing.rect == updated.rect
-        && existing.inner_rect == updated.inner_rect
+        && existing.content_rect == updated.content_rect
         && existing.focused == updated.focused
 }
 
@@ -1050,7 +1050,7 @@ mod tests {
             pane_id: "w1:p1".parse().expect("pane ID"),
             content_revision: crate::test_counters::content(1),
             rect,
-            inner_rect: rect,
+            content_rect: rect,
             scrollbar_rect: None,
             scroll: None,
             focused: true,

@@ -65,7 +65,7 @@ impl CliError {
             Self::Message(message) => eprintln!("error: {message}"),
             Self::Usage(message) => {
                 eprintln!("error: {message}");
-                eprintln!("run 'shepr --help' for usage");
+                eprintln!("{}", shepr_launch::guidance::usage_hint());
             }
             Self::Io(error) => eprintln!("error: {error}"),
             Self::Launch(error) => eprintln!("shepr: {error}"),
@@ -90,7 +90,8 @@ impl CliError {
                         ("", "", "")
                     };
                 eprintln!(
-                    "{bold}error:{reset} shepr does not run inside a pane of a server of its own build profile."
+                    "{bold}error:{reset} {}",
+                    shepr_launch::guidance::NESTED_REFUSAL
                 );
                 eprintln!();
                 eprintln!("{dim}\"{quip}\"{reset}");

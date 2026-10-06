@@ -1,6 +1,6 @@
 use super::*;
+use crate::app::SpawnGeometry;
 use crate::app::tests::test_app;
-use crate::app::{SpawnGeometry, exiting_test_command};
 use crate::test_support::*;
 use shepr_config::ServerConfig;
 use shepr_mux::workspace::Workspace;
@@ -1049,8 +1049,7 @@ fn shut_down_runtimes(app: &mut App) {
 
 #[tokio::test]
 async fn pane_split_request_focuses_the_new_pane_and_navigates_the_requester_only() {
-    let env = IsolatedEnv::new();
-    env.set("SHELL", exiting_test_command());
+    let _env = IsolatedEnv::new();
 
     let mut app = test_app();
     app.state.test_set_workspaces(vec![
@@ -1131,8 +1130,7 @@ async fn a_split_pane_child_sees_the_public_id_the_reply_names() {
 
 #[tokio::test]
 async fn pane_split_request_splits_in_half_and_keeps_default_input_routing() {
-    let env = IsolatedEnv::new();
-    env.set("SHELL", exiting_test_command());
+    let _env = IsolatedEnv::new();
 
     let mut app = test_app();
     app.state
@@ -1171,8 +1169,7 @@ async fn pane_split_request_splits_in_half_and_keeps_default_input_routing() {
 
 #[tokio::test]
 async fn a_split_sizes_against_the_recorded_geometry_and_only_then_the_requesters() {
-    let env = IsolatedEnv::new();
-    env.set("SHELL", exiting_test_command());
+    let _env = IsolatedEnv::new();
 
     let mut app = test_app();
     app.state.settings.pane_scrollbars = false;

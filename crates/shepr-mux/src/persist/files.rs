@@ -641,7 +641,7 @@ mod tests {
     /// A session file whose data directory does not exist yet, so saves
     /// exercise creating it.
     fn temp_session_path(name: &str) -> PathBuf {
-        let scratch = crate::test_support::ScratchDir::new(name);
+        let scratch = shepr_test_support::ScratchDir::new(name);
         session_path(&scratch.join("data"))
     }
 
@@ -656,7 +656,7 @@ mod tests {
 
     #[test]
     fn reacquiring_after_release_loads_the_existing_session() {
-        let scratch = crate::test_support::ScratchDir::new("released-session-lease");
+        let scratch = shepr_test_support::ScratchDir::new("released-session-lease");
         let lease = DataDirLease::acquire(&scratch).expect("lease");
         save_to_path(&session_path(lease.directory()), &empty_snapshot()).expect("save");
         assert!(matches!(load(&lease), SessionLoad::Loaded(_)));
@@ -667,7 +667,7 @@ mod tests {
 
     #[test]
     fn the_startup_sweep_removes_only_staging_files_in_owned_directories() {
-        let scratch = crate::test_support::ScratchDir::new("staging-sweep");
+        let scratch = shepr_test_support::ScratchDir::new("staging-sweep");
         let lease = DataDirLease::acquire(&scratch).expect("lease");
         let snapshots = snapshot_directory(&session_path(lease.directory()));
         std::fs::create_dir_all(&snapshots).expect("snapshot directory");
@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn a_session_path_that_is_not_a_regular_file_is_reported_without_blocking() {
-        let scratch = crate::test_support::ScratchDir::new("session-not-regular");
+        let scratch = shepr_test_support::ScratchDir::new("session-not-regular");
         let lease = DataDirLease::acquire(&scratch).expect("lease");
         let session = session_path(lease.directory());
         check_session_target(&lease).expect("an absent session is fine");
@@ -731,7 +731,7 @@ mod tests {
     fn a_session_file_that_does_not_parse_is_unusable_not_missing() {
         // Both restore nothing, but only a missing file is a fresh start; an
         // unusable one is a whole saved session the user has to be told about.
-        let scratch = crate::test_support::ScratchDir::new("unusable-session");
+        let scratch = shepr_test_support::ScratchDir::new("unusable-session");
         let lease = DataDirLease::acquire(&scratch).expect("lease");
         assert!(matches!(load(&lease), SessionLoad::Missing));
         std::fs::write(session_path(lease.directory()), b"{ not a session").expect("write");
@@ -825,7 +825,7 @@ mod tests {
     #[test]
     fn the_saved_session_file_is_private() {
         use std::os::unix::fs::PermissionsExt;
-        let data_dir = crate::test_support::ScratchDir::new("private-mode").join("data");
+        let data_dir = shepr_test_support::ScratchDir::new("private-mode").join("data");
         let session = session_path(&data_dir);
         save_to_path(&session, &empty_snapshot()).expect("create private session directory");
         // Publishing renames a fresh private file over the target, so an
@@ -858,7 +858,8 @@ mod tests {
         let path = temp_session_path("unrelated-leftover");
         let directory = path.parent().expect("test precondition");
         std::fs::create_dir_all(directory).expect("test precondition");
-        let leftover = path.with_extension("json.tmp");
+        // Publication must leave staging files owned by another writer untouched.
+        let leftover = directory.join(".shepr-unrelated-1.tmp");
         std::fs::write(&leftover, b"{\"trunc").expect("test precondition");
 
         let mut snap = empty_snapshot();
@@ -873,9 +874,10 @@ mod tests {
             std::fs::read(&leftover).expect("test precondition"),
             b"{\"trunc"
         );
-        let names = entry_names(directory);
-        assert_eq!(names[0], shepr_paths::SESSION_FILE_NAME);
-        assert_eq!(names[1], format!("{}.tmp", shepr_paths::SESSION_FILE_NAME));
+        assert_eq!(
+            entry_names(directory),
+            [".shepr-unrelated-1.tmp", shepr_paths::SESSION_FILE_NAME]
+        );
     }
 
     #[test]
@@ -929,9 +931,10 @@ mod tests {
             .expect("test cleanup");
         // A privileged runner can search the directory anyway; there is no
         // stat error to observe then.
-        if inspectable {
-            return;
-        }
+        assert!(
+            !inspectable,
+            "permission test requires a runner without DAC override privileges"
+        );
         let resolve_error = resolved.expect_err("an unreadable path is not absent");
         let clear_error = cleared.expect_err("a clear must not guess");
         assert_eq!(resolve_error.kind(), std::io::ErrorKind::PermissionDenied);
@@ -950,7 +953,7 @@ mod tests {
 
     #[test]
     fn non_regular_symlink_errors_report_the_target_and_link_consistently() {
-        let scratch = crate::test_support::ScratchDir::new("session-non-regular-link");
+        let scratch = shepr_test_support::ScratchDir::new("session-non-regular-link");
         let lease = DataDirLease::acquire(&scratch).expect("lease");
         let link = session_path(lease.directory());
         let target = scratch.path().join("session-directory");

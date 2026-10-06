@@ -6,7 +6,10 @@
 use std::time::Instant;
 
 use super::App;
-use crate::limits::{GIT_REMOTE_STATUS_REFRESH_INTERVAL, GIT_REPO_DISCOVERY_REFRESH_INTERVAL};
+use crate::limits::{
+    GIT_LOST_REFRESH_CHECK_INTERVAL, GIT_REMOTE_STATUS_REFRESH_INTERVAL,
+    GIT_REPO_DISCOVERY_REFRESH_INTERVAL,
+};
 use shepr_mux::events::AppEvent;
 use shepr_protocol::WorkspaceId;
 
@@ -89,7 +92,7 @@ impl GitRefreshScheduler {
             self.finish(now);
         }
         if self.is_in_flight() && now >= self.lost_refresh_check_at {
-            self.lost_refresh_check_at = refresh_deadline_after(now);
+            self.lost_refresh_check_at = lost_refresh_check_after(now);
         }
     }
 
@@ -115,6 +118,11 @@ impl GitRefreshScheduler {
 
 fn refresh_deadline_after(now: Instant) -> Instant {
     now.checked_add(GIT_REMOTE_STATUS_REFRESH_INTERVAL)
+        .unwrap_or(now)
+}
+
+fn lost_refresh_check_after(now: Instant) -> Instant {
+    now.checked_add(GIT_LOST_REFRESH_CHECK_INTERVAL)
         .unwrap_or(now)
 }
 
@@ -160,12 +168,22 @@ impl App {
         match self.git_refresh.worker.refresh(targets) {
             Ok(()) => {
                 self.git_refresh.refresh = RefreshPhase::InFlight;
-                self.git_refresh.lost_refresh_check_at = refresh_deadline_after(now);
+                self.git_refresh.lost_refresh_check_at = lost_refresh_check_after(now);
             }
             Err(err) => {
                 tracing::warn!(error = %err, "failed to start the git status worker");
                 self.git_refresh.next_git_remote_status_refresh = refresh_deadline_after(now);
             }
+        }
+    }
+
+    /// Launches only make status due: changed or undiscovered cwd targets
+    /// already omit their known key. Preserve identities of other workspaces.
+    pub(crate) fn request_git_launch_refresh(&mut self, now: Instant) {
+        if self.git_refresh.is_in_flight() {
+            self.git_refresh.refresh = RefreshPhase::InFlightThenDue;
+        } else {
+            self.git_refresh.next_git_remote_status_refresh = now;
         }
     }
 
@@ -316,7 +334,34 @@ mod tests {
         app.start_git_status_refresh_if_due(now);
         assert!(app.git_refresh.is_in_flight());
         assert!(!app.git_refresh.git_identity_refresh_requested);
-        wait_for_git_refresh(&mut app);
+        let event = app.blocking_next_event();
+        app.handle_internal_event(event);
+        app.start_git_status_refresh_if_due(now);
+        assert!(!app.git_refresh.is_in_flight());
+        assert!(app.no_queued_events());
+    }
+
+    #[test]
+    fn launch_refresh_preserves_known_checkout_and_coalesces_requests() {
+        let mut app = test_app(&shepr_config::ServerConfig::default());
+        let scratch = crate::test_support::ScratchDir::new("launch-git-refresh");
+        let cwd = scratch.join("cwd");
+        let mut ws = Workspace::test_at(Some("test"), &cwd);
+        admit_cached_identity(&mut ws, &cwd, cwd.clone());
+        app.state.test_push_workspace(ws);
+        let now = Instant::now();
+        app.request_git_launch_refresh(now);
+        app.request_git_launch_refresh(now);
+        assert!(!app.git_refresh.git_identity_refresh_requested);
+        assert_eq!(app.git_refresh.refresh_due_at(), Some(now));
+        assert_eq!(
+            app.workspace_git_refresh_targets(false)[0].known_key,
+            Some(GitStatusKey::Checkout(cwd))
+        );
+        app.git_refresh.refresh = RefreshPhase::InFlight;
+        app.request_git_launch_refresh(now);
+        app.request_git_launch_refresh(now);
+        assert_eq!(app.git_refresh.refresh, RefreshPhase::InFlightThenDue);
     }
 
     #[test]
@@ -378,19 +423,23 @@ mod tests {
     }
 
     #[test]
-    fn moved_cwd_without_osc7_rediscovers_the_label_identity() {
+    fn changed_cwd_omits_the_cached_checkout_key() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let config = shepr_config::ServerConfig::default();
         let mut app = test_app(&config);
-        // The shell `cd`ed without reporting OSC 7: only the resolved cwd moved.
+        // An admitted checkout belongs to the old cwd, while the current
+        // resolved cwd comes from the workspace fallback.
         let scratch = crate::test_support::ScratchDir::new("moved-cwd");
-        let ws = Workspace::test_at(None, &scratch.join("moved"));
+        let mut ws = Workspace::test_at(None, &scratch.join("moved"));
+        admit_cached_identity(&mut ws, &scratch.join("old"), scratch.join("old"));
         app.state.test_push_workspace(ws);
         let now = Instant::now();
         app.mark_git_status_refresh_due(now);
 
+        let targets = app.workspace_git_refresh_targets(false);
+        assert_eq!(targets[0].cwd, scratch.join("moved"));
+        assert_eq!(targets[0].known_key, None);
         app.start_git_status_refresh_if_due(now);
-
         assert!(app.git_refresh.is_in_flight());
         wait_for_git_refresh(&mut app);
     }
@@ -434,7 +483,6 @@ mod tests {
         app.handle_internal_event(event);
 
         assert!(!app.git_refresh.is_in_flight());
-        assert_eq!(app.state.ws(0).name(), "labelled");
         assert_eq!(
             app.state.ws(0).branch_state(),
             Some(&GitBranch::OutsideRepository)

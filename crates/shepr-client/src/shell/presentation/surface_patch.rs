@@ -208,7 +208,7 @@ mod tests {
             pane_id,
             content_revision: shepr_protocol::ContentRevision::default(),
             rect,
-            inner_rect: rect,
+            content_rect: rect,
             scrollbar_rect: None,
             // Copy mode is entered only on a pane that reports its scroll position.
             scroll: Some(shepr_protocol::PaneSurfaceScrollMetrics::new(

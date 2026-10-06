@@ -14,8 +14,8 @@ struct StoredMetadata {
 
 /// The remembered remote executable for one SSH target. Machines that share a
 /// target share the hint, since the executable belongs to the host. The cache
-/// is kept per build profile inside the shared client state directory, so a dev
-/// and a release client never overwrite each other's hint for a target.
+/// is kept in this build profile's data directory, so a dev and a release
+/// client never overwrite each other's hint for a target.
 pub(crate) struct SshMetadataCache {
     path: PathBuf,
     target: SshTarget,
@@ -23,18 +23,8 @@ pub(crate) struct SshMetadataCache {
 
 impl SshMetadataCache {
     pub(crate) fn new(paths: &shepr_paths::AppPaths, target: &SshTarget) -> Self {
-        Self::for_profile(paths, target, shepr_paths::BuildProfile::current())
-    }
-
-    fn for_profile(
-        paths: &shepr_paths::AppPaths,
-        target: &SshTarget,
-        profile: shepr_paths::BuildProfile,
-    ) -> Self {
         Self {
-            path: paths
-                .client_state_dir()
-                .join(format!("ssh-metadata-{}", profile.marker()))
+            path: shepr_paths::ssh_metadata_directory(paths.data_dir())
                 .join(format!("{:016x}.json", target_file_key(target))),
             target: target.clone(),
         }
@@ -177,25 +167,19 @@ mod tests {
         let paths = shepr_paths::AppPaths::rooted_at(&scratch, None, None)
             .expect("scratch roots fit a socket");
         let target = |value: &str| SshTarget::parse(value).expect("test precondition");
-        let build = SshMetadataCache::new(&paths, &target("dev@build.example"));
-        let again = SshMetadataCache::new(&paths, &target("dev@build.example"));
+        let build_target = target("dev@build.example");
+        let build = SshMetadataCache::new(&paths, &build_target);
+        let again = SshMetadataCache::new(&paths, &build_target);
         let other = SshMetadataCache::new(&paths, &target("dev@other.example"));
         assert_eq!(build.path(), again.path());
         assert_ne!(build.path(), other.path());
-        assert!(build.path().starts_with(paths.client_state_dir()));
-    }
-
-    #[test]
-    fn metadata_path_differs_per_build_profile() {
-        let scratch = shepr_test_support::ScratchDir::new("ssh-metadata-profile");
-        let paths = shepr_paths::AppPaths::rooted_at(&scratch, None, None)
-            .expect("scratch roots fit a socket");
-        let target = SshTarget::parse("dev@build.example").expect("test precondition");
-        let release =
-            SshMetadataCache::for_profile(&paths, &target, shepr_paths::BuildProfile::Release);
-        let dev = SshMetadataCache::for_profile(&paths, &target, shepr_paths::BuildProfile::Dev);
-        assert_ne!(release.path(), dev.path());
-        assert!(dev.path().starts_with(paths.client_state_dir()));
+        assert_eq!(
+            build.path(),
+            paths
+                .data_dir()
+                .join("client/ssh-metadata")
+                .join(format!("{:016x}.json", target_file_key(&build_target)))
+        );
     }
 
     #[test]
@@ -245,8 +229,6 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&first.path).expect("test precondition"))
                 .expect("test precondition");
         assert_eq!(stored["executable"], "/some-path/shepr");
-        assert!(stored.get("version").is_none());
-        assert!(stored.get("os").is_none());
         stored["future_field"] = true.into();
         std::fs::write(
             &first.path,

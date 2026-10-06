@@ -2,21 +2,17 @@ use crate::resume::{AgentSessionRef, PersistedAgentSession, ReportedSessionStart
 use crate::{Agent, AgentSource};
 
 /// Validated ownership shared by state and session reports: a bundled
-/// integration's source and the agent it names. The field is private so a
-/// report cannot claim a different agent than its source belongs to.
+/// integration's source, from which its agent is derived.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReportOrigin {
     source: AgentSource,
 }
 
-/// Why a report's source and agent label were refused.
+/// Why a report's source was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReportOriginError {
-    EmptyAgent,
     /// The source is not a bundled integration's.
     UnsupportedSource,
-    /// The label does not name the agent the source belongs to.
-    MismatchedAgent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,15 +32,8 @@ impl HookAuthorityClass {
 }
 
 impl ReportOrigin {
-    pub fn parse(source: &str, label: &str) -> Result<Self, ReportOriginError> {
-        let label = label.trim();
-        if label.is_empty() {
-            return Err(ReportOriginError::EmptyAgent);
-        }
+    pub fn parse(source: &str) -> Result<Self, ReportOriginError> {
         let source = AgentSource::parse(source).ok_or(ReportOriginError::UnsupportedSource)?;
-        if crate::parse_agent_label(label) != Some(source.agent()) {
-            return Err(ReportOriginError::MismatchedAgent);
-        }
         Ok(Self { source })
     }
 
@@ -78,11 +67,11 @@ impl ReportOrigin {
     }
 
     pub fn owns(&self, session: &PersistedAgentSession) -> bool {
-        self.source == session.source && self.agent() == session.agent
+        self.source == session.source
     }
 
     pub fn session(&self, session_ref: AgentSessionRef) -> Option<PersistedAgentSession> {
-        PersistedAgentSession::new(self.source, self.agent(), session_ref)
+        PersistedAgentSession::new(self.source, session_ref)
     }
 }
 
@@ -103,42 +92,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn origin_accepts_only_bundled_sources_and_normalizes_labels_once() {
-        assert_eq!(
-            ReportOrigin::parse("shepr:claud", "claude"),
-            Err(ReportOriginError::UnsupportedSource)
-        );
-        assert_eq!(
-            ReportOrigin::parse("shepr:claude", "codex"),
-            Err(ReportOriginError::MismatchedAgent)
-        );
-        assert_eq!(
-            ReportOrigin::parse("shepr:claude", "local bot"),
-            Err(ReportOriginError::MismatchedAgent)
-        );
-        assert_eq!(
-            ReportOrigin::parse("shepr:claude", " "),
-            Err(ReportOriginError::EmptyAgent)
-        );
-        assert_eq!(
-            ReportOrigin::parse("shepr:claude", " Claude ")
-                .expect("normalized label")
-                .agent(),
-            Agent::Claude
-        );
-        assert!(ReportOrigin::official(Agent::Gemini).is_none());
-        for (source, label) in [
-            ("custom:status", "local bot"),
-            ("custom:claude", "claude"),
-            ("myagent", "myagent"),
-            ("", "pi"),
+    fn origin_accepts_only_exact_bundled_sources() {
+        for source in [
+            "shepr:claud",
+            "custom:status",
+            "custom:claude",
+            "myagent",
+            "",
+            " shepr:claude ",
+            "shepr:Claude",
         ] {
             assert_eq!(
-                ReportOrigin::parse(source, label),
+                ReportOrigin::parse(source),
                 Err(ReportOriginError::UnsupportedSource),
-                "{source}"
+                "{source}",
             );
         }
+        assert_eq!(
+            ReportOrigin::parse("shepr:claude")
+                .expect("official source")
+                .agent(),
+            Agent::Claude,
+        );
+        assert!(ReportOrigin::official(Agent::Gemini).is_none());
     }
 
     #[test]

@@ -4,12 +4,9 @@ use shepr_core::socket_path::fits_unix_socket_path;
 #[test]
 fn ssh_control_path_rejects_percent_tokens_in_runtime_directory() {
     for runtime_dir in [Path::new("/run/%h"), Path::new("/run/%%")] {
-        let error = ssh_control_path_under(
-            runtime_dir,
-            Path::new("/config/one"),
-            SshControlKey::from_identity_bytes(b"host"),
-        )
-        .expect_err("OpenSSH would reinterpret percent sequences in ControlPath");
+        let error =
+            ssh_control_path_under(runtime_dir, SshControlKey::from_identity_bytes(b"host"))
+                .expect_err("OpenSSH would reinterpret percent sequences in ControlPath");
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("percent sequences"));
     }
@@ -39,7 +36,7 @@ fn remote_ssh_config_dir_is_private_and_under_the_runtime_directory() {
 }
 
 #[test]
-fn shared_ssh_control_path_is_stable_scoped_and_bounded() {
+fn shared_ssh_control_path_is_stable_per_target_and_bounded() {
     // The control socket's name and OpenSSH's staging suffix leave room only
     // for a runtime directory as short as a real one, which no scratch
     // directory under the build tree is; the naming and length arithmetic are
@@ -48,7 +45,6 @@ fn shared_ssh_control_path_is_stable_scoped_and_bounded() {
     let runtime_dir = Path::new("/run/user/4294967294");
     let path = ssh_control_path_under(
         runtime_dir,
-        Path::new("/config/one"),
         SshControlKey::from_identity_bytes(b"user@host"),
     )
     .expect("test precondition");
@@ -57,7 +53,6 @@ fn shared_ssh_control_path_is_stable_scoped_and_bounded() {
         path,
         ssh_control_path_under(
             runtime_dir,
-            Path::new("/config/one"),
             SshControlKey::from_identity_bytes(b"user@host")
         )
         .expect("test precondition")
@@ -66,16 +61,6 @@ fn shared_ssh_control_path_is_stable_scoped_and_bounded() {
         path,
         ssh_control_path_under(
             runtime_dir,
-            Path::new("/config/two"),
-            SshControlKey::from_identity_bytes(b"user@host")
-        )
-        .expect("test precondition")
-    );
-    assert_ne!(
-        path,
-        ssh_control_path_under(
-            runtime_dir,
-            Path::new("/config/one"),
             SshControlKey::from_identity_bytes(b"other@host")
         )
         .expect("test precondition")
@@ -99,7 +84,6 @@ fn shared_ssh_control_path_validates_the_runtime_directory_first() {
         .expect("test precondition");
     let error = shared_ssh_control_path(
         &runtime_dir,
-        Path::new("/config/one"),
         SshControlKey::from_identity_bytes(b"user@host"),
     )
     .expect_err("a runtime directory others can reach is refused");
@@ -112,7 +96,6 @@ fn shared_ssh_control_path_validates_the_runtime_directory_first() {
     assert!(matches!(error, SshRuntimeError::UnsafeDirectory(_)));
     let relative = shared_ssh_control_path(
         Path::new("relative/runtime"),
-        Path::new("/config/one"),
         SshControlKey::from_identity_bytes(b"user@host"),
     )
     .expect_err("a relative runtime directory is refused");
@@ -133,7 +116,6 @@ fn shared_ssh_control_path_rejects_a_runtime_dir_that_cannot_fit_open_ssh_stagin
     .expect("test precondition");
     let error = shared_ssh_control_path(
         &runtime_dir,
-        Path::new("/config/one"),
         SshControlKey::from_identity_bytes(b"user@host"),
     )
     .expect_err("the OpenSSH staging path must fit");

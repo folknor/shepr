@@ -609,7 +609,10 @@ impl Workspace {
         // A split unzooms the workspace, so launch against the tiled layout.
         let geometry = chrome
             .pane_spawn_geometry(&planned, zoomed, pane, cell)
-            .unwrap_or_else(|| chrome.sole_pane_spawn_geometry(cell));
+            .ok_or_else(|| {
+                tracing::error!(workspace = %self.id, "planned split has no pane geometry");
+                SplitPreparationRefused::LayoutRefused
+            })?;
         let terminal = TerminalState::new(cwd);
         Ok(PreparedSplit {
             workspace: self.id,

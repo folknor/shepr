@@ -72,6 +72,8 @@ pub(crate) const SHELL_CWD_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 /// Refresh Git ahead/behind status periodically while clients are connected,
 /// keeping it fresh without probing on every render.
 pub(crate) const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
+/// Check an in-flight refresh for lost completion or stalled progress.
+pub(crate) const GIT_LOST_REFRESH_CHECK_INTERVAL: Duration = Duration::from_millis(1500);
 /// Rediscover repository roots periodically so external cwd changes settle.
 pub(crate) const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: Duration = Duration::from_secs(5 * 60);
 /// First retry after automatic workspace creation fails, such as when the
@@ -155,8 +157,8 @@ pub(crate) const MAX_RETURNED_MATCHES: usize = 1024;
 /// Layout and drawing follow at once; only the resize waits.
 pub(crate) const PANE_RESIZE_SETTLE: Duration = Duration::from_millis(120);
 
-/// The fraction of a split one resize step moves its edge by.
-pub(crate) const DEFAULT_PANE_RESIZE_AMOUNT: shepr_core::layout::RatioDelta =
+/// The fraction of a split one keyboard resize step moves its edge by.
+pub(crate) const PANE_RESIZE_STEP: shepr_core::layout::RatioDelta =
     shepr_core::layout::RatioDelta::new(0.05);
 
 // ---------------------------------------------------------------------------
@@ -166,11 +168,10 @@ pub(crate) const DEFAULT_PANE_RESIZE_AMOUNT: shepr_core::layout::RatioDelta =
 /// Give Tokio tasks a short time to stop after a failed startup; teardown continues
 /// even if a task is stuck.
 pub(crate) const TOKIO_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
-/// How long server exit waits for pane teardowns: their signal budget, plus
-/// three more of it for the /proc session scans between signal rounds, which
-/// the signal budget does not count.
-pub(crate) const PANE_TEARDOWN_WAIT: Duration =
-    shepr_mux::pane::PaneTeardownTracker::BUDGET.saturating_mul(4);
+/// How long server exit waits for pane teardowns, including the mux's
+/// scan allowance derived from its signal sequence. Session scans remain
+/// unbounded, so unfinished panes are reported when this allowance expires.
+pub(crate) const PANE_TEARDOWN_WAIT: Duration = shepr_mux::pane::PaneTeardownTracker::SHUTDOWN_WAIT;
 /// Upper bound on the wait for client writers to flush their shutdown frames.
 pub(crate) const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long a transport thread waits for a client it could not register to

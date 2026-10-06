@@ -120,15 +120,10 @@ impl AppSettings {
     }
 
     pub(crate) fn headless_rect(&self) -> Rect {
-        Rect::new(
-            0,
-            0,
-            self.headless_size.cols.get(),
-            self.headless_size.rows.get(),
-        )
+        self.headless_size.rect()
     }
 
-    pub(crate) fn pane_geometry_in(&self, area: Rect) -> shepr_mux::workspace::WorkspaceChrome {
+    pub(crate) fn chrome_in(&self, area: Rect) -> shepr_mux::workspace::WorkspaceChrome {
         shepr_mux::workspace::WorkspaceChrome {
             area,
             pane_gaps: self.pane_gaps,
@@ -290,12 +285,12 @@ impl AppState {
     }
 
     pub(crate) fn mark_shell_projection_dirty(&mut self) {
-        // Saturates: a u64 of state changes does not run out in practice, and
-        // bookkeeping must never panic the server.
+        // Exhaustion is an internal error: retaining the revision would leave
+        // every client silently stale.
         self.shell_projection_revision = self
             .shell_projection_revision
             .checked_next()
-            .unwrap_or(self.shell_projection_revision);
+            .expect("shell projection revision exhausted");
     }
 
     /// The area `workspace` is laid out in: the geometry the server last
@@ -313,11 +308,6 @@ impl AppState {
         if let Some(workspace) = self.workspaces.get_mut(id) {
             workspace.record_spawn_geometry(geometry);
         }
-    }
-
-    /// The configured pane chrome applied to a workspace laid out in `area`.
-    pub(crate) fn chrome_in(&self, area: Rect) -> shepr_mux::workspace::WorkspaceChrome {
-        self.settings.pane_geometry_in(area)
     }
 
     /// The terminal state of `pane_id`, wherever the pane lives. The pane's
@@ -477,9 +467,12 @@ mod tests {
         assert_eq!(workspace.spawn_geometry(), None);
         let area = state.layout_area(workspace);
         assert_eq!(area, Rect::new(0, 0, 132, 41));
-        assert_eq!(state.chrome_in(area).area, Rect::new(0, 0, 132, 41));
         assert_eq!(
-            state.chrome_in(area).sole_pane_size(),
+            state.settings.chrome_in(area).area,
+            Rect::new(0, 0, 132, 41)
+        );
+        assert_eq!(
+            state.settings.chrome_in(area).sole_pane_size(),
             // Framed on every side: the headless area less the border cells.
             shepr_core::geometry::GridSize::clamped(130, 39)
         );
@@ -674,7 +667,7 @@ mod tests {
         let mut state = AppState::test_new();
         let area = Rect::new(5, 2, 120, 40);
         state.settings.pane_scrollbars = true;
-        let geometry = state.chrome_in(area);
+        let geometry = state.settings.chrome_in(area);
         assert_eq!(geometry.area, area);
 
         let (mut layout, root) = shepr_core::layout::TileLayout::new();
@@ -696,10 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn runtime_lookup_is_by_pane() {
-        let mut state = AppState::test_new();
-        let ws = shepr_mux::workspace::Workspace::test_new("test");
-        let pane_id = ws.tree().root();
-        state.test_set_workspaces(vec![ws]);
+        let pane_id = shepr_core::layout::PaneId::alloc();
         let mut registry = shepr_mux::pane::PaneRuntimeRegistry::default();
 
         assert!(registry.get(&pane_id).is_none());
@@ -748,7 +738,15 @@ mod tests {
         state.shell_projection_revision = shepr_test_fixtures::counter_at(u64::MAX - 1);
         state.mark_shell_projection_dirty();
         assert_eq!(state.shell_projection_revision, max);
+    }
+
+    /// An exhausted revision is an internal error, not a revision that stops
+    /// advancing and leaves every client silently stale.
+    #[test]
+    #[should_panic(expected = "shell projection revision exhausted")]
+    fn an_exhausted_shell_projection_revision_panics() {
+        let mut state = AppState::test_new();
+        state.shell_projection_revision = shepr_test_fixtures::counter_at(u64::MAX);
         state.mark_shell_projection_dirty();
-        assert_eq!(state.shell_projection_revision, max);
     }
 }

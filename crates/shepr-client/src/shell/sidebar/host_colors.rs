@@ -343,7 +343,7 @@ mod tests {
         );
         let border_fg = |state: &mut ClientShellState| {
             let frame = state.compose(100, 20).expect("pane frame");
-            let inner = state.pane_hits()[0].inner_rect;
+            let inner = state.pane_hits()[0].content_rect;
             frame.cells()[usize::from(inner.y) * 100 + usize::from(inner.x)].fg
         };
 

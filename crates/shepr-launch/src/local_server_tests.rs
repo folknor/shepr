@@ -25,13 +25,7 @@ fn this_build() -> RuntimeStatus {
     status_of_build(shepr_protocol::BUILD_ID)
 }
 
-fn other_build_id() -> &'static str {
-    if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
-        "0000000000000000"
-    } else {
-        "ffffffffffffffff"
-    }
-}
+use shepr_test_fixtures::other_build_id;
 
 fn other_build() -> RuntimeStatus {
     status_of_build(other_build_id())

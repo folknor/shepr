@@ -19,7 +19,7 @@ impl AppState {
         let workspace_id = match self.workspaces.commit_workspace(prepared, geometry) {
             Ok(id) => id,
             Err(refused) => {
-                tracing::error!(workspace = %refused.id(), "refused to add a new workspace");
+                crate::logging::creation_refused(&refused.id(), "workspace", &refused.reason);
                 return None;
             }
         };
@@ -37,21 +37,19 @@ impl AppState {
         &mut self,
         split: shepr_mux::workspace::PreparedSplit,
     ) -> Option<PaneCreationOutcome> {
+        let public_id = split.public_id();
         let workspace_id = split.workspace_id();
         let workspace = self.workspaces.get_mut(&workspace_id)?;
         let pane_id = match workspace.commit_split(split) {
             Ok(pane_id) => pane_id,
             Err(refused) => {
-                tracing::warn!(
-                    workspace = %workspace_id,
-                    ?refused,
-                    "a spawned split was refused by its workspace"
-                );
+                crate::logging::creation_refused(&workspace_id, "split", &refused);
                 return None;
             }
         };
         self.mark_session_dirty();
         self.mark_shell_projection_dirty();
+        crate::logging::pane_event("pane.split", public_id);
         Some(PaneCreationOutcome {
             workspace_id,
             pane_id,

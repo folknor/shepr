@@ -7,7 +7,7 @@
 //! and the same `shepr_core::chrome` border and scrollbar gutter math.
 
 use shepr_core::chrome::{
-    PaneChrome, PaneContent, SharedPaneEdges, apply_pane_chrome, content_rect, inner_rect,
+    PaneChrome, PaneContent, SharedPaneEdges, apply_pane_chrome, border_inner_rect, content_rect,
 };
 use shepr_core::geometry::{CellPx, GridSize, PaneGeometry, Rect};
 use shepr_core::layout::{PaneId, TileLayout};
@@ -109,8 +109,8 @@ impl WorkspaceChrome {
 
     /// The content grid for the only pane of a new workspace.
     pub fn sole_pane_size(&self) -> GridSize {
-        let inner = inner_rect(self.area, SharedPaneEdges::default());
-        let content = content_rect(inner, self.pane_scrollbars, false);
+        let border_inner = border_inner_rect(self.area, SharedPaneEdges::default());
+        let content = content_rect(border_inner, self.pane_scrollbars, false);
         PaneGeometry::cells_only(content.width, content.height).grid()
     }
 
@@ -295,7 +295,7 @@ mod tests {
         assert_eq!(panes[0].shared_edges, SharedPaneEdges::default());
         // Framed on every side: the whole area less one cell per edge.
         assert_eq!(
-            inner_rect(panes[0].rect, panes[0].shared_edges),
+            border_inner_rect(panes[0].rect, panes[0].shared_edges),
             Rect::new(1, 1, 98, 38)
         );
         assert_eq!(geometry.pane_size(&layout, true, right), Some(grid(38, 98)));

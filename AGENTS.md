@@ -548,8 +548,9 @@ unconfirmed, so a child stuck in its chdir cannot keep the pane from ending.
 The child is a `PaneChild`, which owns the process identity acquired immediately
 after fork and its cached wait status. Mux shares that identity for liveness
 and teardown instead of opening another handle. The pane runtime watches its
-pidfd and asks `PaneChild` to reap with `waitid` when available, with a blocking
-`waitpid` as the fallback. If the watcher is dropped before reaping, the child is handed to a
+pidfd and asks `PaneChild` to reap with `waitid` when available, with periodic
+nonblocking `waitpid` probes as the fallback, so a pane without a usable pidfd
+holds no blocking-pool thread. If the watcher is dropped before reaping, the child is handed to a
 detached reaper thread.
 
 ## Rules

@@ -1,9 +1,9 @@
-//! Operator text naming the commands that reach a server.
+//! Operator guidance for launch, CLI, preflight and endpoint failures.
 //!
 //! The text needs the server's address (its socket override) and this build's
 //! entry point, and every launcher shows it: the CLI, the local server
 //! launcher and the TUI client, and the `shepr-server` executable's ready
-//! notice names the client to run. Each public function resolves its entry
+//! notice names the client to run. Command-building functions resolve their entry
 //! point itself ([`operator_entrypoint`], or the server's sibling client for
 //! [`server_ready_hint`]); the `_with` forms take the entry point or the
 //! executable as an argument so tests can pin it.
@@ -134,7 +134,7 @@ pub fn server_ready_hint() -> String {
         }
     };
     format!(
-        "did you mean to open the Shepr TUI? run `{entrypoint}`, which starts the server itself."
+        "did you mean to open the shepr TUI? run `{entrypoint}`, which starts the server itself."
     )
 }
 
@@ -162,6 +162,410 @@ fn server_ready_entrypoint_with(
 fn executable_file(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file())
         && shepr_platform::has_execute_access(path)
+}
+
+/// Usage guidance names this build's executable, including dev builds.
+pub fn usage_hint() -> String {
+    format!("run '{} --help' for usage", operator_entrypoint())
+}
+
+/// A TUI launch from one of its own profile's panes is refused.
+pub const NESTED_REFUSAL: &str =
+    "shepr does not run inside a pane of a server of its own build profile.";
+
+/// A missing local connection is retried while other machines stay usable.
+pub const LOCAL_RECONNECT_HINT: &str = "the local server is unavailable; start it to reconnect";
+
+pub fn machine_login_hint(entrypoint: &str, ssh: &str) -> String {
+    format!("run {entrypoint} again, or {ssh}")
+}
+
+pub fn fleet_login_hint(message: &impl std::fmt::Display) -> String {
+    format!(
+        "needs an SSH login: run `{}` or ssh to it ({message})",
+        operator_entrypoint()
+    )
+}
+
+pub fn local_startup_notice(error: &impl std::fmt::Display) -> String {
+    format!("shepr: the local server is unavailable; configured machines stay available.\n{error}")
+}
+
+pub fn terminal_geometry_failure(error: &impl std::fmt::Display) -> String {
+    format!("cannot attach without a usable terminal: {error}; run inside a terminal")
+}
+
+pub fn cli_build_mismatch(
+    address: &ServerAddress,
+    build_id: shepr_protocol::BuildIdentity,
+) -> String {
+    format!(
+        "this shepr client (build {}) differs from the running server (build {build_id}); restart the server with this build before using this command. {}",
+        shepr_protocol::BUILD_ID,
+        build_mismatch_guidance(address)
+    )
+}
+
+pub fn unresponsive_server(address: &ServerAddress) -> String {
+    format!(
+        "a shepr server is listening at {}, but it is not answering status requests, so its build cannot be confirmed and no second server is started.\n\n{}\nIf that fails, inspect the server log and stop the server process manually; forcing it to exit can lose the final save.",
+        address.socket().display(),
+        build_mismatch_guidance(address)
+    )
+}
+
+pub fn running_build_mismatch(
+    address: &ServerAddress,
+    status: &crate::status::RuntimeStatus,
+) -> String {
+    let summary = if address.is_runtime_address() {
+        "the running shepr server is a different build; restart it before attaching."
+    } else {
+        "the running shepr server is a different build, and this client cannot start a replacement at the selected socket override."
+    };
+    format!(
+        "{summary}\n\nserver: v{} build {}\nclient: v{} build {}\n\n{}",
+        status.version,
+        status.build_id,
+        shepr_protocol::build_version(),
+        shepr_protocol::BUILD_ID,
+        build_mismatch_guidance(address)
+    )
+}
+
+pub fn no_server_at_override(address: &ServerAddress, runtime_dir: &Path) -> String {
+    let selected_by = shepr_core::env::EnvVar::SheprSocketPath;
+    format!(
+        "no shepr server is running at {}, which {selected_by} selects. A client starts a server only for its own runtime address ({}); a socket override names a server that is already running.",
+        address.socket().display(),
+        runtime_dir.display()
+    )
+}
+
+pub fn stop_timeout(label: &str, timeout: std::time::Duration, socket: &Path) -> String {
+    format!(
+        "{label} did not stop within {}ms; the socket at {} is still reachable. \
+         The server may still be saving its layout; wait for shutdown to finish and \
+         inspect the server log before retrying. Forcing the process to exit can lose \
+         the final save",
+        timeout.as_millis(),
+        socket.display()
+    )
+}
+
+pub fn local_install_hint() -> String {
+    let server = crate::invocation::SERVER_BINARY_NAME;
+    format!(
+        "{PROGRAM_NAME} starts its server from the same directory as itself; install {PROGRAM_NAME} and {server} together (`brokkr install`)"
+    )
+}
+
+pub fn server_already_running() -> String {
+    format!(
+        "{} is already running",
+        crate::invocation::SERVER_BINARY_NAME
+    )
+}
+
+/// Discovery classifies the installation; guidance renders the typed cause.
+pub enum RemoteInstallationFailure<'a> {
+    MissingSibling,
+    UnusableSibling {
+        binary: Option<&'a str>,
+        error: &'a str,
+    },
+    DifferentSibling {
+        version: &'a str,
+        build_id: shepr_protocol::BuildIdentity,
+    },
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the cause is a one-shot typed value built at the call site"
+)]
+pub fn remote_sibling_mismatch(
+    target: &impl std::fmt::Display,
+    cause: RemoteInstallationFailure<'_>,
+) -> String {
+    use crate::invocation::SERVER_BINARY_NAME;
+    let install_hint = format!(
+        "Install {PROGRAM_NAME} and {SERVER_BINARY_NAME} together from the same build on the host and retry"
+    );
+    match cause {
+        RemoteInstallationFailure::MissingSibling => format!(
+            "remote shepr installation error on {target}: {PROGRAM_NAME} did not report a {SERVER_BINARY_NAME} beside it. {install_hint}"
+        ),
+        RemoteInstallationFailure::UnusableSibling { binary, error } => {
+            let binary = binary.map_or_else(String::new, |binary| format!(" ({binary})"));
+            format!(
+                "remote shepr installation error on {target}: {SERVER_BINARY_NAME}{binary} is unusable: {error}. {install_hint}"
+            )
+        }
+        RemoteInstallationFailure::DifferentSibling { version, build_id } => {
+            // Remote identity fields must remain printable single-line values.
+            let version = if !version.is_empty()
+                && version.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ')
+            {
+                version
+            } else {
+                "unknown"
+            };
+            format!(
+                "remote shepr installation error on {target}: the {SERVER_BINARY_NAME} beside {PROGRAM_NAME} is version {version} build {build_id}; this client is version {} build {}. {install_hint}",
+                shepr_protocol::build_version(),
+                shepr_protocol::BUILD_ID
+            )
+        }
+    }
+}
+
+pub fn remote_client_mismatch(
+    target: &impl std::fmt::Display,
+    version: &impl std::fmt::Display,
+    build_id: &str,
+) -> String {
+    let advice = if shepr_paths::BuildProfile::current() == shepr_paths::BuildProfile::Dev {
+        "This is a dev client, which needs a dev build of shepr on the remote host; discovery only finds installed builds (normally release), so install a dev build there and retry"
+    } else {
+        "Install the same shepr build on the host and retry"
+    };
+    format!(
+        "remote shepr compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. {advice}",
+        shepr_protocol::build_version(),
+        shepr_protocol::BUILD_ID
+    )
+}
+
+pub fn remote_install_not_ready(target: &impl std::fmt::Display, rejection: &str) -> String {
+    format!(
+        "matching {PROGRAM_NAME} is not ready on {target}{rejection}; install or update it there manually and retry"
+    )
+}
+
+pub fn local_offer(status: &crate::status::RuntimeStatus) -> String {
+    format!(
+        "shepr: the local shepr server is a different build (server build {}, boot {}, this shepr build {}).\n\
+         Restarting it stops that server, which ends every pane process it hosts.\n\
+         The saved layout is restored with fresh shells, and agents are resumed where they can be.\n\
+         Restart it now? [y/N] ",
+        status.build_id,
+        status.boot_id,
+        shepr_protocol::BUILD_ID
+    )
+}
+
+/// What the operator is told about the local server's restart. A server that
+/// was kept running, or that no one could be asked about, is reported by the
+/// launch that follows, with the stop command.
+pub fn local_notice(local: &crate::restart::RestartResult) -> Option<String> {
+    match local {
+        crate::restart::RestartResult::NotNeeded | crate::restart::RestartResult::NoTerminal | crate::restart::RestartResult::Declined => None,
+        crate::restart::RestartResult::Stopped => Some(
+            "shepr: stopped the local server of a different build; one of this build starts now."
+                .to_owned(),
+        ),
+        crate::restart::RestartResult::NoServer => Some(
+            "shepr: the local server of a different build had already stopped; one of this build starts now."
+                .to_owned(),
+        ),
+        crate::restart::RestartResult::OccupantChanged => Some(
+            "shepr: the local server changed while it was being stopped; no stop was sent to a new occupant."
+                .to_owned(),
+        ),
+        crate::restart::RestartResult::Failed(error) => {
+            Some(format!("shepr: could not stop the local server: {error}"))
+        }
+    }
+}
+
+pub fn ssh_prompt_notice(
+    label: &impl std::fmt::Display,
+    target: &impl std::fmt::Display,
+) -> String {
+    format!("shepr: machine {label} ({target}) needs authentication; running ssh for it.")
+}
+
+/// Preflight decisions retain their typed cause until this wording boundary.
+pub enum MachinePreflightNotice<'a> {
+    AuthenticationFailed(&'a dyn std::fmt::Display),
+    NoTerminal,
+    AuthenticationRefused(&'a crate::EndpointFailure),
+    HostKey(&'a crate::EndpointFailure),
+    Incompatible(&'a crate::EndpointFailure),
+    Failed(&'a crate::EndpointFailure),
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the notice is a one-shot typed value built at the call site"
+)]
+pub fn machine_preflight_notice(
+    label: &impl std::fmt::Display,
+    notice: MachinePreflightNotice<'_>,
+) -> String {
+    match notice {
+        MachinePreflightNotice::AuthenticationFailed(error) => format!(
+            "shepr: authentication for machine {label} failed: {error}. The client keeps retrying it."
+        ),
+        MachinePreflightNotice::NoTerminal => format!(
+            "shepr: machine {label} needs authentication, but there is no terminal to prompt on; run `{}` from an interactive terminal.",
+            operator_entrypoint()
+        ),
+        MachinePreflightNotice::AuthenticationRefused(failure) => format!(
+            "shepr: machine {label} still refuses the client's connection after ssh authenticated: {failure}. The client keeps retrying it."
+        ),
+        MachinePreflightNotice::HostKey(failure) => format!("shepr: machine {label}: {failure}"),
+        MachinePreflightNotice::Incompatible(failure) => format!(
+            "shepr: machine {label} cannot be used: {failure}. {}",
+            failure.disposition().client_action()
+        ),
+        MachinePreflightNotice::Failed(failure) => format!(
+            "shepr: machine {label} could not be checked: {failure}. {}",
+            failure.disposition().client_action()
+        ),
+    }
+}
+
+pub fn machine_failure_hints(
+    failure: &crate::EndpointFailure,
+    ssh_check_command: &str,
+) -> Vec<String> {
+    use crate::{FailureCause, SshFailureClass};
+    match failure.cause() {
+        FailureCause::Ssh(SshFailureClass::HostKey) => vec![
+            "hint: configured machines use strict host-key checking; add the host key to the configured known_hosts file, then retry.".to_owned(),
+        ],
+        FailureCause::Ssh(SshFailureClass::Configuration) => vec![
+            "hint: check the configured SSH target and local SSH configuration; OpenSSH reports the file and line for configuration errors.".to_owned(),
+        ],
+        FailureCause::Ssh(SshFailureClass::Authentication) => vec![
+            format!("hint: verify SSH access first with `{ssh_check_command}`."),
+            "hint: if your SSH key has a passphrase, load it into ssh-agent with `ssh-add` before retrying.".to_owned(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
+pub fn failure_client_action(disposition: crate::FailureDisposition) -> &'static str {
+    if disposition.needs_attention() {
+        "The client shows it as unavailable and needs attention; it keeps retrying it."
+    } else {
+        "The client keeps retrying it."
+    }
+}
+
+/// The boot outcome is determined by the launcher; guidance only renders it.
+pub enum ServerBootNotice {
+    Exited {
+        class: crate::daemon_exit::DaemonExit,
+        status: std::process::ExitStatus,
+    },
+    LogOverflow {
+        max_bytes: u64,
+    },
+    TimedOut {
+        timeout: std::time::Duration,
+        occupant_only: bool,
+    },
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "the notice is a one-shot typed value built at the call site"
+)]
+pub fn server_boot_notice(notice: ServerBootNotice) -> String {
+    use crate::invocation::SERVER_BINARY_NAME;
+    match notice {
+        ServerBootNotice::Exited { class, status } => format!(
+            "{SERVER_BINARY_NAME} {} ({status})",
+            class.describe_boot_end()
+        ),
+        ServerBootNotice::LogOverflow { max_bytes } => format!(
+            "{SERVER_BINARY_NAME} wrote more than {max_bytes} bytes to its boot log while starting and was stopped"
+        ),
+        ServerBootNotice::TimedOut {
+            timeout,
+            occupant_only: true,
+        } => format!(
+            "{SERVER_BINARY_NAME} found another server already running, but that server did not answer a status request within {}s",
+            timeout.as_secs()
+        ),
+        ServerBootNotice::TimedOut {
+            timeout,
+            occupant_only: false,
+        } => format!(
+            "{SERVER_BINARY_NAME} did not become ready within {}s and was stopped",
+            timeout.as_secs()
+        ),
+    }
+}
+
+pub fn append_boot_log_notice(
+    message: &mut String,
+    boot_log: &Path,
+    server_log: &Path,
+    tail: Result<String, std::io::Error>,
+) {
+    match tail {
+        Ok(tail) if !tail.is_empty() => message.push_str(&format!(
+            "\nserver output ({}):\n{tail}",
+            boot_log.display()
+        )),
+        Ok(_) => message.push_str(&format!(
+            "\nthe server printed nothing during boot ({})",
+            boot_log.display()
+        )),
+        Err(error) => message.push_str(&format!(
+            "\ncould not read the server boot log {}: {error}",
+            boot_log.display()
+        )),
+    }
+    message.push_str(&format!(
+        "\nonce it is running, the server logs to {}",
+        server_log.display()
+    ));
+}
+
+pub fn sibling_build_mismatch(server: &Path, status: &crate::status::RuntimeStatus) -> String {
+    let server_name = crate::invocation::SERVER_BINARY_NAME;
+    format!(
+        "{} is a different build than this {PROGRAM_NAME} and was stopped; install {PROGRAM_NAME} and {server_name} together (`brokkr install`).\n\nserver: v{} build {}\nclient: v{} build {}",
+        server.display(),
+        status.version,
+        status.build_id,
+        shepr_protocol::build_version(),
+        shepr_protocol::BUILD_ID
+    )
+}
+
+pub fn server_transition_timeout(socket: &Path, timeout: std::time::Duration) -> String {
+    format!(
+        "the shepr server at {} did not finish starting or release its socket within {}ms",
+        socket.display(),
+        timeout.as_millis()
+    )
+}
+
+pub fn disconnect_notice(
+    cause: crate::FailureCause,
+    disposition: crate::FailureDisposition,
+) -> &'static str {
+    use crate::FailureCause;
+    use shepr_platform::ipc::{StreamFailure, classify_stream_error};
+    if disposition.needs_attention() {
+        return "connection failed; needs attention";
+    }
+    match cause {
+        FailureCause::Backpressure => "local output queue filled; reconnecting",
+        FailureCause::Shutdown(_) => "server shut down; reconnecting",
+        FailureCause::Io(kind) => match classify_stream_error(kind) {
+            StreamFailure::TimedOut => "connection timed out; reconnecting",
+            StreamFailure::PeerGone => "connection was lost; reconnecting",
+            StreamFailure::NoListener | StreamFailure::Other => "connection failed; reconnecting",
+        },
+        _ => "connection failed; reconnecting",
+    }
 }
 
 #[cfg(test)]

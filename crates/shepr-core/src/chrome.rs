@@ -24,7 +24,7 @@ pub const MIN_COLS_FOR_SCROLLBAR_GUTTER: u16 = PANE_MIN_COLS;
 /// The part of `area` inside the pane edges: top and left are always inset;
 /// right and bottom are inset when they are not shared. Saturates so a rect too
 /// small for its borders ends up empty.
-pub fn inner_rect(area: Rect, shared_edges: SharedPaneEdges) -> Rect {
+pub fn border_inner_rect(area: Rect, shared_edges: SharedPaneEdges) -> Rect {
     let mut inner = area;
     let right = area.x.saturating_add(area.width);
     let bottom = area.y.saturating_add(area.height);
@@ -44,15 +44,15 @@ pub fn inner_rect(area: Rect, shared_edges: SharedPaneEdges) -> Rect {
 /// The terminal content rect inside a pane's inner (border-less) rect: one
 /// column is kept for the scrollbar gutter unless scrollbars are off, the pane
 /// is too narrow, or the terminal is on the alternate screen.
-pub fn content_rect(pane_inner: Rect, pane_scrollbars: bool, alternate_screen: bool) -> Rect {
-    if !pane_scrollbars || pane_inner.width <= MIN_COLS_FOR_SCROLLBAR_GUTTER || alternate_screen {
-        return pane_inner;
+pub fn content_rect(border_inner: Rect, pane_scrollbars: bool, alternate_screen: bool) -> Rect {
+    if !pane_scrollbars || border_inner.width <= MIN_COLS_FOR_SCROLLBAR_GUTTER || alternate_screen {
+        return border_inner;
     }
     Rect::new(
-        pane_inner.x,
-        pane_inner.y,
-        pane_inner.width.saturating_sub(1),
-        pane_inner.height,
+        border_inner.x,
+        border_inner.y,
+        border_inner.width.saturating_sub(1),
+        border_inner.height,
     )
 }
 
@@ -70,21 +70,23 @@ pub struct PaneChrome {
 
 impl PaneChrome {
     /// The rect inside the borders, before any scrollbar gutter.
-    pub fn inner_rect(&self) -> Rect {
-        inner_rect(self.rect, self.shared_edges)
+    pub fn border_inner_rect(&self) -> Rect {
+        border_inner_rect(self.rect, self.shared_edges)
     }
 
     /// Settle the content rect for a screen mode. Empty drawable rects stay
     /// empty; the PTY grid minimum belongs to the spawn sizing.
     pub fn into_content(self, scrollbars: bool, alternate_screen: bool) -> PaneContent {
-        let inner = self.inner_rect();
-        let content = content_rect(inner, scrollbars, alternate_screen);
-        let scrollbar_gutter = (content != inner).then(|| {
+        let border_inner = self.border_inner_rect();
+        let content = content_rect(border_inner, scrollbars, alternate_screen);
+        let scrollbar_gutter = (content != border_inner).then(|| {
             Rect::new(
-                inner.x.saturating_add(inner.width.saturating_sub(1)),
-                inner.y,
+                border_inner
+                    .x
+                    .saturating_add(border_inner.width.saturating_sub(1)),
+                border_inner.y,
                 1,
-                inner.height,
+                border_inner.height,
             )
         });
         PaneContent {
@@ -205,14 +207,14 @@ mod tests {
     }
 
     #[test]
-    fn inner_rect_always_takes_top_and_left_and_only_unshared_edges() {
+    fn border_inner_rect_always_takes_top_and_left_and_only_unshared_edges() {
         let area = Rect::new(4, 2, 10, 6);
         assert_eq!(
-            inner_rect(area, SharedPaneEdges::default()),
+            border_inner_rect(area, SharedPaneEdges::default()),
             Rect::new(5, 3, 8, 4)
         );
         assert_eq!(
-            inner_rect(
+            border_inner_rect(
                 area,
                 SharedPaneEdges {
                     shares_right: true,
@@ -222,9 +224,9 @@ mod tests {
             Rect::new(5, 3, 9, 4)
         );
         // A rect too small for its borders ends up empty, never wrapped.
-        let tiny = inner_rect(Rect::new(0, 0, 1, 1), SharedPaneEdges::default());
+        let tiny = border_inner_rect(Rect::new(0, 0, 1, 1), SharedPaneEdges::default());
         assert_eq!((tiny.width, tiny.height), (0, 0));
-        let empty = inner_rect(
+        let empty = border_inner_rect(
             Rect::new(u16::MAX, u16::MAX, 0, 0),
             SharedPaneEdges::default(),
         );
@@ -250,7 +252,7 @@ mod tests {
                         shared_edges: SharedPaneEdges::default(),
                         is_focused: true,
                     };
-                    let inner = pane.inner_rect();
+                    let inner = pane.border_inner_rect();
                     let settled = pane.into_content(scrollbars, alternate);
                     let reserved =
                         scrollbars && !alternate && inner.width > MIN_COLS_FOR_SCROLLBAR_GUTTER;

@@ -242,7 +242,6 @@ fn unknown_session_start_source_records_a_session_but_never_replaces_one() {
         let mut params = serde_json::json!({
             "pane_id": pane_id.clone(),
             "source": "shepr:agy",
-            "agent": "agy",
             "agent_session_id": session_id,
             "seq": seq
         });
@@ -429,9 +428,8 @@ fn replay_and_assert_contract(
     .expect("valid contract session reference");
     let origin =
         ReportOrigin::official(contract.agent).expect("a bundled asset has an integration");
-    let expected_session =
-        PersistedAgentSession::new(*origin.source(), contract.agent, session_ref)
-            .expect("supported agent session identity");
+    let expected_session = PersistedAgentSession::new(*origin.source(), session_ref)
+        .expect("supported agent session identity");
 
     for (index, request) in requests.iter().enumerate() {
         // Another bundled source would be accepted too; a bundled asset must

@@ -58,7 +58,7 @@ async fn default_headless_size_lays_out_workspaces_without_clients() {
     let pane = layout.panes.first().expect("test pane geometry");
     assert_eq!(
         server.app.test_runtime(pane_id).current_size(),
-        (pane.inner_rect.height, pane.inner_rect.width)
+        (pane.content_rect.height, pane.content_rect.width)
     );
     shutdown_test_runtimes(&mut server);
 }
@@ -88,7 +88,7 @@ async fn last_shell_disconnect_restores_headless_pane_size() {
         crate::ui::ratatui_rect(view.state.settings().headless_rect()),
     );
     let pane = layout.panes.first().expect("test pane geometry");
-    let headless_pane_size = (pane.inner_rect.height, pane.inner_rect.width);
+    let headless_pane_size = (pane.content_rect.height, pane.content_rect.width);
 
     assert_eq!(
         server
@@ -610,7 +610,7 @@ fn laid_out_pane_size_of(server: &HeadlessServer, index: usize) -> (u16, u16) {
         crate::ui::ratatui_rect(area),
     );
     let pane = layout.panes.first().expect("test pane geometry");
-    (pane.inner_rect.height, pane.inner_rect.width)
+    (pane.content_rect.height, pane.content_rect.width)
 }
 
 /// Moves the app clock forward by `by` without applying anything.

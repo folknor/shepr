@@ -377,14 +377,14 @@ pub(in crate::shell) struct MachineEntryHit {
 #[derive(Clone)]
 pub(in crate::shell) struct PaneHit {
     pub(in crate::shell) rect: Rect,
-    pub(in crate::shell) inner_rect: Rect,
+    pub(in crate::shell) content_rect: Rect,
     pub(in crate::shell) scrollbar_rect: Option<Rect>,
     pub(in crate::shell) scroll: Option<shepr_term::ScrollMetrics>,
     pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
     pub(in crate::shell) mouse_reporting: bool,
     pub(in crate::shell) pixel_mouse: shepr_term::mouse::PanePixelMouse,
     /// The pane's content size in cells as the server laid it out, width then
-    /// height, whether or not the clip cut it. `inner_rect` is only the visible part.
+    /// height, whether or not the clip cut it. `content_rect` is only the visible part.
     pub(in crate::shell) pane_size: (u16, u16),
     /// The pane's full content grid when it is shown unclipped, `None` when
     /// the clip cut it (pixels cannot be mapped then).
@@ -410,8 +410,8 @@ impl PaneHit {
     /// cell. It is `pane_size` unless the clip cut the pane.
     pub(in crate::shell) fn visible_size(&self) -> (u16, u16) {
         (
-            self.inner_rect.width.min(self.pane_size.0),
-            self.inner_rect.height.min(self.pane_size.1),
+            self.content_rect.width.min(self.pane_size.0),
+            self.content_rect.height.min(self.pane_size.1),
         )
     }
 
@@ -423,15 +423,15 @@ impl PaneHit {
         clip: Rect,
     ) -> Option<Self> {
         let offset = |rect| surface_rect_on_screen(origin, rect);
-        let inner_rect = offset(pane.inner_rect);
-        let visible_inner = inner_rect.intersection(clip);
+        let content_rect = offset(pane.content_rect);
+        let visible_inner = content_rect.intersection(clip);
         if visible_inner.is_empty() {
             return None;
         }
-        let clipped = inner_rect != visible_inner;
+        let clipped = content_rect != visible_inner;
         Some(Self {
             rect: offset(pane.rect).intersection(clip),
-            inner_rect: visible_inner,
+            content_rect: visible_inner,
             scrollbar_rect: pane
                 .scrollbar_rect
                 .map(offset)
@@ -441,10 +441,10 @@ impl PaneHit {
             pane_id: pane.pane_id,
             mouse_reporting: pane.mouse_reporting,
             pixel_mouse: pane.pixel_mouse,
-            pane_size: (pane.inner_rect.width, pane.inner_rect.height),
+            pane_size: (pane.content_rect.width, pane.content_rect.height),
             presented: shepr_core::geometry::GridSize::new(
-                pane.inner_rect.width,
-                pane.inner_rect.height,
+                pane.content_rect.width,
+                pane.content_rect.height,
             )
             .filter(|_| !clipped),
         })

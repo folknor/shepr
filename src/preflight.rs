@@ -508,13 +508,7 @@ mod tests {
         }
     }
 
-    fn other_build() -> &'static str {
-        if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
-            "0000000000000000"
-        } else {
-            "ffffffffffffffff"
-        }
-    }
+    use shepr_test_fixtures::other_build_id as other_build;
 
     fn boot_mismatch() -> ServerStopError {
         ServerStopError::BootMismatch {

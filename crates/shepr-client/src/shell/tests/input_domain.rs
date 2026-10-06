@@ -355,8 +355,8 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
     let pane = state.pane_hits()[0].clone();
     let geometry = shepr_termio::input::mouse::HostPixelExtent::new(106, 20, 1060, 400)
         .expect("host geometry");
-    let x = u32::from(pane.inner_rect.x) * 10 + 21;
-    let y = u32::from(pane.inner_rect.y) * 20 + 21;
+    let x = u32::from(pane.content_rect.x) * 10 + 21;
+    let y = u32::from(pane.content_rect.y) * 20 + 21;
 
     let down = state.handle_pixel_mouse_bytes(format!("\x1b[<0;{x};{y}M").as_bytes(), geometry);
     assert!(matches!(
@@ -778,7 +778,7 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
     );
     // Select the linked cell and the one after it with the mouse.
     state.compose(106, 20).expect("unselected frame");
-    let pane = state.pane_hits()[0].inner_rect;
+    let pane = state.pane_hits()[0].content_rect;
     for (kind, column) in [
         (MouseEventKind::Down(MouseButton::Left), pane.x),
         (MouseEventKind::Drag(MouseButton::Left), pane.x + 1),
@@ -800,8 +800,8 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
     );
     let frame = state.compose(106, 20).expect("composed frame");
     let hit = &state.pane_hits()[0];
-    let index =
-        usize::from(hit.inner_rect.y) * usize::from(frame.width()) + usize::from(hit.inner_rect.x);
+    let index = usize::from(hit.content_rect.y) * usize::from(frame.width())
+        + usize::from(hit.content_rect.x);
     let link = frame.cells()[index].hyperlink.expect("linked cell") as usize;
     assert_eq!(frame.hyperlinks()[link], "https://example.test");
 }
@@ -854,7 +854,7 @@ fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
     );
     let plain = state.compose(106, 30).expect("frame without overlay");
     let hit = state.pane_hits()[0].clone();
-    let pane_origin = (hit.inner_rect.x, hit.inner_rect.y);
+    let pane_origin = (hit.content_rect.x, hit.content_rect.y);
     assert!(
         !frame_cell(&plain, pane_origin)
             .style

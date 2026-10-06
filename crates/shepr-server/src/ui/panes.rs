@@ -55,7 +55,8 @@ pub(super) fn visible_chromes(
     workspace: &shepr_mux::workspace::Workspace,
     area: shepr_core::geometry::Rect,
 ) -> Vec<shepr_core::chrome::PaneChrome> {
-    app.chrome_in(area)
+    app.settings()
+        .chrome_in(area)
         .visible_panes(workspace.tree().layout(), workspace.tree().zoomed())
 }
 
@@ -87,20 +88,20 @@ pub(super) fn render_panes(
 
     for info in pane_infos {
         if let Some(rt) = workspace_runtime(ws, terminal_runtimes, info.id) {
-            draws.push((info.id, rt.read().render_into(frame, info.inner_rect)));
+            draws.push((info.id, rt.read().render_into(frame, info.content_rect)));
             render_pane_scrollbar(frame, info, rt);
         } else if let Some(reason) = ws
             .tree()
             .pane(info.id)
             .and_then(|record| record.terminal().start_failure())
         {
-            let mut scratch = Buffer::empty(info.inner_rect);
+            let mut scratch = Buffer::empty(info.content_rect);
             Paragraph::new(restore_failure_text(reason))
                 .wrap(Wrap { trim: false })
-                .render(info.inner_rect, &mut scratch);
+                .render(info.content_rect, &mut scratch);
             // A pane with no runtime has no cells of its own: the message owns
             // its whole content rect.
-            overlay_buffer(frame, &scratch, info.inner_rect);
+            overlay_buffer(frame, &scratch, info.content_rect);
         }
     }
 
@@ -549,7 +550,7 @@ mod tests {
         // inside the frame its fresh shell does not get.
         assert_eq!(infos[0].shared_edges, SharedPaneEdges::default());
         assert_eq!(
-            infos[0].inner_rect,
+            infos[0].content_rect,
             Rect::new(
                 infos[0].rect.x + 1,
                 infos[0].rect.y + 1,
@@ -594,7 +595,7 @@ mod tests {
             .map(|cell| cell.symbol.as_str())
             .collect();
         assert!(text.contains("Pane directory is unavailable."));
-        assert!(text.contains("Restore the directory and restart this session."));
+        assert!(text.contains("Restore the directory, then close this pane and open a new one."));
         assert!(text.contains("Error:"));
         assert!(cursor.is_none_or(|cursor| !cursor.visible));
     }
@@ -648,7 +649,7 @@ mod tests {
         let pane_infos = vec![PaneSurface {
             id: pane_id,
             rect: Rect::new(0, 0, 12, 3),
-            inner_rect: Rect::default(),
+            content_rect: Rect::default(),
             scrollbar_gutter: None,
             scrollbar_rect: None,
             shared_edges: SharedPaneEdges::default(),
@@ -683,7 +684,7 @@ mod tests {
         let surface = |is_focused| PaneSurface {
             id: pane,
             rect: Rect::new(0, 0, 12, 3),
-            inner_rect: Rect::new(1, 1, 10, 1),
+            content_rect: Rect::new(1, 1, 10, 1),
             scrollbar_gutter: None,
             scrollbar_rect: None,
             shared_edges: SharedPaneEdges::default(),
@@ -714,7 +715,7 @@ mod tests {
             PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(1),
                 rect: Rect::new(0, 0, 2, 2),
-                inner_rect: Rect::default(),
+                content_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
                 shared_edges: SharedPaneEdges {
@@ -726,7 +727,7 @@ mod tests {
             PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(2),
                 rect: Rect::new(2, 0, 2, 2),
-                inner_rect: Rect::default(),
+                content_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
                 shared_edges: SharedPaneEdges {
@@ -738,7 +739,7 @@ mod tests {
             PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(3),
                 rect: Rect::new(0, 2, 2, 2),
-                inner_rect: Rect::default(),
+                content_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
                 shared_edges: SharedPaneEdges {
@@ -750,7 +751,7 @@ mod tests {
             PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(4),
                 rect: Rect::new(2, 2, 2, 2),
-                inner_rect: Rect::default(),
+                content_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
                 shared_edges: SharedPaneEdges::default(),
@@ -792,7 +793,7 @@ mod tests {
             PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(1),
                 rect: Rect::new(0, 0, 2, 3),
-                inner_rect: Rect::default(),
+                content_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
                 shared_edges: SharedPaneEdges::default(),
@@ -801,7 +802,7 @@ mod tests {
             PaneSurface {
                 id: shepr_test_fixtures::fixed_pane_id(2),
                 rect: Rect::new(2, 0, 2, 3),
-                inner_rect: Rect::default(),
+                content_rect: Rect::default(),
                 scrollbar_gutter: None,
                 scrollbar_rect: None,
                 shared_edges: SharedPaneEdges::default(),
@@ -838,7 +839,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, Rect::new(11, 4, 37, 6));
+        assert_eq!(info.content_rect, Rect::new(11, 4, 37, 6));
     }
 
     #[tokio::test]
@@ -866,7 +867,7 @@ mod tests {
         let assert_geometry = |expected_width, has_scrollbar| {
             let infos = compute_pane_infos(&app, &terminal_runtimes, area);
             assert_eq!(
-                infos[0].inner_rect,
+                infos[0].content_rect,
                 Rect::new(area.x + 1, area.y + 1, expected_width, area.height - 2)
             );
             assert_eq!(infos[0].scrollbar_rect.is_some(), has_scrollbar);
@@ -899,7 +900,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, Rect::new(11, 4, 37, 6));
+        assert_eq!(info.content_rect, Rect::new(11, 4, 37, 6));
     }
 
     #[tokio::test]
@@ -923,7 +924,7 @@ mod tests {
         assert_eq!(info.id, focused_pane);
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, Rect::new(11, 4, 37, 6));
+        assert_eq!(info.content_rect, Rect::new(11, 4, 37, 6));
     }
 
     #[tokio::test]
@@ -945,7 +946,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, Rect::new(11, 4, 2, 6));
+        assert_eq!(info.content_rect, Rect::new(11, 4, 2, 6));
     }
 
     #[tokio::test]
@@ -972,15 +973,15 @@ mod tests {
             app.test_record_all_workspace_areas(area);
 
             let infos = compute_pane_infos(&app, &terminal_runtimes, area);
-            let geometry = app.chrome_in(app.layout_area(app.ws(0)));
+            let geometry = app.settings().chrome_in(app.layout_area(app.ws(0)));
             assert_eq!(geometry.area, crate::ui::core_rect(area));
             assert_eq!(infos.len(), if zoomed { 1 } else { 2 });
             for info in &infos {
                 assert_eq!(
                     geometry.pane_size(app.ws(0).tree().layout(), zoomed, info.id),
                     shepr_core::geometry::GridSize::new(
-                        info.inner_rect.width,
-                        info.inner_rect.height
+                        info.content_rect.width,
+                        info.content_rect.height
                     ),
                     "scrollbars {pane_scrollbars}, zoomed {zoomed}"
                 );
@@ -1015,7 +1016,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, Some(Rect::new(48, 4, 1, 6)));
-        assert_eq!(info.inner_rect, Rect::new(11, 4, 37, 6));
+        assert_eq!(info.content_rect, Rect::new(11, 4, 37, 6));
 
         app.settings_mut().pane_scrollbars = false;
         let infos = compute_pane_infos(&app, &terminal_runtimes, area);
@@ -1023,7 +1024,7 @@ mod tests {
 
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
-        assert_eq!(info.inner_rect, Rect::new(11, 4, 38, 6));
+        assert_eq!(info.content_rect, Rect::new(11, 4, 38, 6));
     }
 }
 

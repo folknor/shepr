@@ -216,8 +216,8 @@ fn a_pane_without_scroll_metrics_takes_no_selection() {
     let pane = state.pane_hits()[0].clone();
     let mut mouse = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: pane.inner_rect.x,
-        row: pane.inner_rect.y + 1,
+        column: pane.content_rect.x,
+        row: pane.content_rect.y + 1,
         modifiers: KeyModifiers::empty(),
     };
     let press = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
@@ -255,8 +255,8 @@ fn selection_release_copies_latest_position_before_deferred_paint() {
     let pane = state.pane_hits()[0].clone();
     let mut mouse = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: pane.inner_rect.x,
-        row: pane.inner_rect.y,
+        column: pane.content_rect.x,
+        row: pane.content_rect.y,
         modifiers: KeyModifiers::empty(),
     };
     state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
@@ -289,7 +289,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
     let mut second = pane_surface.panes[0].clone();
     second.pane_id = test_pane_id("w1:p2");
     second.rect.x = 40;
-    second.inner_rect.x = 40;
+    second.content_rect.x = 40;
     pane_surface.panes.push(second);
     pane_surface.splits.push(PaneSurfaceSplit {
         direction: PaneSurfaceSplitDirection::Horizontal,
@@ -342,7 +342,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
     let mut second = replacement_surface.panes[0].clone();
     second.pane_id = test_pane_id("w1:p2");
     second.rect.x = 40;
-    second.inner_rect.x = 40;
+    second.content_rect.x = 40;
     replacement_surface.panes.push(second);
     replacement_surface.splits.push(PaneSurfaceSplit {
         direction: PaneSurfaceSplitDirection::Horizontal,
@@ -552,7 +552,7 @@ fn word_drag_state(copy_on_select: bool) -> ClientShellState {
         .expect("test buffer is a valid frame");
     pane_surface.panes[0].rect.width = 19;
     pane_surface.panes[0].rect.height = 3;
-    pane_surface.panes[0].inner_rect = pane_surface.panes[0].rect;
+    pane_surface.panes[0].content_rect = pane_surface.panes[0].rect;
     state.receive_pane_surface_from(
         pane_surface,
         state
@@ -574,8 +574,8 @@ fn word_drag_mouse(
     let pane = state.pane_hits()[0].clone();
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind,
-        column: pane.inner_rect.x + col,
-        row: pane.inner_rect.y + row,
+        column: pane.content_rect.x + col,
+        row: pane.content_rect.y + row,
         modifiers: KeyModifiers::empty(),
     })])
 }
@@ -621,7 +621,7 @@ fn start_word_drag(state: &mut ClientShellState) -> shepr_protocol::RequestId {
     let second = word_drag_mouse(state, MouseEventKind::Down(MouseButton::Left), 0, 8);
     assert!(second.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. }
         if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
-            if params.anchor.col == 0 && params.cursor.col == state.pane_hits()[0].inner_rect.width - 1))));
+            if params.anchor.col == 0 && params.cursor.col == state.pane_hits()[0].content_rect.width - 1))));
     word_read_id(&second.actions)
 }
 
@@ -847,14 +847,14 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
         RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind,
             column,
-            row: pane.inner_rect.y,
+            row: pane.content_rect.y,
             modifiers: KeyModifiers::empty(),
         })
     };
 
     state.handle_raw_events(vec![mouse(
         MouseEventKind::Down(MouseButton::Left),
-        pane.inner_rect.x,
+        pane.content_rect.x,
     )]);
     // Snapshots produced before the click's PaneFocus lands (a title spinner,
     // say) still name the old pane; they must not cancel the drag.
@@ -865,7 +865,7 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
     );
     state.handle_raw_events(vec![mouse(
         MouseEventKind::Drag(MouseButton::Left),
-        pane.inner_rect.x + 2,
+        pane.content_rect.x + 2,
     )]);
     assert_eq!(
         state
@@ -904,8 +904,8 @@ fn selection_in_focused_pane_still_ends_when_focus_moves() {
     let pane = state.pane_hits()[0].clone();
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: pane.inner_rect.x,
-        row: pane.inner_rect.y,
+        column: pane.content_rect.x,
+        row: pane.content_rect.y,
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(state.mouse_selection.focus_pending.is_none());
@@ -1060,7 +1060,7 @@ fn double_click_drag_resize_cancels_pending_word_lookup() {
             .checked_next()
             .expect("test precondition");
         resized.panes[0].rect.width += 5;
-        resized.panes[0].inner_rect.width += 5;
+        resized.panes[0].content_rect.width += 5;
         state.receive_pane_surface_from(
             resized,
             state
@@ -1164,8 +1164,8 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
 
     state.handle_raw_events(vec![mouse(
         MouseEventKind::Down(MouseButton::Left),
-        pane.inner_rect.x,
-        pane.inner_rect.y + 1,
+        pane.content_rect.x,
+        pane.content_rect.y + 1,
     )]);
     let mut updated_surface = surface_at(2, 2, true);
     updated_surface.frame.cells_mut()[0].symbol = "W".into();
@@ -1181,8 +1181,8 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
 
     let drag = state.handle_raw_events(vec![mouse(
         MouseEventKind::Drag(MouseButton::Left),
-        pane.inner_rect.x + 1,
-        pane.inner_rect.y + 1,
+        pane.content_rect.x + 1,
+        pane.content_rect.y + 1,
     )]);
 
     assert!(drag.repaint || state.mouse_selection.repaint_deadline.is_some());
@@ -1286,7 +1286,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         ));
         let mut changed_surface =
             surface_at(surface_revision, content_revision, alternate_screen_active);
-        changed_surface.panes[0].inner_rect.width = width;
+        changed_surface.panes[0].content_rect.width = width;
         changed_surface.panes[0].alternate_screen_active = alternate_screen_active;
         state.receive_pane_surface_from(
             changed_surface,
@@ -1319,8 +1319,8 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
 
     let click = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: pane.inner_rect.x + 2,
-        row: pane.inner_rect.y + 1,
+        column: pane.content_rect.x + 2,
+        row: pane.content_rect.y + 1,
         modifiers: KeyModifiers::ALT,
     })]);
     let [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })] =
@@ -1379,7 +1379,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
-    let inner = pane_surface.panes[0].inner_rect;
+    let inner = pane_surface.panes[0].content_rect;
     let extent = shepr_core::geometry::PanePixelExtent::new(
         shepr_core::geometry::GridSize::new(inner.width, inner.height).expect("inner grid"),
         39,
@@ -1402,8 +1402,8 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     let pane = state.pane_hits()[0].clone();
     let geometry = shepr_termio::input::mouse::HostPixelExtent::new(106, 20, 1060, 400)
         .expect("host geometry");
-    let x = u32::from(pane.inner_rect.x) * 10 + 21;
-    let y = u32::from(pane.inner_rect.y) * 20 + 21;
+    let x = u32::from(pane.content_rect.x) * 10 + 21;
+    let y = u32::from(pane.content_rect.y) * 20 + 21;
     let report = format!("\x1b[<0;{x};{y}M");
     let mut framer = shepr_termio::input::raw_input::RawInputFramer::default();
     let mut framed = framer.push_framed(report.as_bytes());
@@ -1463,8 +1463,8 @@ fn pixel_mouse_down(
 ) -> ClientShellInput {
     let geometry = shepr_termio::input::mouse::HostPixelExtent::new(106, 20, 1060, 400)
         .expect("host geometry");
-    let x = u32::from(pane.inner_rect.x + cell.0) * 10 + 1 + offset.0;
-    let y = u32::from(pane.inner_rect.y + cell.1) * 20 + 1 + offset.1;
+    let x = u32::from(pane.content_rect.x + cell.0) * 10 + 1 + offset.0;
+    let y = u32::from(pane.content_rect.y + cell.1) * 20 + 1 + offset.1;
     let report = format!("\x1b[<0;{x};{y}M");
     let mut framer = shepr_termio::input::raw_input::RawInputFramer::default();
     let mut framed = framer.push_framed(report.as_bytes());
@@ -1591,8 +1591,8 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
 
     let down = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Right),
-        column: pane.inner_rect.x + 1,
-        row: pane.inner_rect.y,
+        column: pane.content_rect.x + 1,
+        row: pane.content_rect.y,
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(matches!(
@@ -1699,20 +1699,20 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
         state.compose(106, 20).expect("composed frame");
         let pane = state.pane_hits()[0].clone();
         for (kind, column) in [
-            (MouseEventKind::Down(MouseButton::Left), pane.inner_rect.x),
+            (MouseEventKind::Down(MouseButton::Left), pane.content_rect.x),
             (
                 MouseEventKind::Drag(MouseButton::Left),
-                pane.inner_rect.x + 2,
+                pane.content_rect.x + 2,
             ),
         ] {
             state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
                 kind,
                 column,
-                row: pane.inner_rect.y,
+                row: pane.content_rect.y,
                 modifiers: KeyModifiers::empty(),
             })]);
         }
-        let cell_index = usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x);
+        let cell_index = usize::from(pane.content_rect.y) * 106 + usize::from(pane.content_rect.x);
         let fallback = state.compose(106, 20).expect("fallback frame");
         assert_eq!(
             fallback.cells()[cell_index].bg,
@@ -1781,8 +1781,8 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
 
     let down = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: pane.inner_rect.x,
-        row: pane.inner_rect.y,
+        column: pane.content_rect.x,
+        row: pane.content_rect.y,
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(matches!(
@@ -1803,8 +1803,8 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
 
     let drag = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Drag(MouseButton::Left),
-        column: pane.inner_rect.x + 2,
-        row: pane.inner_rect.y,
+        column: pane.content_rect.x + 2,
+        row: pane.content_rect.y,
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(drag.repaint || state.mouse_selection.repaint_deadline.is_some());
@@ -1816,8 +1816,8 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
             .is_some_and(shepr_term::selection::Selection::is_visible)
     );
     let selected = state.compose(106, 20).expect("selected frame");
-    let selected_cell =
-        &selected.cells()[usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x)];
+    let selected_cell = &selected.cells()
+        [usize::from(pane.content_rect.y) * 106 + usize::from(pane.content_rect.x)];
     assert_ne!(
         selected_cell.bg,
         shepr_protocol::WireColor::from_ratatui(ratatui::style::Color::Reset)
@@ -1826,8 +1826,8 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
     let release =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
-            column: pane.inner_rect.x + 2,
-            row: pane.inner_rect.y,
+            column: pane.content_rect.x + 2,
+            row: pane.content_rect.y,
             modifiers: KeyModifiers::empty(),
         })]);
     assert!(state.mouse_selection.selection.is_none());
@@ -1884,20 +1884,20 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     for event in [
         crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: pane.inner_rect.x,
-            row: pane.inner_rect.y,
+            column: pane.content_rect.x,
+            row: pane.content_rect.y,
             modifiers: KeyModifiers::empty(),
         },
         crossterm::event::MouseEvent {
             kind: MouseEventKind::Drag(MouseButton::Left),
-            column: pane.inner_rect.x + 2,
-            row: pane.inner_rect.y,
+            column: pane.content_rect.x + 2,
+            row: pane.content_rect.y,
             modifiers: KeyModifiers::empty(),
         },
         crossterm::event::MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
-            column: pane.inner_rect.x + 2,
-            row: pane.inner_rect.y,
+            column: pane.content_rect.x + 2,
+            row: pane.content_rect.y,
             modifiers: KeyModifiers::empty(),
         },
     ] {
@@ -1963,7 +1963,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     );
 
     let highlighted = state.compose(106, 20).expect("highlighted frame");
-    let cell_index = usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x);
+    let cell_index = usize::from(pane.content_rect.y) * 106 + usize::from(pane.content_rect.x);
     let selected_cell = highlighted.cells()[cell_index].clone();
     let selection = state.mouse_selection.selection.take();
     let unselected = state.compose(106, 20).expect("unselected frame");
@@ -2013,7 +2013,7 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
     )
     .expect("test buffer is a valid frame");
     pane_surface.panes[0].rect.y = 1;
-    pane_surface.panes[0].inner_rect.y = 1;
+    pane_surface.panes[0].content_rect.y = 1;
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
         0,
         20,
@@ -2030,17 +2030,17 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
     );
     state.compose(106, 20).expect("composed frame");
     let pane = state.pane_hits()[0].clone();
-    assert_eq!(pane.inner_rect.y, 1);
+    assert_eq!(pane.content_rect.y, 1);
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: pane.inner_rect.x,
-        row: pane.inner_rect.y + 1,
+        column: pane.content_rect.x,
+        row: pane.content_rect.y + 1,
         modifiers: KeyModifiers::empty(),
     })]);
     let drag = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Drag(MouseButton::Left),
-        column: pane.inner_rect.x,
-        row: pane.inner_rect.y.saturating_sub(1),
+        column: pane.content_rect.x,
+        row: pane.content_rect.y.saturating_sub(1),
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(matches!(

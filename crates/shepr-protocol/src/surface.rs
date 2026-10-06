@@ -8,7 +8,7 @@ pub struct PaneSurfacePane {
     pub pane_id: PublicPaneId,
     pub content_revision: ContentRevision,
     pub rect: SurfaceRect,
-    pub inner_rect: SurfaceRect,
+    pub content_rect: SurfaceRect,
     pub scrollbar_rect: Option<SurfaceRect>,
     pub scroll: Option<PaneSurfaceScrollMetrics>,
     pub focused: bool,

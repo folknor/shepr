@@ -21,6 +21,14 @@ id = "muse"
 # `Yes, don't ask again this session`. Each approval rule requires a pair because Muse can
 # emit any one of these phrases as ordinary assistant text after a completed turn.
 
+# Reuse the picker control pairs in the blocker, working, and idle rules.
+# Each named gate retains the original AND requirement for both phrases.
+[matchers.single_select_picker]
+contains = ["Enter to select", "Tab for an optional note"]
+
+[matchers.multi_select_picker]
+contains = ["Enter to toggle", "Esc to interrupt"]
+
 [[rules]]
 id = "workspace_trust_blocked"
 state = "blocked"
@@ -40,8 +48,8 @@ priority = 950
 region = "bottom_non_empty_lines(8)"
 visible_blocker = true
 any = [
-  { contains = ["Enter to select", "Tab for an optional note"] },
-  { contains = ["Enter to toggle", "Esc to interrupt"] },
+  { matcher = "single_select_picker" },
+  { matcher = "multi_select_picker" },
 ]
 
 [[rules]]
@@ -64,8 +72,8 @@ region = "bottom_non_empty_lines(8)"
 visible_working = true
 contains = ["esc to interrupt"]
 not = [
-  { contains = ["Enter to select", "Tab for an optional note"] },
-  { contains = ["Enter to toggle", "Esc to interrupt"] },
+  { matcher = "single_select_picker" },
+  { matcher = "multi_select_picker" },
 ]
 
 [[rules]]
@@ -92,8 +100,8 @@ any = [
 ]
 not = [
   { contains = ["esc to interrupt"] },
-  { contains = ["Enter to select", "Tab for an optional note"] },
-  { contains = ["Enter to toggle", "Esc to interrupt"] },
+  { matcher = "single_select_picker" },
+  { matcher = "multi_select_picker" },
   { contains = ["enter confirm", "esc go back"] },
   { contains = ["enter save", "esc go back"] },
   { contains = ["space toggle", "esc close", "type filter"] },

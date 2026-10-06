@@ -434,11 +434,7 @@ fn remote_client_status_requires_an_exact_build_id() {
     };
     assert!(ensure_remote_client_build(build_target(), &matching).is_ok());
 
-    let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
-        "0000000000000000"
-    } else {
-        "ffffffffffffffff"
-    };
+    let other_build = shepr_test_fixtures::other_build_id();
     let mismatched = shepr_api::schema::ClientStatusJson {
         identity: Some(shepr_protocol::BuildVersion {
             version: shepr_protocol::build_version(),
@@ -506,11 +502,7 @@ fn the_remote_pair_check_requires_a_sibling_of_this_build() {
     let host = SshTarget::parse("host").expect("test precondition");
     assert!(ensure_remote_sibling_build(&host, &matching).is_ok());
 
-    let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
-        "0000000000000000"
-    } else {
-        "ffffffffffffffff"
-    };
+    let other_build = shepr_test_fixtures::other_build_id();
     let stale = client_status_with_sibling(Some(sibling(Some(other_build), None)));
     let error = ensure_remote_sibling_build(&host, &stale).expect_err("stale sibling");
     assert_eq!(error.kind(), io::ErrorKind::Unsupported);
@@ -809,7 +801,7 @@ fn the_first_candidate_mismatch_is_returned_when_none_match() {
         .advance(&mut host)
         .expect_err("the incompatible candidate explains why discovery failed");
     assert!(error.to_string().contains("different build"));
-    assert!(!error.to_string().contains("matching Shepr is not ready"));
+    assert!(!error.to_string().contains("is not ready on"));
     assert_eq!(host.probes.len(), 2);
 }
 

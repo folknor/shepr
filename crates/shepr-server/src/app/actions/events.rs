@@ -55,27 +55,35 @@ fn admit_hook_outcome(
     now: std::time::Instant,
 ) -> Option<AgentOwnershipMutation> {
     use shepr_detect::ownership::{ParkedHookAwaiting, UnappliedHookDisposition};
+    let report = ownership
+        .last_unapplied_hook_report(now)
+        .filter(|report| report.origin.source() == source);
+    let seq = report.as_ref().and_then(|report| report.seq);
+    let session_ref = report
+        .as_ref()
+        .and_then(|report| report.session_ref.as_ref());
     match &outcome {
         shepr_detect::ownership::HookOutcome::Applied(_) => {}
         shepr_detect::ownership::HookOutcome::Parked => {
-            let awaiting =
-                ownership
-                    .last_unapplied_hook_report(now)
-                    .and_then(|report| match report.disposition {
-                        UnappliedHookDisposition::Parked(awaiting) => Some(awaiting),
-                        UnappliedHookDisposition::Rejected(_) => None,
-                    });
+            let awaiting = report.as_ref().and_then(|report| match report.disposition {
+                UnappliedHookDisposition::Parked(awaiting) => Some(awaiting),
+                UnappliedHookDisposition::Rejected(_) => None,
+            });
             match awaiting {
                 Some(ParkedHookAwaiting::SessionStart) => tracing::debug!(
                     pane = %pane_id,
                     ?kind,
                     %source,
+                    seq = ?seq,
+                    session_ref = ?session_ref,
                     "hook report parked until a session start of its agent"
                 ),
                 Some(ParkedHookAwaiting::Process { expires_at }) => tracing::debug!(
                     pane = %pane_id,
                     ?kind,
                     %source,
+                    seq = ?seq,
+                    session_ref = ?session_ref,
                     expires_in = ?expires_at.saturating_duration_since(now),
                     "hook report parked until process evidence for its agent"
                 ),
@@ -85,17 +93,35 @@ fn admit_hook_outcome(
                     pane = %pane_id,
                     ?kind,
                     %source,
+                    seq = ?seq,
+                    session_ref = ?session_ref,
                     "hook report parked behind a start that cannot carry it"
                 ),
             }
         }
-        shepr_detect::ownership::HookOutcome::Rejected(reason) => tracing::debug!(
-            pane = %pane_id,
-            ?kind,
-            %source,
-            ?reason,
-            "hook report rejected"
-        ),
+        shepr_detect::ownership::HookOutcome::Rejected(reason) => {
+            if reason.is_integration_fault() {
+                tracing::warn!(
+                    pane = %pane_id,
+                    ?kind,
+                    %source,
+                    rejection = %reason,
+                    seq = ?seq,
+                    session_ref = ?session_ref,
+                    "bundled agent integration report violated its contract"
+                );
+            } else {
+                tracing::debug!(
+                    pane = %pane_id,
+                    ?kind,
+                    %source,
+                    rejection = %reason,
+                    seq = ?seq,
+                    session_ref = ?session_ref,
+                    "hook report rejected"
+                );
+            }
+        }
     }
     outcome.into_mutation()
 }
@@ -197,11 +223,30 @@ impl AppState {
                 agent,
                 observed_at,
             } => self.update_terminal_state(pane_id, |terminal| {
-                Some(
-                    terminal
-                        .ownership_mut()
-                        .set_detected_agent_process_at(agent, observed_at),
-                )
+                let withdrawn_authority = terminal
+                    .ownership()
+                    .hook_authority()
+                    .filter(|authority| authority.origin.agent() != agent)
+                    .map(|authority| (authority.origin, authority.session_ref.clone()));
+                let mutation = terminal
+                    .ownership_mut()
+                    .set_detected_agent_process_at(agent, observed_at);
+                if let Some((origin, session_ref)) = withdrawn_authority
+                    && terminal
+                        .ownership()
+                        .hook_authority()
+                        .is_none_or(|current| current.origin != origin)
+                {
+                    tracing::info!(
+                        pane = %pane_id,
+                        previous_agent = %origin.agent(),
+                        detected_agent = %agent,
+                        source = %origin.source(),
+                        session_ref = ?session_ref,
+                        "screen detection withdrew hook authority after identifying another agent"
+                    );
+                }
+                Some(mutation)
             }),
             StateEvent::StateChanged {
                 pane_id,

@@ -56,6 +56,8 @@ pub(super) struct OscDebugEvent {
 /// policy (exactly `1`, `0`, `true` or `false`). Pane construction has no
 /// error path, so this optional debug-only capture flag warns and fails closed
 /// when refused; it cannot affect pane behavior.
+/// Evidence is logged at info level because opting into this environment flag
+/// is the privacy and volume control; no debug filter is required.
 /// The flag is not among the settings pane construction takes from the
 /// server, so it is read at the first pane rather than at server startup.
 /// Pane children never see the variable (`pane::launch` scrubs it).
@@ -81,10 +83,10 @@ pub(super) fn events(bodies: &[Vec<u8>]) -> Vec<OscDebugEvent> {
         .collect()
 }
 
-/// Logs each event at debug level.
+/// Logs each event at info level when the opt-in capture is enabled.
 pub(super) fn log(pane_id: PaneId, events: &[OscDebugEvent]) {
     for event in events {
-        tracing::debug!(
+        tracing::info!(
             pane = %pane_id,
             osc_command = %event.command,
             osc_payload = ?event.payload,

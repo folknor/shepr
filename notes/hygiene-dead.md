@@ -107,14 +107,3 @@ And:
 - Not dead, listed so they are not mistaken for leftovers: the `#[serde(default)]` on
   `Pong.stopping` / `starting` and `StatusOverviewJson.summary`, which AGENTS.md keeps for
   `status --all` against older hosts.
-
-## DEAD-017 - Remote options with one production value, a namespace that distinguishes nothing, and dead exports
-
-Reported by: remote.
-
-- `ssh_control_path_under` hashes `client_config_file()` into the control socket name,
-  justified as "User ControlPaths may be shared across isolated Shepr configs". There is
-  no config path override, and the socket already lives in the per-profile runtime
-  directory, so the namespace distinguishes nothing in production except two
-  `XDG_CONFIG_HOME` values sharing one `XDG_RUNTIME_DIR` (a test setup). Likely a
-  leftover of the removed config override; hash the target alone, or say what it is for.

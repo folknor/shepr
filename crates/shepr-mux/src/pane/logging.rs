@@ -5,12 +5,18 @@ pub(super) fn pane_spawn_started(
     rows: u16,
     cols: u16,
     scrollback: shepr_core::scrollback::ScrollbackBudget,
+    kind: super::launch::LaunchKind,
+    cwd: &shepr_core::absolute_path::AbsolutePath,
+    shell: &std::path::Path,
 ) {
     tracing::info!(
         event = "pane.spawn.start",
         subsystem = "pane",
         outcome = "started",
-        %pane_id,
+        pane = %pane_id,
+        kind = ?kind,
+        cwd = %cwd.display(),
+        shell = %shell.display(),
         rows,
         cols,
         scrollback_limit_bytes = scrollback.bytes(),
@@ -23,7 +29,7 @@ pub(super) fn pane_spawned(pane_id: shepr_core::layout::PaneId, pid: shepr_platf
         event = "pane.spawned",
         subsystem = "pane",
         outcome = "ok",
-        %pane_id,
+        pane = %pane_id,
         pid = pid.get(),
         "pane child spawned"
     );
@@ -42,7 +48,7 @@ pub(super) fn pane_exited(
         event = "pane.exit",
         subsystem = "pane",
         outcome = "completed",
-        %pane_id,
+        pane = %pane_id,
         status = status.as_str(),
         setup_failure_status,
         "pane child exited"
@@ -54,7 +60,7 @@ pub(super) fn pane_exit_failed(pane_id: shepr_core::layout::PaneId, err: &str) {
         event = "pane.exit",
         subsystem = "pane",
         outcome = "error",
-        %pane_id,
+        pane = %pane_id,
         error = err,
         "pane child wait failed"
     );

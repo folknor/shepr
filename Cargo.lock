@@ -1541,6 +1541,7 @@ dependencies = [
  "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
+ "shepr-test-fixtures",
  "shepr-test-support",
  "tracing",
 ]

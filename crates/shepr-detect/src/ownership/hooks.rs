@@ -174,14 +174,13 @@ impl AgentOwnership {
     pub fn set_hook_authority_at(
         &mut self,
         source: &str,
-        agent_label: &str,
         state: AgentState,
         session_ref: Option<shepr_agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         sample: impl Into<HookClockSample>,
     ) -> Option<AgentOwnershipMutation> {
         self.set_hook_report_at(
-            ReportOrigin::parse(source, agent_label).ok()?,
+            ReportOrigin::parse(source).ok()?,
             state,
             session_ref,
             seq,

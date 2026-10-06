@@ -98,12 +98,6 @@ impl AppPaths {
         self.server_address.startup_lock_path()
     }
 
-    /// The client-owned state directory beneath the shared application state
-    /// directory. Shared by every build profile.
-    pub fn client_state_dir(&self) -> PathBuf {
-        self.state_dir.join("client")
-    }
-
     /// The XDG runtime root before the application-specific directory is added.
     pub fn xdg_runtime_dir(&self) -> &Path {
         &self.xdg_runtime_dir
@@ -605,13 +599,12 @@ mod tests {
             runtime.join("shepr-dev/shepr.sock")
         );
 
-        // Both config files, the shared state directory (with the client state
-        // below it) and the XDG runtime root are the same in both profiles.
+        // Both config files, the shared state directory and the XDG runtime
+        // root are the same in both profiles.
         assert_eq!(release.config_dir(), dev.config_dir());
         assert_eq!(release.client_config_file(), dev.client_config_file());
         assert_eq!(release.server_config_file(), dev.server_config_file());
         assert_eq!(release.state_dir(), dev.state_dir());
-        assert_eq!(release.client_state_dir(), dev.client_state_dir());
         assert_eq!(release.xdg_runtime_dir(), dev.xdg_runtime_dir());
     }
 

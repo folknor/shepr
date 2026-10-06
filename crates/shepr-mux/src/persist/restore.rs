@@ -88,9 +88,9 @@ impl SessionRestorePlan {
                     terminal_runtimes.insert(launch.pane_id, runtime);
                 }
                 Err(err) => {
-                    error!(
-                        pane = %launch.public_id,
-                        pane_id = %launch.pane_id,
+                    warn!(
+                        public_pane_id = %launch.public_id,
+                        pane = %launch.pane_id,
                         error = %err,
                         "failed to restore pane"
                     );
@@ -114,7 +114,7 @@ impl SessionRestorePlan {
                     match record {
                         Some(record) => record.replace_terminal(terminal),
                         None => error!(
-                            pane = %launch.public_id,
+                            public_pane_id = %launch.public_id,
                             "a pane whose launch failed is not in its restored workspace"
                         ),
                     }
@@ -353,11 +353,9 @@ fn restored_terminal(
                 );
         }
         RestoredPaneStart::Unavailable(reason) => {
-            warn!(
-                cwd = %cwd.display(),
-                reason = ?reason,
-                "preserving unavailable restored pane"
-            );
+            // The failed launch was already logged once, with both pane
+            // identities, by `SessionRestorePlan::launch`; this constructor
+            // only keeps the failure for the pane surface.
             terminal.record_start_failure(reason);
         }
     }
@@ -419,8 +417,9 @@ fn plan_workspace(snapshot: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan<'
 /// need; nothing is launched here. Every saved-file defect was found while
 /// planning, before any agent session was reserved; what can still refuse
 /// the workspace guards internal invariants only. Also returns the panes
-/// whose saved agent session this build cannot use: each is restored as a
-/// plain shell and its session dropped, logged here once.
+/// whose saved agent session was dropped, because this build cannot use it
+/// or an earlier pane of this restore already resumes it: each is restored
+/// as a plain shell, logged here once.
 /// `workspace_index` is where the workspace will sit in the plan's list.
 fn restore_workspace(
     plan: WorkspaceRestorePlan<'_>,
@@ -441,8 +440,8 @@ fn restore_workspace(
             let public_id = PublicPaneId::new(&workspace_id, saved.public_number);
             warn!(
                 workspace = %workspace_id,
-                pane = %public_id,
-                agent = unusable.agent.as_deref().unwrap_or("unknown"),
+                public_pane_id = %public_id,
+                source = unusable.source.as_deref().unwrap_or("unknown"),
                 error = %unusable.error,
                 "dropping saved agent session this build cannot use; the pane restores as a plain shell"
             );
@@ -458,6 +457,19 @@ fn restore_workspace(
             duplicate_agent_session,
         } = pane_restore_startup(saved.agent_session.as_ref(), resumed_agent_sessions.as_deref_mut());
 
+        if duplicate_agent_session {
+            let public_id = PublicPaneId::new(&workspace_id, saved.public_number);
+            if let Some(session) = saved.agent_session.as_ref() {
+                warn!(
+                    workspace = %workspace_id,
+                    public_pane_id = %public_id,
+                    agent = session.agent().label(),
+                    session_ref = session.session_ref().value_str(),
+                    "saved agent session is already reserved by another restored pane; restoring a plain shell"
+                );
+            }
+            dropped_sessions.push(public_id);
+        }
         if let Some(resume) = restore_plan {
             return restored_terminal(
                 &saved.cwd,
@@ -649,12 +661,10 @@ mod tests {
 
     fn persisted_test_session(
         source: &str,
-        agent: shepr_agent::Agent,
         session_ref: shepr_agent::resume::AgentSessionRef,
     ) -> shepr_agent::resume::PersistedAgentSession {
         shepr_agent::resume::PersistedAgentSession::new(
             shepr_agent::AgentSource::parse(source).expect("bundled test source"),
-            agent,
             session_ref,
         )
         .expect("test session is valid")
@@ -831,7 +841,6 @@ mod tests {
         let pane = only_pane_mut(workspace);
         pane.agent_session = Some(persisted_test_session(
             "shepr:codex",
-            shepr_agent::Agent::Codex,
             shepr_agent::resume::AgentSessionRef::id("planned-session").expect("session id"),
         ));
         let mut duplicate = pane.clone();
@@ -857,6 +866,12 @@ mod tests {
         assert_eq!(plan.launches.len(), 1);
         let shell = terminal_of(&plan.workspaces[0], plan.launches[0].pane_id);
         assert!(shell.ownership().persisted_agent_session().is_none());
+        // The duplicate loses its session record, so the drop is restore
+        // damage: reported by pane and backed up before the first save.
+        assert_eq!(
+            plan.damage.dropped_agent_sessions,
+            vec![PublicPaneId::new(&plan.workspaces[0].id(), number(2))]
+        );
     }
 
     /// Capture writes a restorable file: the layout, focus, root, zoom, public
@@ -968,7 +983,6 @@ mod tests {
             pane.label = Some(Label::new("keep me").expect("test label"));
             pane.agent_session = Some(persisted_test_session(
                 "shepr:codex",
-                shepr_agent::Agent::Codex,
                 shepr_agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
             ));
@@ -1329,7 +1343,6 @@ mod tests {
         let session_of = || {
             persisted_test_session(
                 "shepr:codex",
-                shepr_agent::Agent::Codex,
                 shepr_agent::resume::AgentSessionRef::id("shared-session").expect("session id"),
             )
         };
@@ -1375,7 +1388,6 @@ mod tests {
         let pi_session_path = test_session_path("pi-session.jsonl");
         let session = persisted_test_session(
             "shepr:pi",
-            shepr_agent::Agent::Pi,
             shepr_agent::resume::AgentSessionRef::path(pi_session_path.clone())
                 .expect("test precondition"),
         );
@@ -1396,7 +1408,6 @@ mod tests {
         assert!(
             shepr_agent::resume::PersistedAgentSession::new(
                 shepr_agent::AgentSource::parse("shepr:claude").expect("bundled source"),
-                shepr_agent::Agent::Claude,
                 shepr_agent::resume::AgentSessionRef::path(test_session_path("claude-session",))
                     .expect("test precondition"),
             )
@@ -1408,7 +1419,6 @@ mod tests {
     fn pane_restore_startup_resumes_a_session_once_and_starts_duplicates_as_shells() {
         let session = persisted_test_session(
             "shepr:pi",
-            shepr_agent::Agent::Pi,
             shepr_agent::resume::AgentSessionRef::path(test_session_path("pi-session.jsonl"))
                 .expect("test precondition"),
         );
@@ -1427,7 +1437,6 @@ mod tests {
     fn pane_restore_startup_plans_no_resume_when_resume_is_off() {
         let session = persisted_test_session(
             "shepr:pi",
-            shepr_agent::Agent::Pi,
             shepr_agent::resume::AgentSessionRef::path(test_session_path("pi-session.jsonl"))
                 .expect("test precondition"),
         );
@@ -1441,7 +1450,6 @@ mod tests {
     fn restore_rehydrates_agent_session_metadata() {
         let session = persisted_test_session(
             "shepr:codex",
-            shepr_agent::Agent::Codex,
             shepr_agent::resume::AgentSessionRef::id("codex-session").expect("test precondition"),
         );
 
@@ -1456,7 +1464,6 @@ mod tests {
     fn restore_does_not_rehydrate_duplicate_agent_session_metadata() {
         let session = persisted_test_session(
             "shepr:pi",
-            shepr_agent::Agent::Pi,
             shepr_agent::resume::AgentSessionRef::path(test_session_path("pi-session.jsonl"))
                 .expect("test precondition"),
         );
@@ -1508,7 +1515,6 @@ mod tests {
             failed.label = Some(Label::new("keep my pane").expect("test label"));
             failed.agent_session = Some(persisted_test_session(
                 "shepr:opencode",
-                shepr_agent::Agent::OpenCode,
                 shepr_agent::resume::AgentSessionRef::id("keep-my-session")
                     .expect("test precondition"),
             ));
@@ -1629,7 +1635,6 @@ mod tests {
         pane.label = Some(Label::new("keep me").expect("test label"));
         pane.agent_session = Some(persisted_test_session(
             "shepr:codex",
-            shepr_agent::Agent::Codex,
             shepr_agent::resume::AgentSessionRef::id("codex-session").expect("test precondition"),
         ));
         let saved_cwd = pane.cwd.clone();
@@ -1666,7 +1671,6 @@ mod tests {
         pane.label = Some(Label::new("reviewer").expect("test label"));
         pane.agent_session = Some(persisted_test_session(
             "shepr:opencode",
-            shepr_agent::Agent::OpenCode,
             shepr_agent::resume::AgentSessionRef::id("opencode-session")
                 .expect("test precondition"),
         ));
@@ -1767,7 +1771,6 @@ mod tests {
         final_pane.label = Some(Label::new("planner").expect("test label"));
         final_pane.agent_session = Some(persisted_test_session(
             "shepr:codex",
-            shepr_agent::Agent::Codex,
             shepr_agent::resume::AgentSessionRef::id("codex-session").expect("test precondition"),
         ));
         let mut workspace = workspace_snapshot("w1", "gapped", layout);
@@ -1822,7 +1825,6 @@ mod tests {
         pane.cwd = cwd;
         pane.agent_session = Some(persisted_test_session(
             "shepr:codex",
-            shepr_agent::Agent::Codex,
             shepr_agent::resume::AgentSessionRef::id("codex-session").expect("test precondition"),
         ));
         let (events, _event_rx) = mpsc::channel(4);

@@ -8,6 +8,11 @@ pub(crate) const MAX_RULES_PER_MANIFEST: usize = 128;
 /// bundled gate shapes while bounding recursive validation and evaluation.
 pub(crate) const MAX_GATE_DEPTH: usize = 8;
 
+/// Maximum depth of a manifest reference chain. Reference chains are schema
+/// aliases, not matching depth, so they are bounded separately and a manifest
+/// cannot create an arbitrarily deep expansion.
+pub(crate) const MAX_REFERENCE_DEPTH: usize = 32;
+
 /// Maximum gates in one manifest. At the per-manifest rule ceiling this permits
 /// several gates per rule on average while bounding recursive compilation and
 /// matching across all rules.

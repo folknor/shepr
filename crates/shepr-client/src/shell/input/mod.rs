@@ -150,7 +150,8 @@ fn read_clipboard_text_bounded_with(
     }
     let (sender, receiver) = std::sync::mpsc::sync_channel(CLIPBOARD_RESULT_QUEUE_CAPACITY);
     let spawned = std::thread::Builder::new()
-        .name("shepr-clipboard-read".into())
+        // Linux exposes at most 15 bytes through `pthread_setname_np`.
+        .name("clip-read".into())
         .spawn(move || {
             let text = read();
             in_flight.store(false, Ordering::Release);

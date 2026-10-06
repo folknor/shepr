@@ -78,7 +78,8 @@ impl RatioDelta {
 pub struct PaneId(u32);
 
 /// Logging and thread-name form: the bare number. In tracing fields write
-/// `pane = %pane_id`.
+/// `pane = %pane_id`; the operator-facing `PublicPaneId` goes under
+/// `public_pane_id`, so no field name carries both.
 impl std::fmt::Display for PaneId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         std::fmt::Display::fmt(&self.0, f)
@@ -449,7 +450,7 @@ impl TileLayout {
         let Some(split) = best else {
             return false;
         };
-        let current = get_ratio_at(&self.root, split.path.branches()).unwrap_or(SplitRatio::EVEN);
+        let current = split.ratio;
         let adj = if grows { delta } else { delta.negated() };
         let path = split.path.clone();
         self.set_ratio_at(&path, current.nudged(adj))
@@ -815,26 +816,6 @@ fn set_ratio_at(node: &mut Node, path: &[SplitBranch], new_ratio: SplitRatio) ->
         }
     } else {
         false
-    }
-}
-
-fn get_ratio_at(node: &Node, path: &[SplitBranch]) -> Option<SplitRatio> {
-    if let Node::Split {
-        ratio,
-        first,
-        second,
-        ..
-    } = node
-    {
-        if path.is_empty() {
-            Some(*ratio)
-        } else if path[0] == SplitBranch::Second {
-            get_ratio_at(second, &path[1..])
-        } else {
-            get_ratio_at(first, &path[1..])
-        }
-    } else {
-        None
     }
 }
 

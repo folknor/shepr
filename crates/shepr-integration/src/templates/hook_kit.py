@@ -5,7 +5,6 @@ import socket
 import time
 
 SOURCE = "@SOURCE@"
-AGENT = "@LABEL@"
 METHOD_SESSION = "@METHOD_SESSION@"
 METHOD_STATE = "@METHOD_STATE@"
 START = SimpleNamespace(**@START_PY@)
@@ -65,7 +64,6 @@ def send(method, params):
         "params": {
             "pane_id": pane_id,
             "source": SOURCE,
-            "agent": AGENT,
             "seq": report_seq,
             **params,
         },

@@ -11,11 +11,12 @@
 //! abstract autobind (no filesystem path), accepts those channels. The child
 //! connects to it before any filesystem step, names its launch with the ticket
 //! the server gave it, then reports child-setup errors with their stage,
-//! `ChdirOk(index)`, the first cwd candidate's chdir errno when no candidate
-//! could be entered, or an exec errno. Its end is close-on-exec, so EOF after
-//! `ChdirOk` while the child is still alive means exec passed its point of no
-//! return (ExecCommitted). The kernel closes those fds before the new image is
-//! fully mapped, so it does not prove that the shell already runs.
+//! `ChdirOk(index, first-candidate-errno)`, the first cwd candidate's chdir
+//! errno when no candidate could be entered, or an exec errno. Its end is
+//! close-on-exec, so EOF after `ChdirOk` while the child is still alive means
+//! exec passed its point of no return (ExecCommitted). The kernel closes those
+//! fds before the new image is fully mapped, so it does not prove that the
+//! shell already runs.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -76,12 +77,15 @@ impl ChildSetupStage {
 /// One status report from a launching pane child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaunchRecord {
-    /// The child changed into cwd candidate `index` and is about to exec.
-    ChdirOk(u32),
+    /// The child changed into cwd candidate `index` and is about to exec. A
+    /// fallback candidate also carries the first candidate's chdir errno.
+    ChdirOk {
+        index: u32,
+        first_candidate_errno: Option<i32>,
+    },
     /// No cwd candidate could be entered; the errno of candidate 0, the
-    /// directory the pane was meant to open in. The fallbacks' errnos are not
-    /// reported: they are only tried because candidate 0 failed, and the user
-    /// acts on candidate 0.
+    /// directory the pane was meant to open in. If a fallback is entered,
+    /// that same errno travels with `ChdirOk` instead.
     ChdirFailed(i32),
     /// `execve` of the shell returned this errno.
     ExecFailed(i32),
@@ -110,7 +114,12 @@ pub enum LaunchStatusEvent {
     /// Shell startup failed before exec committed. The error retains the
     /// child setup stage when a pre-exec operation reported one.
     ExecFailed(io::Error),
-    CommitCandidate(AbsolutePath),
+    CommitCandidate {
+        path: AbsolutePath,
+        requested_path: AbsolutePath,
+        candidate_index: u32,
+        first_candidate_errno: Option<i32>,
+    },
     Unconfirmed,
     WouldBlock,
 }
@@ -124,7 +133,11 @@ pub struct LaunchStatusReader {
 
 enum StatusPhase {
     AwaitDirectory,
-    Entered(AbsolutePath),
+    Entered {
+        path: AbsolutePath,
+        candidate_index: u32,
+        first_candidate_errno: Option<i32>,
+    },
     Finished,
 }
 
@@ -147,13 +160,29 @@ impl LaunchStatusReader {
         }
         let phase = std::mem::replace(&mut self.phase, StatusPhase::Finished);
         match (phase, record) {
-            (StatusPhase::AwaitDirectory, RecordRead::Record(LaunchRecord::ChdirOk(index))) => {
+            (
+                StatusPhase::AwaitDirectory,
+                RecordRead::Record(LaunchRecord::ChdirOk {
+                    index,
+                    first_candidate_errno,
+                }),
+            ) => {
                 let path = usize::try_from(index)
                     .ok()
                     .and_then(|index| self.candidates.get(index))
                     .cloned()
                     .ok_or_else(|| protocol_error("unknown launch cwd candidate"))?;
-                self.phase = StatusPhase::Entered(path.clone());
+                let selected_fallback = index != 0;
+                if first_candidate_errno.is_some() != selected_fallback {
+                    return Err(protocol_error(
+                        "launch cwd candidate errno does not match the selected candidate",
+                    ));
+                }
+                self.phase = StatusPhase::Entered {
+                    path: path.clone(),
+                    candidate_index: index,
+                    first_candidate_errno,
+                };
                 Ok(LaunchStatusEvent::Entered(path))
             }
             (StatusPhase::AwaitDirectory, RecordRead::Record(LaunchRecord::ChdirFailed(errno))) => {
@@ -176,11 +205,30 @@ impl LaunchStatusReader {
                     ChildSetupFailure { stage, source },
                 )))
             }
-            (StatusPhase::Entered(_), RecordRead::Record(LaunchRecord::ExecFailed(errno))) => Ok(
-                LaunchStatusEvent::ExecFailed(io::Error::from_raw_os_error(errno)),
-            ),
-            (StatusPhase::Entered(path), RecordRead::Eof) => {
-                Ok(LaunchStatusEvent::CommitCandidate(path))
+            (StatusPhase::Entered { .. }, RecordRead::Record(LaunchRecord::ExecFailed(errno))) => {
+                Ok(LaunchStatusEvent::ExecFailed(io::Error::from_raw_os_error(
+                    errno,
+                )))
+            }
+            (
+                StatusPhase::Entered {
+                    path,
+                    candidate_index,
+                    first_candidate_errno,
+                },
+                RecordRead::Eof,
+            ) => {
+                let requested_path = self
+                    .candidates
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| protocol_error("launch cwd candidate list is empty"))?;
+                Ok(LaunchStatusEvent::CommitCandidate {
+                    path,
+                    requested_path,
+                    candidate_index,
+                    first_candidate_errno,
+                })
             }
             (StatusPhase::AwaitDirectory, RecordRead::Eof) => Ok(LaunchStatusEvent::Unconfirmed),
             _ => Err(protocol_error("launch status record out of order")),
@@ -204,8 +252,13 @@ fn decode_record(bytes: &[u8]) -> Option<(u32, u64)> {
     Some((kind, value))
 }
 
-pub(crate) fn chdir_ok_record(index: u32) -> [u8; LAUNCH_STATUS_RECORD_BYTES] {
-    encode_record(RECORD_CHDIR_OK, u64::from(index))
+pub(crate) fn chdir_ok_record(
+    index: u32,
+    first_candidate_errno: Option<i32>,
+) -> [u8; LAUNCH_STATUS_RECORD_BYTES] {
+    let errno = first_candidate_errno.map_or(0, i32::unsigned_abs);
+    let value = (u64::from(errno) << 32) | u64::from(index);
+    encode_record(RECORD_CHDIR_OK, value)
 }
 
 pub(crate) fn chdir_failed_record(errno: i32) -> [u8; LAUNCH_STATUS_RECORD_BYTES] {
@@ -271,10 +324,23 @@ pub(crate) fn read_record(channel: &OwnedFd) -> io::Result<RecordRead> {
                 .ok_or_else(|| protocol_error("launch status errno out of range"))
         };
         let record = match kind {
-            RECORD_CHDIR_OK => LaunchRecord::ChdirOk(
-                u32::try_from(value)
-                    .map_err(|_| protocol_error("launch status cwd index out of range"))?,
-            ),
+            RECORD_CHDIR_OK => {
+                let index = u32::try_from(value & u64::from(u32::MAX))
+                    .map_err(|_| protocol_error("launch status cwd index out of range"))?;
+                let errno = u32::try_from(value >> 32)
+                    .map_err(|_| protocol_error("launch status cwd errno out of range"))?;
+                let first_candidate_errno = match errno {
+                    0 => None,
+                    errno => Some(
+                        i32::try_from(errno)
+                            .map_err(|_| protocol_error("launch status cwd errno out of range"))?,
+                    ),
+                };
+                LaunchRecord::ChdirOk {
+                    index,
+                    first_candidate_errno,
+                }
+            }
             RECORD_CHDIR_FAILED => LaunchRecord::ChdirFailed(errno()?),
             RECORD_EXEC_FAILED => LaunchRecord::ExecFailed(errno()?),
             RECORD_SETUP_FAILED => {
@@ -573,7 +639,8 @@ impl LaunchService {
         });
         let accepting = std::sync::Arc::clone(&router);
         std::thread::Builder::new()
-            .name("shepr-launch-status".into())
+            // Linux exposes at most 15 bytes through `pthread_setname_np`.
+            .name("launch-status".into())
             .spawn(move || accepting.accept_loop())?;
         Ok(Self {
             router,
@@ -961,7 +1028,7 @@ mod tests {
         let now = Instant::now();
         let (child, child_peer) = pair();
         let (stray, stray_peer) = pair();
-        send_record(&child_peer, &chdir_ok_record(0));
+        send_record(&child_peer, &chdir_ok_record(0, None));
         send_record(&stray_peer, &exec_failed_record(libc::ENOENT));
 
         assert!(routes.route(3, pid(42), child, now).is_none());
@@ -973,7 +1040,10 @@ mod tests {
         let delivered = receive.try_recv().expect("registered child delivered");
         assert_eq!(
             read_record(&delivered).expect("read child's report"),
-            RecordRead::Record(LaunchRecord::ChdirOk(0))
+            RecordRead::Record(LaunchRecord::ChdirOk {
+                index: 0,
+                first_candidate_errno: None,
+            })
         );
         assert!(routes.parked.is_empty());
     }
@@ -1072,7 +1142,7 @@ mod tests {
             accept_hello(&channel, 42).expect("hello"),
             Some((9, pid(42)))
         );
-        send_record(&peer, &chdir_ok_record(0));
+        send_record(&peer, &chdir_ok_record(0, None));
         assert_eq!(
             accept_hello(&channel, 42).expect_err("wrong kind").kind(),
             io::ErrorKind::InvalidData
@@ -1135,7 +1205,10 @@ mod tests {
     fn directory_selection_and_commitment_are_validated_together() {
         let mut reader = LaunchStatusReader::new(vec![abs("/requested"), abs("/fallback")]);
         assert!(
-            matches!(reader.accept(RecordRead::Record(LaunchRecord::ChdirOk(1))),
+            matches!(reader.accept(RecordRead::Record(LaunchRecord::ChdirOk {
+                index: 1,
+                first_candidate_errno: Some(libc::ENOENT),
+            })),
             Ok(LaunchStatusEvent::Entered(path)) if path == std::path::Path::new("/fallback"))
         );
         assert!(matches!(
@@ -1143,14 +1216,23 @@ mod tests {
             Ok(LaunchStatusEvent::WouldBlock)
         ));
         assert!(matches!(reader.accept(RecordRead::Eof),
-            Ok(LaunchStatusEvent::CommitCandidate(path)) if path == std::path::Path::new("/fallback")));
+            Ok(LaunchStatusEvent::CommitCandidate {
+                path,
+                requested_path,
+                candidate_index: 1,
+                first_candidate_errno: Some(libc::ENOENT),
+            }) if path == std::path::Path::new("/fallback")
+                && requested_path == std::path::Path::new("/requested")));
         assert!(reader.accept(RecordRead::Eof).is_err());
     }
 
     #[test]
     fn invalid_candidate_and_out_of_order_reports_are_protocol_errors() {
         for record in [
-            LaunchRecord::ChdirOk(1),
+            LaunchRecord::ChdirOk {
+                index: 1,
+                first_candidate_errno: Some(libc::ENOENT),
+            },
             LaunchRecord::ExecFailed(libc::ENOENT),
         ] {
             let mut reader = LaunchStatusReader::new(vec![abs("/requested")]);
@@ -1163,12 +1245,18 @@ mod tests {
             );
         }
         for record in [
-            LaunchRecord::ChdirOk(0),
+            LaunchRecord::ChdirOk {
+                index: 0,
+                first_candidate_errno: None,
+            },
             LaunchRecord::ChdirFailed(libc::ENOENT),
         ] {
             let mut reader = LaunchStatusReader::new(vec![abs("/requested")]);
             reader
-                .accept(RecordRead::Record(LaunchRecord::ChdirOk(0)))
+                .accept(RecordRead::Record(LaunchRecord::ChdirOk {
+                    index: 0,
+                    first_candidate_errno: None,
+                }))
                 .expect("enter directory");
             assert!(reader.accept(RecordRead::Record(record)).is_err());
         }
@@ -1187,7 +1275,10 @@ mod tests {
         assert_eq!(error.raw_os_error(), Some(libc::EACCES));
         let mut reader = LaunchStatusReader::new(vec![abs("/requested")]);
         reader
-            .accept(RecordRead::Record(LaunchRecord::ChdirOk(0)))
+            .accept(RecordRead::Record(LaunchRecord::ChdirOk {
+                index: 0,
+                first_candidate_errno: None,
+            }))
             .expect("directory selected");
         let LaunchStatusEvent::ExecFailed(error) = reader
             .accept(RecordRead::Record(LaunchRecord::ExecFailed(libc::ENOEXEC)))

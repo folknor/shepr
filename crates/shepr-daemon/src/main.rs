@@ -10,7 +10,9 @@ use std::process::ExitCode;
 
 use shepr_launch::daemon_exit::DaemonExit;
 use shepr_launch::guidance::server_ready_hint;
-use shepr_launch::invocation::{ServerInvocation, server_usage, server_version_line};
+use shepr_launch::invocation::{
+    SERVER_BINARY_NAME, ServerInvocation, server_usage, server_version_line,
+};
 use shepr_launch::process_status::ProcessStatus;
 use shepr_server::{RunServerError, ServerReady, run_server};
 
@@ -67,7 +69,7 @@ fn serve(client_spawned: bool) -> ExitCode {
             eprintln!("{ready}\n{}", server_ready_hint());
         } else if let Err(error) = shepr_platform::redirect_stderr_to_null() {
             // Stderr is still the boot log; one line there is bounded.
-            eprintln!("shepr-server: could not detach stderr from the boot log: {error}");
+            eprintln!("{SERVER_BINARY_NAME}: could not detach stderr from the boot log: {error}");
         }
     };
     match run_server(&config, config.paths(), on_ready) {
@@ -85,7 +87,7 @@ where
     I: IntoIterator<Item = D>,
     D: Display,
 {
-    eprintln!("shepr-server: configuration error:");
+    eprintln!("{SERVER_BINARY_NAME}: configuration error:");
     for diagnostic in diagnostics {
         eprintln!("  {diagnostic}");
     }
@@ -100,15 +102,15 @@ where
 /// A server already holding the runtime, by either socket or by the data lock,
 /// reads the same to the operator and ends with the same exit code.
 fn report_server_error(error: RunServerError) -> ExitCode {
-    const ALREADY_RUNNING: &str = "shepr-server is already running";
+    let already_running = shepr_launch::guidance::server_already_running();
     match error {
         RunServerError::AlreadyRunning { path } => {
-            eprintln!("error: {ALREADY_RUNNING}");
+            eprintln!("error: {already_running}");
             eprintln!("socket: {}", path.display());
             exit_with(DaemonExit::AlreadyRunning)
         }
         RunServerError::DataDirHeld { directory } => {
-            eprintln!("error: {ALREADY_RUNNING}");
+            eprintln!("error: {already_running}");
             eprintln!("data directory: {}", directory.display());
             exit_with(DaemonExit::AlreadyRunning)
         }

@@ -274,12 +274,9 @@ fn ensure_server_build_matches(paths: &shepr_paths::AppPaths, client: &ApiClient
     if pong.build_id.is_this_build() {
         return Ok(());
     }
-    Err(CliError::Message(format!(
-        "this shepr client (build {}) differs from the running server (build {}); restart the server with this build before using this command. {}",
-        shepr_protocol::BUILD_ID,
-        pong.build_id,
-        shepr_launch::guidance::build_mismatch_guidance(paths.server_address())
-    )))
+    Err(CliError::Message(
+        shepr_launch::guidance::cli_build_mismatch(paths.server_address(), pong.build_id),
+    ))
 }
 
 /// Classify a socket failure before it reaches the CLI printer.

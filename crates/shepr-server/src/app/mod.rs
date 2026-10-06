@@ -168,7 +168,7 @@ impl App {
         } = shepr_mux::persist::open_session(
             lease,
             &shepr_mux::persist::SessionOpenOptions {
-                geometry: settings.pane_geometry_in(settings.headless_rect()),
+                geometry: settings.chrome_in(settings.headless_rect()),
                 launcher: &pane_launcher,
                 resume_agents_on_restore: config.session().resume_agents_on_restore,
                 now: clock.now,
@@ -284,7 +284,7 @@ impl App {
                 DefaultWorkspace::Created
             }
             Err(err) => {
-                tracing::error!(error = %err, "failed to create default workspace");
+                tracing::error!(error = %err, cwd = %cwd.as_path().display(), "failed to create default workspace");
                 DefaultWorkspace::Failed
             }
         }

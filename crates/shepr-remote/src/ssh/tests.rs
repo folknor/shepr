@@ -38,11 +38,7 @@ fn write_test_managed_ssh_config(
     control_dir: &Path,
 ) -> io::Result<ManagedSshConfig> {
     let runtime_dir = ensure_ssh_runtime_dir(paths)?;
-    let control_path = ssh_control_path_under(
-        control_dir,
-        &paths.client_config_file(),
-        SshControlKey::for_target(target),
-    )?;
+    let control_path = ssh_control_path_under(control_dir, SshControlKey::for_target(target))?;
     write_managed_ssh_config_at(
         runtime_dir,
         &remote_ssh_config_paths(paths.home_dir()),
@@ -140,7 +136,9 @@ fn managed_ssh_config_includes_user_config_then_fallback() {
 }
 
 #[test]
-fn shared_ssh_transport_survives_helper_config_drop() {
+fn helpers_for_one_target_share_a_socket_name_but_own_their_configs() {
+    // No ssh process or control master is started here; this checks the
+    // shared socket naming and the independent managed-config lifetimes.
     let paths = test_app_paths();
     let control_dir = test_control_dir();
     let first = write_test_managed_ssh_config(&example_target(), &paths, control_dir)

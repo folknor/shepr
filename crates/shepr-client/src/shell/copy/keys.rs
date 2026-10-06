@@ -212,7 +212,7 @@ impl ClientShellState {
             .and_then(|surface| {
                 let pane = surface.panes.iter().find(|pane| pane.pane_id == pane_id)?;
                 let cursor = surface.frame.cursor().filter(|cursor| cursor.visible)?;
-                let inner = pane.inner_rect;
+                let inner = pane.content_rect;
                 let row = shepr_term::ViewportRow::on_screen(cursor.y, inner.y)
                     .filter(|row| row.0 < visible_rows)?;
                 let col = cursor
@@ -762,7 +762,7 @@ impl ClientShellState {
         let (Some(hit), Some(view)) = (self.copy_hit(), self.view()) else {
             return true;
         };
-        hit.inner_rect.bottom() >= view.layout.pane_surface.bottom()
+        hit.content_rect.bottom() >= view.layout.pane_surface.bottom()
     }
 
     /// Scrolls the copy pane so the cursor is on screen, keeping it off the row the mode bar

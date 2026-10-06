@@ -1,5 +1,5 @@
 //! The endpoint failure vocabulary, for every endpoint the client presents:
-//! the Local server and configured machines alike.
+//! the local server and configured machines alike.
 //!
 //! A failure is built where its cause is known and keeps that cause as a
 //! typed [`FailureCause`]; display text never decides policy. The one
@@ -7,11 +7,9 @@
 //! the operator action. An SSH failure is one cause among others, holding
 //! only the class OpenSSH's own report was sorted into: the classifier, the
 //! configured target and the discovery consequences of a failure belong to
-//! the SSH crate, and the hints shown for a cause belong to presentation.
+//! the SSH crate, and the hints shown for a cause belong to [`crate::guidance`].
 
 use std::io;
-
-use shepr_platform::ipc::{StreamFailure, classify_stream_error};
 
 use crate::RemoteText;
 
@@ -36,11 +34,7 @@ impl FailureDisposition {
     }
 
     pub fn client_action(self) -> &'static str {
-        if self.needs_attention() {
-            "The client shows it as unavailable and needs attention; it keeps retrying it."
-        } else {
-            "The client keeps retrying it."
-        }
+        crate::guidance::failure_client_action(self)
     }
 }
 
@@ -291,21 +285,7 @@ impl EndpointFailure {
     }
 
     pub fn disconnect_notice(&self) -> &'static str {
-        if self.disposition().needs_attention() {
-            return "connection failed; needs attention";
-        }
-        match self.cause {
-            FailureCause::Backpressure => "local output queue filled; reconnecting",
-            FailureCause::Shutdown(_) => "server shut down; reconnecting",
-            FailureCause::Io(kind) => match classify_stream_error(kind) {
-                StreamFailure::TimedOut => "connection timed out; reconnecting",
-                StreamFailure::PeerGone => "connection was lost; reconnecting",
-                StreamFailure::NoListener | StreamFailure::Other => {
-                    "connection failed; reconnecting"
-                }
-            },
-            _ => "connection failed; reconnecting",
-        }
+        crate::guidance::disconnect_notice(self.cause(), self.disposition())
     }
 }
 

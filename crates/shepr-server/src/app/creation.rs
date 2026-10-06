@@ -106,11 +106,12 @@ impl App {
         initial_cwd: &AbsolutePath,
         geometry: SpawnGeometry,
     ) -> std::io::Result<super::actions::WorkspaceCreationOutcome> {
-        let chrome = self.state.chrome_in(geometry.area);
+        let chrome = self.state.settings().chrome_in(geometry.area);
         let prepared = self
             .state
             .prepare_workspace(initial_cwd)
             .ok_or_else(|| std::io::Error::other("workspace ID space exhausted"))?;
+        let public_id = prepared.root_public_id();
         let runtime = self.launch_pane(
             prepared.root_pane(),
             prepared.root_public_id(),
@@ -125,7 +126,14 @@ impl App {
             ));
         };
         self.install_runtime(outcome.root_pane, runtime);
-        crate::logging::workspace_created(&outcome.workspace_id, outcome.root_pane);
+        crate::logging::workspace_created(
+            &outcome.workspace_id,
+            public_id,
+            initial_cwd,
+            self.state
+                .workspace(&outcome.workspace_id)
+                .map_or("", |ws| ws.name()),
+        );
         Ok(outcome)
     }
 

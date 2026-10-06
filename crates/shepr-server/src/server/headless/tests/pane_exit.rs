@@ -68,16 +68,19 @@ fn server_with_held_runtime_exit() -> (
 }
 
 async fn wait_for_checkpoint(server: &mut HeadlessServer) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if server.app.reap_finished_session_save() {
-                break;
+    // Wait on the writer's completion signal (a stored `notify_one` permit, so
+    // a completion before the wait is not missed). The bound only fails a
+    // wedged writer instead of hanging the test; it is no disk-speed limit.
+    let finished = server.outputs.save_finished_signal();
+    tokio::time::timeout(crate::test_support::SESSION_WRITE_TEST_BOUND, async {
+        while server.app.test_saver().save_in_flight() {
+            if !server.app.reap_finished_session_save() {
+                finished.notified().await;
             }
-            tokio::time::sleep(Duration::from_millis(1)).await;
         }
     })
     .await
-    .expect("pane-exit checkpoint should finish");
+    .expect("the pane-exit checkpoint write finished");
 }
 
 #[tokio::test]
@@ -214,11 +217,14 @@ impl HeadlessServer {
             "runtime envelope required"
         );
         self.handle_internal_event_with_forwarding(event);
-        let timeout = std::time::Instant::now() + Duration::from_secs(5);
+        // The production reap drives completion and the virtual app clock
+        // drives retry deadlines. The wall-clock bound only fails a wedged
+        // writer instead of hanging the test; it is no disk-speed limit.
+        let started = std::time::Instant::now();
         while !self.pending_checkpointed_pane_exits.is_empty() {
             assert!(
-                std::time::Instant::now() < timeout,
-                "checkpoint replay timed out"
+                started.elapsed() < crate::test_support::SESSION_WRITE_TEST_BOUND,
+                "checkpoint replay did not finish"
             );
             let now = if self.app.test_saver().save_in_flight() {
                 self.app.clock().now
@@ -233,7 +239,7 @@ impl HeadlessServer {
                 wall_now: self.app.clock().wall_now,
             });
             self.handle_scheduled_tasks_headless(now);
-            std::thread::yield_now();
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 }

@@ -82,17 +82,47 @@ struct PtyResize {
     geometry: shepr_core::geometry::PaneGeometry,
 }
 
+/// Callbacks and PTY ownership for one actor. The idle wait defaults to
+/// `ACTOR_IDLE_POLL` and can be shortened when a caller needs faster core
+/// integrity checks.
 pub struct PtyIoActorConfig {
-    pub pane_id: PaneId,
-    pub master_fd: OwnedFd,
-    pub on_read: ReadCallback,
-    pub on_reader_exit: ReaderExitCallback,
-    /// Checked on every loop iteration, including the idle poll that fires
-    /// at least once a second, so a core poisoned off the reader thread ends
-    /// the pane even when the child prints nothing. Without it only the next
-    /// read would notice (`PtyReadResult::CoreBroken`), and an idle pane
-    /// would stay frozen until another read arrived.
-    pub core_broken: CoreBrokenCheck,
+    pane_id: PaneId,
+    master_fd: OwnedFd,
+    on_read: ReadCallback,
+    on_reader_exit: ReaderExitCallback,
+    /// Checked on every loop iteration, including after the idle poll, so a
+    /// core poisoned off the reader thread ends the pane even when the child
+    /// prints nothing. Without it only the next read would notice
+    /// (`PtyReadResult::CoreBroken`), and an idle pane would stay frozen until
+    /// another read arrived.
+    core_broken: CoreBrokenCheck,
+    idle_poll: std::time::Duration,
+}
+
+impl PtyIoActorConfig {
+    pub fn new(
+        pane_id: PaneId,
+        master_fd: OwnedFd,
+        on_read: impl FnMut(&[u8]) -> PtyReadResult + Send + 'static,
+        on_reader_exit: impl FnOnce(ReaderExit) + Send + 'static,
+        core_broken: impl Fn() -> bool + Send + 'static,
+    ) -> Self {
+        Self {
+            pane_id,
+            master_fd,
+            on_read: Box::new(on_read),
+            on_reader_exit: Box::new(on_reader_exit),
+            core_broken: Box::new(core_broken),
+            idle_poll: ACTOR_IDLE_POLL,
+        }
+    }
+
+    /// Set the idle wait used to check for a core poisoned on another thread.
+    /// It must be nonzero; PTY readiness and the wake pipe still drive normal IO.
+    pub fn with_idle_poll(mut self, idle_poll: std::time::Duration) -> Self {
+        self.idle_poll = idle_poll;
+        self
+    }
 }
 
 #[derive(Clone)]
@@ -497,12 +527,15 @@ impl PtyIoActor {
             on_read: config.on_read,
             on_reader_exit: Some(config.on_reader_exit),
             core_broken: config.core_broken,
+            idle_poll: config.idle_poll,
             exit_reason: ReaderExit::ShutdownRequested,
             io,
             resize_failure_logged: false,
         };
         std::thread::Builder::new()
-            .name(format!("shepr-pty-{}", config.pane_id))
+            // `PaneId` is a u32; this form stays below Linux's 15-byte
+            // pthread name limit, including the largest decimal id.
+            .name(format!("pty-{}", config.pane_id))
             .spawn(move || runner.run())?;
 
         Ok(handle)
@@ -556,6 +589,7 @@ struct PtyIoActorRunner<I: PtyIo> {
     on_read: ReadCallback,
     on_reader_exit: Option<ReaderExitCallback>,
     core_broken: CoreBrokenCheck,
+    idle_poll: std::time::Duration,
     /// Only raised, through `raise_exit`. It starts at `ShutdownRequested`,
     /// which is what a loop that leaves on the shutdown flag reports; every
     /// other way out raises it first.
@@ -655,7 +689,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
                 self.file.as_raw_fd(),
                 self.wake_read_fd.as_raw_fd(),
                 writable,
-                Wait::After(ACTOR_IDLE_POLL),
+                Wait::After(self.idle_poll),
             ) {
                 Ok(readiness) => {
                     if readiness.wake_ready
@@ -1122,18 +1156,18 @@ mod tests {
         // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let (read_tx, read_rx) = std_mpsc::channel();
-        let config = PtyIoActorConfig {
-            pane_id: test_pane_id(),
-            master_fd: owned,
-            on_read: Box::new(move |bytes| {
+        let config = PtyIoActorConfig::new(
+            test_pane_id(),
+            owned,
+            move |bytes| {
                 read_tx
                     .send(Bytes::copy_from_slice(bytes))
                     .expect("read callback receiver alive");
                 PtyReadResult::empty()
-            }),
-            on_reader_exit: Box::new(|_| {}),
-            core_broken: Box::new(|| false),
-        };
+            },
+            |_| {},
+            || false,
+        );
         let handle = if let Some(poll_observer) = poll_observer {
             PtyIoActor::spawn_with_poll_observer(config, poll_observer)
         } else {
@@ -1173,6 +1207,7 @@ mod tests {
             on_read,
             on_reader_exit: None,
             core_broken: Box::new(|| false),
+            idle_poll: ACTOR_IDLE_POLL,
             exit_reason: ReaderExit::ShutdownRequested,
             io: TestPtyIo::default(),
             resize_failure_logged: false,
@@ -1241,13 +1276,13 @@ mod tests {
         assert!(fill_send_buffer(&mut actor_socket) > 0);
         // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
-        let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: test_pane_id(),
-            master_fd: owned,
-            on_read: Box::new(|_| PtyReadResult::empty()),
-            on_reader_exit: Box::new(|_| {}),
-            core_broken: Box::new(|| false),
-        })
+        let handle = PtyIoActor::spawn(PtyIoActorConfig::new(
+            test_pane_id(),
+            owned,
+            |_| PtyReadResult::empty(),
+            |_| {},
+            || false,
+        ))
         .expect("actor spawn");
 
         let chunk = Bytes::from(vec![b'x'; 16 * 1024]);
@@ -1328,11 +1363,11 @@ mod tests {
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let handle_slot = Arc::new(Mutex::new(None::<PtyIoActorHandle>));
         let (attempt_tx, attempt_rx) = std_mpsc::channel();
-        let config = PtyIoActorConfig {
-            pane_id: test_pane_id(),
-            master_fd: owned,
-            on_read: Box::new(|_| PtyReadResult::empty()),
-            on_reader_exit: Box::new({
+        let config = PtyIoActorConfig::new(
+            test_pane_id(),
+            owned,
+            |_| PtyReadResult::empty(),
+            {
                 let handle_slot = Arc::clone(&handle_slot);
                 move |_| {
                     let handle = crate::locks::lock_auxiliary(&handle_slot)
@@ -1342,9 +1377,9 @@ mod tests {
                     let attempt = handle.try_write_user_input(Bytes::from_static(b"late"));
                     attempt_tx.send(attempt).expect("attempt receiver alive");
                 }
-            }),
-            core_broken: Box::new(|| false),
-        };
+            },
+            || false,
+        );
         let handle = PtyIoActor::spawn(config).expect("actor spawn");
         *crate::locks::lock_auxiliary(&handle_slot) = Some(handle);
 
@@ -1368,6 +1403,14 @@ mod tests {
         on_read: ReadCallback,
         core_broken: Option<CoreBrokenCheck>,
     ) -> (PtyIoActorHandle, UnixStream, std_mpsc::Receiver<ReaderExit>) {
+        actor_reporting_exit_with_core_check_and_idle_poll(on_read, core_broken, ACTOR_IDLE_POLL)
+    }
+
+    fn actor_reporting_exit_with_core_check_and_idle_poll(
+        on_read: ReadCallback,
+        core_broken: Option<CoreBrokenCheck>,
+        idle_poll: Duration,
+    ) -> (PtyIoActorHandle, UnixStream, std_mpsc::Receiver<ReaderExit>) {
         let (actor_socket, peer) = UnixStream::pair().expect("socket pair");
         actor_socket
             .set_nonblocking(true)
@@ -1375,18 +1418,19 @@ mod tests {
         // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let (exit_tx, exit_rx) = std_mpsc::channel();
-        let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: test_pane_id(),
-            master_fd: owned,
+        let config = PtyIoActorConfig::new(
+            test_pane_id(),
+            owned,
             on_read,
-            on_reader_exit: Box::new(move |exit| {
+            move |exit| {
                 // The actor thread can outlive a test that already finished
                 // and dropped the receiver; tests that check the exit hold it.
                 exit_tx.send(exit).ok();
-            }),
-            core_broken: core_broken.unwrap_or_else(|| Box::new(|| false)),
-        })
-        .expect("actor spawn");
+            },
+            core_broken.unwrap_or_else(|| Box::new(|| false)),
+        )
+        .with_idle_poll(idle_poll);
+        let handle = PtyIoActor::spawn(config).expect("actor spawn");
         (handle, peer, exit_rx)
     }
 
@@ -1423,22 +1467,26 @@ mod tests {
 
     #[test]
     fn a_core_broken_elsewhere_ends_an_idle_pane() {
+        let idle_poll = Duration::from_millis(20);
         let broken = Arc::new(AtomicBool::new(false));
         let check = Arc::clone(&broken);
-        let (_handle, _peer, exit_rx) = actor_reporting_exit_with_core_check(
+        let (_handle, _peer, exit_rx) = actor_reporting_exit_with_core_check_and_idle_poll(
             Box::new(|_| PtyReadResult::empty()),
             Some(Box::new(move || check.load(Ordering::Acquire))),
+            idle_poll,
         );
         assert!(
             exit_rx.recv_timeout(Duration::from_millis(100)).is_err(),
             "a healthy idle pane keeps running"
         );
 
-        // The child prints nothing; the idle poll alone must notice.
+        // The child prints nothing; the idle poll alone must notice. Nothing
+        // else can end this pane, so the bound only caps a failing run; it is
+        // generous so a loaded runner's scheduling does not fail it.
         broken.store(true, Ordering::Release);
         assert_eq!(
             exit_rx
-                .recv_timeout(Duration::from_secs(3))
+                .recv_timeout(idle_poll * 100)
                 .expect("reader exit is reported without any output"),
             ReaderExit::Panicked
         );
@@ -1610,6 +1658,7 @@ mod tests {
 
     #[test]
     fn actor_open_pty_handles_io_resize_and_slave_close() {
+        let _guard = crate::locks::lock_auxiliary(crate::backend::pty_fd_test_lock());
         let crate::backend::OpenedPty { master, slave } = crate::backend::open_pty_with_geometry(
             shepr_core::geometry::PaneGeometry::cells_only(80, 24),
         )
@@ -1618,20 +1667,20 @@ mod tests {
         let mut slave = std::fs::File::from(slave);
         let (read_tx, read_rx) = std_mpsc::channel::<Bytes>();
         let (exit_tx, exit_rx) = std_mpsc::channel();
-        let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: test_pane_id(),
-            master_fd: master,
-            on_read: Box::new(move |bytes| {
+        let handle = PtyIoActor::spawn(PtyIoActorConfig::new(
+            test_pane_id(),
+            master,
+            move |bytes| {
                 read_tx
                     .send(Bytes::copy_from_slice(bytes))
                     .expect("read receiver stays alive through actor exit");
                 PtyReadResult::empty()
-            }),
-            on_reader_exit: Box::new(move |reason| {
+            },
+            move |reason| {
                 exit_tx.send(reason).expect("exit receiver stays alive");
-            }),
-            core_broken: Box::new(|| false),
-        })
+            },
+            || false,
+        ))
         .expect("start actor on PTY master");
 
         slave.write_all(b"pty-output").expect("write slave output");
@@ -1690,7 +1739,7 @@ mod tests {
     fn actor_wakes_idle_poll_for_user_input() {
         let (poll_tx, poll_rx) = std_mpsc::channel();
         let (handle, mut peer, _read_rx) = actor_with_socket_pair_and_poll_observer(Some(poll_tx));
-        peer.set_read_timeout(Some(Duration::from_millis(500)))
+        peer.set_read_timeout(Some(ACTOR_IDLE_POLL))
             .expect("peer timeout");
         poll_rx
             .recv_timeout(Duration::from_secs(1))
@@ -1706,7 +1755,7 @@ mod tests {
             .expect("peer receives write without waiting for actor poll timeout");
         assert_eq!(&buf, b"x");
         assert!(
-            start.elapsed() < Duration::from_millis(500),
+            start.elapsed() < ACTOR_IDLE_POLL / 2,
             "actor write should be driven by wake fd, not the idle poll timeout"
         );
         handle.shutdown();
@@ -1735,18 +1784,18 @@ mod tests {
         // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let (read_tx, read_rx) = std_mpsc::channel();
-        let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: test_pane_id(),
-            master_fd: owned,
-            on_read: Box::new(move |bytes| {
+        let handle = PtyIoActor::spawn(PtyIoActorConfig::new(
+            test_pane_id(),
+            owned,
+            move |bytes| {
                 read_tx
                     .send(Bytes::copy_from_slice(bytes))
                     .expect("read callback receiver alive");
                 PtyReadResult::empty()
-            }),
-            on_reader_exit: Box::new(|_| {}),
-            core_broken: Box::new(|| false),
-        })
+            },
+            |_| {},
+            || false,
+        ))
         .expect("actor spawn");
 
         let marker = Bytes::from_static(b"queued-input\r");
@@ -2088,12 +2137,12 @@ mod tests {
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         const REPLY_LEN: usize = 4096;
         let (read_tx, read_rx) = std_mpsc::channel();
-        let handle = PtyIoActor::spawn(PtyIoActorConfig {
-            pane_id: test_pane_id(),
-            master_fd: owned,
+        let handle = PtyIoActor::spawn(PtyIoActorConfig::new(
+            test_pane_id(),
+            owned,
             // Every read is a query that earns a reply, as for a child that
             // prints DA1 or DSR in a loop.
-            on_read: Box::new(move |bytes| {
+            move |bytes| {
                 // The actor thread keeps reading after the test has counted
                 // enough and dropped the receiver; later reads need no count.
                 read_tx.send(bytes.len()).ok();
@@ -2101,10 +2150,10 @@ mod tests {
                     terminal_responses: vec![Bytes::from(vec![b'r'; REPLY_LEN])],
                     after_response_order: None,
                 })
-            }),
-            on_reader_exit: Box::new(|_| {}),
-            core_broken: Box::new(|| false),
-        })
+            },
+            |_| {},
+            || false,
+        ))
         .expect("actor spawn");
 
         // The child never reads its stdin; it only prints queries.

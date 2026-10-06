@@ -17,7 +17,6 @@ fn request_uses_dot_method_names() {
         method: Method::PaneReportAgentSession(PaneReportAgentSessionParams {
             pane_id: "w1:p1".into(),
             source: "shepr:pi".into(),
-            agent: "pi".into(),
             seq: None,
             agent_session_id: None,
             agent_session_path: None,
@@ -27,6 +26,7 @@ fn request_uses_dot_method_names() {
 
     let json = serde_json::to_value(&request).expect("test precondition");
     assert_eq!(json["method"], "pane.report_agent_session");
+    assert!(json["params"].get("agent").is_none());
 }
 
 #[test]

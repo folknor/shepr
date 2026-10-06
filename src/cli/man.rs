@@ -172,7 +172,10 @@ mod tests {
                     })
             })
             .collect::<Vec<_>>();
-        const CONTRIBUTOR_ONLY: [&str; 1] = ["reference/technical-implementation-spec.md"];
+        const CONTRIBUTOR_ONLY: [&str; 2] = [
+            "reference/session-save-shutdown.md",
+            "reference/technical-implementation-spec.md",
+        ];
         for excluded in CONTRIBUTOR_ONLY {
             assert!(
                 manuals.iter().any(|manual| manual.as_str() == excluded),

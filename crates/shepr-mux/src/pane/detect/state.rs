@@ -260,7 +260,7 @@ impl DetectorState {
         }
     }
 
-    pub(super) fn current_agent(&self) -> Option<Agent> {
+    pub(in crate::pane) fn current_agent(&self) -> Option<Agent> {
         // The server must receive the exit against the identity that just
         // passed miss confirmation, before the detector withdraws it.
         self.exit_phase

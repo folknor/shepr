@@ -666,7 +666,7 @@ fn connect_once(
                         std::io::Error::new(
                             error.kind(),
                             shepr_launch::EndpointFailure::retry(
-                                "the local server is unavailable; start it to reconnect",
+                                shepr_launch::guidance::LOCAL_RECONNECT_HINT,
                             ),
                         )
                     } else {
@@ -889,6 +889,7 @@ impl EndpointSupervisors {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::RETRY_PROMISE;
     use crate::tests::test_generation as generation;
 
     fn machine() -> shepr_config::MachineConfig {
@@ -1026,8 +1027,8 @@ mod tests {
     }
 
     #[test]
-    fn a_reconnecting_machine_retries_within_thirty_seconds() {
-        // Open clients retry a machine within 30 seconds of it becoming reachable.
+    fn a_reconnecting_machine_retries_within_the_retry_promise() {
+        // Open clients keep a reachable machine's next attempt within the promise.
         let env = shepr_test_support::IsolatedEnv::new();
         let now = Instant::now();
         let machine = machine();
@@ -1043,7 +1044,7 @@ mod tests {
             assert!(
                 supervisors.endpoints[&id]
                     .next_attempt
-                    .is_some_and(|next| next <= now + Duration::from_secs(30))
+                    .is_some_and(|next| next <= now + RETRY_PROMISE)
             );
         }
     }
@@ -1124,7 +1125,7 @@ mod tests {
     }
 
     #[test]
-    fn a_slow_failed_attempt_still_retries_within_thirty_seconds_of_any_moment() {
+    fn a_slow_failed_attempt_still_meets_the_retry_promise_from_any_moment() {
         // An attempt that hangs until its budget runs out, at the longest backoff, and the
         // machine becomes reachable just after it started.
         assert!(ATTEMPT_BUDGET < MAX_RETRY_DELAY);
@@ -1156,12 +1157,12 @@ mod tests {
                 .next_attempt
                 .expect("a failed attempt is retried");
             assert!(
-                next <= promised_at + MAX_RETRY_DELAY,
+                next <= promised_at + RETRY_PROMISE,
                 "{status:?}: retry {:?} after the promise",
                 next.saturating_duration_since(promised_at)
             );
             // The retry delay counts from the attempt's start, not from when it gave up.
-            assert!(next < gave_up + MAX_RETRY_DELAY);
+            assert!(next < gave_up + RETRY_PROMISE);
             assert!(supervisors.endpoints[&id].attempt_started.is_none());
         }
     }
@@ -1436,7 +1437,7 @@ mod tests {
         ));
         assert_eq!(
             supervisors.endpoints[&endpoint_id].next_attempt,
-            Some(now + Duration::from_secs(30))
+            Some(now + ATTENTION_RETRY_DELAY)
         );
     }
 

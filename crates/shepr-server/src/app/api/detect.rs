@@ -134,7 +134,7 @@ impl App {
                     }
                     None => {
                         tracing::error!(
-                            pane_id = %target.pane_id,
+                            public_pane_id = %target.pane_id,
                             "pane state owner names hook authority without an authority"
                         );
                         shepr_api::schema::DetectionStateSource::Screen
@@ -474,8 +474,7 @@ mod tests {
                     monotonic: std::time::Instant::now(),
                     wall: std::time::SystemTime::now(),
                 },
-                origin: shepr_agent::ReportOrigin::parse("shepr:codex", "codex")
-                    .expect("test origin"),
+                origin: shepr_agent::ReportOrigin::parse("shepr:codex").expect("test origin"),
                 state: AgentState::Working,
                 seq: Some(seq),
                 session_ref,
@@ -567,8 +566,7 @@ mod tests {
                     monotonic: std::time::Instant::now(),
                     wall: std::time::SystemTime::now(),
                 },
-                origin: shepr_agent::ReportOrigin::parse("shepr:kimi", "kimi")
-                    .expect("test origin"),
+                origin: shepr_agent::ReportOrigin::parse("shepr:kimi").expect("test origin"),
                 state: AgentState::Working,
                 seq: Some(10),
                 session_ref: shepr_agent::resume::AgentSessionRef::id("kimi-root"),
@@ -605,14 +603,13 @@ mod tests {
         terminal.ownership_mut().set_persisted_agent_session(
             shepr_agent::resume::PersistedAgentSession::from_report(
                 "shepr:omp",
-                "omp",
                 session_ref.clone(),
             )
             .expect("test precondition"),
         );
         terminal
             .set_hook_report_at(
-                shepr_agent::ReportOrigin::parse("shepr:omp", "omp").expect("test origin"),
+                shepr_agent::ReportOrigin::parse("shepr:omp").expect("test origin"),
                 AgentState::Working,
                 Some(session_ref),
                 Some(1),

@@ -23,34 +23,6 @@ and says how the fixed form could be enforced.
 
 ## Tests
 
-## CLAIM-002 - Persistence tests that pass vacuously, use a developer's paths, or fight the scratch convention
-
-Reported by: persistence.
-
-- `files::tests::resolve_write_target_returns_a_stat_error_other_than_not_found` and
-  `writer::tests::repeated_failed_saves_do_not_replace_a_completed_recovery_copy`
-  return early and pass when the runner can read a 0o000 directory or write a 0o500
-  one, so under root they assert nothing and report success. Fail loudly or ignore
-  under a privileged runner (the repo has `brokkr test`'s `--include-ignored`
-  convention for root-only tests).
-- `open::tests::refusing_launcher` hard-codes
-  `socket_path: "/run/user/1000/shepr-test.sock"`, one developer's uid; harmless only
-  because the launcher refuses before a child sees it. Use a scratch path.
-- `writer::tests::snapshot_survives_exit_bursts_clears_and_writer_restarts` varies
-  only the workspace name across 100 saves; the name is not in the layout
-  fingerprint and every save is within the interval, so it cannot tell interval
-  suppression from fingerprint suppression. Its local is still called `shrinking`, a
-  history-era leftover.
-- `files::tests::an_unrelated_leftover_beside_the_session_is_not_touched_by_saves`
-  guards a `session.json.tmp` staging name nothing has used since publication moved
-  to `.shepr-<token>-<seq>.tmp`; a regression test for a removed behaviour.
-- The writer tests end with `std::fs::remove_dir_all(writer.path.parent())` while
-  `ScratchDir` is documented as "deliberately left in place afterwards"; half the
-  file follows the convention and half fights it. The `writer()` helper drops its
-  `ScratchDir` at once, harmless only because it has no `Drop`. `persist/` spells
-  scratch directories both `crate::test_support::ScratchDir` and
-  `shepr_test_support::ScratchDir`.
-
 ## CLAIM-003 - Restore tests that exercise a test-only copy or cannot fail
 
 Reported by: restore-resume.
@@ -71,6 +43,12 @@ Reported by: restore-resume.
 - `restore.rs` `failed_cold_restore_preserves_panes_and_saved_directories` writes
   `/tmp/shepr-restore-test-a` and `-b` into its JSON and overwrites them at once;
   the literals mean nothing and read as a `/tmp` use.
+- `restore.rs` tests hard-code `TEST_SOCKET = "/run/user/1000/shepr-test.sock"`, one
+  developer's uid; use a scratch path.
+- `invalid_session_kind_and_conflicting_owner_do_not_change_arbitration` lost its
+  conflicting-label case when reports stopped carrying a label; its last assertion
+  now checks a Kimi report with no session ref. Rename it or restore a real
+  conflicting-owner case through the source.
 
 ## CLAIM-004 - Tests assert positional tables zipped against a list that can grow
 
@@ -103,31 +81,6 @@ arguably the subject; then say so, and give the others
 `shepr_test_support::fixture::resolved_shell` or `idle_shell`. A textlint on
 `"/bin/sh"` literals in fixture crates would close the gap.
 
-## CLAIM-007 - Save tests use test-only twins of the production paths and mix two clocks
-
-Reported by: save-shutdown.
-
-- `save_session_now`, `save_session_before_teardown` (sync) and
-  `wait_for_session_save` are `#[cfg(test)]` re-spellings of
-  `save_session_before_teardown_async` / `reap_finished_session_save`.
-  `final_session_save_joins_background_writer_before_returning` is named for the
-  final save but calls `save_session_now`, so the production final save's join is
-  untested, and it uses a 30 ms sleep to order threads.
-  `normal_autosave_replaces_a_signaled_exit_checkpoint` and
-  `durable_mutation_after_pane_exit_checkpoint_wins_on_shutdown` end on the sync twin.
-  Drive the async path and delete the twins.
-- `due_session_save_starts_background_writer`,
-  `background_session_save_reschedules_when_writer_is_busy` and
-  `normal_autosave_replaces_a_signaled_exit_checkpoint` set the deadline to
-  `Instant::now() - 1s` while the saver compares it with `app.clock.now`, sampled
-  when the app was built; more than a second between the two (a loaded machine) and
-  the save is not due. Use `Some(app.clock.now)`, or make the seam take no argument
-  (`make_autosave_due()`).
-- `background_session_save_reschedules_when_writer_is_busy` asserts a save is in
-  flight and the deadline `is_some()`; both hold whether or not the busy writer
-  deferred it. Assert `deadline()` is `None` while in flight and that the next pass
-  after the reap starts the save.
-
 ## CLAIM-008 - The D-Bus monitor test borrows the host's `dbus-daemon` unflagged
 
 Reported by: save-shutdown.
@@ -139,31 +92,6 @@ a host without `dbus-daemon`. `no-borrowed-process-stand-ins` lists only shells 
 coreutils, so it is not flagged. Add `dbus-daemon` with a `host-program-ok:` marker
 (real D-Bus behaviour is its subject), or say so in the rule's preset. It also uses
 5 s wall-clock timeouts.
-
-## CLAIM-009 - Pane lifecycle tests that race, depend on the runner, or name a geometry they do not run
-
-Reported by: pane-lifecycle.
-
-- `pty_spawn_leaves_one_parent_pty_fd` counts `/dev/pts` and `/dev/ptmx` fds in the
-  whole test process under a lock private to `backend.rs`'s tests, while `actor.rs`
-  `actor_open_pty_handles_io_resize_and_slave_close` opens a PTY pair in the same
-  binary without that lock, so in parallel the `before + 1` assertion can fail or
-  pass for the wrong reason. Move the lock to a crate-level helper. The same test
-  sets `SHEPR_ENV=in-pane`, unrelated to what it asserts.
-- `actor_wakes_idle_poll_for_user_input` proves wake-driven writes by
-  `elapsed < 500 ms` against a 1 s idle poll; with `ACTOR_IDLE_POLL` at 500 ms or
-  less it passes whether or not the wake works. Derive the bound from the constant or
-  have the poll observer report the wake. `a_core_broken_elsewhere_ends_an_idle_pane`
-  hard-codes a 3 s budget from the same constant.
-- `the_child_keeps_no_inherited_descriptor` does `dup(0)` and asserts `> 2` as a
-  precondition; under a runner with stdin closed it fails for an environmental
-  reason. Create the leaked fd itself (a pipe without `O_CLOEXEC`).
-- The focus tests in `runtime.rs` build `current_size: cells_only(24, 80)` (24
-  columns, 80 rows) around an 80x24 terminal.
-- `PtyCommand::interactive_shell` reads the process environment, and most tests in
-  `command.rs`, `backend.rs` and `runtime.rs` call it without the `IsolatedEnv` the
-  repository rule requires (no wrong result today, since they override what they
-  assert on).
 
 ## CLAIM-010 - Most bundled detection manifests have no behaviour test
 
@@ -229,21 +157,6 @@ Reported by: integrations.
 
 Reported by: workspace-model.
 
-- `pane_split_request_focuses_the_new_pane_and_navigates_the_requester_only`,
-  `pane_split_request_splits_in_half_and_keeps_default_input_routing` and
-  `a_split_sizes_against_the_recorded_geometry_and_only_then_the_requesters` do
-  `env.set("SHELL", ..)`, but the fixture config sets an explicit `default_shell` and
-  `test_app()` then replaces the launcher's shell: the setup does nothing.
-- `moved_cwd_without_osc7_rediscovers_the_label_identity` moves no cwd and asserts
-  only that a refresh went in flight ("label identity" is from when Git named
-  workspaces); `refreshed_status_is_applied_to_its_workspace` asserts a name that
-  comes from construction, not the refresh; `cwd_identity_refresh_runs_once` never
-  checks "once".
-- `runtime_lookup_is_by_pane` (`state.rs`) builds an `AppState` with a workspace and
-  never consults it; it tests `PaneRuntimeRegistry`.
-- `workspace_rename_trims_defaults_and_renders_what_it_changed` computes the expected
-  blank-rename name with the function production calls, so it cannot catch a change
-  in the naming rule. Assert a literal.
 - Many server tests seed `seed_bookmark_index(Some(n))` and name workspaces
   "active" / "background" although nothing they exercise reads the bookmark;
   leftovers of the "active workspace" model, misleading about dependencies.
@@ -282,38 +195,6 @@ Reported by: server-lifecycle, remote.
   `"/home/` in test literals would hold it.
 - `src/main.rs` `args_as_utf8_*` tests use `["shepr", "pane", "get", "pane-1"]`, a
   removed command group.
-
-## CLAIM-017 - Remote tests that cannot fail, test another crate, or depend on the host
-
-Reported by: remote.
-
-- `ssh/tests.rs` `shared_ssh_transport_survives_helper_config_drop` starts no master;
-  it checks that two configs name one control path and that dropping one removes only
-  its directory.
-- `bridge/tests.rs` `remote_bridge_failures_need_attention_only_when_the_host_must_be_fixed`
-  forges the remote stderr as `"error: {record}"` itself (VAL-060); its third case
-  includes `"error: shepr-remote-daemon-boot-exit:11\n..."`, a record nothing produces
-  any more, now only re-testing "unknown marker is unclassified".
-- `machine/executable.rs` `shell_quote_uses_the_remote_executable_plain_word_predicate`
-  tests shepr-core's internal consistency from shepr-remote;
-  `remote_executable_accepts_shell_safe_absolute_paths` and
-  `shell_command/tests.rs` `remote_executable_rejects_paths_that_need_shell_quoting`
-  test the same parse twice.
-- `relay/tests.rs` `bridge_preserves_one_way_progress_and_drains_after_stdin_eof`
-  sleeps 60 ms twelve times against a real 300 ms idle timeout and asserts the child
-  is alive (a 300 ms stall fails it); `bridge_upload_idle_waits_without_repeated_reads_and_cancels`
-  asserts exact poll counts after real sleeps; preflight tests prove concurrency by
-  `max_checks_active == 4` after a 100 ms sleep. Say why in each, or drive the boot
-  clock through the existing `start_with_clock` seam.
-- `shell_command/tests.rs` `remote_output_wrapper_accepts_newline_scripts_and_remaps_exit_255`
-  runs `known_remote_binary_candidate_script()` under host `/bin/sh` with the
-  developer's real `HOME` / `CARGO_HOME` and asserts only exit 0; a version with a
-  scratch `HOME` holding a stand-in `.cargo/bin/shepr` would test what it emits.
-- `ssh_metadata.rs` `metadata_is_disposable_fingerprinted_and_independent_per_target`
-  asserts removed `version` and `os` fields stay absent (migration residue).
-- `process.rs` `a_stderr_pipe_held_by_a_background_process_does_not_block_the_result`
-  borrows `shepr_platform::detach_server_daemon_command` to make a process group, so
-  a change to server daemon spawning changes this fixture.
 
 ## Guards that fail open
 

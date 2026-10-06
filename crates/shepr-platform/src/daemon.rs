@@ -163,7 +163,8 @@ impl SpawnedDaemon {
         };
         let pid = child.id();
         let reaper = std::thread::Builder::new()
-            .name("shepr-daemon-reaper".into())
+            // Linux exposes at most 15 bytes through `pthread_setname_np`.
+            .name("daemon-reaper".into())
             .spawn(move || {
                 if let Err(error) = child.wait() {
                     tracing::debug!(pid, %error, "could not wait for the server daemon");

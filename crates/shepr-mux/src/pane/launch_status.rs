@@ -48,7 +48,12 @@ use shepr_core::layout::PaneId;
 #[derive(Debug)]
 pub enum LaunchOutcome {
     /// Exec committed in `cwd`, the candidate the child entered.
-    Launched { cwd: crate::UsableCwd },
+    Launched {
+        cwd: crate::UsableCwd,
+        requested_cwd: shepr_core::absolute_path::AbsolutePath,
+        candidate_index: u32,
+        first_candidate_error: Option<std::io::Error>,
+    },
     /// The child reported why it could not start the shell.
     Failed(PaneStartFailure),
     /// Exec was not confirmed: the child is gone without a report, or the
@@ -203,6 +208,25 @@ async fn coordinate<Claim>(
     let launched = matches!(settlement, LaunchOutcome::Launched { .. });
     child_liveness.settle_launch(launched);
     progress.send_replace(LaunchProgress);
+    if let LaunchOutcome::Launched {
+        cwd,
+        requested_cwd,
+        candidate_index,
+        ..
+    } = &settlement
+    {
+        tracing::info!(
+            event = "pane.launch.settled",
+            subsystem = "pane",
+            outcome = "launched",
+            pane = %pane_id,
+            kind = ?kind,
+            cwd = %cwd.as_path().display(),
+            requested_cwd = %requested_cwd.display(),
+            cwd_candidate_index = *candidate_index,
+            "pane launch settled"
+        );
+    }
     if let LaunchOutcome::Failed(failure) = &settlement {
         tracing::warn!(pane = %pane_id, %failure, "pane launch failed");
     }
@@ -316,12 +340,21 @@ async fn settle(
                     error,
                 });
             }
-            Ok(LaunchStatusEvent::CommitCandidate(path)) => {
+            Ok(LaunchStatusEvent::CommitCandidate {
+                path,
+                requested_path,
+                candidate_index,
+                first_candidate_errno,
+            }) => {
                 return if child_liveness.has_exited() {
                     LaunchOutcome::Unconfirmed
                 } else {
                     LaunchOutcome::Launched {
                         cwd: crate::UsableCwd::entered(path),
+                        requested_cwd: requested_path,
+                        candidate_index,
+                        first_candidate_error: first_candidate_errno
+                            .map(std::io::Error::from_raw_os_error),
                     }
                 };
             }

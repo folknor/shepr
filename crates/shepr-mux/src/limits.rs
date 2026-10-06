@@ -77,6 +77,10 @@ pub(crate) const RESIZE_RECOVERY_MIN_PROBE_ROWS: usize = 24;
 /// Slack after synchronized output's deadline before a follow-up render, so
 /// the terminal can finish its batch.
 pub(crate) const SYNCHRONIZED_OUTPUT_FLUSH_MARGIN: Duration = Duration::from_millis(5);
+/// Maximum number of synchronized-output timeout flushes waiting in or using
+/// Tokio's blocking pool. These flushes can wait for ordered filesystem
+/// effects, so they must leave pool capacity for unrelated server work.
+pub(crate) const SYNCHRONIZED_OUTPUT_FLUSH_LIMIT: usize = 8;
 /// Rows a chunked scrollback scan (copy-mode search) reads per hold of the
 /// terminal lock. Between chunks the lock is released so the PTY reader,
 /// rendering and detection are never stalled behind a scan of the whole
@@ -139,6 +143,8 @@ pub(crate) const LAUNCH_SETTLE_AFTER_PANE_END: Duration = Duration::from_secs(1)
 pub(crate) const TERMINAL_CLOSED_EXIT_GRACE: Duration = Duration::from_secs(2);
 /// Grace per pane teardown signal before escalating to the next signal.
 const PANE_TEARDOWN_STEP: Duration = Duration::from_millis(250);
+/// Poll cadence when pidfd readiness cannot be used by the async runtime.
+pub(crate) const CHILD_WAIT_FALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// Escalation sequence for a pane session, using a grace interval after each
 /// signal before the next round.
 pub(crate) const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = [
@@ -146,7 +152,8 @@ pub(crate) const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = 
     (shepr_platform::Signal::Terminate, PANE_TEARDOWN_STEP),
     (shepr_platform::Signal::Kill, PANE_TEARDOWN_STEP),
 ];
-/// Total teardown wait: the sum of the grace intervals in `PANE_TEARDOWN_STEPS`.
+/// Sum of the grace intervals in `PANE_TEARDOWN_STEPS`. Session scans and
+/// system calls are outside this signal-time budget.
 pub(crate) const PANE_TEARDOWN_BUDGET: Duration = {
     let mut budget = Duration::ZERO;
     let mut index = 0;
@@ -156,6 +163,21 @@ pub(crate) const PANE_TEARDOWN_BUDGET: Duration = {
     }
     budget
 };
+/// Additional shutdown allowance for session scans: one signal-time budget
+/// per step. `/proc` walks and system calls have no finite bound, so this is a
+/// wait allowance, not a guarantee that teardown finishes within it.
+const PANE_TEARDOWN_SCAN_ALLOWANCE: Duration = {
+    let mut allowance = Duration::ZERO;
+    let mut index = 0;
+    while index < PANE_TEARDOWN_STEPS.len() {
+        allowance = allowance.saturating_add(PANE_TEARDOWN_BUDGET);
+        index += 1;
+    }
+    allowance
+};
+/// Server-exit wait allowance derived from the teardown's own signal steps.
+pub(crate) const PANE_TEARDOWN_WAIT: Duration =
+    PANE_TEARDOWN_BUDGET.saturating_add(PANE_TEARDOWN_SCAN_ALLOWANCE);
 
 // Session persistence: recovery copies and file size bounds.
 

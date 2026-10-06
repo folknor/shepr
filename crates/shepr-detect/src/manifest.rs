@@ -20,6 +20,10 @@
 //! state and priority with matchers, nested gates, evidence flags and a region
 //! selection. See [`AgentManifest`], [`ManifestRule`], [`ManifestGate`],
 //! [`RegionSpec`] and the `MAX_*` constants for schema details and limits.
+//! A `[matchers]` table names reusable gate bodies within one manifest;
+//! `matcher = "name"` inserts one at a gate, and `rule = "agent.rule_id"`
+//! reuses another bundled rule's matcher body while keeping the current rule's
+//! state and priority.
 //!
 //! `regex` and `line_regex` patterns may use named character classes, expanded
 //! before the pattern compiles. `{spinner}` matches one nonblank Braille cell
@@ -36,6 +40,7 @@
 //! fallback (`Idle` when omitted). Evidence flags describe visible state;
 //! `skip_state_update` preserves prior state for agent-owned viewers.
 
+use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -46,8 +51,8 @@ use shepr_agent::{Agent, AgentState, parse_agent_label};
 
 use crate::limits::{
     MAX_GATE_DEPTH, MAX_MANIFEST_PREVIEW_CHARS, MAX_MATCHER_CHARS, MAX_MATCHERS_PER_GATE,
-    MAX_REGION_LINE_COUNT, MAX_REGIONS_PER_MANIFEST, MAX_RULES_PER_MANIFEST, MAX_TOTAL_GATES,
-    MAX_TOTAL_MATCHERS, MIN_REGION_LINE_COUNT,
+    MAX_REFERENCE_DEPTH, MAX_REGION_LINE_COUNT, MAX_REGIONS_PER_MANIFEST, MAX_RULES_PER_MANIFEST,
+    MAX_TOTAL_GATES, MAX_TOTAL_MATCHERS, MIN_REGION_LINE_COUNT,
 };
 use crate::{AgentDetection, Detection};
 
@@ -195,20 +200,28 @@ struct CompiledManifest {
     unknown_is_stable: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AgentManifest {
     id: String,
     #[serde(default = "default_fallback")]
     fallback: ManifestFallback,
+    /// Reusable gate bodies. References are expanded before validation, so the
+    /// matching and complexity limits apply to the effective rule trees.
+    #[serde(default)]
+    matchers: BTreeMap<String, ManifestGate>,
     #[serde(default)]
     rules: Vec<ManifestRule>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct ManifestRule {
     id: String,
+    /// Reuse another rule's matcher body, retaining this rule's verdict and
+    /// priority. Rule references are qualified as `agent.rule_id`.
+    #[serde(default, rename = "rule")]
+    rule_reference: Option<String>,
     #[serde(default = "default_state")]
     state: AgentState,
     #[serde(default)]
@@ -253,9 +266,15 @@ struct ManifestRule {
 /// `all` or `any`); a gate inside `not` may consist of nested `not` gates only.
 /// Gate depth counts the rule's root matcher as level one, up to
 /// `MAX_GATE_DEPTH`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 struct ManifestGate {
+    /// Reuse a gate from this manifest's `[matchers]` table.
+    #[serde(default)]
+    matcher: Option<String>,
+    /// Reuse a rule's matcher body, qualified as `agent.rule_id`.
+    #[serde(default, rename = "rule")]
+    rule_reference: Option<String>,
     /// Region this gate (and its nested gates) reads instead of the enclosing
     /// one. Lets a rule on one input AND/OR/NOT controls on another, e.g. a
     /// title-spinner rule that stands down while a dialog is on screen.
@@ -789,33 +808,59 @@ fn fallback_explain(
 
 fn bundled_manifest(agent: Agent) -> Option<CompiledManifest> {
     let id = agent.label();
-    let content = bundled_manifest_source(agent)?;
+    bundled_manifest_source(agent)?;
     // These bytes are compiled into the executable and the all-bundled test
     // validates them. Startup eagerly compiles them before restoring panes;
     // a broken build must fail there rather than silently disable detection.
+    let catalog = bundled_manifest_catalog()
+        .unwrap_or_else(|error| panic!("invalid bundled detection manifest catalog: {error}"));
+    let manifest = catalog
+        .get(id)
+        .cloned()
+        .unwrap_or_else(|| panic!("missing bundled detection manifest for {id}"));
     Some(
-        parse_bundled_manifest(id, content)
+        compile_manifest_with_catalog(manifest, catalog)
             .unwrap_or_else(|error| panic!("invalid bundled detection manifest for {id}: {error}")),
     )
-}
-
-/// Parse a bundled manifest and check its identity against its owning agent.
-fn parse_bundled_manifest(label: &str, content: &str) -> Result<CompiledManifest, String> {
-    let manifest = parse_manifest_source(content)?;
-    if manifest.id != label {
-        return Err(format!(
-            "manifest id {} does not match agent label {label}",
-            manifest.id
-        ));
-    }
-    compile_manifest(manifest)
 }
 
 fn parse_manifest_source(content: &str) -> Result<AgentManifest, String> {
     toml::from_str::<AgentManifest>(content).map_err(|err| err.to_string())
 }
 
-fn compile_manifest(manifest: AgentManifest) -> Result<CompiledManifest, String> {
+type ManifestCatalog = BTreeMap<String, AgentManifest>;
+
+fn bundled_manifest_catalog() -> Result<&'static ManifestCatalog, String> {
+    static CATALOG: OnceLock<Result<ManifestCatalog, String>> = OnceLock::new();
+    match CATALOG.get_or_init(|| {
+        let mut catalog = BTreeMap::new();
+        for agent in Agent::all() {
+            let Some(source) = bundled_manifest_source(agent) else {
+                continue;
+            };
+            let manifest = parse_manifest_source(source)?;
+            if manifest.id != agent.label() {
+                return Err(format!(
+                    "manifest id {} does not match agent label {}",
+                    manifest.id,
+                    agent.label()
+                ));
+            }
+            if catalog.insert(manifest.id.clone(), manifest).is_some() {
+                return Err(format!("duplicate bundled manifest id {}", agent.label()));
+            }
+        }
+        Ok(catalog)
+    }) {
+        Ok(catalog) => Ok(catalog),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn compile_manifest_with_catalog(
+    manifest: AgentManifest,
+    catalog: &ManifestCatalog,
+) -> Result<CompiledManifest, String> {
     if manifest.rules.is_empty() {
         return Err("manifest must contain at least one rule".to_string());
     }
@@ -825,14 +870,26 @@ fn compile_manifest(manifest: AgentManifest) -> Result<CompiledManifest, String>
             manifest.rules.len()
         ));
     }
+    for name in manifest.matchers.keys() {
+        if name.trim().is_empty() {
+            return Err("manifest matcher name must not be empty".to_string());
+        }
+    }
 
     let mut unknown_is_stable = manifest.fallback == ManifestFallback::Unknown;
     let mut complexity = ManifestComplexity::default();
     let mut regions = RegionTable::default();
     let mut rules = Vec::with_capacity(manifest.rules.len());
+    let owner = manifest.id.clone();
     for rule in manifest.rules {
         unknown_is_stable |= !rule.skip_state_update && rule.state == AgentState::Unknown;
-        rules.push(compile_rule(rule, &mut regions, &mut complexity)?);
+        let root_gate = expand_rule_gate(&rule, &owner, catalog, &mut Vec::new(), 0, 0)?;
+        rules.push(compile_rule(
+            rule,
+            &root_gate,
+            &mut regions,
+            &mut complexity,
+        )?);
     }
 
     let mut priority_order: Vec<usize> = (0..rules.len()).collect();
@@ -848,6 +905,198 @@ fn compile_manifest(manifest: AgentManifest) -> Result<CompiledManifest, String>
     })
 }
 
+fn expand_rule_gate(
+    rule: &ManifestRule,
+    owner: &str,
+    catalog: &ManifestCatalog,
+    stack: &mut Vec<String>,
+    reference_depth: usize,
+    gate_depth: usize,
+) -> Result<ManifestGate, String> {
+    if let Some(reference) = &rule.rule_reference {
+        if !rule.all.is_empty()
+            || !rule.any.is_empty()
+            || !rule.not_gate.is_empty()
+            || !rule.contains.is_empty()
+            || !rule.regex.is_empty()
+            || !rule.line_regex.is_empty()
+            || rule.region != default_region()
+        {
+            return Err(format!(
+                "rule {} combines a rule reference with inline matchers or a region",
+                rule.id
+            ));
+        }
+        return expand_rule_reference(
+            reference,
+            owner,
+            catalog,
+            stack,
+            reference_depth,
+            gate_depth,
+        );
+    }
+
+    let root = ManifestGate {
+        matcher: None,
+        rule_reference: None,
+        region: Some(rule.region.clone()),
+        all: rule.all.clone(),
+        any: rule.any.clone(),
+        not_gate: rule.not_gate.clone(),
+        contains: rule.contains.clone(),
+        regex: rule.regex.clone(),
+        line_regex: rule.line_regex.clone(),
+    };
+    expand_gate(root, owner, catalog, stack, reference_depth, gate_depth)
+}
+
+fn expand_rule_reference(
+    reference: &str,
+    _owner: &str,
+    catalog: &ManifestCatalog,
+    stack: &mut Vec<String>,
+    reference_depth: usize,
+    gate_depth: usize,
+) -> Result<ManifestGate, String> {
+    if reference_depth >= MAX_REFERENCE_DEPTH {
+        return Err(format!(
+            "manifest reference chain exceeds max depth {MAX_REFERENCE_DEPTH}"
+        ));
+    }
+    let (agent, rule_id) = split_rule_reference(reference)?;
+    let identity = format!("rule:{agent}.{rule_id}");
+    if stack.contains(&identity) {
+        return Err(format!("manifest reference cycle at {reference:?}"));
+    }
+    let Some(manifest) = catalog.get(agent) else {
+        return Err(format!(
+            "rule reference {reference:?} names an unknown agent"
+        ));
+    };
+    let mut matching_rules = manifest.rules.iter().filter(|rule| rule.id == rule_id);
+    let Some(rule) = matching_rules.next() else {
+        return Err(format!(
+            "rule reference {reference:?} names an unknown rule"
+        ));
+    };
+    if matching_rules.next().is_some() {
+        return Err(format!("rule reference {reference:?} is ambiguous"));
+    }
+
+    stack.push(identity);
+    let result = expand_rule_gate(rule, agent, catalog, stack, reference_depth + 1, gate_depth);
+    stack.pop();
+    result
+}
+
+fn split_rule_reference(reference: &str) -> Result<(&str, &str), String> {
+    let Some((agent, rule)) = reference.split_once('.') else {
+        return Err(format!(
+            "rule reference {reference:?} must be qualified as agent.rule_id"
+        ));
+    };
+    if agent.is_empty() || rule.is_empty() || rule.contains('.') {
+        return Err(format!("invalid qualified rule reference {reference:?}"));
+    }
+    Ok((agent, rule))
+}
+
+fn expand_gate(
+    mut gate: ManifestGate,
+    owner: &str,
+    catalog: &ManifestCatalog,
+    stack: &mut Vec<String>,
+    reference_depth: usize,
+    gate_depth: usize,
+) -> Result<ManifestGate, String> {
+    if gate_depth >= MAX_GATE_DEPTH {
+        return Err(format!("rule exceeds max gate depth {MAX_GATE_DEPTH}"));
+    }
+    if gate.matcher.is_some() || gate.rule_reference.is_some() {
+        let has_inline_matchers = gate.region.is_some()
+            || !gate.all.is_empty()
+            || !gate.any.is_empty()
+            || !gate.not_gate.is_empty()
+            || !gate.contains.is_empty()
+            || !gate.regex.is_empty()
+            || !gate.line_regex.is_empty();
+        if has_inline_matchers || (gate.matcher.is_some() && gate.rule_reference.is_some()) {
+            return Err("a matcher or rule reference cannot have inline gate fields".to_string());
+        }
+        if reference_depth >= MAX_REFERENCE_DEPTH {
+            return Err(format!(
+                "manifest reference chain exceeds max depth {MAX_REFERENCE_DEPTH}"
+            ));
+        }
+        if let Some(name) = gate.matcher.take() {
+            let identity = format!("matcher:{owner}.{name}");
+            if stack.contains(&identity) {
+                return Err(format!("manifest matcher reference cycle at {name:?}"));
+            }
+            let Some(manifest) = catalog.get(owner) else {
+                return Err(format!("matcher reference owner {owner:?} is missing"));
+            };
+            let Some(source) = manifest.matchers.get(&name) else {
+                return Err(format!("unknown matcher reference {name:?} in {owner}"));
+            };
+            stack.push(identity);
+            let result = expand_gate(
+                source.clone(),
+                owner,
+                catalog,
+                stack,
+                reference_depth + 1,
+                gate_depth,
+            );
+            stack.pop();
+            return result;
+        }
+        if let Some(reference) = gate.rule_reference.take() {
+            return expand_rule_reference(
+                &reference,
+                owner,
+                catalog,
+                stack,
+                reference_depth,
+                gate_depth,
+            );
+        }
+    }
+
+    for nested in &mut gate.all {
+        *nested = expand_gate(
+            nested.clone(),
+            owner,
+            catalog,
+            stack,
+            reference_depth,
+            gate_depth + 1,
+        )?;
+    }
+    for nested in &mut gate.any {
+        *nested = expand_gate(
+            nested.clone(),
+            owner,
+            catalog,
+            stack,
+            reference_depth,
+            gate_depth + 1,
+        )?;
+    }
+    for nested in &mut gate.not_gate {
+        *nested = expand_gate(
+            nested.clone(),
+            owner,
+            catalog,
+            stack,
+            reference_depth,
+            gate_depth + 1,
+        )?;
+    }
+    Ok(gate)
+}
+
 #[derive(Default)]
 struct ManifestComplexity {
     total_gates: usize,
@@ -856,6 +1105,7 @@ struct ManifestComplexity {
 
 fn compile_rule(
     rule: ManifestRule,
+    root_gate: &ManifestGate,
     regions: &mut RegionTable,
     complexity: &mut ManifestComplexity,
 ) -> Result<CompiledRule, String> {
@@ -898,7 +1148,7 @@ fn compile_rule(
     let mut regions_used = Vec::new();
     let rule_id = &rule.id;
     let gate = compile_gate(
-        GateSource::from_rule(&rule),
+        GateSource::from_gate(root_gate),
         0,
         GateRequirement::Positive,
         "rule",
@@ -938,18 +1188,6 @@ struct GateSource<'a> {
 }
 
 impl<'a> GateSource<'a> {
-    fn from_rule(rule: &'a ManifestRule) -> Self {
-        Self {
-            region: Some(&rule.region),
-            all: &rule.all,
-            any: &rule.any,
-            not_gate: &rule.not_gate,
-            contains: &rule.contains,
-            regex: &rule.regex,
-            line_regex: &rule.line_regex,
-        }
-    }
-
     fn from_gate(gate: &'a ManifestGate) -> Self {
         Self {
             region: gate.region.as_deref(),
@@ -1463,6 +1701,28 @@ fn line_end_offset(content: &str, line: &str) -> usize {
     content[start..]
         .find('\n')
         .map_or(content.len(), |offset| start + offset + 1)
+}
+
+/// Parse a bundled manifest and check its identity against its owning agent.
+#[cfg(test)]
+fn parse_bundled_manifest(label: &str, content: &str) -> Result<CompiledManifest, String> {
+    let manifest = parse_manifest_source(content)?;
+    if manifest.id != label {
+        return Err(format!(
+            "manifest id {} does not match agent label {label}",
+            manifest.id
+        ));
+    }
+    let mut catalog = (*bundled_manifest_catalog()?).clone();
+    catalog.insert(label.to_string(), manifest.clone());
+    compile_manifest_with_catalog(manifest, &catalog)
+}
+
+#[cfg(test)]
+fn compile_manifest(manifest: AgentManifest) -> Result<CompiledManifest, String> {
+    let mut catalog = BTreeMap::new();
+    catalog.insert(manifest.id.clone(), manifest.clone());
+    compile_manifest_with_catalog(manifest, &catalog)
 }
 
 #[cfg(test)]

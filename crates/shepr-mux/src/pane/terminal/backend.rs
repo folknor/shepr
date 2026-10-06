@@ -169,17 +169,29 @@ impl PaneTerminal {
     /// lock, so they describe the same observed terminal state. The OSC title
     /// is the latest OSC 0/2 title retained for detection and the progress the
     /// latest OSC 9;4 report; each is `None` when none was seen or it was cleared.
-    /// Returns `None` if either the core lock or screen read fails.
+    /// Returns `None` if either the core lock or screen read fails. Callers
+    /// that need a diagnostic cause use `agent_detection_inputs_result`.
     pub(crate) fn agent_detection_inputs(&self) -> Option<AgentDetectionInputs> {
-        let core = self.core.lock().ok()?;
-        Some(AgentDetectionInputs {
-            screen_text: terminal_detection_text(&core.terminal).ok()?,
+        self.agent_detection_inputs_result().ok().flatten()
+    }
+
+    /// Preserve a screen-read failure for on-demand diagnostics while keeping
+    /// core poisoning distinct from a VT read error.
+    pub(crate) fn agent_detection_inputs_result(
+        &self,
+    ) -> Result<Option<AgentDetectionInputs>, shepr_vt::ReadError> {
+        let Ok(core) = self.core.lock() else {
+            return Ok(None);
+        };
+        let screen_text = terminal_detection_text(&core.terminal)?;
+        Ok(Some(AgentDetectionInputs {
+            screen_text,
             osc_title: core.agent_osc_state.latest_title().map(str::to_owned),
             osc_progress: core
                 .agent_osc_state
                 .latest_progress()
                 .map(|progress| progress.to_string()),
-        })
+        }))
     }
 
     /// Clears retained OSC title/progress evidence when the pane's foreground

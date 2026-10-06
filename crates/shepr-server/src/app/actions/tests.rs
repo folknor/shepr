@@ -91,7 +91,9 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
     let mut state = app_with_workspaces(&["one"]);
     let root_pane = state.ws(0).tree().root();
     assert_eq!(state.ws(0).tree().len(), 1);
-    let chrome = state.chrome_in(shepr_core::geometry::Rect::new(0, 0, 80, 24));
+    let chrome = state
+        .settings()
+        .chrome_in(shepr_core::geometry::Rect::new(0, 0, 80, 24));
     let prepared = state
         .ws(0)
         .prepare_split(
@@ -538,7 +540,7 @@ fn visible_blocker_overrides_hook_working() {
     report_hook_state(
         &mut state,
         bg_pane_id,
-        shepr_agent::ReportOrigin::parse("shepr:codex", "codex").expect("test origin"),
+        shepr_agent::ReportOrigin::parse("shepr:codex").expect("test origin"),
         AgentState::Working,
         Some(1),
         shepr_agent::resume::AgentSessionRef::id("codex-session"),
@@ -572,7 +574,7 @@ fn reserved_native_state_report_does_not_override_screen_state() {
     report_hook_state(
         &mut state,
         pane_id,
-        shepr_agent::ReportOrigin::parse("shepr:claude", "claude").expect("test origin"),
+        shepr_agent::ReportOrigin::parse("shepr:claude").expect("test origin"),
         AgentState::Blocked,
         Some(1),
         shepr_agent::resume::AgentSessionRef::id("claude-session"),
@@ -609,7 +611,7 @@ fn devin_state_report_refreshes_session_without_overriding_screen_state() {
     report_hook_state(
         &mut state,
         pane_id,
-        shepr_agent::ReportOrigin::parse("shepr:devin", "devin").expect("test origin"),
+        shepr_agent::ReportOrigin::parse("shepr:devin").expect("test origin"),
         AgentState::Working,
         Some(1),
         shepr_agent::resume::AgentSessionRef::id("devin-session"),
@@ -750,6 +752,7 @@ fn pane_focus_direction_changes_focus_while_zoomed_through_endpoint() {
     assert_eq!(workspace.tree().focused(), right);
     let visible = app
         .state
+        .settings()
         .chrome_in(shepr_core::geometry::Rect::new(0, 0, 100, 20))
         .visible_panes(workspace.tree().layout(), workspace.tree().zoomed());
     assert_eq!(visible.len(), 1);

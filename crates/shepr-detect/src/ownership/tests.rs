@@ -19,7 +19,6 @@ fn set_codex_hook_state(terminal: &mut AgentOwnership, state: AgentState) {
     terminal
         .set_hook_authority_with_session_ref(
             "shepr:codex",
-            "codex",
             state,
             shepr_agent::resume::AgentSessionRef::id("codex-session"),
             None,
@@ -35,14 +34,14 @@ fn pi_root_session_ref() -> Option<shepr_agent::resume::AgentSessionRef> {
 
 #[test]
 fn official_state_reports_require_the_session_reference_declared_by_the_descriptor() {
-    for (agent, source, label) in [
-        (Agent::Pi, "shepr:pi", "pi"),
-        (Agent::Codex, "shepr:codex", "codex"),
-        (Agent::Omp, "shepr:omp", "omp"),
-        (Agent::Mastracode, "shepr:mastracode", "mastracode"),
-        (Agent::OpenCode, "shepr:opencode", "opencode"),
-        (Agent::Kimi, "shepr:kimi", "kimi"),
-        (Agent::Kilo, "shepr:kilo", "kilo"),
+    for (agent, source) in [
+        (Agent::Pi, "shepr:pi"),
+        (Agent::Codex, "shepr:codex"),
+        (Agent::Omp, "shepr:omp"),
+        (Agent::Mastracode, "shepr:mastracode"),
+        (Agent::OpenCode, "shepr:opencode"),
+        (Agent::Kimi, "shepr:kimi"),
+        (Agent::Kilo, "shepr:kilo"),
     ] {
         assert!(
             agent
@@ -53,14 +52,7 @@ fn official_state_reports_require_the_session_reference_declared_by_the_descript
         let mut terminal = test_terminal();
         assert!(
             terminal
-                .set_hook_authority_at(
-                    source,
-                    label,
-                    AgentState::Working,
-                    None,
-                    None,
-                    Instant::now()
-                )
+                .set_hook_authority_at(source, AgentState::Working, None, None, Instant::now())
                 .is_none()
         );
         assert_eq!(terminal.state, AgentState::Unknown);
@@ -78,7 +70,6 @@ fn ownership_test_seams_use_the_supplied_observation_time() {
     terminal
         .set_hook_authority_with_session_ref(
             "shepr:codex",
-            "codex",
             AgentState::Working,
             shepr_agent::resume::AgentSessionRef::id("codex-session"),
             None,
@@ -102,12 +93,11 @@ fn anchor_full_lifecycle_session(
     terminal: &mut AgentOwnership,
     agent: Agent,
     source: &str,
-    agent_label: &str,
     session_ref: shepr_agent::resume::AgentSessionRef,
 ) {
     terminal.set_detected_state_at(Some(agent), terminal.fallback_state, Instant::now());
     terminal.set_persisted_agent_session(
-        shepr_agent::resume::PersistedAgentSession::from_report(source, agent_label, session_ref)
+        shepr_agent::resume::PersistedAgentSession::from_report(source, session_ref)
             .expect("test precondition"),
     );
 }
@@ -139,13 +129,11 @@ fn hook_authority_overrides_fallback_for_same_agent() {
         &mut terminal,
         Agent::Pi,
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         pi_root_session_ref(),
         None,
@@ -172,7 +160,7 @@ fn process_exit_suppresses_only_full_lifecycle_sources() {
             shepr_agent::resume::AgentSessionRef::id(format!("{label}-exit"))
         }
         .expect("test precondition");
-        anchor_full_lifecycle_session(&mut terminal, agent, source, label, session_ref);
+        anchor_full_lifecycle_session(&mut terminal, agent, source, session_ref);
 
         terminal.confirmed_detection_for_test(
             Some(agent),
@@ -198,12 +186,10 @@ fn omp_hook_authority_overrides_detected_fallback() {
         &mut terminal,
         Agent::Omp,
         "shepr:omp",
-        "omp",
         shepr_agent::resume::AgentSessionRef::id("omp-root").expect("test precondition"),
     );
     terminal.set_hook_authority_with_session_ref(
         "shepr:omp",
-        "omp",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::id("omp-root"),
         None,
@@ -229,16 +215,15 @@ fn omp_hook_authority_overrides_detected_fallback() {
 
 #[test]
 fn session_only_report_does_not_create_hook_authority() {
-    for (agent, source, label, session_id) in [
-        (Agent::Codex, "shepr:codex", "codex", "codex-session"),
-        (Agent::Devin, "shepr:devin", "devin", "devin-session"),
+    for (agent, source, session_id) in [
+        (Agent::Codex, "shepr:codex", "codex-session"),
+        (Agent::Devin, "shepr:devin", "devin-session"),
     ] {
         let mut terminal = test_terminal();
         terminal.set_detected_state_at(Some(agent), AgentState::Idle, Instant::now());
 
         let mutation = terminal.set_agent_session_ref(
             source,
-            label,
             shepr_agent::resume::AgentSessionRef::id(session_id),
             Some(1),
             Instant::now(),
@@ -349,7 +334,6 @@ fn startup_session_claim_activates_full_lifecycle_integrations() {
 
         let session = terminal.set_agent_session_ref_for_session_start(
             source,
-            label,
             session_ref.clone(),
             Some(10),
             Some("startup"),
@@ -357,7 +341,6 @@ fn startup_session_claim_activates_full_lifecycle_integrations() {
         );
         let working = terminal.set_hook_authority_with_session_ref(
             source,
-            label,
             AgentState::Working,
             session_ref,
             Some(11),
@@ -388,7 +371,6 @@ fn session_identity_claims_leave_state_to_detection() {
         .expect("test precondition");
     let first = terminal.set_agent_session_ref_for_session_start(
         source,
-        label,
         Some(first_ref.clone()),
         Some(10),
         start_source,
@@ -411,7 +393,6 @@ fn session_identity_claims_leave_state_to_detection() {
         .expect("test precondition");
     let replacement = terminal.set_agent_session_ref_for_session_start(
         source,
-        label,
         Some(replacement_ref.clone()),
         Some(11),
         start_source,
@@ -434,7 +415,6 @@ fn session_identity_claims_leave_state_to_detection() {
 
     let identity_from_state = terminal.set_hook_authority_with_session_ref(
         source,
-        label,
         AgentState::Blocked,
         Some(replacement_ref.clone()),
         Some(12),
@@ -451,7 +431,6 @@ fn session_identity_claims_leave_state_to_detection() {
         .expect("test precondition");
     let background_replacement = terminal.set_agent_session_ref_for_session_start(
         source,
-        label,
         Some(background_ref.clone()),
         Some(13),
         replacement_source,
@@ -472,7 +451,6 @@ fn session_identity_claims_leave_state_to_detection() {
     terminal.set_detected_state_at(Some(agent), AgentState::Idle, Instant::now());
     let retried_replacement = terminal.set_agent_session_ref_for_session_start(
         source,
-        label,
         Some(background_ref.clone()),
         Some(14),
         replacement_source,
@@ -500,7 +478,6 @@ fn pi_session_replacement_reports_reanchor_full_lifecycle_authority() {
         terminal.set_detected_state_at(Some(Agent::Pi), AgentState::Idle, Instant::now());
         terminal.set_hook_authority_with_session_ref(
             "shepr:pi",
-            "pi",
             AgentState::Idle,
             shepr_agent::resume::AgentSessionRef::path(old_session),
             Some(10),
@@ -509,7 +486,6 @@ fn pi_session_replacement_reports_reanchor_full_lifecycle_authority() {
 
         let session_report = terminal.set_agent_session_ref_for_session_start(
             "shepr:pi",
-            "pi",
             shepr_agent::resume::AgentSessionRef::path(new_session.clone()),
             Some(11),
             Some(reason),
@@ -524,7 +500,6 @@ fn pi_session_replacement_reports_reanchor_full_lifecycle_authority() {
 
         let working = terminal.set_hook_authority_with_session_ref(
             "shepr:pi",
-            "pi",
             AgentState::Working,
             shepr_agent::resume::AgentSessionRef::path(new_session.clone()),
             Some(12),
@@ -555,7 +530,6 @@ fn pi_resume_reactivates_a_previously_stale_session() {
     terminal.set_detected_state_at(Some(Agent::Pi), AgentState::Idle, Instant::now());
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Idle,
         shepr_agent::resume::AgentSessionRef::path(session_a.clone()),
         Some(10),
@@ -564,7 +538,6 @@ fn pi_resume_reactivates_a_previously_stale_session() {
 
     terminal.set_agent_session_ref_for_session_start(
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(session_b.clone()),
         Some(11),
         Some("new"),
@@ -572,7 +545,6 @@ fn pi_resume_reactivates_a_previously_stale_session() {
     );
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Idle,
         shepr_agent::resume::AgentSessionRef::path(session_b.clone()),
         Some(12),
@@ -581,7 +553,6 @@ fn pi_resume_reactivates_a_previously_stale_session() {
 
     let resumed = terminal.set_agent_session_ref_for_session_start(
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(session_a.clone()),
         Some(13),
         Some("resume"),
@@ -589,7 +560,6 @@ fn pi_resume_reactivates_a_previously_stale_session() {
     );
     let working = terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(session_a.clone()),
         Some(14),
@@ -610,7 +580,6 @@ fn pi_resume_reactivates_a_previously_stale_session() {
 
     let late_session_b = terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Idle,
         shepr_agent::resume::AgentSessionRef::path(session_b),
         Some(15),
@@ -629,7 +598,6 @@ fn pi_startup_adopts_persisted_session_without_live_authority() {
     terminal.set_persisted_agent_session(
         shepr_agent::resume::PersistedAgentSession::new(
             bundled_source("shepr:pi"),
-            shepr_agent::Agent::Pi,
             shepr_agent::resume::AgentSessionRef::path(old_session)
                 .expect("test session path should be valid"),
         )
@@ -638,7 +606,6 @@ fn pi_startup_adopts_persisted_session_without_live_authority() {
 
     let startup = terminal.set_agent_session_ref_for_session_start(
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(new_session.clone()),
         Some(11),
         Some("startup"),
@@ -651,7 +618,6 @@ fn pi_startup_adopts_persisted_session_without_live_authority() {
         Some(
             shepr_agent::resume::PersistedAgentSession::from_report(
                 "shepr:pi",
-                "pi",
                 shepr_agent::resume::AgentSessionRef::path(new_session)
                     .expect("test session path should be valid"),
             )
@@ -671,13 +637,11 @@ fn pi_non_replacement_reports_preserve_full_lifecycle_authority() {
             &mut terminal,
             Agent::Pi,
             "shepr:pi",
-            "pi",
             shepr_agent::resume::AgentSessionRef::path(old_session.clone())
                 .expect("test precondition"),
         );
         terminal.set_hook_authority_with_session_ref(
             "shepr:pi",
-            "pi",
             AgentState::Idle,
             shepr_agent::resume::AgentSessionRef::path(old_session.clone()),
             Some(10),
@@ -686,7 +650,6 @@ fn pi_non_replacement_reports_preserve_full_lifecycle_authority() {
 
         let session_report = terminal.set_agent_session_ref_for_session_start(
             "shepr:pi",
-            "pi",
             shepr_agent::resume::AgentSessionRef::path(new_session.clone()),
             Some(11),
             reason,
@@ -694,7 +657,6 @@ fn pi_non_replacement_reports_preserve_full_lifecycle_authority() {
         );
         let working = terminal.set_hook_authority_with_session_ref(
             "shepr:pi",
-            "pi",
             AgentState::Working,
             shepr_agent::resume::AgentSessionRef::path(new_session),
             Some(12),
@@ -724,7 +686,6 @@ fn omp_resume_session_report_reanchors_full_lifecycle_authority() {
     terminal.set_detected_state_at(Some(Agent::Omp), AgentState::Idle, Instant::now());
     terminal.set_hook_authority_with_session_ref(
         "shepr:omp",
-        "omp",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(old_session.clone()),
         Some(10),
@@ -733,7 +694,6 @@ fn omp_resume_session_report_reanchors_full_lifecycle_authority() {
 
     let session_report = terminal.set_agent_session_ref_for_session_start(
         "shepr:omp",
-        "omp",
         shepr_agent::resume::AgentSessionRef::path(new_session.clone()),
         Some(11),
         Some("resume"),
@@ -754,7 +714,6 @@ fn omp_resume_session_report_reanchors_full_lifecycle_authority() {
 
     let blocked = terminal.set_hook_authority_with_session_ref(
         "shepr:omp",
-        "omp",
         AgentState::Blocked,
         shepr_agent::resume::AgentSessionRef::path(new_session.clone()),
         Some(12),
@@ -774,7 +733,6 @@ fn omp_resume_session_report_reanchors_full_lifecycle_authority() {
 
     let stale = terminal.set_hook_authority_with_session_ref(
         "shepr:omp",
-        "omp",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(old_session),
         Some(13),
@@ -797,7 +755,6 @@ fn late_full_lifecycle_hook_with_same_session_after_process_exit_does_not_reacqu
     );
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
@@ -813,7 +770,6 @@ fn late_full_lifecycle_hook_with_same_session_after_process_exit_does_not_reacqu
     );
     let late = terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(session_path),
         Some(21),
@@ -835,13 +791,11 @@ fn live_full_lifecycle_hook_rejects_different_session_ref_for_same_source() {
         &mut terminal,
         Agent::Pi,
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(test_session_path("one.jsonl"))
             .expect("test precondition"),
     );
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(test_session_path("one.jsonl")),
         Some(20),
@@ -850,7 +804,6 @@ fn live_full_lifecycle_hook_rejects_different_session_ref_for_same_source() {
 
     let mutation = terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Idle,
         shepr_agent::resume::AgentSessionRef::path(test_session_path("two.jsonl")),
         Some(21),
@@ -872,7 +825,6 @@ fn live_full_lifecycle_hook_rejects_different_session_ref_for_same_source() {
     // session's own next report is still accepted.
     let follow_up = terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Idle,
         shepr_agent::resume::AgentSessionRef::path(test_session_path("one.jsonl")),
         Some(22),
@@ -893,7 +845,6 @@ fn fresh_detected_process_keeps_old_session_suppressed_after_process_exit() {
     terminal.set_detected_state_at(Some(Agent::Pi), AgentState::Idle, initial_observation);
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(old_session.clone()),
         Some(1000),
@@ -926,7 +877,6 @@ fn fresh_detected_process_keeps_old_session_suppressed_after_process_exit() {
 
     let late_old = terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(old_session),
         Some(500),
@@ -934,7 +884,6 @@ fn fresh_detected_process_keeps_old_session_suppressed_after_process_exit() {
     );
     let fresh_new = terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(new_session.clone()),
         Some(501),
@@ -949,7 +898,6 @@ fn fresh_detected_process_keeps_old_session_suppressed_after_process_exit() {
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:pi",
-            "pi",
             shepr_agent::resume::AgentSessionRef::path(new_session),
             Some(400),
             Some("startup"),
@@ -972,7 +920,6 @@ fn rapid_restart_replays_reports_that_arrive_before_process_evidence() {
     );
     terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(1000),
@@ -988,7 +935,6 @@ fn rapid_restart_replays_reports_that_arrive_before_process_evidence() {
 
     let lower_sequence = terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Idle,
         shepr_agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(1001),
@@ -996,7 +942,6 @@ fn rapid_restart_replays_reports_that_arrive_before_process_evidence() {
     );
     let missing_sequence = terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Idle,
         shepr_agent::resume::AgentSessionRef::path(session_path.clone()),
         None,
@@ -1004,7 +949,6 @@ fn rapid_restart_replays_reports_that_arrive_before_process_evidence() {
     );
     let buffered_working = terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(2001),
@@ -1012,7 +956,6 @@ fn rapid_restart_replays_reports_that_arrive_before_process_evidence() {
     );
     let startup = terminal.set_agent_session_ref_for_session_start(
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(session_path),
         Some(2000),
         Some("startup"),
@@ -1045,13 +988,11 @@ fn process_exit_discards_unclaimed_buffered_state_from_that_generation() {
         &mut terminal,
         Agent::Pi,
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(old_session.clone()).expect("test precondition"),
     );
     let now = Instant::now();
     terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(old_session),
         Some(1000),
@@ -1073,7 +1014,6 @@ fn process_exit_discards_unclaimed_buffered_state_from_that_generation() {
     );
     terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(shared_session.clone()),
         Some(500),
@@ -1097,7 +1037,6 @@ fn process_exit_discards_unclaimed_buffered_state_from_that_generation() {
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:pi",
-            "pi",
             shepr_agent::resume::AgentSessionRef::path(shared_session),
             Some(100),
             Some("startup"),
@@ -1121,7 +1060,6 @@ fn queued_fresh_process_evidence_uses_process_exit_observation_time() {
     );
     terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(1000),
@@ -1151,7 +1089,6 @@ fn queued_fresh_process_evidence_uses_process_exit_observation_time() {
     );
     let startup = terminal.set_agent_session_ref_for_session_start(
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(session_path),
         Some(2000),
         Some("startup"),
@@ -1174,7 +1111,6 @@ fn different_session_after_process_exit_waits_for_fresh_process_evidence() {
     );
     terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(old_session),
         Some(1000),
@@ -1190,7 +1126,6 @@ fn different_session_after_process_exit_waits_for_fresh_process_evidence() {
 
     let early_new = terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(new_session.clone()),
         Some(500),
@@ -1216,7 +1151,6 @@ fn different_session_after_process_exit_waits_for_fresh_process_evidence() {
     );
     let fresh_new = terminal.set_agent_session_ref_for_session_start(
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(new_session),
         Some(400),
         Some("startup"),
@@ -1240,7 +1174,6 @@ fn missing_session_after_process_exit_waits_for_fresh_process_evidence() {
     );
     terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(old_session),
         Some(1000),
@@ -1256,7 +1189,6 @@ fn missing_session_after_process_exit_waits_for_fresh_process_evidence() {
 
     let early_without_session = terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         None,
         Some(500),
@@ -1282,7 +1214,6 @@ fn missing_session_after_process_exit_waits_for_fresh_process_evidence() {
     );
     let fresh_without_session = terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         None,
         Some(500),
@@ -1294,7 +1225,6 @@ fn missing_session_after_process_exit_waits_for_fresh_process_evidence() {
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:pi",
-            "pi",
             shepr_agent::resume::AgentSessionRef::path(test_session_path(
                 "fresh-after-nosession-process-exit.jsonl",
             )),
@@ -1305,7 +1235,6 @@ fn missing_session_after_process_exit_waits_for_fresh_process_evidence() {
         .expect("fresh root session should claim the process generation");
     let child_update = terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(test_session_path(
             "fresh-after-nosession-process-exit.jsonl",
@@ -1325,7 +1254,6 @@ fn mastracode_session_start_replaces_current_root_session() {
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:mastracode",
-            "mastracode",
             shepr_agent::resume::AgentSessionRef::id("mastracode-old"),
             Some(20),
             Some("startup"),
@@ -1335,7 +1263,6 @@ fn mastracode_session_start_replaces_current_root_session() {
 
     let replacement = terminal.set_agent_session_ref_for_session_start(
         "shepr:mastracode",
-        "mastracode",
         shepr_agent::resume::AgentSessionRef::id("mastracode-new"),
         Some(21),
         Some("startup"),
@@ -1363,7 +1290,6 @@ fn omp_reacquires_full_lifecycle_hook_after_process_exit_with_fresh_process_and_
     );
     terminal.set_hook_authority_at(
         "shepr:omp",
-        "omp",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::id("omp-old"),
         Some(1000),
@@ -1379,7 +1305,6 @@ fn omp_reacquires_full_lifecycle_hook_after_process_exit_with_fresh_process_and_
 
     let stale = terminal.set_hook_authority_with_session_ref(
         "shepr:omp",
-        "omp",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::id("omp-old"),
         Some(500),
@@ -1407,7 +1332,6 @@ fn omp_reacquires_full_lifecycle_hook_after_process_exit_with_fresh_process_and_
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:omp",
-            "omp",
             shepr_agent::resume::AgentSessionRef::id("omp-new"),
             Some(400),
             Some("startup"),
@@ -1416,7 +1340,6 @@ fn omp_reacquires_full_lifecycle_hook_after_process_exit_with_fresh_process_and_
         .expect("fresh process and session should claim the pane");
     let fresh = terminal.set_hook_authority_with_session_ref(
         "shepr:omp",
-        "omp",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::id("omp-new"),
         Some(500),
@@ -1458,13 +1381,11 @@ fn visible_blocker_does_not_override_full_lifecycle_hook_authority() {
         &mut terminal,
         Agent::Pi,
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         pi_root_session_ref(),
         None,
@@ -1528,7 +1449,6 @@ fn fallback_idle_does_not_override_hook_working() {
     terminal.set_detected_state_at(Some(Agent::Codex), AgentState::Working, Instant::now());
     terminal.set_hook_authority_at(
         "shepr:codex",
-        "codex",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::id("codex-session"),
         None,
@@ -1556,12 +1476,10 @@ fn fallback_idle_does_not_override_full_lifecycle_hook_working() {
         &mut terminal,
         Agent::OpenCode,
         "shepr:opencode",
-        "opencode",
         shepr_agent::resume::AgentSessionRef::id("opencode-root").expect("test precondition"),
     );
     terminal.set_hook_authority_at(
         "shepr:opencode",
-        "opencode",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::id("opencode-root"),
         None,
@@ -1586,7 +1504,6 @@ fn visible_working_does_not_override_hook_idle_for_same_agent() {
     terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
     terminal.set_hook_authority_at(
         "shepr:codex",
-        "codex",
         AgentState::Idle,
         shepr_agent::resume::AgentSessionRef::id("codex-session"),
         None,
@@ -1615,12 +1532,10 @@ fn visible_working_does_not_override_full_lifecycle_hook_idle() {
         &mut terminal,
         Agent::Kimi,
         "shepr:kimi",
-        "kimi",
         shepr_agent::resume::AgentSessionRef::id("kimi-root").expect("test precondition"),
     );
     terminal.set_hook_authority_at(
         "shepr:kimi",
-        "kimi",
         AgentState::Idle,
         shepr_agent::resume::AgentSessionRef::id("kimi-root"),
         None,
@@ -1649,12 +1564,10 @@ fn detected_working_fallback_is_ignored_under_full_lifecycle_hook_authority() {
         &mut terminal,
         Agent::Kilo,
         "shepr:kilo",
-        "kilo",
         shepr_agent::resume::AgentSessionRef::id("kilo-root").expect("test precondition"),
     );
     terminal.set_hook_authority_at(
         "shepr:kilo",
-        "kilo",
         AgentState::Idle,
         shepr_agent::resume::AgentSessionRef::id("kilo-root"),
         None,
@@ -1688,7 +1601,6 @@ fn visible_working_does_not_hold_against_newer_hook_idle() {
 
     let change = terminal.set_hook_authority_at(
         "shepr:codex",
-        "codex",
         AgentState::Idle,
         shepr_agent::resume::AgentSessionRef::id("codex-session"),
         None,
@@ -1719,7 +1631,6 @@ fn refreshed_visible_working_does_not_override_newer_hook_blocked() {
     );
     terminal.set_hook_authority_at(
         "shepr:codex",
-        "codex",
         AgentState::Blocked,
         shepr_agent::resume::AgentSessionRef::id("codex-session"),
         None,
@@ -1751,7 +1662,6 @@ fn fallback_idle_does_not_override_hook_working_when_screen_agent_is_absent() {
     terminal
         .set_hook_authority_with_session_ref(
             "shepr:codex",
-            "codex",
             AgentState::Working,
             shepr_agent::resume::AgentSessionRef::id("codex-session"),
             None,
@@ -1779,7 +1689,6 @@ fn known_hook_authority_does_not_override_different_detected_agent() {
     terminal.set_detected_state_at(Some(Agent::Grok), AgentState::Working, Instant::now());
     let change = terminal.set_hook_authority_with_session_ref(
         "shepr:codex",
-        "codex",
         AgentState::Blocked,
         shepr_agent::resume::AgentSessionRef::id("codex-session"),
         None,
@@ -1828,13 +1737,11 @@ fn full_lifecycle_hook_authority_ignores_detected_agent_clear_without_process_ex
         &mut terminal,
         Agent::Pi,
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
     terminal.set_hook_authority_at(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         pi_root_session_ref(),
         None,
@@ -1906,7 +1813,6 @@ fn stale_visible_screen_signal_does_not_override_newer_hook_authority() {
     );
     terminal.set_hook_authority_at(
         "shepr:codex",
-        "codex",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::id("codex-session"),
         Some(1),
@@ -1936,7 +1842,6 @@ fn partial_state_authority_reanchors_sequence_after_process_restart() {
     );
     terminal.set_hook_authority_at(
         "shepr:codex",
-        "codex",
         AgentState::Working,
         session(),
         Some(100),
@@ -1961,7 +1866,6 @@ fn partial_state_authority_reanchors_sequence_after_process_restart() {
         terminal
             .set_hook_authority_with_session_ref(
                 "shepr:codex",
-                "codex",
                 AgentState::Working,
                 session(),
                 Some(1),
@@ -1980,7 +1884,6 @@ fn partial_state_authority_reanchors_sequence_after_process_restart() {
         terminal
             .set_hook_authority_with_session_ref(
                 "shepr:codex",
-                "codex",
                 AgentState::Working,
                 session(),
                 Some(1),
@@ -2005,7 +1908,6 @@ fn process_exit_clears_newer_same_agent_hook_authority() {
         terminal
             .set_hook_authority_at(
                 "shepr:codex",
-                "codex",
                 AgentState::Working,
                 shepr_agent::resume::AgentSessionRef::id("codex-session"),
                 Some(seq),
@@ -2050,13 +1952,11 @@ fn stale_hook_report_sequence_is_ignored_for_same_source() {
         &mut terminal,
         Agent::Pi,
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         pi_root_session_ref(),
         Some(20),
@@ -2065,7 +1965,6 @@ fn stale_hook_report_sequence_is_ignored_for_same_source() {
 
     let change = terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Idle,
         pi_root_session_ref(),
         Some(19),
@@ -2092,14 +1991,12 @@ fn accepted_hook_report_stores_session_ref() {
         &mut terminal,
         Agent::Pi,
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(session_path.clone())
             .expect("test precondition"),
     );
     let mutation = terminal
         .set_hook_authority_with_session_ref(
             "shepr:pi",
-            "pi",
             AgentState::Working,
             shepr_agent::resume::AgentSessionRef::path(session_path.clone()),
             Some(20),
@@ -2130,13 +2027,11 @@ fn stale_hook_report_cannot_overwrite_session_ref() {
         &mut terminal,
         Agent::Pi,
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(session_path.clone())
             .expect("test precondition"),
     );
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
@@ -2145,7 +2040,6 @@ fn stale_hook_report_cannot_overwrite_session_ref() {
 
     let mutation = terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(new_session_path),
         Some(19),
@@ -2171,13 +2065,11 @@ fn hook_report_without_session_ref_is_rejected_and_preserves_current_generation(
         &mut terminal,
         Agent::Pi,
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(session_path.clone())
             .expect("test precondition"),
     );
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(session_path),
         Some(20),
@@ -2190,7 +2082,6 @@ fn hook_report_without_session_ref_is_rejected_and_preserves_current_generation(
         terminal
             .set_hook_authority_with_session_ref(
                 "shepr:pi",
-                "pi",
                 AgentState::Idle,
                 None,
                 Some(21),
@@ -2214,7 +2105,6 @@ fn hook_report_without_session_ref_is_rejected_and_preserves_current_generation(
         terminal
             .set_hook_authority_with_session_ref(
                 "shepr:pi",
-                "pi",
                 AgentState::Idle,
                 Some(identity.session_ref().clone()),
                 Some(22),
@@ -2231,7 +2121,6 @@ fn different_same_agent_session_ref_is_ignored_until_current_session_clears() {
     terminal
         .set_agent_session_ref(
             "shepr:claude",
-            "claude",
             shepr_agent::resume::AgentSessionRef::id("claude-session"),
             Some(20),
             Instant::now(),
@@ -2240,7 +2129,6 @@ fn different_same_agent_session_ref_is_ignored_until_current_session_clears() {
 
     let mutation = terminal.set_agent_session_ref(
         "shepr:claude",
-        "claude",
         shepr_agent::resume::AgentSessionRef::id("nested-session"),
         Some(21),
         Instant::now(),
@@ -2269,7 +2157,6 @@ fn claude_startup_session_ref_does_not_replace_existing_session_ref() {
     terminal
         .set_agent_session_ref(
             "shepr:claude",
-            "claude",
             shepr_agent::resume::AgentSessionRef::id("claude-session"),
             Some(20),
             Instant::now(),
@@ -2278,7 +2165,6 @@ fn claude_startup_session_ref_does_not_replace_existing_session_ref() {
 
     let mutation = terminal.set_agent_session_ref_for_session_start(
         "shepr:claude",
-        "claude",
         shepr_agent::resume::AgentSessionRef::id("nested-session"),
         Some(21),
         Some("startup"),
@@ -2302,7 +2188,6 @@ fn claude_lifecycle_session_ref_replaces_existing_session_ref() {
         terminal
             .set_agent_session_ref(
                 "shepr:claude",
-                "claude",
                 shepr_agent::resume::AgentSessionRef::id("claude-session"),
                 Some(20),
                 Instant::now(),
@@ -2313,7 +2198,6 @@ fn claude_lifecycle_session_ref_replaces_existing_session_ref() {
         let mutation = terminal
             .set_agent_session_ref_for_session_start(
                 "shepr:claude",
-                "claude",
                 shepr_agent::resume::AgentSessionRef::id(&next_session),
                 Some(21),
                 Some(session_start_source),
@@ -2343,7 +2227,6 @@ fn codex_lifecycle_session_ref_replaces_existing_session_ref() {
         terminal
             .set_agent_session_ref(
                 "shepr:codex",
-                "codex",
                 shepr_agent::resume::AgentSessionRef::id("codex-session"),
                 Some(20),
                 Instant::now(),
@@ -2354,7 +2237,6 @@ fn codex_lifecycle_session_ref_replaces_existing_session_ref() {
         let mutation = terminal
             .set_agent_session_ref_for_session_start(
                 "shepr:codex",
-                "codex",
                 shepr_agent::resume::AgentSessionRef::id(&next_session),
                 Some(21),
                 Some(session_start_source),
@@ -2388,7 +2270,6 @@ fn codex_hook_turn_lifecycle_preserves_session_and_beats_stale_working_screen() 
     ) -> Option<AgentOwnershipMutation> {
         terminal.set_hook_authority_with_session_ref(
             "shepr:codex",
-            "codex",
             state,
             shepr_agent::resume::AgentSessionRef::id(session),
             Some(seq),
@@ -2405,7 +2286,6 @@ fn codex_hook_turn_lifecycle_preserves_session_and_beats_stale_working_screen() 
         terminal
             .set_agent_session_ref_for_session_start(
                 "shepr:codex",
-                "codex",
                 shepr_agent::resume::AgentSessionRef::id(session),
                 Some(seq),
                 start_source,
@@ -2448,7 +2328,6 @@ fn grok_new_session_ref_replaces_existing_session_ref() {
     terminal
         .set_agent_session_ref(
             "shepr:grok",
-            "grok",
             shepr_agent::resume::AgentSessionRef::id("grok-old"),
             Some(20),
             Instant::now(),
@@ -2458,7 +2337,6 @@ fn grok_new_session_ref_replaces_existing_session_ref() {
     let mutation = terminal
         .set_agent_session_ref_for_session_start(
             "shepr:grok",
-            "grok",
             shepr_agent::resume::AgentSessionRef::id("grok-new"),
             Some(21),
             Some("new"),
@@ -2483,7 +2361,6 @@ fn opencode_server_new_does_not_replace_existing_session_ref() {
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:opencode",
-            "opencode",
             shepr_agent::resume::AgentSessionRef::id("opencode-visible"),
             None,
             Some("select"),
@@ -2493,7 +2370,6 @@ fn opencode_server_new_does_not_replace_existing_session_ref() {
 
     let mutation = terminal.set_agent_session_ref_for_session_start(
         "shepr:opencode",
-        "opencode",
         shepr_agent::resume::AgentSessionRef::id("opencode-attached-client"),
         Some(21),
         Some("new"),
@@ -2517,7 +2393,6 @@ fn opencode_server_resume_does_not_replace_existing_session_ref() {
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:opencode",
-            "opencode",
             shepr_agent::resume::AgentSessionRef::id("opencode-visible"),
             None,
             Some("select"),
@@ -2527,7 +2402,6 @@ fn opencode_server_resume_does_not_replace_existing_session_ref() {
 
     let mutation = terminal.set_agent_session_ref_for_session_start(
         "shepr:opencode",
-        "opencode",
         shepr_agent::resume::AgentSessionRef::id("opencode-attached-client"),
         Some(21),
         Some("resume"),
@@ -2549,7 +2423,6 @@ fn opencode_tui_selection_anchors_after_process_detection() {
     let mut terminal = test_terminal();
     let startup_selection = terminal.set_agent_session_ref_for_session_start(
         "shepr:opencode",
-        "opencode",
         shepr_agent::resume::AgentSessionRef::id("opencode-startup-selection"),
         None,
         Some("select"),
@@ -2594,7 +2467,6 @@ fn opencode_tui_selection_anchors_after_process_detection() {
     let selected = terminal
         .set_agent_session_ref_for_session_start(
             "shepr:opencode",
-            "opencode",
             shepr_agent::resume::AgentSessionRef::id("opencode-reselected"),
             None,
             Some("select"),
@@ -2628,7 +2500,6 @@ fn opencode_child_prompt_reports_with_root_id_preserve_lifecycle_authority() {
         &mut terminal,
         Agent::OpenCode,
         "shepr:opencode",
-        "opencode",
         root.clone(),
     );
 
@@ -2642,7 +2513,6 @@ fn opencode_child_prompt_reports_with_root_id_preserve_lifecycle_authority() {
         let mutation = terminal
             .set_hook_authority_with_session_ref(
                 "shepr:opencode",
-                "opencode",
                 state,
                 Some(root.clone()),
                 Some(seq),
@@ -2664,7 +2534,6 @@ fn opencode_child_prompt_reports_with_root_id_preserve_lifecycle_authority() {
 
     let foreign_child_prompt = terminal.set_hook_authority_with_session_ref(
         "shepr:opencode",
-        "opencode",
         AgentState::Blocked,
         shepr_agent::resume::AgentSessionRef::id("opencode-other-root"),
         Some(24),
@@ -2685,13 +2554,11 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
         &mut terminal,
         Agent::OpenCode,
         "shepr:opencode",
-        "opencode",
         old_session.clone(),
     );
     terminal
         .set_hook_authority_with_session_ref(
             "shepr:opencode",
-            "opencode",
             AgentState::Idle,
             Some(old_session.clone()),
             Some(20),
@@ -2702,7 +2569,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
         .expect("test precondition");
     let attached = terminal.set_hook_authority_with_session_ref(
         "shepr:opencode",
-        "opencode",
         AgentState::Working,
         Some(attached_session.clone()),
         Some(21),
@@ -2714,7 +2580,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
     let selected = terminal
         .set_agent_session_ref_for_session_start(
             "shepr:opencode",
-            "opencode",
             Some(selected_session.clone()),
             None,
             Some("select"),
@@ -2743,7 +2608,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
     terminal
         .set_hook_authority_with_session_ref(
             "shepr:opencode",
-            "opencode",
             AgentState::Working,
             Some(selected_session.clone()),
             Some(21),
@@ -2764,7 +2628,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
         terminal
             .set_agent_session_ref_for_session_start(
                 "shepr:opencode",
-                "opencode",
                 Some(selected_session.clone()),
                 None,
                 Some("select"),
@@ -2777,7 +2640,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
         terminal
             .set_hook_authority_with_session_ref(
                 "shepr:opencode",
-                "opencode",
                 AgentState::Idle,
                 Some(selected_session.clone()),
                 Some(20),
@@ -2789,7 +2651,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
 
     let late_old_session = terminal.set_hook_authority_with_session_ref(
         "shepr:opencode",
-        "opencode",
         AgentState::Idle,
         Some(old_session),
         Some(22),
@@ -2807,7 +2668,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
 
     let late_attached_session = terminal.set_hook_authority_with_session_ref(
         "shepr:opencode",
-        "opencode",
         AgentState::Blocked,
         Some(attached_session),
         Some(23),
@@ -2821,7 +2681,6 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:opencode",
-            "opencode",
             Some(final_session.clone()),
             None,
             Some("select"),
@@ -2845,7 +2704,6 @@ fn opencode_session_ref_without_start_source_does_not_replace_existing() {
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:opencode",
-            "opencode",
             shepr_agent::resume::AgentSessionRef::id("opencode-old"),
             None,
             Some("select"),
@@ -2857,7 +2715,6 @@ fn opencode_session_ref_without_start_source_does_not_replace_existing() {
     // id must not displace the established session (cross-talk guard).
     let mutation = terminal.set_agent_session_ref_for_session_start(
         "shepr:opencode",
-        "opencode",
         shepr_agent::resume::AgentSessionRef::id("opencode-other"),
         Some(21),
         None,
@@ -2880,7 +2737,6 @@ fn different_owner_session_ref_does_not_replace_existing_session_ref() {
     terminal
         .set_agent_session_ref(
             "shepr:droid",
-            "droid",
             shepr_agent::resume::AgentSessionRef::id("droid-session"),
             Some(20),
             Instant::now(),
@@ -2889,7 +2745,6 @@ fn different_owner_session_ref_does_not_replace_existing_session_ref() {
 
     let mutation = terminal.set_agent_session_ref_for_session_start(
         "shepr:claude",
-        "claude",
         shepr_agent::resume::AgentSessionRef::id("claude-session"),
         Some(21),
         Some("resume"),
@@ -2898,12 +2753,11 @@ fn different_owner_session_ref_does_not_replace_existing_session_ref() {
 
     assert!(mutation.is_none());
     assert_eq!(
-        terminal.persisted_agent_session.as_ref().map(|session| (
-            session.source().as_str(),
-            session.agent().label(),
-            session.session_ref().value_str()
-        )),
-        Some(("shepr:droid", "droid", "droid-session"))
+        terminal
+            .persisted_agent_session
+            .as_ref()
+            .map(|session| (session.source().as_str(), session.session_ref().value_str())),
+        Some(("shepr:droid", "droid-session"))
     );
 }
 
@@ -2913,7 +2767,6 @@ fn grok_new_session_does_not_replace_a_different_owner() {
     terminal.set_persisted_agent_session(
         shepr_agent::resume::PersistedAgentSession::new(
             bundled_source("shepr:claude"),
-            shepr_agent::Agent::Claude,
             shepr_agent::resume::AgentSessionRef::id("claude-session").expect("test precondition"),
         )
         .expect("test session should be valid"),
@@ -2922,7 +2775,6 @@ fn grok_new_session_does_not_replace_a_different_owner() {
 
     let mutation = terminal.set_agent_session_ref_for_session_start(
         "shepr:grok",
-        "grok",
         shepr_agent::resume::AgentSessionRef::id("grok-session"),
         Some(21),
         Some("new"),
@@ -2931,12 +2783,11 @@ fn grok_new_session_does_not_replace_a_different_owner() {
 
     assert!(mutation.is_none());
     assert_eq!(
-        terminal.persisted_agent_session.as_ref().map(|session| (
-            session.source().as_str(),
-            session.agent().label(),
-            session.session_ref().value_str()
-        )),
-        Some(("shepr:claude", "claude", "claude-session"))
+        terminal
+            .persisted_agent_session
+            .as_ref()
+            .map(|session| (session.source().as_str(), session.session_ref().value_str())),
+        Some(("shepr:claude", "claude-session"))
     );
 }
 
@@ -2947,7 +2798,6 @@ fn foreground_agent_session_replaces_stale_different_owner_session_ref() {
         terminal.set_persisted_agent_session(
             shepr_agent::resume::PersistedAgentSession::new(
                 bundled_source("shepr:codex"),
-                shepr_agent::Agent::Codex,
                 shepr_agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
             )
@@ -2958,7 +2808,6 @@ fn foreground_agent_session_replaces_stale_different_owner_session_ref() {
         let mutation = terminal
             .set_agent_session_ref_for_session_start(
                 "shepr:claude",
-                "claude",
                 shepr_agent::resume::AgentSessionRef::id("claude-session"),
                 Some(21),
                 Some(session_start_source),
@@ -2968,12 +2817,11 @@ fn foreground_agent_session_replaces_stale_different_owner_session_ref() {
 
         assert!(mutation.session_ref_changed);
         assert_eq!(
-            terminal.persisted_agent_session.as_ref().map(|session| (
-                session.source().as_str(),
-                session.agent().label(),
-                session.session_ref().value_str()
-            )),
-            Some(("shepr:claude", "claude", "claude-session")),
+            terminal
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| (session.source().as_str(), session.session_ref().value_str())),
+            Some(("shepr:claude", "claude-session")),
             "{session_start_source} should store claude session"
         );
     }
@@ -2986,7 +2834,6 @@ fn foreground_agent_session_requires_lifecycle_source_to_replace_different_owner
         terminal.set_persisted_agent_session(
             shepr_agent::resume::PersistedAgentSession::new(
                 bundled_source("shepr:codex"),
-                shepr_agent::Agent::Codex,
                 shepr_agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
             )
@@ -2996,7 +2843,6 @@ fn foreground_agent_session_requires_lifecycle_source_to_replace_different_owner
 
         let mutation = terminal.set_agent_session_ref_for_session_start(
             "shepr:claude",
-            "claude",
             shepr_agent::resume::AgentSessionRef::id("claude-session"),
             Some(21),
             session_start_source,
@@ -3008,12 +2854,11 @@ fn foreground_agent_session_requires_lifecycle_source_to_replace_different_owner
             "{session_start_source:?} should not replace"
         );
         assert_eq!(
-            terminal.persisted_agent_session.as_ref().map(|session| (
-                session.source().as_str(),
-                session.agent().label(),
-                session.session_ref().value_str()
-            )),
-            Some(("shepr:codex", "codex", "codex-session"))
+            terminal
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| (session.source().as_str(), session.session_ref().value_str())),
+            Some(("shepr:codex", "codex-session"))
         );
     }
 }
@@ -3026,7 +2871,6 @@ fn different_owner_session_ref_requires_matching_detected_agent() {
             terminal.set_persisted_agent_session(
                 shepr_agent::resume::PersistedAgentSession::new(
                     bundled_source("shepr:codex"),
-                    shepr_agent::Agent::Codex,
                     shepr_agent::resume::AgentSessionRef::id("codex-session")
                         .expect("test precondition"),
                 )
@@ -3036,7 +2880,6 @@ fn different_owner_session_ref_requires_matching_detected_agent() {
 
             let mutation = terminal.set_agent_session_ref_for_session_start(
                 "shepr:claude",
-                "claude",
                 shepr_agent::resume::AgentSessionRef::id("claude-session"),
                 Some(21),
                 Some(session_start_source),
@@ -3048,12 +2891,11 @@ fn different_owner_session_ref_requires_matching_detected_agent() {
                 "{session_start_source} with {detected_agent:?} should not replace"
             );
             assert_eq!(
-                terminal.persisted_agent_session.as_ref().map(|session| (
-                    session.source().as_str(),
-                    session.agent().label(),
-                    session.session_ref().value_str()
-                )),
-                Some(("shepr:codex", "codex", "codex-session"))
+                terminal
+                    .persisted_agent_session
+                    .as_ref()
+                    .map(|session| (session.source().as_str(), session.session_ref().value_str())),
+                Some(("shepr:codex", "codex-session"))
             );
         }
     }
@@ -3066,7 +2908,6 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
         &mut terminal,
         Agent::OpenCode,
         "shepr:opencode",
-        "opencode",
         shepr_agent::resume::AgentSessionRef::id("opencode-session").expect("test precondition"),
     );
     // Taken after the anchor's own detector observation: an observation
@@ -3075,7 +2916,6 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
     terminal
         .set_hook_authority_at(
             "shepr:opencode",
-            "opencode",
             AgentState::Working,
             shepr_agent::resume::AgentSessionRef::id("opencode-session"),
             Some(20),
@@ -3093,7 +2933,6 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
     let mutation = terminal
         .set_agent_session_ref_for_session_start(
             "shepr:codex",
-            "codex",
             shepr_agent::resume::AgentSessionRef::id("codex-session"),
             Some(21),
             Some("startup"),
@@ -3108,7 +2947,6 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
         Some(
             shepr_agent::resume::PersistedAgentSession::from_report(
                 "shepr:codex",
-                "codex",
                 shepr_agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test session ID should be valid"),
             )
@@ -3117,7 +2955,6 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
     );
     let late_old_session = terminal.set_hook_authority_with_session_ref(
         "shepr:opencode",
-        "opencode",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::id("opencode-session"),
         Some(22),
@@ -3133,7 +2970,6 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:opencode",
-            "opencode",
             shepr_agent::resume::AgentSessionRef::id("opencode-new-session"),
             None,
             Some("select"),
@@ -3142,7 +2978,6 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
         .expect("fresh local selection");
     let fresh_session = terminal.set_hook_authority_with_session_ref(
         "shepr:opencode",
-        "opencode",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::id("opencode-new-session"),
         Some(24),
@@ -3157,7 +2992,6 @@ fn different_owner_full_lifecycle_hook_does_not_replace_existing_session_ref() {
     terminal
         .set_agent_session_ref(
             "shepr:droid",
-            "droid",
             shepr_agent::resume::AgentSessionRef::id("droid-session"),
             Some(20),
             Instant::now(),
@@ -3166,7 +3000,6 @@ fn different_owner_full_lifecycle_hook_does_not_replace_existing_session_ref() {
 
     let mutation = terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path("/tmp/pi-session.jsonl"),
         Some(21),
@@ -3176,12 +3009,11 @@ fn different_owner_full_lifecycle_hook_does_not_replace_existing_session_ref() {
     assert!(mutation.is_none());
     assert!(terminal.hook_authority.is_none());
     assert_eq!(
-        terminal.persisted_agent_session.as_ref().map(|session| (
-            session.source().as_str(),
-            session.agent().label(),
-            session.session_ref().value_str()
-        )),
-        Some(("shepr:droid", "droid", "droid-session"))
+        terminal
+            .persisted_agent_session
+            .as_ref()
+            .map(|session| (session.source().as_str(), session.session_ref().value_str())),
+        Some(("shepr:droid", "droid-session"))
     );
 }
 
@@ -3191,7 +3023,6 @@ fn repeated_same_agent_session_ref_is_accepted_without_session_change() {
     terminal
         .set_agent_session_ref(
             "shepr:claude",
-            "claude",
             shepr_agent::resume::AgentSessionRef::id("claude-session"),
             Some(20),
             Instant::now(),
@@ -3201,7 +3032,6 @@ fn repeated_same_agent_session_ref_is_accepted_without_session_change() {
     let mutation = terminal
         .set_agent_session_ref(
             "shepr:claude",
-            "claude",
             shepr_agent::resume::AgentSessionRef::id("claude-session"),
             Some(21),
             Instant::now(),
@@ -3219,13 +3049,11 @@ fn hook_authority_rejects_state_from_a_different_session() {
         &mut terminal,
         Agent::OpenCode,
         "shepr:opencode",
-        "opencode",
         shepr_agent::resume::AgentSessionRef::id("opencode-session").expect("test precondition"),
     );
     terminal
         .set_hook_authority_with_session_ref(
             "shepr:opencode",
-            "opencode",
             AgentState::Working,
             shepr_agent::resume::AgentSessionRef::id("opencode-session"),
             Some(20),
@@ -3235,7 +3063,6 @@ fn hook_authority_rejects_state_from_a_different_session() {
 
     let mutation = terminal.set_hook_authority_with_session_ref(
         "shepr:opencode",
-        "opencode",
         AgentState::Blocked,
         shepr_agent::resume::AgentSessionRef::id("nested-session"),
         Some(21),
@@ -3261,7 +3088,6 @@ fn detected_agent_clear_does_not_clear_current_session_ref() {
     terminal
         .set_agent_session_ref(
             "shepr:claude",
-            "claude",
             shepr_agent::resume::AgentSessionRef::id("claude-session"),
             Some(20),
             Instant::now(),
@@ -3274,7 +3100,6 @@ fn detected_agent_clear_does_not_clear_current_session_ref() {
 
     let mutation = terminal.set_agent_session_ref(
         "shepr:claude",
-        "claude",
         shepr_agent::resume::AgentSessionRef::id("new-session"),
         Some(21),
         Instant::now(),
@@ -3298,7 +3123,6 @@ fn process_exit_clears_matching_persisted_session_ref() {
     terminal.set_persisted_agent_session(
         shepr_agent::resume::PersistedAgentSession::new(
             bundled_source("shepr:pi"),
-            shepr_agent::Agent::Pi,
             session_ref.clone(),
         )
         .expect("test session should be valid"),
@@ -3316,13 +3140,8 @@ fn process_exit_clears_matching_persisted_session_ref() {
     assert!(mutation.session_ref_changed);
     assert!(terminal.persisted_agent_session.is_none());
 
-    let delayed = terminal.set_agent_session_ref(
-        "shepr:pi",
-        "pi",
-        Some(session_ref),
-        Some(21),
-        Instant::now(),
-    );
+    let delayed =
+        terminal.set_agent_session_ref("shepr:pi", Some(session_ref), Some(21), Instant::now());
     assert!(delayed.is_none());
     assert!(terminal.persisted_agent_session.is_none());
 }
@@ -3333,7 +3152,6 @@ fn process_exit_preserves_foreign_persisted_session_ref() {
     terminal.set_persisted_agent_session(
         shepr_agent::resume::PersistedAgentSession::new(
             bundled_source("shepr:claude"),
-            shepr_agent::Agent::Claude,
             shepr_agent::resume::AgentSessionRef::id("claude-session").expect("test precondition"),
         )
         .expect("test session should be valid"),
@@ -3363,7 +3181,6 @@ fn detected_conflict_preserves_session_only_report_identity() {
     let mut terminal = test_terminal();
     terminal.set_hook_authority_with_session_ref(
         "shepr:claude",
-        "claude",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::id("claude-session"),
         Some(20),
@@ -3380,12 +3197,11 @@ fn detected_conflict_preserves_session_only_report_identity() {
     assert!(!mutation.session_ref_changed);
     assert!(terminal.hook_authority.is_none());
     assert_eq!(
-        terminal.persisted_agent_session.as_ref().map(|session| (
-            session.source().as_str(),
-            session.agent().label(),
-            session.session_ref().value_str()
-        )),
-        Some(("shepr:claude", "claude", "claude-session"))
+        terminal
+            .persisted_agent_session
+            .as_ref()
+            .map(|session| (session.source().as_str(), session.session_ref().value_str())),
+        Some(("shepr:claude", "claude-session"))
     );
 }
 
@@ -3397,12 +3213,10 @@ fn detected_agent_disappearance_does_not_clear_full_lifecycle_hook_session_ref()
         &mut terminal,
         Agent::Kimi,
         "shepr:kimi",
-        "kimi",
         shepr_agent::resume::AgentSessionRef::id("kimi-session").expect("test precondition"),
     );
     terminal.set_hook_authority_with_session_ref(
         "shepr:kimi",
-        "kimi",
         AgentState::Working,
         shepr_agent::resume::AgentSessionRef::id("kimi-session"),
         Some(20),
@@ -3424,7 +3238,6 @@ fn detected_agent_disappearance_preserves_matching_persisted_session_ref() {
     terminal.set_persisted_agent_session(
         shepr_agent::resume::PersistedAgentSession::new(
             bundled_source("shepr:opencode"),
-            shepr_agent::Agent::OpenCode,
             shepr_agent::resume::AgentSessionRef::id("opencode-session")
                 .expect("test precondition"),
         )
@@ -3451,7 +3264,6 @@ fn initial_unknown_detection_preserves_restored_session_ref() {
     terminal.set_persisted_agent_session(
         shepr_agent::resume::PersistedAgentSession::new(
             bundled_source("shepr:codex"),
-            shepr_agent::Agent::Codex,
             shepr_agent::resume::AgentSessionRef::id("codex-session").expect("test precondition"),
         )
         .expect("test session should be valid"),
@@ -3471,13 +3283,11 @@ fn unsequenced_hook_report_is_ignored_after_source_uses_sequence() {
         &mut terminal,
         Agent::Pi,
         "shepr:pi",
-        "pi",
         shepr_agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
     terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Working,
         pi_root_session_ref(),
         Some(20),
@@ -3486,7 +3296,6 @@ fn unsequenced_hook_report_is_ignored_after_source_uses_sequence() {
 
     let change = terminal.set_hook_authority_with_session_ref(
         "shepr:pi",
-        "pi",
         AgentState::Idle,
         pi_root_session_ref(),
         None,
@@ -3564,12 +3373,11 @@ fn recognized_kimi_and_kilo_session_starts_replace_identity_and_release_old_stat
         let mut terminal = test_terminal();
         let old = shepr_agent::resume::AgentSessionRef::id("old").expect("session");
         let new = shepr_agent::resume::AgentSessionRef::id("new").expect("session");
-        anchor_full_lifecycle_session(&mut terminal, agent, source, agent.label(), old.clone());
+        anchor_full_lifecycle_session(&mut terminal, agent, source, old.clone());
         assert!(
             terminal
                 .set_hook_authority_with_session_ref(
                     source,
-                    agent.label(),
                     AgentState::Blocked,
                     Some(old.clone()),
                     Some(10),
@@ -3580,7 +3388,6 @@ fn recognized_kimi_and_kilo_session_starts_replace_identity_and_release_old_stat
         let changed = terminal
             .set_agent_session_ref_for_session_start(
                 source,
-                agent.label(),
                 Some(new.clone()),
                 Some(11),
                 Some(start),
@@ -3601,7 +3408,6 @@ fn recognized_kimi_and_kilo_session_starts_replace_identity_and_release_old_stat
             terminal
                 .set_hook_authority_with_session_ref(
                     source,
-                    agent.label(),
                     AgentState::Working,
                     Some(new.clone()),
                     Some(12),
@@ -3613,7 +3419,6 @@ fn recognized_kimi_and_kilo_session_starts_replace_identity_and_release_old_stat
             terminal
                 .set_hook_authority_with_session_ref(
                     source,
-                    agent.label(),
                     AgentState::Idle,
                     Some(new),
                     Some(11),
@@ -3625,7 +3430,6 @@ fn recognized_kimi_and_kilo_session_starts_replace_identity_and_release_old_stat
             terminal
                 .set_hook_authority_with_session_ref(
                     source,
-                    agent.label(),
                     AgentState::Blocked,
                     Some(old),
                     Some(13),
@@ -3641,16 +3445,9 @@ fn recognized_kimi_and_kilo_session_starts_replace_identity_and_release_old_stat
 fn refused_session_replacement_preserves_authority_and_source_ordering() {
     let mut terminal = test_terminal();
     let old = shepr_agent::resume::AgentSessionRef::id("old").expect("session");
-    anchor_full_lifecycle_session(
-        &mut terminal,
-        Agent::Kilo,
-        "shepr:kilo",
-        "kilo",
-        old.clone(),
-    );
+    anchor_full_lifecycle_session(&mut terminal, Agent::Kilo, "shepr:kilo", old.clone());
     terminal.set_hook_authority_with_session_ref(
         "shepr:kilo",
-        "kilo",
         AgentState::Working,
         Some(old.clone()),
         Some(10),
@@ -3662,7 +3459,6 @@ fn refused_session_replacement_preserves_authority_and_source_ordering() {
         terminal
             .set_agent_session_ref_for_session_start(
                 "shepr:kilo",
-                "kilo",
                 shepr_agent::resume::AgentSessionRef::id("different"),
                 Some(100),
                 Some("unknown"),
@@ -3676,7 +3472,6 @@ fn refused_session_replacement_preserves_authority_and_source_ordering() {
         terminal
             .set_hook_authority_with_session_ref(
                 "shepr:kilo",
-                "kilo",
                 AgentState::Idle,
                 Some(old),
                 Some(11),
@@ -3690,16 +3485,9 @@ fn refused_session_replacement_preserves_authority_and_source_ordering() {
 fn invalid_session_kind_and_conflicting_owner_do_not_change_arbitration() {
     let mut terminal = test_terminal();
     let old = shepr_agent::resume::AgentSessionRef::id("old").expect("session");
-    anchor_full_lifecycle_session(
-        &mut terminal,
-        Agent::Kimi,
-        "shepr:kimi",
-        "kimi",
-        old.clone(),
-    );
+    anchor_full_lifecycle_session(&mut terminal, Agent::Kimi, "shepr:kimi", old.clone());
     terminal.set_hook_authority_with_session_ref(
         "shepr:kimi",
-        "kimi",
         AgentState::Working,
         Some(old),
         Some(10),
@@ -3712,7 +3500,6 @@ fn invalid_session_kind_and_conflicting_owner_do_not_change_arbitration() {
         terminal
             .set_agent_session_ref_for_session_start(
                 "shepr:kimi",
-                "kimi",
                 invalid.clone(),
                 Some(100),
                 Some("new"),
@@ -3724,7 +3511,6 @@ fn invalid_session_kind_and_conflicting_owner_do_not_change_arbitration() {
         terminal
             .set_hook_authority_with_session_ref(
                 "shepr:kimi",
-                "kimi",
                 AgentState::Blocked,
                 invalid,
                 Some(100),
@@ -3736,7 +3522,6 @@ fn invalid_session_kind_and_conflicting_owner_do_not_change_arbitration() {
         terminal
             .set_agent_session_ref_for_session_start(
                 "shepr:kilo",
-                "kilo",
                 shepr_agent::resume::AgentSessionRef::id("other"),
                 Some(100),
                 Some("startup"),
@@ -3748,7 +3533,6 @@ fn invalid_session_kind_and_conflicting_owner_do_not_change_arbitration() {
         terminal
             .set_hook_authority_with_session_ref(
                 "shepr:kimi",
-                "kilo",
                 AgentState::Blocked,
                 None,
                 Some(100),
@@ -3768,7 +3552,6 @@ fn older_pending_report_returns_none_without_changing_the_generation() {
     let pending = terminal
         .set_hook_authority_with_session_ref(
             "shepr:kimi",
-            "kimi",
             AgentState::Working,
             Some(session.clone()),
             Some(100),
@@ -3783,7 +3566,6 @@ fn older_pending_report_returns_none_without_changing_the_generation() {
         terminal
             .set_hook_authority_with_session_ref(
                 "shepr:kimi",
-                "kimi",
                 AgentState::Idle,
                 Some(session),
                 Some(99),
@@ -3803,7 +3585,6 @@ fn claude_clear_replaces_session_before_and_after_next_state_report() {
     terminal
         .set_hook_authority_with_session_ref(
             "shepr:claude",
-            "claude",
             AgentState::Working,
             Some(old),
             Some(10),
@@ -3813,7 +3594,6 @@ fn claude_clear_replaces_session_before_and_after_next_state_report() {
     terminal
         .set_agent_session_ref_for_session_start(
             "shepr:claude",
-            "claude",
             Some(new.clone()),
             Some(11),
             Some("clear"),
@@ -3831,7 +3611,6 @@ fn claude_clear_replaces_session_before_and_after_next_state_report() {
     terminal
         .set_hook_authority_with_session_ref(
             "shepr:claude",
-            "claude",
             AgentState::Idle,
             Some(new.clone()),
             Some(12),
@@ -3882,7 +3661,7 @@ fn hook_ledger_uses_injected_clock_pair_and_tolerates_small_wall_reversal() {
 }
 
 fn codex_origin() -> ReportOrigin {
-    ReportOrigin::parse("shepr:codex", "codex").expect("test origin")
+    ReportOrigin::parse("shepr:codex").expect("test origin")
 }
 
 #[test]
@@ -3960,7 +3739,7 @@ fn an_applied_report_from_another_source_keeps_the_rejection() {
     );
     let session_path = test_session_path("other-source.jsonl");
     terminal.set_detected_state_at(Some(Agent::Pi), AgentState::Idle, Instant::now());
-    let pi = ReportOrigin::parse("shepr:pi", "pi").expect("test origin");
+    let pi = ReportOrigin::parse("shepr:pi").expect("test origin");
     let outcome = terminal.report_session_start_outcome_at(
         &pi,
         shepr_agent::resume::AgentSessionRef::path(session_path),
@@ -3983,7 +3762,7 @@ fn an_applied_report_from_another_source_keeps_the_rejection() {
 fn a_parked_start_is_recorded_until_process_evidence_promotes_it() {
     let mut terminal = test_terminal();
     let t0 = Instant::now();
-    let kimi = ReportOrigin::parse("shepr:kimi", "kimi").expect("test origin");
+    let kimi = ReportOrigin::parse("shepr:kimi").expect("test origin");
     let start = ReportedSessionStart::Known(AgentSessionStartSource::Startup);
 
     let outcome = terminal.report_session_start_outcome_at(
@@ -4027,7 +3806,7 @@ fn a_parked_start_is_recorded_until_process_evidence_promotes_it() {
 fn an_expired_parked_start_is_no_longer_recorded_as_parked() {
     let mut terminal = test_terminal();
     let t0 = Instant::now();
-    let kimi = ReportOrigin::parse("shepr:kimi", "kimi").expect("test origin");
+    let kimi = ReportOrigin::parse("shepr:kimi").expect("test origin");
     let start = ReportedSessionStart::Known(AgentSessionStartSource::Startup);
 
     let outcome = terminal.report_session_start_outcome_at(
@@ -4077,20 +3856,12 @@ fn a_governing_hook_overrides_observations_without_moving_the_detected_agent() {
         &mut terminal,
         Agent::Pi,
         "shepr:pi",
-        "pi",
         first.clone().expect("test precondition"),
     );
     let now = Instant::now();
     assert!(
         terminal
-            .set_hook_authority_at(
-                "shepr:pi",
-                "pi",
-                AgentState::Working,
-                first,
-                Some(1_000),
-                now
-            )
+            .set_hook_authority_at("shepr:pi", AgentState::Working, first, Some(1_000), now)
             .is_some()
     );
     assert!(terminal.full_lifecycle_hook_authority_active());
@@ -4109,7 +3880,7 @@ fn a_governing_hook_overrides_observations_without_moving_the_detected_agent() {
 
     let second = second.expect("test precondition");
     let started = terminal.report_session_start_outcome_at(
-        &ReportOrigin::parse("shepr:pi", "pi").expect("test origin"),
+        &ReportOrigin::parse("shepr:pi").expect("test origin"),
         Some(second.clone()),
         Some(2_000),
         ReportedSessionStart::Known(AgentSessionStartSource::New),
@@ -4151,7 +3922,7 @@ fn a_rejection_is_not_aged_out_by_a_parked_start_lifetime() {
 }
 
 fn kimi_origin() -> ReportOrigin {
-    ReportOrigin::parse("shepr:kimi", "kimi").expect("test origin")
+    ReportOrigin::parse("shepr:kimi").expect("test origin")
 }
 
 fn kimi_root() -> Option<shepr_agent::resume::AgentSessionRef> {

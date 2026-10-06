@@ -12,7 +12,6 @@ method = "pane.report_agent_session"
 [pi.params]
 pane_id = "test:p1"
 source = "shepr:pi"
-agent = "pi"
 seq = 1
 session_start_source = "new"
 agent_session_path = "/nonexistent/pi-new.jsonl"
@@ -23,7 +22,6 @@ method = "pane.report_agent"
 [pi.params]
 pane_id = "test:p1"
 source = "shepr:pi"
-agent = "pi"
 state = "idle"
 seq = 2
 agent_session_path = "/nonexistent/pi-new.jsonl"
@@ -34,7 +32,6 @@ method = "pane.report_agent_session"
 [pi.params]
 pane_id = "test:p1"
 source = "shepr:pi"
-agent = "pi"
 seq = 3
 agent_session_path = "/nonexistent/pi-new.jsonl"
 
@@ -44,7 +41,6 @@ method = "pane.report_agent"
 [pi.params]
 pane_id = "test:p1"
 source = "shepr:pi"
-agent = "pi"
 state = "working"
 seq = 4
 agent_session_path = "/nonexistent/pi-new.jsonl"
@@ -56,7 +52,6 @@ method = "pane.report_agent_session"
 [omp.params]
 pane_id = "test:p1"
 source = "shepr:omp"
-agent = "omp"
 seq = 1
 session_start_source = "startup"
 agent_session_id = "omp-contract-session"
@@ -67,7 +62,6 @@ method = "pane.report_agent"
 [omp.params]
 pane_id = "test:p1"
 source = "shepr:omp"
-agent = "omp"
 state = "working"
 seq = 2
 agent_session_id = "omp-contract-session"
@@ -80,7 +74,6 @@ method = "pane.report_agent_session"
 [opencode.params]
 pane_id = "test:p1"
 source = "shepr:opencode"
-agent = "opencode"
 seq = 1
 session_start_source = "startup"
 agent_session_id = "local-session"
@@ -91,7 +84,6 @@ method = "pane.report_agent"
 [opencode.params]
 pane_id = "test:p1"
 source = "shepr:opencode"
-agent = "opencode"
 state = "working"
 seq = 2
 agent_session_id = "local-session"
@@ -104,7 +96,6 @@ method = "pane.report_agent_session"
 [opencode_tui_v1.params]
 pane_id = "test:p1"
 source = "shepr:opencode"
-agent = "opencode"
 session_start_source = "select"
 agent_session_id = "session-a"
 
@@ -115,7 +106,6 @@ method = "pane.report_agent_session"
 [opencode_tui_v2.params]
 pane_id = "test:p1"
 source = "shepr:opencode"
-agent = "opencode"
 session_start_source = "select"
 agent_session_id = "v2-session"
 
@@ -127,7 +117,6 @@ method = "pane.report_agent_session"
 [kilo.params]
 pane_id = "test:p1"
 source = "shepr:kilo"
-agent = "kilo"
 seq = 1
 session_start_source = "startup"
 agent_session_id = "kilo-contract-session"
@@ -138,7 +127,6 @@ method = "pane.report_agent"
 [kilo.params]
 pane_id = "test:p1"
 source = "shepr:kilo"
-agent = "kilo"
 state = "blocked"
 seq = 2
 agent_session_id = "kilo-contract-session"

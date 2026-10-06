@@ -52,7 +52,8 @@ impl Activity {
         let watched_clock = Arc::clone(&clock);
         let (stop, stopped) = mpsc::channel();
         std::thread::Builder::new()
-            .name("ssh-bridge-liveness".into())
+            // Linux exposes at most 15 bytes through `pthread_setname_np`.
+            .name("ssh-bridge".into())
             .spawn(move || {
                 loop {
                     match stopped

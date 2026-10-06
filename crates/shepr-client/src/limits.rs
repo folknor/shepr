@@ -208,8 +208,12 @@ pub(crate) const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
 /// from when it gave up, and no attempt runs longer than `ATTEMPT_BUDGET`. Together they
 /// keep the promise with an attempt already in flight: from any moment, the next attempt
 /// starts once the current one ends or its retry delay (counted from its start) is up,
-/// whichever is later, within the retry bound.
+/// whichever is later, within [`RETRY_PROMISE`].
 pub(crate) const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
+/// The endpoint retry promise from any moment an attempt is in flight or a
+/// machine is waiting to reconnect.
+pub(crate) const RETRY_PROMISE: Duration = Duration::from_secs(30);
+const _: () = assert!(MAX_RETRY_DELAY.as_millis() <= RETRY_PROMISE.as_millis());
 /// A connection stable for this interval resets its accumulated retry state.
 ///
 /// The interval distinguishes a durable connection from a brief success between failures.

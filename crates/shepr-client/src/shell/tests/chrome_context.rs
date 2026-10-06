@@ -621,7 +621,7 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
         height: 60,
     };
     oversized.panes[0].rect = full;
-    oversized.panes[0].inner_rect = full;
+    oversized.panes[0].content_rect = full;
     oversized.panes[0].pixel_mouse = shepr_term::mouse::PanePixelMouse::new(
         true,
         shepr_core::geometry::PanePixelExtent::new(
@@ -639,7 +639,7 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
         height: 60,
     };
     off_screen.rect = far;
-    off_screen.inner_rect = far;
+    off_screen.content_rect = far;
     oversized.panes.push(off_screen);
     state.receive_pane_surface_from(
         oversized,
@@ -659,7 +659,7 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
     );
     let hit = &state.pane_hits()[0];
     assert_eq!(hit.pane_id.to_string(), "w1:p1");
-    assert_eq!(hit.inner_rect, area);
+    assert_eq!(hit.content_rect, area);
     assert_eq!(
         hit.presented, None,
         "a clipped pane cannot map pixels, so it has no presented grid"

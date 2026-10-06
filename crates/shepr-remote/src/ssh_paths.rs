@@ -118,11 +118,10 @@ impl<'a> SshControlKey<'a> {
 /// directory accessible by others.
 pub(crate) fn shared_ssh_control_path(
     runtime_dir: &Path,
-    namespace: &Path,
     target: SshControlKey<'_>,
 ) -> Result<PathBuf, SshRuntimeError> {
     validate_ssh_runtime_dir(runtime_dir)?;
-    ssh_control_path_under(runtime_dir, namespace, target).map_err(SshRuntimeError::Io)
+    ssh_control_path_under(runtime_dir, target).map_err(SshRuntimeError::Io)
 }
 
 /// [`shared_ssh_control_path`] without the runtime directory check: the name,
@@ -134,7 +133,6 @@ pub(crate) fn shared_ssh_control_path(
 /// `/run/user/<uid>`, which no test scratch directory is.
 pub(crate) fn ssh_control_path_under(
     runtime_dir: &Path,
-    namespace: &Path,
     target: SshControlKey<'_>,
 ) -> std::io::Result<PathBuf> {
     use sha2::{Digest, Sha256};
@@ -147,22 +145,15 @@ pub(crate) fn ssh_control_path_under(
             "SSH runtime directory must not contain '%' because OpenSSH interprets percent sequences in ControlPath",
         ));
     }
-    if !namespace.is_absolute() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "SSH control namespace must be an absolute path",
-        ));
-    }
-    let namespace = namespace.to_owned();
     let mut hash = Sha256::new();
-    hash.update(namespace.as_os_str().as_bytes());
-    hash.update([0]);
     hash.update(target.0);
     // %C additionally scopes the socket to OpenSSH's resolved destination,
     // port and jump host, rather than merely the spelling of an alias.
-    // Keep 64 bits of namespace/target hash plus OpenSSH's 160-bit %C. What
-    // is left of the socket address for the runtime directory is small, but a
-    // real `/run/user/<uid>` fits with room to spare.
+    // Keep 64 bits of target hash plus OpenSSH's 160-bit %C. The profile's
+    // runtime directory already isolates shepr's sockets; no config-path
+    // namespace is needed here. What is left of the socket address for the
+    // runtime directory is small, but a real `/run/user/<uid>` fits with room
+    // to spare.
     let digest = hash.finalize();
     let mut hash = String::with_capacity(digest.len() * 2);
     for byte in digest {

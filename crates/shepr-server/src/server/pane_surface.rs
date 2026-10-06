@@ -145,7 +145,7 @@ pub(super) fn render_pane_surface(
                 pane_id,
                 content_revision: shepr_protocol::ContentRevision::default(),
                 rect: surface_rect(pane.rect),
-                inner_rect: surface_rect(pane.inner_rect),
+                content_rect: surface_rect(pane.content_rect),
                 scrollbar_rect: pane.scrollbar_rect.map(surface_rect),
                 scroll: None,
                 focused: pane.is_focused,

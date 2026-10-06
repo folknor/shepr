@@ -119,8 +119,8 @@ pub struct SessionRestoreDamage {
     /// Saved workspace bookmarks beyond the saved workspace list, redirected
     /// to the last restored workspace (or cleared when none survived).
     pub repaired_bookmarks: usize,
-    /// Restored panes whose saved agent session this build cannot use: each
-    /// came back as a plain shell, without its session.
+    /// Restored panes whose saved agent session was unusable or duplicated:
+    /// each came back as a plain shell, without its session.
     pub dropped_agent_sessions: Vec<crate::PublicPaneId>,
 }
 
@@ -162,11 +162,11 @@ impl std::fmt::Display for SessionRestoreDamage {
                 .join(", ");
             sentences.push(if self.dropped_agent_sessions.len() == 1 {
                 format!(
-                    "The saved agent session of pane {panes} could not be used, so the pane came back as a plain shell."
+                    "The saved agent session of pane {panes} was unusable or already resumed in another pane, so the pane came back as a plain shell."
                 )
             } else {
                 format!(
-                    "The saved agent sessions of panes {panes} could not be used, so those panes came back as plain shells."
+                    "The saved agent sessions of panes {panes} were unusable or already resumed in another pane, so those panes came back as plain shells."
                 )
             });
         }
@@ -368,13 +368,15 @@ mod tests {
         let sessions = partial(0, 0, vec![pane(1), pane(2)]);
         assert!(
             sessions.starts_with(&format!(
-                "The saved agent sessions of panes {}, {} could not be used",
+                "The saved agent sessions of panes {}, {} were unusable or already resumed in another pane",
                 pane(1),
                 pane(2)
             )),
             "{sessions}"
         );
-        assert!(partial(0, 0, vec![pane(1)]).contains(&format!("of pane {} could", pane(1))));
+        assert!(
+            partial(0, 0, vec![pane(1)]).contains(&format!("of pane {} was unusable", pane(1)))
+        );
         let unusable = rendered(SessionRestoreLoss::Unusable {
             failure: SessionRestoreFailure {
                 path: "/state/session.json".into(),

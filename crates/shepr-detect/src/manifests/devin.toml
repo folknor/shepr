@@ -1,5 +1,10 @@
 id = "devin"
 
+# Permission controls suppress all five working/idle footer rules below.
+# Reusing this pair preserves the requirement that both phrases are present.
+[matchers.permission_controls]
+contains = ["approve once", "esc cancel"]
+
 [[rules]]
 id = "workspace_trust_prompt"
 state = "blocked"
@@ -28,7 +33,7 @@ region = "bottom_non_empty_lines(8)"
 visible_working = true
 contains = ["running tools", "esc to interrupt"]
 not = [
-  { contains = ["approve once", "esc cancel"] },
+  { matcher = "permission_controls" },
 ]
 
 [[rules]]
@@ -39,7 +44,7 @@ region = "bottom_non_empty_lines(6)"
 visible_working = true
 contains = ["guide devin while it works"]
 not = [
-  { contains = ["approve once", "esc cancel"] },
+  { matcher = "permission_controls" },
 ]
 
 [[rules]]
@@ -50,7 +55,7 @@ region = "bottom_non_empty_lines(8)"
 visible_working = true
 contains = ["reading shell ", "timeout:"]
 not = [
-  { contains = ["approve once", "esc cancel"] },
+  { matcher = "permission_controls" },
 ]
 
 [[rules]]
@@ -62,7 +67,7 @@ visible_idle = true
 contains = ["ask devin to build", "features, fix bugs", "your code"]
 line_regex = ['^\s*❭ Ask Devin to build']
 not = [
-  { contains = ["approve once", "esc cancel"] },
+  { matcher = "permission_controls" },
   { contains = ["running tools", "esc to interrupt"] },
   { contains = ["guide devin while it works"] },
 ]
@@ -76,7 +81,7 @@ visible_idle = true
 contains = ["context:"]
 line_regex = ['^\s*❭']
 not = [
-  { contains = ["approve once", "esc cancel"] },
+  { matcher = "permission_controls" },
   { contains = ["running tools", "esc to interrupt"] },
   { contains = ["guide devin while it works"] },
 ]

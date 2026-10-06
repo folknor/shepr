@@ -69,6 +69,74 @@ fn synthetic_loaded(rules: &str) -> CompiledManifest {
     parse_manifest(&rules_manifest(rules)).expect("test precondition")
 }
 
+fn compiled_rule<'a>(manifest: &'a CompiledManifest, id: &str) -> &'a CompiledRule {
+    manifest
+        .rules
+        .iter()
+        .find(|rule| rule.id == id)
+        .expect("test rule exists")
+}
+
+fn compiled_rule_matches_screen(
+    manifest: &CompiledManifest,
+    rule_id: &str,
+    input: DetectionInput<'_>,
+) -> bool {
+    let rule = compiled_rule(manifest, rule_id);
+    let mut texts = RegionTexts::new(input);
+    compiled_rule_matches(rule, &manifest.regions, &mut texts)
+}
+
+fn compiled_gate_matches_screen(
+    manifest: &CompiledManifest,
+    gate: &CompiledGate,
+    input: DetectionInput<'_>,
+) -> bool {
+    fn collect_regions(gate: &CompiledGate, regions: &mut Vec<usize>) {
+        if !regions.contains(&gate.region) {
+            regions.push(gate.region);
+        }
+        for nested in gate.all.iter().chain(&gate.any).chain(&gate.not_gate) {
+            collect_regions(nested, regions);
+        }
+    }
+
+    let mut indices = Vec::new();
+    collect_regions(gate, &mut indices);
+    let mut texts = RegionTexts::new(input);
+    texts.prepare(&manifest.regions, &indices);
+    compiled_gate_matches(gate, &texts)
+}
+
+fn literal_gate_manifest(region: &str, matcher_fields: &str) -> CompiledManifest {
+    synthetic_loaded(&format!(
+        r#"
+[[rules]]
+id = "legacy"
+state = "working"
+region = "{region}"
+{matcher_fields}
+"#
+    ))
+}
+
+fn assert_gate_equivalent(
+    actual_manifest: &CompiledManifest,
+    actual: &CompiledGate,
+    legacy_manifest: &CompiledManifest,
+    inputs: &[&str],
+) {
+    let legacy = &compiled_rule(legacy_manifest, "legacy").gate;
+    for screen in inputs {
+        let input = screen_input(screen);
+        assert_eq!(
+            compiled_gate_matches_screen(actual_manifest, actual, input),
+            compiled_gate_matches_screen(legacy_manifest, legacy, input),
+            "screen={screen:?}"
+        );
+    }
+}
+
 #[test]
 fn priority_ordered_detection_agrees_with_full_explain() {
     let manifests = TestManifests::new(&rules_manifest(
@@ -504,6 +572,173 @@ fn opencode_permission_follow_up_screens_need_their_own_controls() {
             );
         }
     }
+}
+
+#[test]
+fn kilo_permission_rule_reference_matches_the_opencode_gate_body() {
+    let kilo = bundled_loaded(Agent::Kilo);
+    let opencode = bundled_loaded(Agent::OpenCode);
+    let screens = [
+        "△ Permission required",
+        "△ Permission required\nallow once",
+        "△ Permission required\nallow always",
+        "△ Permission required\nreject",
+        "△ Permission required\nenter confirm",
+        "△ Reject permission\nenter confirm\nesc cancel",
+        "△ Reject permission\nenter confirm",
+        "△ Always allow\nConfirm    Cancel\nenter confirm",
+        "△ Always allow\nConfirm\nenter confirm",
+        "esc dismiss\nenter confirm\n↑↓ select",
+        "esc dismiss\nenter confirm\n⇆ tab",
+        "esc dismiss\nenter confirm",
+    ];
+    for screen in screens {
+        assert_eq!(
+            compiled_rule_matches_screen(&kilo, "opencode_permission", screen_input(screen)),
+            compiled_rule_matches_screen(&opencode, "permission_required", screen_input(screen)),
+            "screen={screen:?}"
+        );
+    }
+}
+
+#[test]
+fn letta_named_status_matchers_keep_their_original_line_patterns() {
+    let letta = bundled_loaded(Agent::Letta);
+    let composer = compiled_rule(&letta, "composer_idle");
+    let active = literal_gate_manifest(
+        "bottom_non_empty_lines(8)",
+        r#"line_regex = ['^\s*(?:\S+\s+)+is(?: \S+)*… \((?:esc to interrupt(?: · .*)?|interrupting)\)\s*$']"#,
+    );
+    let running = literal_gate_manifest(
+        "bottom_non_empty_lines(8)",
+        r#"line_regex = ['^\s*(?:└\s*)?Running\.\.\.\s*(?:\(.*\))?$']"#,
+    );
+    let screens = [
+        "Claude is thinking… (esc to interrupt)",
+        "Claude is thinking… (interrupting)",
+        "Claude is thinking… (esc to interrupt · ctrl+c)",
+        "Claude is thinking…",
+        "Running...",
+        "└ Running... (tool)",
+        "Running",
+        "not running...",
+    ];
+    assert_gate_equivalent(&letta, &composer.gate.not_gate[0], &active, &screens);
+    assert_gate_equivalent(&letta, &composer.gate.not_gate[1], &running, &screens);
+}
+
+#[test]
+fn muse_named_picker_matchers_keep_both_control_requirements() {
+    let muse = bundled_loaded(Agent::Muse);
+    let screens = [
+        "Enter to select",
+        "Tab for an optional note",
+        "Enter to select\nTab for an optional note",
+        "Enter to toggle",
+        "Esc to interrupt",
+        "Enter to toggle\nEsc to interrupt",
+        "unrelated transcript text",
+    ];
+    for (rule, index, region) in [
+        ("pick_request_blocked", 0, "bottom_non_empty_lines(8)"),
+        ("working_esc_interrupt", 0, "bottom_non_empty_lines(8)"),
+        ("idle_prompt", 1, "bottom_non_empty_lines(5)"),
+    ] {
+        let compiled = compiled_rule(&muse, rule);
+        let actual = if rule == "pick_request_blocked" {
+            &compiled.gate.any[index]
+        } else {
+            &compiled.gate.not_gate[index]
+        };
+        let legacy = literal_gate_manifest(
+            region,
+            r#"contains = ["Enter to select", "Tab for an optional note"]"#,
+        );
+        assert_gate_equivalent(&muse, actual, &legacy, &screens);
+    }
+    for (rule, index, region) in [
+        ("pick_request_blocked", 1, "bottom_non_empty_lines(8)"),
+        ("working_esc_interrupt", 1, "bottom_non_empty_lines(8)"),
+        ("idle_prompt", 2, "bottom_non_empty_lines(5)"),
+    ] {
+        let compiled = compiled_rule(&muse, rule);
+        let actual = if rule == "pick_request_blocked" {
+            &compiled.gate.any[index]
+        } else {
+            &compiled.gate.not_gate[index]
+        };
+        let legacy = literal_gate_manifest(
+            region,
+            r#"contains = ["Enter to toggle", "Esc to interrupt"]"#,
+        );
+        assert_gate_equivalent(&muse, actual, &legacy, &screens);
+    }
+}
+
+#[test]
+fn devin_named_permission_matcher_keeps_both_control_requirements() {
+    let devin = bundled_loaded(Agent::Devin);
+    let screens = [
+        "approve once",
+        "esc cancel",
+        "approve once\nesc cancel",
+        "Approve once\nESC CANCEL",
+        "approval required",
+    ];
+    for (rule_id, region) in [
+        ("running_tools_footer", "bottom_non_empty_lines(8)"),
+        ("guide_while_working", "bottom_non_empty_lines(6)"),
+        ("tool_reading_timeout", "bottom_non_empty_lines(8)"),
+        ("welcome_prompt_footer", "bottom_non_empty_lines(8)"),
+        ("live_prompt_footer", "bottom_non_empty_lines(6)"),
+    ] {
+        let permission =
+            literal_gate_manifest(region, r#"contains = ["approve once", "esc cancel"]"#);
+        let compiled = compiled_rule(&devin, rule_id);
+        assert_gate_equivalent(&devin, &compiled.gate.not_gate[0], &permission, &screens);
+    }
+}
+
+#[test]
+fn manifest_matcher_references_reject_cycles_and_inline_overrides() {
+    assert!(
+        parse_manifest(
+            r#"
+id = "codex"
+
+[matchers.a]
+matcher = "b"
+
+[matchers.b]
+matcher = "a"
+
+[[rules]]
+id = "cycle"
+state = "working"
+contains = ["root"]
+not = [{ matcher = "a" }]
+"#
+        )
+        .is_err()
+    );
+
+    assert!(
+        parse_manifest(
+            r#"
+id = "codex"
+
+[matchers.a]
+contains = ["shared"]
+
+[[rules]]
+id = "override"
+state = "working"
+contains = ["root"]
+not = [{ matcher = "a", contains = ["extra"] }]
+"#
+        )
+        .is_err()
+    );
 }
 
 #[test]

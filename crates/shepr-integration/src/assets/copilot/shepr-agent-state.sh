@@ -3,7 +3,7 @@
 # managed by shepr; every release shepr server launch on this host rewrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=copilot
-# SHEPR_INTEGRATION_VERSION=2506302063
+# SHEPR_INTEGRATION_VERSION=3058722047
 
 set -eu
 
@@ -38,7 +38,6 @@ import socket
 import time
 
 SOURCE = "shepr:copilot"
-AGENT = "copilot"
 METHOD_SESSION = "pane.report_agent_session"
 METHOD_STATE = "pane.report_agent"
 START = SimpleNamespace(**{"startup": "startup", "resume": "resume", "select": "select"})
@@ -98,7 +97,6 @@ def send(method, params):
         "params": {
             "pane_id": pane_id,
             "source": SOURCE,
-            "agent": AGENT,
             "seq": report_seq,
             **params,
         },

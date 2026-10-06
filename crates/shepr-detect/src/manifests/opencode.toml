@@ -6,6 +6,8 @@ state = "blocked"
 priority = 300
 region = "whole_recent"
 visible_blocker = true
+# This is the canonical permission gate tree; Kilo references this matcher
+# body so the two agents keep identical screen matching.
 # The header alone can linger in the transcript; require it AND one of the
 # dialog's own reply controls. "Reject" (for a subagent's request) and "Allow
 # always" lead to follow-up screens of the same pending request, which drop the

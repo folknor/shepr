@@ -73,7 +73,7 @@ pub fn run_remote_client_bridge(
             io::Error::new(
                 err.kind(),
                 format!(
-                    "failed to connect to remote Shepr server socket {}: {err}",
+                    "failed to connect to remote shepr server socket {}: {err}",
                     socket_path.display()
                 ),
             )

@@ -324,8 +324,8 @@ impl HeadlessServer {
                     continue;
                 };
                 source_pane.get_or_insert(((*pane.identity).clone(), pane.identity.pane_id));
-                width = width.max(pane.wire.inner_rect.width);
-                height = height.max(pane.wire.inner_rect.height);
+                width = width.max(pane.wire.content_rect.width);
+                height = height.max(pane.wire.content_rect.height);
             }
             let Some((identity, pane_id)) = source_pane else {
                 continue;
@@ -388,14 +388,14 @@ impl HeadlessServer {
                 }
                 if patch_intersects_hyperlinks(
                     &surface.frame,
-                    pane.inner_rect,
+                    pane.content_rect,
                     &collected_pane.patch,
                 ) {
                     fallback!(RetainedSurfaceFallback::Hyperlink, client_id, 'recipients);
                 }
                 let previous_pane = pane.clone();
                 let Some(rows) =
-                    changed_rows(&surface.frame, pane.inner_rect, &collected_pane.patch)
+                    changed_rows(&surface.frame, pane.content_rect, &collected_pane.patch)
                 else {
                     fallback!(RetainedSurfaceFallback::InvalidPatch, client_id, 'recipients);
                 };
@@ -554,7 +554,7 @@ mod tests {
                     width: 3,
                     height: 3,
                 },
-                inner_rect: shepr_protocol::SurfaceRect {
+                content_rect: shepr_protocol::SurfaceRect {
                     x: 1,
                     y: 1,
                     width: 1,
@@ -594,19 +594,19 @@ mod tests {
         let pane_id = workspace.tree().root();
         app.test_state_mut().test_push_workspace(workspace);
         let area = shepr_core::geometry::Rect::new(0, 0, 6, 5);
-        let layout = app.state().chrome_in(area).visible_panes(
+        let layout = app.state().settings().chrome_in(area).visible_panes(
             app.state().ws(0).tree().layout(),
             app.state().ws(0).tree().zoomed(),
         );
         let pane_layout = layout.first().expect("test workspace has one pane");
-        let pane_inner = pane_layout.inner_rect();
-        assert_eq!(pane_inner.width, 4);
-        let content = shepr_core::chrome::content_rect(pane_inner, true, false);
+        let border_inner = pane_layout.border_inner_rect();
+        assert_eq!(border_inner.width, 4);
+        let content = shepr_core::chrome::content_rect(border_inner, true, false);
         let mut pane = shepr_protocol::PaneSurfacePane {
             pane_id: shepr_test_fixtures::id("w1:p1"),
             content_revision: shepr_protocol::ContentRevision::default(),
             rect: pane_layout.rect,
-            inner_rect: content,
+            content_rect: content,
             scrollbar_rect: None,
             scroll: None,
             focused: true,
@@ -651,17 +651,18 @@ mod tests {
         let pane_id = workspace.tree().root();
         app.test_state_mut().test_push_workspace(workspace);
         let area = shepr_core::geometry::Rect::new(0, 0, 12, 5);
-        let layout = app.state().chrome_in(area).visible_panes(
+        let layout = app.state().settings().chrome_in(area).visible_panes(
             app.state().ws(0).tree().layout(),
             app.state().ws(0).tree().zoomed(),
         );
         let pane_layout = layout.first().expect("test workspace has one pane");
-        let content = shepr_core::chrome::content_rect(pane_layout.inner_rect(), true, false);
+        let content =
+            shepr_core::chrome::content_rect(pane_layout.border_inner_rect(), true, false);
         let mut pane = shepr_protocol::PaneSurfacePane {
             pane_id: shepr_test_fixtures::id("w1:p1"),
             content_revision: shepr_protocol::ContentRevision::default(),
             rect: pane_layout.rect,
-            inner_rect: content,
+            content_rect: content,
             scrollbar_rect: None,
             scroll: None,
             focused: true,

@@ -89,7 +89,32 @@ enum NextSave {
     },
 }
 
+/// Scheduling values belong to the saver, so fixtures can use virtual time
+/// and a policy appropriate to the behavior they exercise.
+#[derive(Clone, Copy)]
+pub(crate) struct SavePolicyConfig {
+    pub(crate) debounce: Duration,
+    pub(crate) retry: Backoff,
+    pub(crate) checkpoint_retry: Backoff,
+    pub(crate) checkpoint_max_failures: u8,
+}
+
+impl Default for SavePolicyConfig {
+    fn default() -> Self {
+        Self {
+            debounce: crate::limits::SESSION_SAVE_DEBOUNCE,
+            retry: Backoff::new(
+                crate::limits::SESSION_SAVE_RETRY_MIN,
+                crate::limits::SESSION_SAVE_RETRY_MAX,
+            ),
+            checkpoint_retry: Backoff::new(CHECKPOINT_RETRY_MIN, Duration::MAX),
+            checkpoint_max_failures: CHECKPOINT_MAX_FAILURES,
+        }
+    }
+}
+
 pub(crate) struct SessionSaver {
+    config: SavePolicyConfig,
     policy: SavePolicy,
     autosave: Autosave,
     exit: PaneExitCheckpoint,
@@ -165,21 +190,21 @@ impl SavePolicy {
     }
 }
 
-/// Retry delay of a failed pane-exit or host-shutdown checkpoint after
-/// `failures_before` earlier failures of the same checkpoint: doubling from
-/// `CHECKPOINT_RETRY_MIN`. The attempt count bounds the schedule. Total for
-/// every `u8`, so raising `CHECKPOINT_MAX_FAILURES` cannot make it overflow.
-fn checkpoint_retry_delay(failures_before: u8) -> Duration {
-    Backoff::new(CHECKPOINT_RETRY_MIN, Duration::MAX).delay_after(u32::from(failures_before))
-}
-
 impl SessionSaver {
     /// The persister fires its own completion signal, which the app's outputs
     /// own; the saver keeps no copy.
     pub(crate) fn new(persister: shepr_mux::persist::SessionPersister) -> Self {
+        Self::with_config(persister, SavePolicyConfig::default())
+    }
+
+    pub(crate) fn with_config(
+        persister: shepr_mux::persist::SessionPersister,
+        config: SavePolicyConfig,
+    ) -> Self {
         Self {
+            config,
             policy: SavePolicy::new(),
-            autosave: Autosave::new(),
+            autosave: Autosave::with_config(config.debounce, config.retry),
             exit: PaneExitCheckpoint::new(),
             host: HostShutdownCheckpoint::new(),
             in_flight: None,
@@ -527,18 +552,24 @@ impl App {
                 );
                 if let SaveKind::Checkpoint(ticket) = kind {
                     if let Some(exit) = ticket.exit
-                        && self.session_saver.exit.failed(exit.generation, now)
+                        && self.session_saver.exit.failed_with_config(
+                            exit.generation,
+                            now,
+                            self.session_saver.config,
+                        )
                     {
                         tracing::warn!(
                             event = "session.checkpoint.abandoned", subsystem = "persist",
                             kind = "pane_exit_checkpoint", generation = exit.generation.0,
                             directory = %self.paths.data_dir().display(),
-                            failures = CHECKPOINT_MAX_FAILURES,
+                            failures = self.session_saver.config.checkpoint_max_failures,
                             "pane exit checkpoint failed repeatedly; removing exited panes without persisting their exit"
                         );
                     }
                     if ticket.host {
-                        self.session_saver.host.failed(now);
+                        self.session_saver
+                            .host
+                            .failed_with_config(now, self.session_saver.config);
                     }
                 }
             }
@@ -838,6 +869,16 @@ async fn wait_off_the_runtime(
 #[cfg(test)]
 use shepr_mux::events::AppEvent;
 
+/// Retry delay of a failed pane-exit or host-shutdown checkpoint after
+/// `failures_before` earlier failures of the same checkpoint, under the
+/// default save policy (`SavePolicyConfig::default`).
+#[cfg(test)]
+fn checkpoint_retry_delay(failures_before: u8) -> Duration {
+    SavePolicyConfig::default()
+        .checkpoint_retry
+        .delay_after(u32::from(failures_before))
+}
+
 #[cfg(test)]
 impl SessionSaver {
     /// The autosave deadline itself, which [`Self::deadline`] does not report
@@ -924,54 +965,24 @@ impl App {
         self.session_saver.policy.mode = SaveMode::Persisting;
     }
 
-    /// Blocks until the save in flight, if any, has finished, records its
-    /// outcome and returns whether it succeeded; `None` when nothing was in
-    /// flight.
-    fn wait_for_session_save_with_outcome(&mut self) -> Option<bool> {
-        let save = self.session_saver.in_flight.take()?;
-        let result = save.pending.wait();
-        let saved = result.is_ok();
-        self.finish_session_save(save.kind, result);
-        Some(saved)
-    }
-
-    /// Blocks until the save in flight, if any, has finished, and records
-    /// its outcome.
+    /// Drives the production reap until the current save completes.
+    /// Synchronous event fixtures retain this driver because converting their
+    /// callers to async would cross the app and pane-lifecycle test scopes.
+    /// A wedged writer fails the test at `SESSION_WRITE_TEST_BOUND` rather
+    /// than hanging it; that bound is far above any healthy write.
     pub(super) fn wait_for_session_save(&mut self) {
-        self.wait_for_session_save_with_outcome();
-    }
-
-    pub(crate) fn save_session_now(&mut self) -> bool {
-        self.wait_for_session_save();
-
-        if !self.session_saver.policy.allows_saves() {
-            self.session_saver.autosave.clear();
-            return !self.session_saver.policy.is_unavailable();
+        // Keep the synchronous fixture wait as a driver of the production reap,
+        // rather than a second implementation of save outcome handling.
+        let started = std::time::Instant::now();
+        while self.session_saver.save_in_flight() {
+            if !self.reap_finished_session_save() {
+                assert!(
+                    started.elapsed() < crate::test_support::SESSION_WRITE_TEST_BOUND,
+                    "the session writer did not finish a save"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
-
-        self.session_saver
-            .set_autosave_deadline(Some(self.clock.now));
-        self.start_background_session_save();
-        self.wait_for_session_save_with_outcome() == Some(true)
-    }
-
-    /// Save the session while runtimes still exist, keeping the directory
-    /// claim until their processes have finished tearing down.
-    pub(crate) fn save_session_before_teardown(&mut self) -> Result<(), std::io::Error> {
-        self.wait_for_session_save();
-        let pending = match self.submit_final_session_save() {
-            Ok(Some(pending)) => pending,
-            Ok(None) if self.session_saver.policy.is_unavailable() => {
-                return self.finish_final_session_save(Err(std::io::Error::other(
-                    "session persistence was blocked before the final save",
-                )));
-            }
-            Ok(None) => return Ok(()),
-            Err(error) => {
-                return self.finish_final_session_save(Err(std::io::Error::other(error)));
-            }
-        };
-        self.finish_final_session_save(pending.wait().map_err(std::io::Error::other))
     }
 }
 
@@ -982,6 +993,46 @@ mod tests {
 
     fn test_app() -> crate::app::TestApp {
         App::new(&shepr_config::ServerConfig::default())
+    }
+
+    #[test]
+    fn injected_checkpoint_policy_controls_delay_and_failure_limit() {
+        let mut app = test_app();
+        let config = SavePolicyConfig {
+            debounce: Duration::ZERO,
+            retry: Backoff::new(Duration::from_millis(2), Duration::from_millis(8)),
+            checkpoint_retry: Backoff::new(Duration::from_millis(11), Duration::from_millis(11)),
+            checkpoint_max_failures: 2,
+        };
+        let persister = app
+            .session_saver
+            .persister
+            .take()
+            .expect("fixture persister");
+        app.session_saver = SessionSaver::with_config(persister, config);
+        app.state.mark_session_dirty();
+        app.sync_session_save_schedule();
+        assert_eq!(app.session_saver.deadline(), Some(app.clock.now));
+        app.session_saver.host.request();
+        app.finish_session_save(
+            SaveKind::Checkpoint(CheckpointTicket {
+                exit: None,
+                host: true,
+            }),
+            disk_full(),
+        );
+        assert_eq!(
+            app.session_saver.host.retry_at(),
+            Some(app.clock.now + config.checkpoint_retry.delay_after(0))
+        );
+        app.finish_session_save(
+            SaveKind::Checkpoint(CheckpointTicket {
+                exit: None,
+                host: true,
+            }),
+            disk_full(),
+        );
+        assert!(app.session_saver.host.finished_unsaved());
     }
 
     #[test]
@@ -1557,7 +1608,14 @@ mod tests {
         );
         assert_eq!(
             app.session_saver.autosave_deadline(),
-            Some(app.clock.now + SESSION_SAVE_RETRY_MIN * 64)
+            Some(
+                app.clock.now
+                    + Backoff::new(
+                        SESSION_SAVE_RETRY_MIN,
+                        crate::limits::SESSION_SAVE_RETRY_MAX
+                    )
+                    .delay_after(6)
+            )
         );
     }
 
@@ -1792,7 +1850,9 @@ mod tests {
         );
 
         // The persister the app saves through took the backup decision.
-        assert!(app.save_session_now(), "first save");
+        app.save_session_before_teardown_async()
+            .await
+            .expect("first save");
         assert_eq!(directory_files(&backups), vec![original]);
     }
 
@@ -1865,14 +1925,14 @@ mod tests {
             app.persist();
             app.state
                 .test_set_workspaces(vec![Workspace::test_new("autosave")]);
-            app.session_saver
-                .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
+            let now = app.clock.now;
+            app.session_saver.set_autosave_deadline(Some(now));
 
             app.start_background_session_save();
 
             assert!(app.session_saver.save_in_flight());
             assert!(app.session_saver.autosave_deadline().is_none());
-            app.save_session_now();
+            app.wait_for_session_save();
             assert!(
                 shepr_mux::persist::session_path(app.paths.data_dir())
                     .try_exists()
@@ -1885,37 +1945,43 @@ mod tests {
             let mut app = test_app();
             app.persist();
             let release = app.session_saver.hold_test_save_in_flight();
-            app.session_saver
-                .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
+            let now = app.clock.now;
+            app.session_saver.set_autosave_deadline(Some(now));
 
             app.start_background_session_save();
 
             assert!(app.session_saver.save_in_flight());
-            assert!(app.session_saver.autosave_deadline().is_some());
+            assert_eq!(app.session_saver.deadline(), None);
 
             release.complete(Ok(()));
-            app.freeze_session_saves();
-            app.save_session_now();
+            app.wait_for_session_save();
+            assert_eq!(app.session_saver.deadline(), Some(app.clock.now));
+            app.start_background_session_save();
+            assert!(app.session_saver.save_in_flight());
+            app.wait_for_session_save();
         }
 
-        #[test]
-        fn final_session_save_joins_background_writer_before_returning() {
+        #[tokio::test]
+        async fn final_session_save_joins_background_writer_before_returning() {
             let mut app = test_app();
             let release = app.session_saver.hold_test_save_in_flight();
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            let releaser = std::thread::spawn(move || {
-                // Keep the save in flight while the final-save call reaches its wait.
-                std::thread::sleep(Duration::from_millis(30));
-                done_tx.send(()).expect("test precondition");
-                release.complete(Ok(()));
-            });
-
-            app.save_session_now();
-
-            done_rx
-                .try_recv()
-                .expect("the final save returned only after the save in flight finished");
-            releaser.join().expect("test precondition");
+            let mut final_save = Box::pin(app.save_session_before_teardown_async());
+            // Poll the actual final-save future while completion is withheld.
+            // The failure below also proves the joined outcome is applied
+            // before the final save admits a new capture.
+            assert!(
+                std::future::poll_fn(|cx| {
+                    std::task::Poll::Ready(
+                        std::future::Future::poll(final_save.as_mut(), cx).is_pending(),
+                    )
+                })
+                .await
+            );
+            release.complete(Err(shepr_mux::persist::SaveError::Abandoned));
+            final_save
+                .await
+                .expect_err("the joined background failure stops final-save admission");
+            assert!(app.session_saves_stopped());
             assert!(!app.session_saver.save_in_flight());
         }
 
@@ -1996,7 +2062,6 @@ mod tests {
             .expect("pane child exits");
             let session = PersistedAgentSession::from_report(
                 "shepr:claude",
-                "claude",
                 AgentSessionRef::id("checkpoint-resume").expect("session id"),
             )
             .expect("official session");
@@ -2078,7 +2143,6 @@ mod tests {
             app.insert_idle_test_runtime(pane_id);
             let session = PersistedAgentSession::from_report(
                 "shepr:claude",
-                "claude",
                 AgentSessionRef::id("group-killed").expect("session id"),
             )
             .expect("official session");
@@ -2189,8 +2253,8 @@ mod tests {
             assert_eq!(saved.session_ref(), session.session_ref());
         }
 
-        #[test]
-        fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
+        #[tokio::test]
+        async fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
             let mut server = crate::server::headless::tests::test_headless_server();
             server.install_test_app(test_app());
             server.persist_for_test();
@@ -2223,16 +2287,15 @@ mod tests {
             );
 
             // The loop starts the autosave once its debounce has elapsed.
-            server
-                .app
-                .session_saver
-                .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
+            let now = server.app.clock.now;
+            server.app.session_saver.set_autosave_deadline(Some(now));
             server.app.start_background_session_save();
             assert!(server.app.session_saver.save_in_flight());
             server.app.wait_for_session_save();
             server
                 .app
-                .save_session_before_teardown()
+                .save_session_before_teardown_async()
+                .await
                 .expect("final save");
             server.app.retire_session_writer();
 
@@ -2269,8 +2332,8 @@ mod tests {
             );
         }
 
-        #[test]
-        fn durable_mutation_after_pane_exit_checkpoint_wins_on_shutdown() {
+        #[tokio::test]
+        async fn durable_mutation_after_pane_exit_checkpoint_wins_on_shutdown() {
             for another_interrupted_exit in [false, true] {
                 let mut server = crate::server::headless::tests::test_headless_server();
                 server.install_test_app(test_app());
@@ -2313,7 +2376,8 @@ mod tests {
                 }
                 server
                     .app
-                    .save_session_before_teardown()
+                    .save_session_before_teardown_async()
+                    .await
                     .expect("final save");
                 server.app.retire_session_writer();
 

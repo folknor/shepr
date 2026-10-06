@@ -4,14 +4,16 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentDetectionReadError {
     TerminalCorePoisoned,
-    ScreenReadFailed,
+    ScreenReadFailed(shepr_vt::ReadError),
 }
 
 impl std::fmt::Display for AgentDetectionReadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TerminalCorePoisoned => f.write_str("terminal core lock is poisoned"),
-            Self::ScreenReadFailed => f.write_str("terminal screen text could not be read"),
+            Self::ScreenReadFailed(error) => {
+                write!(f, "terminal screen text could not be read: {error}")
+            }
         }
     }
 }
@@ -168,16 +170,10 @@ impl PaneRead<'_> {
     pub fn agent_detection_inputs(
         &self,
     ) -> Result<super::AgentDetectionInputs, AgentDetectionReadError> {
-        // PaneTerminal has already collapsed lock poisoning and VT read errors
-        // into `None`; retain failure and classify the actionable poison case
-        // without inventing a more specific screen-read cause.
-        self.terminal.agent_detection_inputs().ok_or_else(|| {
-            if self.terminal.core_poisoned() {
-                AgentDetectionReadError::TerminalCorePoisoned
-            } else {
-                AgentDetectionReadError::ScreenReadFailed
-            }
-        })
+        self.terminal
+            .agent_detection_inputs_result()
+            .map_err(AgentDetectionReadError::ScreenReadFailed)?
+            .ok_or(AgentDetectionReadError::TerminalCorePoisoned)
     }
 
     pub fn extract_selection<P>(

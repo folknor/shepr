@@ -266,8 +266,8 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
         (68, 17)
     );
     assert_ne!(
-        large_initial.panes[0].inner_rect,
-        small_initial.panes[0].inner_rect
+        large_initial.panes[0].content_rect,
+        small_initial.panes[0].content_rect
     );
 
     write_shared_test_pane(&mut server, pane_id, b"\rMIXED");
@@ -297,8 +297,8 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     }));
     assert_eq!(large_patch.spans, small_patch.spans);
     assert_ne!(
-        meta_panes(&large_patch.meta)[0].inner_rect,
-        meta_panes(&small_patch.meta)[0].inner_rect
+        meta_panes(&large_patch.meta)[0].content_rect,
+        meta_panes(&small_patch.meta)[0].content_rect
     );
     assert!(
         frame_text(
@@ -333,12 +333,12 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
         (initial_size.0, initial_size.1 + 1)
     );
     assert_eq!(
-        large_alt.panes[0].inner_rect.width,
-        large_initial.panes[0].inner_rect.width + 1
+        large_alt.panes[0].content_rect.width,
+        large_initial.panes[0].content_rect.width + 1
     );
     assert_eq!(
-        small_alt.panes[0].inner_rect.width,
-        small_initial.panes[0].inner_rect.width + 1
+        small_alt.panes[0].content_rect.width,
+        small_initial.panes[0].content_rect.width + 1
     );
 
     write_shared_test_pane(&mut server, pane_id, b"\x1b[?1049l");
@@ -353,12 +353,12 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
         initial_size
     );
     assert_eq!(
-        large_main.panes[0].inner_rect,
-        large_initial.panes[0].inner_rect
+        large_main.panes[0].content_rect,
+        large_initial.panes[0].content_rect
     );
     assert_eq!(
-        small_main.panes[0].inner_rect,
-        small_initial.panes[0].inner_rect
+        small_main.panes[0].content_rect,
+        small_initial.panes[0].content_rect
     );
 
     shutdown_test_runtimes(&mut server);

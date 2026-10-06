@@ -27,10 +27,9 @@ pub(super) fn failure_label(error: &std::io::Error) -> String {
     let failure = EndpointFailure::from_error(error);
     let message = failure.message();
     match failure.disposition() {
-        FailureDisposition::Authentication | FailureDisposition::PossibleAuthentication => format!(
-            "needs an SSH login: run `{}` or ssh to it ({message})",
-            shepr_launch::guidance::operator_entrypoint()
-        ),
+        FailureDisposition::Authentication | FailureDisposition::PossibleAuthentication => {
+            shepr_launch::guidance::fleet_login_hint(message)
+        }
         FailureDisposition::HostKey => format!("host key not accepted: {message}"),
         FailureDisposition::Offline => format!("unreachable: {message}"),
         FailureDisposition::Incompatible

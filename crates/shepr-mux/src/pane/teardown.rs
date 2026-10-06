@@ -191,8 +191,11 @@ pub struct PaneTeardownTracker {
 }
 
 impl PaneTeardownTracker {
-    /// Three signal grace periods; session scans add work outside this budget.
+    /// Sum of the signal grace periods in the teardown sequence.
     pub const BUDGET: Duration = PANE_TEARDOWN_BUDGET;
+    /// Server-exit wait allowance, including time reserved for session scans.
+    /// The scans themselves are unbounded, so this is not a completion bound.
+    pub const SHUTDOWN_WAIT: Duration = crate::limits::PANE_TEARDOWN_WAIT;
 
     fn start(self: &Arc<Self>, pane_id: PaneId) -> PaneTeardownInFlight {
         shepr_core::locks::lock_auxiliary(&self.in_flight).push(pane_id);
@@ -284,7 +287,9 @@ pub(super) fn shutdown_pane_processes(
         run_pane_teardown(pane_id, in_flight, &worker_child_liveness);
     });
     let spawned = std::thread::Builder::new()
-        .name(format!("shepr-pane-{pane_id}-teardown"))
+        // Linux thread names have a short kernel limit; keep the useful role
+        // visible instead of truncating the teardown suffix behind the pane id.
+        .name("shepr-teardown".into())
         .spawn(task);
     if let Err(err) = spawned {
         // Closing a pane must not run sleeps or /proc scans on the event loop,

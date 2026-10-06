@@ -1,21 +1,24 @@
 use std::time::{Duration, Instant};
 
 use crate::backoff::Backoff;
-use crate::limits::{SESSION_SAVE_DEBOUNCE, SESSION_SAVE_RETRY_MAX, SESSION_SAVE_RETRY_MIN};
-
-const RETRY_BACKOFF: Backoff = Backoff::new(SESSION_SAVE_RETRY_MIN, SESSION_SAVE_RETRY_MAX);
 
 /// The debounced save of the live layout, and the backoff shared by every
 /// kind of save.
 pub(super) struct Autosave {
+    debounce: Duration,
+    retry: Backoff,
     deadline: Option<Instant>,
     /// Consecutive failed saves of any kind, for the backoff.
     failures: u32,
 }
 
 impl Autosave {
-    pub(super) fn new() -> Self {
+    /// An autosave on the saver's policy: `debounce` after a mutation, and
+    /// `retry` after each consecutive failed save.
+    pub(super) fn with_config(debounce: Duration, retry: Backoff) -> Self {
         Self {
+            debounce,
+            retry,
             deadline: None,
             failures: 0,
         }
@@ -34,7 +37,7 @@ impl Autosave {
     /// A session mutation was observed: the save is due
     /// `SESSION_SAVE_DEBOUNCE` from now.
     pub(super) fn schedule(&mut self, now: Instant) {
-        self.deadline = Some(now + SESSION_SAVE_DEBOUNCE);
+        self.deadline = Some(now + self.debounce);
     }
 
     pub(super) fn clear(&mut self) {
@@ -51,7 +54,7 @@ impl Autosave {
     pub(super) fn record_failure(&mut self, now: Instant) -> (u32, Duration) {
         let failures_before = self.failures;
         self.failures = self.failures.saturating_add(1);
-        let delay = RETRY_BACKOFF.delay_after(failures_before);
+        let delay = self.retry.delay_after(failures_before);
         let retry = now + delay;
         self.deadline = Some(
             self.deadline
@@ -78,6 +81,32 @@ impl Autosave {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::{SESSION_SAVE_DEBOUNCE, SESSION_SAVE_RETRY_MAX, SESSION_SAVE_RETRY_MIN};
+
+    const RETRY_BACKOFF: Backoff = Backoff::new(SESSION_SAVE_RETRY_MIN, SESSION_SAVE_RETRY_MAX);
+
+    impl Autosave {
+        /// An autosave on the production policy constants.
+        fn new() -> Self {
+            Self::with_config(SESSION_SAVE_DEBOUNCE, RETRY_BACKOFF)
+        }
+    }
+
+    #[test]
+    fn injected_policy_controls_debounce_and_retry() {
+        let now = Instant::now();
+        let debounce = Duration::from_millis(17);
+        let retry = Backoff::new(Duration::from_millis(3), Duration::from_millis(9));
+        let mut save = Autosave::with_config(debounce, retry);
+        save.schedule(now);
+        assert_eq!(save.deadline(), Some(now + debounce));
+        save.clear();
+        for failures_before in 0..5 {
+            let (_, delay) = save.record_failure(now);
+            assert_eq!(delay, retry.delay_after(failures_before));
+            save.clear();
+        }
+    }
 
     #[test]
     fn schedule_sets_the_debounce_deadline() {
@@ -119,6 +148,6 @@ mod tests {
         assert_eq!(save.deadline(), Some(now + Duration::from_millis(1)));
         save.deadline = Some(now);
         save.record_failure(now);
-        assert_eq!(save.deadline(), Some(now + SESSION_SAVE_RETRY_MIN * 2));
+        assert_eq!(save.deadline(), Some(now + RETRY_BACKOFF.delay_after(1)));
     }
 }

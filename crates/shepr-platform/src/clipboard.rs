@@ -436,7 +436,8 @@ fn detach_clipboard_owner(child: std::process::Child) -> bool {
     let child = std::sync::Arc::new(std::sync::Mutex::new(child));
     let reaper_child = std::sync::Arc::clone(&child);
     let reaper = std::thread::Builder::new()
-        .name("shepr-clipboard-owner-reaper".to_string())
+        // Linux exposes at most 15 bytes through `pthread_setname_np`.
+        .name("clip-owner-reap".to_string())
         .spawn(move || {
             let wait_result = match reaper_child.lock() {
                 Ok(mut child) => child.wait(),

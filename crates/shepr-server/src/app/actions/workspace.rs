@@ -14,7 +14,7 @@ impl AppState {
         if !workspace.set_name(name) {
             return Some(ViewMutation::Unchanged);
         }
-        crate::logging::workspace_renamed(&workspace.id());
+        crate::logging::workspace_renamed(&workspace.id(), workspace.name());
         self.mark_session_dirty();
         self.mark_shell_projection_dirty();
         Some(ViewMutation::Metadata)
@@ -30,6 +30,7 @@ impl AppState {
         if !self.workspaces.move_before(id, before) {
             return ViewMutation::Unchanged;
         }
+        crate::logging::workspace_moved(id, before);
         self.mark_session_dirty();
         self.mark_shell_projection_dirty();
         ViewMutation::WorkspaceOrder
@@ -41,7 +42,9 @@ impl AppState {
     /// workspace) out, and the caller shuts down the runtimes the outcome
     /// names.
     pub(crate) fn remove_pane(&mut self, pane_id: PaneId) -> Option<PaneRemovalOutcome> {
+        let public_id = self.workspaces.pane(pane_id)?.public_id();
         let removal = self.workspaces.remove_pane(pane_id)?;
+        crate::logging::pane_event("pane.remove", public_id);
         self.mark_session_dirty();
         self.mark_shell_projection_dirty();
         if removal.scope == PaneRemovalScope::Workspace {

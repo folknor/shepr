@@ -116,46 +116,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remote_executable_accepts_shell_safe_absolute_paths() {
-        for (path, valid) in [
-            ("/usr/bin/shepr", true),
-            ("/home/a b/shepr", false),
-            ("$HOME/.local/bin/shepr", false),
-            ("/home/user/.local/share/mise/shims/shepr", true),
-            ("/bin/shepr\nmalformed", false),
-        ] {
-            assert_eq!(
-                RemoteExecutable::parse(path.to_owned()).is_ok(),
-                valid,
-                "{path}"
-            );
-        }
-    }
-
-    #[test]
-    fn parse_keeps_the_shell_quoting_rejection_reason_typed() {
+    fn remote_executable_rejects_non_absolute_control_and_oversized_paths() {
         assert_eq!(
-            RemoteExecutable::parse("/home/a b/shepr"),
-            Err(RemoteExecutableError::NeedsShellQuoting)
+            RemoteExecutable::parse("relative/shepr"),
+            Err(RemoteExecutableError::NotAbsolute)
         );
-    }
-
-    #[test]
-    fn shell_quote_uses_the_remote_executable_plain_word_predicate() {
-        for value in [
-            "",
-            "/usr/bin/shepr",
-            "user@host:22",
-            "/home/a b/shepr",
-            "/home/user's/shepr",
-            "/home/$user/shepr",
-            "/opt/shepr-0.1+dev",
-        ] {
-            assert_eq!(
-                crate::shell_command::shell_quote(value) == value,
-                RemoteExecutable::is_shell_plain_word(value),
-                "{value:?}"
-            );
-        }
+        assert_eq!(
+            RemoteExecutable::parse("/home/user/shepr\nmalformed"),
+            Err(RemoteExecutableError::ContainsControlCharacters)
+        );
+        let oversized = format!("/{}", "x".repeat(MAX_REMOTE_EXECUTABLE_BYTES));
+        assert_eq!(
+            RemoteExecutable::parse(oversized),
+            Err(RemoteExecutableError::TooLong)
+        );
     }
 }

@@ -1,7 +1,6 @@
 import net from "node:net";
 
 const SOURCE = "@SOURCE@";
-const AGENT = "@LABEL@";
 const METHOD_SESSION = "@METHOD_SESSION@";
 const METHOD_STATE = "@METHOD_STATE@";
 const START = @START_JS@;
@@ -49,7 +48,6 @@ function requestOnce(sessionID, state, seq, isCurrent = () => true) {
     params: {
       pane_id: paneId,
       source: SOURCE,
-      agent: AGENT,
       agent_session_id: sessionID,
       ...(state === undefined ? { session_start_source: SELECTION_START_SOURCE } : { state, seq }),
     },

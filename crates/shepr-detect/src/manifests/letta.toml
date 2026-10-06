@@ -3,6 +3,7 @@ id = "letta"
 # Letta keeps completed tool rows and spinners in the transcript. A standalone
 # screen spinner is not working evidence. Prefer its live OSC title/progress
 # signals, with visible status chrome and running tool rows as fallbacks.
+
 [[rules]]
 id = "osc_progress_blocked"
 state = "blocked"
@@ -78,9 +79,11 @@ any = [
   { line_regex = ['^\s*›\s*$'] },
   { line_regex = ['^\s*›\s+Try\s+"'] },
 ]
+# Both referenced rules use this same region. Reusing their root matchers keeps
+# the exact line patterns and region while suppressing stale tool activity.
 not = [
-  { line_regex = ['^\s*(?:\S+\s+)+is(?: \S+)*… \((?:esc to interrupt(?: · .*)?|interrupting)\)\s*$'] },
-  { line_regex = ['^\s*(?:└\s*)?Running\.\.\.\s*(?:\(.*\))?$'] },
+  { rule = "letta.active_status" },
+  { rule = "letta.running_tool" },
 ]
 
 [[rules]]

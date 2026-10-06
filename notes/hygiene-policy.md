@@ -116,15 +116,6 @@ extending it to report non-`cfg(test)` public items whose only callers are test 
 would enforce this. A textlint banning `\btest_from_pane\b|\bPaneId::from_raw\b`
 outside test files and `cfg(test)` regions is the cheaper half.
 
-## POL-011 - Agent label acceptance differs by path
-
-Reported by: restore-resume.
-
-`ReportOrigin::parse` trims, lowercases and accepts aliases (`" Claude "`,
-`"claude-code"`), while `PersistedAgentSession::from_report`, `AgentSource::from_pair`
-and the saved `Agent` deserializer accept only the canonical label. With VAL-008 the
-label leaves reports altogether and the question disappears.
-
 ## POL-015 - The pane spawn path reaches the environment and clock directly, and a timer handle is set by call order
 
 Reported by: pane-lifecycle.
@@ -136,18 +127,6 @@ is a `OnceLock` set after the actor spawns, and the timer path handles the gap b
 dropping replies with a warning: documented, not structural. Creating the inbox and wake
 pipe first, then spawning the actor with the effects already holding a handle, removes
 the window.
-
-## POL-016 - Blocking work off the loop is bounded per pane but not overall
-
-Reported by: pane-lifecycle.
-
-`flush_expired_synchronized_output` runs on `spawn_blocking` and, through the
-deferred-effect ticket order, can wait behind the PTY actor's OSC 7 `stat` on a hung
-mount, holding a tokio blocking-pool thread for as long as the mount hangs; the
-watcher's blocking fallback also holds one pool thread per pane for the pane's life. The
-pool is shared with the rest of the server. Bounded by pane count, not by anything the
-server configures. Separately, the shutdown's wait for pane teardown still blocks the
-runtime thread (reported by the save and shutdown fix).
 
 ## POL-017 - Agent evidence is ordered across two clock samplers, and a derived flag is mirrored by two writers
 
@@ -165,21 +144,6 @@ every `update_terminal_state` marking the pane dirty: correct today, by call ord
 Child-controlled data reaching logs (OSC evidence payloads, documented, opt-in,
 truncated; the `/proc` comm in `info!("agent changed", process = ..)`) is acceptable and
 noted for completeness.
-
-## POL-018 - Agent state laterals: stale fallback after authority ends, and small probe costs
-
-Reported by: agent-state.
-
-- The detector's `reset()` (on authority activation) and the end of authority leave
-  ownership's `fallback_state` at whatever the detector last published before the
-  authority, possibly long ago. When a session-start replacement clears authority
-  without an exit, that stale fallback is presented until the next publication (about
-  one tick). Harmless in practice; a reset could also reset the fallback to Unknown.
-- `osc7.rs` keeps a `?query` or `#fragment` of a `file://` URI as part of the path.
-  Shells do not send them.
-- `ProcessProbeResult::process_name` is computed and cloned per probe only for the
-  "agent changed" log line; `foreground_group_leader_job` and then `foreground_job` read
-  `/proc` twice per probe when the leader is unidentified. Fine at current cadences.
 
 ## POL-021 - Three hand-written delivery retry policies in the plugin kits
 
@@ -218,19 +182,10 @@ MastraCode) that is the user's prompt text. `mktemp` makes it 0600 and the exit 
 removes it, but a SIGKILL leaves it in `/tmp`. Pipe the payload straight into python3
 instead of staging it.
 
-## POL-026 - Remote ambient state: random socket names, a process-global teardown registry, and broad watches
+## POL-026 - Preflight probe locks
 
 Reported by: remote.
 
-- `SSH_TEARDOWN` is a process-global registry (now only for the temporary SSH config
-  directories) whose correctness rests on calling `release_ssh_resources_before_exit`
-  once, after the loop, before exit (documented call order, not structural).
-- `server_wait` watches the whole runtime directory; on a host that is also a client,
-  (`shepr-platform` `DirectoryWatch` drains events without exposing entry names, so
-  this needs a named-event API there first) every lock sidecar and managed config
-  directory created there wakes
-  the wait for a pointless presence check. Filter inotify events by the server socket's
-  name.
 - `MachineSshPreflight::check` holds a machine's probe mutex for the whole bounded SSH
   check (up to 25 s); fine because each machine has its own, but the map lock and the
   deadline lock are two more mutexes around what could be a `Vec<MachineProbe>` handed
@@ -258,16 +213,6 @@ type; pane ids stay process-global on purpose (events and render sources carry n
 workspace id), as commented in `layout.rs`. `RuntimeGeneration::alloc` is a separate
 global counter with about ten call sites in mux; decide whether it needs to be
 global or can be per pane.
-
-## POL-030 - Every successful launch requests a Git identity refresh with rediscovery
-
-Reported by: workspace-model.
-
-`handle_pane_launch_settled` calls `request_git_identity_refresh` (which also forces
-repository rediscovery) for every successful launch, including every pane of a restore,
-so a restore of N panes queues N rediscovery requests (coalesced by the scheduler, but
-each invalidates the worker cache via `mark_due`). Policy decided at the site rather than
-by the scheduler.
 
 ## POL-031 - Workspace model laterals
 
@@ -346,3 +291,38 @@ Reported by: server-lifecycle.
 - `stop --all` stops the local server unconditionally while every remote one is stopped
   by boot. AGENTS.md states exactly this, so it is not a defect, but a server that
   replaced the local one between `status` and the stop is stopped without being named.
+
+## POL-036 - Detector ticks run on the shared blocking pool, unbounded overall
+
+Reported by: the blocking-pool fix.
+
+Synchronized-output flushes are now capped and the child watcher's fallback is async,
+but `pane/detection_task.rs` still runs each detector tick through `spawn_blocking`.
+A tick that stalls (a `/proc` read on a hung mount) holds a pool thread shared with
+the rest of the server; bounded by pane count only. Cap it like the flushes, or give
+detection its own bounded pool.
+
+## POL-018 - A stale fallback state is presented after hook authority ends
+
+Reported by: agent-state.
+
+The detector's `reset()` (on authority activation) and the end of authority leave
+ownership's `fallback_state` at whatever the detector last published before the
+authority, possibly long ago. When a session-start replacement clears authority
+without an exit, that stale fallback is presented until the next publication (about
+one tick). A first attempt reset the fallback on every accepted full-lifecycle report
+(`AuthorityEffect::Set`) rather than only when authority activates, and changed what
+`hook_authority_overrides_fallback_for_same_agent`,
+`omp_hook_authority_overrides_detected_fallback` and
+`visible_blocker_does_not_override_full_lifecycle_hook_authority` assert; it was
+reverted. Reset only on activation, and decide the tests' expectations deliberately.
+
+## POL-037 - The client writes its ssh metadata cache into the server's leased data directory
+
+Reported by: the wave review.
+
+The ssh metadata cache moved to `<data>/client/ssh-metadata`, inside the data
+directory the server holds a lease on and sweeps at startup. Harmless today (the
+sweep removes only staging-named files), but the client now writes into a
+server-owned tree; a client-owned per-profile directory would keep the ownership
+clean.

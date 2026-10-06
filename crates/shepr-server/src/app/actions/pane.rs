@@ -56,6 +56,12 @@ impl AppState {
     /// `source`. Unchanged when no workspace holds it or `target` is not in
     /// the same workspace.
     pub(crate) fn swap_panes(&mut self, source: PaneId, target: PaneId) -> ViewMutation {
+        let Some(source_public) = self.workspaces.pane(source).map(|pane| pane.public_id()) else {
+            return ViewMutation::Unchanged;
+        };
+        let Some(target_public) = self.workspaces.pane(target).map(|pane| pane.public_id()) else {
+            return ViewMutation::Unchanged;
+        };
         let Some(workspace) = self.workspace_of_mut(source) else {
             return ViewMutation::Unchanged;
         };
@@ -65,6 +71,7 @@ impl AppState {
         }
         workspace.focus_pane(source);
         let focus_changed = workspace.tree().focused() != focused;
+        crate::logging::panes_swapped(source_public, target_public);
         self.mark_session_dirty();
         self.mark_shell_projection_dirty();
         ViewMutation::Swap { focus_changed }
@@ -81,6 +88,7 @@ impl AppState {
                 focus_changed: false,
             });
         }
+        let public_id = self.workspaces.pane(pane_id)?.public_id();
         let focus_changed = self.focus_pane(pane_id).changed();
         let workspace = self.workspace_of_mut(pane_id)?;
         let desired = !workspace.tree().zoomed();
@@ -95,6 +103,7 @@ impl AppState {
         }
         self.mark_session_dirty();
         self.mark_shell_projection_dirty();
+        crate::logging::pane_zoomed(public_id, desired);
         Some(PaneZoomOutcome {
             changed: true,
             focus_changed,

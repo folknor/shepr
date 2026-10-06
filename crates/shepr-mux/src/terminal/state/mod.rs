@@ -130,22 +130,25 @@ impl PaneStartFailure {
     }
 
     /// What the operator should do about the failure.
+    /// Agent-specific manual commands belong to the caller owning the saved
+    /// plan. This layer has neither the build profile nor selected socket,
+    /// so it names pane actions rather than inventing a restart command.
     pub fn guidance(&self) -> &'static str {
         match self {
             Self::DirectoryUnavailable { .. } => {
-                "Pane directory is unavailable. Restore the directory and restart this session."
+                "Pane directory is unavailable. Restore the directory, then close this pane and open a new one."
             }
             Self::DirectoryUnreadable { .. } => {
-                "Pane directory cannot be read. Fix its access and restart this session."
+                "Pane directory cannot be read. Fix its access, then close this pane and open a new one."
             }
             Self::ShellStartFailed { .. } => {
-                "Could not start the pane shell. Fix the shell configuration and restart this session."
+                "Could not start the pane shell. Check the shell executable and [terminal].default_shell in server.toml. Config changes take effect at the next server launch."
             }
             Self::LaunchUnobservable { .. } => {
                 "Could not confirm that the pane shell started, so it was stopped. Close this pane and open a new one."
             }
             Self::ResumeUnavailable { .. } => {
-                "Could not resume the saved agent. Restart this session."
+                "Could not resume the saved agent. Open a new pane and resume it with the agent's own resume command."
             }
         }
     }
@@ -262,6 +265,15 @@ mod titles;
 
 #[cfg(test)]
 mod start_failure_tests {
+    #[test]
+    fn resume_failure_guidance_names_a_pane_action() {
+        let failure = super::PaneStartFailure::resume_unavailable(
+            super::ResumeUnavailableReason::CommandSendFailed,
+        );
+        assert!(failure.guidance().contains("Open a new pane"));
+        assert!(!failure.guidance().contains("restart this session"));
+    }
+
     use super::PaneStartFailure;
 
     #[test]

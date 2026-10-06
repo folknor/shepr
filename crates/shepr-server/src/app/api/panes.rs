@@ -1,4 +1,4 @@
-use shepr_api::error::{ApiError, ApiErrorCode};
+use shepr_api::error::ApiErrorCode;
 
 use crate::app::{App, EndpointContext};
 use shepr_api::schema::{PaneReportAgentParams, PaneReportAgentSessionParams, ResponseResult};
@@ -38,7 +38,7 @@ impl App {
             .spawn_geometry()
             .or(ctx.requester_geometry)
             .unwrap_or_else(|| self.headless_spawn_geometry());
-        let chrome = self.state.chrome_in(geometry.area);
+        let chrome = self.state.settings().chrome_in(geometry.area);
         let follow_cwd = self.launch_cwd_for_pane(target_pane_id);
         let split_cwd = self.resolve_new_terminal_cwd(follow_cwd);
         let direction = match params.direction {
@@ -194,10 +194,6 @@ impl App {
         let source = panes.iter().find(|pane| pane.id == source_pane_id)?;
         find_in_direction(source, direction, &panes)
     }
-}
-
-fn invalid_agent<T>() -> Result<T, ApiError> {
-    failure(ApiErrorCode::InvalidAgent, "agent label must not be empty")
 }
 
 #[cfg(test)]

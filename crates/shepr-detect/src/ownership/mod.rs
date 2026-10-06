@@ -73,6 +73,20 @@ pub enum HookRejection {
     ProcessRequired,
 }
 
+impl HookRejection {
+    /// Whether a bundled shepr hook violated a report contract. Other
+    /// rejections describe arbitration races or stale evidence and are routine.
+    pub fn is_integration_fault(self) -> bool {
+        matches!(
+            self,
+            Self::MissingSession
+                | Self::InvalidSession
+                | Self::MissingSequence
+                | Self::UnrecognizedStart
+        )
+    }
+}
+
 impl std::fmt::Display for HookRejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {

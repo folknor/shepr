@@ -8,7 +8,8 @@ use shepr_api::schema::{
     ClientStatusJson, ServerStatusJson, ServerSummaryJson, SiblingServerJson, StatusOverviewJson,
 };
 use shepr_launch::invocation::{
-    COMMAND_CLIENT, COMMAND_SERVER, FLAG_ALL, FLAG_JSON, option_name_from_flag,
+    COMMAND_CLIENT, COMMAND_SERVER, FLAG_ALL, FLAG_JSON, PROGRAM_NAME, SERVER_BINARY_NAME,
+    option_name_from_flag,
 };
 use shepr_launch::status::{RuntimeStatus, ServerPresence};
 use shepr_paths::{BuildProfile, ServerAddress};
@@ -413,7 +414,7 @@ fn render_installation(out: &mut String, installation: &Installation) {
     push_line(
         out,
         &format!(
-            "shepr {} ({}, build {})",
+            "{PROGRAM_NAME} {} ({}, build {})",
             installation.version,
             installation.profile.marker(),
             installation.build_id
@@ -422,7 +423,7 @@ fn render_installation(out: &mut String, installation: &Installation) {
     push_line(out, &format!("  {}", installation.binary));
     match &installation.sibling.identity {
         Err(error) => {
-            push_line(out, "shepr-server unusable");
+            push_line(out, &format!("{SERVER_BINARY_NAME} unusable"));
             push_line(out, &format!("  {error}"));
         }
         Ok(sibling) => {
@@ -436,7 +437,7 @@ fn render_installation(out: &mut String, installation: &Installation) {
             push_line(
                 out,
                 &format!(
-                    "shepr-server {} (build {}), a different {difference}",
+                    "{SERVER_BINARY_NAME} {} (build {}), a different {difference}",
                     sibling.version,
                     short_build(sibling.build_id)
                 ),

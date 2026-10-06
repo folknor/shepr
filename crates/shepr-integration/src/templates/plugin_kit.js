@@ -1,7 +1,6 @@
 import net from "node:net";
 
 const SOURCE = "@SOURCE@";
-const AGENT = "@LABEL@";
 const METHOD_SESSION = "@METHOD_SESSION@";
 const METHOD_STATE = "@METHOD_STATE@";
 const START = @START_JS@;
@@ -48,7 +47,6 @@ function requestOnce(method, params) {
     params: {
       pane_id: paneId,
       source: SOURCE,
-      agent: AGENT,
       seq,
       ...params,
     },

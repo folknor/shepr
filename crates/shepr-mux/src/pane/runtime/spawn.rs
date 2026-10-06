@@ -177,13 +177,13 @@ impl PtySetup<'_> {
                 pane_id,
                 terminal: Arc::clone(terminal),
             };
-            let on_read = Box::new(move |bytes: &[u8]| read_effects.read(&output, bytes));
+            let on_read = move |bytes: &[u8]| read_effects.read(&output, bytes);
             let on_reader_exit = reader_exit_callback(
                 pane_id,
                 Arc::clone(exit_arbiter),
                 TERMINAL_CLOSED_EXIT_GRACE,
             );
-            let actor = PtyIoActor::spawn(PtyIoActorConfig {
+            let actor = PtyIoActor::spawn(PtyIoActorConfig::new(
                 pane_id,
                 master_fd,
                 on_read,
@@ -191,8 +191,8 @@ impl PtySetup<'_> {
                 // A render, detection or API read that panicked while holding
                 // the core lock breaks it for good; end the pane within the
                 // actor's idle poll even if the child never prints again.
-                core_broken: Box::new(move || health_terminal.core_poisoned()),
-            });
+                move || health_terminal.core_poisoned(),
+            ));
             let actor = match actor {
                 Ok(actor) => actor,
                 Err(err) => {
@@ -335,7 +335,15 @@ impl PaneLauncher {
         // and a later `resize` to the same size is a no-op.
         let rows = geometry.rows();
         let cols = geometry.cols();
-        crate::pane::logging::pane_spawn_started(pane_id, rows, cols, scrollback);
+        crate::pane::logging::pane_spawn_started(
+            pane_id,
+            rows,
+            cols,
+            scrollback,
+            launch_kind,
+            cwd,
+            self.shell.path(),
+        );
 
         let terminal = prepare_terminal(
             pane_id,
@@ -384,7 +392,7 @@ impl PaneLauncher {
                     subsystem = "pane",
                     outcome = "error",
                     pane = %pane_id,
-                    public_pane = %public_id,
+                    public_pane_id = %public_id,
                     kind = ?launch_kind,
                     cwd = %cwd.display(),
                     stage = failure.stage,

@@ -245,6 +245,14 @@ fn check_concurrently(ssh: &dyn PreflightSsh, machines: &[&MachineConfig]) -> Ve
 /// client's connector.
 pub struct MachineSshPreflight<'a> {
     paths: &'a shepr_paths::AppPaths,
+    // The public preflight contract calls `check` through `&dyn PreflightSsh`
+    // on scoped workers. Replacing this deadline mutex and the probe map with
+    // disjoint `&mut MachineProbe` borrows requires changing that ownership API
+    // and the client launch caller; keep the locks here until that cross-scope
+    // change can be made together. The per-machine lock protects resumable
+    // discovery progress that is later transferred to its connector; the map
+    // and deadline locks are brief lookups before SSH IO and do not serialize
+    // network checks.
     deadline: Mutex<Instant>,
     probes: Mutex<HashMap<MachineLabel, Arc<Mutex<MachineProbe>>>>,
 }

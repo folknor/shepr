@@ -264,7 +264,7 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
         height: area.height,
     };
     pane_surface.panes[0].rect = rect;
-    pane_surface.panes[0].inner_rect = rect;
+    pane_surface.panes[0].content_rect = rect;
     pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
         0,
         50,
@@ -355,7 +355,7 @@ fn clipped_pane_shell() -> (
         height: 60,
     };
     oversized.panes[0].rect = full;
-    oversized.panes[0].inner_rect = full;
+    oversized.panes[0].content_rect = full;
     oversized.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
         0,
         50,
@@ -377,7 +377,7 @@ fn copy_mode_in_a_clipped_pane_keeps_its_cursor_on_the_drawn_rows() {
     let (mut state, _, _) = clipped_pane_shell();
     let hit = state.pane_hits()[0].clone();
     assert!(
-        hit.inner_rect.height < 60 && hit.inner_rect.width < 200,
+        hit.content_rect.height < 60 && hit.content_rect.width < 200,
         "the hit is clipped to the pane area"
     );
     let drawn_cursor = |state: &mut ClientShellState| {
@@ -390,19 +390,19 @@ fn copy_mode_in_a_clipped_pane_keeps_its_cursor_on_the_drawn_rows() {
     let mut outcome = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut outcome));
     let (_, row) = drawn_cursor(&mut state).expect("the copy cursor starts on a drawn row");
-    assert_eq!(row, hit.inner_rect.bottom() - 1);
+    assert_eq!(row, hit.content_rect.bottom() - 1);
 
     // At the newest rows no scroll can bring the rows below the clip into view, so a motion
     // down stops on the last drawn row.
     for _ in 0..5 {
         state.handle_input_bytes(b"j");
         let (_, row) = drawn_cursor(&mut state).expect("moving down stays on a drawn row");
-        assert_eq!(row, hit.inner_rect.bottom() - 1);
+        assert_eq!(row, hit.content_rect.bottom() - 1);
     }
 
     // Paging and the ends of history keep the cursor within the drawn rows of the viewport
     // the session asks for (the surface for it has not arrived, so nothing is drawn yet).
-    let visible_rows = u64::from(hit.inner_rect.height);
+    let visible_rows = u64::from(hit.content_rect.height);
     for keys in [&b"\x1b[5~"[..], b"\x1b[6~", b"g", b"G"] {
         state.handle_input_bytes(keys);
         let copy_mode = state.copy.as_ref().expect("still in copy mode");
@@ -418,14 +418,14 @@ fn copy_mode_in_a_clipped_pane_keeps_its_cursor_on_the_drawn_rows() {
     }
     // Back at the newest rows the viewport is the one on screen.
     let (_, row) = drawn_cursor(&mut state).expect("the end of history is drawn");
-    assert_eq!(row, hit.inner_rect.bottom() - 1);
+    assert_eq!(row, hit.content_rect.bottom() - 1);
 
     // Moving right stops at the last drawn column.
-    for _ in 0..hit.inner_rect.width {
+    for _ in 0..hit.content_rect.width {
         state.handle_input_bytes(b"l");
     }
     let (col, _) = drawn_cursor(&mut state).expect("moving right stays on a drawn column");
-    assert_eq!(col, hit.inner_rect.right() - 1);
+    assert_eq!(col, hit.content_rect.right() - 1);
     assert_eq!(
         state.copy.as_ref().map(|copy_mode| copy_mode.geometry),
         Some((200, 60)),
@@ -438,8 +438,8 @@ fn copy_mode_in_a_clipped_pane_keeps_the_panes_full_geometry() {
     let (mut state, oversized, generation) = clipped_pane_shell();
     let area = state.layout(106, 30).pane_surface;
     assert!(
-        state.pane_hits()[0].inner_rect.width < 200
-            && state.pane_hits()[0].inner_rect.width <= area.width,
+        state.pane_hits()[0].content_rect.width < 200
+            && state.pane_hits()[0].content_rect.width <= area.width,
         "the hit is clipped to the pane area"
     );
 
@@ -669,7 +669,7 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
         // A linewise selection is requested across the pane's full width; a character
         // selection is requested as its own range.
         let expected = if selection_key == b"V" {
-            let width = state.copy_hit().expect("copy hit").inner_rect.width;
+            let width = state.copy_hit().expect("copy hit").content_rect.width;
             (
                 shepr_term::Point::new(range.0.row, 0),
                 shepr_term::Point::new(range.1.row, width.saturating_sub(1)),
@@ -783,7 +783,7 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
         if screen_switch {
             pane_surface.panes[0].alternate_screen_active = true;
         } else {
-            pane_surface.panes[0].inner_rect.width -= 1;
+            pane_surface.panes[0].content_rect.width -= 1;
         }
         state.receive_pane_surface_from(
             pane_surface,
@@ -1111,7 +1111,10 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     assert_eq!(
         cell_bg(
             &frame,
-            (hit.inner_rect.x + 2, hit.inner_rect.y + (5 - viewport_top))
+            (
+                hit.content_rect.x + 2,
+                hit.content_rect.y + (5 - viewport_top)
+            )
         ),
         state.palette.accent
     );
@@ -2255,7 +2258,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
         .surface_revision
         .checked_next()
         .expect("test precondition");
-    pane_surface.panes[0].inner_rect.width -= 1;
+    pane_surface.panes[0].content_rect.width -= 1;
     state.receive_pane_surface_from(
         pane_surface,
         state
@@ -2619,7 +2622,7 @@ fn an_in_flight_search_answered_after_a_resize_finishes_without_applying() {
         .checked_next()
         .expect("test precondition");
     resized.panes[0].content_revision.advance();
-    resized.panes[0].inner_rect.width -= 1;
+    resized.panes[0].content_rect.width -= 1;
     s.receive_pane_surface_from(
         resized,
         s.endpoints

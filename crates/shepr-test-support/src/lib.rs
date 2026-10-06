@@ -852,7 +852,7 @@ mod tests {
     /// disjoint trees.
     #[test]
     fn repeated_labels_across_threads_get_disjoint_trees() {
-        let roots: Vec<PathBuf> = ["scratch-thread-a", "scratch-thread-b"]
+        let roots: Vec<PathBuf> = ["scratch-a", "scratch-b"]
             .into_iter()
             .map(|name| {
                 std::thread::Builder::new()

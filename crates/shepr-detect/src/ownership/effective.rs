@@ -74,14 +74,7 @@ mod tests {
         assert_eq!(ownership.state_owner(), EffectiveStateSource::Screen);
         let session = shepr_agent::resume::AgentSessionRef::id("session").expect("session ref");
         let mutation = ownership
-            .set_hook_authority_at(
-                "shepr:codex",
-                "codex",
-                AgentState::Idle,
-                Some(session),
-                None,
-                now,
-            )
+            .set_hook_authority_at("shepr:codex", AgentState::Idle, Some(session), None, now)
             .expect("partial-state hook report");
         assert_eq!(mutation.effective_state_change, None);
         assert_eq!(ownership.state_owner(), EffectiveStateSource::Hook);
@@ -103,22 +96,11 @@ mod tests {
         // it owns the state only once a session anchors it.
         let session = shepr_agent::resume::AgentSessionRef::id("session").expect("session ref");
         ownership.set_persisted_agent_session(
-            shepr_agent::resume::PersistedAgentSession::from_report(
-                "shepr:omp",
-                "omp",
-                session.clone(),
-            )
-            .expect("persisted session"),
+            shepr_agent::resume::PersistedAgentSession::from_report("shepr:omp", session.clone())
+                .expect("persisted session"),
         );
         let mutation = ownership
-            .set_hook_authority_at(
-                "shepr:omp",
-                "omp",
-                AgentState::Idle,
-                Some(session),
-                None,
-                now,
-            )
+            .set_hook_authority_at("shepr:omp", AgentState::Idle, Some(session), None, now)
             .expect("full lifecycle report");
         assert_eq!(mutation.effective_state_change, None);
         assert_eq!(

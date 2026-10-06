@@ -703,13 +703,12 @@ mod runtime_generation_tests {
             ownership.set_persisted_agent_session(
                 shepr_agent::resume::PersistedAgentSession::from_report(
                     "shepr:omp",
-                    "omp",
                     shepr_agent::resume::AgentSessionRef::id("session").expect("session"),
                 )
                 .expect("official identity"),
             );
             let _ = ownership.set_hook_report_at(
-                shepr_agent::ReportOrigin::parse("shepr:omp", "omp").expect("test origin"),
+                shepr_agent::ReportOrigin::parse("shepr:omp").expect("test origin"),
                 shepr_agent::AgentState::Idle,
                 shepr_agent::resume::AgentSessionRef::id("session"),
                 None,
@@ -741,7 +740,6 @@ mod runtime_generation_tests {
         app.state.test_set_workspaces(vec![workspace]);
         let session = shepr_agent::resume::PersistedAgentSession::from_report(
             "shepr:codex",
-            "codex",
             shepr_agent::resume::AgentSessionRef::id("killed-agent").expect("session"),
         )
         .expect("official identity");
@@ -804,7 +802,6 @@ mod runtime_generation_tests {
         app.state.test_set_workspaces(vec![workspace]);
         let session = shepr_agent::resume::PersistedAgentSession::from_report(
             "shepr:codex",
-            "codex",
             shepr_agent::resume::AgentSessionRef::id("restored").expect("session"),
         )
         .expect("persisted identity");

@@ -402,10 +402,10 @@ mod tests {
         let mut last =
             crate::tests::endpoints::surface(&ClientEndpointId::Local, 1, size, "prompt");
         // The primary screen reserves the last column for the scrollbar track.
-        last.panes[0].inner_rect.width = size.cols - 1;
+        last.panes[0].content_rect.width = size.cols - 1;
         let mut next = last.clone();
         next.surface_revision = surface_rev(2);
-        next.panes[0].inner_rect.width = size.cols;
+        next.panes[0].content_rect.width = size.cols;
         next.panes[0].alternate_screen_active = true;
         next.frame.cells_mut()[0].symbol = "A".into();
 
@@ -597,8 +597,8 @@ mod tests {
         let baseline = s.baseline().expect("baseline");
         let mut pane = baseline.panes[0].clone();
         let grid = shepr_core::geometry::GridSize::clamped(
-            pane.inner_rect.width.max(1),
-            pane.inner_rect.height.max(1),
+            pane.content_rect.width.max(1),
+            pane.content_rect.height.max(1),
         );
         let extent = shepr_core::geometry::PanePixelExtent::new(grid, 640, 480).expect("nonzero");
         assert_ne!(pane.pixel_mouse.extent(), Some(extent));

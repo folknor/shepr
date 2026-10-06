@@ -2,8 +2,7 @@ use std::time::Instant;
 
 use shepr_mux::persist::CapturedLayout;
 
-use super::{CheckpointGeneration, checkpoint_retry_delay};
-use crate::limits::CHECKPOINT_MAX_FAILURES;
+use super::{CheckpointGeneration, SavePolicyConfig};
 
 /// Generations are issued 1, 2, 3, ... per held exit. `through` is the newest
 /// generation released: a held exit with generation <= `through` may be
@@ -178,8 +177,14 @@ impl PaneExitCheckpoint {
     /// A checkpoint save of `failed_generation` failed. Returns whether this
     /// abandoned the checkpoint. A failure of the pending generation counts
     /// toward abandonment; a failure of an older capture only re-arms the
-    /// retry, without charging the newer epoch.
-    pub(super) fn failed(&mut self, failed_generation: CheckpointGeneration, now: Instant) -> bool {
+    /// retry, without charging the newer epoch. `config` is the saver's
+    /// retry and failure-limit policy.
+    pub(super) fn failed_with_config(
+        &mut self,
+        failed_generation: CheckpointGeneration,
+        now: Instant,
+        config: SavePolicyConfig,
+    ) -> bool {
         let Self::Requested {
             generation,
             failures,
@@ -192,10 +197,10 @@ impl PaneExitCheckpoint {
         if failed_generation > *generation {
             return false;
         }
-        let delay = checkpoint_retry_delay(*failures);
+        let delay = config.checkpoint_retry.delay_after(u32::from(*failures));
         if failed_generation == *generation {
             *failures = failures.saturating_add(1);
-            if *failures >= CHECKPOINT_MAX_FAILURES {
+            if *failures >= config.checkpoint_max_failures {
                 *self = Self::Abandoned {
                     through: Some(*generation),
                 };
@@ -258,12 +263,19 @@ impl PaneExitCheckpoint {
             None
         }
     }
+
+    /// [`Self::failed_with_config`] under the default save policy.
+    #[cfg(test)]
+    pub(super) fn failed(&mut self, failed_generation: CheckpointGeneration, now: Instant) -> bool {
+        self.failed_with_config(failed_generation, now, SavePolicyConfig::default())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::checkpoint_retry_delay;
     use super::*;
-    use crate::limits::SESSION_SAVE_RETRY_MIN;
+    use crate::limits::CHECKPOINT_MAX_FAILURES;
 
     fn layout() -> Box<CapturedLayout> {
         Box::new(CapturedLayout::new(
@@ -306,7 +318,7 @@ mod tests {
             exit,
             PaneExitCheckpoint::Requested { failures: 1, .. }
         ));
-        assert_eq!(exit.retry_at(), Some(now + SESSION_SAVE_RETRY_MIN));
+        assert_eq!(exit.retry_at(), Some(now + checkpoint_retry_delay(0)));
     }
     #[test]
     fn exits_after_a_saved_layout_with_an_unchanged_session_hold_nothing() {
@@ -373,7 +385,7 @@ mod tests {
         assert_eq!(exit.request(false), Some(generation(2)));
     }
     #[test]
-    fn three_failures_of_the_newest_generation_abandon_it_and_release_every_generation() {
+    fn the_failure_limit_of_the_newest_generation_abandon_it_and_release_every_generation() {
         let mut exit = requested();
         let now = Instant::now();
         for _ in 1..CHECKPOINT_MAX_FAILURES {
@@ -392,7 +404,7 @@ mod tests {
         exit.failed(generation(1), now);
         exit.request(false);
         assert!(!exit.failed(generation(1), now));
-        assert_eq!(exit.retry_at(), Some(now + SESSION_SAVE_RETRY_MIN * 2));
+        assert_eq!(exit.retry_at(), Some(now + checkpoint_retry_delay(1)));
         assert!(matches!(
             exit,
             PaneExitCheckpoint::Requested { failures: 1, .. }

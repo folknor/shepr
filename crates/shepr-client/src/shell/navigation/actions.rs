@@ -135,7 +135,7 @@ impl ClientShellState {
                     .pane_hits()
                     .iter()
                     .find(|hit| hit.pane_id == pane_id)
-                    .map(|hit| hit.inner_rect.width)
+                    .map(|hit| hit.content_rect.width)
                     .or_else(|| {
                         self.copy
                             .as_ref()
@@ -215,6 +215,8 @@ impl ClientShellState {
         boot_id: &shepr_protocol::BootId,
         notice: &shepr_protocol::SessionRestoreNotice,
     ) -> bool {
+        // Session damage includes duplicate resume suppression: render its
+        // pane identities through the same boot-scoped restore card.
         let title = match &notice.loss {
             shepr_protocol::SessionRestoreLoss::Damaged(damage)
                 if !damage.loses_data() && damage.repaired_bookmarks == 0 =>

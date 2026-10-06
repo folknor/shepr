@@ -372,11 +372,7 @@ fn wait_for_server_socket_to_settle_until(
 
 fn server_transition_timeout(paths: &shepr_paths::AppPaths, timeout: Duration) -> LaunchError {
     LaunchError::TransitionTimeout {
-        message: format!(
-            "the shepr server at {} did not finish starting or release its socket within {}ms",
-            paths.server_address().socket().display(),
-            timeout.as_millis()
-        ),
+        message: guidance::server_transition_timeout(paths.server_address().socket(), timeout),
     }
 }
 
@@ -399,11 +395,7 @@ fn wait_for_overridden_server(
 
 fn unresponsive_error(paths: &shepr_paths::AppPaths) -> LaunchError {
     LaunchError::Unresponsive {
-        message: format!(
-            "a shepr server is listening at {}, but it is not answering status requests, so its build cannot be confirmed and no second server is started.\n\n{}\nIf that fails, stop the server process manually.",
-            paths.server_address().socket().display(),
-            build_mismatch_guidance(paths)
-        ),
+        message: guidance::unresponsive_server(paths.server_address()),
     }
 }
 
@@ -423,20 +415,8 @@ fn accept_running(
 }
 
 fn running_build_mismatch(paths: &shepr_paths::AppPaths, status: &RuntimeStatus) -> LaunchError {
-    let summary = if paths.server_address().is_runtime_address() {
-        "the running shepr server is a different build; restart it before attaching."
-    } else {
-        "the running shepr server is a different build, and this client cannot start a replacement at the selected socket override."
-    };
     LaunchError::DifferentBuild {
-        message: format!(
-            "{summary}\n\nserver: v{} build {}\nclient: v{} build {}\n\n{}",
-            status.version,
-            status.build_id,
-            shepr_protocol::build_version(),
-            shepr_protocol::BUILD_ID,
-            build_mismatch_guidance(paths)
-        ),
+        message: guidance::running_build_mismatch(paths.server_address(), status),
     }
 }
 
@@ -457,14 +437,8 @@ fn require_own_runtime_address(paths: &shepr_paths::AppPaths) -> Result<(), Laun
 }
 
 fn no_server_at_override(paths: &shepr_paths::AppPaths) -> LaunchError {
-    let address = paths.server_address();
-    let selected_by = EnvVar::SheprSocketPath;
     LaunchError::OverrideMissing {
-        message: format!(
-            "no shepr server is running at {}, which {selected_by} selects. A client starts a server only for its own runtime address ({}); a socket override names a server that is already running.",
-            address.socket().display(),
-            paths.runtime_dir().display()
-        ),
+        message: guidance::no_server_at_override(paths.server_address(), paths.runtime_dir()),
     }
 }
 
@@ -489,10 +463,10 @@ pub fn server_executable() -> io::Result<PathBuf> {
 }
 
 fn sibling_server_executable(client: &Path) -> io::Result<PathBuf> {
+    // Filesystem details stay at this boundary; actionable installation wording
+    // belongs to guidance, which also names both executables.
     let server = client.with_file_name(SERVER_BINARY_NAME);
-    let install_hint = format!(
-        "shepr starts its server from the same directory as itself; install shepr and {SERVER_BINARY_NAME} together (`brokkr install`)"
-    );
+    let install_hint = guidance::local_install_hint();
     match std::fs::metadata(&server) {
         Ok(metadata) if metadata.is_file() => {}
         Ok(_) => {
@@ -929,10 +903,8 @@ fn boot_id_process_id(boot_id: &shepr_protocol::BootId) -> Option<shepr_platform
 /// The daemon exited during boot: how, and what it printed.
 fn boot_failure(files: &LaunchFiles<'_>, status: ExitStatus) -> LaunchError {
     let class = DaemonExit::from_code(status.code());
-    let mut message = format!(
-        "{SERVER_BINARY_NAME} {} ({status})",
-        class.describe_boot_end()
-    );
+    let mut message =
+        guidance::server_boot_notice(guidance::ServerBootNotice::Exited { class, status });
     append_boot_log(&mut message, files);
     LaunchError::DaemonFailed { class, message }
 }
@@ -940,63 +912,33 @@ fn boot_failure(files: &LaunchFiles<'_>, status: ExitStatus) -> LaunchError {
 /// The daemon printed more than [`BOOT_LOG_MAX_BYTES`] while booting; the
 /// caller's guard stops it.
 fn boot_log_overflow(files: &LaunchFiles<'_>) -> LaunchError {
-    let mut message = format!(
-        "{SERVER_BINARY_NAME} wrote more than {BOOT_LOG_MAX_BYTES} bytes to its boot log while starting and was stopped"
-    );
+    let mut message = guidance::server_boot_notice(guidance::ServerBootNotice::LogOverflow {
+        max_bytes: BOOT_LOG_MAX_BYTES,
+    });
     append_boot_log(&mut message, files);
     LaunchError::BootLogOverflow { message }
 }
 
 /// The daemon did not answer with this build's identity in time.
 fn boot_timeout(files: &LaunchFiles<'_>, timeout: Duration, occupant_only: bool) -> LaunchError {
-    let mut message = if occupant_only {
-        format!(
-            "{SERVER_BINARY_NAME} found another server already running, but that server did not answer a status request within {}s",
-            timeout.as_secs()
-        )
-    } else {
-        format!(
-            "{SERVER_BINARY_NAME} did not become ready within {}s and was stopped",
-            timeout.as_secs()
-        )
-    };
+    let mut message = guidance::server_boot_notice(guidance::ServerBootNotice::TimedOut {
+        timeout,
+        occupant_only,
+    });
     append_boot_log(&mut message, files);
     LaunchError::BootTimeout { message }
 }
 
 fn append_boot_log(message: &mut String, files: &LaunchFiles<'_>) {
-    match shepr_platform::read_boot_log_tail(files.boot_log) {
-        Ok(tail) if !tail.is_empty() => message.push_str(&format!(
-            "\nserver output ({}):\n{tail}",
-            files.boot_log.display()
-        )),
-        Ok(_) => message.push_str(&format!(
-            "\nthe server printed nothing during boot ({})",
-            files.boot_log.display()
-        )),
-        Err(error) => message.push_str(&format!(
-            "\ncould not read the server boot log {}: {error}",
-            files.boot_log.display()
-        )),
-    }
-    message.push_str(&format!(
-        "\nonce it is running, the server logs to {}",
-        files.server_log.display()
-    ));
+    let tail = shepr_platform::read_boot_log_tail(files.boot_log);
+    guidance::append_boot_log_notice(message, files.boot_log, files.server_log, tail);
 }
 
 /// The daemon this client just started answered as another build, so the
 /// installed pair is inconsistent.
 fn sibling_build_mismatch(files: &LaunchFiles<'_>, status: &RuntimeStatus) -> LaunchError {
     LaunchError::SiblingBuildMismatch {
-        message: format!(
-            "{} is a different build than this shepr and was stopped; install shepr and {SERVER_BINARY_NAME} together (`brokkr install`).\n\nserver: v{} build {}\nclient: v{} build {}",
-            files.server.display(),
-            status.version,
-            status.build_id,
-            shepr_protocol::build_version(),
-            shepr_protocol::BUILD_ID
-        ),
+        message: guidance::sibling_build_mismatch(files.server, status),
     }
 }
 

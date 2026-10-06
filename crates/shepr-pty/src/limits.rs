@@ -47,8 +47,9 @@ pub(crate) const MAX_SIGNAL_NUMBER: libc::c_int = 128;
 pub(crate) const GETDENTS_READ_BUFFER_BYTES: usize = 4 * KIBIBYTE_BYTES;
 
 /// Idle timeout for the PTY actor's `poll` call. Wake-pipe and PTY readiness
-/// drive normal responsiveness; this is only a fallback for a missed
-/// wake.
+/// drive normal responsiveness; this timeout catches missed wakes and is the
+/// cadence for noticing a terminal core poisoned on another thread while the
+/// pane has no IO.
 pub(crate) const ACTOR_IDLE_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Total queued PTY input and terminal-reply bytes allowed while other items

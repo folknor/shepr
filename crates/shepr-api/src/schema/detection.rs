@@ -408,7 +408,7 @@ mod tests {
         received: std::time::Instant,
     ) -> shepr_detect::ownership::UnappliedHookReport {
         shepr_detect::ownership::UnappliedHookReport {
-            origin: shepr_agent::ReportOrigin::parse("shepr:codex", "codex").expect("test origin"),
+            origin: shepr_agent::ReportOrigin::parse("shepr:codex").expect("test origin"),
             kind,
             seq: Some(12),
             session_ref: shepr_agent::resume::AgentSessionRef::id("codex-session"),

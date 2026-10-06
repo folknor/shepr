@@ -262,7 +262,7 @@ pub(in crate::shell) fn surface_presented(
     };
     let mut invalidated = false;
     let mut clamped = false;
-    let geometry = (pane.inner_rect.width, pane.inner_rect.height);
+    let geometry = (pane.content_rect.width, pane.content_rect.height);
     let coordinates_changed = session.geometry != geometry
         || session.alternate_screen_active != pane.alternate_screen_active;
     // Copy-mode points are absolute rows, so output alone moves nothing; a resize or a

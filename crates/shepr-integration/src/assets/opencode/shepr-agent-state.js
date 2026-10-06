@@ -2,12 +2,11 @@
 // managed by shepr; every release shepr server launch on this host rewrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=opencode
-// SHEPR_INTEGRATION_VERSION=3328850120
+// SHEPR_INTEGRATION_VERSION=3864894411
 
 import net from "node:net";
 
 const SOURCE = "shepr:opencode";
-const AGENT = "opencode";
 const METHOD_SESSION = "pane.report_agent_session";
 const METHOD_STATE = "pane.report_agent";
 const START = { startup: "startup", resume: "resume", select: "select" };
@@ -62,7 +61,6 @@ function requestOnce(method, params) {
     params: {
       pane_id: paneId,
       source: SOURCE,
-      agent: AGENT,
       seq,
       ...params,
     },

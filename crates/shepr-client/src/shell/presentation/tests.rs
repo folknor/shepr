@@ -298,7 +298,7 @@ fn a_rejected_patch_reports_its_reason() {
     ));
     p = patch(s.presentation.surfaces.baseline().expect("baseline"));
     let mut pane = s.presentation.surfaces.baseline().expect("baseline").panes[0].clone();
-    pane.inner_rect.width += 1;
+    pane.content_rect.width += 1;
     p.panes.push(pane);
     assert!(matches!(
         s.apply_pane_surface_patch_from(
@@ -397,7 +397,7 @@ fn pairing_a_waiting_baseline_runs_the_selection_and_copy_mode_effects() {
     s.copy.as_mut().expect("copy").cursor.row = shepr_term::AbsRow(0);
     let mut future = surface();
     future.projection_revision = shepr_test_fixtures::counter_at(2);
-    future.panes[0].inner_rect.width = 10;
+    future.panes[0].content_rect.width = 10;
     {
         let metrics = future.panes[0].scroll.as_mut().expect("scroll");
         *metrics = shepr_term::ScrollMetrics::new(

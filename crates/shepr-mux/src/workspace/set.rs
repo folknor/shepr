@@ -10,6 +10,34 @@ use shepr_core::absolute_path::AbsolutePath;
 use shepr_core::layout::PaneId;
 use shepr_protocol::{PanePublicNumber, PublicPaneId, WorkspaceId};
 
+/// Why a workspace could not join the session, with ownership returned.
+pub struct InsertRefusal {
+    pub workspace: Box<Workspace>,
+    pub reason: InsertRefusalReason,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InsertRefusalReason {
+    WorkspaceIdPresent,
+    PaneIdShared,
+}
+
+impl std::fmt::Debug for InsertRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InsertRefusal")
+            .field("workspace", &self.workspace.id())
+            .field("reason", &self.reason)
+            .finish()
+    }
+}
+
+impl std::ops::Deref for InsertRefusal {
+    type Target = Workspace;
+    fn deref(&self) -> &Workspace {
+        &self.workspace
+    }
+}
+
 /// Hands out the workspace IDs of one session. The session's `WorkspaceSet`
 /// owns the one allocator its workspaces come from, and session restore takes
 /// it by `&mut` and moves it past every saved ID before it allocates any, so a
@@ -110,6 +138,7 @@ impl WorkspaceSet {
             if let Err(refused) = set.insert(workspace) {
                 tracing::error!(
                     workspace = %refused.id,
+                    reason = ?refused.reason,
                     "dropped a restored workspace that repeats an id or a pane"
                 );
             }
@@ -120,13 +149,16 @@ impl WorkspaceSet {
 
     /// Appends; refuses a present ID or a shared pane ID. Moves the allocator
     /// past the ID.
-    pub fn insert(&mut self, workspace: Workspace) -> Result<WorkspaceId, Box<Workspace>> {
+    pub fn insert(&mut self, workspace: Workspace) -> Result<WorkspaceId, InsertRefusal> {
         if self
             .workspaces
             .iter()
             .any(|present| present.id == workspace.id)
         {
-            return Err(Box::new(workspace));
+            return Err(InsertRefusal {
+                workspace: Box::new(workspace),
+                reason: InsertRefusalReason::WorkspaceIdPresent,
+            });
         }
         let present_panes: HashSet<PaneId> = self
             .workspaces
@@ -138,7 +170,10 @@ impl WorkspaceSet {
             .panes()
             .any(|(pane, _)| present_panes.contains(&pane))
         {
-            return Err(Box::new(workspace));
+            return Err(InsertRefusal {
+                workspace: Box::new(workspace),
+                reason: InsertRefusalReason::PaneIdShared,
+            });
         }
         let id = workspace.id;
         self.ids.reserve([&id]);
@@ -166,7 +201,7 @@ impl WorkspaceSet {
         &mut self,
         prepared: PreparedWorkspace,
         geometry: SpawnGeometry,
-    ) -> Result<WorkspaceId, Box<Workspace>> {
+    ) -> Result<WorkspaceId, InsertRefusal> {
         let mut workspace = prepared.workspace;
         workspace.record_spawn_geometry(geometry);
         self.insert(workspace)
@@ -185,7 +220,13 @@ impl WorkspaceSet {
         let workspace_id = workspace.id;
         if !workspace.tree().is_lone() {
             let focused = workspace.tree().focused();
-            let record = workspace.remove_pane(pane).ok()?;
+            let record = match workspace.remove_pane(pane) {
+                Ok(record) => record,
+                Err(reason) => {
+                    tracing::error!(%workspace_id, %pane, ?reason, "pane removal refused after membership check");
+                    return None;
+                }
+            };
             return Some(PaneRemoval {
                 workspace_id,
                 pane,
@@ -574,6 +615,7 @@ mod tests {
         let refused = set.insert(repeat).expect_err("the id is present");
 
         assert_eq!(refused.name(), "repeat");
+        assert_eq!(refused.reason, InsertRefusalReason::WorkspaceIdPresent);
         assert_eq!(set.len(), 1);
         assert_eq!(set.as_slice()[0].name(), "a");
     }
@@ -590,7 +632,8 @@ mod tests {
             test_terminal(),
         );
 
-        assert!(set.insert(sharing).is_err());
+        let refused = set.insert(sharing).expect_err("shared pane");
+        assert_eq!(refused.reason, InsertRefusalReason::PaneIdShared);
         assert_eq!(set.len(), 1);
     }
 

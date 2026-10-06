@@ -1233,11 +1233,28 @@ impl AgentOwnership {
             .hook_sources
             .get(origin.source())
             .is_some_and(|record| record.parked_start_expired(now));
+        let expired_session_ref = if expired {
+            self.hook_sources
+                .get(origin.source())
+                .and_then(|record| record.suppressed())
+                .and_then(|report| report.pending_start.as_ref())
+                .map(|session| session.session_ref().clone())
+        } else {
+            None
+        };
         let effect = self
             .hook_sources
             .get_mut(origin.source())
             .map(|record| record.transition(HookSourceEvent::ProcessObserved(now)));
         if expired {
+            if let Some(session_ref) = expired_session_ref {
+                tracing::info!(
+                    agent = %detected_agent,
+                    source = %origin.source(),
+                    session_ref = ?session_ref,
+                    "parked agent session start expired before process evidence arrived"
+                );
+            }
             // Expiry discards the parked start and report. The read already
             // judges such a record gone (`parked_awaiting` finds nothing
             // pending); dropping it here keeps the stored record from
@@ -1706,8 +1723,7 @@ mod transition_tests {
     }
 
     fn session(id: &str) -> PersistedAgentSession {
-        PersistedAgentSession::from_report("shepr:pi", "pi", identity(id))
-            .expect("official test session")
+        PersistedAgentSession::from_report("shepr:pi", identity(id)).expect("official test session")
     }
 
     fn release(sample: HookClockSample) -> SuppressedFullLifecycleHookReport {
@@ -1859,7 +1875,7 @@ mod transition_tests {
     fn report(id: &str, seq: u64, sample: HookClockSample) -> PendingFullLifecycleHookReport {
         PendingFullLifecycleHookReport {
             authority: HookAuthority {
-                origin: ReportOrigin::parse("shepr:pi", "pi").expect("fixture origin"),
+                origin: ReportOrigin::parse("shepr:pi").expect("fixture origin"),
                 state: AgentState::Working,
                 reported_at: sample.monotonic,
                 session_ref: Some(identity(id)),
@@ -2303,13 +2319,12 @@ impl AgentOwnership {
     pub fn set_hook_authority_with_session_ref(
         &mut self,
         source: &str,
-        agent_label: &str,
         state: AgentState,
         session_ref: Option<shepr_agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         now: Instant,
     ) -> Option<AgentOwnershipMutation> {
-        self.set_hook_authority_at(source, agent_label, state, session_ref, seq, now)
+        self.set_hook_authority_at(source, state, session_ref, seq, now)
     }
 }
 
@@ -2318,30 +2333,23 @@ impl AgentOwnership {
     pub fn set_agent_session_ref(
         &mut self,
         source: &str,
-        agent_label: &str,
         session_ref: Option<shepr_agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         now: Instant,
     ) -> Option<AgentOwnershipMutation> {
-        self.set_agent_session_ref_at(
-            ReportOrigin::parse(source, agent_label).ok()?,
-            session_ref,
-            seq,
-            now,
-        )
+        self.set_agent_session_ref_at(ReportOrigin::parse(source).ok()?, session_ref, seq, now)
     }
 
     pub fn set_agent_session_ref_for_session_start(
         &mut self,
         source: &str,
-        agent_label: &str,
         session_ref: Option<shepr_agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         session_start_source: Option<&str>,
         now: Instant,
     ) -> Option<AgentOwnershipMutation> {
         self.set_agent_session_ref_for_typed_start_source_at(
-            ReportOrigin::parse(source, agent_label).ok()?,
+            ReportOrigin::parse(source).ok()?,
             session_ref,
             seq,
             ReportedSessionStart::from_wire(session_start_source),
@@ -2432,7 +2440,6 @@ mod pane_exit_tests {
         let mut terminal = AgentOwnership::new();
         let session = PersistedAgentSession::from_report(
             "shepr:pi",
-            "pi",
             AgentSessionRef::id("interrupted-session").expect("session id"),
         )
         .expect("official session");
@@ -2440,7 +2447,7 @@ mod pane_exit_tests {
         let now = Instant::now();
         terminal.set_detected_agent_process_at(Agent::Pi, now);
         terminal.seed_hook_authority_for_test(Some(HookAuthority {
-            origin: ReportOrigin::parse("shepr:pi", "pi").expect("fixture origin"),
+            origin: ReportOrigin::parse("shepr:pi").expect("fixture origin"),
             state: AgentState::Working,
             reported_at: now,
             session_ref: Some(session.session_ref().clone()),
@@ -2593,7 +2600,6 @@ mod pane_exit_tests {
         pi_exits(&mut terminal, now);
         let replacement = PersistedAgentSession::from_report(
             "shepr:pi",
-            "pi",
             AgentSessionRef::id("replacement").expect("replacement identity"),
         )
         .expect("official identity");
@@ -2621,7 +2627,6 @@ mod pane_exit_tests {
         // Pi's own `New` reaches the server after its exit was applied.
         terminal.set_agent_session_ref_for_session_start(
             "shepr:pi",
-            "pi",
             Some(AgentSessionRef::id("late-new").expect("session id")),
             Some(99),
             Some("new"),
@@ -2669,7 +2674,6 @@ mod pane_exit_tests {
     fn official_session(agent: &str, id: &str) -> PersistedAgentSession {
         PersistedAgentSession::from_report(
             &format!("shepr:{agent}"),
-            agent,
             AgentSessionRef::id(id).expect("session id"),
         )
         .expect("official session")
@@ -2684,7 +2688,7 @@ mod pane_exit_tests {
         let persisted = official_session("pi", "kept");
         terminal.set_persisted_agent_session(persisted.clone());
         terminal.seed_hook_authority_for_test(Some(HookAuthority {
-            origin: ReportOrigin::parse("shepr:claude", "claude").expect("fixture origin"),
+            origin: ReportOrigin::parse("shepr:claude").expect("fixture origin"),
             state: AgentState::Working,
             reported_at: now,
             session_ref: None,
@@ -2711,7 +2715,7 @@ mod pane_exit_tests {
         let pi = official_session("pi", "pi-session");
         terminal.set_persisted_agent_session(pi.clone());
         terminal.seed_hook_authority_for_test(Some(HookAuthority {
-            origin: ReportOrigin::parse("shepr:claude", "claude").expect("fixture origin"),
+            origin: ReportOrigin::parse("shepr:claude").expect("fixture origin"),
             state: AgentState::Working,
             reported_at: now,
             session_ref: Some(AgentSessionRef::id("claude-session").expect("session id")),
@@ -2735,7 +2739,7 @@ mod pane_exit_tests {
         terminal.set_detected_agent_process_at(Agent::Claude, now);
         terminal.set_persisted_agent_session(official_session("claude", "older"));
         terminal.seed_hook_authority_for_test(Some(HookAuthority {
-            origin: ReportOrigin::parse("shepr:claude", "claude").expect("fixture origin"),
+            origin: ReportOrigin::parse("shepr:claude").expect("fixture origin"),
             state: AgentState::Working,
             reported_at: now,
             session_ref: Some(AgentSessionRef::id("current").expect("session id")),

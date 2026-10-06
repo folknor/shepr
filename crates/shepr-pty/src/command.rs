@@ -46,7 +46,8 @@ pub(crate) struct LaunchSpec {
 }
 
 impl PtyCommand {
-    /// Run the shell selected and resolved while the server loaded its config.
+    /// Run the shell selected and resolved while the server loaded its config,
+    /// with the server's environment as it is now (see `base_env`).
     pub fn interactive_shell(
         default_shell: &shepr_core::shell::ResolvedShell,
         login: bool,
@@ -208,6 +209,11 @@ impl PtyCommand {
 /// session's markers), and the pane launch layer removes exactly those, one
 /// decision per registered variable. Shell selection and validation happen once
 /// when server config is loaded.
+///
+/// It is copied per command, not snapshotted at launch init the way the passwd
+/// home is (`launch::init`): the server never edits its own environment, so the
+/// two reads agree, while a process-wide snapshot would freeze the first
+/// initializing test's isolated environment for every later test in its binary.
 #[expect(
     clippy::disallowed_methods,
     reason = "a pane child inherits the server's environment verbatim; it is copied, not interpreted, and pane launch policy then edits the copy"
@@ -309,6 +315,7 @@ mod tests {
 
     #[test]
     fn env_edits_are_visible_before_spawn() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.envs.insert("SHEPR_PTY_TEST_KEY".into(), "value".into());
         assert_eq!(cmd.get_env("SHEPR_PTY_TEST_KEY"), Some(OsStr::new("value")));
@@ -320,6 +327,7 @@ mod tests {
 
     #[test]
     fn the_launch_carries_exactly_the_command_env() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.envs.insert("SHEPR_PTY_TEST_SET".into(), "1".into());
         cmd.envs.insert("SHEPR_PTY_TEST_REMOVED".into(), "1".into());
@@ -337,6 +345,7 @@ mod tests {
 
     #[test]
     fn each_candidate_sets_pwd_to_its_directory_and_drops_server_oldpwd() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("pty-command-cwd-env");
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.cwd(&abs(scratch.path()));
@@ -358,6 +367,7 @@ mod tests {
 
     #[test]
     fn fallback_candidates_are_home_then_passwd_home_then_root_without_repeats() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.cwd(&abs("/requested"));
         cmd.env(EnvVar::Home, "/home/user");
@@ -389,6 +399,7 @@ mod tests {
 
     #[test]
     fn a_required_cwd_has_no_fallback() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.cwd(&abs("/requested"));
         cmd.require_cwd();
@@ -401,6 +412,7 @@ mod tests {
 
     #[test]
     fn the_child_sees_the_selected_shell_not_an_inherited_shell_env() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.env(EnvVar::Shell, "/__shepr_missing_shell__");
         let spec = cmd.launch_spec(None).expect("build launch");
@@ -414,6 +426,7 @@ mod tests {
 
     #[test]
     fn a_login_shell_gets_a_dash_argv0_and_no_arguments() {
+        let _env = shepr_test_support::IsolatedEnv::new();
         // host-program-ok: the path is only turned into an argv, never run.
         let cmd = PtyCommand::interactive_shell(&test_shell("/bin/zsh"), true);
         let spec = cmd.launch_spec(None).expect("build launch");

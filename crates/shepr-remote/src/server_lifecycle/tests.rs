@@ -69,14 +69,6 @@ fn running(build_id: &str, boot_id: &str) -> RemoteServerStatus {
     }
 }
 
-fn other_build() -> &'static str {
-    if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
-        "0000000000000000"
-    } else {
-        "ffffffffffffffff"
-    }
-}
-
 /// A Restart stops only a server of another build, and only the boot its
 /// status named.
 #[test]
@@ -89,21 +81,26 @@ fn a_restart_stops_the_observed_boot_of_another_build_only() {
     }
 
     let mut stopped = Vec::new();
-    stop_for_restart(running(other_build(), "17-23"), |boot| {
-        stopped.push(boot.to_string());
-        Ok(StopOutcome::Stopped)
-    })
+    stop_for_restart(
+        running(shepr_test_fixtures::other_build_id(), "17-23"),
+        |boot| {
+            stopped.push(boot.to_string());
+            Ok(StopOutcome::Stopped)
+        },
+    )
     .expect("the observed server stopped");
     assert_eq!(stopped, ["17-23"]);
 
-    stop_for_restart(running(other_build(), "17-23"), |_| {
-        Ok(StopOutcome::NoServer)
-    })
+    stop_for_restart(
+        running(shepr_test_fixtures::other_build_id(), "17-23"),
+        |_| Ok(StopOutcome::NoServer),
+    )
     .expect("a server already gone needs no stop");
 
-    let error = stop_for_restart(running(other_build(), "17-23"), |_| {
-        Ok(StopOutcome::BootChanged)
-    })
+    let error = stop_for_restart(
+        running(shepr_test_fixtures::other_build_id(), "17-23"),
+        |_| Ok(StopOutcome::BootChanged),
+    )
     .expect_err("a replaced server is left running");
     assert!(error.to_string().contains("left running"), "{error}");
 }

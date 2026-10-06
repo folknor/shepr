@@ -4,6 +4,7 @@
 //! until a server answers on this host and then exits, so the client can
 //! attach. It starts nothing.
 
+use std::ffi::OsStr;
 use std::io;
 use std::os::fd::RawFd;
 use std::path::Path;
@@ -32,14 +33,19 @@ pub enum ServerWaitEnd {
 
 /// Waits on this host until a server answers as running, its client closes
 /// stdin, or the wait has run for its longest life. The runtime directory is
-/// watched with inotify, so a server's socket ends the wait as soon as it
-/// appears; the server is also checked on a slow timer, which covers a server
-/// still starting when its socket appeared and a runtime directory that does
-/// not exist yet.
+/// watched with inotify, so the selected server's socket ends the wait as soon
+/// as it appears; unrelated entries are ignored. The server is also checked on
+/// a slow timer, which covers a server still starting when its socket appeared
+/// and a runtime directory that does not exist yet.
 pub fn wait_for_server(paths: &shepr_paths::AppPaths) -> io::Result<ServerWaitEnd> {
     let stdin = std::os::fd::AsRawFd::as_raw_fd(&std::io::stdin());
+    let socket_name =
+        paths.server_address().socket().file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "server socket has no name")
+        })?;
     wait_for_server_with(
         paths.runtime_dir(),
+        socket_name,
         stdin,
         || {
             let presence = match local_server::server_presence(paths) {
@@ -99,6 +105,7 @@ struct WaitTimes {
 /// away and how it checks the server handed in.
 fn wait_for_server_with(
     dir: &Path,
+    socket_name: &OsStr,
     input: RawFd,
     mut check_server: impl FnMut() -> io::Result<ServerSeen>,
     times: WaitTimes,
@@ -111,12 +118,6 @@ fn wait_for_server_with(
         // The watch is set up before the check, so a socket that appears
         // between the two still wakes the next wait.
         if watch.is_none() {
-            // DirectoryWatch reports that the directory changed, but does not
-            // expose the changed entry's name. Filtering to the selected server
-            // socket needs a named-event API from shepr-platform; keeping the
-            // inotify parser here would put platform plumbing in this SSH-policy
-            // crate. Unrelated entries can therefore cause an extra presence
-            // check; periodic checks also catch socket events the watch misses.
             match DirectoryWatch::new(dir) {
                 Ok(new_watch) => {
                     watch = Some(new_watch);
@@ -155,7 +156,7 @@ fn wait_for_server_with(
             (_, None) => times.unwatched_recheck,
         };
         let wake = match &watch {
-            Some(watch) => watch.wait(input, remaining.min(recheck))?,
+            Some(watch) => watch.wait_for_entry(input, socket_name, remaining.min(recheck))?,
             None => {
                 if shepr_platform::poll_fd_readable(input, remaining.min(recheck))? {
                     DirectoryWake::Input
@@ -216,23 +217,42 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("server-wait-socket");
         let (input, _client) = std::os::unix::net::UnixStream::pair().expect("an open input");
         let socket = scratch.join("server.sock");
+        let unrelated = scratch.join("client-lock.lock");
+        let (unrelated_created, wait_for_unrelated) = std::sync::mpsc::sync_channel(1);
         let binder = {
             let socket = socket.clone();
             std::thread::spawn(move || {
+                wait_for_unrelated
+                    .recv()
+                    .expect("the unrelated entry is created first");
                 std::thread::sleep(Duration::from_millis(200));
                 std::os::unix::net::UnixListener::bind(&socket).expect("bind the server socket")
             })
         };
+        let mut checks = 0;
+        let mut announce_unrelated = Some(unrelated_created);
         let started = Instant::now();
         let end = wait_for_server_with(
             scratch.path(),
+            OsStr::new("server.sock"),
             raw(&input),
-            || Ok(seen(socket.try_exists().unwrap_or(false))),
+            || {
+                checks += 1;
+                if let Some(unrelated_created) = announce_unrelated.take() {
+                    std::fs::write(&unrelated, b"client lock activity")
+                        .expect("create unrelated runtime entry");
+                    unrelated_created
+                        .send(())
+                        .expect("wake the delayed socket binder");
+                }
+                Ok(seen(socket.try_exists().unwrap_or(false)))
+            },
             watched_times(),
         )
         .expect("the wait runs");
         let _listener = binder.join().expect("the binder finishes");
         assert_eq!(end, ServerWaitEnd::Ready);
+        assert_eq!(checks, 2, "only the initial and socket checks run");
         assert!(started.elapsed() < Duration::from_secs(60));
     }
 
@@ -242,6 +262,7 @@ mod tests {
         let (input, _client) = std::os::unix::net::UnixStream::pair().expect("an open input");
         let end = wait_for_server_with(
             scratch.path(),
+            OsStr::new("server.sock"),
             raw(&input),
             || Ok(ServerSeen::Ready),
             watched_times(),
@@ -257,6 +278,7 @@ mod tests {
         let mut checks = 0;
         let end = wait_for_server_with(
             scratch.path(),
+            OsStr::new("server.sock"),
             raw(&input),
             || {
                 checks += 1;
@@ -282,6 +304,7 @@ mod tests {
         drop(client);
         let end = wait_for_server_with(
             scratch.path(),
+            OsStr::new("server.sock"),
             raw(&input),
             || Ok(ServerSeen::Absent),
             watched_times(),
@@ -297,6 +320,7 @@ mod tests {
         let mut checks = 0;
         let end = wait_for_server_with(
             &scratch.join("absent"),
+            OsStr::new("server.sock"),
             raw(&input),
             || {
                 checks += 1;
@@ -317,6 +341,7 @@ mod tests {
         let (input, _client) = std::os::unix::net::UnixStream::pair().expect("an open input");
         let end = wait_for_server_with(
             scratch.path(),
+            OsStr::new("server.sock"),
             raw(&input),
             || Ok(ServerSeen::Absent),
             WaitTimes {

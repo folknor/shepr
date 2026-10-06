@@ -152,6 +152,7 @@ fn bridge_upload_idle_waits_without_repeated_reads_and_cancels() {
     struct CountingUploadStream {
         stream: shepr_platform::ipc::LocalStream,
         polls: Arc<AtomicUsize>,
+        waits: mpsc::Sender<()>,
     }
 
     impl UploadReadStream for CountingUploadStream {
@@ -164,6 +165,9 @@ fn bridge_upload_idle_waits_without_repeated_reads_and_cancels() {
         }
 
         fn wait_for_input(&self, wake: &shepr_platform::StreamWake) -> io::Result<()> {
+            self.waits
+                .send(())
+                .map_err(|error| io::Error::other(error.to_string()))?;
             wake.wait(&self.stream)
         }
     }
@@ -173,6 +177,7 @@ fn bridge_upload_idle_waits_without_repeated_reads_and_cancels() {
     let worker_attempts = Arc::clone(&attempts);
     let stop = Arc::new(BridgeUploadStop::new().expect("test precondition"));
     let worker_stop = Arc::clone(&stop);
+    let (waiting_tx, waiting_rx) = mpsc::channel();
     let (done_tx, done_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
         let mut output = Vec::new();
@@ -181,6 +186,7 @@ fn bridge_upload_idle_waits_without_repeated_reads_and_cancels() {
             CountingUploadStream {
                 stream,
                 polls: worker_attempts,
+                waits: waiting_tx,
             },
             &mut output,
             &worker_stop,
@@ -191,23 +197,14 @@ fn bridge_upload_idle_waits_without_repeated_reads_and_cancels() {
             .send((result, output, closed.load(Ordering::Acquire)))
             .expect("test precondition");
     });
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while attempts.load(Ordering::Relaxed) == 0 {
-        assert!(Instant::now() < deadline, "upload worker did not start");
-        thread::sleep(Duration::from_millis(1));
-    }
-    thread::sleep(Duration::from_millis(100));
+    waiting_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("the empty read reached its blocking wait");
     let idle_reads = attempts.load(Ordering::Relaxed);
     client.write_all(b"pane input").expect("test precondition");
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while attempts.load(Ordering::Relaxed) < idle_reads + 2 {
-        assert!(
-            Instant::now() < deadline,
-            "input did not wake the upload worker"
-        );
-        thread::sleep(Duration::from_millis(1));
-    }
-    thread::sleep(Duration::from_millis(100));
+    waiting_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("input woke the upload worker and it returned to its wait");
     let reads_after_input = attempts.load(Ordering::Relaxed);
     stop.cancel();
     let (result, output, closed) = done_rx
@@ -472,6 +469,10 @@ fn remote_bridge_failures_need_attention_only_when_the_host_must_be_fixed() {
     use shepr_launch::local_server::LaunchError;
     let marker = BRIDGE_FAILURE_MARKER;
 
+    // `classified_bridge_failure` is the production record producer. The
+    // `error:` line and optional logging notice are printed by the root CLI,
+    // above this crate, so this consumer-boundary test assembles those lines
+    // rather than making remote depend on the CLI binary.
     for class in RemoteFailureClass::ALL {
         let disposition = match class {
             RemoteFailureClass::Repair => FailureDisposition::Repair,
@@ -549,7 +550,6 @@ fn remote_bridge_failures_need_attention_only_when_the_host_must_be_fixed() {
     for stderr in [
         "server config was refused".to_owned(),
         format!("error: {marker}unknown\ninvalid server.toml"),
-        "error: shepr-remote-daemon-boot-exit:11\ninvalid server.toml".to_owned(),
     ] {
         let error = ssh_bridge_exit_error(exit_status(1), stderr.as_bytes());
         let failure = EndpointFailure::from_error(&error);

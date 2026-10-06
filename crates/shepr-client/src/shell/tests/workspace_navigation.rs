@@ -415,7 +415,7 @@ fn mouse_clicks_cancel_remote_workspace_navigation() {
         preview_key(&mut state, b"\x1b[B");
         state.compose(100, 28).expect("test precondition");
         let rect = if pane {
-            state.pane_hits()[0].inner_rect
+            state.pane_hits()[0].content_rect
         } else {
             workspace_rect(&state, &ClientEndpointId::Local, "w1")
         };

@@ -159,6 +159,10 @@ impl DetectorState {
             tick.group_changed,
             content_changed,
         );
+        // Expiry means no agent was identified before the deadline, not that
+        // the agent rejected its session. This pure detector has neither the
+        // public pane identity nor the saved session reference, so it logs
+        // nothing here; a log of the expiry belongs to a caller holding both.
         if withhold_agent_absence(agent, &mut self.agent_absence_hold_until, tick.now) {
             self.pending_idle.clear();
             return None;

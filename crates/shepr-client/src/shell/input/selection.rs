@@ -34,7 +34,7 @@ pub(super) struct ClientSelectionAutoscroll {
     pub(super) direction: ClientSelectionAutoscrollDirection,
     pub(super) last_mouse_column: u16,
     pub(super) last_mouse_row: u16,
-    pub(super) inner_rect: Rect,
+    pub(super) content_rect: Rect,
     pub(super) offset_from_bottom: usize,
     pub(super) max_offset_from_bottom: usize,
 }
@@ -123,8 +123,8 @@ impl MouseSelection {
             .find(|p| &p.pane_id == pane_id)
             .map_or(PreviousPane::Absent, |p| {
                 PreviousPane::Present(PaneFacts {
-                    inner_width: p.inner_rect.width,
-                    inner_height: p.inner_rect.height,
+                    inner_width: p.content_rect.width,
+                    inner_height: p.content_rect.height,
                     alternate_screen_active: p.alternate_screen_active,
                     content_revision: p.content_revision,
                 })
@@ -185,8 +185,8 @@ impl MouseSelection {
         let invalidated = match (before, next) {
             (PreviousPane::NoSurface, _) => true,
             (PreviousPane::Present(previous), Some(next)) => {
-                previous.inner_width != next.inner_rect.width
-                    || previous.inner_height != next.inner_rect.height
+                previous.inner_width != next.content_rect.width
+                    || previous.inner_height != next.content_rect.height
                     || previous.alternate_screen_active != next.alternate_screen_active
                     // Ordinary selections are live buffer ranges. Only word gestures
                     // cache content-dependent boundaries that output can invalidate.

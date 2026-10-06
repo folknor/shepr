@@ -68,6 +68,9 @@ impl SessionRestoreOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SessionRestoreSummary {
     workspaces: usize,
+    resumes_planned: usize,
+    resumes_dropped: usize,
+    resume_enabled: bool,
     outcome: SessionRestoreOutcome,
 }
 
@@ -100,6 +103,9 @@ fn log_restore(path: &std::path::Path, summary: SessionRestoreSummary) {
         outcome = summary.outcome.as_log_value(),
         path = %path.display(),
         workspaces = summary.workspaces,
+        resumes_planned = summary.resumes_planned,
+        resumes_dropped = summary.resumes_dropped,
+        resume_enabled = summary.resume_enabled,
         "session restore evaluated"
     );
 }
@@ -150,6 +156,14 @@ fn open_and_summarize(
                     restore_loss,
                 } = restored_session;
                 let restore_was_partial = restore_loss.is_some();
+                let resumes_dropped = restore_loss
+                    .as_ref()
+                    .map_or(0, |damage| damage.dropped_agent_sessions.len());
+                let resumes_planned = workspaces
+                    .iter()
+                    .flat_map(|workspace| workspace.tree().panes())
+                    .filter(|(_, record)| record.terminal().agent_resume().is_pending())
+                    .count();
                 if let Some(damage) = restore_loss {
                     backup_policy = SessionBackupPolicy::PreserveExisting;
                     tracing::warn!(
@@ -174,6 +188,9 @@ fn open_and_summarize(
                 };
                 restore_summary = Some(SessionRestoreSummary {
                     workspaces: workspaces.len(),
+                    resumes_planned,
+                    resumes_dropped,
+                    resume_enabled: options.resume_agents_on_restore,
                     outcome,
                 });
                 restored = Some((workspaces, terminal_runtimes, active));
@@ -221,7 +238,8 @@ mod tests {
                 render_notify: Arc::new(Notify::new()),
                 render_dirty: Arc::new(crate::render_signal::RenderSignal::new()),
                 pane_teardowns: Arc::default(),
-                socket_path: PathBuf::from("/run/user/1000/shepr-test.sock"),
+                socket_path: shepr_test_support::ScratchDir::new("refusing-launcher")
+                    .join("server.sock"),
             },
             crate::pane::PaneShellConfig::new(&shell, false),
             shepr_core::scrollback::ScrollbackBudget::new(0),
@@ -239,13 +257,13 @@ mod tests {
 
     /// A data directory under a fresh scratch directory, with its lease.
     struct DataDir {
-        _scratch: crate::test_support::ScratchDir,
+        _scratch: shepr_test_support::ScratchDir,
         path: PathBuf,
     }
 
     impl DataDir {
         fn new(name: &str) -> (Self, DataDirLease) {
-            let scratch = crate::test_support::ScratchDir::new(name);
+            let scratch = shepr_test_support::ScratchDir::new(name);
             let lease = DataDirLease::acquire(&scratch.join("data")).expect("test session lease");
             // The lease's own canonical directory: the one open reads and
             // names in its notices.
@@ -389,6 +407,9 @@ mod tests {
             summary,
             Some(SessionRestoreSummary {
                 workspaces: 2,
+                resumes_planned: 0,
+                resumes_dropped: 0,
+                resume_enabled: false,
                 outcome: SessionRestoreOutcome::Restored,
             })
         );
@@ -410,6 +431,9 @@ mod tests {
             summary,
             Some(SessionRestoreSummary {
                 workspaces: 0,
+                resumes_planned: 0,
+                resumes_dropped: 0,
+                resume_enabled: false,
                 outcome: SessionRestoreOutcome::Empty,
             })
         );
@@ -500,6 +524,9 @@ mod tests {
             summary,
             Some(SessionRestoreSummary {
                 workspaces: 1,
+                resumes_planned: 0,
+                resumes_dropped: 0,
+                resume_enabled: false,
                 outcome: SessionRestoreOutcome::Partial,
             })
         );
@@ -580,7 +607,7 @@ mod tests {
         );
         let mut json = serde_json::to_value(snapshot).expect("encode snapshot");
         json["workspaces"][0]["layout"]["Pane"]["agent_session"] = serde_json::json!({
-            "source": "shepr:codex", "agent": "removed-agent", "session_ref": {"id": "valuable-session"}
+            "source": "shepr:removed-agent", "session_ref": {"id": "valuable-session"}
         });
         let original = serde_json::to_vec(&json).expect("encode damaged snapshot");
         std::fs::write(dir.session_file(), &original).expect("write damaged snapshot");

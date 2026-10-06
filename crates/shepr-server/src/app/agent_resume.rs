@@ -202,6 +202,7 @@ impl App {
         area: shepr_core::geometry::Rect,
     ) -> Vec<shepr_core::chrome::PaneContent> {
         self.state
+            .settings()
             .chrome_in(area)
             .resume_panes(workspace.tree().layout(), workspace.tree().zoomed())
     }
@@ -217,6 +218,13 @@ impl App {
     ) -> AttemptOutcome {
         // Quote the planner's validated command before typing it into the shell.
         let resume_command = plan.to_shell_command();
+        tracing::info!(
+            public_pane_id = %public_id,
+            pane = %pane_id,
+            agent = plan.agent().label(),
+            command = %resume_command,
+            "dispatching saved agent resume; command delivery does not confirm the agent resumed"
+        );
         // Candidates carry their public identity from this pass's walk of the
         // state; nothing removes a pane between collection and dispatch.
         //
@@ -522,7 +530,6 @@ mod tests {
             }
             let session = shepr_agent::resume::PersistedAgentSession::new(
                 shepr_agent::AgentSource::parse("shepr:codex").expect("bundled source"),
-                shepr_agent::Agent::Codex,
                 shepr_agent::resume::AgentSessionRef::id("resume-test").expect("test precondition"),
             )
             .expect("test session is valid");
@@ -850,7 +857,7 @@ mod tests {
                 .iter()
                 .find(|info| info.id == pane_id)
                 .expect("the resumed pane is visible");
-            (info.inner_rect.height, info.inner_rect.width)
+            (info.content_rect.height, info.content_rect.width)
         };
         let before_launch = content_rect(&app);
         report_test_host_theme(&mut app);

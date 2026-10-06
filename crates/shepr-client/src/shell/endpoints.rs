@@ -439,7 +439,7 @@ impl ClientShellEndpoint {
             .ssh_check
             .as_ref()
             .filter(|_| self.machine == MachineState::NeedsLogin)
-            .map(|ssh| format!("run {} again, or {ssh}", operator_entrypoint()));
+            .map(|ssh| shepr_launch::guidance::machine_login_hint(operator_entrypoint(), ssh));
         Some(MachineEntry {
             state: self.machine,
             hint,

@@ -47,6 +47,15 @@ pub fn fixed_pane_id(raw: u32) -> shepr_core::layout::PaneId {
     shepr_core::layout::PaneId::from_raw(raw)
 }
 
+/// A valid build identity that differs from this test binary's build.
+pub fn other_build_id() -> &'static str {
+    if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
+        "0000000000000000"
+    } else {
+        "ffffffffffffffff"
+    }
+}
+
 /// A typed id parsed from its canonical text, for tests that spell workspace,
 /// pane or terminal ids as literals.
 ///
@@ -88,4 +97,15 @@ pub fn encode_to_vec<T: serde::Serialize + ?Sized>(
     let mut encoded = Vec::new();
     shepr_protocol::codec::encode_into(&mut encoded, value)?;
     Ok(encoded)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn other_build_id_is_valid_and_differs_from_this_build() {
+        let other = super::other_build_id()
+            .parse::<shepr_protocol::BuildIdentity>()
+            .expect("fixture identity is valid");
+        assert!(!shepr_protocol::BuildIdentity::for_this_build().matches(other));
+    }
 }

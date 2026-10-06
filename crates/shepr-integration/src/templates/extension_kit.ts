@@ -7,7 +7,6 @@ const @ENV_MARKER@ = process.env.@ENV_MARKER@;
 const socketPath = process.env.@ENV_SOCKET@;
 const paneId = process.env.@ENV_PANE@;
 const source = "@SOURCE@";
-const AGENT = "@LABEL@";
 const METHOD_SESSION = "@METHOD_SESSION@";
 const METHOD_STATE = "@METHOD_STATE@";
 const START = @START_JS@;
@@ -146,7 +145,6 @@ function reportSession(sessionStartSource?: string): Promise<void> {
     params: {
       pane_id: paneId,
       source,
-      agent: AGENT,
       seq,
       ...(sessionStartSource ? { session_start_source: sessionStartSource } : {}),
       ...sessionRef,
@@ -165,7 +163,6 @@ function sendState(state: AgentState, seq = nextReportSeq()): Promise<void> {
     params: withSessionRef({
       pane_id: paneId,
       source,
-      agent: AGENT,
       state,
       seq,
     }),

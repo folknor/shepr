@@ -1,5 +1,5 @@
 use super::*;
-use crate::limits::DEFAULT_PANE_RESIZE_AMOUNT;
+use crate::limits::PANE_RESIZE_STEP;
 
 impl App {
     /// Focuses the neighbour of the pane in the given direction and moves the
@@ -38,7 +38,7 @@ impl App {
         let outcome = self
             .state
             .edit_workspace_geometry(&workspace_id, |workspace| {
-                workspace.resize_pane(pane_id, direction, DEFAULT_PANE_RESIZE_AMOUNT, area)
+                workspace.resize_pane(pane_id, direction, PANE_RESIZE_STEP, area)
             });
         Handled::done_with_effects(outcome.into())
     }

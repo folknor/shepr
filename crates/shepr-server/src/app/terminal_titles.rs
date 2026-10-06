@@ -2,12 +2,7 @@ use std::collections::HashSet;
 
 use super::App;
 use shepr_core::layout::PaneId;
-
-#[derive(Debug, Default, PartialEq, Eq)]
-pub(crate) struct TerminalTitleChanges {
-    pub(crate) raw_changed: bool,
-    pub(crate) stripped_changed: bool,
-}
+use shepr_mux::terminal::state::TerminalTitleChange;
 
 impl App {
     /// Pulls the titles of `sources` from their runtimes. Any changed title
@@ -17,9 +12,9 @@ impl App {
     pub(crate) fn sync_terminal_titles(
         &mut self,
         sources: &HashSet<PaneId>,
-    ) -> TerminalTitleChanges {
+    ) -> TerminalTitleChange {
         if sources.is_empty() {
-            return TerminalTitleChanges::default();
+            return TerminalTitleChange::default();
         }
 
         let mut observations = Vec::with_capacity(sources.len());
@@ -30,7 +25,7 @@ impl App {
             observations.push((*pane_id, runtime.read().terminal_title()));
         }
 
-        let mut changes = TerminalTitleChanges::default();
+        let mut changes = TerminalTitleChange::default();
         for (pane_id, title) in observations {
             let Some(record) = self.state.workspaces.pane_mut(pane_id) else {
                 continue;
@@ -79,7 +74,7 @@ mod tests {
 
         assert_eq!(
             app.sync_terminal_titles(&sources),
-            TerminalTitleChanges {
+            TerminalTitleChange {
                 raw_changed: true,
                 stripped_changed: true,
             }
@@ -98,7 +93,7 @@ mod tests {
             .test_process_pty_bytes("\x1b]2;⠙ 修复\u{1F642}标题\x1b\\".as_bytes());
         assert_eq!(
             app.sync_terminal_titles(&sources),
-            TerminalTitleChanges {
+            TerminalTitleChange {
                 raw_changed: true,
                 stripped_changed: false,
             }

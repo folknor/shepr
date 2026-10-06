@@ -57,7 +57,7 @@ pub(crate) struct PaneSurface {
     pub(crate) id: PaneId,
     pub(crate) rect: Rect,
     /// Where the terminal's cells are drawn.
-    pub(crate) inner_rect: Rect,
+    pub(crate) content_rect: Rect,
     /// The track column the pane reserves for a scrollbar, whether or not it
     /// has scrollback to show.
     pub(crate) scrollbar_gutter: Option<Rect>,
@@ -88,7 +88,7 @@ impl PaneSurface {
         Self {
             id: content.chrome.id,
             rect: ratatui_rect(content.chrome.rect),
-            inner_rect: ratatui_rect(content.content),
+            content_rect: ratatui_rect(content.content),
             scrollbar_gutter: content.scrollbar_gutter.map(ratatui_rect),
             scrollbar_rect: None,
             shared_edges: content.chrome.shared_edges,
@@ -118,7 +118,7 @@ impl PaneSurface {
     /// scrollbar track, if any, in the reserved gutter.
     pub(crate) fn matches_committed(&self, pane: &PaneSurfacePane) -> bool {
         surface_rect(self.rect) == pane.rect
-            && surface_rect(self.inner_rect) == pane.inner_rect
+            && surface_rect(self.content_rect) == pane.content_rect
             && (pane.scrollbar_rect.is_none()
                 || pane.scrollbar_rect == self.scrollbar_gutter.map(surface_rect))
     }
@@ -142,7 +142,7 @@ impl PaneSurface {
     /// The cursor the pane shows: geometry belongs to the viewing client,
     /// while agent identity belongs to the pane.
     pub(crate) fn cursor(&self, state: &AppState, runtime: &PaneRuntime) -> Option<CursorState> {
-        let area = self.inner_rect;
+        let area = self.content_rect;
         // One read decides both the cursor and whether a synchronized update
         // holds it back.
         let cursor = match runtime.read().cursor(area) {

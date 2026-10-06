@@ -138,18 +138,24 @@ async fn wait_for_child_exit(
     pidfd: Option<OwnedFd>,
 ) -> std::io::Result<std::process::ExitStatus> {
     let Some(pidfd) = pidfd else {
-        return wait_for_child_exit_blocking(child).await;
+        return wait_for_child_exit_by_polling(child).await;
     };
     let async_pidfd = match tokio::io::unix::AsyncFd::new(pidfd) {
         Ok(async_pidfd) => async_pidfd,
         Err(err) => {
-            tracing::debug!(error = %err, "could not register child pidfd; falling back to child wait");
-            return wait_for_child_exit_blocking(child).await;
+            tracing::debug!(
+                error = %err,
+                "could not register child pidfd; falling back to child polling"
+            );
+            return wait_for_child_exit_by_polling(child).await;
         }
     };
     if let Err(err) = async_pidfd.readable().await {
-        tracing::debug!(error = %err, "child pidfd readiness failed; falling back to child wait");
-        return wait_for_child_exit_blocking(child).await;
+        tracing::debug!(
+            error = %err,
+            "child pidfd readiness failed; falling back to child polling"
+        );
+        return wait_for_child_exit_by_polling(child).await;
     }
 
     let Some(mut owned_child) = child.take() else {
@@ -158,23 +164,28 @@ async fn wait_for_child_exit(
     match owned_child.wait_pidfd() {
         Ok(status) => Ok(status),
         Err(err) => {
-            tracing::debug!(error = %err, "waitid on child pidfd failed; falling back to child wait");
-            wait_for_child_exit_blocking(UnreapedChild(Some(owned_child))).await
+            tracing::debug!(
+                error = %err,
+                "waitid on child pidfd failed; falling back to child polling"
+            );
+            wait_for_child_exit_by_polling(UnreapedChild(Some(owned_child))).await
         }
     }
 }
 
-async fn wait_for_child_exit_blocking(
+async fn wait_for_child_exit_by_polling(
     mut child: UnreapedChild,
 ) -> std::io::Result<std::process::ExitStatus> {
-    // Keep the guard inside the queued closure too: runtime shutdown may
-    // discard blocking work before it starts.
-    tokio::task::spawn_blocking(move || {
-        let Some(mut owned_child) = child.take() else {
+    // A failed pidfd path must not park one shared blocking-pool worker for
+    // each affected pane. `try_wait` polls waitpid without blocking, and the async
+    // delay yields between probes while this guard retains reaping ownership.
+    loop {
+        let Some(owned_child) = child.0.as_mut() else {
             return Err(std::io::Error::other("pane child was already reaped"));
         };
-        owned_child.wait()
-    })
-    .await
-    .map_err(std::io::Error::other)?
+        if let Some(status) = owned_child.try_wait()? {
+            return Ok(status);
+        }
+        tokio::time::sleep(crate::limits::CHILD_WAIT_FALLBACK_POLL_INTERVAL).await;
+    }
 }

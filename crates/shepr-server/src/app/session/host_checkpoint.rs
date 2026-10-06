@@ -1,7 +1,6 @@
 use std::time::Instant;
 
-use super::checkpoint_retry_delay;
-use crate::limits::CHECKPOINT_MAX_FAILURES;
+use super::SavePolicyConfig;
 
 /// How a finished host-shutdown checkpoint ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,13 +76,14 @@ impl HostShutdownCheckpoint {
 
     /// An attempt failed. Returns whether this was the last one allowed,
     /// finishing the checkpoint unsaved; otherwise the retry is armed.
-    pub(super) fn failed(&mut self, now: Instant) -> bool {
+    /// `config` is the saver's retry and failure-limit policy.
+    pub(super) fn failed_with_config(&mut self, now: Instant, config: SavePolicyConfig) -> bool {
         let Self::Requested { failures, retry_at } = self else {
             return false;
         };
-        let delay = checkpoint_retry_delay(*failures);
+        let delay = config.checkpoint_retry.delay_after(u32::from(*failures));
         *failures = failures.saturating_add(1);
-        if *failures >= CHECKPOINT_MAX_FAILURES {
+        if *failures >= config.checkpoint_max_failures {
             *self = Self::Unsaved;
             true
         } else {
@@ -114,12 +114,19 @@ impl HostShutdownCheckpoint {
     pub(super) fn cancel(&mut self) {
         *self = Self::Idle;
     }
+
+    /// [`Self::failed_with_config`] under the default save policy.
+    #[cfg(test)]
+    pub(super) fn failed(&mut self, now: Instant) -> bool {
+        self.failed_with_config(now, SavePolicyConfig::default())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::checkpoint_retry_delay;
     use super::*;
-    use crate::limits::SESSION_SAVE_RETRY_MIN;
+    use crate::limits::CHECKPOINT_MAX_FAILURES;
     #[test]
     fn a_request_is_ignored_while_requested_or_unclaimed() {
         let mut host = HostShutdownCheckpoint::new();
@@ -131,14 +138,17 @@ mod tests {
         assert!(!host.finished_unsaved());
     }
     #[test]
-    fn two_failures_retry_and_the_third_finishes_unsaved() {
+    fn the_failure_limit_finishes_unsaved_after_retries() {
         let mut host = HostShutdownCheckpoint::new();
         let now = Instant::now();
         host.request();
-        assert!(!host.failed(now));
-        assert_eq!(host.retry_at(), Some(now + SESSION_SAVE_RETRY_MIN));
-        assert!(!host.failed(now));
-        assert_eq!(host.retry_at(), Some(now + SESSION_SAVE_RETRY_MIN * 2));
+        for failures_before in 0..CHECKPOINT_MAX_FAILURES.saturating_sub(1) {
+            assert!(!host.failed(now));
+            assert_eq!(
+                host.retry_at(),
+                Some(now + checkpoint_retry_delay(failures_before))
+            );
+        }
         assert!(host.failed(now));
         assert!(host.finished_unsaved());
         assert_eq!(host.retry_at(), None);
