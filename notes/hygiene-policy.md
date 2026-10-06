@@ -50,9 +50,14 @@ Reported by: workspace-model.
   client's epoch is always from the current boot's projection, but a client reconnecting
   to a new boot with a cached epoch could match a different tree by accident.
 
-## POL-040 - Wave 9 laterals
+## POL-040 - Wave 9 and 10 laterals
 
-Reported by: the wave 9 fixers.
+Reported by: the wave 9 and 10 fixers and reviewers.
+
+- `shepr-agent` `PresentedAgentState::label` spells "idle", "working" and "blocked" by
+  hand beside `AgentState`, which gets the same spellings from `named_enum!` in the
+  same file; declaring it through `named_enum!` would drop the duplicate table (check
+  the macro's serde and Display behaviour first).
 
 - `shepr-mux` `pane/runtime.rs` still has a `/run/user/1000/shepr-test.sock` literal.
 - `shepr-mux` `pane/terminal/backend.rs` `process_pty_bytes` is a clock-reading

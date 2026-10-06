@@ -51,16 +51,6 @@ Reported by: integrations.
   `decoders/omp.ts`: an inbound event nothing in shepr emits and nothing documents (its
   payload's `label` field is a remnant). Document it as a feature or delete it.
 
-## DEAD-014 - Workspace model leftovers: misplaced agent types, stale module names, small duplicates
-
-Reported by: workspace-model.
-
-- `shepr-core`'s `agent_state.rs` (`PresentedAgentState`) and `agent_session.rs`
-  (`AgentSessionRefKind`) are used by nothing in core; `shepr-agent` re-exports them and
-  `shepr-protocol` imports one directly although it may depend on `shepr-agent`.
-  AGENTS.md places agent identity in `shepr-agent`. Move them; the `shepr-core-layer`
-  rule then keeps core free of agent types.
-
 ## DEAD-015 - Removed-name test lists that only fail on a deliberate re-add
 
 Reported by: server-lifecycle.

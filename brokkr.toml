@@ -22,9 +22,11 @@ skip_phases = ["textlint", "script_check"]
 # document_private_items = true
 
 # The compact codec is positional. These serde shapes either omit fields or
-# need self-describing data. Protocol messages also reuse selected shepr-core
-# and shepr-term types directly. Config types never cross the wire, so config
-# is not checked. The code region masks string literals, quotes included, so
+# need self-describing data. Protocol messages also reuse selected shepr-core,
+# shepr-term and shepr-agent types directly; of shepr-agent only the agent
+# identity and its states cross the wire (resume's adjacently tagged session
+# reference is JSON only). Config types never cross the wire, so config is not
+# checked. The code region masks string literals, quotes included, so
 # a `tag = "..."` argument is matched by the `=` followed by the argument
 # separator, the closing paren or the end of a wrapped line.
 [[textlint]]
@@ -34,6 +36,8 @@ paths = [
     "crates/shepr-protocol/src/**/*.rs",
     "crates/shepr-core/src/**/*.rs",
     "crates/shepr-term/src/**/*.rs",
+    "crates/shepr-agent/src/lib.rs",
+    "crates/shepr-agent/src/state.rs",
 ]
 except = ['(?:\.|::)flatten\b']
 skip_after = '^[ \t]*#\[cfg\(test\)\]'
@@ -41,6 +45,17 @@ region = "code"
 allow_marker = "toml-only-serde-shape"
 allow_marker_above = 1
 message = "positional wire types cannot use skip_serializing_if, flatten, untagged or tagged serde enums"
+
+# A dependency rule cannot catch agent vocabulary defined inside core itself.
+# This is a name tripwire: it rejects a type declaration whose name says Agent,
+# not agent vocabulary under another name. Core's env registry spells agent
+# environment variables as variants, which it does not match.
+[[textlint]]
+name = "shepr-core-has-no-agent-types"
+pattern = '\b(?:enum|struct|type|trait)\s+(?:[A-Za-z_]*Agent[A-Za-z_]*)\b'
+paths = ["crates/shepr-core/src/**/*.rs"]
+region = "code"
+message = "agent types belong in shepr-agent, not shepr-core"
 
 # User-facing string literals spell the product name as lowercase `shepr`.
 # Ignore test modules and test-only files, where it can be deliberate fixture text.
@@ -883,10 +898,11 @@ sort_dependencies = true
 lints_workspace_required = true
 
 [[dependency_rule]]
+# Core owns geometry and plain utilities; agent vocabulary belongs in shepr-agent.
 name = "shepr-core-layer"
 from = "shepr-core"
 allow = ["serde"]
-kinds = ["normal"]
+kinds = ["normal", "build"]
 
 [[dependency_rule]]
 name = "shepr-platform-layer"

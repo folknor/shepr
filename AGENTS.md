@@ -237,7 +237,8 @@ orientation, and nothing checks them:
   layout without the settings.
 - `shepr-test-support`: shared environment isolation, scratch directories and hook asset capture for tests.
 - `shepr-agent`: agent identity: the descriptor table, report origins,
-  session and resume vocabulary, `AgentState` and label normalization.
+  session and resume vocabulary, `AgentState` and the presented state it
+  collapses to, and label normalization.
 - `shepr-detect`: detection manifests and their rule engine, agent process
   recognition over `shepr-platform`'s `/proc` readers, and per-pane ownership
   arbitration between screen detection and integration reports.
@@ -250,7 +251,9 @@ orientation, and nothing checks them:
   canonical construction and parsing of the identities they carry (it
   allocates none); it uses `shepr-core` for shared grid and input-batch
   resource budgets that config also borrows, and `shepr-agent` for the agent
-  identity the client projection carries.
+  identity and presented state the client projection carries (the state
+  re-exported as `AgentStatus`, as the client takes no direct `shepr-agent`
+  edge).
 - `shepr-surface`: what a pane surface means above the wire: the server's
   delta planner, the client's decoder and its baseline, ratatui conversion,
   the wide-glyph rule for pane rows, the repair of glyphs that chrome laid

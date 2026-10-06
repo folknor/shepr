@@ -1,2 +1,2 @@
 /// Agent state shared by the API and the client projection.
-pub use shepr_core::agent_state::PresentedAgentState as AgentStatus;
+pub use shepr_agent::PresentedAgentState as AgentStatus;
