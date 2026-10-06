@@ -13,8 +13,13 @@ pub(super) enum PermissionPolicy<'a> {
     UserConfig { existing: Option<&'a Path> },
 }
 
-/// A staged replacement, named and collision-checked by the platform's
-/// publication path.
+/// A staged replacement using the platform's shared `PreparedFile` path for
+/// naming, collision checks, writing and atomic publication. Keep the generic
+/// preparation here: `prepare_private` does not preserve existing metadata,
+/// refuses a non-regular target and requests directory durability. Managed
+/// assets intentionally replace a symlink, while integration writes use
+/// file-only durability. User configs also preserve existing metadata and
+/// defer commit until their lock and snapshot conflict checks have passed.
 ///
 /// Process exit can leave a staged file behind because destructors do not run.
 /// Do not sweep sibling staging files here: release processes with different

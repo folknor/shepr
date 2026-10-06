@@ -265,6 +265,8 @@ pub struct ServerSummaryJson {
 pub struct StatusOverviewJson {
     pub local_client: ClientStatusJson,
     pub server: ServerStatusJson,
+    /// The server's counts. Absent in the JSON of a build that predates it;
+    /// the default keeps `status --all` reading such a host.
     #[serde(default)]
     pub summary: Option<ServerSummaryJson>,
 }

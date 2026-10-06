@@ -64,7 +64,10 @@ pub struct SaveCompletion {
 
 impl PendingSave {
     /// A pending result and the completion that settles it, with no
-    /// completion signal.
+    /// completion signal. Tests in dependent crates drive completion without
+    /// spawning the writer, so they can hold a save pending deterministically.
+    /// The fixture crate cannot depend on mux; textlint rejects production
+    /// calls, which must submit jobs to the persister instead.
     pub fn channel() -> (SaveCompletion, Self) {
         Self::signalled_channel(None)
     }

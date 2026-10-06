@@ -61,11 +61,12 @@ use std::path::{Path, PathBuf};
 /// "inside a shepr pane".
 pub const SHEPR_ENV_IN_PANE: &str = "1";
 
-/// `SHEPR_*` spellings used internally by the shipped agent assets rather
-/// than read by a shepr process or written into a pane, so they stay outside
-/// the environment registry. Keeping the list in core lets test isolation
-/// clear these names and the agent crate's asset test check against the same
-/// list, without making them process configuration.
+/// Transient `SHEPR_*` spellings the shipped agent assets pass to their
+/// decoders, rather than names a shepr process reads or writes into a pane.
+/// These are not install-version headers: asset status compares the installed
+/// file's bytes. Keeping the list in core lets test isolation clear these names
+/// and the agent crate's asset test check against the same list, without making
+/// them process configuration.
 pub const SHEPR_ASSET_INTERNAL_NAMES: &[&str] = &[
     // A hook script handing its arguments to the interpreter it runs.
     "SHEPR_ACTION",

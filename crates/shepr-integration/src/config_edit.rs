@@ -8,7 +8,7 @@ use toml_edit::{DocumentMut, Item, Table, Value as TomlValue};
 use crate::limits::TOML_BASIC_STRING_DELIMITER_BYTES;
 use shepr_agent::IntegrationTarget as Target;
 
-use super::command::{hook_command, is_hook_command_for_path};
+use super::command::hook_command;
 use super::{KIMI_CONFIG_BLOCK_BEGIN, KIMI_CONFIG_BLOCK_END};
 
 pub(crate) fn ensure_command_hook(
@@ -73,7 +73,8 @@ pub(crate) const MASTRACODE_HOOK_DESCRIPTION: &str = "Report MastraCode agent st
 // install merges into the user's file through `json_edit` and status matches.
 // Claude and Codex use nested hook groups:
 //   { "matcher": "...", "hooks": [{ "type": "command", ... }] }
-// Copilot uses the flatter settings shape:
+// MastraCode uses flat hook entries with a command field and description.
+// Copilot uses the direct-command settings shape:
 //   { "type": "command", "matcher": "...", "bash": "...", ... }
 pub(crate) fn ensure_flat_command_hook(
     hooks: &mut Map<String, Value>,
@@ -194,7 +195,7 @@ pub(super) fn build_kimi_config_with_timeout(
         ));
     }
     let separator = kimi_line_ending(content);
-    let block = kimi_integration_block(hook_path, timeout).replace('\n', separator);
+    let block = kimi_integration_block(timeout).replace('\n', separator);
     let result = if let Some(start) = content
         .split_inclusive('\n')
         .scan(0, |offset, line| {
@@ -258,7 +259,7 @@ pub(super) fn kimi_config_block_with_timeout_is_current(
         return Ok(false);
     }
 
-    let expected = kimi_integration_block(hook_path, timeout);
+    let expected = kimi_integration_block(timeout);
     let mut actual = String::new();
     let mut in_block = false;
     let mut found_block = false;
@@ -288,19 +289,34 @@ fn kimi_config_uses_hook_path(content: &str, hook_path: &Path) -> InstallResult<
     let config = toml::from_str::<toml::Value>(content).map_err(|error| {
         InstallError::config_unparseable(format!("could not parse Kimi config.toml: {error}"))
     })?;
-    Ok(config
-        .get("hooks")
-        .and_then(toml::Value::as_array)
-        .is_some_and(|hooks| {
-            hooks.iter().any(|hook| {
-                hook.get("command")
-                    .and_then(toml::Value::as_str)
-                    .is_some_and(|command| is_hook_command_for_path(command, hook_path))
+    let expected_commands = Target::Kimi
+        .hook_events()
+        .iter()
+        .map(|event| {
+            hook_command(
+                Target::Kimi,
+                event.action.map(shepr_agent::IntegrationHookAction::as_str),
+            )
+        })
+        .collect::<Vec<_>>();
+    let Some(hooks) = config.get("hooks").and_then(toml::Value::as_array) else {
+        return Ok(false);
+    };
+    Ok(hooks.iter().any(|hook| {
+        hook.get("command")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|command| {
+                super::json_edit::is_managed_hook_command(
+                    command,
+                    Target::Kimi,
+                    hook_path,
+                    &expected_commands,
+                )
             })
-        }))
+    }))
 }
 
-fn kimi_integration_block(hook_path: &Path, timeout: Duration) -> String {
+fn kimi_integration_block(timeout: Duration) -> String {
     let events = Target::Kimi.hook_events();
     let mut block = String::from(KIMI_CONFIG_BLOCK_BEGIN);
     block.push('\n');
@@ -311,7 +327,6 @@ fn kimi_integration_block(hook_path: &Path, timeout: Duration) -> String {
         block.push_str(&kimi_hook_table(
             hook.event,
             hook.matcher,
-            hook_path,
             action.as_str(),
             timeout,
         ));
@@ -324,11 +339,10 @@ fn kimi_integration_block(hook_path: &Path, timeout: Duration) -> String {
 pub(crate) fn kimi_hook_table(
     event: &str,
     matcher: Option<&str>,
-    hook_path: &Path,
     action: &str,
     timeout: Duration,
 ) -> String {
-    let command = hook_command(hook_path, Some(action));
+    let command = hook_command(Target::Kimi, Some(action));
     let matcher =
         matcher.map_or_default(|matcher| format!("matcher = {}\n", toml_basic_string(matcher)));
     format!(

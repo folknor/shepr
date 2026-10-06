@@ -16,17 +16,20 @@ use jsonc_parser::cst::{CstInputValue, CstNode, CstObject, CstRootNode};
 use jsonc_parser::{CollectOptions, ParseOptions, parse_to_ast};
 use serde_json::{Map, Value};
 
-use super::command::{hook_command_prefix, is_hook_command_for_path};
+use super::command::{hook_command_prefix, legacy_hook_command};
 use super::registration::{HooksRoot, RequiredJsonField};
+use shepr_agent::IntegrationTarget as Target;
 
-/// Replace shepr's hook entries in a JSON agent config. An entry already equal
-/// to an expected one is kept where it is; every other entry naming this
-/// managed hook file and one of its descriptor commands is removed, including
-/// entries left by another host's path spelling.
+/// Replace shepr's hook entries in a JSON agent config. An entry that contains
+/// the expected fields is kept where it is, including harmless additional
+/// fields; every other entry naming this managed hook file and one of its
+/// descriptor commands is removed, including entries left by another host's
+/// path spelling.
 /// Required top-level fields are added from the target's registration row when
 /// absent. Parsing and duplicate validation precede even a no-op, so an
 /// ambiguous user document is never accepted.
 pub(super) fn install_json(
+    target: Target,
     content: &str,
     path: &Path,
     hook_path: &Path,
@@ -81,7 +84,7 @@ pub(super) fn install_json(
             }
         },
     };
-    remove_managed_hook_commands(&hooks, hook_path, &mut expected)?;
+    remove_managed_hook_commands(&hooks, target, hook_path, &mut expected)?;
     // The removal has one implementation. Its decoded result is the baseline
     // for verifying subsequent insertions, rather than a second removal model.
     desired = parse_value(&root.to_string(), path)?;
@@ -249,9 +252,14 @@ pub(super) fn install_block(
 
 fn remove_managed_hook_commands(
     hooks: &CstObject,
+    target: Target,
     hook_path: &Path,
     expected: &mut Map<String, Value>,
 ) -> InstallResult<()> {
+    let expected_commands = expected
+        .values()
+        .flat_map(expected_hook_commands)
+        .collect::<Vec<_>>();
     for event_property in hooks.properties() {
         let property_event = event_property.decoded_name().ok_or_else(|| {
             InstallError::config_shape("agent config hooks contain an undecodable event name")
@@ -261,17 +269,16 @@ fn remove_managed_hook_commands(
                 "hook entries for {property_event} must be an array"
             )));
         };
-        let expected_commands = expected
-            .get(&property_event)
-            .map_or_else(Default::default, expected_hook_commands);
         let mut removed_in_event = false;
         for entry in entries.elements() {
             if let Some(canonicals) = expected
                 .get_mut(&property_event)
                 .and_then(Value::as_array_mut)
-                && let Some(index) = canonicals
-                    .iter()
-                    .position(|canonical| entry.to_serde_value().as_ref() == Some(canonical))
+                && let Some(index) = canonicals.iter().position(|canonical| {
+                    entry.to_serde_value().as_ref().is_some_and(|actual| {
+                        canonical_registration_entry_matches(actual, canonical)
+                    })
+                })
             {
                 canonicals.remove(index);
                 continue;
@@ -281,7 +288,12 @@ fn remove_managed_hook_commands(
                 .and_then(|object| object.get("hooks"))
                 .and_then(|property| property.array_value())
             else {
-                if cst_value_uses_managed_hook_command(&entry, hook_path, &expected_commands) {
+                if cst_value_uses_managed_hook_command(
+                    &entry,
+                    target,
+                    hook_path,
+                    &expected_commands,
+                ) {
                     removed_in_event = true;
                     entry.remove();
                 }
@@ -291,6 +303,7 @@ fn remove_managed_hook_commands(
             for command_entry in command_entries.elements() {
                 if cst_value_uses_managed_hook_command(
                     &command_entry,
+                    target,
                     hook_path,
                     &expected_commands,
                 ) {
@@ -304,7 +317,7 @@ fn remove_managed_hook_commands(
                 entry.remove();
                 continue;
             }
-            if cst_value_uses_managed_hook_command(&entry, hook_path, &expected_commands) {
+            if cst_value_uses_managed_hook_command(&entry, target, hook_path, &expected_commands) {
                 removed_in_event = true;
                 entry.remove();
             }
@@ -317,8 +330,40 @@ fn remove_managed_hook_commands(
     Ok(())
 }
 
+/// Recursive subset comparison for registration fields and array entries.
+/// The registration-level wrapper also checks matcher absence and is shared by
+/// install and status.
+pub(super) fn canonical_entry_matches(actual: &Value, expected: &Value) -> bool {
+    match expected {
+        Value::Object(fields) => actual.as_object().is_some_and(|object| {
+            fields.iter().all(|(key, value)| {
+                object
+                    .get(key)
+                    .is_some_and(|actual| canonical_entry_matches(actual, value))
+            })
+        }),
+        Value::Array(entries) => actual.as_array().is_some_and(|actual| {
+            entries.iter().all(|entry| {
+                actual
+                    .iter()
+                    .any(|value| canonical_entry_matches(value, entry))
+            })
+        }),
+        _ => actual == expected,
+    }
+}
+
+/// Registration-level matching also requires an absent matcher to stay
+/// absent. Keep this shared by install and status so a Current entry remains
+/// a byte-for-byte no-op when installed.
+pub(super) fn canonical_registration_entry_matches(actual: &Value, expected: &Value) -> bool {
+    (expected.get("matcher").is_some() || actual.get("matcher").is_none())
+        && canonical_entry_matches(actual, expected)
+}
+
 fn cst_value_uses_managed_hook_command(
     value: &CstNode,
+    target: Target,
     hook_path: &Path,
     expected_commands: &[String],
 ) -> bool {
@@ -328,7 +373,7 @@ fn cst_value_uses_managed_hook_command(
                 .get(*field)
                 .and_then(Value::as_str)
                 .is_some_and(|command| {
-                    is_managed_hook_command(command, hook_path, expected_commands)
+                    is_managed_hook_command(command, target, hook_path, expected_commands)
                 })
         })
     })
@@ -336,25 +381,26 @@ fn cst_value_uses_managed_hook_command(
 
 pub(super) fn is_managed_hook_command(
     command: &str,
+    target: Target,
     hook_path: &Path,
     expected_commands: &[String],
 ) -> bool {
-    if is_hook_command_for_path(command, hook_path) {
+    if expected_commands.iter().any(|expected| expected == command) {
         return true;
     }
-    // This repairs stale absolute registrations as each host starts. A shared
-    // config still stores one host's path at a time; making it portable across
-    // simultaneous hosts needs per-agent runtime path expressions, which are
-    // not inferred from the server's captured paths.
-    // A command counts only when it is `sh '<dir>/<managed file name>'` with
-    // exactly one expected command's arguments, so a user hook that runs a
-    // differently named script, or the same script with other arguments, is
-    // never removed.
+    // Repair absolute registrations left by an earlier installer on this or
+    // another host. Match only the managed filename and a descriptor action;
+    // a user hook that runs a differently named script or the same script
+    // with other arguments remains untouched.
     let Some(file_name) = hook_path.file_name().map(|name| name.to_string_lossy()) else {
         return false;
     };
     let current_prefix = hook_command_prefix(hook_path);
-    expected_commands.iter().any(|expected| {
+    target.hook_events().iter().any(|event| {
+        let expected = legacy_hook_command(
+            hook_path,
+            event.action.map(shepr_agent::IntegrationHookAction::as_str),
+        );
         let Some(arguments) = expected.strip_prefix(&current_prefix) else {
             return false;
         };
@@ -577,13 +623,13 @@ pub(crate) fn install_claude_settings(
     timeout: std::time::Duration,
 ) -> InstallResult<String> {
     install_json(
+        shepr_agent::IntegrationTarget::Claude,
         content,
         settings_path,
         hook_path,
         HooksRoot::HooksKey,
         super::registration::JsonShape::Nested(timeout).expected_events(
             shepr_agent::IntegrationTarget::Claude,
-            hook_path,
             super::registration::HookEventPolicy::CLAUDE,
         )?,
         &[],
@@ -592,14 +638,9 @@ pub(crate) fn install_claude_settings(
 }
 
 #[cfg(test)]
-fn canonical_hook_value(
-    hook_path: &Path,
-    matcher: &str,
-    action: Option<&str>,
-    timeout_seconds: u64,
-) -> Value {
+fn canonical_hook_value(matcher: &str, action: Option<&str>, timeout_seconds: u64) -> Value {
     super::config_edit::command_hook_group(
-        &super::command::hook_command(hook_path, action),
+        &super::command::hook_command(shepr_agent::IntegrationTarget::Claude, action),
         timeout_seconds,
         Some(matcher),
     )
@@ -607,18 +648,12 @@ fn canonical_hook_value(
 
 #[cfg(test)]
 fn canonical_hook_json(
-    hook_path: &Path,
     matcher: &str,
     action: Option<&str>,
     timeout_seconds: u64,
 ) -> InstallResult<String> {
-    serde_json::to_string(&canonical_hook_value(
-        hook_path,
-        matcher,
-        action,
-        timeout_seconds,
-    ))
-    .map_err(|error| InstallError::from(io::Error::other(error)))
+    serde_json::to_string(&canonical_hook_value(matcher, action, timeout_seconds))
+        .map_err(|error| InstallError::from(io::Error::other(error)))
 }
 
 #[cfg(test)]
@@ -680,11 +715,7 @@ mod tests {
                         ..
                     } => (
                         root,
-                        Some(
-                            shape
-                                .expected_events(target, hook, event_policy)
-                                .expect("events"),
-                        ),
+                        Some(shape.expected_events(target, event_policy).expect("events")),
                         required_fields,
                         document_description,
                     ),
@@ -698,7 +729,7 @@ mod tests {
                         HooksRoot::HooksKey,
                         Some(
                             JsonShape::Nested(timeout)
-                                .expected_events(target, hook, event_policy)
+                                .expected_events(target, event_policy)
                                 .expect("events"),
                         ),
                         required_fields,
@@ -724,6 +755,7 @@ mod tests {
             ] {
                 let edit = |text: &str| match &events {
                     Some(events) => install_json(
+                        target,
                         text,
                         path,
                         hook,
@@ -737,7 +769,6 @@ mod tests {
                         path,
                         super::super::ANTIGRAVITY_CLI_HOOK_BLOCK_NAME,
                         &super::super::targets::antigravity_cli_hook_block_with_timeout(
-                            hook,
                             super::super::HOOK_TIMEOUT,
                         )
                         .expect("block"),
@@ -803,7 +834,6 @@ mod tests {
         let (settings_path, hook_path) = paths();
         let matcher = claude_session_start_matcher();
         let canonical = canonical_hook_json(
-            hook_path,
             &matcher,
             Some("session"),
             super::super::HOOK_TIMEOUT.as_secs(),
@@ -898,7 +928,7 @@ mod tests {
     fn install_is_a_byte_exact_noop_for_a_canonical_hook() {
         let (settings_path, hook_path) = paths();
         let matcher = claude_session_start_matcher();
-        let command = serde_json::to_string(&hook_command(hook_path, Some("session")))
+        let command = serde_json::to_string(&hook_command(Target::Claude, Some("session")))
             .expect("test precondition");
         let timeout = super::super::HOOK_TIMEOUT.as_secs();
         let input = format!(
@@ -912,10 +942,27 @@ mod tests {
     }
 
     #[test]
+    fn install_is_a_byte_exact_noop_when_a_canonical_hook_has_extra_fields() {
+        let (settings_path, hook_path) = paths();
+        let matcher = claude_session_start_matcher();
+        let command = serde_json::to_string(&hook_command(Target::Claude, Some("session")))
+            .expect("test precondition");
+        let timeout = super::super::HOOK_TIMEOUT.as_secs();
+        let input = format!(
+            "{{\"hooks\":{{\"SessionStart\":[{{\"matcher\":\"{matcher}\",\"hooks\":[{{\"type\":\"command\",\"command\":{command},\"timeout\":{timeout},\"disabled\":true}}]}}]}}}}"
+        );
+
+        let updated =
+            install_for_test(&input, settings_path, hook_path).expect("test precondition");
+
+        assert_eq!(updated, input);
+    }
+
+    #[test]
     fn install_replaces_noncanonical_session_start_and_preserves_user_hook() {
         let (settings_path, hook_path) = paths();
         let matcher = claude_session_start_matcher();
-        let command = serde_json::to_string(&hook_command(hook_path, Some("session")))
+        let command = serde_json::to_string(&hook_command(Target::Claude, Some("session")))
             .expect("test precondition");
         let user_hook = r#"{ "type" : "command", "command" : "echo keep", "timeout" : 3 }"#;
         let timeout = super::super::HOOK_TIMEOUT.as_secs();
@@ -943,7 +990,6 @@ mod tests {
         assert_eq!(
             groups[1],
             canonical_hook_value(
-                hook_path,
                 &matcher,
                 Some("session"),
                 super::super::HOOK_TIMEOUT.as_secs()

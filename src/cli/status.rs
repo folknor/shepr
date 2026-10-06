@@ -451,6 +451,8 @@ fn render_installation(out: &mut String, installation: &Installation) {
 }
 
 fn render_server(out: &mut String, overview: &Overview<'_>) {
+    // Compare with the installation identity carried by this view;
+    // `is_this_build()` would bypass it and use the process-global build.
     let this_build = overview.installation.build_id;
     match overview.server {
         ServerPresence::Gone => push_line(out, "server: not running"),

@@ -299,14 +299,9 @@ impl Launched {
             retry_host_modes: false,
             refused_output_retry: state::RefusedOutputRetry::default(),
         };
-        state.shell.endpoints.choice = match &local_launch_state {
-            LocalLaunchState::Attached => {
-                endpoint::EndpointChoice::showing(endpoint::ClientEndpointId::Local)
-            }
-            LocalLaunchState::Unreached | LocalLaunchState::Failed(_) => {
-                endpoint::EndpointChoice::waiting_for(endpoint::ClientEndpointId::Local)
-            }
-        };
+        if !matches!(&local_launch_state, LocalLaunchState::Attached) {
+            endpoint::mark_local_unavailable(&mut state.shell);
+        }
         state.shell.set_host_cell(initial_geometry.cell());
         state.shell.set_machines(&machines);
         if let LocalLaunchState::Failed(failure) = &local_launch_state {

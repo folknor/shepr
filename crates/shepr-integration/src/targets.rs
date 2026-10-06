@@ -173,7 +173,7 @@ pub(super) fn install(
                         content,
                         path,
                         ANTIGRAVITY_CLI_HOOK_BLOCK_NAME,
-                        &antigravity_cli_hook_block_with_timeout(&hook_path, timeout)?,
+                        &antigravity_cli_hook_block_with_timeout(timeout)?,
                     )
                 },
             )?);
@@ -184,10 +184,19 @@ pub(super) fn install(
             // Grok merges every `hooks/*.json`, so this dedicated config is
             // wholly Shepr-owned: its old contents need not be valid JSON
             // (only UTF-8), but its target and lock are checked before assets.
-            edits.push(ConfigEdit::prepare(path.clone(), paths, "", |_, _| {
-                serde_json::to_string_pretty(&grok_hook_config_with_timeout(&hook_path, timeout)?)
-                    .map_err(|error| InstallError::from(io::Error::other(error)))
-            })?);
+            edits.push(ConfigEdit::prepare(
+                path.clone(),
+                paths,
+                "",
+                |content, _| {
+                    let expected = grok_hook_config_with_timeout(timeout)?;
+                    if grok_hook_config_matches(content, &expected) {
+                        return Ok(content.to_owned());
+                    }
+                    serde_json::to_string_pretty(&expected)
+                        .map_err(|error| InstallError::from(io::Error::other(error)))
+                },
+            )?);
             outcome = outcome.with_artifact(ArtifactRole::HookConfig, path);
         }
         Registration::Opencode => {
@@ -252,11 +261,12 @@ fn prepare_json(
 ) -> InstallResult<ConfigEdit> {
     ConfigEdit::prepare(path, paths, "{}", |content, path| {
         super::json_edit::install_json(
+            target,
             content,
             path,
             hook_path,
             root,
-            shape.expected_events(target, hook_path, event_policy)?,
+            shape.expected_events(target, event_policy)?,
             required_fields,
             document_description,
         )
@@ -276,7 +286,6 @@ fn missing_agent_directory(target: Target, dir: &Path) -> super::types::InstallE
 /// Every event Shepr registers takes a flat handler list; the `matcher`/`hooks`
 /// group is only valid for the tool events, which Shepr does not use.
 pub(super) fn antigravity_cli_hook_block_with_timeout(
-    hook_path: &Path,
     timeout: std::time::Duration,
 ) -> InstallResult<Value> {
     let mut block = Map::new();
@@ -287,7 +296,7 @@ pub(super) fn antigravity_cli_hook_block_with_timeout(
         };
         let handler = json!({
             "type": "command",
-            "command": hook_command(hook_path, Some(action)),
+            "command": hook_command(Target::AntigravityCli, Some(action)),
             "timeout": timeout_seconds,
         });
         block.insert(hook.event.to_string(), json!([handler]));
@@ -297,14 +306,14 @@ pub(super) fn antigravity_cli_hook_block_with_timeout(
 
 /// The complete Shepr-owned Grok hook config, generated from its declared
 /// events. Installation and status share this value so config drift is outdated.
-pub(super) fn grok_hook_config_with_timeout(
-    hook_path: &Path,
-    timeout: std::time::Duration,
-) -> InstallResult<Value> {
+pub(super) fn grok_hook_config_with_timeout(timeout: std::time::Duration) -> InstallResult<Value> {
     let mut event_groups = BTreeMap::<&'static str, Vec<Value>>::new();
     let timeout_seconds = timeout.as_secs();
     for event in Target::Grok.hook_events() {
-        let command = hook_command(hook_path, event.action.map(IntegrationHookAction::as_str));
+        let command = hook_command(
+            Target::Grok,
+            event.action.map(IntegrationHookAction::as_str),
+        );
         let hook = json!({
             "type": "command",
             "command": command,
@@ -325,15 +334,18 @@ pub(super) fn grok_hook_config_with_timeout(
     }))
 }
 
+/// Use the same semantic equality for status and install's no-op decision.
+pub(super) fn grok_hook_config_matches(content: &str, expected: &Value) -> bool {
+    serde_json::from_str::<Value>(content).is_ok_and(|config| config == *expected)
+}
+
 #[cfg(test)]
-pub(crate) fn grok_hook_config(hook_path: &Path) -> InstallResult<Value> {
-    grok_hook_config_with_timeout(hook_path, super::HOOK_TIMEOUT)
+pub(crate) fn grok_hook_config() -> InstallResult<Value> {
+    grok_hook_config_with_timeout(super::HOOK_TIMEOUT)
 }
 
 #[cfg(test)]
 mod grok_tests {
-    use std::path::Path;
-
     use serde_json::Value;
 
     use super::{Target, grok_hook_config};
@@ -342,9 +354,8 @@ mod grok_tests {
 
     #[test]
     fn grok_config_uses_its_declared_hook_events() {
-        let hook_path = Path::new("/home/user/grok hooks/shepr-agent-state.sh");
         let events = Target::Grok.hook_events();
-        let config = grok_hook_config(hook_path).expect("test precondition");
+        let config = grok_hook_config().expect("test precondition");
         let configured_events = config["hooks"].as_object().expect("Grok hooks object");
 
         assert_eq!(events.len(), 1);
@@ -355,7 +366,10 @@ mod grok_tests {
                 .get(event.event)
                 .and_then(Value::as_array)
                 .expect("declared Grok hook event");
-            let command = hook_command(hook_path, event.action.map(IntegrationHookAction::as_str));
+            let command = hook_command(
+                Target::Grok,
+                event.action.map(IntegrationHookAction::as_str),
+            );
             assert!(
                 groups.iter().any(|group| {
                     group["matcher"].as_str() == event.matcher

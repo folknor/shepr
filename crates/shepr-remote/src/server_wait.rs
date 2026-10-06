@@ -82,12 +82,25 @@ pub fn wait_for_server(paths: &shepr_paths::AppPaths) -> io::Result<ServerWaitEn
     .map_err(|error| classified_wait_failure(&error))
 }
 
-/// A failure that prevents the remote wait from checking or waiting for the
-/// selected server is a host setup failure, like the bridge's path and logger
-/// setup failures. The client reads this record from SSH stderr and marks the
-/// machine for repair instead of retrying the wait as a transient connection.
+/// Classifies failures from the remote wait. A broken or unreachable socket
+/// can clear on retry; failures such as a bad runtime path or denied access
+/// still need repair on the host.
 fn classified_wait_failure(error: &io::Error) -> io::Error {
-    crate::host::classified_bridge_failure(RemoteFailureClass::Repair, error.kind(), error)
+    let transient = shepr_launch::failure::is_link_error_kind(error.kind())
+        || matches!(
+            error.kind(),
+            io::ErrorKind::Interrupted
+                | io::ErrorKind::WouldBlock
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::BrokenPipe
+        );
+    let class = if transient {
+        RemoteFailureClass::Retry
+    } else {
+        RemoteFailureClass::Repair
+    };
+    crate::host::classified_bridge_failure(class, error.kind(), error)
 }
 
 /// What one check of the host's server found.

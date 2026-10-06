@@ -151,7 +151,7 @@ pub(in crate::shell) struct MachineEntry {
 
 /// Owns endpoint selection and the endpoint presentations read by the shell.
 pub(crate) struct Endpoints {
-    pub(crate) choice: crate::endpoint::EndpointChoice,
+    choice: crate::endpoint::EndpointChoice,
     entries: Vec<ClientShellEndpoint>,
     pub(in crate::shell) agent_panel_model: AgentPanelModel,
     pub(in crate::shell) navigator_index: NavigatorIndex,
@@ -160,8 +160,20 @@ pub(crate) struct Endpoints {
 }
 
 impl Endpoints {
+    pub(crate) fn choice(&self) -> &crate::endpoint::EndpointChoice {
+        &self.choice
+    }
+
+    /// Mutable access is gated by the endpoint module's private token.
+    pub(crate) fn choice_mut(
+        &mut self,
+        _access: crate::endpoint::ChoiceAccess,
+    ) -> &mut crate::endpoint::EndpointChoice {
+        &mut self.choice
+    }
+
     pub(in crate::shell) fn presented(&self) -> &ClientEndpointId {
-        self.choice.presented()
+        self.choice().presented()
     }
 
     pub(in crate::shell) fn new(
@@ -172,7 +184,7 @@ impl Endpoints {
         let agent_panel_model = AgentPanelModel::build(&entries, config, agent_panel_sort);
         let navigator_index = NavigatorIndex::build(&entries, &config.local_label);
         Self {
-            choice: crate::endpoint::EndpointChoice::showing(ClientEndpointId::Local),
+            choice: crate::endpoint::EndpointChoice::initial_local(),
             entries,
             agent_panel_model,
             navigator_index,
@@ -1007,17 +1019,8 @@ impl ClientShellState {
         let Some(projection) = self.endpoint_projection(endpoint_id) else {
             return false;
         };
-        match self.endpoints.choice.preparing() {
-            Some(preparing) if &preparing.lease().endpoint_id == endpoint_id => {
-                if self.endpoints.choice.commit().is_none() {
-                    return false;
-                }
-            }
-            None if self.endpoints.choice.pending_start().is_none() => {
-                self.endpoints.choice =
-                    crate::endpoint::EndpointChoice::showing(endpoint_id.clone());
-            }
-            Some(_) | None => return false,
+        if !crate::endpoint::activate_choice_for_test(self, endpoint_id) {
+            return false;
         }
         self.present_projection(&projection);
         true

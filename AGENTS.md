@@ -384,8 +384,10 @@ every agent integration reports through it.
   running and is reported (exit status 3).
 - The cross-build JSON control surface is the `ping` response identity
   (`version`, `build_id`, `boot_id`), its `stopping` and `starting` flags
-  (each read as false when an older build omits it) and the
-  `server.stop_if_boot` request; keep their literal JSON fixtures in the
+  (each read as false when an older build omits it), the
+  `server.stop_if_boot` request and its answer, which carries the final
+  save's result (a bare `ok` from an older build reads as a stop accepted
+  with no save result); keep their literal JSON fixtures in the
   `shepr-api` tests in sync with intentional wire changes. `server.summary`
   (the workspace, pane and agent counts `shepr status` shows) is not part of
   it: status asks it only of a running server of its own build.

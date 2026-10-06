@@ -380,7 +380,7 @@ fn capture_shell_asset(
         }
         let mut input = step.input.to_string().into_bytes();
         input.push(b'\n');
-        let output = capture_hook(command, &socket_path, scratch.path(), pane_id, &input);
+        let output = capture_hook(command, &socket_path, pane_id, &input);
         assert!(
             output.status.success(),
             "{} exited unsuccessfully",

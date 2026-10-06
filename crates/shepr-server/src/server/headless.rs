@@ -25,7 +25,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::app;
-use crate::limits::{PANE_TEARDOWN_WAIT, SERVER_EVENT_CHANNEL_CAPACITY, SERVER_EVENT_DRAIN_LIMIT};
+use crate::limits::{
+    PANE_TEARDOWN_WAIT, SERVER_EVENT_CHANNEL_CAPACITY, SERVER_EVENT_DRAIN_LIMIT, STOP_ANSWER_WAIT,
+};
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
     ClientConnection, ClientDeparture, ClientRegistry, ClientShellLocationGeneration,
@@ -576,10 +578,11 @@ impl HeadlessServer {
             }
         }
 
-        // There is deliberately no forced stop. `server.stop` is answered on
-        // the API connection thread, so it is accepted even when this loop is
-        // stuck, but only this loop acts on it. The final save and
-        // the writer's retirement wait for the persister without a deadline.
+        // There is deliberately no forced stop. `server.stop` is accepted on
+        // the API connection thread, so it can wake this loop even while the
+        // app channel is full; the response waits for this loop's final save.
+        // The final save and the writer's retirement wait for the persister
+        // without a deadline.
         // Only two things can wedge here: a loop bug (deadlock or spin) and a
         // data directory on a hung filesystem. Against either, a watchdog that
         // exits after a deadline does no more than SIGKILL. A thread blocked in
@@ -602,6 +605,10 @@ impl HeadlessServer {
             .app
             .save_session_for_exit(self.lifecycle.signal_quit_at())
             .await;
+        let final_save_error = final_save.as_ref().err().map(ToString::to_string);
+        self.lifecycle
+            .stop_signal()
+            .complete_final_save(final_save_error);
         // The save can take seconds; the duration below and the teardown wait
         // after it read a fresh sample.
         self.refresh_app_clock();
@@ -653,6 +660,16 @@ impl HeadlessServer {
         self.refresh_app_clock();
         if let Err(error) = self.app.retire_session_writer_async().await {
             run_error.get_or_insert(RunServerError::Runtime(error));
+        }
+        // A stop request's answer carries the final save result; the teardown
+        // above has normally given it time to be written, and an exit under
+        // it would hand the stopping client an empty answer instead.
+        if !self
+            .lifecycle
+            .stop_signal()
+            .wait_for_stop_answers(STOP_ANSWER_WAIT)
+        {
+            debug!("a stop request's answer was not written before the server exit");
         }
         self.release_socket_after_save();
 

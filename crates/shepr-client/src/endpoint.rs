@@ -18,6 +18,27 @@ pub(crate) use shepr_config::MachineLabel;
 pub(crate) use supervisor::*;
 pub(crate) use view::HostBaseline;
 
+/// Token for mutable choice access; only this module can construct it.
+pub(crate) struct ChoiceAccess {
+    _private: (),
+}
+
+impl ChoiceAccess {
+    fn new() -> Self {
+        Self { _private: () }
+    }
+}
+
+pub(in crate::endpoint) fn choice_mut(
+    shell: &mut crate::shell::ClientShellState,
+) -> &mut EndpointChoice {
+    shell.endpoints.choice_mut(ChoiceAccess::new())
+}
+
+pub(crate) fn mark_local_unavailable(shell: &mut crate::shell::ClientShellState) {
+    *choice_mut(shell) = EndpointChoice::initial_local_waiting();
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum ClientEndpointId {
     Local,

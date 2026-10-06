@@ -299,7 +299,7 @@ impl Fixture {
     /// Whatever is shown is viewed, nothing the choice does not want is viewed, and the
     /// shell projects what is shown.
     pub(super) fn assert_views(&self) {
-        let choice = &self.client.state().shell.endpoints.choice;
+        let choice = self.client.state().shell.endpoints.choice();
         let registry = self.client.hub().registry();
         if let Some(shown) = choice.live()
             && registry.connection(shown).is_some()

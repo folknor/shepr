@@ -3,7 +3,7 @@ use crate::failure::SSH_OWN_FAILURE_EXIT_CODE;
 use crate::preflight::{MachineCheck, classify_check};
 use crate::ssh_paths::ssh_control_path_under;
 use shepr_core::socket_path::fits_unix_socket_path;
-use shepr_launch::SshFailureClass;
+use shepr_launch::{EndpointFailure, FailureCause, FailureDisposition, SshFailureClass};
 use std::thread;
 
 #[test]
@@ -12,10 +12,9 @@ fn ssh_check_command_quotes_remote_target() {
     assert_eq!(ssh_check_command(&target), "ssh 'host name'");
 }
 
-/// Whether `error` came from ssh, the link or a bounded command timeout rather
-/// than from a remote command, so nothing is known about the remote install.
-fn failed_before_remote_result(error: &io::Error) -> bool {
-    SshFailureDiagnostic::from_error(error).failed_before_remote_result()
+/// Whether this error leaves the remote executable's discovery knowledge intact.
+fn preserves_discovery(error: &io::Error) -> bool {
+    crate::failure::failure_evidence(error).preserves_discovery()
 }
 
 /// Paths whose root doubles as the XDG runtime root; the managed config
@@ -516,10 +515,10 @@ fn missing_local_ssh_is_reported_as_local_setup_not_remote_incompatibility() {
         "could not start local ssh",
         io::Error::from(io::ErrorKind::NotFound),
     );
-    let diagnostic = SshFailureDiagnostic::from_error(&error);
-    assert!(diagnostic.is_local_setup_failure());
-    assert!(!diagnostic.is_remote_compatibility());
-    assert!(diagnostic.needs_attention());
+    let failure = EndpointFailure::from_error(&error);
+    assert_eq!(failure.cause(), FailureCause::LocalSetup);
+    assert_ne!(failure.disposition(), FailureDisposition::Incompatible);
+    assert!(failure.disposition().needs_attention());
     assert!(error.to_string().contains("local ssh"));
     assert!(matches!(
         classify_check(Err(error)),
@@ -535,15 +534,22 @@ fn local_setup_diagnostics_require_an_explicit_local_boundary() {
         io::ErrorKind::PermissionDenied,
     ] {
         let error = io::Error::new(kind, "operation failed");
-        let untyped = SshFailureDiagnostic::from_error(&error);
+        let untyped = EndpointFailure::from_error(&error);
         assert!(
-            !untyped.needs_attention(),
+            !untyped.disposition().needs_attention(),
             "an unwrapped {kind} does not prove a local setup failure"
         );
 
-        let local = SshFailureDiagnostic::from_local_setup_error(&error);
-        assert!(local.is_local_setup_failure(), "{kind}");
-        assert!(local.needs_attention(), "{kind}");
+        let local = local_setup_error("test local setup", io::Error::new(kind, "operation failed"));
+        let failure = EndpointFailure::from_error(&local);
+        assert!(
+            matches!(
+                failure.cause(),
+                FailureCause::LocalSetup | FailureCause::InvalidLocalSetup
+            ),
+            "{kind}"
+        );
+        assert!(failure.disposition().needs_attention(), "{kind}");
     }
 }
 
@@ -567,8 +573,11 @@ fn an_attempt_deadline_shortens_and_then_refuses_commands() {
         .expect_err("no command may start past the deadline");
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     // Treated as a dropped link: no rediscovery, and a retry rather than attention.
-    assert!(failed_before_remote_result(&error));
-    assert!(!SshFailureDiagnostic::from_error(&error).needs_attention());
+    assert!(preserves_discovery(&error));
+    assert_eq!(
+        EndpointFailure::from_error(&error).disposition(),
+        FailureDisposition::Offline
+    );
     // The refusal happens before ssh is spawned.
     let error = ssh
         .sh_output(&PosixScript::new("true\n"))
@@ -584,8 +593,11 @@ fn a_round_trip_timeout_can_prompt_but_an_attempt_deadline_stays_offline() {
     );
     let diagnostic = SshFailureDiagnostic::from_error(&round_trip);
     assert!(diagnostic.ssh_class() == Some(SshFailureClass::AuthenticationPending));
-    assert!(diagnostic.failed_before_remote_result());
-    assert!(!diagnostic.is_transient_network_failure());
+    assert!(preserves_discovery(&round_trip));
+    assert_ne!(
+        EndpointFailure::from_error(&round_trip).disposition(),
+        FailureDisposition::Offline
+    );
 
     let attempt = classify_command_timeout(
         io::Error::new(io::ErrorKind::TimedOut, "SSH command timed out"),
@@ -596,5 +608,8 @@ fn a_round_trip_timeout_can_prompt_but_an_attempt_deadline_stays_offline() {
         diagnostic.ssh_class(),
         Some(SshFailureClass::AuthenticationPending)
     );
-    assert!(diagnostic.is_transient_network_failure());
+    assert_eq!(
+        EndpointFailure::from_error(&attempt).disposition(),
+        FailureDisposition::Offline
+    );
 }

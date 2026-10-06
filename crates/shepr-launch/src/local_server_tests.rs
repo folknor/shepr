@@ -328,30 +328,45 @@ fn serve_starting_until_released(
 fn repeated_socket_transitions_share_one_wait_deadline() {
     let _env = IsolatedEnv::new();
     let paths = shepr_paths::AppPaths::resolve().expect("paths");
-    let socket = runtime_socket(&paths);
-    let (release, server) = serve_starting_until_released(&socket);
-    let timeout = Duration::from_millis(500);
-    let deadline = Instant::now() + timeout;
-    let releaser = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(350));
-        release.send(()).expect("release");
-        server.join().expect("server");
-    });
+    let timeout = LIFECYCLE_POLL_INTERVAL * 10;
+    let transition_after = LIFECYCLE_POLL_INTERVAL * 7;
+    let start = Instant::now();
+    let elapsed = Cell::new(Duration::ZERO);
+    let mut now = || start + elapsed.get();
+    let mut sleep = |duration| elapsed.set(elapsed.get() + duration);
+    let deadline = start + timeout;
+    let mut first_probe = || {
+        Ok(if elapsed.get() < transition_after {
+            Probed::Starting
+        } else {
+            Probed::NoServer
+        })
+    };
     assert!(matches!(
-        wait_for_server_socket_to_settle_until(&paths, deadline, timeout)
-            .expect("first transition ends"),
+        wait_for_server_socket_to_settle_until_with(
+            &paths,
+            deadline,
+            timeout,
+            &mut first_probe,
+            &mut now,
+            &mut sleep,
+        )
+        .expect("first transition ends"),
         SettledServer::NoServer
     ));
-    releaser.join().expect("release");
-    std::fs::remove_file(&socket).expect("remove stale socket");
-    let (release, server) = serve_starting_until_released(&socket);
-    let second_wait = Instant::now();
-    let error = wait_for_server_socket_to_settle_until(&paths, deadline, timeout)
-        .expect_err("shared deadline");
+    assert_eq!(elapsed.get(), transition_after);
+    let mut second_probe = || Ok(Probed::Starting);
+    let error = wait_for_server_socket_to_settle_until_with(
+        &paths,
+        deadline,
+        timeout,
+        &mut second_probe,
+        &mut now,
+        &mut sleep,
+    )
+    .expect_err("the second transition shares the first wait's deadline");
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    release.send(()).expect("release");
-    server.join().expect("server");
-    assert!(second_wait.elapsed() < Duration::from_millis(225));
+    assert_eq!(elapsed.get(), timeout);
 }
 
 #[test]
@@ -491,21 +506,17 @@ fn the_launch_lock_wait_is_bounded_and_its_file_persists() {
         .expect("lock file exists")
         .ino();
 
-    let started = Instant::now();
-    let error = match acquire_launch_lock_with(
-        &lock_path,
-        Duration::from_millis(150),
-        &mut Instant::now,
-        &mut std::thread::sleep,
-    ) {
+    let wait = LIFECYCLE_POLL_INTERVAL * 3;
+    let start = Instant::now();
+    let time = Cell::new(start);
+    let mut now = || time.get();
+    let mut sleep = |duration| time.set(time.get() + duration);
+    let error = match acquire_launch_lock_with(&lock_path, wait, &mut now, &mut sleep) {
         Ok(_) => panic!("a held launch lock must not be granted twice"),
         Err(error) => error,
     };
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "the wait must be bounded"
-    );
+    assert_eq!(time.get(), start + wait);
     // A lock another launcher holds is waited out, not repaired.
     assert_eq!(
         LaunchError::LaunchLock(error).remote_failure_class(),
@@ -513,13 +524,8 @@ fn the_launch_lock_wait_is_bounded_and_its_file_persists() {
     );
 
     drop(held);
-    acquire_launch_lock_with(
-        &lock_path,
-        Duration::from_millis(150),
-        &mut Instant::now,
-        &mut std::thread::sleep,
-    )
-    .expect("a released lock is granted");
+    acquire_launch_lock_with(&lock_path, wait, &mut now, &mut sleep)
+        .expect("a released lock is granted");
     assert_eq!(
         std::fs::metadata(&lock_path)
             .expect("lock file persists")
@@ -688,7 +694,23 @@ fn an_occupant_that_never_answers_ends_in_a_timeout() {
 fn launch_after_a_refused_first_daemon(
     dir: &ScratchDir,
     timeout: Duration,
+    probe: impl FnMut(u32) -> io::Result<Probed>,
+) -> (Result<RuntimeStatus, LaunchError>, u32, FixtureDaemonGuard) {
+    launch_after_a_refused_first_daemon_with(
+        dir,
+        timeout,
+        probe,
+        &mut Instant::now,
+        &mut std::thread::sleep,
+    )
+}
+
+fn launch_after_a_refused_first_daemon_with(
+    dir: &ScratchDir,
+    timeout: Duration,
     mut probe: impl FnMut(u32) -> io::Result<Probed>,
+    now: &mut impl FnMut() -> Instant,
+    sleep: &mut impl FnMut(Duration),
 ) -> (Result<RuntimeStatus, LaunchError>, u32, FixtureDaemonGuard) {
     let server = dir.join("shepr-server");
     let boot_log = shepr_paths::boot_log_path(dir.path());
@@ -711,11 +733,15 @@ fn launch_after_a_refused_first_daemon(
             } else {
                 &idle[..]
             };
-            fixture_daemon(steps, &group)(stderr)
+            let mut child = fixture_daemon(steps, &group)(stderr)?;
+            if spawned.get() == 1 {
+                child.wait()?;
+            }
+            Ok(child)
         },
         || probe(spawned.get()),
-        &mut Instant::now,
-        &mut std::thread::sleep,
+        now,
+        sleep,
     );
     (result, spawned.get(), FixtureDaemonGuard::new(group.get()))
 }
@@ -794,16 +820,24 @@ fn a_refused_daemon_is_not_started_again_while_an_occupant_listens() {
 #[test]
 fn a_holder_that_never_leaves_ends_the_launch_in_a_timeout_with_restarts_paced() {
     let dir = ScratchDir::new("launch-lease-held-forever");
-    let (result, spawned, group) =
-        launch_after_a_refused_first_daemon(&dir, DAEMON_RESTART_INTERVAL * 3, |_| {
-            Ok(Probed::NoServer)
-        });
+    let start = Instant::now();
+    let elapsed = Cell::new(Duration::ZERO);
+    let mut now = || start + elapsed.get();
+    let mut sleep = |duration| elapsed.set(elapsed.get() + duration);
+    let (result, spawned, group) = launch_after_a_refused_first_daemon_with(
+        &dir,
+        DAEMON_RESTART_INTERVAL * 3,
+        |_| Ok(Probed::NoServer),
+        &mut now,
+        &mut sleep,
+    );
     let error = result.expect_err("the launch stays bounded");
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    assert!(
-        (2..=4).contains(&spawned),
-        "restarts are paced by the interval, got {spawned} starts"
-    );
+    // Only a daemon that gave way is started again: the refused first one is
+    // replaced once the restart interval has passed, and its idling successor
+    // is waited on until the deadline rather than replaced.
+    assert_eq!(spawned, 2, "one paced restart, not one per poll");
+    assert_eq!(elapsed.get(), DAEMON_RESTART_INTERVAL * 3);
     assert_group_dies(group.process_group());
 }
 

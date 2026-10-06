@@ -9,12 +9,17 @@ use std::time::Duration;
 /// while still failing a stalled loop promptly.
 pub(crate) const ORDINARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Maximum ordinary client wait for a local server whose listen backlog is
+/// full. This matches the platform connect bound; the response budget starts
+/// after this separate connect budget.
+pub(crate) const ORDINARY_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Extra client-side allowance beyond the server request deadline, so the
 /// server can return its more specific timeout response first.
 const ORDINARY_RESPONSE_GRACE: Duration = Duration::from_secs(5);
 
-/// Client response deadline derived from the server request deadline plus a
-/// short allowance for the server to report that deadline.
+/// One client budget for writing and reading, derived from the server request
+/// deadline plus a short allowance for the server to report that deadline.
 pub(crate) const ORDINARY_RESPONSE_TIMEOUT: Duration =
     Duration::from_secs(ORDINARY_REQUEST_TIMEOUT.as_secs() + ORDINARY_RESPONSE_GRACE.as_secs());
 

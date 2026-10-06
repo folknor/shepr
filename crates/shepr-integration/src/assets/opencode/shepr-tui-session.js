@@ -96,8 +96,9 @@ function requestOnce(sessionID, state, seq, isCurrent = () => true) {
 
 // Both lifecycle entries below seed their seq with `seedSeq` and add one per
 // report. The server plugin, the only other reporter under this source, uses
-// the same unit and stands down whenever a TUI owns the lifecycle. Selection
-// reports carry no seq at all.
+// the same unit and reports only for launch shapes that load no TUI plugin
+// (`ownsLocalLifecycle`); nothing else keeps the two apart. Selection reports
+// carry no seq at all.
 const ROUTE_POLL_INTERVAL_MS = 100;
 const RETRY_WAIT_MS = 500;
 const REQUEST_WAIT_MS = 5000;

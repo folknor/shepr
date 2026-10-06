@@ -3,9 +3,10 @@
 //! The TUI reaches machines with `BatchMode=yes`, so password and
 //! keyboard-interactive prompts are disabled. A security-key agent can still
 //! wait for user presence; when a full bounded SSH command times out before a
-//! remote result, preflight offers foreground SSH for that candidate. This step
-//! runs once before the client takes over the terminal: [`preflight`] checks
-//! every machine concurrently and without prompting, walks the ones that need
+//! remote result, preflight offers foreground SSH for that candidate. This
+//! step runs once before the client takes over the terminal:
+//! [`MachineSshPreflight::run`] checks every machine concurrently and without
+//! prompting, walks the ones that need
 //! authentication one at a time and runs interactive ssh on shepr's own control
 //! socket for each, then checks those machines again, since the first check
 //! could not see past the prompt. `ControlPersist` keeps the authenticated
@@ -14,11 +15,11 @@
 //! The check starts nothing on a machine, and a machine's server of another
 //! build is not handled here: the client shows it with a Restart entry.
 //!
-//! [`PreflightSsh`] is the seam for testing parallel checks, prompt
-//! serialization and classification without a host. Production checks borrow
-//! each machine's probe directly into its scoped worker. This crate does not
-//! print or read the terminal: the caller announces each prompt through the
-//! `before_authentication` callback and reports the returned outcomes.
+//! A test-only SSH seam exercises parallel checks, prompt serialization and
+//! classification without a host. Production checks borrow each machine's
+//! probe directly into its scoped worker. This crate does not print or read the
+//! terminal: the caller announces each prompt through the callback and reports
+//! the returned outcomes.
 
 use std::io;
 use std::time::Instant;
@@ -28,22 +29,6 @@ use shepr_launch::{EndpointFailure, FailureCause, FailureDisposition, SshFailure
 use crate::machine::MachineConfig;
 use crate::machine_ssh::{MachineProbe, MachineSshConnector};
 use crate::ssh::ssh_authentication_command;
-
-/// The SSH operations the preflight needs.
-pub trait PreflightSsh: Sync {
-    /// Called before each round of concurrent checks, so an implementation can
-    /// give the round its own time budget: the re-check after a prompt starts
-    /// long after the first check did.
-    fn start_round(&self) {}
-
-    /// Checks one machine without prompting and without starting anything.
-    /// Called for all machines of a round at once, from separate threads.
-    fn check(&self, machine: &MachineConfig) -> io::Result<()>;
-
-    /// Runs interactive authentication for one machine in this terminal. Called
-    /// for one machine at a time, from the calling thread.
-    fn authenticate(&self, machine: &MachineConfig) -> Result<(), AuthenticationError>;
-}
 
 /// What the non-interactive check found out about one machine. A failed check
 /// carries its neutral endpoint failure; presentation derives the operator
@@ -136,32 +121,6 @@ pub struct PreflightOutcome {
     pub authentication: Option<Result<(), AuthenticationError>>,
 }
 
-/// Checks every machine concurrently, then authenticates the ones that need it
-/// one after another, in configuration order, then checks those again.
-/// `before_authentication` runs just before each prompt so the caller can say
-/// which machine it is for. When it is absent, no prompt runs and machines
-/// needing authentication are reported as such.
-///
-/// Each outcome owns its machine configuration. A machine whose prompt
-/// succeeded carries the check that followed it; one whose prompt failed keeps
-/// the check that asked for it.
-pub fn preflight(
-    machines: &[MachineConfig],
-    ssh: &dyn PreflightSsh,
-    before_authentication: Option<&mut dyn FnMut(&MachineConfig)>,
-) -> Vec<PreflightOutcome> {
-    preflight_with_checks(
-        machines,
-        |indices| {
-            let round: Vec<&MachineConfig> =
-                indices.iter().map(|&index| &machines[index]).collect();
-            check_concurrently(ssh, &round)
-        },
-        |machine| ssh.authenticate(machine),
-        before_authentication,
-    )
-}
-
 fn preflight_with_checks(
     machines: &[MachineConfig],
     mut check_round: impl FnMut(&[usize]) -> Vec<MachineCheck>,
@@ -222,34 +181,6 @@ fn check_after_authentication(check: MachineCheck) -> MachineCheck {
     }
 }
 
-/// One round of checks, all machines at once.
-fn check_concurrently(ssh: &dyn PreflightSsh, machines: &[&MachineConfig]) -> Vec<MachineCheck> {
-    ssh.start_round();
-    std::thread::scope(|scope| {
-        let handles: Vec<_> = machines
-            .iter()
-            .map(|machine| scope.spawn(move || classify_check(ssh.check(machine))))
-            .collect();
-        let mut checks = Vec::with_capacity(handles.len());
-        let mut panic_payload = None;
-        for handle in handles {
-            match handle.join() {
-                Ok(check) => checks.push(check),
-                Err(payload) => {
-                    if panic_payload.is_none() {
-                        panic_payload = Some(payload);
-                    }
-                }
-            }
-        }
-        if let Some(payload) = panic_payload {
-            // Finish joining all workers before unwinding through the caller.
-            std::panic::resume_unwind(payload);
-        }
-        checks
-    })
-}
-
 /// The real SSH preflight: each retained probe is mutably borrowed by exactly
 /// one scoped worker per round, and `ssh_authentication_command` uses shepr's
 /// control socket. The launch hands each probe to its client's connector.
@@ -266,6 +197,8 @@ impl<'a> MachineSshPreflight<'a> {
     /// Checks the configured machines and transfers each retained probe to its
     /// client connector. Scoped workers borrow distinct probe slots directly,
     /// so no lock is held around SSH or needed to hand state back afterward.
+    /// This is the production entry point called by the root client's startup
+    /// preflight, which owns terminal prompting.
     pub fn run(
         self,
         machines: &[MachineConfig],
@@ -345,6 +278,79 @@ impl<'a> MachineSshPreflight<'a> {
 fn round_deadline() -> Instant {
     // clock-io-ok: the deadline bounds real ssh IO for one round of checks.
     Instant::now() + crate::limits::PREFLIGHT_CHECK_BUDGET
+}
+
+/// SSH operations supplied by tests for the generic preflight driver.
+#[cfg(test)]
+trait PreflightSsh: Sync {
+    /// Called before each round of concurrent checks, so an implementation can
+    /// give the round its own time budget: the re-check after a prompt starts
+    /// long after the first check did.
+    fn start_round(&self) {}
+
+    /// Checks one machine without prompting and without starting anything.
+    /// Called for all machines of a round at once, from separate threads.
+    fn check(&self, machine: &MachineConfig) -> io::Result<()>;
+
+    /// Runs interactive authentication for one machine in this terminal. Called
+    /// for one machine at a time, from the calling thread.
+    fn authenticate(&self, machine: &MachineConfig) -> Result<(), AuthenticationError>;
+}
+
+/// Test driver: checks every machine concurrently, then authenticates the ones that need it
+/// one after another, in configuration order, then checks those again.
+/// `before_authentication` runs just before each prompt so the caller can say
+/// which machine it is for. When it is absent, no prompt runs and machines
+/// needing authentication are reported as such.
+///
+/// Each outcome owns its machine configuration. A machine whose prompt
+/// succeeded carries the check that followed it; one whose prompt failed keeps
+/// the check that asked for it.
+#[cfg(test)]
+fn preflight(
+    machines: &[MachineConfig],
+    ssh: &dyn PreflightSsh,
+    before_authentication: Option<&mut dyn FnMut(&MachineConfig)>,
+) -> Vec<PreflightOutcome> {
+    preflight_with_checks(
+        machines,
+        |indices| {
+            let round: Vec<&MachineConfig> =
+                indices.iter().map(|&index| &machines[index]).collect();
+            check_concurrently(ssh, &round)
+        },
+        |machine| ssh.authenticate(machine),
+        before_authentication,
+    )
+}
+
+/// One test round of checks, all machines at once.
+#[cfg(test)]
+fn check_concurrently(ssh: &dyn PreflightSsh, machines: &[&MachineConfig]) -> Vec<MachineCheck> {
+    ssh.start_round();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = machines
+            .iter()
+            .map(|machine| scope.spawn(move || classify_check(ssh.check(machine))))
+            .collect();
+        let mut checks = Vec::with_capacity(handles.len());
+        let mut panic_payload = None;
+        for handle in handles {
+            match handle.join() {
+                Ok(check) => checks.push(check),
+                Err(payload) => {
+                    if panic_payload.is_none() {
+                        panic_payload = Some(payload);
+                    }
+                }
+            }
+        }
+        if let Some(payload) = panic_payload {
+            // Finish joining all workers before unwinding through the caller.
+            std::panic::resume_unwind(payload);
+        }
+        checks
+    })
 }
 
 #[cfg(test)]

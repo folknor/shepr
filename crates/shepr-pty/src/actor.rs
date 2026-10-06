@@ -496,17 +496,6 @@ fn report_terminal_response_drop_total(pane_id: PaneId, total_dropped_responses:
 pub struct PtyIoActor;
 
 impl PtyIoActor {
-    pub fn spawn(config: PtyIoActorConfig) -> std::io::Result<PtyIoActorHandle> {
-        Self::spawn_inner(config, SystemPtyIo)
-    }
-
-    fn spawn_inner<I: PtyIo + Send + 'static>(
-        config: PtyIoActorConfig,
-        io: I,
-    ) -> std::io::Result<PtyIoActorHandle> {
-        Self::spawn_prepared_inner(config.pane_id, |_| config, io)
-    }
-
     /// Build read effects with their inbox route before the actor can run.
     pub fn spawn_prepared(
         pane_id: PaneId,
@@ -1126,6 +1115,13 @@ impl PtyIo for TestPtyIo {
 
 #[cfg(test)]
 impl PtyIoActor {
+    fn spawn_inner<I: PtyIo + Send + 'static>(
+        config: PtyIoActorConfig,
+        io: I,
+    ) -> std::io::Result<PtyIoActorHandle> {
+        Self::spawn_prepared_inner(config.pane_id, |_| config, io)
+    }
+
     fn spawn_with_poll_observer(
         config: PtyIoActorConfig,
         poll_observer: std_mpsc::Sender<()>,
@@ -1150,6 +1146,10 @@ mod tests {
         sync::atomic::{AtomicBool, Ordering},
         time::{Duration, Instant},
     };
+
+    fn spawn_actor(config: PtyIoActorConfig) -> std::io::Result<PtyIoActorHandle> {
+        PtyIoActor::spawn_prepared(config.pane_id, |_| config)
+    }
 
     fn test_pane_id() -> PaneId {
         PaneId::from_raw(1)
@@ -1191,7 +1191,7 @@ mod tests {
         let handle = if let Some(poll_observer) = poll_observer {
             PtyIoActor::spawn_with_poll_observer(config, poll_observer)
         } else {
-            PtyIoActor::spawn(config)
+            spawn_actor(config)
         }
         .expect("actor spawn");
         (handle, peer, read_rx)
@@ -1320,7 +1320,7 @@ mod tests {
         assert!(fill_send_buffer(&mut actor_socket) > 0);
         // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
-        let handle = PtyIoActor::spawn(PtyIoActorConfig::new(
+        let handle = spawn_actor(PtyIoActorConfig::new(
             test_pane_id(),
             owned,
             |_| PtyReadResult::empty(),
@@ -1424,7 +1424,7 @@ mod tests {
             },
             || false,
         );
-        let handle = PtyIoActor::spawn(config).expect("actor spawn");
+        let handle = spawn_actor(config).expect("actor spawn");
         *crate::locks::lock_auxiliary(&handle_slot) = Some(handle);
 
         drop(peer);
@@ -1474,7 +1474,7 @@ mod tests {
             core_broken.unwrap_or_else(|| Box::new(|| false)),
         )
         .with_idle_poll(idle_poll);
-        let handle = PtyIoActor::spawn(config).expect("actor spawn");
+        let handle = spawn_actor(config).expect("actor spawn");
         (handle, peer, exit_rx)
     }
 
@@ -1711,7 +1711,7 @@ mod tests {
         let mut slave = std::fs::File::from(slave);
         let (read_tx, read_rx) = std_mpsc::channel::<Bytes>();
         let (exit_tx, exit_rx) = std_mpsc::channel();
-        let handle = PtyIoActor::spawn(PtyIoActorConfig::new(
+        let handle = spawn_actor(PtyIoActorConfig::new(
             test_pane_id(),
             master,
             move |bytes| {
@@ -1828,7 +1828,7 @@ mod tests {
         // SAFETY: into_raw_fd transfers this socket's sole fd ownership to OwnedFd.
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         let (read_tx, read_rx) = std_mpsc::channel();
-        let handle = PtyIoActor::spawn(PtyIoActorConfig::new(
+        let handle = spawn_actor(PtyIoActorConfig::new(
             test_pane_id(),
             owned,
             move |bytes| {
@@ -2181,7 +2181,7 @@ mod tests {
         let owned = unsafe { OwnedFd::from_raw_fd(actor_socket.into_raw_fd()) };
         const REPLY_LEN: usize = 4096;
         let (read_tx, read_rx) = std_mpsc::channel();
-        let handle = PtyIoActor::spawn(PtyIoActorConfig::new(
+        let handle = spawn_actor(PtyIoActorConfig::new(
             test_pane_id(),
             owned,
             // Every read is a query that earns a reply, as for a child that

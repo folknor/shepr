@@ -73,12 +73,6 @@ mod tests {
         fn new() -> Self {
             Self::with_config(SESSION_SAVE_DEBOUNCE, RETRY_BACKOFF)
         }
-
-        /// Boundary tests of the configured debounce; production readiness is
-        /// decided by the saver's combined deadline.
-        pub(in crate::app::session) fn is_due(&self, now: Instant) -> bool {
-            self.deadline.is_some_and(|d| now >= d)
-        }
     }
 
     #[test]
@@ -103,8 +97,6 @@ mod tests {
         let mut save = Autosave::new();
         save.schedule(now);
         assert_eq!(save.deadline(), Some(now + SESSION_SAVE_DEBOUNCE));
-        assert!(!save.is_due(now));
-        assert!(save.is_due(now + SESSION_SAVE_DEBOUNCE));
     }
 
     #[test]

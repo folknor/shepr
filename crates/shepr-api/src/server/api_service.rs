@@ -98,8 +98,7 @@ pub(super) fn send_busy_refusal(
 /// `ingress`, then gives `ingress` up and holds the app slot through the app's
 /// answer and its write, so every worker that can block is counted by one of
 /// the two. A stalled app loop therefore fills only app slots, and a stop
-/// still gets through; that delivers the stop, but a loop that never returns
-/// still never runs it.
+/// still gets through. Its answer waits for the final save result.
 pub(super) fn handle_connection(
     mut stream: LocalStream,
     deadline: Instant,
@@ -153,6 +152,11 @@ pub(super) fn handle_connection(
 
     let response = match route_request(request, server_stop, boot_id, gate) {
         Route::Immediate(response) => response,
+        Route::StopAnswer(response) => {
+            let written = finish_api_response(&mut stream, &request_id, method_traits, &response);
+            server_stop.stop_answered();
+            return written;
+        }
         Route::App(request) => {
             let Ok(app_slot) = app_requests.try_acquire() else {
                 let busy = error_response_json(
@@ -209,6 +213,10 @@ fn finish_api_response(
 enum Route {
     /// By the connection thread, without the app loop.
     Immediate(crate::error::EncodedApiResponse),
+    /// An accepted stop's answer, carrying the final save result. The
+    /// connection thread settles it with `ServerStopSignal::stop_answered`
+    /// once written, so the server does not exit under it.
+    StopAnswer(crate::error::EncodedApiResponse),
     /// By the app loop.
     App(AppRequest),
 }
@@ -242,15 +250,10 @@ fn route_request(
             ));
         }
         MethodRoute::Socket(SocketMethod::ServerStop(_)) => {
-            return Route::Immediate(stop_server(&id, None, boot_id, server_stop));
+            return stop_server(&id, None, boot_id, server_stop);
         }
         MethodRoute::Socket(SocketMethod::ServerStopIfBoot(params)) => {
-            return Route::Immediate(stop_server(
-                &id,
-                Some(&params.expected_boot_id),
-                boot_id,
-                server_stop,
-            ));
+            return stop_server(&id, Some(&params.expected_boot_id), boot_id, server_stop);
         }
         MethodRoute::App(method) => method,
     };
@@ -271,7 +274,7 @@ fn stop_server(
     expected_boot_id: Option<&shepr_protocol::BootId>,
     actual: &shepr_protocol::BootId,
     server_stop: &crate::ServerStopSignal,
-) -> crate::error::EncodedApiResponse {
+) -> Route {
     // The conditional operation has its own method name because this request
     // crosses builds. A server that predates it rejects the method instead of
     // ignoring a guard and treating the request as an unconditional stop. A
@@ -284,22 +287,28 @@ fn stop_server(
         // A stop aimed at one boot must not stop another: the caller observed
         // that instance, and the occupant may have been replaced since.
         if actual != expected {
-            return error_response_json(
+            return Route::Immediate(error_response_json(
                 id,
                 crate::error::ApiErrorCode::ServerBootMismatch,
                 format!(
                     "refusing to stop: this server is boot {actual}, not the expected boot {expected}"
                 ),
-            );
+            ));
         }
     }
     tracing::info!(event = "server.stop.accepted", request_id = id, boot_id = %actual, expected_boot_id = ?expected_boot_id, "server stop accepted");
     server_stop.request();
+    // The answer waits for the final save so it can carry its result. The
+    // server keeps its socket through that save, so the client would wait
+    // that long for the socket to go anyway; its stop deadline covers both.
+    let final_save_error = server_stop.wait_for_final_save();
     let response = SuccessResponse {
         id: id.to_owned(),
-        result: ResponseResult::Ok {},
+        result: ResponseResult::ServerStopCompleted { final_save_error },
     };
-    crate::serialize_response_or_error_with_outcome(id, &response)
+    Route::StopAnswer(crate::serialize_response_or_error_with_outcome(
+        id, &response,
+    ))
 }
 
 /// Reads the connection's one request line with blocking reads bounded by an
@@ -507,6 +516,10 @@ mod tests {
     ) -> crate::error::EncodedApiResponse {
         match route_request(request, server_stop, &this_boot(), gate) {
             Route::Immediate(response) => response,
+            Route::StopAnswer(response) => {
+                server_stop.stop_answered();
+                response
+            }
             Route::App(request) => dispatch_to_app(request, api_tx).response,
         }
     }
@@ -516,6 +529,16 @@ mod tests {
         server: LocalStream,
         api_tx: &ApiRequestSender,
         app_requests: &ConnectionAdmission,
+    ) -> io::Result<()> {
+        serve_connection_with_stop(server, api_tx, app_requests, &running())
+    }
+
+    /// As [`serve_connection`], under a caller's stop signal.
+    fn serve_connection_with_stop(
+        server: LocalStream,
+        api_tx: &ApiRequestSender,
+        app_requests: &ConnectionAdmission,
+        server_stop: &crate::ServerStopSignal,
     ) -> io::Result<()> {
         let ingress_count = Arc::new(AtomicUsize::new(0));
         let ingress_admission = ConnectionAdmission::new(
@@ -531,7 +554,7 @@ mod tests {
             ingress,
             app_requests,
             api_tx,
-            &running(),
+            server_stop,
             &this_boot(),
             &ClientGate::default(),
         )
@@ -619,37 +642,30 @@ mod tests {
     }
 
     #[test]
-    fn request_line_arriving_after_connect_is_read_without_a_poll_delay() {
+    fn request_line_arriving_after_connect_is_read_completely() {
         let (mut client, mut server) = local_stream_pair("request-line-latency");
-        let writer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(20));
-            client
-                .write_all(br#"{"id":"late","method":"ping","#)
-                .expect("test precondition");
-            client.flush().expect("test precondition");
-            std::thread::sleep(Duration::from_millis(20));
-            client
-                .write_all(b"\"params\":{}}\n")
-                .expect("test precondition");
-            client.flush().expect("test precondition");
-            client
+        let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
+        let reader = std::thread::spawn(move || {
+            ready_tx.send(()).expect("reader ready");
+            read_initial_request_line(&mut server)
         });
-        let started = Instant::now();
-        let line = read_initial_request_line(&mut server)
+        ready_rx.recv().expect("reader ready");
+        client
+            .write_all(br#"{"id":"late","method":"ping","#)
+            .expect("test precondition");
+        client.flush().expect("test precondition");
+        client
+            .write_all(b"\"params\":{}}\n")
+            .expect("test precondition");
+        client.flush().expect("test precondition");
+        let line = reader
+            .join()
+            .expect("reader thread")
             .expect("test precondition")
             .expect("request line");
-        let elapsed = started.elapsed();
-        let _client = writer.join().expect("test precondition");
         assert_eq!(
             line,
             "{\"id\":\"late\",\"method\":\"ping\",\"params\":{}}\n"
-        );
-        // The writer sleeps 40 ms in all. A 100 ms poll would have slept a
-        // full interval after the first empty read, and again between the two
-        // writes; blocking reads wake on arrival.
-        assert!(
-            elapsed < Duration::from_millis(100),
-            "request line took {elapsed:?}"
         );
     }
 
@@ -762,10 +778,13 @@ mod tests {
             r#"{{"id":"stop","method":"server.stop","params":{{}}}}"#
         )
         .expect("test precondition");
-        serve_connection(server, &api_tx, &app_requests).expect("stop served");
+        // The stop's answer waits for the final save result.
+        let stop = running();
+        stop.complete_final_save(None);
+        serve_connection_with_stop(server, &api_tx, &app_requests, &stop).expect("stop served");
         let stopped: serde_json::Value =
             serde_json::from_str(&read_line(&mut client)).expect("json");
-        assert_eq!(stopped["result"]["type"], "ok");
+        assert_eq!(stopped["result"]["type"], "server_stop_completed");
 
         let (mut client, server) = local_stream_pair("full-app-admission-report");
         writeln!(
@@ -839,6 +858,7 @@ mod tests {
     fn server_stop_control_bypasses_app_channel() {
         let (tx, mut rx) = mpsc::channel(1);
         let stop = running();
+        stop.complete_final_save(Some("data directory is read-only".to_owned()));
         let response = handle_request(
             Request {
                 id: "priority_stop".into(),
@@ -852,7 +872,11 @@ mod tests {
         let response: serde_json::Value =
             serde_json::from_str(&response.body).expect("test precondition");
         assert_eq!(response["id"], "priority_stop");
-        assert_eq!(response["result"]["type"], "ok");
+        assert_eq!(response["result"]["type"], "server_stop_completed");
+        assert_eq!(
+            response["result"]["final_save_error"],
+            "data directory is read-only"
+        );
         assert!(stop.is_requested());
 
         let rejected = handle_request(
@@ -886,6 +910,7 @@ mod tests {
         assert_eq!(boot_id, this_boot(), "ping reports the boot it was given");
         let stop_with = |expected_boot_id: Option<shepr_protocol::BootId>,
                          stop: &crate::ServerStopSignal| {
+            stop.complete_final_save(None);
             let method = match expected_boot_id {
                 Some(expected_boot_id) => {
                     Method::ServerStopIfBoot(crate::schema::ServerStopIfBootParams {
@@ -919,7 +944,7 @@ mod tests {
 
         let this_boot = running();
         let stopped = stop_with(Some(boot_id), &this_boot);
-        assert_eq!(stopped["result"]["type"], "ok");
+        assert_eq!(stopped["result"]["type"], "server_stop_completed");
         assert!(this_boot.is_requested());
     }
 

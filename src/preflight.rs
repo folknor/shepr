@@ -42,6 +42,7 @@ pub(crate) fn run(
     // the terminal too, so asking needs both to be a terminal.
     let can_prompt = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let machines = config.machines();
+    let has_remote_machines = !machines.is_empty();
     let ssh = shepr_remote::MachineSshPreflight::new(paths);
     let mut before_authentication = |machine: &MachineConfig| {
         crate::cli::print_notice(&prompt_notice(machine));
@@ -67,7 +68,7 @@ pub(crate) fn run(
         None
     };
     let local = restart_local(
-        || local_server_status(paths),
+        || local_server_status(paths, has_remote_machines),
         |boot_id| shepr_launch::stop::stop_for_startup_restart(paths, boot_id),
         local_decision,
     );
@@ -83,9 +84,12 @@ pub(crate) fn run(
 /// The status of a running local server of any build, when this client can
 /// start its replacement. A socket override names an existing server but is
 /// not an address this client can launch for, so it gets no restart offer. A
-/// server that cannot be read is reported here, since a multi-machine TUI
-/// can continue without the local endpoint.
-fn local_server_status(paths: &shepr_paths::AppPaths) -> Option<RuntimeStatus> {
+/// server that cannot be read is reported here when remote machines let the
+/// TUI continue; otherwise the later local launch prints its refusal.
+fn local_server_status(
+    paths: &shepr_paths::AppPaths,
+    report_unavailable: bool,
+) -> Option<RuntimeStatus> {
     if !paths.server_address().is_runtime_address() {
         return None;
     }
@@ -98,9 +102,11 @@ fn local_server_status(paths: &shepr_paths::AppPaths) -> Option<RuntimeStatus> {
         Ok(status) => status,
         Err(error) => {
             tracing::warn!(socket = %paths.server_address().socket().display(), error_kind = ?error.kind(), %error, "no restart offer: cannot read the local server");
-            crate::cli::print_notice(&format!(
-                "shepr: cannot check the local server for a restart: {error}"
-            ));
+            if report_unavailable {
+                crate::cli::print_notice(&format!(
+                    "shepr: cannot check the local server for a restart: {error}"
+                ));
+            }
             None
         }
     }
@@ -183,7 +189,7 @@ mod tests {
     use super::words::*;
     use super::*;
     use shepr_config::SshTarget;
-    use shepr_launch::EndpointFailure;
+    use shepr_launch::{EndpointFailure, SshFailureClass};
     use shepr_remote::machine::MachineLabel;
     use shepr_remote::{MachineCheck, PreflightOutcome};
 
@@ -208,10 +214,8 @@ mod tests {
         }
     }
 
-    fn diagnostic(message: &str) -> EndpointFailure {
-        EndpointFailure::from_error(&io::Error::other(
-            shepr_remote::SshFailureDiagnostic::from_ssh_output(Some(255), message),
-        ))
+    fn ssh_failure(class: SshFailureClass, message: &str) -> EndpointFailure {
+        EndpointFailure::ssh(class, message)
     }
 
     #[test]
@@ -235,26 +239,32 @@ mod tests {
             outcome(&machines[0], MachineCheck::Ready, None),
             outcome(
                 &machines[1],
-                MachineCheck::Offline(diagnostic("Connection refused")),
+                MachineCheck::Offline(ssh_failure(SshFailureClass::Link, "Connection refused")),
                 None,
             ),
             // The check that followed the prompt found the machine fine.
             outcome(&machines[2], MachineCheck::Ready, Some(Ok(()))),
             outcome(
                 &machines[3],
-                MachineCheck::NeedsAuthentication(diagnostic("Permission denied (publickey)")),
+                MachineCheck::NeedsAuthentication(ssh_failure(
+                    SshFailureClass::Authentication,
+                    "Permission denied (publickey)",
+                )),
                 Some(Err(shepr_remote::AuthenticationError::Exited(
                     std::os::unix::process::ExitStatusExt::from_raw(255 << 8),
                 ))),
             ),
             outcome(
                 &machines[4],
-                MachineCheck::HostKey(diagnostic("Host key verification failed.")),
+                MachineCheck::HostKey(ssh_failure(
+                    SshFailureClass::HostKey,
+                    "Host key verification failed.",
+                )),
                 None,
             ),
             outcome(
                 &machines[5],
-                MachineCheck::Incompatible(diagnostic("another build")),
+                MachineCheck::Incompatible(EndpointFailure::incompatible("another build")),
                 None,
             ),
         ];
@@ -274,14 +284,18 @@ mod tests {
         let outcomes = [
             outcome(
                 &machines[0],
-                MachineCheck::Failed(diagnostic(
+                MachineCheck::Failed(ssh_failure(
+                    SshFailureClass::Configuration,
                     "/home/u/.ssh/config: line 12: Bad configuration option: hostkeyalgorithms",
                 )),
                 None,
             ),
             outcome(
                 &machines[1],
-                MachineCheck::Failed(diagnostic("Connection closed by host port 22")),
+                MachineCheck::Failed(ssh_failure(
+                    SshFailureClass::RemoteRejected,
+                    "Connection closed by host port 22",
+                )),
                 None,
             ),
         ];
@@ -311,7 +325,8 @@ mod tests {
             "Host key verification failed.",
             "REMOTE HOST IDENTIFICATION HAS CHANGED!",
         ] {
-            let hints = machine_failure_hints(&diagnostic(message), &target);
+            let hints =
+                machine_failure_hints(&ssh_failure(SshFailureClass::HostKey, message), &target);
             assert_eq!(hints.len(), 1, "{message}");
             assert!(hints[0].contains("known_hosts"), "{hints:?}");
         }
@@ -321,7 +336,10 @@ mod tests {
             "remote server status failed: user@host: Permission denied (keyboard-interactive).",
             "SIGN_AND_SEND_PUBKEY: SIGNING FAILED for ED25519 from agent: agent refused operation",
         ] {
-            let hints = machine_failure_hints(&diagnostic(message), &target);
+            let hints = machine_failure_hints(
+                &ssh_failure(SshFailureClass::Authentication, message),
+                &target,
+            );
             assert_eq!(hints.len(), 2, "{message}");
             assert!(
                 hints[0].contains("`ssh 'host name'`"),
@@ -331,7 +349,10 @@ mod tests {
         }
 
         let configuration = machine_failure_hints(
-            &diagnostic("Bad owner or permissions on /home/u/.ssh/config"),
+            &ssh_failure(
+                SshFailureClass::Configuration,
+                "Bad owner or permissions on /home/u/.ssh/config",
+            ),
             &target,
         );
         assert!(
@@ -341,7 +362,10 @@ mod tests {
 
         // A host-key refusal named alongside a denied key is a host-key failure.
         let both = machine_failure_hints(
-            &diagnostic("Permission denied (publickey). Host key verification failed."),
+            &ssh_failure(
+                SshFailureClass::HostKey,
+                "Permission denied (publickey). Host key verification failed.",
+            ),
             &target,
         );
         assert!(
@@ -366,7 +390,10 @@ mod tests {
         let machines = [machine("build")];
         let outcomes = [outcome(
             &machines[0],
-            MachineCheck::NeedsAuthentication(diagnostic("Permission denied (publickey)")),
+            MachineCheck::NeedsAuthentication(ssh_failure(
+                SshFailureClass::Authentication,
+                "Permission denied (publickey)",
+            )),
             Some(Ok(())),
         )];
         let notices = result_notices(&outcomes, true);
@@ -379,7 +406,10 @@ mod tests {
         let machines = [machine("build")];
         let outcomes = [outcome(
             &machines[0],
-            MachineCheck::NeedsAuthentication(diagnostic("Permission denied (publickey)")),
+            MachineCheck::NeedsAuthentication(ssh_failure(
+                SshFailureClass::Authentication,
+                "Permission denied (publickey)",
+            )),
             None,
         )];
         assert!(result_notices(&outcomes, true).is_empty());
@@ -460,7 +490,7 @@ mod tests {
         });
 
         let status =
-            local_server_status(&paths).expect("starting server settles to a running status");
+            local_server_status(&paths, true).expect("starting server settles to a running status");
         server.join().expect("fake server thread");
         assert_eq!(status.build_id.to_string(), other_build());
         assert_eq!(

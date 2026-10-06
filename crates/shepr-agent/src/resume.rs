@@ -261,11 +261,6 @@ impl PersistedAgentSession {
         session.is_valid_identity().then_some(session)
     }
 
-    pub fn from_report(source: &str, session_ref: AgentSessionRef) -> Option<Self> {
-        let source = AgentSource::parse(source)?;
-        Self::new(source, session_ref)
-    }
-
     /// Build the resume command for this validated identity. Construction
     /// admits only agents with resume support and a nonempty executable, so
     /// planning cannot fail after a session has been accepted.
@@ -320,17 +315,16 @@ impl AgentResumePlan {
         &self.session
     }
 
-    /// The arguments after the executable, which the constructor requires.
-    pub fn args(&self) -> &[String] {
-        &self.argv[1..]
-    }
-
     pub fn to_shell_command(&self) -> String {
         shepr_core::shell_quote::join_argv(&self.argv)
     }
 
     /// Construct an explicit command for this resume identity. The executable
     /// must be nonempty, just as for commands derived from agent descriptors.
+    /// Cross-crate tests need fake programs to exercise launch failures and
+    /// lifecycle ordering without running installed agents. The fixture crate
+    /// cannot construct this private representation itself; textlint restricts
+    /// this constructor to that crate. Production plans come from descriptors.
     pub fn for_command(
         session: &PersistedAgentSession,
         program: String,
@@ -469,8 +463,8 @@ mod tests {
             });
             assert!(serde_json::from_value::<PersistedAgentSession>(saved).is_err());
         }
-        let session = PersistedAgentSession::from_report(
-            "shepr:codex",
+        let session = PersistedAgentSession::new(
+            crate::AgentSource::parse("shepr:codex").expect("bundled test source"),
             AgentSessionRef::id("session").expect("session ID"),
         )
         .expect("official session");

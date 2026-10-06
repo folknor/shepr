@@ -75,7 +75,7 @@ impl App {
     ) -> (T, bool) {
         let before = self.state.shell_projection_revision();
         let result = apply(self);
-        (result, self.state.shell_projection_revision() != before)
+        (result, !self.state.shell_projection_is_current(before))
     }
 
     pub(crate) fn handle_api_request_with_render(

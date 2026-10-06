@@ -44,25 +44,3 @@ decoder timing from `limits`, and pass a clock and timer object into the kits; t
 Rust clock textlints do not reach `.js` / `.ts`. Also,
 `TOML_BASIC_STRING_DELIMITER_BYTES = 2` (the two quote characters, a `with_capacity`
 hint) poses as a tunable; mark it `limits-exempt` at the use or write `len() + 2`.
-
-## VAL-058 - Request ids, "is this build" and similar wire facts are spelled per call site
-
-Reported by: server-lifecycle.
-
-`shepr-api` now has a request id type with constructors (ping, summary, operator
-stop, startup-restart stop, detect capture and explain), used by the API client.
-Still spelled as literals: the request ids and a local error response id in
-`src/cli/detect.rs`, and the stop request in `shepr-launch/src/stop.rs` (which
-still sends one id for an operator stop and the startup restart) and its status
-fake in `shepr-launch/src/status.rs`. Separately, "is this build" has two spellings:
-`status.build_id.is_this_build()` (launch, preflight, remote) and
-`BuildIdentity::for_this_build().matches(..)` (`cli/status.rs`). Pick one.
-
-## VAL-059 - Server lifecycle tunables: unused seams, misnamed values, no injection points
-
-Reported by: server-lifecycle.
-
-- `launch_with` and `acquire_launch_lock_with` take `now` / `sleep` seams that every
-  test fills with `Instant::now` and `std::thread::sleep`, so the tests run on real
-  time and `a_holder_that_never_leaves..` asserts a 2..=4 restart count from
-  wall-clock pacing. Drive them with a fake clock or drop the seam.

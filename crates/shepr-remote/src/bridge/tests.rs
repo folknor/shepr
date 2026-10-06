@@ -105,10 +105,9 @@ fn upload_cancellation_preserves_pending_endpoint_download() {
     assert_eq!(output, FINAL);
 }
 
-/// Whether `error` came from ssh, the link or a bounded command timeout rather
-/// than from a remote command, so nothing is known about the remote install.
-fn failed_before_remote_result(error: &io::Error) -> bool {
-    SshFailureDiagnostic::from_error(error).failed_before_remote_result()
+/// Whether the failure leaves the remote executable's discovery knowledge intact.
+fn preserves_discovery(error: &io::Error) -> bool {
+    crate::failure::failure_evidence(error).preserves_discovery()
 }
 
 fn upload_test_streams() -> (
@@ -387,7 +386,7 @@ fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
     stream.read_to_end(&mut Vec::new()).expect("failed SSH EOF");
     let failure = bridge.reported_failure().expect("SSH diagnostic");
     assert!(failure.to_string().contains("Connection refused"));
-    assert!(failed_before_remote_result(&failure));
+    assert!(preserves_discovery(&failure));
     drop(bridge);
     assert_eq!(
         std::fs::read_dir(scratch.path())
@@ -410,7 +409,10 @@ fn bridge_worker_failure_is_returned_once_and_drop_is_safe() {
         }))),
     };
     let error = bridge.reported_failure().expect("worker diagnostic");
-    assert!(SshFailureDiagnostic::from_error(&error).is_local_setup_failure());
+    assert_eq!(
+        EndpointFailure::from_error(&error).cause(),
+        FailureCause::LocalSetup
+    );
     assert!(error.to_string().contains("test failure"));
     assert!(bridge.reported_failure().is_none());
     drop(bridge);
@@ -427,7 +429,7 @@ fn only_ssh_own_exit_code_counts_as_failing_before_a_remote_result() {
         exit_status(SSH_OWN_FAILURE_EXIT_CODE),
         b"Connection refused",
     );
-    assert!(failed_before_remote_result(&link));
+    assert!(preserves_discovery(&link));
     assert_eq!(link.kind(), io::ErrorKind::ConnectionAborted);
     assert_eq!(
         link.to_string(),
@@ -439,7 +441,7 @@ fn only_ssh_own_exit_code_counts_as_failing_before_a_remote_result() {
         exit_status(REMAPPED_REMOTE_255_EXIT_CODE),
         b"remote bridge failed",
     );
-    assert!(!failed_before_remote_result(&remapped));
+    assert!(!preserves_discovery(&remapped));
     let remapped_message = remapped.to_string();
     assert!(remapped_message.contains(&format!(
         "remote status {SSH_OWN_FAILURE_EXIT_CODE} is remapped to {REMAPPED_REMOTE_255_EXIT_CODE}"
@@ -448,16 +450,16 @@ fn only_ssh_own_exit_code_counts_as_failing_before_a_remote_result() {
         "a native {REMAPPED_REMOTE_255_EXIT_CODE} is indistinguishable"
     )));
     let missing = ssh_bridge_exit_error(exit_status(127), b"sh: 1: exec: /old/shepr: not found");
-    assert!(!failed_before_remote_result(&missing));
+    assert!(!preserves_discovery(&missing));
     assert_eq!(
         missing.to_string(),
         "remote command failed (exit status 127): sh: 1: exec: /old/shepr: not found"
     );
-    assert!(failed_before_remote_result(&io::Error::new(
+    assert!(preserves_discovery(&io::Error::new(
         io::ErrorKind::TimedOut,
         "handshake timed out"
     )));
-    assert!(!failed_before_remote_result(&io::Error::new(
+    assert!(!preserves_discovery(&io::Error::new(
         io::ErrorKind::UnexpectedEof,
         "closed before welcome"
     )));
@@ -496,7 +498,10 @@ fn remote_bridge_failures_need_attention_only_when_the_host_must_be_fixed() {
         assert!(!failure.to_string().contains("file logging"));
         // A fault on the remote host is not reported as local setup.
         assert!(
-            !SshFailureDiagnostic::from_error(&error).is_local_setup_failure(),
+            !matches!(
+                EndpointFailure::from_error(&error).cause(),
+                FailureCause::LocalSetup | FailureCause::InvalidLocalSetup
+            ),
             "{class:?}"
         );
     }

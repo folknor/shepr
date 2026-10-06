@@ -355,20 +355,39 @@ fn wait_for_server_socket_to_settle_until(
     deadline: Instant,
     timeout: Duration,
 ) -> Result<SettledServer, LaunchError> {
-    // clock-io-ok: bounds a wait on another process's real socket.
+    let mut probe = || probe_server(paths);
+    wait_for_server_socket_to_settle_until_with(
+        paths,
+        deadline,
+        timeout,
+        &mut probe,
+        &mut real_now,
+        &mut std::thread::sleep,
+    )
+}
+
+fn wait_for_server_socket_to_settle_until_with(
+    paths: &shepr_paths::AppPaths,
+    deadline: Instant,
+    timeout: Duration,
+    probe: &mut impl FnMut() -> io::Result<Probed>,
+    now: &mut impl FnMut() -> Instant,
+    sleep: &mut impl FnMut(Duration),
+) -> Result<SettledServer, LaunchError> {
+    // clock-io-ok: production callers bound a wait on another process's real socket.
     loop {
-        match probe_server(paths)? {
+        match probe()? {
             Probed::NoServer => return Ok(SettledServer::NoServer),
             Probed::Running(status) => return Ok(SettledServer::Running(status)),
             Probed::Unresponsive => return Ok(SettledServer::Unresponsive),
             Probed::Starting | Probed::Stopping => {}
         }
-        // clock-io-ok: the same real-socket wait.
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        // clock-io-ok: production callers use the same real-socket wait.
+        let remaining = deadline.saturating_duration_since(now());
         if remaining.is_zero() {
             return Err(server_transition_timeout(paths, timeout));
         }
-        std::thread::sleep(LIFECYCLE_POLL_INTERVAL.min(remaining));
+        sleep(LIFECYCLE_POLL_INTERVAL.min(remaining));
     }
 }
 
@@ -847,14 +866,10 @@ fn launch_with(
         let nothing_listens = matches!(probed, Probed::NoServer);
         if let Probed::Running(status) = probed {
             if status.build_id.is_this_build() {
-                // Empty startup diagnostics after readiness. This is not a
-                // lifetime cap: a daemon whose file logging failed may keep
-                // stderr here, unbounded. A launcher cannot cap it after it
-                // exits: a pipe needs an owner that keeps draining it, and an
-                // rlimit would also cap the server's other file writes. The
-                // cap has to come from the server redirecting its own stderr
-                // to a bounded sink when file logging fails, which it does not
-                // do yet.
+                // Empty startup diagnostics after readiness. The server
+                // bounds what it writes here after that itself: it points
+                // stderr at /dev/null once its log is running, and without a
+                // log it reports only a capped number of panics.
                 if let Err(error) = boot_log_handle.set_len(0) {
                     tracing::debug!(%error, "could not empty the server boot log");
                 }

@@ -99,7 +99,10 @@ impl PaneRuntimeFixture for PaneRuntime {
     }
 
     fn test_process_pty_bytes(&self, bytes: &[u8]) {
-        self.output_writer().begin().write(bytes);
+        self.output_writer()
+            .begin()
+            .seed_at(bytes, Instant::now())
+            .expect("seed terminal");
     }
 
     fn test_contend_during_dirty_collection(
@@ -124,7 +127,10 @@ impl PaneRuntimeFixture for PaneRuntime {
             let took_core = early.is_some();
             ready_tx.send(()).expect("test ready channel is open");
             release_rx.recv().expect("test releases the waiting writer");
-            early.unwrap_or_else(|| writer.begin()).write(&bytes);
+            early
+                .unwrap_or_else(|| writer.begin())
+                .seed_at(&bytes, Instant::now())
+                .expect("seed terminal");
             took_core
         });
         (release_tx, handle)
@@ -292,23 +298,28 @@ pub(crate) fn test_workspace_id(id: &str) -> shepr_protocol::WorkspaceId {
         .unwrap_or_else(|_| panic!("{id:?} is not a canonical workspace id"))
 }
 
+/// Inspect a successful load in tests without putting a lossy projection on
+/// the production enum, whose callers must handle missing and unusable files.
+pub(crate) trait SessionLoadFixture {
+    fn into_snapshot(self) -> Option<shepr_mux::persist::schema::SessionSnapshot>;
+}
+
+impl SessionLoadFixture for shepr_mux::persist::SessionLoad {
+    fn into_snapshot(self) -> Option<shepr_mux::persist::schema::SessionSnapshot> {
+        match self {
+            Self::Loaded(snapshot) => Some(snapshot),
+            Self::Missing | Self::Unusable(_) => None,
+        }
+    }
+}
+
 /// A Codex resume plan for `session_id`, launching `argv` instead of the real
 /// resume command. The validated id rejects obsolete composite identities.
 pub(crate) fn test_codex_plan(
     session_id: &str,
     argv: Vec<String>,
 ) -> shepr_agent::resume::AgentResumePlan {
-    use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
-    use shepr_agent::{AgentSource, IntegrationTarget};
-    let session = PersistedAgentSession::new(
-        AgentSource::new(IntegrationTarget::Codex),
-        AgentSessionRef::id(session_id).expect("test session id is valid"),
-    )
-    .expect("test session is a Codex session");
-    let mut argv = argv.into_iter();
-    let program = argv.next().expect("test resume command has an executable");
-    shepr_agent::resume::AgentResumePlan::for_command(&session, program, argv.collect())
-        .expect("test resume command has a nonempty executable")
+    shepr_test_fixtures::codex_resume_plan(session_id, argv)
 }
 
 /// An API reply as the JSON a client would read.

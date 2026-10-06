@@ -37,6 +37,12 @@ pub const STATUS_REQUEST_TIMEOUT: Duration = shepr_api::client::STATUS_REQUEST_T
 /// server from filling the runtime directory, which is usually a small tmpfs.
 pub(crate) const BOOT_LOG_MAX_BYTES: u64 = 1024 * 1024;
 
+/// How many panics a launched server whose own log could not be opened
+/// reports to its boot log after readiness, its only record then. The first
+/// reports are the ones that explain a failure; the cap keeps a panic that
+/// repeats for the server's life from growing the file without limit.
+pub const BOOT_LOG_PANIC_REPORTS: usize = 8;
+
 /// Time allowed for the sibling `shepr-server --version` that `status client`
 /// runs to report the installed pair. It prints one line and exits, so a longer
 /// wait means a broken or hung binary; the deadline keeps a remote discovery

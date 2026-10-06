@@ -96,8 +96,11 @@ mod tests {
         // it owns the state only once a session anchors it.
         let session = shepr_agent::resume::AgentSessionRef::id("session").expect("session ref");
         ownership.set_persisted_agent_session(
-            shepr_agent::resume::PersistedAgentSession::from_report("shepr:omp", session.clone())
-                .expect("persisted session"),
+            shepr_agent::resume::PersistedAgentSession::new(
+                shepr_agent::AgentSource::parse("shepr:omp").expect("bundled test source"),
+                session.clone(),
+            )
+            .expect("persisted session"),
         );
         let mutation = ownership
             .set_hook_authority_at("shepr:omp", AgentState::Idle, Some(session), None, now)

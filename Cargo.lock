@@ -1626,6 +1626,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "serde",
+ "shepr-agent",
  "shepr-config",
  "shepr-core",
  "shepr-paths",

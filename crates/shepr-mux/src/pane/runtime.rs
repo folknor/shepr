@@ -119,6 +119,8 @@ impl PaneOutputWriter {
     }
 
     /// Return immediately if the core is busy or poisoned.
+    /// Cross-crate contention tests must observe lock acquisition without
+    /// blocking or publishing a revision; textlint confines this seam to tests.
     pub fn try_begin(&self) -> Option<PaneOutputWrite<'_>> {
         Some(PaneOutputWrite {
             writer: self,
@@ -131,9 +133,10 @@ impl PaneOutputWrite<'_> {
     /// Process `bytes` in the terminal parser and advance content revisions.
     /// Effects produced by the parser are intentionally not dispatched here;
     /// this seam is for tests that need to seed or mutate terminal contents.
-    pub fn write(self, bytes: &[u8]) {
-        // clock-io-ok: this fixture adapter seeds a terminal without live IO.
-        self.process(bytes, std::time::Instant::now()).ok();
+    pub fn seed_at(self, bytes: &[u8], now: std::time::Instant) -> std::io::Result<()> {
+        self.process(bytes, now)
+            .map(|_| ())
+            .map_err(|_| std::io::Error::other("terminal core is poisoned"))
     }
 
     fn process(self, bytes: &[u8], now: std::time::Instant) -> ProcessBytesResult {
@@ -185,6 +188,9 @@ impl PaneRuntime {
     /// terminal starts with `screen` written to it. `detection_reset` is the
     /// signal a detection task would wait on; with none running, the caller
     /// may watch it to see the resets the runtime is asked for.
+    /// This constructor is the ChildIo double seam: the fixture crate cannot
+    /// depend on mux, whose tests already depend on it. Textlint confines
+    /// callers to tests; production creates runtimes through pane launches.
     pub fn with_child_io(
         geometry: shepr_core::geometry::PaneGeometry,
         scrollback: shepr_core::scrollback::ScrollbackBudget,
@@ -217,6 +223,9 @@ impl PaneRuntime {
 
     /// A parser-only writer for tests that feed bytes into the terminal.
     /// The PTY reader uses the same parser but also dispatches its read effects.
+    /// Its owned handle lets contention tests outlive the fixture runtime;
+    /// moving it to the fixture crate would require exposing the core itself.
+    /// Textlint rejects production calls to this parser-only seam.
     pub fn output_writer(&self) -> PaneOutputWriter {
         PaneOutputWriter {
             pane_id: self.pane_id,
@@ -407,7 +416,10 @@ impl PaneRuntime {
     }
 
     pub fn test_process_pty_bytes(&self, bytes: &[u8]) {
-        self.output_writer().begin().write(bytes);
+        self.output_writer()
+            .begin()
+            .seed_at(bytes, std::time::Instant::now())
+            .expect("seed terminal");
     }
 
     /// Seed the cwd arbitration state a PTY reader and a save would leave:
@@ -479,7 +491,10 @@ mod tests {
         let writer = runtime.output_writer();
         drop(runtime);
         assert!(cwd.upgrade().is_none());
-        writer.begin().write(b"still usable");
+        writer
+            .begin()
+            .seed_at(b"still usable", std::time::Instant::now())
+            .expect("seed terminal");
     }
 
     /// Runs the reader's exit callback and returns the reason it recorded and
@@ -628,7 +643,11 @@ mod tests {
         assert!(writer.try_begin().is_none());
         drop(write);
         assert_eq!(runtime.read().content_revision(), before);
-        writer.try_begin().expect("unlocked core").write(b"hello");
+        writer
+            .try_begin()
+            .expect("unlocked core")
+            .seed_at(b"hello", std::time::Instant::now())
+            .expect("seed terminal");
         assert!(runtime.read().content_revision() > before);
         assert!(runtime.visible_text().contains("hello"));
     }
@@ -640,6 +659,12 @@ mod tests {
         poison_terminal_core(&writer);
 
         assert!(writer.try_begin().is_none());
+        assert!(
+            writer
+                .begin()
+                .seed_at(b"unwritten", std::time::Instant::now())
+                .is_err()
+        );
     }
 
     #[tokio::test]

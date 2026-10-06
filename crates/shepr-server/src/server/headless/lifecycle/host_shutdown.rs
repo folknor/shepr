@@ -595,6 +595,7 @@ mod tests {
         for (already_preparing, shutdown_races_inhibit) in
             [(false, false), (true, false), (false, true)]
         {
+            // host-program-ok: a private dbus-daemon is the subject of this D-Bus monitor test.
             let mut bus = PrivateBus(
                 shepr_test_support::command_in_scratch("dbus-daemon", "private-dbus")
                     .args(["--session", "--nofork", "--print-address=1"])

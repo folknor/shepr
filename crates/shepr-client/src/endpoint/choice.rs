@@ -7,11 +7,16 @@ mod preparing;
 pub(crate) use preparing::*;
 
 /// The live or stale endpoint presentation, and the move toward the one the client wants.
-/// The shell and transport routing both derive their endpoint identity from this owner. Plain data: no method takes the registry or
-/// sends anything; the I/O lives in `endpoint::view`, sequenced by the endpoint hub, the
-/// only production code that transitions it.
+/// The shell and transport routing both derive their endpoint identity from this owner. Plain
+/// data: no method takes the registry or sends anything. The endpoint hub and its view steps
+/// own runtime transitions; launch only chooses the initial local state.
 #[derive(Debug)]
-pub(crate) enum EndpointChoice {
+pub(crate) struct EndpointChoice {
+    state: ChoiceState,
+}
+
+#[derive(Debug)]
+enum ChoiceState {
     /// The endpoint is selected and on screen.
     Showing(ClientEndpointId),
     /// `to` is selected and not on screen yet.
@@ -113,34 +118,48 @@ pub(crate) struct Committed {
 }
 
 impl EndpointChoice {
+    /// The shell's initial presentation before the launch outcome is known.
+    pub(crate) fn initial_local() -> Self {
+        Self::showing(ClientEndpointId::Local)
+    }
+
+    /// The launch's local endpoint could not be reached: nothing is shown, waiting for Local.
+    pub(in crate::endpoint) fn initial_local_waiting() -> Self {
+        Self::waiting_for(ClientEndpointId::Local)
+    }
+
     /// Launch with Local connected.
-    pub(crate) fn showing(endpoint: ClientEndpointId) -> Self {
-        Self::Showing(endpoint)
+    pub(in crate::endpoint) fn showing(endpoint: ClientEndpointId) -> Self {
+        Self {
+            state: ChoiceState::Showing(endpoint),
+        }
     }
 
     /// Launch with Local unreachable: nothing shown, waiting for `to`.
-    pub(crate) fn waiting_for(to: ClientEndpointId) -> Self {
-        Self::Moving(Move {
-            from: Presentation::Stale(to.clone()),
-            to,
-            stage: MoveStage::Waiting {
-                focus: LocationTarget::Machine,
-            },
-        })
+    pub(in crate::endpoint) fn waiting_for(to: ClientEndpointId) -> Self {
+        Self {
+            state: ChoiceState::Moving(Move {
+                from: Presentation::Stale(to.clone()),
+                to,
+                stage: MoveStage::Waiting {
+                    focus: LocationTarget::Machine,
+                },
+            }),
+        }
     }
     /// The endpoint whose live or stale presentation the client draws.
     pub(crate) fn presented(&self) -> &ClientEndpointId {
-        match self {
-            Self::Showing(endpoint) => endpoint,
-            Self::Moving(movement) => movement.from.endpoint(),
+        match &self.state {
+            ChoiceState::Showing(endpoint) => endpoint,
+            ChoiceState::Moving(movement) => movement.from.endpoint(),
         }
     }
 
     /// The live endpoint eligible for input and inbound host effects.
     pub(crate) fn live(&self) -> Option<&ClientEndpointId> {
-        match self {
-            Self::Showing(e) => Some(e),
-            Self::Moving(m) => m.from.live(),
+        match &self.state {
+            ChoiceState::Showing(e) => Some(e),
+            ChoiceState::Moving(m) => m.from.live(),
         }
     }
 
@@ -166,19 +185,19 @@ impl EndpointChoice {
     /// target again only replaces its navigation (and rearms a failed move); anything else
     /// starts a new move from the shown endpoint. The pick's navigation is its location's
     /// target.
-    pub(crate) fn select(&mut self, destination: Location) -> Selection {
+    pub(in crate::endpoint) fn select(&mut self, destination: Location) -> Selection {
         let Location {
             endpoint,
             target: focus,
         } = destination;
         if self.live() == Some(&endpoint) {
-            *self = Self::Showing(endpoint);
+            self.state = ChoiceState::Showing(endpoint);
             return match focus {
                 LocationTarget::Machine => Selection::Unchanged,
                 navigation => Selection::FocusShown(navigation),
             };
         }
-        if let Self::Moving(m) = self
+        if let ChoiceState::Moving(m) = &mut self.state
             && m.to == endpoint
         {
             match &mut m.stage {
@@ -186,7 +205,7 @@ impl EndpointChoice {
                 _ => m.stage = MoveStage::Waiting { focus },
             }
         } else {
-            *self = Self::Moving(Move {
+            self.state = ChoiceState::Moving(Move {
                 from: if self.live().is_some() {
                     Presentation::Live(self.presented().clone())
                 } else {
@@ -202,18 +221,22 @@ impl EndpointChoice {
     /// Losing the shown connection leaves nothing shown and keeps the selection (a target
     /// being prepared keeps preparing). Losing the target returns to the shown endpoint, or
     /// waits for the target's next connection when nothing is shown.
-    pub(crate) fn connection_lost(&mut self, endpoint: &ClientEndpointId) -> Lost {
+    pub(in crate::endpoint) fn connection_lost(&mut self, endpoint: &ClientEndpointId) -> Lost {
         if self.live() == Some(endpoint) {
-            match self {
-                Self::Showing(e) => *self = Self::waiting_for(e.clone()),
-                Self::Moving(m) => m.from = Presentation::Stale(m.from.endpoint().clone()),
+            match &mut self.state {
+                ChoiceState::Showing(e) => {
+                    self.state = Self::waiting_for(e.clone()).state;
+                }
+                ChoiceState::Moving(m) => {
+                    m.from = Presentation::Stale(m.from.endpoint().clone());
+                }
             }
             Lost::Shown
-        } else if let Self::Moving(m) = self
+        } else if let ChoiceState::Moving(m) = &mut self.state
             && &m.to == endpoint
         {
             if let Some(from) = m.from.live() {
-                *self = Self::Showing(from.clone());
+                self.state = ChoiceState::Showing(from.clone());
             } else {
                 m.stage = MoveStage::Waiting {
                     focus: LocationTarget::Machine,
@@ -226,7 +249,7 @@ impl EndpointChoice {
     }
 
     pub(crate) fn pending_start(&self) -> Option<PendingStart<'_>> {
-        let Self::Moving(m) = self else {
+        let ChoiceState::Moving(m) = &self.state else {
             return None;
         };
         let failed_generation = match m.stage {
@@ -243,13 +266,13 @@ impl EndpointChoice {
 
     /// `Waiting` with a shown `from`: back to `Showing(from)`; returns `to`. Any other state:
     /// unchanged, `None`.
-    pub(crate) fn abandon(&mut self) -> Option<ClientEndpointId> {
-        if let Self::Moving(m) = self
+    pub(in crate::endpoint) fn abandon(&mut self) -> Option<ClientEndpointId> {
+        if let ChoiceState::Moving(m) = &mut self.state
             && matches!(m.stage, MoveStage::Waiting { .. })
             && let Some(from) = m.from.live().cloned()
         {
             let to = m.to.clone();
-            *self = Self::Showing(from);
+            self.state = ChoiceState::Showing(from);
             Some(to)
         } else {
             None
@@ -258,14 +281,14 @@ impl EndpointChoice {
 
     /// `Waiting` or `Failed`: becomes `Preparing`, taking the `Waiting` focus. Any other
     /// state: unchanged.
-    pub(crate) fn begin_preparing(
+    pub(in crate::endpoint) fn begin_preparing(
         &mut self,
         lease: ViewLease,
         view_request: RequestId,
         geometry: TerminalGeometry,
         now: Instant,
     ) {
-        if let Self::Moving(m) = self
+        if let ChoiceState::Moving(m) = &mut self.state
             && !matches!(m.stage, MoveStage::Preparing(_))
         {
             let focus = match &mut m.stage {
@@ -282,17 +305,17 @@ impl EndpointChoice {
         }
     }
     pub(crate) fn preparing(&self) -> Option<&Preparing> {
-        match self {
-            Self::Moving(Move {
+        match &self.state {
+            ChoiceState::Moving(Move {
                 stage: MoveStage::Preparing(p),
                 ..
             }) => Some(p),
             _ => None,
         }
     }
-    pub(crate) fn preparing_mut(&mut self) -> Option<&mut Preparing> {
-        match self {
-            Self::Moving(Move {
+    pub(in crate::endpoint) fn preparing_mut(&mut self) -> Option<&mut Preparing> {
+        match &mut self.state {
+            ChoiceState::Moving(Move {
                 stage: MoveStage::Preparing(p),
                 ..
             }) => Some(p),
@@ -305,8 +328,8 @@ impl EndpointChoice {
 
     /// `Preparing` only: back to `Showing(from)` when `from` exists, else `Failed` on the
     /// lease's generation. Any other state: unchanged, `None`.
-    pub(crate) fn fail_move(&mut self) -> Option<FailedMove> {
-        let Self::Moving(m) = self else {
+    pub(in crate::endpoint) fn fail_move(&mut self) -> Option<FailedMove> {
+        let ChoiceState::Moving(m) = &mut self.state else {
             return None;
         };
         let MoveStage::Preparing(p) = &m.stage else {
@@ -314,7 +337,7 @@ impl EndpointChoice {
         };
         let failed = FailedMove { to: m.to.clone() };
         if let Some(from) = m.from.live() {
-            *self = Self::Showing(from.clone());
+            self.state = ChoiceState::Showing(from.clone());
         } else {
             m.stage = MoveStage::Failed {
                 generation: p.lease().generation,
@@ -324,8 +347,8 @@ impl EndpointChoice {
     }
 
     /// `Preparing` only: becomes `Showing(to)`. Any other state: unchanged, `None`.
-    pub(crate) fn commit(&mut self) -> Option<Committed> {
-        let Self::Moving(m) = self else {
+    pub(in crate::endpoint) fn commit(&mut self) -> Option<Committed> {
+        let ChoiceState::Moving(m) = &self.state else {
             return None;
         };
         if !matches!(m.stage, MoveStage::Preparing(_)) {
@@ -335,8 +358,26 @@ impl EndpointChoice {
             previous: m.from.live().cloned(),
             shown: m.to.clone(),
         };
-        *self = Self::Showing(m.to.clone());
+        self.state = ChoiceState::Showing(m.to.clone());
         Some(committed)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn activate_choice_for_test(
+    shell: &mut crate::shell::ClientShellState,
+    endpoint_id: &ClientEndpointId,
+) -> bool {
+    let choice = super::choice_mut(shell);
+    match choice.preparing() {
+        Some(preparing) if &preparing.lease().endpoint_id == endpoint_id => {
+            choice.commit().is_some()
+        }
+        None if choice.pending_start().is_none() => {
+            *choice = EndpointChoice::showing(endpoint_id.clone());
+            true
+        }
+        Some(_) | None => false,
     }
 }
 

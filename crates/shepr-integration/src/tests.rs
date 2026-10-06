@@ -42,8 +42,8 @@ fn install_path(outcome: &InstallOutcome, role: ArtifactRole) -> PathBuf {
         .clone()
 }
 
-fn kimi_hook_command(hook_path: &Path, action: &str) -> String {
-    hook_command(hook_path, Some(action))
+fn kimi_hook_command(_hook_path: &Path, action: &str) -> String {
+    hook_command(Target::Kimi, Some(action))
 }
 
 fn kimi_config_hooks(config: &str) -> Vec<toml::Value> {
@@ -507,45 +507,57 @@ fn install_claude_uses_claude_config_dir_env() {
 }
 
 #[test]
-fn claude_install_replaces_registrations_from_an_old_config_path_alias() {
+fn claude_install_resolves_a_shared_config_on_each_host() {
     use std::os::unix::fs::symlink;
 
     use shepr_agent::IntegrationTarget as Target;
 
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
-    let shared_dir = base.join("shared-claude");
-    let first_alias = base.join("host-a/claude");
-    let second_alias = base.join("host-b/claude");
-    fs::create_dir_all(&shared_dir).expect("test precondition");
-    fs::create_dir_all(first_alias.parent().expect("test precondition"))
+    let shared_settings = base.join("dotfiles/claude-settings.json");
+    let first_dir = base.join("host-a/home/.claude");
+    let second_dir = base.join("host-b/home/.claude");
+    fs::create_dir_all(shared_settings.parent().expect("test precondition"))
         .expect("test precondition");
-    fs::create_dir_all(second_alias.parent().expect("test precondition"))
-        .expect("test precondition");
-    symlink(&shared_dir, &first_alias).expect("test precondition");
-    symlink(&shared_dir, &second_alias).expect("test precondition");
+    fs::create_dir_all(&first_dir).expect("test precondition");
+    fs::create_dir_all(&second_dir).expect("test precondition");
+    fs::write(&shared_settings, "{}").expect("test precondition");
+    symlink(&shared_settings, first_dir.join("settings.json")).expect("test precondition");
+    symlink(&shared_settings, second_dir.join("settings.json")).expect("test precondition");
 
-    env.set(EnvVar::ClaudeConfigDir, &first_alias);
+    env.set(EnvVar::ClaudeConfigDir, &first_dir);
     install_target_for_test(Target::Claude).expect("first host install");
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
 
-    env.set(EnvVar::ClaudeConfigDir, &second_alias);
-    assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Outdated);
+    env.set(EnvVar::ClaudeConfigDir, &second_dir);
+    assert_eq!(
+        status_of(Target::Claude),
+        IntegrationStatusKind::NotInstalled
+    );
     install_target_for_test(Target::Claude).expect("second host install");
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
 
-    let settings: Value = serde_json::from_str(
-        &fs::read_to_string(shared_dir.join("settings.json")).expect("test precondition"),
-    )
-    .expect("test precondition");
+    assert!(
+        first_dir
+            .join("hooks")
+            .join(CLAUDE_HOOK_INSTALL_NAME)
+            .stat_is_file()
+    );
+    assert!(
+        second_dir
+            .join("hooks")
+            .join(CLAUDE_HOOK_INSTALL_NAME)
+            .stat_is_file()
+    );
+
+    let settings: Value =
+        serde_json::from_str(&fs::read_to_string(&shared_settings).expect("test precondition"))
+            .expect("test precondition");
     let session_start = settings["hooks"]["SessionStart"]
         .as_array()
         .expect("SessionStart registrations");
     assert_eq!(session_start.len(), 1);
-    let expected_command = hook_command(
-        &second_alias.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME),
-        Some("session"),
-    );
+    let expected_command = hook_command(Target::Claude, Some("session"));
     assert_eq!(
         session_start[0]["hooks"][0]["command"].as_str(),
         Some(expected_command.as_str())
@@ -1850,7 +1862,7 @@ fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
         shepr_core::env::EnvVar::SheprBuildProfile.name(),
         shepr_paths::BuildProfile::Release.marker(),
     );
-    let capture = shepr_test_support::capture_hook(command, &socket_path, base, "w1:p2", payload);
+    let capture = shepr_test_support::capture_hook(command, &socket_path, "w1:p2", payload);
     assert!(
         capture.status.success(),
         "the hook must never fail its caller"
@@ -1876,7 +1888,7 @@ fn run_state_hook(
         shepr_core::env::EnvVar::SheprBuildProfile.name(),
         shepr_paths::BuildProfile::Release.marker(),
     );
-    let output = shepr_test_support::capture_hook(command, &socket_path, base, "w1:p2", payload);
+    let output = shepr_test_support::capture_hook(command, &socket_path, "w1:p2", payload);
     (
         output.status.success(),
         output.stderr,
@@ -2037,7 +2049,7 @@ fn run_session_hook(base: &Path, asset: &str, payload: &[u8]) -> (bool, Vec<u8>,
         shepr_core::env::EnvVar::SheprBuildProfile.name(),
         shepr_paths::BuildProfile::Release.marker(),
     );
-    let output = shepr_test_support::capture_hook(command, &socket_path, base, "w1:p2", payload);
+    let output = shepr_test_support::capture_hook(command, &socket_path, "w1:p2", payload);
     (
         output.status.success(),
         output.stderr,
@@ -2157,7 +2169,7 @@ fn claude_hook_stays_silent_in_background_sessions() {
                 shepr_paths::BuildProfile::Release.marker(),
             );
         let output =
-            shepr_test_support::capture_hook(command, &dir.join("s.sock"), &dir, "w1:p2", payload);
+            shepr_test_support::capture_hook(command, &dir.join("s.sock"), "w1:p2", payload);
         assert!(output.status.success(), "{name}: the hook failed");
         assert!(output.stderr.is_empty(), "{name}: the hook wrote to stderr");
         assert_eq!(!output.requests.is_empty(), reports, "{name}");
@@ -2236,13 +2248,7 @@ fn install_cursor_writes_hook_and_updates_hooks_json() {
     assert_eq!(session_start.len(), 1);
     assert_eq!(
         session_start[0].get("command").and_then(Value::as_str),
-        Some(
-            hook_command(
-                &install_path(&installed, ArtifactRole::Hook),
-                Some("session")
-            )
-            .as_str()
-        )
+        Some(hook_command(Target::Cursor, Some("session")).as_str())
     );
     assert!(hooks.get("beforeSubmitPrompt").is_none());
     assert!(hooks.get("beforeShellExecution").is_none());
@@ -2448,10 +2454,7 @@ fn install_mastracode_writes_hook_and_updates_hooks_json() {
             .get("command")
             .and_then(Value::as_str)
             .expect("test precondition");
-        assert_eq!(
-            command,
-            hook_command(&install_path(&installed, ArtifactRole::Hook), Some(action),)
-        );
+        assert_eq!(command, hook_command(Target::Mastracode, Some(action)));
         assert_eq!(
             entries[0].get("type").and_then(Value::as_str),
             Some("command")
@@ -2506,16 +2509,13 @@ fn install_grok_writes_hook_and_config() {
             .expect("test precondition"),
     )
     .expect("test precondition");
-    assert_eq!(
-        config,
-        grok_hook_config(&install_path(&installed, ArtifactRole::Hook)).expect("test precondition")
-    );
+    assert_eq!(config, grok_hook_config().expect("test precondition"));
     let session_start = config["hooks"]["SessionStart"]
         .as_array()
         .expect("test precondition");
     assert_eq!(session_start.len(), 1);
     let command = grok_session_command(&config);
-    assert!(command.starts_with("sh "));
+    assert!(command.starts_with("hook_dir="));
     assert!(command.contains("shepr-agent-state.sh"));
     assert!(command.ends_with(" session"));
 }
@@ -2563,6 +2563,16 @@ fn install_grok_is_idempotent() {
     let second = fs::read_to_string(grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME))
         .expect("test precondition");
     assert_eq!(first, second);
+
+    let config_path = grok_dir.join("hooks").join(GROK_HOOK_CONFIG_NAME);
+    let reformatted = format!("\n{first}\n");
+    fs::write(&config_path, &reformatted).expect("test precondition");
+    assert_eq!(status_of(Target::Grok), IntegrationStatusKind::Current);
+    install_target_for_test(Target::Grok).expect("semantically current install");
+    assert_eq!(
+        fs::read_to_string(config_path).expect("test precondition"),
+        reformatted
+    );
 }
 
 #[test]
@@ -2630,6 +2640,7 @@ fn install_grok_uses_grok_home_env() {
 #[test]
 fn hook_path_strip_rejects_non_array_event_values() {
     let error = super::json_edit::install_json(
+        Target::Claude,
         r#"{"hooks":{"UnrelatedEvent":{}}}"#,
         Path::new("/settings.json"),
         Path::new("/hooks/shepr-agent-state.sh"),
@@ -2774,10 +2785,7 @@ fn install_antigravity_cli_writes_hook_and_updates_hooks_json() {
             .get("command")
             .and_then(Value::as_str)
             .expect("test precondition");
-        assert_eq!(
-            command,
-            hook_command(&install_path(&installed, ArtifactRole::Hook), Some(action),)
-        );
+        assert_eq!(command, hook_command(Target::AntigravityCli, Some(action)));
     }
 
     // The integration is session-only. Antigravity CLI cannot express blocked
@@ -2951,8 +2959,7 @@ fn grok_status_distinguishes_missing_malformed_and_drifted_hook_config() {
     assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
 
     // Correct command but not a command-type hook: grok will not execute it.
-    let session_command =
-        grok_session_command(&grok_hook_config(&hook_path).expect("test precondition"));
+    let session_command = grok_session_command(&grok_hook_config().expect("test precondition"));
     fs::write(
         &config_path,
         format!(
@@ -2964,7 +2971,7 @@ fn grok_status_distinguishes_missing_malformed_and_drifted_hook_config() {
     assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
 
     // A matcher can prevent the expected hook from running.
-    let mut config = grok_hook_config(&hook_path).expect("test precondition");
+    let mut config = grok_hook_config().expect("test precondition");
     config["hooks"]["SessionStart"][0]["matcher"] = json!("(");
     fs::write(
         &config_path,
@@ -2974,7 +2981,7 @@ fn grok_status_distinguishes_missing_malformed_and_drifted_hook_config() {
     assert_eq!(grok_state(), IntegrationStatusKind::Outdated);
 
     // A malformed sibling group makes grok reject the event's hook groups.
-    let mut config = grok_hook_config(&hook_path).expect("test precondition");
+    let mut config = grok_hook_config().expect("test precondition");
     config["hooks"]["SessionStart"]
         .as_array_mut()
         .expect("test precondition")
@@ -3360,7 +3367,6 @@ fn shell_hooks_report_release_sessions_and_reject_dev_panes() {
             let capture = shepr_test_support::capture_hook(
                 command,
                 &dir.join("s.sock"),
-                &dir,
                 "w1:p2",
                 payload.as_bytes(),
             );

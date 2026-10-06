@@ -158,7 +158,7 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let inherited = [
             ("SHEPR_TEST_UNREGISTERED".into(), "inherited".into()),
-            ("SSH_AUTH_SOCK".into(), "/run/user/1000/agent.sock".into()),
+            ("SSH_AUTH_SOCK".into(), "/fixture/runtime/agent.sock".into()),
         ]
         .into_iter()
         .collect();
@@ -172,7 +172,7 @@ mod tests {
         apply_pane_launch_env(
             &mut command,
             &PaneLaunchEnv::new(
-                "/run/user/1000/shepr-test.sock".into(),
+                "/fixture/runtime/shepr.sock".into(),
                 shepr_test_fixtures::id("w1:p1"),
             ),
         );
@@ -201,7 +201,7 @@ mod tests {
         );
         assert_eq!(
             command.get_env("SSH_AUTH_SOCK"),
-            Some(std::ffi::OsStr::new("/run/user/1000/agent.sock")),
+            Some(std::ffi::OsStr::new("/fixture/runtime/agent.sock")),
             "a pane reaches the server's own SSH agent"
         );
         assert_eq!(

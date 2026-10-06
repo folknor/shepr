@@ -40,17 +40,6 @@ quote per shell family, or launch the resumed agent by a path that does not go
 through the interactive shell's grammar. Enforce with a test per accepted shell
 family, or a type pairing a resolved shell with its quoting.
 
-## BUG-014 - A failed final save is reported to no operator command
-
-Reported by: save-shutdown, persistence.
-
-The final save has its own must-use outcome, logs the data directory and the error,
-and makes `run()` exit with failure; its single attempt is deliberate (reasoned in
-`app/session.rs`: retries would lengthen teardown). What remains: `shepr stop`
-reports only that the server went away, so the operator who stopped it learns of a
-failed final save only from the server log. Carry the outcome to the stopping client
-or the stop's exit status.
-
 ## BUG-022 - `SHEPR_BIN_PATH` names the server binary, is set inconsistently, and nothing reads it
 
 Reported by: pane-lifecycle, server-lifecycle.
@@ -145,19 +134,6 @@ read the same indeterminate state as Working. One may be right for its agent,
 but nothing records why Letta's indeterminate progress means a blocker. Needs a
 capture.
 
-## BUG-044 - An agent config shared by hosts with different home paths runs a missing hook on all but one
-
-Reported by: integrations.
-
-Install now removes earlier shepr-generated commands at an old hook path, so a
-changed `HOME`, override or symlink spelling is repaired. What remains: a config
-shared across hosts (a dotfiles symlink) stores one absolute hook path, so each
-host's server launch replaces the other's entry, and on every other host the
-agent runs `sh '<missing path>'`, a failing hook it may show, until that host's
-server launches again. The limit is commented in `json_edit.rs`. Fix: a command
-that resolves the hook path on the host at run time (for example through `$HOME`
-or the agent config directory variable) instead of an absolute path.
-
 ## BUG-060 - The client never heartbeats the local server, though the heartbeat module says it probes every endpoint
 
 Reported by: remote.
@@ -191,13 +167,3 @@ is refused each time. On a host with fail2ban or `MaxAuthTries` accounting this
 can ban the client's address, turning an auth problem into Offline for every
 client on it. Consider not retrying authentication refusals automatically (only
 on operator action or a key-agent change), or a much longer interval.
-
-## BUG-075 - Claude's SessionStart matcher is applied to every Claude hook event
-
-Reported by: the wave review.
-
-`HookEventPolicy::CLAUDE` (formerly `JsonShape::NestedClaude`) puts the SessionStart
-matcher on every event Claude registers. Correct only while Claude registers one
-event; a second event would get a matcher meant for session starts and never fire
-for other sources. Latent. Fix: the matcher belongs to the SessionStart event row,
-not the target.

@@ -542,6 +542,12 @@ mod tests {
         failure_evidence(error).invalidates_executable()
     }
 
+    fn failure_needs_attention(error: &io::Error) -> bool {
+        EndpointFailure::from_error(error)
+            .disposition()
+            .needs_attention()
+    }
+
     #[test]
     fn launch_setup_input_and_runtime_policy_errors_are_fatal() {
         let policy =
@@ -575,13 +581,12 @@ mod tests {
             !is_launch_fatal_setup_error(&error),
             "a runtime root that can return remains retryable: {error}"
         );
-        let diagnostic = SshFailureDiagnostic::from_error(&error);
         assert!(
-            !diagnostic.failed_before_remote_result(),
-            "a missing local runtime root is not an SSH failure"
+            failure_evidence(&error).preserves_discovery(),
+            "a missing local runtime root establishes no remote install evidence"
         );
         assert!(
-            diagnostic.needs_attention(),
+            failure_needs_attention(&error),
             "a missing local runtime root is actionable, not a dropped SSH link"
         );
         assert!(ssh.is_none(), "a failed setup keeps nothing to reuse");
@@ -665,7 +670,7 @@ mod tests {
             "SSH endpoint handshake failed: build mismatch: peer is a different shepr build",
         ));
         assert!(!remote_executable_must_be_rediscovered(&server_mismatch));
-        assert!(SshFailureDiagnostic::from_error(&server_mismatch).needs_attention());
+        assert!(failure_needs_attention(&server_mismatch));
     }
 
     #[test]
@@ -880,7 +885,7 @@ mod tests {
                     |_| panic!("no remote result means no discovery fallback"),
                 )
                 .expect_err("SSH rejection");
-            assert!(SshFailureDiagnostic::from_error(&error).needs_attention());
+            assert!(failure_needs_attention(&error));
             assert!(matches!(probe.executable, ProbeExecutable::Hint(_)));
             assert_eq!(cache.load(), Some(executable("/cached/shepr")));
             let found = probe
@@ -997,19 +1002,22 @@ mod tests {
             Some(SSH_OWN_FAILURE_EXIT_CODE),
             "Permission denied (publickey)",
         );
-        assert!(
-            SshFailureDiagnostic::from_error(&io::Error::other(authentication)).needs_attention()
-        );
+        let authentication = io::Error::other(authentication);
+        assert!(failure_needs_attention(&authentication));
         let host_key = SshFailureDiagnostic::from_ssh_output(
             Some(SSH_OWN_FAILURE_EXIT_CODE),
             "Host key verification failed",
         );
-        assert!(SshFailureDiagnostic::from_error(&io::Error::other(host_key)).needs_attention());
+        let host_key = io::Error::other(host_key);
+        assert!(failure_needs_attention(&host_key));
         let compatibility =
             remote_compatibility_error("matching Shepr is not ready; install or update");
-        let compatibility = SshFailureDiagnostic::from_error(&compatibility);
-        assert!(compatibility.needs_attention());
-        assert!(compatibility.is_remote_compatibility());
+        let compatibility_failure = EndpointFailure::from_error(&compatibility);
+        assert!(compatibility_failure.disposition().needs_attention());
+        assert_eq!(
+            compatibility_failure.disposition(),
+            shepr_launch::FailureDisposition::Incompatible
+        );
         for kind in [
             io::ErrorKind::InvalidInput,
             io::ErrorKind::NotFound,
@@ -1019,44 +1027,44 @@ mod tests {
                 "local setup failure",
                 io::Error::new(kind, "the local operation failed"),
             );
-            let diagnostic = SshFailureDiagnostic::from_error(&error);
-            assert!(diagnostic.is_local_setup_failure(), "{kind}");
-            assert!(diagnostic.needs_attention(), "{kind}");
+            let failure = EndpointFailure::from_error(&error);
+            assert!(
+                matches!(
+                    failure.cause(),
+                    FailureCause::LocalSetup | FailureCause::InvalidLocalSetup
+                ),
+                "{kind}"
+            );
+            assert!(failure.disposition().needs_attention(), "{kind}");
         }
         for kind in [io::ErrorKind::InvalidData, io::ErrorKind::Unsupported] {
             let error = local_setup_error(
                 "local setup failure",
                 io::Error::new(kind, "the local operation failed"),
             );
-            let diagnostic = SshFailureDiagnostic::from_error(&error);
-            assert!(diagnostic.is_local_setup_failure(), "{kind}");
-            assert!(diagnostic.needs_attention(), "{kind}");
+            let failure = EndpointFailure::from_error(&error);
+            assert!(
+                matches!(
+                    failure.cause(),
+                    FailureCause::LocalSetup | FailureCause::InvalidLocalSetup
+                ),
+                "{kind}"
+            );
+            assert!(failure.disposition().needs_attention(), "{kind}");
         }
-        assert!(
-            !SshFailureDiagnostic::from_error(&io::Error::new(
-                io::ErrorKind::TimedOut,
-                "network timed out"
-            ))
-            .needs_attention()
+        let timed_out = io::Error::new(io::ErrorKind::TimedOut, "network timed out");
+        assert!(!failure_needs_attention(&timed_out));
+        let aborted = io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "server shut down during handshake",
         );
-        assert!(
-            !SshFailureDiagnostic::from_error(&io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                "server shut down during handshake"
-            ))
-            .needs_attention()
-        );
+        assert!(!failure_needs_attention(&aborted));
         for message in [
             "Protocol mismatch in unrelated SSH stderr",
             "remote command mentioned protocol in its output",
         ] {
-            assert!(
-                !SshFailureDiagnostic::from_error(&io::Error::new(
-                    io::ErrorKind::ConnectionAborted,
-                    message,
-                ))
-                .needs_attention()
-            );
+            let error = io::Error::new(io::ErrorKind::ConnectionAborted, message);
+            assert!(!failure_needs_attention(&error));
         }
     }
 }

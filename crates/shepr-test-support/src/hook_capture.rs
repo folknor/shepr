@@ -49,8 +49,8 @@ pub struct HookCapture {
 
 /// Runs `command` (a hook asset invocation) with `input` on stdin, the shepr
 /// pane environment pointing at a stand-in API socket bound at `socket_path`,
-/// `TMPDIR` at `scratch_dir`, and [`INHERITED_AGENT_VARIABLES`] removed. Each
-/// connection gets an empty JSON reply.
+/// and [`INHERITED_AGENT_VARIABLES`] removed. Each connection gets an empty
+/// JSON reply.
 ///
 /// A hook that never connects cannot block the call: the socket is polled,
 /// and the poll stops once the hook has exited and the backlog is drained. A
@@ -64,7 +64,6 @@ pub struct HookCapture {
 pub fn capture_hook(
     mut command: Command,
     socket_path: &Path,
-    scratch_dir: &Path,
     pane_id: &str,
     input: &[u8],
 ) -> HookCapture {
@@ -88,7 +87,6 @@ pub fn capture_hook(
         )
         .env(shepr_core::env::EnvVar::SheprSocketPath.name(), socket_path)
         .env(shepr_core::env::ChildEnv::SheprPaneId.name(), pane_id)
-        .env("TMPDIR", scratch_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped());

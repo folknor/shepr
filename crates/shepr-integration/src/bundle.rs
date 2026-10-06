@@ -30,35 +30,15 @@ use shepr_agent::{IntegrationHookAction, IntegrationTarget};
 use shepr_core::env::{ChildEnv, EnvVar, SHEPR_ENV_IN_PANE};
 
 use shepr_agent::resume::AgentSessionStartSource;
-use shepr_api::schema::{
-    Method, PaneReportAgentParams, PaneReportAgentSessionParams, PaneReportAgentState,
-};
+use shepr_api::schema::MethodKind;
 use shepr_paths::BuildProfile;
 
 fn method_state() -> &'static str {
-    Method::PaneReportAgent(PaneReportAgentParams {
-        pane_id: String::new(),
-        source: String::new(),
-        state: PaneReportAgentState::Idle,
-        seq: None,
-        agent_session_id: None,
-        agent_session_path: None,
-    })
-    .traits()
-    .name
+    MethodKind::PaneReportAgent.name()
 }
 
 fn method_session() -> &'static str {
-    Method::PaneReportAgentSession(PaneReportAgentSessionParams {
-        pane_id: String::new(),
-        source: String::new(),
-        seq: None,
-        agent_session_id: None,
-        agent_session_path: None,
-        session_start_source: None,
-    })
-    .traits()
-    .name
+    MethodKind::PaneReportAgentSession.name()
 }
 
 const SOCKET_WAIT: Duration = crate::limits::HOOK_SOCKET_WAIT;
@@ -70,7 +50,7 @@ struct ShellHook {
     gate: Option<&'static str>,
     /// Whether the shell stamps the report's seq when the hook starts.
     early_seq: bool,
-    /// Whether every exit prints an empty JSON object, as the agent expects.
+    /// Whether exits print an empty JSON object, as the agent expects.
     empty_object: bool,
 }
 
@@ -217,8 +197,8 @@ const EARLY_SEQ: &str = r#"# Stamp the report the moment the hook starts. Every 
 hook_seq="$(date +%s%N 2>/dev/null || true)""#;
 
 const EMPTY_OBJECT: &str = r"  # Antigravity CLI expects a JSON object on stdout and this hook never injects
-  # anything, so every exit path emits an empty object.
-  printf '{}\n'";
+  # content, so normal and error exits print a neutral object.
+  printf '{}\n' || true";
 
 fn templates_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/templates")
@@ -422,10 +402,22 @@ fn render_shell(spec: &AssetSpec, hook: ShellHook) -> String {
         None => String::new(),
     };
     let finish_body = if hook.empty_object { EMPTY_OBJECT } else { "" };
+    let finish_trap_reset = if hook.empty_object {
+        "  trap - EXIT HUP INT TERM"
+    } else {
+        ""
+    };
+    let exit_trap = if hook.empty_object {
+        "trap 'finish' EXIT"
+    } else {
+        ""
+    };
     let early_seq = if hook.early_seq { EARLY_SEQ } else { "" };
     let mut values = common;
     values.extend([
         ("FINISH_BODY", finish_body.to_owned()),
+        ("FINISH_TRAP_RESET", finish_trap_reset.to_owned()),
+        ("EXIT_TRAP", exit_trap.to_owned()),
         ("EARLY_SEQ", early_seq.to_owned()),
         ("ACTION_GATE", action_gate),
         ("SHELL_GATE", shell_gate),

@@ -87,8 +87,12 @@ exit candidates observed at the signal time before this capture.
 
 The final save is skipped while host-shutdown saves are frozen, because the
 checkpoint from the warning is the layout to restore. The `session.save.final`
-log records `completed`, `failed`, or `frozen` and the save duration. A failed
-final save is reported as an unclean exit. The final save is deliberately a
+log records the save's outcome (such as `completed`, `failed` or `frozen`) and
+its duration. A failed final save is reported as an unclean exit, and to every
+client whose stop request the server accepted: the answer to `server.stop` and
+`server.stop_if_boot` waits for the final save and carries its error, if any.
+Before removing its socket, the server waits a short bound
+(`STOP_ANSWER_WAIT`) for those answers to be written. The final save is deliberately a
 single attempt with no retry schedule, unlike autosaves and checkpoints: the
 event loop no longer runs, and retries would hold the lease, the socket and
 every stopping client through more unbounded filesystem work. The final save
@@ -119,6 +123,9 @@ present after the final-save log.
 answering, then `STOP_LEASE_WAIT_TIMEOUT` if the data-directory lease remains
 held. `STOP_STATUS_PROBE_TIMEOUT` and `STOP_WAIT_POLL` bound the observations
 within those waits; `STOP_WORST_CASE` summarizes the stop client's own wait
-budget in `crates/shepr-launch/src/limits.rs`. A client timeout does not kill
+budget in `crates/shepr-launch/src/limits.rs`. The wait for the stop request's
+answer, which arrives once the final save is done, shares the
+`STOP_WAIT_TIMEOUT` deadline. A server reporting a failed final save fails the
+stop even when the server then goes. A client timeout does not kill
 the server. In particular, it can expire while the server is still completing
 its unbounded final save or retiring the writer.

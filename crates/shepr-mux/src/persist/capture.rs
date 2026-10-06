@@ -113,6 +113,9 @@ impl CapturedLayout {
     }
 
     /// The layout as it was saved.
+    /// Dependent-crate tests clone it to corrupt the pane pairing while keeping
+    /// the saved layout intact; the fixture crate cannot depend on mux.
+    /// Production recaptures through `recapture`, without inspecting it.
     pub fn snapshot(&self) -> &SessionSnapshot {
         &self.snapshot
     }
@@ -176,6 +179,9 @@ impl PendingCwds {
 
 /// Capture the current app state into a serializable snapshot, refreshing each
 /// runtime's cwd now. A save uses [`capture_deferred`] instead.
+/// Dependent-crate snapshot tests need the resolved cwd without writing a
+/// session file. Keep this seam here because the fixture crate cannot depend
+/// on mux; production uses `capture_job` to defer filesystem reads to the writer.
 pub fn capture(
     workspaces: &WorkspaceSet,
     terminal_runtimes: &PaneRuntimeRegistry,

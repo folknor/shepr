@@ -44,9 +44,11 @@ pub fn create_private_runtime_directory(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Opens the file a launched daemon's stderr goes to, emptied. The daemon
-/// keeps it as its stderr only until its own log is running, then points
-/// stderr at `/dev/null`, so it holds only pre-logging output.
+/// Opens the file a launched daemon's stderr goes to, emptied. The server
+/// keeps it as stderr through startup and points stderr at `/dev/null` at
+/// readiness once its own log is running; one whose log could not be opened
+/// keeps it, writing to it after readiness only a capped number of panic
+/// reports and its exit error.
 ///
 /// A regular file rather than a pipe, so a detached daemon can never block on
 /// a reader that went away. It is opened owner-only without following a

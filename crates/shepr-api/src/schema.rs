@@ -306,13 +306,19 @@ macro_rules! define_methods {
             App(AppMethod),
         }
 
+        /// A schema method discriminant without its request parameters.
         #[derive(Clone, Copy)]
-        enum MethodKind {
+        pub enum MethodKind {
             $($socket_variant,)+
             $($app_variant,)+
         }
 
         impl MethodKind {
+            /// The wire method name for this method kind.
+            pub fn name(self) -> &'static str {
+                self.traits().name
+            }
+
             fn traits(self) -> MethodTraits {
                 // Keep each method's logging facts beside its route declaration.
                 match self {

@@ -2078,8 +2078,8 @@ mod tests {
             })
             .await
             .expect("pane child exits");
-            let session = PersistedAgentSession::from_report(
-                "shepr:claude",
+            let session = PersistedAgentSession::new(
+                shepr_agent::AgentSource::parse("shepr:claude").expect("bundled test source"),
                 AgentSessionRef::id("checkpoint-resume").expect("session id"),
             )
             .expect("official session");
@@ -2159,8 +2159,8 @@ mod tests {
             app.state.test_set_workspaces(vec![workspace]);
             app.state.seed_bookmark_index(Some(0));
             app.insert_idle_test_runtime(pane_id);
-            let session = PersistedAgentSession::from_report(
-                "shepr:claude",
+            let session = PersistedAgentSession::new(
+                shepr_agent::AgentSource::parse("shepr:claude").expect("bundled test source"),
                 AgentSessionRef::id("group-killed").expect("session id"),
             )
             .expect("official session");

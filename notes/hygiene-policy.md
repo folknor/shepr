@@ -22,71 +22,6 @@ reported it and says how the fixed form could be enforced.
 
 ---
 
-## POL-003 - Staging leftovers outside the data directory have no owner to reclaim them
-
-Reported by: persistence, integrations.
-
-The data and recovery directories are now swept of staging leftovers at startup
-under the lease, and the session file placement rule is written down in `files.rs`.
-Not swept, deliberately, with the reason at the sweep site and in
-`atomic_replace.rs`: staging leftovers beside an external symlinked session target,
-and leftovers of the detached integration installer in agent directories. Both use
-the same staging names, and a server's data-directory lease does not own agent
-directories or an external target (servers with different XDG state roots can share
-them), so a sweep could delete a live installer's file. Reclaiming them needs a
-shared ownership mechanism for those directories first.
-
-## POL-004 - Integration's `AtomicReplace` keeps its own publish path
-
-Reported by: persistence.
-
-Mux and `ssh_metadata.rs` now use the platform's `prepare_private` /
-`publish_private`. `shepr-integration`'s `AtomicReplace` still wraps the lower-level
-`PreparedFile` itself, because its metadata, permission and deferred-commit policies
-are not the private publisher's defaults; adopt the shared preparation where the
-policies match. The two best-effort cleanup functions stay separate on purpose (each
-logs with its own layer's fields), as commented at both.
-
-## POL-010 - Test-only shortcuts in production APIs, which nothing reports
-
-Reported by: restore-resume, workspace-model, pane-lifecycle, agent-state, persistence, remote.
-
-Production `pub` items whose only callers are tests:
-
-- `shepr-agent`: `AgentResumePlan::for_command(session, program, args)` (used only by
-  the server's `test_support`; it lets any production caller build a plan that types
-  an arbitrary command into a restored shell, in a project that deliberately keeps no
-  way to drive panes), `AgentResumePlan::args()`, `PersistedAgentSession::from_report`
-  and `AgentSource::from_pair`.
-- `shepr-mux`: `TerminalState::plan_agent_resume` (a second writer of
-  `AgentResumeState::Planned` beside restore's `with_pending_agent_resume_plan`; see
-  CLAIM-022) and `TerminalState::set_hook_report_at` (production uses
-  `ownership_mut().set_hook_report_at`); `Workspace::test_from_pane` and
-  `PaneId::from_raw` (by design, per their docs, but nothing stops a production call);
-  `persist::capture` (eager cwd read, used only by server `snapshot_tests.rs`),
-  `SessionLoad::into_snapshot`, `CapturedLayout::snapshot()` and
-  `PendingSave::channel` (an acknowledged seam).
-- pane runtime: `PaneOutputWriter::try_begin`, `PaneOutputWrite::write` (reads the
-  clock and swallows a poisoned-core error with `.ok()`), `PaneRuntime::output_writer`
-  and `PaneRuntime::with_child_io`. Seams are sanctioned over test features; the
-  finding is that `write` and `try_begin` are wider than the seam needs (production's
-  reader uses `begin` plus the private `process`).
-- `shepr-detect`: `AgentOwnership::with_initial_hook_authority` (now held to its one
-  caller by a textlint).
-- `shepr-remote`: `pub use failure::SshFailureDiagnostic` (for one test in
-  `src/preflight.rs`), and seven `SshFailureDiagnostic` queries (`from_message`,
-  `from_local_setup_error`, `is_ssh_process_failure`, `remote_exit_code`,
-  `is_transient_network_failure`, `needs_attention`, `failed_before_remote_result`),
-  now `#[cfg(test)]` inside the production impl: test-only API on a production type.
-  Delete them and assert on `disposition()` and evidence instead.
-
-`shepr-test-fixtures` exists for this; its layering rule does not yet allow
-`shepr-agent` (a one-line change). `scripts/check_dead_test_helpers.py` catches the
-inverse (test helpers nothing calls) but not production `pub` items only tests call;
-extending it to report non-`cfg(test)` public items whose only callers are test code
-would enforce this. A textlint banning `\btest_from_pane\b|\bPaneId::from_raw\b`
-outside test files and `cfg(test)` regions is the cheaper half.
-
 ## POL-021 - Three hand-written delivery retry policies in the plugin kits
 
 Reported by: integrations.
@@ -115,59 +50,61 @@ Reported by: workspace-model.
   client's epoch is always from the current boot's projection, but a client reconnecting
   to a new boot with a cached epoch could match a different tree by accident.
 
-## POL-035 - A daemon that never redirected stderr grows the boot log without bound
+## POL-040 - Wave 9 laterals
 
-Reported by: server-lifecycle.
+Reported by: the wave 9 fixers.
 
-- `launch_with` empties the boot log with `set_len(0)` once its daemon is up; a daemon
-  from a different launch that never redirected stderr (its log file could not be
-  opened, `ServerReady.log_file_unavailable`) keeps the boot log as stderr for life, and
-  nothing caps it once `BOOT_LOG_MAX_BYTES` stops being checked, so its later stderr
-  (panics included) grows a tmpfs file without bound. A launcher-side cap cannot
-  work (the launcher exits; a pipe needs a draining owner; an rlimit hits unrelated
-  writes). The fix is server-side: when file logging fails, the server redirects its
-  own stderr to a bounded sink. The gap is commented at `launch_with`.
-
-## POL-038 - Wave 7 laterals
-
-Reported by: the wave review.
-
-- `shepr_remote::preflight` and the `PreflightSsh` trait are exercised only by that
-  crate's tests; production uses `MachineSshPreflight::run` (a public test-only seam).
-  `RatioDelta::get` is likewise a new `pub` accessor only tests call, and
-  `PtyIoActor::spawn` may now have no production caller.
-- The OSC evidence flag is a process-global `OnceLock`: the first server started in a
-  process fixes it, and a later one never validates its own value (test binaries).
-- `remote-wait-for-server` now classifies every wait failure as Repair, including
-  presence-probe IO errors, which is broader than "setup failure".
-- With no machines configured, a local status failure in preflight is printed and
-  then the launch prints the same refusal again.
-- `api.connection.failed` moved from debug to warn; idle or slow clients that hit the
-  first-line timeout now warn.
-- `pane/launch.rs` tests still use `/run/user/1000/...` literals.
-- `every_session_save_status_roundtrips_as_a_unit_enum` lists the variants by hand.
-- `reader_exit_callback` in `pane/runtime/spawn.rs` carries two `clock-io-ok` markers
-  for one read.
-- `api.rs` and `events.rs` detect a projection change by `revision != before`, which a
-  saturated revision hides (unreachable in practice; render uses
-  `shell_projection_is_current`).
-
-## POL-039 - Wave 8 laterals
-
-Reported by: the wave review.
-
-- `shepr-test-support` `hook_capture.rs` still sets `TMPDIR` for hooks and documents
-  why, though no shipped hook stages files any more.
-- `shepr-server` `agent_report_test_support.rs` validates `ServerConfig::default()`
-  through the real `validate`, so it depends on the host `SHELL` / `PATH` resolving.
-- The client log moved to the client state directory; existing installs keep an
-  orphaned `shepr-client.log` and its rotations in the old data directory.
-- `ApiClient::request_value_with_timeout` now starts the read budget before connect;
-  check `ORDINARY_RESPONSE_TIMEOUT`'s margin over the server bound still holds when
-  connect is slow under a full backlog.
-- `Autosave::is_due` survives only as a `#[cfg(test)]` method on a production type.
-- "Current implies a no-op install" is still unproven: nothing catches a target that
-  reads Current while an install would rewrite different bytes (Cursor's inserted
-  `version` was the example).
-- A non-regular object at an integration asset path is now a `NotRegularFile` error
-  instead of reading as not installed.
+- `shepr-mux` `pane/runtime.rs` still has a `/run/user/1000/shepr-test.sock` literal.
+- `shepr-mux` `pane/terminal/backend.rs` `process_pty_bytes` is a clock-reading
+  production helper that only tests call.
+- `no-borrowed-process-stand-ins` now matches `command_in_scratch("dbus-daemon", ..)`
+  only; other programs spawned through `command_in_scratch` (Git in
+  `app/git_refresh.rs` tests, `/bin/sleep` in mux `pane/launch_status.rs` tests) are not
+  matched. Broaden the rule to every listed program through that helper and audit the
+  markers.
+- A neighbouring API deadline test still runs on a 30 ms real deadline (it asserts the
+  outcome, not elapsed time).
+- Integration hook commands now resolve their hook directory at run time
+  (`"${VAR:-$HOME/...}"`, `exec sh "$hook_dir/..."`), which assumes every agent runs
+  the command through a POSIX shell; the old `sh '<path>' action` only needed word
+  splitting. No test runs a registered command through a shell, so an agent that
+  splits and execs the command itself (Codex, Kimi, Grok, MastraCode, Devin, Cursor
+  are the ones to confirm) would silently stop reporting. Confirm per agent, or add a
+  test running one target's command under `sh -c` with a stand-in hook.
+- `command.rs` `directory_setup` repeats `shepr-core` `env.rs`'s directory rules in
+  shell, held in step only by a comment; no parity test. Its Pi, OMP, OpenCode and Kilo
+  arms exist only for exhaustiveness (those targets register no command).
+- `hook_command` takes `managed_assets(target).next()...unwrap_or_default()`; the
+  default is dead and would silently produce `exec sh "$hook_dir/"`. Read
+  `spec_for(target).primary_asset.path` directly.
+- Integration `tests.rs` `kimi_hook_command(_hook_path, action)` ignores its path
+  argument.
+- The integration `lib.rs` overview lost why the generated assets are committed (bun
+  and server contract tests run them from disk) and the OpenCode TUI selection
+  report's seq-unit id note.
+- Install and status now share subset matching, so a shepr hook the user disabled with
+  an extra field such as `"disabled": true` reads as Current and stays disabled.
+- Nothing in shepr-launch tests a `server_stop_completed` answer carrying an error (the
+  `FinalSaveFailed` path).
+- `ServerStopError::is_boot_mismatch` is true for `FinalSaveFailed` wrapping a boot
+  mismatch, so that combination exits 3 (replaced), not as a save failure.
+- Downgrade only: an older client stopping a newer server reads `server_stop_completed`
+  as a protocol error though the server stops; and a restart-offer stop returning
+  `FinalSaveFailed` says "could not stop the local server" though it stopped.
+- If `HeadlessServer::run` errors before the final save, `complete_final_save` never
+  runs, and a waiting stop request gets an empty answer at process exit and counts as
+  accepted. Completing it with an explicit error from `release_socket_after_save`
+  would close this.
+- `launch_with` empties the boot log (`set_len(0)`) once the server answers as running,
+  usually erasing the ready notice a server writes there when its log file could not
+  be opened, so the operator never learns there is no server log. Surface the boot log
+  before emptying it, or keep it when the server reported no log.
+- `shepr-core` `RatioDelta::get` was removed as test-only and then put back to
+  compile `shepr-server` `app/api/panes/tests.rs`, its one remaining caller; that test
+  can compare deltas without a production accessor.
+- `ServerStopSignal::wait_for_final_save` has no timeout; a server that dies before
+  its final save leaves the stop connection thread blocked until exit.
+- `shepr-remote` `preflight.rs`: the test-only `check_concurrently` duplicates the join
+  and panic-resume block of `MachineSshPreflight::check_round`.
+- The endpoint choice is now guarded three times (a private access token,
+  `pub(in crate::endpoint)` transitions and the textlint); one would do.

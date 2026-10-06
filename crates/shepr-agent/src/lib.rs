@@ -92,7 +92,8 @@ impl ResumeSupport {
 
 const CONVERSATION_FLAG: &str = "--conversation";
 
-/// The action word an installed hook passes to the shepr report command. It is
+/// The action word an integration associates with an event before its bundled
+/// decoder writes a report directly to the server socket. It is
 /// not an `AgentState`: `Session` reports only a session id and carries no
 /// state, and `Working`, `Blocked` and `Idle` are names of the hook-report
 /// vocabulary that the server interprets (and may park or reject by arbitration),

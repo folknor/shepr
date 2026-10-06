@@ -523,12 +523,14 @@ pattern = '\b(?:PathBuf::from|Path::new)\(\s*"\.[A-Za-z_]'
 paths = ["crates/**/*.rs", "src/**/*.rs"]
 message = "a relative dot-directory path resolves against the working directory, which under cargo test is the crate directory; in a test use shepr_test_support::ScratchDir, and for a path only compared or rendered spell it /nonexistent/..."
 
-# The launch and CLI tests below only compare or render these path values; a
-# host-rooted literal there disguises a developer's install or temp directory.
+# Keep this lint to path-only cases: roots elsewhere are often behavior
+# fixtures (OSC cwd, SSH candidates), not developer file locations. These
+# launch, CLI and snapshot tests compare or render path values, so a host-rooted
+# literal there disguises a developer's install or temp directory.
 [[textlint]]
 name = "compared-test-paths-use-nonexistent-root"
 pattern = '/(?:home|tmp)/'
-paths = ["crates/shepr-launch/src/local_server_tests.rs", "src/cli/status.rs"]
+paths = ["crates/shepr-launch/src/local_server_tests.rs", "crates/shepr-server/src/app/snapshot_tests.rs", "src/cli/status.rs"]
 allow_marker = "test-path-ok"
 allow_marker_above = 1
 message = "for a path only compared or rendered use /nonexistent/...; use ScratchDir for filesystem state (test-path-ok: <reason> when conventional path syntax is the behavior)"
@@ -577,7 +579,7 @@ allow_marker_above = 2
 [[textlint]]
 name = "no-borrowed-process-stand-ins"
 preset = "host-programs"
-pattern = '\b(?:(?:Pty)?Command::new|PaneShellConfig::new|interactive_shell|set_test_shell)\(\s*"(?:/usr)?(?:/s?bin/)?(?:sh|bash|dash|zsh|sleep|true|false|yes|cat|echo|printf|head|tr|ps|env|git)"'
+pattern = '\b(?:(?:(?:Pty)?Command::new|PaneShellConfig::new|interactive_shell|set_test_shell)\(\s*"(?:/usr)?(?:/s?bin/)?(?:sh|bash|dash|zsh|sleep|true|false|yes|cat|echo|printf|head|tr|ps|env|git|dbus-daemon)"|command_in_scratch\(\s*"dbus-daemon")'
 message = "spawn a shepr_test_support::fixture script; a borrowed host utility makes the fixture's behaviour the host's to define (host-program-ok: <why> where the host program is the subject)"
 
 [[textlint]]
@@ -942,11 +944,11 @@ kinds = ["normal", "build"]
 
 # Built on the public API of the crates it stands in for. A crate it depends
 # on cannot take it as a dev-dependency without linking a second copy of
-# itself, so the list stays low: config, protocol, pty and termio.
+# itself, so the list stays low: agent, config, protocol, pty and termio.
 [[dependency_rule]]
 name = "shepr-test-fixtures-layer"
 from = "shepr-test-fixtures"
-allow = ["bytes", "serde", "shepr-config", "shepr-core", "shepr-paths", "shepr-protocol", "shepr-pty", "shepr-termio", "tokio"]
+allow = ["bytes", "serde", "shepr-agent", "shepr-config", "shepr-core", "shepr-paths", "shepr-protocol", "shepr-pty", "shepr-termio", "tokio"]
 kinds = ["normal"]
 
 # The dev-edge side of the rule above: every workspace crate the fixtures
@@ -1148,3 +1150,33 @@ exclude = [
 ]
 region = "code"
 message = "initial hook authority is only for malformed persistence fixtures; production must arbitrate reports"
+
+# Cross-crate fixtures need public seams, but production must not use them.
+# Declarations remain available without a test feature; calls stay in tests.
+[[textlint]]
+name = "public-fixture-seams-stay-in-tests"
+pattern = '\b(?:test_from_pane|plan_agent_resume|with_child_io|output_writer|try_begin|seed_at|into_snapshot)\s*\(|\bPaneId::from_raw\s*\(|\bPendingSave::channel\s*\('
+except = ['^\s*pub\s+fn\s+(?:test_from_pane|plan_agent_resume|with_child_io|output_writer|try_begin|seed_at|into_snapshot)\s*\(']
+paths = ["crates/**/*.rs", "src/**/*.rs", "tests/**/*.rs"]
+exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs", "**/test_support.rs", "**/*_test_support.rs", "crates/shepr-test-fixtures/src/**"]
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+region = "code"
+message = "public fixture seams are for tests; use production allocation, launch, restore and persistence paths"
+
+[[textlint]]
+name = "fake-resume-commands-stay-in-fixtures"
+pattern = '\bfor_command\s*\('
+except = ['^\s*pub\s+fn\s+for_command\s*\(']
+paths = ["crates/**/*.rs", "src/**/*.rs", "tests/**/*.rs"]
+exclude = ["crates/shepr-test-fixtures/src/**"]
+region = "code"
+message = "fake agent resume commands belong in shepr-test-fixtures; production plans come from agent descriptors"
+
+[[textlint]]
+name = "eager-session-capture-stays-in-tests"
+pattern = '\bpersist::capture\b'
+paths = ["crates/**/*.rs", "src/**/*.rs"]
+exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs", "**/test_support.rs"]
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+region = "code"
+message = "use capture_job in production to defer cwd reads to the persistence worker"

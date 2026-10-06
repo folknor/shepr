@@ -282,13 +282,7 @@ mod tests {
         .to_string()
         .into_bytes();
         input.push(b'\n');
-        let output = shepr_test_support::capture_hook(
-            command,
-            &socket_path,
-            scratch.path(),
-            pane_id,
-            &input,
-        );
+        let output = shepr_test_support::capture_hook(command, &socket_path, pane_id, &input);
         assert!(
             output.status.success(),
             "broken Claude asset exited unsuccessfully"

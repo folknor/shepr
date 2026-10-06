@@ -177,7 +177,7 @@ fn round_trip_layout_snapshot() {
 
 #[test]
 fn round_trip_full_workspace_snapshot() {
-    let mut website = saved_pane(2, "/home/can/Projects/website");
+    let mut website = saved_pane(2, "/nonexistent/website");
     website.label = Some(shepr_mux::Label::new("website").expect("test label"));
 
     let snap = SessionSnapshot {
@@ -189,10 +189,7 @@ fn round_trip_full_workspace_snapshot() {
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
                 ratio: split_ratio(0.5),
-                first: Box::new(LayoutSnapshot::Pane(saved_pane(
-                    1,
-                    "/home/can/Projects/shepr",
-                ))),
+                first: Box::new(LayoutSnapshot::Pane(saved_pane(1, "/nonexistent/shepr"))),
                 second: Box::new(LayoutSnapshot::Pane(website)),
             },
             zoomed: false,
@@ -212,7 +209,7 @@ fn round_trip_full_workspace_snapshot() {
     assert_eq!(restored.workspaces[0].layout.panes().len(), 2);
     assert_eq!(
         pane_snapshot(&restored.workspaces[0], 1).cwd,
-        PathBuf::from("/home/can/Projects/shepr")
+        PathBuf::from("/nonexistent/shepr")
     );
     assert_eq!(
         pane_snapshot(&restored.workspaces[0], 2)

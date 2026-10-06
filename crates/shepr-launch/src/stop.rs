@@ -101,6 +101,12 @@ pub enum ServerStopError {
         expected_boot_id: BootId,
         actual_boot_id: BootId,
     },
+    /// The server reported that its final session save failed. The stop may
+    /// also have failed to finish cleanly after that result was received.
+    FinalSaveFailed {
+        message: String,
+        stop_error: Option<Box<ServerStopError>>,
+    },
 }
 
 impl ServerStopError {
@@ -110,6 +116,12 @@ impl ServerStopError {
         matches!(
             self,
             Self::BootMismatch { .. } | Self::OccupantChanged { .. }
+        ) || matches!(
+            self,
+            Self::FinalSaveFailed {
+                stop_error: Some(error),
+                ..
+            } if error.is_boot_mismatch()
         )
     }
 
@@ -165,6 +177,16 @@ impl std::fmt::Display for ServerStopError {
                 f,
                 "the server stopped answering as boot {expected_boot_id}, but boot {actual_boot_id} now answers; no stop was sent to the new occupant"
             ),
+            Self::FinalSaveFailed {
+                message,
+                stop_error,
+            } => {
+                write!(f, "the server's final session save failed: {message}")?;
+                if let Some(stop_error) = stop_error {
+                    write!(f, "; the stop outcome was also not confirmed: {stop_error}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -175,6 +197,10 @@ impl std::error::Error for ServerStopError {
             Self::NotRunning { source, .. }
             | Self::Unreachable { source, .. }
             | Self::Io { source, .. } => Some(source),
+            Self::FinalSaveFailed {
+                stop_error: Some(error),
+                ..
+            } => Some(error.as_ref()),
             _ => None,
         }
     }
@@ -199,7 +225,8 @@ impl std::error::Error for ServerStopError {
 /// # Errors
 ///
 /// When there is no server to stop, the stop request fails, the named server
-/// does not stop answering in time, or a different boot answers.
+/// does not stop answering in time, a different boot answers, or the server
+/// reports that its final session save failed.
 pub fn stop_active_server(
     paths: &shepr_paths::AppPaths,
     expected_boot_id: Option<&BootId>,
@@ -290,7 +317,28 @@ fn stop_socket_with_timeout(
     // and the server process's exit, so it must share their real clock.
     let deadline = Instant::now() + timeout;
     let request = server_stop_request(origin, expected_boot_id);
-    send_stop_request(socket_path, &request, deadline, expected_boot_id)?;
+    let final_save_error = send_stop_request(socket_path, &request, deadline, expected_boot_id)?;
+    let stop_result =
+        wait_for_stopped_server(socket_path, lease, timeout, deadline, expected_boot_id);
+    match final_save_error {
+        Some(message) => Err(ServerStopError::FinalSaveFailed {
+            message,
+            stop_error: stop_result.err().map(Box::new),
+        }),
+        None => stop_result,
+    }
+}
+
+/// The waits of [`stop_socket_with_timeout`] after its stop request was
+/// delivered: for the named boot (or the socket) to go by `deadline`, then
+/// for the lease and the socket.
+fn wait_for_stopped_server(
+    socket_path: &Path,
+    lease: Option<(&Path, Duration)>,
+    timeout: Duration,
+    deadline: Instant,
+    expected_boot_id: Option<&BootId>,
+) -> Result<(), ServerStopError> {
     let stopped = if let Some(expected_boot_id) = expected_boot_id {
         match wait_until_boot_stops(socket_path, expected_boot_id, deadline)? {
             BootStopWait::Gone => true,
@@ -601,7 +649,7 @@ fn send_stop_request(
     request: &Request,
     deadline: Instant,
     expected_boot_id: Option<&BootId>,
-) -> Result<(), ServerStopError> {
+) -> Result<Option<String>, ServerStopError> {
     // clock-io-ok: the deadline is the one the real socket reader below keeps.
     if deadline.saturating_duration_since(Instant::now()).is_zero() {
         return Err(ServerStopError::Io {
@@ -615,7 +663,10 @@ fn send_stop_request(
     let client = ApiClient::for_socket(socket_path);
     match client.request_until(request, deadline) {
         Ok(response) => match response.result {
-            ResponseResult::Ok {} => Ok(()),
+            // Older servers acknowledge a stop with `ok`; their final save
+            // result cannot be recovered by this client.
+            ResponseResult::Ok {} => Ok(None),
+            ResponseResult::ServerStopCompleted { final_save_error } => Ok(final_save_error),
             _ => Err(ServerStopError::Protocol(
                 "unexpected stop result from server".into(),
             )),
@@ -633,11 +684,11 @@ fn send_stop_request(
         // that never arrived then ends in the wait's `TimedOut`, whose
         // wording reads as though the stop was delivered; that ambiguity is
         // accepted rather than resolved.
-        Err(ApiClientDeadlineError::Request(ApiClientError::EmptyResponse)) => Ok(()),
+        Err(ApiClientDeadlineError::Request(ApiClientError::EmptyResponse)) => Ok(None),
         Err(ApiClientDeadlineError::Request(ApiClientError::Io(error)))
             if stop_request_error_allows_wait(&error) =>
         {
-            Ok(())
+            Ok(None)
         }
         Err(ApiClientDeadlineError::Request(ApiClientError::Io(source))) => {
             Err(ServerStopError::Io {

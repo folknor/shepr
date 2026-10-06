@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
 
-use crate::limits::ORDINARY_RESPONSE_TIMEOUT;
+use crate::limits::{ORDINARY_CONNECT_TIMEOUT, ORDINARY_RESPONSE_TIMEOUT};
 use crate::schema::{ErrorResponse, Request, ResponseResult, SuccessResponse};
 use shepr_platform::ipc::{LocalStreamDeadlineReader, TrustedServerStream};
 
@@ -66,20 +66,31 @@ impl ApiClient {
 
     /// Sends one request and reads its single-line response.
     ///
-    /// The response wait is bounded a little beyond the server's own request
-    /// bound, so the server can return its more specific timeout response
-    /// first. A timeout surfaces as `ErrorKind::TimedOut`.
+    /// The bounded socket connect is separate from the response wait, which
+    /// leaves the server's full request bound and the client's grace after it
+    /// even when the listen backlog delays connection. A timeout surfaces as
+    /// `ErrorKind::TimedOut`.
     pub fn request_value(&self, request: &Request) -> Result<serde_json::Value, ApiClientError> {
         self.request_value_with_timeout(request, ORDINARY_RESPONSE_TIMEOUT)
     }
 
-    /// Like [`Self::request_value`] with one budget for connect, write and read.
+    /// Like [`Self::request_value`] with a caller-selected write/read budget.
     fn request_value_with_timeout(
         &self,
         request: &Request,
         timeout: Duration,
     ) -> Result<serde_json::Value, ApiClientError> {
-        self.request_value_until(request, deadline_after(timeout)?)
+        if timeout.is_zero() {
+            return Err(ApiClientError::Io(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "api request deadline expired before connecting",
+            )));
+        }
+        let stream = self
+            .connect(timeout.min(ORDINARY_CONNECT_TIMEOUT))
+            .map_err(ApiClientError::Io)?;
+        let deadline = deadline_after(timeout).map_err(ApiClientError::Io)?;
+        request_value_on_stream_until(request, stream, deadline)
             .map_err(ApiClientDeadlineError::into_client_error)
     }
 
@@ -100,34 +111,10 @@ impl ApiClient {
                 "api request deadline expired before connecting",
             )));
         }
-        let mut stream = self
+        let stream = self
             .connect(connect_timeout)
             .map_err(ApiClientDeadlineError::Connect)?;
-        // clock-io-ok: the socket connect above may have used the budget.
-        let send_timeout = deadline.saturating_duration_since(Instant::now());
-        if send_timeout.is_zero() {
-            return Err(ApiClientDeadlineError::Request(ApiClientError::Io(
-                io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "timed out waiting for the shepr server to respond",
-                ),
-            )));
-        }
-        // Some local socket wrappers reject SO_SNDTIMEO; the deadline reader
-        // still bounds response reads in that case.
-        if let Err(error) = stream.set_write_timeout(Some(send_timeout))
-            && error.kind() != io::ErrorKind::InvalidInput
-        {
-            return Err(ApiClientDeadlineError::Request(error.into()));
-        }
-        write_request(&mut stream, request)
-            .map_err(normalize_socket_timeout)
-            .map_err(ApiClientDeadlineError::Request)?;
-
-        let mut reader = BufReader::new(LocalStreamDeadlineReader::new(&mut stream, deadline));
-        read_response_value(&mut reader, &request.id)
-            .map_err(normalize_socket_timeout)
-            .map_err(ApiClientDeadlineError::Request)
+        request_value_on_stream_until(request, stream, deadline)
     }
 
     /// [`Self::request_value_until`], decoded into a success or the server's
@@ -187,6 +174,38 @@ impl ApiClient {
     }
 }
 
+fn request_value_on_stream_until(
+    request: &Request,
+    mut stream: TrustedServerStream,
+    deadline: Instant,
+) -> Result<serde_json::Value, ApiClientDeadlineError> {
+    // clock-io-ok: bounds the request write by the same deadline as its read.
+    let send_timeout = deadline.saturating_duration_since(Instant::now());
+    if send_timeout.is_zero() {
+        return Err(ApiClientDeadlineError::Request(ApiClientError::Io(
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "timed out waiting for the shepr server to respond",
+            ),
+        )));
+    }
+    // Some local socket wrappers reject SO_SNDTIMEO; the deadline reader
+    // still bounds response reads in that case.
+    if let Err(error) = stream.set_write_timeout(Some(send_timeout))
+        && error.kind() != io::ErrorKind::InvalidInput
+    {
+        return Err(ApiClientDeadlineError::Request(error.into()));
+    }
+    write_request(&mut stream, request)
+        .map_err(normalize_socket_timeout)
+        .map_err(ApiClientDeadlineError::Request)?;
+
+    let mut reader = BufReader::new(LocalStreamDeadlineReader::new(&mut stream, deadline));
+    read_response_value(&mut reader, &request.id)
+        .map_err(normalize_socket_timeout)
+        .map_err(ApiClientDeadlineError::Request)
+}
+
 fn pong(response: SuccessResponse) -> Result<Pong, ApiClientError> {
     match response.result {
         ResponseResult::Pong {
@@ -207,7 +226,7 @@ fn pong(response: SuccessResponse) -> Result<Pong, ApiClientError> {
 }
 
 fn deadline_after(timeout: Duration) -> io::Result<Instant> {
-    // clock-io-ok: one budget begins before connect and bounds real socket IO.
+    // clock-io-ok: the caller uses this deadline to bound real socket IO.
     Instant::now().checked_add(timeout).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,

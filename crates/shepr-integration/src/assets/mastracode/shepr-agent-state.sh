@@ -5,7 +5,7 @@
 
 set -eu
 
-# Every exit path of the hook ends here, so the agent always sees a clean exit.
+# Normal gate and report paths finish here, so the agent gets a clean exit.
 finish() {
   cat >/dev/null 2>/dev/null || true
   exit 0

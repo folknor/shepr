@@ -258,6 +258,9 @@ impl TerminalState {
     /// Fixture seam for seeding a pending plan in dependent crates' tests.
     /// Production restore uses the consuming constructor before scheduling;
     /// injecting a plan after the server schedule retires will not run it.
+    /// Tests must seed an existing terminal without replacing its other state;
+    /// the fixture crate cannot depend on mux. Textlint rejects production
+    /// calls, so restore remains the only production writer of Planned.
     pub fn plan_agent_resume(&mut self, plan: shepr_agent::resume::AgentResumePlan) {
         self.agent_resume = AgentResumeState::Planned(plan);
     }

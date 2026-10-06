@@ -65,10 +65,10 @@ pub enum ResponseResult {
         /// Identifies this server process, which a build id cannot: a
         /// conditional `server.stop_if_boot` names the boot it expects.
         boot_id: shepr_protocol::BootId,
-        /// The server has begun stopping. Its socket stays up until the final
-        /// session save is on disk, so a launcher waits for it to go rather
-        /// than attaching to a server that no longer accepts TUI connections. Absent in
-        /// a pong from a build that predates it.
+        /// The server has begun stopping. Its socket stays up through the
+        /// final session save attempt, so a launcher waits for it to go rather
+        /// than attaching to a server that no longer accepts TUI connections.
+        /// Absent in a pong from a build that predates it.
         #[serde(default)]
         stopping: bool,
         /// The server has bound its socket but has not finished restoring panes,
@@ -94,6 +94,12 @@ pub enum ResponseResult {
     },
     DetectExplain {
         explain: Box<DetectionExplanation>,
+    },
+    /// The server's final session save finished after accepting a stop request.
+    /// When present, the message is the save error the stopping client should
+    /// report to its operator.
+    ServerStopCompleted {
+        final_save_error: Option<String>,
     },
     Ok {},
 }

@@ -601,8 +601,8 @@ mod tests {
         .expect("test precondition");
         terminal.set_detected_state(Some(Agent::Omp), AgentState::Idle);
         terminal.ownership_mut().set_persisted_agent_session(
-            shepr_agent::resume::PersistedAgentSession::from_report(
-                "shepr:omp",
+            shepr_agent::resume::PersistedAgentSession::new(
+                shepr_agent::AgentSource::parse("shepr:omp").expect("bundled test source"),
                 session_ref.clone(),
             )
             .expect("test precondition"),

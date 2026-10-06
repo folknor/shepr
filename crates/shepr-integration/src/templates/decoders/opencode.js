@@ -1,6 +1,7 @@
 
-// The TUI plugin reports under this source too and uses the same seq unit; it
-// never runs alongside this server plugin (see `ownsLocalLifecycle`).
+// The TUI plugin reports under this source too and uses the same seq unit.
+// `ownsLocalLifecycle` is a launch-shape heuristic, not coordination with the
+// TUI plugin; a launch enabling both can run both reporters.
 let reportedRootSessionID;
 let reportedLocalSessionID;
 
@@ -34,8 +35,9 @@ function reportSessionOf(sessionID) {
 function ownsLocalLifecycle() {
   const args = localLifecycleArgs();
   if (!args) return false;
-  // These local clients have no TUI plugin. Shared servers and the TUI worker
-  // cannot identify their attached panes; their lifecycle belongs to each TUI.
+  // Supported local clients are intended to have no TUI plugin. This relies on
+  // current launch shapes; no ownership token is shared with the TUI plugin.
+  // Shared servers and the TUI worker cannot identify their attached panes.
   return args[0] === "run" ||
     (!["serve", "web", "attach"].includes(args[0]) && args.includes("--mini"));
 }

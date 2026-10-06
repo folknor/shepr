@@ -5,7 +5,7 @@ use crate::failure::{
     FailureEvidence, REMAPPED_REMOTE_255_EXIT_CODE, SSH_OWN_FAILURE_EXIT_CODE,
     SshFailureDiagnostic, attempt_deadline_passed,
 };
-use shepr_launch::SshFailureClass;
+use shepr_launch::{EndpointFailure, SshFailureClass};
 use std::sync::OnceLock;
 
 fn is_remote_candidate_mismatch(error: &io::Error) -> bool {
@@ -210,7 +210,7 @@ fn progress_survives_retryable_failures_and_restarts_for_untrusted_targets() {
     let error = progress
         .advance(&mut timed_out)
         .expect_err("probe times out");
-    assert!(SshFailureDiagnostic::from_error(&error).failed_before_remote_result());
+    assert!(failure_evidence(&error).preserves_discovery());
     assert!(progress.has_progress());
     assert!(progress.advance(&mut timed_out).is_ok());
     assert_eq!(
@@ -254,7 +254,7 @@ fn progress_survives_retryable_failures_and_restarts_for_untrusted_targets() {
     failed.fail_other_at = vec![3];
     let mut progress = DiscoveryProgress::default();
     let error = progress.advance(&mut failed).expect_err("probe fails");
-    assert!(!SshFailureDiagnostic::from_error(&error).failed_before_remote_result());
+    assert!(!failure_evidence(&error).preserves_discovery());
     assert!(!progress.has_progress());
     assert!(progress.advance(&mut failed).is_ok());
     assert_eq!(
@@ -316,19 +316,19 @@ fn ssh_exit_255_from_a_discovery_command_has_no_remote_result() {
         "remote SSH connection failed",
         &ssh_output(255, "Connection reset by peer"),
     );
-    assert!(SshFailureDiagnostic::from_error(&lost).failed_before_remote_result());
+    assert!(failure_evidence(&lost).preserves_discovery());
     assert_eq!(
         lost.to_string(),
         "remote SSH connection failed: Connection reset by peer"
     );
     let remote = command_failed("remote binary discovery failed", &ssh_output(1, "boom"));
-    assert!(!SshFailureDiagnostic::from_error(&remote).failed_before_remote_result());
+    assert!(!failure_evidence(&remote).preserves_discovery());
     assert_eq!(remote.to_string(), "remote binary discovery failed: boom");
     // A `command -v` lookup whose ssh failed is not "no shepr on PATH".
     assert!(path_lookup_result(&ssh_output(1, "")).is_ok_and(|path| path.is_none()));
     let error = path_lookup_result(&ssh_output(255, "Connection timed out"))
         .expect_err("ssh failure is not a lookup result");
-    assert!(SshFailureDiagnostic::from_error(&error).failed_before_remote_result());
+    assert!(failure_evidence(&error).preserves_discovery());
 
     // And discovery keeps its progress across it.
     struct LinkDrop(FakeHost);
@@ -808,17 +808,26 @@ fn the_first_candidate_mismatch_is_returned_when_none_match() {
 #[test]
 fn candidate_mismatch_class_excludes_other_remote_compatibility_errors() {
     let mismatch = remote_candidate_mismatch("remote candidate has a different build".into());
-    let mismatch_diagnostic = SshFailureDiagnostic::from_error(&mismatch);
     assert!(is_remote_candidate_mismatch(&mismatch));
-    assert!(mismatch_diagnostic.is_remote_compatibility());
+    assert_eq!(
+        EndpointFailure::from_error(&mismatch).disposition(),
+        shepr_launch::FailureDisposition::Incompatible
+    );
+    assert_eq!(
+        failure_evidence(&mismatch),
+        FailureEvidence::CandidateMismatch
+    );
 
     for message in [
         "matching Shepr is not ready on build",
         "remote Shepr server compatibility error on build",
     ] {
         let error = remote_compatibility_error(message);
-        let diagnostic = SshFailureDiagnostic::from_error(&error);
-        assert!(diagnostic.is_remote_compatibility(), "{message}");
+        assert_eq!(
+            EndpointFailure::from_error(&error).disposition(),
+            shepr_launch::FailureDisposition::Incompatible,
+            "{message}"
+        );
         assert!(!is_remote_candidate_mismatch(&error), "{message}");
     }
 }

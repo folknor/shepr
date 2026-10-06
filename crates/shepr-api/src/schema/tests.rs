@@ -155,7 +155,8 @@ fn cross_build_ping_and_conditional_stop_json_is_frozen() {
     // What a build from before the stopping flag answers.
     const PONG_RESPONSE_WITHOUT_STOPPING: &str = r#"{"id":"cross-build:ping","result":{"type":"pong","version":"0.1.2","build_id":"0123456789abcdef","boot_id":"17-23"}}"#;
     const STOP_REQUEST: &str = r#"{"id":"cross-build:stop","method":"server.stop_if_boot","params":{"expected_boot_id":"17-23"}}"#;
-    const STOP_RESPONSE: &str = r#"{"id":"cross-build:stop","result":{"type":"ok"}}"#;
+    const LEGACY_STOP_RESPONSE: &str = r#"{"id":"cross-build:stop","result":{"type":"ok"}}"#;
+    const STOP_RESPONSE: &str = r#"{"id":"cross-build:stop","result":{"type":"server_stop_completed","final_save_error":null}}"#;
 
     let ping_request = Request {
         id: "cross-build:ping".into(),
@@ -211,7 +212,9 @@ fn cross_build_ping_and_conditional_stop_json_is_frozen() {
 
     let stop_response = SuccessResponse {
         id: "cross-build:stop".into(),
-        result: ResponseResult::Ok {},
+        result: ResponseResult::ServerStopCompleted {
+            final_save_error: None,
+        },
     };
     assert_eq!(
         serde_json::to_string(&stop_response).expect("test precondition"),
@@ -221,6 +224,14 @@ fn cross_build_ping_and_conditional_stop_json_is_frozen() {
         serde_json::from_str::<SuccessResponse>(STOP_RESPONSE).expect("test precondition"),
         stop_response
     );
+    assert!(matches!(
+        serde_json::from_str::<SuccessResponse>(LEGACY_STOP_RESPONSE)
+            .expect("legacy stop acknowledgment"),
+        SuccessResponse {
+            result: ResponseResult::Ok {},
+            ..
+        }
+    ));
 }
 
 #[test]

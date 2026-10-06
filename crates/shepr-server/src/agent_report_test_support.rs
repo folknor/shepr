@@ -20,6 +20,7 @@ use shepr_mux::terminal::TerminalState;
 use shepr_mux::workspace::Workspace;
 
 use crate::app::{App, AppClock, AppOutputs};
+use crate::test_support::ValidatedServerConfigFixture as _;
 
 /// An `App` with one workspace whose single pane has a terminal but no
 /// spawned process. Its persister owns the data directory under the root, but
@@ -43,17 +44,13 @@ impl AgentReportHarness {
     ) -> Result<Self, String> {
         let paths = shepr_paths::AppPaths::rooted_at(root, Some(root), Some(root))
             .map_err(|error| error.to_string())?;
-        let config = shepr_config::ValidatedServerConfig::validate(
-            &shepr_config::ServerConfig::default(),
+        // This harness does not spawn a shell. The config fixture gives
+        // validation a fixed stand-in instead of resolving the test runner's
+        // inherited shell and PATH.
+        let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
+            shepr_config::ServerConfig::default(),
             paths.clone(),
-        )
-        .map_err(|errors| {
-            errors
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("; ")
-        })?;
+        );
         let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
             .map_err(|error| error.to_string())?;
         // Requests are applied directly with `apply_request`.

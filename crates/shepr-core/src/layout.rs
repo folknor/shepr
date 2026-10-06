@@ -67,7 +67,6 @@ impl RatioDelta {
         Self(value)
     }
 
-    /// The signed fraction of the parent extent.
     pub const fn get(self) -> f32 {
         self.0
     }
@@ -134,6 +133,7 @@ impl PaneId {
     /// It is public because tests in other crates (`shepr-test-fixtures`,
     /// `shepr-pty`) build fixed IDs, and no production crate has a test
     /// feature to hide it behind. A live pane's ID always comes from `alloc`.
+    /// Textlint rejects calls outside test code and the fixture crate.
     pub fn from_raw(id: u32) -> Self {
         Self(id)
     }
@@ -1122,7 +1122,7 @@ mod tests {
 
         let split = split_snapshot(&layout)[0];
         assert_eq!(split.0, Direction::Horizontal);
-        assert!((split.1 - (EVEN_SPLIT - RESIZE_DELTA.get())).abs() < f32::EPSILON);
+        assert!((split.1 - (EVEN_SPLIT - RESIZE_DELTA.0)).abs() < f32::EPSILON);
         assert_eq!(layout.focused(), root);
     }
 
@@ -1144,7 +1144,7 @@ mod tests {
         ));
         let split = split_snapshot(&horizontal)[0];
         assert_eq!(split.0, Direction::Horizontal);
-        assert!((split.1 - (EVEN_SPLIT - RESIZE_DELTA.get())).abs() < f32::EPSILON);
+        assert!((split.1 - (EVEN_SPLIT - RESIZE_DELTA.0)).abs() < f32::EPSILON);
 
         let (mut horizontal, left) = TileLayout::new();
         let right = PaneId::alloc();
@@ -1158,7 +1158,7 @@ mod tests {
         ));
         let split = split_snapshot(&horizontal)[0];
         assert_eq!(split.0, Direction::Horizontal);
-        assert!((split.1 - (EVEN_SPLIT + RESIZE_DELTA.get())).abs() < f32::EPSILON);
+        assert!((split.1 - (EVEN_SPLIT + RESIZE_DELTA.0)).abs() < f32::EPSILON);
 
         let (mut vertical, top) = TileLayout::new();
         assert!(vertical.split_pane(top, Direction::Vertical, SplitRatio::EVEN, PaneId::alloc()));
@@ -1171,7 +1171,7 @@ mod tests {
         ));
         let split = split_snapshot(&vertical)[0];
         assert_eq!(split.0, Direction::Vertical);
-        assert!((split.1 - (EVEN_SPLIT - RESIZE_DELTA.get())).abs() < f32::EPSILON);
+        assert!((split.1 - (EVEN_SPLIT - RESIZE_DELTA.0)).abs() < f32::EPSILON);
 
         let (mut vertical, top) = TileLayout::new();
         let bottom = PaneId::alloc();
@@ -1185,7 +1185,7 @@ mod tests {
         ));
         let split = split_snapshot(&vertical)[0];
         assert_eq!(split.0, Direction::Vertical);
-        assert!((split.1 - (EVEN_SPLIT + RESIZE_DELTA.get())).abs() < f32::EPSILON);
+        assert!((split.1 - (EVEN_SPLIT + RESIZE_DELTA.0)).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1218,7 +1218,7 @@ mod tests {
         assert!(after.width < before.width);
         let splits = split_snapshot(&layout);
         assert_eq!(splits[0].0, Direction::Horizontal);
-        assert!((splits[0].1 - (0.6 - RESIZE_DELTA.get())).abs() < f32::EPSILON);
+        assert!((splits[0].1 - (0.6 - RESIZE_DELTA.0)).abs() < f32::EPSILON);
         assert_eq!(splits[1], (Direction::Vertical, 0.5));
     }
 
@@ -1252,7 +1252,7 @@ mod tests {
         assert!(after.height < before.height);
         let splits = split_snapshot(&layout);
         assert_eq!(splits[0].0, Direction::Vertical);
-        assert!((splits[0].1 - (0.6 - RESIZE_DELTA.get())).abs() < f32::EPSILON);
+        assert!((splits[0].1 - (0.6 - RESIZE_DELTA.0)).abs() < f32::EPSILON);
         assert_eq!(splits[1], (Direction::Horizontal, 0.5));
     }
 
@@ -1289,7 +1289,7 @@ mod tests {
         assert_eq!(splits[0], (Direction::Vertical, 0.5));
         assert_eq!(splits[1], (Direction::Horizontal, 0.5));
         assert_eq!(splits[2].0, Direction::Horizontal);
-        assert!((splits[2].1 - (EVEN_SPLIT + RESIZE_DELTA.get())).abs() < f32::EPSILON);
+        assert!((splits[2].1 - (EVEN_SPLIT + RESIZE_DELTA.0)).abs() < f32::EPSILON);
     }
 
     #[test]

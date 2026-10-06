@@ -152,6 +152,7 @@ impl Workspace {
     /// keep or overwrite: the one-pane tree numbers its pane as a new
     /// workspace's first pane is numbered. A `name` that is blank once trimmed
     /// names the workspace after `identity_cwd`, as a blank rename does.
+    /// Textlint rejects calls outside test code.
     pub fn test_from_pane(
         id: WorkspaceId,
         name: Option<String>,

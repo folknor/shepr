@@ -34,7 +34,9 @@ pub(super) fn backup_directory(path: &Path) -> PathBuf {
 /// outside the lease (servers with different XDG state roots can share it,
 /// and it may be an agent config directory, where the detached integration
 /// installer stages files with the same names), so a staging file there may
-/// belong to a live publication.
+/// belong to a live publication. The staging name's shape cannot distinguish a
+/// leftover from a live writer; reclaiming it needs ownership shared by every
+/// writer of that directory.
 pub(super) fn sweep_staging_leftovers(lease: &DataDirLease) {
     let path = session_path(lease.directory());
     let directories = [
@@ -504,16 +506,6 @@ pub enum SessionLoad {
     /// Nothing of it is restored, and the first save backs it up before
     /// replacing it.
     Unusable(shepr_protocol::SessionRestoreFailure),
-}
-
-impl SessionLoad {
-    #[must_use]
-    pub fn into_snapshot(self) -> Option<SessionSnapshot> {
-        match self {
-            Self::Loaded(snapshot) => Some(snapshot),
-            Self::Missing | Self::Unusable(_) => None,
-        }
-    }
 }
 
 /// Refuses a session path that holds something other than a regular file (a

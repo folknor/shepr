@@ -25,8 +25,8 @@ use tracing::warn;
 /// The client's side of every endpoint: connections, command lanes, reconnect supervisors,
 /// and the move between presentations. Connections, supervisors and command lanes serve
 /// every endpoint, hidden ones included; the shell's endpoint choice decides only what is
-/// shown. This is the only production code that transitions the endpoint choice; the shell
-/// reads what is presented and never moves it.
+/// shown. The hub and its view steps drive runtime transitions; launch sets only the initial
+/// local state. The shell reads what is presented and never moves it.
 pub(crate) struct EndpointHub {
     registry: EndpointRegistry,
     commands: EndpointCommands,
@@ -95,7 +95,7 @@ impl EndpointHub {
         now: Instant,
     ) -> Option<Instant> {
         [
-            shell.endpoints.choice.deadline(),
+            shell.endpoints.choice().deadline(),
             self.commands.next_deadline(),
             self.registry.next_service_deadline(now),
             self.supervisors.next_retry_deadline(),
@@ -322,7 +322,7 @@ impl EndpointHub {
             }
             self.endpoint_lost(shell, &failure, now, &mut effects);
         }
-        if let Some(preparing) = shell.endpoints.choice.preparing() {
+        if let Some(preparing) = shell.endpoints.choice().preparing() {
             if let Some(rejection) = preparing.rejection() {
                 let rejection = rejection.to_string();
                 fail_move(
@@ -349,7 +349,7 @@ impl EndpointHub {
                 shell::EndpointNoticeKind::NotReady,
             )));
         }
-        view::send_focus(&mut shell.endpoints.choice, &mut self.registry);
+        view::send_focus(crate::endpoint::choice_mut(shell), &mut self.registry);
         match view::commit_move(&mut self.registry, shell, focused) {
             Ok(Some(committed)) => {
                 if let Some(previous) = committed.previous {
@@ -374,7 +374,7 @@ impl EndpointHub {
             ),
             Ok(None) => {}
         }
-        view::release_unwanted(&shell.endpoints.choice, &mut self.registry, shell);
+        view::release_unwanted(shell.endpoints.choice(), &mut self.registry, shell);
         Ok(effects)
     }
 
@@ -432,7 +432,7 @@ impl EndpointHub {
         if !self.registry.accepts(endpoint_id, generation) {
             return Admission::Consumed;
         }
-        let role = shell.endpoints.choice.role(endpoint_id);
+        let role = shell.endpoints.choice().role(endpoint_id);
         let move_response = match message.as_ref() {
             DecodedClientServerMessage::Wire(
                 DecodedWireServerMessage::ClientShellEndpointResponse {
@@ -440,9 +440,13 @@ impl EndpointHub {
                     request_id,
                     ..
                 },
-            ) => shell.endpoints.choice.preparing().is_some_and(|preparing| {
-                preparing.accepts_response(endpoint_id, generation, boot_id, request_id)
-            }),
+            ) => shell
+                .endpoints
+                .choice()
+                .preparing()
+                .is_some_and(|preparing| {
+                    preparing.accepts_response(endpoint_id, generation, boot_id, request_id)
+                }),
             _ => false,
         };
         match PresentationGate::new(role, move_response).decide(message.as_ref()) {
@@ -452,14 +456,14 @@ impl EndpointHub {
                 if let DecodedClientServerMessage::Wire(DecodedWireServerMessage::EndpointSnapshot(
                     snapshot,
                 )) = message.as_ref()
-                    && let Some(pending) = shell.endpoints.choice.preparing_mut()
+                    && let Some(pending) = crate::endpoint::choice_mut(shell).preparing_mut()
                 {
                     pending.receive_snapshot(endpoint_id, generation, snapshot);
                 }
                 Admission::Present { message, role }
             }
             PresentationDecision::Buffer => {
-                if let Some(pending) = shell.endpoints.choice.preparing_mut() {
+                if let Some(pending) = crate::endpoint::choice_mut(shell).preparing_mut() {
                     match *message {
                         DecodedClientServerMessage::PaneSurfacePatch(patch) => {
                             pending.receive_patch(endpoint_id, generation, &patch);
@@ -540,7 +544,7 @@ impl EndpointHub {
         endpoint_id: &ClientEndpointId,
         status: EndpointFailureStatus,
     ) -> (Lost, shell::Repaint) {
-        let lost = shell.endpoints.choice.connection_lost(endpoint_id);
+        let lost = crate::endpoint::choice_mut(shell).connection_lost(endpoint_id);
         let cancelled = self.commands.disconnect(endpoint_id);
         let repaint = cancel_commands(shell, cancelled);
         shell.endpoint_failed(endpoint_id, status);
@@ -568,7 +572,8 @@ impl EndpointHub {
                     boot_id,
                     request,
                 } => {
-                    if input_endpoint(&shell.endpoints.choice, &self.registry) == Some(&endpoint_id)
+                    if input_endpoint(shell.endpoints.choice(), &self.registry)
+                        == Some(&endpoint_id)
                         && let Some(connection) = self.registry.connection(&endpoint_id)
                     {
                         // A superseded split ratio leaves the queue unsent.
@@ -605,7 +610,7 @@ impl EndpointHub {
                 }
                 shell::ClientShellAction::ActivateEndpoint(destination) => {
                     let endpoint_id = destination.endpoint.clone();
-                    match shell.endpoints.choice.select(destination) {
+                    match crate::endpoint::choice_mut(shell).select(destination) {
                         Selection::Unchanged => {}
                         Selection::FocusShown(target) => {
                             actions.extend(shell.focus_endpoint_target(target));
@@ -614,7 +619,7 @@ impl EndpointHub {
                         Selection::Moving => {
                             if view::selection_wait_notice_needed(
                                 &endpoint_id,
-                                &shell.endpoints.choice,
+                                shell.endpoints.choice(),
                                 &self.registry,
                                 shell,
                             ) {
@@ -631,7 +636,7 @@ impl EndpointHub {
                 }
             }
         }
-        if let Some(shown) = input_endpoint(&shell.endpoints.choice, &self.registry) {
+        if let Some(shown) = input_endpoint(shell.endpoints.choice(), &self.registry) {
             let cancelled = self.commands.send_next(shown, &mut self.registry, now);
             repaint |= cancel_commands(shell, cancelled);
         }
@@ -642,7 +647,7 @@ impl EndpointHub {
     /// and is viewed. A target learns of host focus at its commit, and a released endpoint
     /// was sent focus-loss with its release.
     pub(crate) fn send_shown(&mut self, shell: &ClientShellState, message: &ClientMessage) {
-        if let Some(shown) = input_endpoint(&shell.endpoints.choice, &self.registry) {
+        if let Some(shown) = input_endpoint(shell.endpoints.choice(), &self.registry) {
             self.registry.send_to(shown, message);
         }
     }
@@ -660,7 +665,7 @@ impl EndpointHub {
         shell: &mut ClientShellState,
         geometry: TerminalGeometry,
     ) {
-        if let Some(preparing) = shell.endpoints.choice.preparing_mut() {
+        if let Some(preparing) = crate::endpoint::choice_mut(shell).preparing_mut() {
             preparing.update_geometry(geometry);
         }
         self.registry
@@ -671,7 +676,7 @@ impl EndpointHub {
     /// the endpoint. The registry remembers a sent Detach, so its Drop on the way out only
     /// flushes this connection.
     pub(crate) fn detach(&mut self, shell: &ClientShellState) {
-        if let Some(shown) = shell.endpoints.choice.live() {
+        if let Some(shown) = shell.endpoints.choice().live() {
             self.registry.send_to(shown, &ClientMessage::Detach);
         }
     }
@@ -693,7 +698,7 @@ fn fail_move(
     notice: shell::EndpointNoticeKind,
     effects: &mut Vec<HubEffect>,
 ) {
-    if let Some(failed) = shell.endpoints.choice.fail_move() {
+    if let Some(failed) = crate::endpoint::choice_mut(shell).fail_move() {
         effects.push(HubEffect::Notice(shell::EndpointNotice::new(
             failed.to, notice,
         )));
@@ -768,7 +773,7 @@ mod tests {
         let mut shell = ClientShellState::new(ClientShellConfig::from_validated_config(
             &shepr_config::ValidatedClientConfig::test_default(),
         ));
-        shell.endpoints.choice = choice;
+        *crate::endpoint::choice_mut(&mut shell) = choice;
         shell
     }
 
@@ -787,13 +792,13 @@ mod tests {
         assert_eq!(
             shell
                 .endpoints
-                .choice
+                .choice()
                 .pending_start()
                 .expect("waiting pick")
                 .to,
             &ClientEndpointId::Local
         );
-        assert!(shell.endpoints.choice.live().is_none());
+        assert!(shell.endpoints.choice().live().is_none());
     }
 
     #[test]
@@ -839,16 +844,16 @@ mod tests {
                 Instant::now(),
             );
             if shown {
-                assert!(shell.endpoints.choice.pending_start().is_none());
+                assert!(shell.endpoints.choice().pending_start().is_none());
                 assert_eq!(
-                    shell.endpoints.choice.live(),
+                    shell.endpoints.choice().live(),
                     Some(&ClientEndpointId::Local)
                 );
             } else {
                 assert_eq!(
                     shell
                         .endpoints
-                        .choice
+                        .choice()
                         .pending_start()
                         .expect("rearmed proof")
                         .failed_generation,

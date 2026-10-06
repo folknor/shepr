@@ -1407,8 +1407,8 @@ mod tests {
             pane_restore_startup(Some(&session), Some(&mut HashSet::new()))
                 .restore_plan
                 .expect("test precondition")
-                .args(),
-            &["--session", pi_session_path.as_str()]
+                .to_shell_command(),
+            shepr_core::shell_quote::join_argv(["pi", "--session", pi_session_path.as_str()])
         );
 
         assert!(

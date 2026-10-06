@@ -503,13 +503,23 @@ mod tests {
 
     #[test]
     fn every_session_save_status_roundtrips_as_a_unit_enum() -> TestResult {
-        for status in [
-            SessionSaveStatus::Ready,
-            SessionSaveStatus::Stopped,
-            SessionSaveStatus::BlockedOnBackup,
-        ] {
+        // Unit variants use consecutive codec enum indexes. Decode indexes
+        // until serde rejects the first unknown one, so this covers new
+        // variants without maintaining a second list beside the enum.
+        let mut index = 0_u32;
+        loop {
+            let encoded_index = codec::to_vec(&index)?;
+            let status = match codec::from_slice_exact::<SessionSaveStatus>(&encoded_index) {
+                Ok(status) => status,
+                Err(CodecError::Message(_)) => break,
+                Err(error) => return Err(error.into()),
+            };
             assert_eq!(roundtrip(&status)?, status);
+            index = index
+                .checked_add(1)
+                .ok_or("session-save status enum exceeds its wire index")?;
         }
+        assert_ne!(index, 0, "session-save status enum has no variants");
         Ok(())
     }
 

@@ -58,15 +58,24 @@ static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 /// Evidence logs at info level: opting in is its privacy and volume control.
 /// Pane children never see the variable (`pane::launch` scrubs it).
 pub fn init_osc_evidence_capture() -> std::io::Result<()> {
-    if ENABLED.get().is_some() {
-        return Ok(());
-    }
     let enabled = shepr_core::env::read_flag(shepr_core::env::EnvVar::SheprDebugOscEvidence)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?
         .unwrap_or(false);
-    // A racing initializer set the same startup value first; that is fine.
-    ENABLED.get_or_init(|| enabled);
-    Ok(())
+    // The server executable has one process-wide startup environment. A later
+    // server startup in a test process must validate that environment instead
+    // of silently inheriting the first startup's capture setting.
+    let initial = ENABLED.get_or_init(|| enabled);
+    if *initial == enabled {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "{} changed between server startups in one process",
+                shepr_core::env::EnvVar::SheprDebugOscEvidence
+            ),
+        ))
+    }
 }
 
 /// Pane construction only consumes the startup setting. Parser-only test

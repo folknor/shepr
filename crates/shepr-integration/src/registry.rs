@@ -403,23 +403,20 @@ pub(super) fn agent_directory(
     Ok(agent_directory)
 }
 
-/// Whether the Shepr-owned Grok hook config exactly matches the installed
-/// integration. JSON formatting and object key order do not affect validity.
-fn grok_hook_config_is_valid(
-    config_path: &Path,
-    hook_path: &Path,
-    timeout: Duration,
-) -> InstallResult<bool> {
-    let expected_config = super::targets::grok_hook_config_with_timeout(hook_path, timeout)?;
+/// Whether the Shepr-owned Grok hook config matches semantically. JSON
+/// formatting and object key order do not affect validity; install shares this
+/// predicate so a Current config is not rewritten just for formatting.
+fn grok_hook_config_is_valid(config_path: &Path, timeout: Duration) -> InstallResult<bool> {
+    let expected_config = super::targets::grok_hook_config_with_timeout(timeout)?;
     let Some(content) = read_config_content(config_path)? else {
         return Ok(false);
     };
-    let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) else {
-        // This file is wholly Shepr-owned, so malformed contents are drift
-        // that install can safely replace rather than a user config error.
-        return Ok(false);
-    };
-    Ok(config == expected_config)
+    // Parse failures compare false; the file is wholly Shepr-owned, so install
+    // can replace malformed contents rather than treating them as user data.
+    Ok(super::targets::grok_hook_config_matches(
+        &content,
+        &expected_config,
+    ))
 }
 
 fn opencode_tui_integration_is_valid(plugin_path: &Path, state_dir: &Path) -> InstallResult<bool> {
@@ -471,29 +468,8 @@ fn read_json(path: &Path) -> InstallResult<Option<serde_json::Value>> {
     })
 }
 
-/// Check the same canonical entries installation merges, allowing unrelated
-/// fields and hooks. A matcher absent from the canonical entry must stay absent.
-fn canonical_entry_matches(actual: &serde_json::Value, expected: &serde_json::Value) -> bool {
-    match expected {
-        serde_json::Value::Object(fields) => actual.as_object().is_some_and(|object| {
-            fields.iter().all(|(key, value)| {
-                object
-                    .get(key)
-                    .is_some_and(|actual| canonical_entry_matches(actual, value))
-            })
-        }),
-        serde_json::Value::Array(entries) => actual.as_array().is_some_and(|actual| {
-            entries.iter().all(|entry| {
-                actual
-                    .iter()
-                    .any(|value| canonical_entry_matches(value, entry))
-            })
-        }),
-        _ => actual == expected,
-    }
-}
-
 fn json_hook_commands_registered(
+    target: Target,
     config_path: &Path,
     root: HooksRoot,
     expected: &serde_json::Map<String, serde_json::Value>,
@@ -523,20 +499,21 @@ fn json_hook_commands_registered(
         entries.as_array().is_some_and(|entries| {
             entries.iter().all(|expected| {
                 actual.iter().any(|entry| {
-                    (expected.get("matcher").is_some() || entry.get("matcher").is_none())
-                        && canonical_entry_matches(entry, expected)
+                    super::json_edit::canonical_registration_entry_matches(entry, expected)
                 })
             })
         })
     });
     let mut installed = Vec::new();
     let mut commands = Vec::new();
+    let expected_commands = expected
+        .values()
+        .flat_map(super::json_edit::expected_hook_commands)
+        .collect::<Vec<_>>();
     for (event, entries) in events {
-        let expected_commands = expected
-            .get(event)
-            .map_or_else(Default::default, super::json_edit::expected_hook_commands);
         collect_hook_path_commands(
             entries,
+            target,
             hook_path,
             event,
             &expected_commands,
@@ -544,8 +521,14 @@ fn json_hook_commands_registered(
         );
     }
     for (event, entries) in expected {
-        let expected_commands = super::json_edit::expected_hook_commands(entries);
-        collect_hook_path_commands(entries, hook_path, event, &expected_commands, &mut commands);
+        collect_hook_path_commands(
+            entries,
+            target,
+            hook_path,
+            event,
+            &expected_commands,
+            &mut commands,
+        );
     }
     installed.sort();
     commands.sort();
@@ -554,6 +537,7 @@ fn json_hook_commands_registered(
 
 fn collect_hook_path_commands(
     value: &serde_json::Value,
+    target: Target,
     hook_path: &Path,
     event: &str,
     expected_commands: &[String],
@@ -562,7 +546,14 @@ fn collect_hook_path_commands(
     match value {
         serde_json::Value::Array(values) => {
             for value in values {
-                collect_hook_path_commands(value, hook_path, event, expected_commands, output);
+                collect_hook_path_commands(
+                    value,
+                    target,
+                    hook_path,
+                    event,
+                    expected_commands,
+                    output,
+                );
             }
         }
         serde_json::Value::Object(object) => {
@@ -570,6 +561,7 @@ fn collect_hook_path_commands(
                 if let Some(command) = object.get(field).and_then(serde_json::Value::as_str)
                     && super::json_edit::is_managed_hook_command(
                         command,
+                        target,
                         hook_path,
                         expected_commands,
                     )
@@ -578,7 +570,14 @@ fn collect_hook_path_commands(
                 }
             }
             if let Some(hooks) = object.get("hooks") {
-                collect_hook_path_commands(hooks, hook_path, event, expected_commands, output);
+                collect_hook_path_commands(
+                    hooks,
+                    target,
+                    hook_path,
+                    event,
+                    expected_commands,
+                    output,
+                );
             }
         }
         _ => {}
@@ -631,7 +630,7 @@ fn hook_registration_is_current(
     let registered = match spec.registration {
         Registration::DirectoryLoaded => true,
         Registration::Grok { file, timeout } => {
-            grok_hook_config_is_valid(&dir.join("hooks").join(file), hook_path, timeout)?
+            grok_hook_config_is_valid(&dir.join("hooks").join(file), timeout)?
         }
         Registration::Opencode => {
             return opencode_tui_integration_is_valid(
@@ -643,8 +642,7 @@ fn hook_registration_is_current(
             kimi_hooks_registered(&dir.join(file), hook_path, timeout)?
         }
         Registration::AntigravityCli { file, timeout } => {
-            let expected_block =
-                super::targets::antigravity_cli_hook_block_with_timeout(hook_path, timeout)?;
+            let expected_block = super::targets::antigravity_cli_hook_block_with_timeout(timeout)?;
             read_json(&dir.join(file))?.is_some_and(|document| {
                 document.get(super::ANTIGRAVITY_CLI_HOOK_BLOCK_NAME) == Some(&expected_block)
             })
@@ -658,13 +656,10 @@ fn hook_registration_is_current(
             ..
         } => {
             json_hook_commands_registered(
+                spec.target,
                 &dir.join(hooks),
                 HooksRoot::HooksKey,
-                &JsonShape::Nested(timeout).expected_events(
-                    spec.target,
-                    hook_path,
-                    event_policy,
-                )?,
+                &JsonShape::Nested(timeout).expected_events(spec.target, event_policy)?,
                 required_fields,
                 hook_path,
             )? && codex_hooks_feature_enabled(&dir.join(config))?
@@ -677,9 +672,10 @@ fn hook_registration_is_current(
             event_policy,
             ..
         } => json_hook_commands_registered(
+            spec.target,
             &dir.join(file),
             root,
-            &shape.expected_events(spec.target, hook_path, event_policy)?,
+            &shape.expected_events(spec.target, event_policy)?,
             required_fields,
             hook_path,
         )?,
@@ -1111,7 +1107,7 @@ mod registration_tests {
         let hook = dir.join("hooks").join("shepr-agent-state.sh");
         write_current_hook(IntegrationTarget::Claude, &hook);
         let settings_path = dir.join("settings.json");
-        let command = hook_command(&hook, Some("session"));
+        let command = hook_command(IntegrationTarget::Claude, Some("session"));
         let matcher = super::super::registration::claude_session_start_matcher();
         let write = |session_start: serde_json::Value| {
             let settings = serde_json::json!({ "hooks": { "SessionStart": session_start } });
@@ -1162,7 +1158,7 @@ mod registration_tests {
         write_current_hook(IntegrationTarget::Codex, &hook);
         let entry = |action| {
             serde_json::json!([
-                { "hooks": [{ "type": "command", "command": hook_command(&hook, Some(action)), "timeout": super::super::HOOK_TIMEOUT.as_secs() }] }
+                { "hooks": [{ "type": "command", "command": hook_command(IntegrationTarget::Codex, Some(action)), "timeout": super::super::HOOK_TIMEOUT.as_secs() }] }
             ])
         };
         let hooks_json = serde_json::json!({
@@ -1229,12 +1225,14 @@ mod registration_tests {
 
         let status = integration_status(&paths, IntegrationTarget::Kimi).expect("status");
         assert_eq!(status.state, IntegrationStatusKind::Current);
-        let hook = status.path;
         let config_path = dir.join(super::super::KIMI_CONFIG_NAME);
         let config = fs::read_to_string(&config_path).expect("test precondition");
         let stale_registration = format!(
             "[[hooks]]\nevent = \"OldEvent\"\ncommand = {}\ntimeout = {}\n\n{}",
-            super::super::config_edit::toml_basic_string(&hook_command(&hook, Some("old-action"),)),
+            super::super::config_edit::toml_basic_string(&hook_command(
+                IntegrationTarget::Kimi,
+                Some("old-action"),
+            )),
             super::super::HOOK_TIMEOUT.as_secs(),
             super::super::KIMI_CONFIG_BLOCK_END,
         );
@@ -1270,13 +1268,14 @@ mod registration_tests {
         let paths = AgentIntegrationPaths::resolve();
         super::super::targets::install(&paths, IntegrationTarget::Kimi).expect("install");
 
-        let status = integration_status(&paths, IntegrationTarget::Kimi).expect("status");
-        let hook = status.path;
         let config_path = dir.join(super::super::KIMI_CONFIG_NAME);
         let config = fs::read_to_string(&config_path).expect("test precondition");
         let external_hook = format!(
             "[[hooks]]\nevent = \"SessionStart\"\ncommand = {}\ntimeout = {}\n\n",
-            super::super::config_edit::toml_basic_string(&hook_command(&hook, Some("session"))),
+            super::super::config_edit::toml_basic_string(&hook_command(
+                IntegrationTarget::Kimi,
+                Some("session")
+            )),
             super::super::HOOK_TIMEOUT.as_secs()
         );
         let config_with_external_hook = format!("{external_hook}{config}");
@@ -1312,7 +1311,7 @@ mod registration_tests {
             };
             document.insert(
                 event_spec.event.to_string(),
-                serde_json::json!([{ "type": "command", "command": hook_command(&hook, Some(action.as_str())), "timeout": timeout_millis, "description": super::super::config_edit::MASTRACODE_HOOK_DESCRIPTION }]),
+                serde_json::json!([{ "type": "command", "command": hook_command(IntegrationTarget::Mastracode, Some(action.as_str())), "timeout": timeout_millis, "description": super::super::config_edit::MASTRACODE_HOOK_DESCRIPTION }]),
             );
         }
         fs::write(
@@ -1461,7 +1460,14 @@ mod registration_tests {
             let config_path = dir.join(config_name);
             // Apply `edit` to every event entry that carries this hook.
             let edit_entries = |edit: &dyn Fn(&mut serde_json::Map<String, serde_json::Value>)| {
-                let hook = status().path.display().to_string();
+                // Registered commands resolve the hook's directory when they
+                // run, so they name the managed file, not its absolute path.
+                let hook = status()
+                    .path
+                    .file_name()
+                    .expect("managed hook file name")
+                    .to_string_lossy()
+                    .into_owned();
                 let mut document = read_json(&config_path)
                     .expect("read config")
                     .expect("config exists");
@@ -1506,8 +1512,12 @@ mod registration_tests {
             let document = fs::read_to_string(&config_path).expect("test precondition");
             assert!(!document.contains("hand-edited"), "{target:?}: {document}");
 
-            let hook_path = status().path;
-            let stale_command = super::super::command::hook_command(&hook_path, Some("old-action"));
+            let descriptor_action = target
+                .hook_events()
+                .first()
+                .and_then(|event| event.action)
+                .map(shepr_agent::IntegrationHookAction::as_str);
+            let stale_command = super::super::command::hook_command(target, descriptor_action);
             let stale_entry = match target {
                 IntegrationTarget::Claude
                 | IntegrationTarget::Codex

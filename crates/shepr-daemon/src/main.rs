@@ -13,6 +13,7 @@ use shepr_launch::guidance::server_ready_hint;
 use shepr_launch::invocation::{
     SERVER_BINARY_NAME, ServerInvocation, server_usage, server_version_line,
 };
+use shepr_launch::limits::BOOT_LOG_PANIC_REPORTS;
 use shepr_launch::process_status::ProcessStatus;
 use shepr_server::{RunServerError, ServerReady, run_server};
 
@@ -49,10 +50,13 @@ fn usage_error(message: &str) -> ExitCode {
 ///
 /// A client-spawned server has the client's boot log as its stderr. Once the
 /// server log is running (the ready callback), stderr goes to `/dev/null` so
-/// the boot log holds only pre-logging failures and cannot grow for the
-/// server's life; a panic from then on reaches the server log through the
-/// panic hook `run_server` installs. A foreground server keeps its stderr, and
-/// so does a client-spawned one whose log file could not be opened.
+/// the boot log holds only pre-logging failures; a panic from then on reaches
+/// the server log through the panic hook `run_server` installs. A
+/// client-spawned server whose log file could not be opened has no other
+/// record, so it keeps the boot log as stderr and bounds it instead: after
+/// readiness the only writes to stderr are panic reports and the exit error,
+/// and only the first [`BOOT_LOG_PANIC_REPORTS`] panics are reported. A
+/// foreground server keeps its stderr.
 fn serve(client_spawned: bool) -> ExitCode {
     let paths = match shepr_paths::AppPaths::resolve_for_server() {
         Ok(paths) => paths,
@@ -63,10 +67,13 @@ fn serve(client_spawned: bool) -> ExitCode {
         Err(diagnostics) => return config_error(&diagnostics),
     };
     let on_ready = |ready: &ServerReady| {
-        if !client_spawned || ready.log_file_unavailable.is_some() {
-            // A client-spawned server without its log file has nowhere
-            // durable to report to: the boot log stays the stderr.
+        if !client_spawned {
             eprintln!("{ready}\n{}", server_ready_hint());
+        } else if ready.log_file_unavailable.is_some() {
+            // Without a server log the boot log is the only place a later
+            // panic is recorded, so it stays the stderr, bounded by the cap.
+            eprintln!("{ready}\n{}", server_ready_hint());
+            cap_panic_reports();
         } else if let Err(error) = shepr_platform::redirect_stderr_to_null() {
             // Stderr is still the boot log; one line there is bounded.
             eprintln!("{SERVER_BINARY_NAME}: could not detach stderr from the boot log: {error}");
@@ -76,6 +83,18 @@ fn serve(client_spawned: bool) -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => report_server_error(error),
     }
+}
+
+/// Wraps the panic hook so only the first [`BOOT_LOG_PANIC_REPORTS`] panics
+/// reach it; later ones are not reported.
+fn cap_panic_reports() {
+    let previous = std::panic::take_hook();
+    let reported = std::sync::atomic::AtomicUsize::new(0);
+    std::panic::set_hook(Box::new(move |info| {
+        if reported.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < BOOT_LOG_PANIC_REPORTS {
+            previous(info);
+        }
+    }));
 }
 
 fn exit_with(class: DaemonExit) -> ExitCode {

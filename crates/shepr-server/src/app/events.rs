@@ -416,7 +416,7 @@ impl App {
             self.state.handle_state_event(event) != super::actions::StateUpdate::Unchanged;
         self.apply_lifecycle_authority_changes();
         let cwd_moved =
-            terminal_cwd_reported && self.state.shell_projection_revision() != projection_before;
+            terminal_cwd_reported && !self.state.shell_projection_is_current(projection_before);
         if cwd_moved {
             self.request_git_identity_refresh(self.clock.now);
         }
@@ -702,8 +702,8 @@ mod runtime_generation_tests {
             // Only a full-lifecycle source (Omp, not Codex) pauses detection,
             // and it owns the state only once a session anchors it.
             ownership.set_persisted_agent_session(
-                shepr_agent::resume::PersistedAgentSession::from_report(
-                    "shepr:omp",
+                shepr_agent::resume::PersistedAgentSession::new(
+                    shepr_agent::AgentSource::parse("shepr:omp").expect("bundled test source"),
                     shepr_agent::resume::AgentSessionRef::id("session").expect("session"),
                 )
                 .expect("official identity"),
@@ -739,8 +739,8 @@ mod runtime_generation_tests {
         let workspace = shepr_mux::workspace::Workspace::test_new("kill-ordering");
         let pane_id = workspace.tree().root();
         app.state.test_set_workspaces(vec![workspace]);
-        let session = shepr_agent::resume::PersistedAgentSession::from_report(
-            "shepr:codex",
+        let session = shepr_agent::resume::PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse("shepr:codex").expect("bundled test source"),
             shepr_agent::resume::AgentSessionRef::id("killed-agent").expect("session"),
         )
         .expect("official identity");
@@ -801,8 +801,8 @@ mod runtime_generation_tests {
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.tree().root();
         app.state.test_set_workspaces(vec![workspace]);
-        let session = shepr_agent::resume::PersistedAgentSession::from_report(
-            "shepr:codex",
+        let session = shepr_agent::resume::PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse("shepr:codex").expect("bundled test source"),
             shepr_agent::resume::AgentSessionRef::id("restored").expect("session"),
         )
         .expect("persisted identity");

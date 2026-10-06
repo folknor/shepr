@@ -61,6 +61,7 @@ pub(super) enum MatcherSource {
 #[derive(Clone, Copy)]
 pub(super) struct HookEventPolicy {
     pub(super) matcher_source: MatcherSource,
+    /// Copilot has an actionless session event whose payload still needs decoding.
     pub(super) decodes_events_without_action: bool,
 }
 
@@ -81,6 +82,8 @@ impl HookEventPolicy {
 
 #[derive(Clone, Copy)]
 pub(super) struct RequiredJsonField {
+    /// Install supplies this only when absent; an existing value is preserved.
+    /// Status therefore checks presence, not the value's type or contents.
     pub(super) key: &'static str,
     pub(super) default_number: u64,
 }
@@ -157,12 +160,13 @@ impl Registration {
 
 impl JsonShape {
     /// The registration row supplies event decoding and matcher policy. The
-    /// shape decides entry fields and timeout units. Install and status use
-    /// the same result instead of rebuilding separate interpretations.
+    /// shape decides entry fields and timeout units. Claude's source matcher
+    /// belongs only to its SessionStart row. Install and status use the same
+    /// result instead of rebuilding separate interpretations; Claude's JSON
+    /// edit goes through the same CST editor as the other JSON targets.
     pub(super) fn expected_events(
         self,
         target: Target,
-        hook_path: &Path,
         policy: HookEventPolicy,
     ) -> InstallResult<Map<String, Value>> {
         let mut entries = Map::new();
@@ -175,8 +179,13 @@ impl JsonShape {
                 continue;
             }
             let action = hook.action.map(shepr_agent::IntegrationHookAction::as_str);
-            let command = hook_command(hook_path, action);
-            let matcher = claude_matcher.as_deref().or(hook.matcher);
+            let command = hook_command(target, action);
+            let matcher = match (policy.matcher_source, hook.event) {
+                (MatcherSource::ClaudeSessionStartPolicy, "SessionStart") => {
+                    claude_matcher.as_deref()
+                }
+                _ => hook.matcher,
+            };
             match self {
                 JsonShape::Nested(timeout) => ensure_command_hook(
                     &mut entries,

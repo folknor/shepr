@@ -47,6 +47,25 @@ pub fn fixed_pane_id(raw: u32) -> shepr_core::layout::PaneId {
     shepr_core::layout::PaneId::from_raw(raw)
 }
 
+/// A Codex identity with a fake resume command, for lifecycle tests that
+/// must exercise command failure or ordering without starting an agent.
+pub fn codex_resume_plan(
+    session_id: &str,
+    argv: Vec<String>,
+) -> shepr_agent::resume::AgentResumePlan {
+    use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
+    use shepr_agent::{AgentSource, IntegrationTarget};
+    let session = PersistedAgentSession::new(
+        AgentSource::new(IntegrationTarget::Codex),
+        AgentSessionRef::id(session_id).expect("valid test session id"),
+    )
+    .expect("valid Codex session");
+    let mut argv = argv.into_iter();
+    let program = argv.next().expect("test command has an executable");
+    shepr_agent::resume::AgentResumePlan::for_command(&session, program, argv.collect())
+        .expect("test command has a nonempty executable")
+}
+
 /// A valid build identity that differs from this test binary's build.
 pub fn other_build_id() -> &'static str {
     if shepr_protocol::BUILD_ID == "ffffffffffffffff" {

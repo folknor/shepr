@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 bytes = { workspace = true }
 serde = { workspace = true }
+shepr-agent = { path = "../shepr-agent" }
 shepr-config = { path = "../shepr-config" }
 shepr-core = { path = "../shepr-core" }
 shepr-paths = { path = "../shepr-paths" }

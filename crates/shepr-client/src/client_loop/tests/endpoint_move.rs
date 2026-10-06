@@ -142,7 +142,7 @@ fn a_failed_move_releases_the_target() {
         assert!(off(&f.target.take()));
         assert!(f.client.hub().registry().connection(&remote()).is_some());
         assert_eq!(
-            f.client.state().shell.endpoints.choice.live(),
+            f.client.state().shell.endpoints.choice().live(),
             Some(&ClientEndpointId::Local)
         );
         f.assert_views();
@@ -155,7 +155,7 @@ fn a_move_timeout_returns_to_the_source_and_reports_it() {
     f.now += crate::limits::ENDPOINT_MOVE_TIMEOUT;
     f.reconcile();
     assert_eq!(
-        f.client.state().shell.endpoints.choice.live(),
+        f.client.state().shell.endpoints.choice().live(),
         Some(&ClientEndpointId::Local)
     );
     assert!(f.output().contains("coherent surface in time"));
@@ -191,7 +191,7 @@ fn a_send_failure_while_preparing_with_nothing_shown_waits_for_a_new_connection(
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .preparing()
             .is_some()
     );
@@ -201,11 +201,11 @@ fn a_send_failure_while_preparing_with_nothing_shown_waits_for_a_new_connection(
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .pending_start()
             .is_some()
     );
-    assert!(f.client.state().shell.endpoints.choice.live().is_none());
+    assert!(f.client.state().shell.endpoints.choice().live().is_none());
     assert!(f.client.hub().registry().connection(&remote()).is_none());
 }
 #[test]
@@ -216,12 +216,12 @@ fn a_failed_commit_send_completes_the_switch_and_then_reports_the_loss() {
     f.target.fail_next();
     f.reconcile();
     assert_eq!(
-        f.client.state().shell.endpoints.choice.live(),
+        f.client.state().shell.endpoints.choice().live(),
         Some(&remote())
     );
     assert!(f.client.state().shell.endpoint_is_active(&remote()));
     f.reconcile();
-    assert!(f.client.state().shell.endpoints.choice.live().is_none());
+    assert!(f.client.state().shell.endpoints.choice().live().is_none());
     assert!(f.output().contains("connection was lost"));
 }
 #[test]
@@ -281,7 +281,7 @@ fn local_selection_waits_for_metadata_while_the_shown_endpoint_stays_live() {
     f.pick(ClientEndpointId::Local);
     f.reconcile();
     assert_eq!(
-        f.client.state().shell.endpoints.choice.live(),
+        f.client.state().shell.endpoints.choice().live(),
         Some(&remote())
     );
     assert!(
@@ -289,7 +289,7 @@ fn local_selection_waits_for_metadata_while_the_shown_endpoint_stays_live() {
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .pending_start()
             .is_some()
     );
@@ -332,7 +332,7 @@ fn a_remote_pick_without_metadata_waits_with_a_notice() {
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .pending_start()
             .is_some()
     );
@@ -366,7 +366,7 @@ fn a_remote_pick_without_a_connection_is_abandoned_with_one_notice() {
     );
     f.reconcile();
     assert_eq!(
-        f.client.state().shell.endpoints.choice.live(),
+        f.client.state().shell.endpoints.choice().live(),
         Some(&ClientEndpointId::Local)
     );
     assert!(
@@ -374,7 +374,7 @@ fn a_remote_pick_without_a_connection_is_abandoned_with_one_notice() {
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .pending_start()
             .is_none()
     );
@@ -390,7 +390,7 @@ fn a_newer_selection_replaces_a_waiting_one() {
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .pending_start()
             .expect("waiting")
             .to,
@@ -403,7 +403,7 @@ fn a_newer_selection_replaces_a_waiting_one() {
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .preparing()
             .expect("preparing")
             .lease()
@@ -489,7 +489,7 @@ fn a_resize_reaches_every_viewed_connection_and_drops_the_recorded_surface() {
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .preparing()
             .expect("preparing")
             .ready()
@@ -516,7 +516,7 @@ fn a_resize_with_an_unchanged_geometry_keeps_the_move_evidence() {
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .preparing()
             .expect("preparing")
             .ready()
@@ -524,7 +524,7 @@ fn a_resize_with_an_unchanged_geometry_keeps_the_move_evidence() {
     );
     f.reconcile();
     assert_eq!(
-        f.client.state().shell.endpoints.choice.live(),
+        f.client.state().shell.endpoints.choice().live(),
         Some(&remote())
     );
 }
@@ -570,7 +570,7 @@ fn a_reconnected_local_is_prepared_once_per_connection() {
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .preparing()
             .is_none()
     );
@@ -584,7 +584,7 @@ fn a_reconnected_local_is_prepared_once_per_connection() {
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .preparing()
             .is_some()
     );
@@ -661,7 +661,7 @@ fn the_shell_projects_the_shown_endpoint() {
         &io::Error::new(io::ErrorKind::BrokenPipe, "lost"),
     );
     f.reconcile();
-    assert!(f.client.state().shell.endpoints.choice.live().is_none());
+    assert!(f.client.state().shell.endpoints.choice().live().is_none());
     assert!(f.client.state().shell.endpoint_is_active(&remote()));
 }
 #[test]
@@ -675,7 +675,7 @@ fn local_selection_never_waits_for_a_remote() {
         f.pick(ClientEndpointId::Local);
         f.reconcile();
         assert_eq!(
-            f.client.state().shell.endpoints.choice.live(),
+            f.client.state().shell.endpoints.choice().live(),
             Some(&ClientEndpointId::Local)
         );
         assert!(
@@ -683,7 +683,7 @@ fn local_selection_never_waits_for_a_remote() {
                 .state()
                 .shell
                 .endpoints
-                .choice
+                .choice()
                 .preparing()
                 .is_none()
         );
@@ -717,7 +717,7 @@ fn a_failed_local_proof_waits_for_another_generation() {
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .pending_start()
             .expect("failed")
             .failed_generation,
@@ -740,7 +740,7 @@ fn a_failed_local_proof_waits_for_another_generation() {
             .state()
             .shell
             .endpoints
-            .choice
+            .choice()
             .preparing()
             .expect("preparing")
             .lease()
@@ -821,7 +821,7 @@ fn navigation_is_acknowledged_and_in_the_first_committed_projection() {
     f.evidence();
     f.reconcile();
     assert_eq!(
-        f.client.state().shell.endpoints.choice.live(),
+        f.client.state().shell.endpoints.choice().live(),
         Some(&ClientEndpointId::Local)
     );
     f.inbound(
@@ -841,7 +841,7 @@ fn navigation_is_acknowledged_and_in_the_first_committed_projection() {
     );
     f.reconcile();
     assert_eq!(
-        f.client.state().shell.endpoints.choice.live(),
+        f.client.state().shell.endpoints.choice().live(),
         Some(&remote())
     );
     assert!(f.client.state().shell.endpoint_is_active(&remote()));

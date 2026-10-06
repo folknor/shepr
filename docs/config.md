@@ -558,6 +558,12 @@ release server installs into each agent's own config at launch, for every
 agent present on that host. Dev builds do not install them, so dev panes do
 not resume agents.
 
+Command hooks in a shared agent config resolve their script under the host's
+`HOME`, `XDG_CONFIG_HOME` or agent-specific config directory variable when
+the agent runs them. Each host therefore uses its own installed hook file even
+when the registration is shared with other machines that have different home
+paths.
+
 ## [server]
 
 | Setting | Type | Default | What it does |

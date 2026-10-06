@@ -2,7 +2,7 @@
 //! failure travels as, and the constructors for the typed errors the rest of
 //! the crate raises.
 
-use shepr_launch::{EndpointFailure, FailureCause, FailureDisposition, SshFailureClass};
+use shepr_launch::{EndpointFailure, FailureCause, SshFailureClass};
 
 mod evidence;
 
@@ -82,7 +82,7 @@ impl RemoteExit {
 /// its source, so `EndpointFailure::from_error` outside this crate reads the
 /// neutral cause without knowing this type.
 #[derive(Clone, Debug)]
-pub struct SshFailureDiagnostic {
+pub(crate) struct SshFailureDiagnostic {
     failure: EndpointFailure,
     origin: SshFailureOrigin,
 }
@@ -101,7 +101,7 @@ enum SshFailureOrigin {
 impl SshFailureDiagnostic {
     /// The diagnostic an error carries, or one built from the endpoint
     /// failure it carries, or from its IO kind.
-    pub fn from_error(error: &std::io::Error) -> Self {
+    pub(crate) fn from_error(error: &std::io::Error) -> Self {
         if let Some(diagnostic) = error
             .get_ref()
             .and_then(|source| source.downcast_ref::<Self>())
@@ -133,7 +133,7 @@ impl SshFailureDiagnostic {
         Self { failure, origin }
     }
 
-    pub fn from_ssh_output(exit_code: Option<i32>, message: &str) -> Self {
+    pub(crate) fn from_ssh_output(exit_code: Option<i32>, message: &str) -> Self {
         let exit = SshExit::from_code(exit_code);
         let failure = if exit == SshExit::SshFailed {
             EndpointFailure::ssh(classify_ssh_diagnostic(message), message)
@@ -147,7 +147,7 @@ impl SshFailureDiagnostic {
     }
 
     /// Adds display context while retaining this diagnostic's structured class.
-    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+    pub(crate) fn with_context(mut self, context: impl Into<String>) -> Self {
         self.failure = self.failure.with_context(&context.into());
         self
     }
@@ -207,10 +207,6 @@ impl SshFailureDiagnostic {
             | SshFailureOrigin::SshOutput(_)
             | SshFailureOrigin::Message => FailureEvidence::RemoteFault,
         }
-    }
-
-    pub fn disposition(&self) -> FailureDisposition {
-        self.failure.disposition()
     }
 }
 
@@ -365,82 +361,11 @@ pub(crate) fn attempt_deadline_passed() -> std::io::Error {
     )
 }
 
-// Keep test helpers after all production items: textlint skip_after is file-wide.
-#[cfg(test)]
-impl SshFailureDiagnostic {
-    pub(crate) fn from_message(message: impl Into<String>) -> Self {
-        Self {
-            failure: EndpointFailure::unclassified(message),
-            origin: SshFailureOrigin::Message,
-        }
-    }
-
-    /// Test constructor for an error boundary that already knows its source was local setup.
-    pub(crate) fn from_local_setup_error(error: &std::io::Error) -> Self {
-        Self {
-            failure: EndpointFailure::local_setup(error.to_string()),
-            origin: SshFailureOrigin::LocalSetup,
-        }
-    }
-
-    /// Test query for whether the origin predates a remote command result.
-    /// Runtime policy uses the endpoint failure and its discovery evidence.
-    pub(crate) fn failed_before_remote_result(&self) -> bool {
-        match self.origin {
-            SshFailureOrigin::Io(kind) => shepr_launch::failure::is_link_error_kind(kind),
-            SshFailureOrigin::SshOutput(exit) => exit == SshExit::SshFailed,
-            SshFailureOrigin::CommandTimeout => true,
-            SshFailureOrigin::LocalSetup
-            | SshFailureOrigin::RemoteCompatibility
-            | SshFailureOrigin::RemoteCandidateMismatch
-            | SshFailureOrigin::Message => false,
-        }
-    }
-
-    /// Test query for whether OpenSSH itself returned its failure status.
-    pub(crate) fn is_ssh_process_failure(&self) -> bool {
-        matches!(self.origin, SshFailureOrigin::SshOutput(SshExit::SshFailed))
-    }
-
-    /// Test query for the remote command's exit status.
-    pub(crate) fn remote_exit_code(&self) -> Option<i32> {
-        match self.origin {
-            SshFailureOrigin::SshOutput(SshExit::Remote(exit)) => Some(exit.code()),
-            SshFailureOrigin::Io(_)
-            | SshFailureOrigin::SshOutput(_)
-            | SshFailureOrigin::CommandTimeout
-            | SshFailureOrigin::LocalSetup
-            | SshFailureOrigin::RemoteCompatibility
-            | SshFailureOrigin::RemoteCandidateMismatch
-            | SshFailureOrigin::Message => None,
-        }
-    }
-
-    /// Test query for whether a failure is currently presented as offline.
-    pub(crate) fn is_transient_network_failure(&self) -> bool {
-        self.disposition() == FailureDisposition::Offline
-    }
-
-    pub(crate) fn needs_attention(&self) -> bool {
-        self.disposition().needs_attention()
-    }
-
-    pub(crate) fn is_remote_compatibility(&self) -> bool {
-        self.disposition() == FailureDisposition::Incompatible
-    }
-
-    pub(crate) fn is_local_setup_failure(&self) -> bool {
-        matches!(
-            self.failure.cause(),
-            FailureCause::LocalSetup | FailureCause::InvalidLocalSetup
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::preflight::{MachineCheck, classify_check};
+    use shepr_launch::FailureDisposition;
 
     #[test]
     fn special_remote_exit_codes_round_trip() {
@@ -470,7 +395,8 @@ mod tests {
                 "{message}"
             );
         }
-        let unclassified = SshFailureDiagnostic::from_message("server closed connection");
+        let error = std::io::Error::other("server closed connection");
+        let unclassified = SshFailureDiagnostic::from_error(&error);
         assert_eq!(unclassified.ssh_class(), None);
     }
 
@@ -500,9 +426,8 @@ mod tests {
 
     #[test]
     fn remote_auth_error_ignores_non_auth_errors() {
-        let diagnostic = SshFailureDiagnostic::from_message(
-            "remote platform detection failed: unsupported platform",
-        );
+        let error = std::io::Error::other("remote platform detection failed: unsupported platform");
+        let diagnostic = SshFailureDiagnostic::from_error(&error);
 
         assert_eq!(diagnostic.ssh_class(), None);
     }
@@ -536,49 +461,76 @@ mod tests {
                 "offline",
                 true,
                 false,
+                FailureEvidence::NothingLearned,
             ),
             (
                 "kex_exchange_identification: Connection closed by remote host",
                 "offline",
                 true,
                 false,
+                FailureEvidence::NothingLearned,
             ),
-            ("write: Broken pipe", "offline", true, false),
+            (
+                "write: Broken pipe",
+                "offline",
+                true,
+                false,
+                FailureEvidence::NothingLearned,
+            ),
             (
                 "Received disconnect from h port 22:2: Too many authentication failures",
                 "authentication",
                 false,
                 false,
+                FailureEvidence::NothingLearned,
             ),
             (
                 "ssh: Could not resolve hostname typo.example: Name or service not known",
                 "failed",
                 false,
                 true,
+                FailureEvidence::TargetUntrusted,
             ),
             (
                 "/home/u/.ssh/config: line 12: Bad configuration option: hostkeyalgorithms",
                 "failed",
                 false,
                 true,
+                FailureEvidence::TargetUntrusted,
             ),
             (
                 "Bad owner or permissions on /home/u/.ssh/config",
                 "failed",
                 false,
                 true,
+                FailureEvidence::TargetUntrusted,
             ),
-            ("Connection closed by h port 22", "failed", false, false),
-            ("an unrecognized ssh error", "failed", false, false),
+            (
+                "Connection closed by h port 22",
+                "failed",
+                false,
+                false,
+                FailureEvidence::TargetUntrusted,
+            ),
+            (
+                "an unrecognized ssh error",
+                "failed",
+                false,
+                false,
+                FailureEvidence::TargetUntrusted,
+            ),
         ];
 
-        for (message, expected_class, transient, local_configuration) in cases {
+        for (message, expected_class, transient, local_configuration, evidence) in cases {
             let diagnostic =
                 SshFailureDiagnostic::from_ssh_output(Some(SSH_OWN_FAILURE_EXIT_CODE), message);
-            assert!(diagnostic.is_ssh_process_failure(), "{message}");
-            assert!(diagnostic.failed_before_remote_result(), "{message}");
+            assert!(matches!(
+                diagnostic.origin,
+                SshFailureOrigin::SshOutput(SshExit::SshFailed)
+            ));
+            assert_eq!(diagnostic.evidence(), evidence, "{message}");
             assert_eq!(
-                diagnostic.is_transient_network_failure(),
+                diagnostic.failure.disposition() == FailureDisposition::Offline,
                 transient,
                 "{message}"
             );
@@ -618,14 +570,20 @@ mod tests {
             "handshake failed: Permission denied (publickey)."
         );
         // The origin stays readable inside this crate.
-        assert!(SshFailureDiagnostic::from_error(&error).is_ssh_process_failure());
+        assert!(matches!(
+            SshFailureDiagnostic::from_error(&error).origin,
+            SshFailureOrigin::SshOutput(SshExit::SshFailed)
+        ));
     }
 
     #[test]
     fn a_remote_command_failure_is_not_an_ssh_class() {
         let diagnostic = SshFailureDiagnostic::from_ssh_output(Some(127), "shepr: not found");
         assert_eq!(diagnostic.failure.cause(), FailureCause::Unclassified);
-        assert_eq!(diagnostic.remote_exit_code(), Some(127));
+        assert!(matches!(
+            diagnostic.origin,
+            SshFailureOrigin::SshOutput(SshExit::Remote(RemoteExit::NotFound))
+        ));
         assert_eq!(diagnostic.evidence(), FailureEvidence::InstallStale);
     }
 

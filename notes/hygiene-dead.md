@@ -41,16 +41,7 @@ will ever do it.
 
 Reported by: agent-state, workspace-model.
 
-- `visible_working` end to end (BUG-031).
-- `ClientShellAgent.agent` on the wire is still an `Option`, though the server now
-  always sends `Some` (`SnapshotAgent.agent` became required).
-- `SessionRestoreDamage.repaired_bookmarks` is a count that can only be 0 or 1 (there
-  is one bookmark); a `bool` says that.
-- `session_saves_stopped` and `session_saves_blocked_on_backup` are two wire booleans
-  for mutually exclusive states; one unit enum says that (check the codec rule against
-  tagged enums first).
-- `bundle.rs` builds dummy params to read an API method name because `shepr-api`'s
-  `MethodKind` and its `traits()` are private; a public name lookup by kind is cleaner.
+`visible_working` end to end; waits on BUG-031.
 
 ## DEAD-013 - Integration code, keys and assets nothing needs
 
@@ -70,16 +61,13 @@ Reported by: workspace-model.
   AGENTS.md places agent identity in `shepr-agent`. Move them; the `shepr-core-layer`
   rule then keeps core free of agent types.
 
-## DEAD-015 - Server lifecycle types, payloads and arms with one value or no reader
+## DEAD-015 - Removed-name test lists that only fail on a deliberate re-add
 
 Reported by: server-lifecycle.
 
-- The removed-method and removed-command test lists (`schema/tests.rs`
-  `removed_methods_are_rejected`, `removed_uncalled_methods_are_rejected`, `cli.rs`
-  `unknown_commands_and_launch_flags_are_rejected` with `--session`, `machine`,
-  `integration`, `config`, `remote-api-bridge`, ...) assert that unknown strings are
-  unknown. They protect against resurrection, which the owner may value, but grow with
-  every removal and fail only on a deliberate re-add.
-- Not dead, listed so they are not mistaken for leftovers: the `#[serde(default)]` on
-  `Pong.stopping` / `starting` and `StatusOverviewJson.summary`, which AGENTS.md keeps for
-  `status --all` against older hosts.
+The removed-method and removed-command test lists (`schema/tests.rs`
+`removed_methods_are_rejected`, `removed_uncalled_methods_are_rejected`, `cli.rs`
+`unknown_commands_and_launch_flags_are_rejected` with `--session`, `machine`,
+`integration`, `config`, `remote-api-bridge`, ...) assert that unknown strings are
+unknown. They protect against resurrection, which the owner may value, but grow with
+every removal and fail only on a deliberate re-add.

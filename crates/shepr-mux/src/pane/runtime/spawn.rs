@@ -17,12 +17,10 @@ pub(super) fn reader_exit_callback(
     arbiter: Arc<PaneExitArbiter>,
     closed_grace: std::time::Duration,
 ) -> Box<dyn FnOnce(ReaderExit) + Send> {
-    // clock-io-ok: when the reader saw the ending (a closed terminal ends
-    // when it closed, not when its grace runs out).
     let ending = |reason| RecordedEnding::Observed {
         ending: PaneEnding::new(reason),
         child_exit_confirmed: false,
-        // clock-io-ok: timestamp the actual reader ending at the IO callback.
+        // clock-io-ok: timestamp the reader ending, before any closed-terminal grace.
         ended_at: std::time::Instant::now(),
     };
     Box::new(move |exit| match exit {

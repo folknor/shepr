@@ -115,7 +115,7 @@ pub(crate) fn start_move<'a>(
     baseline: impl FnOnce(&ClientShellState) -> HostBaseline<'a>,
     now: Instant,
 ) -> StartOutcome {
-    let Some(pending) = shell.endpoints.choice.pending_start() else {
+    let Some(pending) = shell.endpoints.choice().pending_start() else {
         return StartOutcome::Idle;
     };
     let (generation, boot_id, minimum_revision) = match target_readiness(
@@ -127,9 +127,7 @@ pub(crate) fn start_move<'a>(
     ) {
         TargetReadiness::Waiting => return StartOutcome::Waiting,
         TargetReadiness::Abandon => {
-            return shell
-                .endpoints
-                .choice
+            return crate::endpoint::choice_mut(shell)
                 .abandon()
                 .map_or(StartOutcome::Waiting, StartOutcome::Abandoned);
         }
@@ -149,10 +147,12 @@ pub(crate) fn start_move<'a>(
         minimum_revision,
     };
     let request = RequestId::allocate();
-    shell
-        .endpoints
-        .choice
-        .begin_preparing(lease.clone(), request.clone(), baseline.geometry, now);
+    crate::endpoint::choice_mut(shell).begin_preparing(
+        lease.clone(),
+        request.clone(),
+        baseline.geometry,
+        now,
+    );
     turn_on(endpoints, &lease, &request, &baseline);
     StartOutcome::Started
 }
@@ -207,7 +207,7 @@ pub(crate) fn commit_move(
     shell: &mut ClientShellState,
     host_focused: bool,
 ) -> Result<Option<Committed>, super::choice::MoveFailure> {
-    let Some(preparing) = shell.endpoints.choice.preparing() else {
+    let Some(preparing) = shell.endpoints.choice().preparing() else {
         return Ok(None);
     };
     let Some(surface) = preparing.ready() else {
@@ -236,7 +236,7 @@ pub(crate) fn commit_move(
         return Err(super::choice::MoveFailure::ProjectionUnavailable);
     };
     // Every check precedes this commit: past it the choice shows the target.
-    let Some(committed) = shell.endpoints.choice.commit() else {
+    let Some(committed) = crate::endpoint::choice_mut(shell).commit() else {
         return Ok(None);
     };
     shell.present_projection(&projection);
@@ -336,7 +336,7 @@ mod tests {
         }
 
         fn pick(&mut self, id: ClientEndpointId) {
-            self.shell.endpoints.choice.select(Location::machine(id));
+            crate::endpoint::choice_mut(&mut self.shell).select(Location::machine(id));
         }
 
         /// Step 2 with the host baseline the loop derives.
@@ -380,10 +380,7 @@ mod tests {
             let generation = self.registry.connection(id).expect("connection").generation;
             let size = self.size();
             let snapshot = snapshot(id, revision);
-            let preparing = self
-                .shell
-                .endpoints
-                .choice
+            let preparing = crate::endpoint::choice_mut(&mut self.shell)
                 .preparing_mut()
                 .expect("preparing");
             assert_eq!(
@@ -460,7 +457,7 @@ mod tests {
         f.registry.set_viewed(&remote(), true);
         assert_eq!(f.start(), StartOutcome::Started);
         let first = on_request(&f.target);
-        f.shell.endpoints.choice.fail_move();
+        crate::endpoint::choice_mut(&mut f.shell).fail_move();
         f.pick(remote());
         assert_eq!(f.start(), StartOutcome::Started);
         assert_ne!(first, on_request(&f.target));
@@ -471,7 +468,7 @@ mod tests {
         f.pick(remote());
         f.target.fail_next();
         assert_eq!(f.start(), StartOutcome::Started);
-        assert!(f.shell.endpoints.choice.preparing().is_some());
+        assert!(f.shell.endpoints.choice().preparing().is_some());
         assert!(f.registry.connection(&remote()).is_none());
         assert_eq!(f.registry.take_failures().len(), 1);
     }
@@ -482,7 +479,7 @@ mod tests {
         f.pick(remote());
         assert_eq!(f.start(), StartOutcome::Abandoned(remote()));
         assert_eq!(
-            f.shell.endpoints.choice.live(),
+            f.shell.endpoints.choice().live(),
             Some(&ClientEndpointId::Local)
         );
     }
@@ -500,9 +497,9 @@ mod tests {
         let mut f = Views::new();
         // Nothing shown, waiting for the machine: a failed move then waits for a new
         // generation instead of returning to a shown endpoint.
-        f.shell.endpoints.choice = EndpointChoice::waiting_for(remote());
+        *crate::endpoint::choice_mut(&mut f.shell) = EndpointChoice::waiting_for(remote());
         assert_eq!(f.start(), StartOutcome::Started);
-        f.shell.endpoints.choice.fail_move();
+        crate::endpoint::choice_mut(&mut f.shell).fail_move();
         f.target.take();
         assert_eq!(f.start(), StartOutcome::Idle);
         assert!(f.target.take().is_empty());
@@ -535,7 +532,7 @@ mod tests {
         assert!(!messages.is_empty());
         assert!(commit_move(&mut f.registry, &mut f.shell, true).is_err());
         assert_eq!(
-            f.shell.endpoints.choice.live(),
+            f.shell.endpoints.choice().live(),
             Some(&ClientEndpointId::Local)
         );
         assert!(f.shell.endpoint_is_active(&ClientEndpointId::Local));
@@ -571,7 +568,7 @@ mod tests {
                 .expect("commit")
                 .is_some()
         );
-        assert_eq!(f.shell.endpoints.choice.live(), Some(&remote()));
+        assert_eq!(f.shell.endpoints.choice().live(), Some(&remote()));
         assert_eq!(f.registry.take_failures().len(), 1);
     }
     #[test]
@@ -586,9 +583,9 @@ mod tests {
             commit_move(&mut f.registry, &mut f.shell, true),
             Err(MoveFailure::ProjectionUnavailable)
         ));
-        assert!(f.shell.endpoints.choice.preparing().is_some());
+        assert!(f.shell.endpoints.choice().preparing().is_some());
         assert_eq!(
-            f.shell.endpoints.choice.live(),
+            f.shell.endpoints.choice().live(),
             Some(&ClientEndpointId::Local)
         );
     }
@@ -598,7 +595,7 @@ mod tests {
         f.start_remote();
         f.pick(ClientEndpointId::Local);
         assert_eq!(
-            release_unwanted(&f.shell.endpoints.choice, &mut f.registry, &f.shell),
+            release_unwanted(f.shell.endpoints.choice(), &mut f.registry, &f.shell),
             1
         );
         let sent = f.target.take();
@@ -655,19 +652,19 @@ mod tests {
             assert!(
                 f.shell
                     .endpoints
-                    .choice
+                    .choice()
                     .preparing()
                     .expect("preparing")
                     .ready()
                     .is_some()
             );
-            send_focus(&mut f.shell.endpoints.choice, &mut f.registry);
+            send_focus(crate::endpoint::choice_mut(&mut f.shell), &mut f.registry);
             assert!(
                 commit_move(&mut f.registry, &mut f.shell, true)
                     .expect("commit")
                     .is_some()
             );
-            assert_eq!(f.shell.endpoints.choice.presented(), &to);
+            assert_eq!(f.shell.endpoints.choice().presented(), &to);
             assert!(f.shell.endpoint_is_active(&to));
             assert!(f.registry.viewed(&to));
             assert!(matches!(
@@ -678,7 +675,7 @@ mod tests {
                 ]
             ));
             assert_eq!(
-                release_unwanted(&f.shell.endpoints.choice, &mut f.registry, &f.shell),
+                release_unwanted(f.shell.endpoints.choice(), &mut f.registry, &f.shell),
                 1
             );
             let released = from_sent.take();

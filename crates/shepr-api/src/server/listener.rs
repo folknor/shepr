@@ -118,7 +118,18 @@ impl Dispatch {
                     &self.boot_id,
                     &self.gate,
                 ) {
-                    warn!(event = "api.connection.failed", connection_fd, ?peer, error_kind = ?error.kind(), %error, "api connection failed before a response could be completed");
+                    // Disconnects and first-line timeouts are ordinary peers,
+                    // so keep per-connection failures below warning level.
+                    shepr_platform::structured_log!(
+                        DEBUG,
+                        event = api.connection,
+                        outcome = "failed",
+                        connection_fd,
+                        ?peer,
+                        error_kind = ?error.kind(),
+                        %error,
+                        "api connection failed before a response could be completed"
+                    );
                 }
             }
             Service::Client(handler, slot) => handler.serve(stream, slot, accepted),
@@ -251,6 +262,17 @@ fn start_listener_with_dispatch(
     dispatch: Dispatch,
     unclassified: ConnectionAdmission,
 ) -> io::Result<std::thread::JoinHandle<()>> {
+    start_listener_with_overflow_observer(listener, running, dispatch, unclassified, || {})
+}
+
+// The observer runs at the exact classifier-overflow branch, before handoff.
+fn start_listener_with_overflow_observer(
+    listener: std::os::unix::net::UnixListener,
+    running: Arc<AtomicBool>,
+    dispatch: Dispatch,
+    unclassified: ConnectionAdmission,
+    mut on_unclassified_overflow: impl FnMut() + Send + 'static,
+) -> io::Result<std::thread::JoinHandle<()>> {
     let refuser = spawn_refuser(dispatch.clone());
     std::thread::Builder::new()
         .name("shepr-listener".into())
@@ -313,6 +335,7 @@ fn start_listener_with_dispatch(
                                 })
                                 .map(|_| ())
                         } else {
+                            on_unclassified_overflow();
                             hand_off(
                                 refuser.as_ref(),
                                 Pending {
@@ -492,6 +515,14 @@ mod tests {
         dispatch: Dispatch,
         unclassified: Arc<AtomicUsize>,
     ) -> (shepr_test_support::ScratchDir, super::super::ServerHandle) {
+        server_with_overflow_observer(dispatch, unclassified, || {})
+    }
+
+    fn server_with_overflow_observer(
+        dispatch: Dispatch,
+        unclassified: Arc<AtomicUsize>,
+        on_unclassified_overflow: impl FnMut() + Send + 'static,
+    ) -> (shepr_test_support::ScratchDir, super::super::ServerHandle) {
         let scratch = shepr_test_support::ScratchDir::new("merged-listener");
         let path = scratch.join("server.sock");
         let socket_path = shepr_platform::ipc::SocketPath::new(path.clone()).expect("socket path");
@@ -507,7 +538,7 @@ mod tests {
         .into_parts();
         let running = Arc::new(AtomicBool::new(true));
         let gate = dispatch.gate.clone();
-        let thread = start_listener_with_dispatch(
+        let thread = start_listener_with_overflow_observer(
             listener,
             Arc::clone(&running),
             dispatch,
@@ -518,6 +549,7 @@ mod tests {
                     MAX_UNCLASSIFIED_CONNECTIONS,
                 ),
             ),
+            on_unclassified_overflow,
         )
         .expect("listener");
         let handle = super::super::ServerHandle {
@@ -608,28 +640,41 @@ mod tests {
     }
 
     #[test]
-    fn classification_saturation_still_serves_a_peer_whose_kind_has_room() {
+    fn unclassified_overflow_refuser_serves_each_peer_kind_with_capacity() {
         let dispatch = dispatch();
         let received = open_gate(&dispatch);
         let active: Arc<AtomicUsize> = Arc::default();
-        let (_scratch, handle) = server(dispatch, Arc::clone(&active));
-        let silent = (0..MAX_UNCLASSIFIED_CONNECTIONS)
-            .map(|_| connect(&handle))
-            .collect::<Vec<_>>();
-        wait_count(&active, MAX_UNCLASSIFIED_CONNECTIONS);
-        // Stay silent past the accept thread's one immediate peek, so each
-        // overflow peer is handed to the refuser unclassified, then speak.
+        let unclassified = ConnectionAdmission::new(
+            Arc::clone(&active),
+            shepr_protocol::Limit::new(
+                shepr_protocol::LimitKind::ConnectionCount,
+                MAX_UNCLASSIFIED_CONNECTIONS,
+            ),
+        );
+        let held_classifier_slots = hold(&unclassified, MAX_UNCLASSIFIED_CONNECTIONS);
+        let (overflow_tx, overflow_rx) = std::sync::mpsc::channel();
+        let (_scratch, handle) =
+            server_with_overflow_observer(dispatch, Arc::clone(&active), move || {
+                overflow_tx.send(()).expect("overflow observer receiver");
+            });
+
         let mut api = connect(&handle);
-        std::thread::sleep(Duration::from_millis(50));
+        overflow_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("listener handed an API peer to the refuser");
         assert_eq!(ping(&mut api)["result"]["type"], "pong");
+
         let mut client = connect(&handle);
-        std::thread::sleep(Duration::from_millis(50));
+        overflow_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("listener handed a TUI peer to the refuser");
         hello(&mut client);
         assert_eq!(welcome(&mut client), EndpointServerWelcome::Accepted);
         received
             .recv_timeout(Duration::from_secs(1))
             .expect("client served through overflow");
-        drop(silent);
+        drop(client);
+        drop(held_classifier_slots);
         wait_count(&active, 0);
     }
 

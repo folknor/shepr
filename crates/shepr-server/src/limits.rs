@@ -164,6 +164,11 @@ pub(crate) const TOKIO_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_milli
 pub(crate) const PANE_TEARDOWN_WAIT: Duration = shepr_mux::pane::PaneTeardownTracker::SHUTDOWN_WAIT;
 /// Upper bound on the wait for client writers to flush their shutdown frames.
 pub(crate) const SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+/// Upper bound on the wait, before the socket goes, for accepted stop
+/// requests to write the answer that carries the final save result. An answer
+/// is one short line to a local peer; the bound only matters for a peer that
+/// stopped reading.
+pub(crate) const STOP_ANSWER_WAIT: Duration = Duration::from_secs(1);
 /// How long a transport thread waits for a client it could not register to
 /// receive its shutdown frame.
 pub(crate) const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);

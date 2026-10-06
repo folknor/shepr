@@ -1742,7 +1742,11 @@ mod transition_tests {
     }
 
     fn session(id: &str) -> PersistedAgentSession {
-        PersistedAgentSession::from_report("shepr:pi", identity(id)).expect("official test session")
+        PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse("shepr:pi").expect("bundled test source"),
+            identity(id),
+        )
+        .expect("official test session")
     }
 
     fn release(sample: HookClockSample) -> SuppressedFullLifecycleHookReport {
@@ -2457,8 +2461,8 @@ mod pane_exit_tests {
 
     fn running_terminal() -> AgentOwnership {
         let mut terminal = AgentOwnership::new();
-        let session = PersistedAgentSession::from_report(
-            "shepr:pi",
+        let session = PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse("shepr:pi").expect("bundled test source"),
             AgentSessionRef::id("interrupted-session").expect("session id"),
         )
         .expect("official session");
@@ -2617,8 +2621,8 @@ mod pane_exit_tests {
         // clock-io-ok: synthetic detector tick times.
         let now = Instant::now();
         pi_exits(&mut terminal, now);
-        let replacement = PersistedAgentSession::from_report(
-            "shepr:pi",
+        let replacement = PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse("shepr:pi").expect("bundled test source"),
             AgentSessionRef::id("replacement").expect("replacement identity"),
         )
         .expect("official identity");
@@ -2691,8 +2695,9 @@ mod pane_exit_tests {
     }
 
     fn official_session(agent: &str, id: &str) -> PersistedAgentSession {
-        PersistedAgentSession::from_report(
-            &format!("shepr:{agent}"),
+        PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse(&format!("shepr:{agent}"))
+                .expect("bundled test source"),
             AgentSessionRef::id(id).expect("session id"),
         )
         .expect("official session")

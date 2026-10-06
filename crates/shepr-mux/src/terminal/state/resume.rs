@@ -54,8 +54,8 @@ mod tests {
 
     #[test]
     fn abandoning_a_launch_keeps_the_plan_for_manual_recovery() {
-        let session = shepr_agent::resume::PersistedAgentSession::from_report(
-            "shepr:codex",
+        let session = shepr_agent::resume::PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse("shepr:codex").expect("bundled test source"),
             shepr_agent::resume::AgentSessionRef::id("session; literal").expect("valid session id"),
         )
         .expect("valid Codex session");
@@ -86,8 +86,8 @@ mod tests {
 
     #[test]
     fn refused_shell_keeps_the_resume_plan_and_original_errno() {
-        let session = shepr_agent::resume::PersistedAgentSession::from_report(
-            "shepr:codex",
+        let session = shepr_agent::resume::PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse("shepr:codex").expect("bundled test source"),
             shepr_agent::resume::AgentSessionRef::id("cold-session").expect("valid id"),
         )
         .expect("valid Codex session");

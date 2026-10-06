@@ -5,15 +5,17 @@
 
 set -eu
 
-# Every exit path of the hook ends here, so the agent always sees a clean exit.
+# Normal gate and report paths finish here, so the agent gets a clean exit.
 finish() {
+  trap - EXIT HUP INT TERM
   cat >/dev/null 2>/dev/null || true
   # Antigravity CLI expects a JSON object on stdout and this hook never injects
-  # anything, so every exit path emits an empty object.
-  printf '{}\n'
+  # content, so normal and error exits print a neutral object.
+  printf '{}\n' || true
   exit 0
 }
 
+trap 'finish' EXIT
 action="${1:-}"
 trap 'finish' HUP INT TERM
 

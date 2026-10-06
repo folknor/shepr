@@ -97,8 +97,11 @@ fn anchor_full_lifecycle_session(
 ) {
     terminal.set_detected_state_at(Some(agent), terminal.fallback_state, Instant::now());
     terminal.set_persisted_agent_session(
-        shepr_agent::resume::PersistedAgentSession::from_report(source, session_ref)
-            .expect("test precondition"),
+        shepr_agent::resume::PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse(source).expect("bundled test source"),
+            session_ref,
+        )
+        .expect("test precondition"),
     );
 }
 
@@ -616,8 +619,8 @@ fn pi_startup_adopts_persisted_session_without_live_authority() {
     assert_eq!(
         terminal.current_session_identity_for_persistence(),
         Some(
-            shepr_agent::resume::PersistedAgentSession::from_report(
-                "shepr:pi",
+            shepr_agent::resume::PersistedAgentSession::new(
+                shepr_agent::AgentSource::parse("shepr:pi").expect("bundled test source"),
                 shepr_agent::resume::AgentSessionRef::path(new_session)
                     .expect("test session path should be valid"),
             )
@@ -2947,8 +2950,8 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
     assert_eq!(
         terminal.current_session_identity_for_persistence(),
         Some(
-            shepr_agent::resume::PersistedAgentSession::from_report(
-                "shepr:codex",
+            shepr_agent::resume::PersistedAgentSession::new(
+                shepr_agent::AgentSource::parse("shepr:codex").expect("bundled test source"),
                 shepr_agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test session ID should be valid"),
             )
