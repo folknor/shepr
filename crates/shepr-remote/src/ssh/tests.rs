@@ -4,6 +4,7 @@ use crate::preflight::{MachineCheck, classify_check};
 use crate::ssh_paths::ssh_control_path_under;
 use shepr_core::socket_path::fits_unix_socket_path;
 use shepr_launch::{EndpointFailure, FailureCause, FailureDisposition, SshFailureClass};
+use std::fs;
 use std::thread;
 
 #[test]
@@ -38,11 +39,7 @@ fn write_test_managed_ssh_config(
 ) -> io::Result<ManagedSshConfig> {
     let runtime_dir = ensure_ssh_runtime_dir(paths)?;
     let control_path = ssh_control_path_under(control_dir, SshControlKey::for_target(target))?;
-    write_managed_ssh_config_at(
-        runtime_dir,
-        &remote_ssh_config_paths(paths.home_dir()),
-        control_path,
-    )
+    write_managed_ssh_config_at(runtime_dir, control_path)
 }
 
 fn example_target() -> SshTarget {
@@ -65,12 +62,6 @@ fn managed_ssh_config_includes_user_config_then_fallback() {
     use std::os::unix::fs::PermissionsExt;
 
     let paths = test_app_paths();
-    let home = paths.home_dir().expect("test home is configured");
-    let user_config = home.join(".ssh").join("config");
-    std::fs::create_dir_all(user_config.parent().expect("config has a parent"))
-        .expect("create user ssh config directory");
-    std::fs::write(&user_config, "Host example\n  ServerAliveInterval 30\n")
-        .expect("write user ssh config");
     let managed_config =
         write_test_managed_ssh_config(&example_target(), &paths, test_control_dir())
             .expect("write managed config");
@@ -91,25 +82,25 @@ fn managed_ssh_config_includes_user_config_then_fallback() {
     assert!(!contents.contains("ControlMaster"));
     assert!(!contents.contains("ControlPersist"));
     assert!(!contents.contains("ControlPath"));
-    // ...and any user config is Included (quoted) before it so
-    // first-value-wins keeps the user's own settings.
-    assert!(
-        ssh_config_include(Some(user_config.as_path()))
-            .expect("stat user ssh config")
-            .is_some(),
-        "test user config must be included"
-    );
-    // Spell OpenSSH's quoted Include syntax directly so this assertion can
-    // catch mistakes in the production quoting helper.
-    let include = format!(
-        "Include \"{}\"",
-        user_config.to_str().expect("test path is UTF-8")
-    );
-    let include_at = contents.find(&include).expect("user config Included");
+    // ...and the user's config, then the system's, are Included before it so
+    // first-value-wins keeps their own settings. The user's is left for
+    // OpenSSH to expand from the passwd home, the one its keys come from, so
+    // no path under `HOME` is written here.
+    let user_at = contents
+        .find("Include ~/.ssh/config\n")
+        .expect("user config Included");
+    let system_at = contents
+        .find("Include /etc/ssh/ssh_config\n")
+        .expect("system config Included");
     let fallback_at = contents.find("Host *").expect("fallback present");
     assert!(
-        include_at < fallback_at,
-        "user config must be Included before shepr's fallback: {contents}"
+        user_at < system_at && system_at < fallback_at,
+        "user then system config must be Included before shepr's fallback: {contents}"
+    );
+    let home = paths.home_dir().expect("test home is configured");
+    assert!(
+        !contents.contains(&*home.to_string_lossy()),
+        "the managed config names no HOME path: {contents}"
     );
 
     let mode = std::fs::metadata(&path)
@@ -296,40 +287,6 @@ fn authentication_command_uses_shared_transport_without_askpass_or_host_key_rela
 }
 
 #[test]
-fn ssh_config_quote_wraps_path_with_spaces() {
-    assert_eq!(
-        ssh_config_quote(Path::new("/home/a b/.ssh/config")).expect("UTF-8 path is quotable"),
-        "\"/home/a b/.ssh/config\""
-    );
-}
-
-#[test]
-fn ssh_config_include_rejects_quotes_and_non_utf8_paths() {
-    use std::os::unix::ffi::OsStrExt as _;
-
-    let scratch = shepr_test_support::ScratchDir::new("ssh-config-include-quote");
-    let quoted_path = scratch.join("alice\"smith-config");
-    fs::write(&quoted_path, "").expect("test precondition");
-    let error = ssh_config_include(Some(&quoted_path)).expect_err("quote cannot be escaped");
-    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-    assert!(error.to_string().contains(&format!("{quoted_path:?}")));
-
-    let non_utf8_path = scratch.join(std::ffi::OsStr::from_bytes(b"alice-\xff-config"));
-    fs::write(&non_utf8_path, "").expect("test precondition");
-    let error = ssh_config_include(Some(&non_utf8_path)).expect_err("non-UTF-8 path is refused");
-    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-    assert!(error.to_string().contains(&format!("{non_utf8_path:?}")));
-
-    // A path the Include line cannot spell is harmless while nothing is there.
-    let absent = scratch.join("missing\"config");
-    assert!(
-        ssh_config_include(Some(&absent))
-            .expect("an absent config is skipped")
-            .is_none()
-    );
-}
-
-#[test]
 fn remote_ssh_command_uses_managed_config_when_present() {
     let paths = test_app_paths();
     let managed_config =
@@ -456,15 +413,6 @@ fn ssh_command_cannot_prompt_or_accept_unknown_hosts() {
 #[test]
 fn ssh_modes_override_user_remote_command_and_quiet_logging() {
     let paths = test_app_paths();
-    let home = paths.home_dir().expect("test home is configured");
-    let user_config = home.join(".ssh").join("config");
-    std::fs::create_dir_all(user_config.parent().expect("config has a parent"))
-        .expect("create user ssh config directory");
-    std::fs::write(
-        &user_config,
-        "Host example\n  RemoteCommand whoami\n  LogLevel QUIET\n",
-    )
-    .expect("write user ssh config");
     let target = SshTarget::parse("example").expect("test precondition");
     let config = write_test_managed_ssh_config(&example_target(), &paths, test_control_dir())
         .expect("write managed config");
@@ -472,8 +420,7 @@ fn ssh_modes_override_user_remote_command_and_quiet_logging() {
         std::fs::read_to_string(&config.options.config_path).expect("read managed config");
     // The managed config includes the user's file, whose RemoteCommand and
     // LogLevel would apply unless the command line overrides them.
-    assert!(managed_contents.contains("Include"));
-    assert!(managed_contents.contains(&*user_config.to_string_lossy()));
+    assert!(managed_contents.contains("Include ~/.ssh/config"));
     let ssh = RemoteSsh::test_with_state(target.clone(), config);
     let batch_args = ssh
         .command()

@@ -1,4 +1,3 @@
-use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -14,9 +13,8 @@ use crate::machine::SshTarget;
 use crate::process::wait_with_output_timeout;
 use crate::shell_command::{AccountShellCommand, PosixScript, posix_remote_output_command};
 use crate::ssh_paths::{
-    RemoteSshConfigPaths, SshControlKey, create_remote_ssh_config_dir,
-    release_remote_ssh_config_dir, remote_ssh_config_file_path, remote_ssh_config_paths,
-    shared_ssh_control_path, validate_ssh_runtime_dir,
+    SshControlKey, create_remote_ssh_config_dir, release_remote_ssh_config_dir,
+    remote_ssh_config_file_path, shared_ssh_control_path, validate_ssh_runtime_dir,
 };
 
 mod ssh_options {
@@ -226,7 +224,7 @@ pub fn ssh_authentication_command(
 ) -> io::Result<SshAuthenticationCommand> {
     let control_dir = SshControlDir::runtime(paths)
         .map_err(|error| local_setup_error("could not prepare local SSH configuration", error))?;
-    let config = write_managed_ssh_config(target, paths, control_dir)
+    let config = write_managed_ssh_config(target, control_dir)
         .map_err(|error| local_setup_error("could not prepare local SSH configuration", error))?;
     Ok(authentication_command_with_config(target, config))
 }
@@ -271,10 +269,9 @@ impl RemoteSsh {
         let control_dir = SshControlDir::runtime(paths).map_err(|error| {
             local_setup_error("could not prepare local SSH configuration", error)
         })?;
-        let managed_config =
-            write_managed_ssh_config(&target, paths, control_dir).map_err(|error| {
-                local_setup_error("could not prepare local SSH configuration", error)
-            })?;
+        let managed_config = write_managed_ssh_config(&target, control_dir).map_err(|error| {
+            local_setup_error("could not prepare local SSH configuration", error)
+        })?;
         Ok(Self {
             target,
             managed_config,
@@ -484,60 +481,6 @@ fn apply_managed_ssh_options(command: &mut Command, options: &ManagedSshOptions)
     );
 }
 
-fn ssh_config_quote(path: &Path) -> io::Result<String> {
-    let Some(path_text) = path.to_str() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("SSH config path {path:?} is not valid UTF-8"),
-        ));
-    };
-    if path_text.contains('"') {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("SSH config path {path:?} contains a double quote"),
-        ));
-    }
-    Ok(format!("\"{path_text}\""))
-}
-
-/// Returns the quoted `Include` value for an SSH config file, or `None` when
-/// there is no such file (or the path names something other than a file).
-/// A stat failure other than absence, such as `EACCES`, is an error rather
-/// than a silently dropped include, and so is a file whose path the `Include`
-/// line cannot spell (not UTF-8, or holding a double quote).
-fn ssh_config_include(path: Option<&Path>) -> io::Result<Option<String>> {
-    let Some(path) = path else {
-        return Ok(None);
-    };
-    match fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() => {
-            let include = ssh_config_quote(path)?;
-            tracing::debug!(path = %path.display(), "emitting SSH config include");
-            Ok(Some(include))
-        }
-        Ok(_) => {
-            tracing::debug!(
-                path = %path.display(),
-                reason = "not_a_file",
-                "skipping SSH config include"
-            );
-            Ok(None)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            tracing::debug!(
-                path = %path.display(),
-                reason = "not_found",
-                "skipping SSH config include"
-            );
-            Ok(None)
-        }
-        Err(error) => Err(io::Error::new(
-            error.kind(),
-            format!("could not read SSH config {}: {error}", path.display()),
-        )),
-    }
-}
-
 /// An `ssh` child. Every one runs in `/`: shepr passes it only absolute paths,
 /// and a ControlPersist master it forks outlives the command, so inheriting
 /// shepr's working directory would pin that directory for the master's life.
@@ -581,24 +524,29 @@ pub(crate) fn ensure_ssh_runtime_dir(app_paths: &shepr_paths::AppPaths) -> io::R
     Ok(runtime_dir)
 }
 
+/// The configs the managed one includes, in OpenSSH's own spelling. Passing
+/// `-F` stops OpenSSH reading its defaults, so these restore them. The user's
+/// is written `~/.ssh/config` for OpenSSH to expand: it takes `~` from the
+/// passwd home, as it does for `IdentityFile`, `UserKnownHostsFile` and the
+/// rest, so the config and the keys always come from the same home whatever
+/// `HOME` says. An `Include` that matches no file is skipped by OpenSSH.
+const MANAGED_SSH_CONFIG_INCLUDES: [&str; 2] = ["~/.ssh/config", "/etc/ssh/ssh_config"];
+
 /// Builds a temporary ssh config that includes the user's settings first, so
 /// OpenSSH's first-value-wins behavior preserves explicit user keepalives.
 fn write_managed_ssh_config(
     target: &SshTarget,
-    app_paths: &shepr_paths::AppPaths,
     control_dir: SshControlDir<'_>,
 ) -> io::Result<ManagedSshConfig> {
     let runtime_dir = control_dir.path;
-    let paths: RemoteSshConfigPaths = remote_ssh_config_paths(app_paths.home_dir());
     let control_path = shared_ssh_control_path(control_dir.path, SshControlKey::for_target(target))
         .map_err(ssh_runtime_error)?;
 
-    write_managed_ssh_config_at(runtime_dir, &paths, control_path)
+    write_managed_ssh_config_at(runtime_dir, control_path)
 }
 
 fn write_managed_ssh_config_at(
     runtime_dir: &Path,
-    paths: &RemoteSshConfigPaths,
     control_path: PathBuf,
 ) -> io::Result<ManagedSshConfig> {
     let dir = ManagedSshConfigDirectory::new(
@@ -606,13 +554,7 @@ fn write_managed_ssh_config_at(
     );
     let path = remote_ssh_config_file_path(&dir.path);
     let mut contents = String::new();
-    for include in [
-        ssh_config_include(paths.user_config.as_deref())?,
-        ssh_config_include(Some(paths.system_config.as_path()))?,
-    ]
-    .into_iter()
-    .flatten()
-    {
+    for include in MANAGED_SSH_CONFIG_INCLUDES {
         contents.push_str(&format!("Include {include}\n"));
     }
     contents.push_str("Host *\n");
@@ -669,12 +611,7 @@ pub(crate) fn managed_ssh_options_for_test(
         Path::new("/nonexistent/ssh"),
         SshControlKey::for_target(target),
     )?;
-    Ok(write_managed_ssh_config_at(
-        runtime_dir,
-        &remote_ssh_config_paths(paths.home_dir()),
-        control_path,
-    )?
-    .options)
+    Ok(write_managed_ssh_config_at(runtime_dir, control_path)?.options)
 }
 
 #[cfg(test)]

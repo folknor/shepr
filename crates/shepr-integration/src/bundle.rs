@@ -54,6 +54,10 @@ struct ShellHook {
     empty_object: bool,
 }
 
+/// Each kind keeps its own delivery policy, written by hand in its kit: the
+/// plugins try once, the extensions retry once in the same queue slot, and the
+/// TUI plugin retries while its selection is current. They differ because the
+/// agents' lifecycles do; one shared policy is not wanted.
 #[derive(Clone, Copy)]
 enum Kind {
     Shell(ShellHook),
@@ -84,6 +88,10 @@ const fn shell(gate: Option<&'static str>, early_seq: bool, empty_object: bool) 
     })
 }
 
+/// The asset list. It is also spelled in `lib.rs` (`include_str!` needs a
+/// literal path) and in the server's contract test lists; the tests here and
+/// the server's asset coverage check hold the copies in step, which is kept
+/// over a macro that would generate them.
 const SPECS: [AssetSpec; 16] = [
     AssetSpec {
         target: IntegrationTarget::AntigravityCli,

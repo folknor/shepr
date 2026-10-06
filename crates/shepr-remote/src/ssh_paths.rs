@@ -54,21 +54,6 @@ impl std::error::Error for SshRuntimeError {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct RemoteSshConfigPaths {
-    pub(crate) user_config: Option<PathBuf>,
-    pub(crate) system_config: PathBuf,
-}
-
-pub(crate) fn remote_ssh_config_paths(
-    home_dir: Option<&shepr_core::absolute_path::AbsolutePath>,
-) -> RemoteSshConfigPaths {
-    RemoteSshConfigPaths {
-        user_config: home_dir.map(|home| home.join(".ssh").join("config")),
-        system_config: PathBuf::from("/etc/ssh/ssh_config"),
-    }
-}
-
 /// Create an ephemeral SSH config directory under the validated private runtime
 /// directory. Each directory gets a random name so concurrent configured-machine
 /// bridges do not share a small per-process allocation limit. Callers remove

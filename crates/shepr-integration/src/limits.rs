@@ -18,6 +18,12 @@ pub(crate) const MAX_INTEGRATION_FILE_BYTES: u64 = 8 * 1024 * 1024;
 /// Escapes may expand beyond this estimate and the string grows as needed.
 pub(crate) const TOML_BASIC_STRING_DELIMITER_BYTES: usize = 2;
 
+// The timings below are generated into the hook assets. The JavaScript and
+// TypeScript kits read `Date.now()` and `setTimeout` directly, with no clock
+// handed in, so their bun tests wait in real time (up to a few seconds), and
+// some decoder literals live in the decoders rather than here. Both are
+// accepted: a clock seam in the kits buys only faster tests.
+
 /// How long a bundled hook waits to connect to the shepr socket before giving
 /// up. Generated into every hook asset, so the agent is never held longer than
 /// this by an unreachable server.

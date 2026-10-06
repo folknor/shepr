@@ -101,6 +101,12 @@ pub enum AgentSessionRef {
 }
 
 /// A resume key is the saved identity itself, without another copy of its fields.
+///
+/// So for Pi and OMP, whose session may be saved as an id or as a path, one
+/// session saved as the id in one pane and the path in another is two keys,
+/// and both panes resume it. That is accepted: a report prefers the path when
+/// it carries both, so the mixed pair practically never arises, and keying on
+/// the session behind both spellings would need the agent's session store.
 pub type AgentResumeKey = PersistedAgentSession;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
