@@ -54,12 +54,6 @@ Reported by: workspace-model.
 
 Reported by: the wave 12 fixers.
 
-- Waiting on the owner: install and status match a registered hook as a subset
-  (`canonical_registration_entry_matches` in `json_edit.rs`), so a shepr hook the user
-  disabled with an extra field such as `"disabled": true` reads as Current and install
-  leaves it alone. If the agent honours that field, the user's disable is respected but
-  status says Current while no reports arrive. The tests' comments claim none of these
-  agents honours a `disabled` field; nothing verifies it.
 - Hook commands now need a POSIX shell (`;`, `case`, `${VAR:-...}`, quoting). The new
   `sh -c` test proves they work there, but whether Codex, Kimi, Grok, MastraCode, Devin
   and Cursor run a registered command through a shell or split and exec it is not
@@ -79,7 +73,7 @@ Reported by: the wave 12 fixers.
 - `src/preflight.rs` `restart_local` now fails for a final-save failure followed by a
   new occupant; no preflight test covers that combination.
 - The final save's summary `persist.save` logs outcome `error` at INFO, beside the
-  separate ERROR event that carries the cause; split it if level-based filtering of
+  separate error-level event that carries the cause; split it if level-based filtering of
   save failures matters.
 - Collapsing outcome synonyms moved distinctions such as `persist.restore`'s
   `read_error` against `parse_error` out of `outcome` and into the message only; give

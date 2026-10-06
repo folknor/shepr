@@ -355,7 +355,10 @@ pub(super) fn canonical_entry_matches(actual: &Value, expected: &Value) -> bool 
 
 /// Registration-level matching also requires an absent matcher to stay
 /// absent. Keep this shared by install and status so a Current entry remains
-/// a byte-for-byte no-op when installed.
+/// a byte-for-byte no-op when installed. Fields the user added to a shepr
+/// entry are ignored on purpose, one that switches the hook off (such as
+/// `"disabled": true`) included: nobody disables shepr's own hook, so such an
+/// entry is left as written and reads as Current rather than being flagged.
 pub(super) fn canonical_registration_entry_matches(actual: &Value, expected: &Value) -> bool {
     (expected.get("matcher").is_some() || actual.get("matcher").is_none())
         && canonical_entry_matches(actual, expected)
