@@ -282,7 +282,7 @@ fn stop_active_server_with_timeout(
 ) -> Result<(), ServerStopError> {
     let address = paths.server_address();
     let socket_path = address.socket().to_path_buf();
-    tracing::info!(socket = %socket_path.display(), ?origin, expected_boot_id = ?expected_boot_id, "server stop requested");
+    shepr_platform::structured_log!(INFO, event = server.stop, outcome = "requested", socket = %socket_path.display(), ?origin, expected_boot_id = ?expected_boot_id, "server stop requested");
     let result = stop_socket_with_timeout(
         &socket_path,
         Some((&paths.data_dir_lease_path(), STOP_LEASE_WAIT_TIMEOUT)),
@@ -292,10 +292,10 @@ fn stop_active_server_with_timeout(
     );
     match &result {
         Ok(()) => {
-            tracing::info!(socket = %socket_path.display(), ?origin, expected_boot_id = ?expected_boot_id, "server stop completed");
+            shepr_platform::structured_log!(INFO, event = server.stop, outcome = "completed", socket = %socket_path.display(), ?origin, expected_boot_id = ?expected_boot_id, "server stop completed");
         }
         Err(error) => {
-            tracing::warn!(socket = %socket_path.display(), ?origin, expected_boot_id = ?expected_boot_id, %error, "server stop failed");
+            shepr_platform::structured_log!(WARN, event = server.stop, outcome = "error", socket = %socket_path.display(), ?origin, expected_boot_id = ?expected_boot_id, %error, "server stop failed");
         }
     }
     result

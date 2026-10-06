@@ -44,7 +44,7 @@ impl AppState {
     pub(crate) fn remove_pane(&mut self, pane_id: PaneId) -> Option<PaneRemovalOutcome> {
         let public_id = self.workspaces.pane(pane_id)?.public_id();
         let removal = self.workspaces.remove_pane(pane_id)?;
-        crate::logging::pane_event("pane.remove", public_id);
+        crate::logging::pane_removed(public_id);
         self.mark_session_dirty();
         self.mark_shell_projection_dirty();
         if removal.scope == PaneRemovalScope::Workspace {

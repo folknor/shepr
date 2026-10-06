@@ -1,7 +1,6 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
-use tracing::{info, warn};
 
 use shepr_core::layout::PaneId;
 
@@ -244,7 +243,7 @@ impl Drop for PaneTeardownInFlight {
             // `start` inserts this pane before constructing the guard. Keep an
             // invariant-failure fallback so teardown completion cannot panic
             // or report a different pane as finished if that ownership changes.
-            warn!(pane = %self.pane_id, "pane teardown completion had no matching start");
+            shepr_platform::structured_log!(WARN, event = pane.teardown, outcome = "unmatched", pane = %self.pane_id, "pane teardown completion had no matching start");
             return;
         };
         in_flight.swap_remove(index);
@@ -308,7 +307,8 @@ pub(super) fn shutdown_pane_processes_with_steps(
         let leader_killed = leader
             .as_ref()
             .is_some_and(|leader| leader.signal(shepr_platform::Signal::Kill));
-        warn!(
+        shepr_platform::structured_log!(
+            WARN, event = pane.teardown_start, outcome = "error",
             pane = %pane_id,
             error = %err,
             leader_killed,
@@ -356,7 +356,8 @@ fn terminate_pane_session(
             // process was absent from `handles`, so confirm the whole session
             // is empty before ending the escalation.
             if shepr_platform::session_members(session_id, leader_reaped).is_empty() {
-                info!(
+                shepr_platform::structured_log!(
+                    INFO, event = pane.session_terminate, outcome = "completed",
                     pane = %pane_id,
                     session = session_id.get(),
                     ?signal,
@@ -376,7 +377,8 @@ fn terminate_pane_session(
         .filter(|handle| !handle.has_exited())
         .map(|handle| handle.process_id().get())
         .collect();
-    warn!(
+    shepr_platform::structured_log!(
+        WARN, event = pane.session_terminate, outcome = "survivors",
         pane = %pane_id,
         session = session_id.get(),
         ?survivors,

@@ -593,7 +593,13 @@ impl HeadlessServer {
                 // skips the settle and, with its outbox still open, nothing
                 // would ever reap it.
                 let Some(cache) = self.shell_session_cache.as_ref() else {
-                    warn!(?client_id, "shell session cache missing while projecting");
+                    shepr_platform::structured_log!(
+                        WARN,
+                        event = client.session_cache,
+                        outcome = "missing",
+                        ?client_id,
+                        "shell session cache missing while projecting"
+                    );
                     return ClientPassOutcome::Owed;
                 };
                 Self::snapshot_from_viewed_workspace(
@@ -613,7 +619,10 @@ impl HeadlessServer {
                 // reconnects with a fresh counter instead of receiving
                 // a snapshot that repeats a revision.
                 let Some(revision) = shell.projection_revision.checked_next() else {
-                    warn!(
+                    shepr_platform::structured_log!(
+                        WARN,
+                        event = surface.projection_revision,
+                        outcome = "exhausted",
                         ?client_id,
                         "projection revisions exhausted; dropping client"
                     );
@@ -716,7 +725,13 @@ impl HeadlessServer {
             PreparedSurface::Ready(prepared) => *prepared,
             PreparedSurface::Unchanged => return ClientPassOutcome::Unchanged,
             PreparedSurface::RevisionsExhausted => {
-                warn!(?client_id, "surface revisions exhausted; dropping client");
+                shepr_platform::structured_log!(
+                    WARN,
+                    event = surface.revision,
+                    outcome = "exhausted",
+                    ?client_id,
+                    "surface revisions exhausted; dropping client"
+                );
                 client.outbox.close();
                 return ClientPassOutcome::Closed;
             }
@@ -741,9 +756,14 @@ impl HeadlessServer {
                         claimed, max, "skipping oversized surface for client"
                     );
                 } else {
-                    warn!(
+                    shepr_platform::structured_log!(
+                        WARN,
+                        event = surface.render,
+                        outcome = "oversized",
                         ?client_id,
-                        claimed, max, "skipping oversized surface for client"
+                        claimed,
+                        max,
+                        "skipping oversized surface for client"
                     );
                     client.oversized_surface_reported = true;
                     shared.oversized_notices.push(OversizedNotice {
@@ -755,7 +775,7 @@ impl HeadlessServer {
                 return ClientPassOutcome::Refused;
             }
             Err(err) => {
-                warn!(?client_id, error = %err, "failed to serialize frame");
+                shepr_platform::structured_log!(WARN, event = surface.encode, outcome = "error", ?client_id, error = %err, "failed to serialize frame");
                 client.outbox.close();
                 return ClientPassOutcome::Closed;
             }

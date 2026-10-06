@@ -867,7 +867,12 @@ impl ClientShellState {
             return;
         };
         if copy_mode.pipeline().in_flight() {
-            tracing::warn!("a copy operation was routed while another was outstanding");
+            shepr_platform::structured_log!(
+                WARN,
+                event = clipboard.copy,
+                outcome = "busy",
+                "a copy operation was routed while another was outstanding"
+            );
             return;
         }
         let pane_id = copy_mode.pane_id;

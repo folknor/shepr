@@ -47,7 +47,8 @@ impl App {
         let session_start_source = match params.session_start_source {
             Some(Ok(source)) => ReportedSessionStart::Known(source),
             Some(Err(source)) => {
-                tracing::warn!(
+                shepr_platform::structured_log!(
+                    WARN, event = agent.session_start, outcome = "unknown_source",
                     pane = %pane_id,
                     public_pane_id = %params.pane_id,
                     agent = %origin.agent(),

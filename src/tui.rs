@@ -63,7 +63,7 @@ fn auto_detect_launch<T>(
     ) -> T,
 ) -> Result<T, shepr_launch::local_server::LaunchError> {
     let socket_path = paths.server_address().socket().to_path_buf();
-    tracing::info!(path = %socket_path.display(), "auto-detect launch starting");
+    shepr_platform::structured_log!(INFO, event = launch.attach, outcome = "started", path = %socket_path.display(), "auto-detect launch starting");
 
     // The running server is checked whether or not machines are
     // configured. With configured machines a mismatch does not end the launch below,

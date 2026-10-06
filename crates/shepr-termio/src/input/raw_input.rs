@@ -451,11 +451,19 @@ impl RawInputByteFramer {
         let was_tail = matches!(self.held, Held::PasteTail { .. });
         self.held = Held::None;
         if was_tail {
-            tracing::warn!("bracketed paste terminator never arrived; resuming input");
+            shepr_platform::structured_log!(
+                WARN,
+                event = input.paste,
+                outcome = "missing_terminator",
+                "bracketed paste terminator never arrived; resuming input"
+            );
             self.buffer.clear();
             return Vec::new();
         }
-        tracing::warn!(
+        shepr_platform::structured_log!(
+            WARN,
+            event = input.paste,
+            outcome = "stalled",
             len = self.buffer.len(),
             "bracketed paste stalled without a terminator; delivering what arrived"
         );
@@ -492,7 +500,10 @@ impl RawInputByteFramer {
     }
 
     fn cut_oversized_paste(&mut self) -> Vec<u8> {
-        tracing::warn!(
+        shepr_platform::structured_log!(
+            WARN,
+            event = input.paste,
+            outcome = "oversized",
             len = self.buffer.len(),
             max = MAX_PENDING_PASTE_BYTES,
             "bracketed paste exceeds the held-paste limit; delivering its head and dropping the rest"
@@ -720,7 +731,10 @@ impl RawInputByteFramer {
             }
             // No continuation arrived; give up the window so Escape is not delayed again.
             self.host_replies.clear_all();
-            tracing::warn!(
+            shepr_platform::structured_log!(
+                WARN,
+                event = input.escape,
+                outcome = "timeout",
                 len = self.buffer.len(),
                 "flushing lone escape after input timeout; if this follows an alt chord or focus switch it may reach the pane as plain esc"
             );

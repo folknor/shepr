@@ -1267,7 +1267,8 @@ impl AgentOwnership {
             .map(|record| record.transition(HookSourceEvent::ProcessObserved(now)));
         if expired {
             if let Some(session_ref) = expired_session_ref {
-                tracing::info!(
+                shepr_platform::structured_log!(
+                    INFO, event = agent.session_start, outcome = "expired",
                     agent = %detected_agent,
                     source = %origin.source(),
                     session_ref = ?session_ref,

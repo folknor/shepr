@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 use crate::ApiRequestSender;
 use shepr_platform::ipc::SocketStartupLock;
@@ -41,14 +41,19 @@ impl Drop for ServerHandle {
         if let Err(err) = self.remove_socket_file_if_owned()
             && err.kind() != std::io::ErrorKind::NotFound
         {
-            warn!(path = %self.path.display(), error = %err, "failed to remove server socket on shutdown");
+            shepr_platform::structured_log!(WARN, event = ipc.socket_remove, outcome = "error", path = %self.path.display(), error = %err, "failed to remove server socket on shutdown");
         }
 
         if let Some(thread) = self.thread.take() {
             if woke {
                 // Bounded by one accept-failure backoff (at most a second).
                 if thread.join().is_err() {
-                    warn!("server listener thread panicked");
+                    shepr_platform::structured_log!(
+                        WARN,
+                        event = ipc.listener_join,
+                        outcome = "panicked",
+                        "server listener thread panicked"
+                    );
                 }
             } else {
                 debug!("server listener not woken; leaving its thread to process exit");
@@ -107,7 +112,7 @@ pub fn start_server(
         &paths.server_socket_startup_lock_path(),
     )?
     .into_parts();
-    info!(path = %path.display(), "server socket listening");
+    shepr_platform::structured_log!(INFO, event = ipc.socket_listen, outcome = "ok", path = %path.display(), "server socket listening");
     let running = Arc::new(AtomicBool::new(true));
     let gate = ClientGate::default();
     // Nothing restarts the listener. Recoverable accept and spawn failures

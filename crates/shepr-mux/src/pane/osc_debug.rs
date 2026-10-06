@@ -97,7 +97,8 @@ pub(super) fn events(bodies: &[Vec<u8>]) -> Vec<OscDebugEvent> {
 /// Logs each event at info level when the opt-in capture is enabled.
 pub(super) fn log(pane_id: PaneId, events: &[OscDebugEvent]) {
     for event in events {
-        tracing::info!(
+        shepr_platform::structured_log!(
+            INFO, event = agent.osc, outcome = "observed",
             pane = %pane_id,
             osc_command = %event.command,
             osc_payload = ?event.payload,

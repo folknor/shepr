@@ -458,7 +458,7 @@ impl GitCeilings {
             Ok(Some(value)) => Self::parse(&value),
             Ok(None) => Self::default(),
             Err(error) => {
-                tracing::warn!(%error, "failed to read Git ceiling directories");
+                shepr_platform::structured_log!(WARN, event = git.ceiling_read, outcome = "error", %error, "failed to read Git ceiling directories");
                 Self::default()
             }
         }

@@ -5,7 +5,7 @@ use crate::server::outbox::ReleaseMode;
 use shepr_protocol::ServerMessage;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 mod host_shutdown;
 use host_shutdown::HostShutdownMonitor;
@@ -256,11 +256,11 @@ impl ShutdownLifecycle {
                 app.cancel_host_shutdown_checkpoint();
             }
             if was_warning || was_frozen {
-                info!(
-                    event = "host.shutdown.cancel",
-                    subsystem = "shutdown",
-                    generation = cancelled_generation.map(WarningGeneration::as_u64),
+                shepr_platform::structured_log!(
+                    INFO,
+                    event = shutdown.cancel,
                     outcome = "resumed",
+                    generation = cancelled_generation.map(WarningGeneration::as_u64),
                     "host shutdown cancelled; session saves resumed"
                 );
             }
@@ -310,19 +310,19 @@ impl ShutdownLifecycle {
             return;
         };
         if outcome == app::HostCheckpointOutcome::Unsaved {
-            warn!(
-                event = "host.shutdown.freeze",
-                subsystem = "shutdown",
-                generation = generation.map(WarningGeneration::as_u64),
+            shepr_platform::structured_log!(
+                WARN,
+                event = shutdown.freeze,
                 outcome = "unsaved",
+                generation = generation.map(WarningGeneration::as_u64),
                 "host shutdown checkpoint unavailable; freezing session saves"
             );
         } else {
-            info!(
-                event = "host.shutdown.freeze",
-                subsystem = "shutdown",
-                generation = generation.map(WarningGeneration::as_u64),
+            shepr_platform::structured_log!(
+                INFO,
+                event = shutdown.freeze,
                 outcome = "saved",
+                generation = generation.map(WarningGeneration::as_u64),
                 "host shutdown checkpoint saved; freezing session saves"
             );
         }
@@ -354,9 +354,12 @@ impl HeadlessServer {
         if !self.lifecycle.begin_stopping() {
             return;
         }
-        info!(
-            event = "server.shutdown.begin",
-            cause, "server shutdown initiated"
+        shepr_platform::structured_log!(
+            INFO,
+            event = server.shutdown,
+            outcome = "started",
+            cause,
+            "server shutdown initiated"
         );
 
         // Hand every held reply to its client's FIFO control lane before
@@ -382,7 +385,12 @@ impl HeadlessServer {
         // current caller: direct lifecycle drivers also invoke this method.
         self.lifecycle
             .require_phase(ShutdownStep::CompleteShutdown, ShutdownPhase::Stopping)?;
-        info!("completing server shutdown");
+        shepr_platform::structured_log!(
+            INFO,
+            event = server.shutdown,
+            outcome = "completing",
+            "completing server shutdown"
+        );
         // A client whose outbox already closed leaves first, so a request it
         // left buffered finds no registered client and is dropped with it.
         self.reap_closed_clients();
@@ -425,7 +433,10 @@ impl HeadlessServer {
                     debug!("client writer exited before acknowledging shutdown flush");
                 }
                 Err(_) => {
-                    warn!(
+                    shepr_platform::structured_log!(
+                        WARN,
+                        event = shutdown.client_flush,
+                        outcome = "timeout",
                         timeout_ms = SHUTDOWN_FLUSH_TIMEOUT.as_millis(),
                         "client writers did not flush shutdown frames in time; closing anyway"
                     );

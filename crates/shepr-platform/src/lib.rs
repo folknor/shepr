@@ -82,7 +82,7 @@ pub const PRIVATE_DIRECTORY_MODE: u32 = limits::PRIVATE_DIRECTORY_MODE;
 /// accepted; the fallback keeps a future registry error fail-soft.
 fn env_present(var: shepr_core::env::EnvVar) -> bool {
     shepr_core::env::read_present(var).unwrap_or_else(|error| {
-        tracing::warn!(%error, "ignoring a refused environment value");
+        crate::structured_log!(WARN, event = environment.read, outcome = "refused", %error, "ignoring a refused environment value");
         false
     })
 }

@@ -133,7 +133,8 @@ impl App {
                         }
                     }
                     None => {
-                        tracing::error!(
+                        shepr_platform::structured_log!(
+                            ERROR, event = agent.authority, outcome = "missing",
                             public_pane_id = %target.pane_id,
                             "pane state owner names hook authority without an authority"
                         );

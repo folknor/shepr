@@ -126,12 +126,12 @@ pub fn run_server(
     })?;
 
     let result = rt.block_on(async move {
-        info!(socket = %ready.socket.display(), "shepr server started");
+        shepr_platform::structured_log!(INFO, event = server.startup, outcome = "ready", socket = %ready.socket.display(), "shepr server started");
         on_ready(&ready);
 
         server.run().await.map_err(|error| {
             // A client-spawned server's stderr is /dev/null by now.
-            tracing::error!(%error, "the server event loop failed");
+            shepr_platform::structured_log!(ERROR, event = server.event_loop, outcome = "error", %error, "the server event loop failed");
             error
         })
     });
@@ -292,7 +292,13 @@ fn log_panics() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let thread = std::thread::current();
-        tracing::error!(thread = thread.name().unwrap_or("<unnamed>"), "{info}");
+        shepr_platform::structured_log!(
+            ERROR,
+            event = server.panic,
+            outcome = "panicked",
+            thread = thread.name().unwrap_or("<unnamed>"),
+            "{info}"
+        );
         previous(info);
     }));
 }
@@ -309,7 +315,12 @@ fn log_panics() {
 /// any file IO starts; the inherited pane marker does not.
 fn spawn_integration_install() {
     if !integration_install_enabled(shepr_paths::BuildProfile::current()) {
-        info!("agent integration installation skipped; only release servers own agent configs");
+        shepr_platform::structured_log!(
+            INFO,
+            event = integration.install,
+            outcome = "skipped",
+            "agent integration installation skipped; only release servers own agent configs"
+        );
         return;
     }
     let paths = shepr_integration::AgentIntegrationPaths::resolve();
@@ -320,7 +331,7 @@ fn spawn_integration_install() {
             shepr_integration::install_present_integrations(&paths);
         })
     {
-        warn!(event = "integration.worker_start_failed", subsystem = "integration", %error, "could not start the agent integration install");
+        shepr_platform::structured_log!(WARN, event = integration.worker_start, outcome = "error", %error, "could not start the agent integration install");
     }
 }
 
@@ -337,7 +348,8 @@ fn seed_startup_workspace_if_empty(
     };
 
     if !app.state().workspaces().is_empty() {
-        info!(
+        shepr_platform::structured_log!(
+            INFO, event = workspace.startup, outcome = "ignored",
             cwd = %cwd.display(),
             "restored session already has workspaces; ignoring startup cwd"
         );
@@ -349,10 +361,10 @@ fn seed_startup_workspace_if_empty(
     let geometry = app.headless_spawn_geometry();
     match app.create_workspace(&cwd, geometry) {
         Ok(_) => {
-            info!(cwd = %cwd.display(), "created startup workspace");
+            shepr_platform::structured_log!(INFO, event = workspace.startup, outcome = "created", cwd = %cwd.display(), "created startup workspace");
         }
         Err(err) => {
-            warn!(cwd = %cwd.display(), error = %err, "failed to create startup workspace");
+            shepr_platform::structured_log!(WARN, event = workspace.startup, outcome = "error", cwd = %cwd.display(), error = %err, "failed to create startup workspace");
         }
     }
 }
@@ -365,7 +377,7 @@ fn startup_error(error: shepr_platform::ipc::BindError) -> RunServerError {
     match error {
         shepr_platform::ipc::BindError::Busy(busy) => {
             let path = busy.path().to_path_buf();
-            tracing::error!(path = %path.display(), "another server already listens on the socket");
+            shepr_platform::structured_log!(ERROR, event = ipc.socket_bind, outcome = "busy", path = %path.display(), "another server already listens on the socket");
             RunServerError::AlreadyRunning { path }
         }
         shepr_platform::ipc::BindError::Io(error) => RunServerError::Socket(error),

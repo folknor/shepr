@@ -265,7 +265,10 @@ fn lock_reaper() -> MutexGuard<'static, Reaper> {
 fn hand_to_reaper(child: Child) {
     let mut reaper = lock_reaper();
     if reaper.children.len() >= MAX_UNREAPED_GIT_CHILDREN {
-        tracing::warn!(
+        shepr_platform::structured_log!(
+            WARN,
+            event = git.probe_reap,
+            outcome = "limit",
             pid = child.id(),
             "too many killed git probes are still unreaped; leaving this one a zombie until \
              shepr exits"

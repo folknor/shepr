@@ -409,7 +409,10 @@ impl App {
         };
         let job = layout.recapture(&self.terminal_runtimes);
         if job.is_none() {
-            tracing::warn!(
+            shepr_platform::structured_log!(
+                WARN,
+                event = persist.checkpoint,
+                outcome = "unpaired",
                 "could not pair fresh cwd probes with the saved pane-exit layout; keeping the durable checkpoint"
             );
         }
@@ -492,7 +495,13 @@ impl App {
         match result {
             Ok(()) => {
                 if let Some(failures) = self.session_saver.autosave.record_success() {
-                    tracing::info!(failures, "session save recovered after failures");
+                    shepr_platform::structured_log!(
+                        INFO,
+                        event = persist.save,
+                        outcome = "recovered",
+                        failures,
+                        "session save recovered after failures"
+                    );
                 }
                 self.session_saver.exit.save_succeeded();
                 match kind {
@@ -519,8 +528,8 @@ impl App {
                 }
             }
             Err(error) if error.is_blocked_on_backup() => {
-                tracing::error!(
-                    event = "session.save.blocked", subsystem = "persist",
+                shepr_platform::structured_log!(
+                    ERROR, event = persist.save, outcome = "blocked_on_backup",
                     kind = save_kind, generation, directory = %self.paths.data_dir().display(),
                     error = %error,
                     "session saves are blocked because the existing session could not be opened for backup; fix access and restart the server"
@@ -530,8 +539,8 @@ impl App {
                     .record_session_save_status(self.session_saver.policy.save_status());
             }
             Err(error) if !error.is_retryable() => {
-                tracing::error!(
-                    event = "session.save.stopped", subsystem = "persist",
+                shepr_platform::structured_log!(
+                    ERROR, event = persist.save, outcome = "stopped",
                     kind = save_kind, generation, directory = %self.paths.data_dir().display(),
                     error = %error,
                     "session persistence failed permanently; disabling session saves for this boot"
@@ -552,15 +561,15 @@ impl App {
                     // Capture failed before the mux writer received a job; this
                     // layer owns that diagnostic. Writer failures are logged
                     // by the mux, and only their retry policy is recorded here.
-                    tracing::warn!(
-                        event = "session.capture.failed", subsystem = "persist",
+                    shepr_platform::structured_log!(
+                        WARN, event = persist.capture, outcome = "error",
                         kind = save_kind, generation, directory = %self.paths.data_dir().display(),
                         error = %error, "session capture failed; keeping the previous session file"
                     );
                 }
                 let (failures, delay) = self.session_saver.autosave.record_failure(now);
-                tracing::debug!(
-                    event = "session.save.retry", subsystem = "persist",
+                shepr_platform::structured_log!(
+                    DEBUG, event = persist.save, outcome = "retry_scheduled",
                     kind = save_kind, generation, directory = %self.paths.data_dir().display(),
                     error = %error, failures, retry_ms = delay.as_millis(),
                     "session save retry scheduled"
@@ -573,8 +582,8 @@ impl App {
                             self.session_saver.config,
                         )
                     {
-                        tracing::warn!(
-                            event = "session.checkpoint.abandoned", subsystem = "persist",
+                        shepr_platform::structured_log!(
+                            WARN, event = persist.checkpoint, outcome = "abandoned",
                             kind = "pane_exit_checkpoint", generation = exit.generation.0,
                             directory = %self.paths.data_dir().display(),
                             failures = self.session_saver.config.checkpoint_max_failures,
@@ -779,8 +788,9 @@ impl App {
         // Keep the previous atomic save on failure and report an unclean exit.
         self.session_saver.autosave.clear();
         if let Err(error) = &result {
-            tracing::error!(
-                event = "session.save.final_failure", subsystem = "persist", kind = "final",
+            shepr_platform::structured_log!(
+                ERROR, event = persist.save, outcome = "error",
+                kind = "final",
                 directory = %self.paths.data_dir().display(),
                 %error,
                 "final session save failed"

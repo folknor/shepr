@@ -80,8 +80,8 @@ impl BlitEncoder {
             &mut next_last_cursor_shape,
             clear_before_full_redraw,
         ) {
-            tracing::warn!(
-                event = "blit.frame_encode_failed",
+            shepr_platform::structured_log!(
+                WARN, event = blit.frame_encode, outcome = "error",
                 error = %error,
                 "could not encode terminal frame"
             );

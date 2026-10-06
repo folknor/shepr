@@ -1286,7 +1286,6 @@ dependencies = [
  "shepr-test-support",
  "tokio",
  "toml",
- "tracing",
 ]
 
 [[package]]
@@ -1391,7 +1390,6 @@ dependencies = [
  "shepr-test-support",
  "shepr-vt",
  "toml",
- "tracing",
 ]
 
 [[package]]

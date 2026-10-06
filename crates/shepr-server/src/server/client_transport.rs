@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::endpoint::EndpointServerWelcome;
@@ -205,7 +205,7 @@ fn handle_client_handshake(
     let hello = match shepr_api::read_client_handshake(&mut stream, deadline) {
         Ok(shepr_api::ClientHandshakeOutcome::Hello(message)) => message,
         Ok(shepr_api::ClientHandshakeOutcome::Foreign(peer)) => {
-            warn!(?client_id, build_id = %peer.build_id, "rejecting client from another build");
+            shepr_platform::structured_log!(WARN, event = client.handshake, outcome = "different_build", ?client_id, build_id = %peer.build_id, "rejecting client from another build");
             return Ok(());
         }
         Ok(shepr_api::ClientHandshakeOutcome::Silent(
@@ -219,7 +219,10 @@ fn handle_client_handshake(
                 error,
             )),
         )) => {
-            warn!(
+            shepr_platform::structured_log!(
+                WARN,
+                event = client.handshake,
+                outcome = "oversized",
                 ?client_id,
                 claimed = error.actual,
                 max = error.limit.max(),
@@ -234,7 +237,10 @@ fn handle_client_handshake(
             return Ok(());
         }
         Ok(shepr_api::ClientHandshakeOutcome::NotShepr) => {
-            warn!(
+            shepr_platform::structured_log!(
+                WARN,
+                event = client.handshake,
+                outcome = "invalid_preamble",
                 ?client_id,
                 "rejecting client connection without a shepr preamble"
             );
@@ -428,7 +434,10 @@ fn client_read_loop_with_endpoint_controls(
                 break;
             }
             Err(shepr_protocol::FramingError::LimitExceeded(error)) => {
-                warn!(
+                shepr_platform::structured_log!(
+                    WARN,
+                    event = client.message,
+                    outcome = "oversized",
                     ?client_id,
                     claimed = error.actual,
                     max = error.limit.max(),
@@ -453,7 +462,7 @@ fn client_read_loop_with_endpoint_controls(
                 let geometry = match geometry.host_geometry() {
                     Ok(geometry) => geometry,
                     Err(reason) => {
-                        warn!(?client_id, %reason, "invalid client shell resize, closing");
+                        shepr_platform::structured_log!(WARN, event = client.resize, outcome = "invalid", ?client_id, %reason, "invalid client shell resize, closing");
                         send_client_disconnected(server_event_tx, client_id);
                         break;
                     }
@@ -477,7 +486,10 @@ fn client_read_loop_with_endpoint_controls(
                         events,
                     },
                     InputEventLimit::TooManyEvents => {
-                        warn!(
+                        shepr_platform::structured_log!(
+                            WARN,
+                            event = client.input_batch,
+                            outcome = "oversized",
                             ?client_id,
                             count = events.len(),
                             "oversized targeted pane input batch, closing"
@@ -486,7 +498,10 @@ fn client_read_loop_with_endpoint_controls(
                         break;
                     }
                     InputEventLimit::PasteTooLarge { size } => {
-                        warn!(
+                        shepr_platform::structured_log!(
+                            WARN,
+                            event = client.paste,
+                            outcome = "oversized",
                             ?client_id,
                             size,
                             max = MAX_INPUT_PAYLOAD,
@@ -495,7 +510,10 @@ fn client_read_loop_with_endpoint_controls(
                         ServerEvent::PasteRejected { client_id, size }
                     }
                     InputEventLimit::InputPayloadTooLarge { size } => {
-                        warn!(
+                        shepr_platform::structured_log!(
+                            WARN,
+                            event = client.input,
+                            outcome = "oversized",
                             ?client_id,
                             size,
                             max = MAX_INPUT_PAYLOAD,

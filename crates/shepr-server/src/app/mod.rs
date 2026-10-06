@@ -69,7 +69,6 @@ pub(crate) struct Outcome {
 use crate::limits::{APP_EVENT_CHANNEL_CAPACITY, PENDING_AGENT_RESUME_THEME_WAIT};
 
 use tokio::sync::{Notify, mpsc};
-use tracing::info;
 
 use shepr_mux::events::AppEvent;
 
@@ -198,7 +197,10 @@ impl App {
             std::sync::Arc::clone(&save_finished),
         );
 
-        info!(
+        shepr_platform::structured_log!(
+            INFO,
+            event = server.scrollback,
+            outcome = "configured",
             pane_scrollback_limit_bytes = pane_scrollback.bytes(),
             "using pane scrollback configuration"
         );
@@ -326,7 +328,7 @@ impl App {
                 DefaultWorkspace::Created
             }
             Err(err) => {
-                tracing::error!(error = %err, cwd = %cwd.as_path().display(), "failed to create default workspace");
+                shepr_platform::structured_log!(ERROR, event = workspace.create, outcome = "error", error = %err, cwd = %cwd.as_path().display(), "failed to create default workspace");
                 DefaultWorkspace::Failed
             }
         }

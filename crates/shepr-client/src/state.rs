@@ -441,7 +441,8 @@ impl HostWriteFailure {
         match result {
             Ok(()) => {
                 if let Some(kind) = self.failing.take() {
-                    tracing::info!(
+                    shepr_platform::structured_log!(
+                        INFO, event = terminal.write, outcome = "recovered",
                         write,
                         previous_error_kind = %kind,
                         "host terminal write recovered"
@@ -451,7 +452,8 @@ impl HostWriteFailure {
             }
             Err(error) => {
                 if self.failing != Some(error.kind()) {
-                    tracing::warn!(
+                    shepr_platform::structured_log!(
+                        WARN, event = terminal.write, outcome = "error",
                         write,
                         endpoint = %EndpointLogValue(context.map(|context| &context.endpoint)),
                         generation = ?context.and_then(|context| context.generation.as_ref()),

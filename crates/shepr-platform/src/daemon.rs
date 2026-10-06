@@ -173,7 +173,7 @@ impl SpawnedDaemon {
                 }
             });
         if let Err(error) = reaper {
-            tracing::warn!(pid, %error, "could not start the server daemon reaper");
+            crate::structured_log!(WARN, event = daemon.reaper_start, outcome = "error", pid, %error, "could not start the server daemon reaper");
         }
     }
 }
@@ -188,7 +188,7 @@ impl Drop for SpawnedDaemon {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid daemon pid"))
             .and_then(|pid| kill_process_group(crate::Pgid::led_by(pid)))
         {
-            tracing::warn!(pid, %error, "could not kill the server daemon's process group");
+            crate::structured_log!(WARN, event = daemon.group_kill, outcome = "error", pid, %error, "could not kill the server daemon's process group");
         }
         // A child that does not lead its own group has none to signal above.
         // Killing it directly is a no-op error when it already exited.
@@ -198,7 +198,7 @@ impl Drop for SpawnedDaemon {
             tracing::debug!(pid, %error, "could not kill the server daemon");
         }
         if let Err(error) = child.wait() {
-            tracing::warn!(pid, %error, "could not reap the killed server daemon");
+            crate::structured_log!(WARN, event = daemon.child_reap, outcome = "error", pid, %error, "could not reap the killed server daemon");
         }
     }
 }

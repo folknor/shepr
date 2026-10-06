@@ -6,7 +6,7 @@
 //! `PaneTerminal::drop_default_color_overrides_if`) and knows nothing of
 //! processes.
 
-use tracing::{debug, info};
+use tracing::debug;
 
 use shepr_core::layout::PaneId;
 
@@ -100,7 +100,8 @@ pub(in crate::pane) fn maybe_restore_host_terminal_theme(
     }
     let dropped = terminal.drop_default_color_overrides_if(owner_pgid);
     if dropped {
-        info!(
+        shepr_platform::structured_log!(
+            INFO, event = terminal.theme, outcome = "restored",
             pane = %pane_id,
             owner_pgid = owner_pgid.get(),
             "restored host terminal default colors after transient override"

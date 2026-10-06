@@ -26,7 +26,7 @@ use std::net::Shutdown;
 use std::sync::mpsc::{SendError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use tokio::sync::Notify;
-use tracing::{debug, warn};
+use tracing::debug;
 
 fn encode_message_or_close<M: serde::Serialize>(
     queue: &OutboxQueue,
@@ -35,7 +35,7 @@ fn encode_message_or_close<M: serde::Serialize>(
     match shepr_protocol::encode_message(message) {
         Ok(bytes) => Some(bytes),
         Err(error) => {
-            warn!(%error, "failed to encode client message; closing the client");
+            shepr_platform::structured_log!(WARN, event = client.message_encode, outcome = "error", %error, "failed to encode client message; closing the client");
             queue.close_connection();
             None
         }
@@ -476,9 +476,13 @@ impl ClientOutbox {
     /// backlog is dropped rather than buffered for).
     fn admission(&self, count: usize, bytes: usize) -> bool {
         if count > MAX_HELD_ENDPOINT_REPLIES || bytes > MAX_HELD_ENDPOINT_REPLY_BYTES {
-            warn!(
+            shepr_platform::structured_log!(
+                WARN,
+                event = client.reply_budget,
+                outcome = "exceeded",
                 count,
-                bytes, "client exceeded held endpoint reply budget; closing the client"
+                bytes,
+                "client exceeded held endpoint reply budget; closing the client"
             );
             self.close();
             false

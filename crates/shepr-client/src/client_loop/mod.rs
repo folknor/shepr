@@ -16,7 +16,6 @@ use crate::{endpoint, fatal_panic, terminal_geometry};
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::{info, warn};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientLoopAction {
@@ -286,7 +285,7 @@ impl ClientLoop {
         {
             // Reassertion repeats a mode the host already accepted after a host event that
             // may have reset it; a failure here is logged and never ends the session.
-            warn!(%error, "failed to re-assert host mouse capture");
+            shepr_platform::structured_log!(WARN, event = terminal.mouse_capture, outcome = "error", %error, "failed to re-assert host mouse capture");
         }
         let host_reports_all_keys = state.host_modes.keyboard_report_all_active();
         let shell = &mut state.shell;
@@ -301,7 +300,7 @@ impl ClientLoop {
         &mut self,
         err: &io::Error,
     ) -> Result<ClientLoopAction, LoopExit> {
-        info!(error = %err, "client terminal unavailable; detaching");
+        shepr_platform::structured_log!(INFO, event = client.detach, outcome = "terminal_unavailable", error = %err, "client terminal unavailable; detaching");
         Ok(ClientLoopAction::Exit)
     }
 

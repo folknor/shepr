@@ -610,7 +610,7 @@ impl Workspace {
         let geometry = chrome
             .pane_spawn_geometry(&planned, zoomed, pane, cell)
             .ok_or_else(|| {
-                tracing::error!(workspace = %self.id, "planned split has no pane geometry");
+                shepr_platform::structured_log!(ERROR, event = pane.split, outcome = "missing_geometry", workspace = %self.id, "planned split has no pane geometry");
                 SplitPreparationRefused::LayoutRefused
             })?;
         let terminal = TerminalState::new(cwd);

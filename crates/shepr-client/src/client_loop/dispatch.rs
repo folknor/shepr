@@ -6,7 +6,6 @@ use crate::shell_runtime::{ShellInputDisposition, finish_client_shell_input};
 use crate::{endpoint, shell};
 use shepr_surface::decode::{DecodedClientServerMessage, DecodedWireServerMessage};
 use std::io;
-use tracing::warn;
 
 impl ClientLoop {
     /// Applies one inbound message to the host and the shell. The hub admits it first: the
@@ -48,7 +47,8 @@ impl ClientLoop {
                         // shell does not (a pane geometry change, or a row on a pane the
                         // patch does not list; the decoder checks neither). Both are bugs, and
                         // reconnecting for a fresh full surface baseline is the one response.
-                        tracing::error!(
+                        shepr_platform::structured_log!(
+                            ERROR, event = surface.patch, outcome = "refused",
                             endpoint = %endpoint_id,
                             %generation,
                             ?reason,
@@ -127,7 +127,8 @@ impl ClientLoop {
                     state.settings.clipboard_route(),
                     &mut state.output_writer,
                 ) {
-                    warn!(
+                    shepr_platform::structured_log!(
+                        WARN, event = clipboard.copy, outcome = "error",
                         endpoint = %endpoint_id,
                         %generation,
                         bytes = data.len(),

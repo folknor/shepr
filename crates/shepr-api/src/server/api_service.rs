@@ -128,7 +128,7 @@ pub(super) fn handle_connection(
             // Recover correlation without relaxing typed request validation or accepting
             // ambiguous duplicate IDs. Invalid JSON and non-string IDs stay uncorrelated.
             let id = request_id_from_line(line);
-            tracing::warn!(event = "api.request.invalid", request_id = ?id, error_category = ?request_error.classify(), line = request_error.line(), column = request_error.column(), "invalid API request");
+            shepr_platform::structured_log!(WARN, event = api.request, outcome = "invalid", request_id = ?id, error_category = ?request_error.classify(), line = request_error.line(), column = request_error.column(), "invalid API request");
             let response = ErrorResponse {
                 id,
                 error: crate::error::ApiError::new(
@@ -296,7 +296,7 @@ fn stop_server(
             ));
         }
     }
-    tracing::info!(event = "server.stop.accepted", request_id = id, boot_id = %actual, expected_boot_id = ?expected_boot_id, "server stop accepted");
+    shepr_platform::structured_log!(INFO, event = server.stop, outcome = "accepted", request_id = id, boot_id = %actual, expected_boot_id = ?expected_boot_id, "server stop accepted");
     server_stop.request();
     // The answer waits for the final save so it can carry its result. The
     // server keeps its socket through that save, so the client would wait

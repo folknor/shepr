@@ -20,7 +20,6 @@ use shepr_surface::decode::{DecodedClientServerMessage, DecodedWireServerMessage
 use std::collections::VecDeque;
 use std::io;
 use std::time::Instant;
-use tracing::warn;
 
 /// The client's side of every endpoint: connections, command lanes, reconnect supervisors,
 /// and the move between presentations. Connections, supervisors and command lanes serve
@@ -168,7 +167,7 @@ impl EndpointHub {
                 ) {
                     return Vec::new();
                 }
-                tracing::info!(endpoint = %endpoint_id, %generation, "endpoint connected");
+                shepr_platform::structured_log!(INFO, event = endpoint.connection, outcome = "connected", endpoint = %endpoint_id, %generation, "endpoint connected");
                 self.registry.insert_native(
                     endpoint_id.clone(),
                     connection.activate(),
@@ -204,9 +203,9 @@ impl EndpointHub {
             return Vec::new();
         };
         if status == EndpointFailureStatus::Attention {
-            warn!(endpoint = %endpoint_id, %generation, error = %failure, "endpoint needs attention");
+            shepr_platform::structured_log!(WARN, event = endpoint.attempt, outcome = "needs_attention", endpoint = %endpoint_id, %generation, error = %failure, "endpoint needs attention");
         } else {
-            tracing::info!(endpoint = %endpoint_id, %generation, ?status, error = %failure, "endpoint attempt ended");
+            shepr_platform::structured_log!(INFO, event = endpoint.attempt, outcome = "ended", endpoint = %endpoint_id, %generation, ?status, error = %failure, "endpoint attempt ended");
         }
         shell.set_endpoint_status(endpoint_id, status);
         shell.set_machine_diagnostic(endpoint_id, failure);
@@ -308,7 +307,8 @@ impl EndpointHub {
             // installed by its supervisor's attempt, the supervisor starts no attempt while
             // its generation is connected, and only `endpoint_lost` below re-arms it. So
             // every queued failure ends its endpoint's lane here.
-            tracing::info!(
+            shepr_platform::structured_log!(
+                INFO, event = endpoint.transport, outcome = "error",
                 endpoint = %failure.endpoint_id,
                 generation = %failure.generation,
                 error = %failure.failure,

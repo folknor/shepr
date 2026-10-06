@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use shepr_platform::ipc::{LocalStream, LocalStreamDeadlineReader};
 use shepr_protocol::preamble::{PreambleError, local_preamble, read_preamble};
-use tracing::{debug, error};
+use tracing::debug;
 
 use crate::limits::{BUSY_CLIENT_HANDSHAKE_TIMEOUT, STREAM_WRITE_TIMEOUT};
 
@@ -36,7 +36,12 @@ impl ClientGate {
     /// Installs the handler. A second open logs an error and keeps the first.
     pub fn open(&self, handler: Arc<dyn ClientProtocolHandler>) {
         if self.handler.set(handler).is_err() {
-            error!("client protocol gate was opened twice; keeping its first handler");
+            shepr_platform::structured_log!(
+                ERROR,
+                event = api.protocol_open,
+                outcome = "already_open",
+                "client protocol gate was opened twice; keeping its first handler"
+            );
         }
     }
 
@@ -176,7 +181,9 @@ pub(super) fn refuse_client(mut stream: LocalStream, reason: shepr_protocol::Han
                         debug!(%error, "failed to send client refusal");
                     }
                 }
-                Err(error) => error!(%error, "failed to encode client refusal"),
+                Err(error) => {
+                    shepr_platform::structured_log!(ERROR, event = api.refusal_encode, outcome = "error", %error, "failed to encode client refusal");
+                }
             }
         }
         Ok(ClientHandshakeOutcome::Foreign(peer)) => {

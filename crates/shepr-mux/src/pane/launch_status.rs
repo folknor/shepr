@@ -228,10 +228,8 @@ async fn coordinate<Claim>(
         ..
     } = &settlement
     {
-        tracing::info!(
-            event = "pane.launch.settled",
-            subsystem = "pane",
-            outcome = "launched",
+        shepr_platform::structured_log!(
+            INFO, event = pane.launch, outcome = "launched",
             pane = %pane_id,
             kind = ?kind,
             cwd = %cwd.as_path().display(),
@@ -241,10 +239,10 @@ async fn coordinate<Claim>(
         );
     }
     if let LaunchOutcome::Failed(failure) = &settlement {
-        tracing::warn!(pane = %pane_id, %failure, "pane launch failed");
+        shepr_platform::structured_log!(WARN, event = pane.launch, outcome = "error", pane = %pane_id, %failure, "pane launch failed");
     }
     if let LaunchOutcome::StatusUnavailable(error) = &settlement {
-        tracing::error!(pane = %pane_id, %error, "pane launch status unavailable for a live child");
+        shepr_platform::structured_log!(ERROR, event = pane.launch_status, outcome = "unavailable", pane = %pane_id, %error, "pane launch status unavailable for a live child");
     }
     if let Err(error) = events
         .send(crate::events::RuntimeEvent::PaneLaunchSettled {
@@ -255,7 +253,7 @@ async fn coordinate<Claim>(
         })
         .await
     {
-        tracing::error!(pane = %pane_id, %error, "failed to send PaneLaunchSettled event");
+        shepr_platform::structured_log!(ERROR, event = pane.launch_notify, outcome = "error", pane = %pane_id, %error, "failed to send PaneLaunchSettled event");
         return;
     }
     let RecordedEnding::Observed {
@@ -269,7 +267,7 @@ async fn coordinate<Claim>(
         .send(crate::events::RuntimeEvent::PaneDied { ending, ended_at })
         .await
     {
-        tracing::error!(pane = %pane_id, %error, "failed to send PaneDied event");
+        shepr_platform::structured_log!(ERROR, event = pane.exit_notify, outcome = "error", pane = %pane_id, %error, "failed to send PaneDied event");
     }
 }
 
@@ -328,7 +326,7 @@ async fn settle(
     let channel = match AsyncFd::new(channel) {
         Ok(channel) => channel,
         Err(error) => {
-            tracing::warn!(%error, "could not watch a pane launch status channel");
+            shepr_platform::structured_log!(WARN, event = pane.launch_watch, outcome = "error", %error, "could not watch a pane launch status channel");
             return status_unavailable(error, child_liveness);
         }
     };
@@ -337,7 +335,7 @@ async fn settle(
         let mut ready = match channel.readable().await {
             Ok(ready) => ready,
             Err(error) => {
-                tracing::warn!(%error, "pane launch status channel failed");
+                shepr_platform::structured_log!(WARN, event = pane.launch_status, outcome = "error", %error, "pane launch status channel failed");
                 return status_unavailable(error, child_liveness);
             }
         };
@@ -381,7 +379,7 @@ async fn settle(
                 );
             }
             Err(error) => {
-                tracing::warn!(%error, "pane launch status channel failed");
+                shepr_platform::structured_log!(WARN, event = pane.launch_status, outcome = "error", %error, "pane launch status channel failed");
                 return status_unavailable(error, child_liveness);
             }
         }

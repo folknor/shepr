@@ -467,7 +467,8 @@ impl HeadlessServer {
             let serialized = match shepr_protocol::encode_message(prepared.message()) {
                 Ok(serialized) => serialized,
                 Err(error) => {
-                    warn!(
+                    shepr_platform::structured_log!(
+                        WARN, event = surface.patch_encode, outcome = "error",
                         ?client_id,
                         %error,
                         "failed to serialize retained pane surface patch"

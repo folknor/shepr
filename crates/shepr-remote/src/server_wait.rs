@@ -54,7 +54,8 @@ pub fn wait_for_server(paths: &shepr_paths::AppPaths) -> io::Result<ServerWaitEn
             let presence = match local_server::server_presence(paths) {
                 Ok(presence) => presence,
                 Err(error) => {
-                    tracing::warn!(
+                    shepr_platform::structured_log!(
+                        WARN, event = remote.server_probe, outcome = "error",
                         socket = %paths.server_address().socket().display(),
                         %error,
                         "server presence check failed while waiting for a server"
@@ -157,7 +158,8 @@ fn wait_for_server_with(
                                 "could not watch runtime directory while waiting for a server"
                             );
                         } else {
-                            tracing::warn!(
+                            shepr_platform::structured_log!(
+                                WARN, event = remote.server_watch, outcome = "error",
                                 directory = %dir.display(),
                                 %error,
                                 "could not watch runtime directory while waiting for a server"

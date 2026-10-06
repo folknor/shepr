@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use ratatui::layout::Rect;
-use tracing::{debug, error, warn};
+use tracing::debug;
 
 use shepr_core::layout::PaneId;
 use shepr_protocol::{CellData, FrameData, GridCellWidth, WireColor, WireStyle, WireStyleFlags};
@@ -492,13 +492,17 @@ impl PaneTerminal {
     fn report_terminal_mutation_failure(&self, operation: TerminalMutation) {
         if !self.mutation_failure_reported.swap(true, Ordering::Relaxed) {
             if let Some(pane_id) = self.pane_id {
-                error!(
+                shepr_platform::structured_log!(
+                    ERROR, event = terminal.mutation, outcome = "poisoned",
                     pane = %pane_id,
                     ?operation,
                     "terminal core lock poisoned; mutation was not applied"
                 );
             } else {
-                error!(
+                shepr_platform::structured_log!(
+                    ERROR,
+                    event = terminal.mutation,
+                    outcome = "poisoned",
                     ?operation,
                     "terminal core lock poisoned; mutation was not applied"
                 );
@@ -511,7 +515,8 @@ impl PaneTerminal {
             .oversized_clipboard_reported
             .swap(true, Ordering::Relaxed)
         {
-            warn!(
+            shepr_platform::structured_log!(
+                WARN, event = clipboard.osc_store, outcome = "oversized",
                 pane = %pane_id,
                 bytes, "dropped oversized OSC 52 clipboard store"
             );

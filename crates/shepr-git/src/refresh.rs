@@ -134,12 +134,20 @@ impl GitRefresher {
         caught.unwrap_or_else(|_| {
             if committing {
                 cache.clear();
-                tracing::warn!(
+                shepr_platform::structured_log!(
+                    WARN,
+                    event = git.refresh,
+                    outcome = "panicked",
                     "git status refresh panicked while committing; cleared the status cache \
                      and reporting an empty refresh"
                 );
             } else {
-                tracing::warn!("git status refresh panicked; reporting an empty refresh");
+                shepr_platform::structured_log!(
+                    WARN,
+                    event = git.refresh,
+                    outcome = "panicked",
+                    "git status refresh panicked; reporting an empty refresh"
+                );
             }
             RefreshOutcome::empty()
         })

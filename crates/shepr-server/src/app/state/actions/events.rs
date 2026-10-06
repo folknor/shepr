@@ -101,7 +101,8 @@ fn admit_hook_outcome(
         }
         shepr_detect::ownership::HookOutcome::Rejected(reason) => {
             if reason.is_integration_fault() {
-                tracing::warn!(
+                shepr_platform::structured_log!(
+                    WARN, event = agent.report, outcome = "refused",
                     pane = %pane_id,
                     ?kind,
                     %source,
@@ -237,7 +238,8 @@ impl AppState {
                         .hook_authority()
                         .is_none_or(|current| current.origin != origin)
                 {
-                    tracing::info!(
+                    shepr_platform::structured_log!(
+                        INFO, event = agent.authority, outcome = "withdrawn",
                         pane = %pane_id,
                         previous_agent = %origin.agent(),
                         detected_agent = %agent,

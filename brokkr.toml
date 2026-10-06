@@ -811,6 +811,13 @@ match = "last-line"
 stage = "pre-clippy"
 
 [[script_check]]
+name = "structured-logs"
+command = "python3 scripts/check_structured_logs.py"
+expect = "structured logs ok"
+match = "last-line"
+stage = "pre-clippy"
+
+[[script_check]]
 name = "seal-paths"
 command = "python3 scripts/check_seal_paths.py"
 expect = "seal paths ok"
@@ -1004,7 +1011,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-detect-layer"
 from = "shepr-detect"
-allow = ["regex", "serde", "shepr-agent", "shepr-core", "shepr-platform", "toml", "tracing"]
+allow = ["regex", "serde", "shepr-agent", "shepr-core", "shepr-platform", "toml"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -1121,7 +1128,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-binary-layer"
 from = "shepr"
-allow = ["clap", "owo-colors", "pulldown-cmark", "serde", "serde_json", "shepr-api", "shepr-client", "shepr-config", "shepr-core", "shepr-detect", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "tracing"]
+allow = ["clap", "owo-colors", "pulldown-cmark", "serde", "serde_json", "shepr-api", "shepr-client", "shepr-config", "shepr-core", "shepr-detect", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote"]
 kinds = ["normal"]
 
 # The server executable links the server and not the client. Its argument

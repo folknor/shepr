@@ -9,10 +9,8 @@ pub(super) fn pane_spawn_started(
     cwd: &shepr_core::absolute_path::AbsolutePath,
     shell: &std::path::Path,
 ) {
-    tracing::info!(
-        event = "pane.spawn.start",
-        subsystem = "pane",
-        outcome = "started",
+    shepr_platform::structured_log!(
+        INFO, event = pane.spawn, outcome = "started",
         pane = %pane_id,
         kind = ?kind,
         cwd = %cwd.display(),
@@ -25,10 +23,8 @@ pub(super) fn pane_spawn_started(
 }
 
 pub(super) fn pane_spawned(pane_id: shepr_core::layout::PaneId, pid: shepr_platform::Pid) {
-    tracing::info!(
-        event = "pane.spawned",
-        subsystem = "pane",
-        outcome = "ok",
+    shepr_platform::structured_log!(
+        INFO, event = pane.spawn, outcome = "ok",
         pane = %pane_id,
         pid = pid.get(),
         "pane child spawned"
@@ -44,10 +40,8 @@ pub(super) fn pane_exited(
     // shell can exit with it too, so the field says what the status means to
     // shepr, not that setup certainly failed.
     let setup_failure_status = exit_status.code() == Some(shepr_pty::backend::EXIT_SETUP_FAILED);
-    tracing::info!(
-        event = "pane.exit",
-        subsystem = "pane",
-        outcome = "completed",
+    shepr_platform::structured_log!(
+        INFO, event = pane.exit, outcome = "completed",
         pane = %pane_id,
         status = status.as_str(),
         setup_failure_status,
@@ -56,10 +50,8 @@ pub(super) fn pane_exited(
 }
 
 pub(super) fn pane_exit_failed(pane_id: shepr_core::layout::PaneId, err: &str) {
-    tracing::error!(
-        event = "pane.exit",
-        subsystem = "pane",
-        outcome = "error",
+    shepr_platform::structured_log!(
+        ERROR, event = pane.exit, outcome = "error",
         pane = %pane_id,
         error = err,
         "pane child wait failed"

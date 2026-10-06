@@ -97,9 +97,9 @@ impl Shared {
             return;
         }
         let generation = self.start_warning();
-        tracing::info!(
-            event = "host.shutdown.request",
-            subsystem = "shutdown",
+        shepr_platform::structured_log!(
+            INFO,
+            event = shutdown.request,
             outcome = "pending",
             generation = generation.as_u64(),
             "host shutdown requested; preserving session before pane termination"
@@ -110,9 +110,9 @@ impl Shared {
     /// cancellation and a second warning while logind was unavailable.
     fn refresh_warning(&self) {
         let generation = self.start_warning();
-        tracing::info!(
-            event = "host.shutdown.refresh",
-            subsystem = "shutdown",
+        shepr_platform::structured_log!(
+            INFO,
+            event = shutdown.refresh,
             outcome = "pending",
             generation = generation.as_u64(),
             "host shutdown remains pending after reconnect; refreshing session checkpoint"
@@ -175,9 +175,9 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<Option<Wa
         match result {
             Ok(()) => {
                 refresh_pending_warning = shutdown_pending;
-                tracing::debug!(
-                    event = "host.shutdown.notification",
-                    subsystem = "shutdown",
+                shepr_platform::structured_log!(
+                    DEBUG,
+                    event = shutdown.notification,
                     outcome = "disconnected",
                     retry_seconds = retry_delay.as_secs(),
                     "host shutdown notification stream ended"
@@ -186,17 +186,17 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<Option<Wa
             Err(err) => {
                 // Missing logind is routine unless a shutdown warning is pending.
                 if shutdown_pending {
-                    tracing::warn!(
-                        event = "host.shutdown.notification", subsystem = "shutdown",
-                        outcome = "unavailable", shutdown_pending,
+                    shepr_platform::structured_log!(
+                        WARN, event = shutdown.notification, outcome = "unavailable",
+                        shutdown_pending,
                         generation = shared.generation.load(Ordering::Acquire),
                         error = %err, retry_seconds = retry_delay.as_secs(),
                         "host shutdown notification unavailable"
                     );
                 } else {
-                    tracing::debug!(
-                        event = "host.shutdown.notification", subsystem = "shutdown",
-                        outcome = "unavailable", shutdown_pending,
+                    shepr_platform::structured_log!(
+                        DEBUG, event = shutdown.notification, outcome = "unavailable",
+                        shutdown_pending,
                         generation = shared.generation.load(Ordering::Acquire),
                         error = %err, retry_seconds = retry_delay.as_secs(),
                         "host shutdown notification unavailable"
@@ -309,9 +309,10 @@ async fn watch_connection(
         if preparing {
             shared.announce();
             if inhibitor.is_some() && shared.checkpointed(*checkpoints.borrow_and_update()) {
-                tracing::debug!(
-                    event = "host.shutdown.delay_release",
-                    subsystem = "shutdown",
+                shepr_platform::structured_log!(
+                    DEBUG,
+                    event = shutdown.delay_release,
+                    outcome = "released",
                     generation = shared.generation.load(Ordering::Acquire),
                     "session checkpoint finished; releasing the shutdown delay lock"
                 );

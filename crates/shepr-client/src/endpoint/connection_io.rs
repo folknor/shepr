@@ -10,7 +10,6 @@ use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::debug;
-use tracing::warn;
 
 pub(crate) struct AcceptedEndpoint {
     stream: LocalStream,
@@ -106,7 +105,7 @@ impl EndpointConnectionIo {
         endpoint_id: endpoint::ClientEndpointId,
         generation: shepr_protocol::ConnectionGeneration,
     ) -> io::Result<Self> {
-        tracing::info!(endpoint = %endpoint_id, %generation, "endpoint handshake accepted");
+        shepr_platform::structured_log!(INFO, event = endpoint.handshake, outcome = "accepted", endpoint = %endpoint_id, %generation, "endpoint handshake accepted");
         let assemble = || -> io::Result<Self> {
             let reader = accepted.stream.try_clone()?;
             let writer =
@@ -272,7 +271,8 @@ fn server_reader_thread(
             }
             // `EndpointReader` waits out WouldBlock itself, so any error here is final.
             Err(err) => {
-                warn!(
+                shepr_platform::structured_log!(
+                    WARN, event = endpoint.read, outcome = "error",
                     endpoint = %endpoint_id,
                     %generation,
                     error = %err,

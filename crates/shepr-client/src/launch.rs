@@ -22,7 +22,6 @@ use shepr_termio::blit as render_ansi;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::{info, warn};
 
 /// What launch prepares before taking the terminal: settings, supervisors, the event channel
 /// and the first Local attachment. Every launch-fatal configuration and endpoint check runs
@@ -60,7 +59,7 @@ impl Launched {
             shepr_launch::guidance::build_mismatch_guidance(paths.server_address()).into();
 
         crate::logging::startup();
-        info!(path = %socket_path.display(), "connecting to server");
+        shepr_platform::structured_log!(INFO, event = client.connection, outcome = "connecting", path = %socket_path.display(), "connecting to server");
 
         let machines = config.machines().to_vec();
         let local_failure_policy = endpoint::LocalFailurePolicy::for_machines(&machines);
@@ -109,13 +108,13 @@ impl Launched {
             Err(failure) if reconnect_local => {
                 match &failure {
                     LocalAttachFailure::Connection(error) => {
-                        warn!(%error, "the local server is unavailable; keeping configured machines available");
+                        shepr_platform::structured_log!(WARN, event = client.local_probe, outcome = "unavailable", %error, "the local server is unavailable; keeping configured machines available");
                     }
                     LocalAttachFailure::Handshake(error) => {
-                        warn!(%error, "the local server handshake failed; keeping configured machines available");
+                        shepr_platform::structured_log!(WARN, event = client.local_handshake, outcome = "error", %error, "the local server handshake failed; keeping configured machines available");
                     }
                     LocalAttachFailure::Setup(error) => {
-                        warn!(%error, "the local server transport setup failed; keeping configured machines available");
+                        shepr_platform::structured_log!(WARN, event = client.local_transport, outcome = "error", %error, "the local server transport setup failed; keeping configured machines available");
                     }
                 }
                 // The Local endpoint's first status comes from this real
@@ -193,7 +192,7 @@ pub(crate) fn run_launched_client(
             quit_flag.store(true, Ordering::Release);
             quit_event_tx.try_send(ClientLoopEvent::Quit).ok();
         }) {
-            warn!(error = %err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop");
+            shepr_platform::structured_log!(WARN, event = client.signal_handler, outcome = "error", error = %err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop");
         }
 
         let mut client_loop = match launched.into_loop(output_writer, terminal_guard, Arc::clone(&should_quit), Arc::clone(&fatal), HostHelpers::spawn_threads) {
@@ -220,7 +219,15 @@ pub(crate) fn run_launched_client(
         shepr_remote::release_ssh_resources_before_exit(SSH_RESOURCE_RELEASE_TIMEOUT);
     });
     if let Some(diagnostic) = fatal.diagnostic() {
-        fatal.guard(|| tracing::error!(diagnostic, "client panicked; exiting"));
+        fatal.guard(|| {
+            shepr_platform::structured_log!(
+                ERROR,
+                event = client.panic,
+                outcome = "panicked",
+                diagnostic,
+                "client panicked; exiting"
+            );
+        });
     }
     fatal.guard(crate::logging::shutdown);
 
@@ -397,7 +404,7 @@ impl Launched {
         match &local_launch_state {
             LocalLaunchState::Failed(failure) => {
                 if failure.disposition().needs_attention() {
-                    warn!(endpoint = "local", error = %failure, "endpoint needs attention");
+                    shepr_platform::structured_log!(WARN, event = endpoint.attempt, outcome = "needs_attention", endpoint = "local", error = %failure, "endpoint needs attention");
                 }
                 state.present_notice(&shell::EndpointNotice::new(
                     endpoint::ClientEndpointId::Local,

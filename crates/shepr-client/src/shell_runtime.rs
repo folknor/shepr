@@ -3,7 +3,6 @@ use crate::state::ClientState;
 use crate::terminal_geometry::{query_host_terminal_appearance, query_host_terminal_theme};
 use crate::{endpoint, shell};
 use shepr_protocol::ClientMessage;
-use tracing::warn;
 
 /// The geometry every endpoint is asked to render: the host size under the client's own layout.
 /// Shell chrome belongs to the client, so all endpoints lay out the same surface. Handshakes
@@ -101,7 +100,8 @@ pub(super) fn finish_client_shell_input(
             state.settings.clipboard_route(),
             &mut state.output_writer,
         ) {
-            warn!(
+            shepr_platform::structured_log!(
+                WARN, event = clipboard.copy, outcome = "error",
                 bytes = bytes.len(),
                 %error,
                 "clipboard copy did not reach the host clipboard"

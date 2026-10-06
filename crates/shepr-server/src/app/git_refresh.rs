@@ -82,7 +82,10 @@ impl GitRefreshScheduler {
     /// path out of the refreshes that follow.
     fn observe_worker(&mut self, now: Instant) {
         if self.worker.take_lost_refresh() {
-            tracing::warn!(
+            shepr_platform::structured_log!(
+                WARN,
+                event = git.refresh,
+                outcome = "worker_stopped",
                 "git status worker stopped without publishing an accepted refresh; \
                  scheduling the next refresh on a new worker"
             );
@@ -171,7 +174,7 @@ impl App {
                 self.git_refresh.lost_refresh_check_at = lost_refresh_check_after(now);
             }
             Err(err) => {
-                tracing::warn!(error = %err, "failed to start the git status worker");
+                shepr_platform::structured_log!(WARN, event = git.worker_start, outcome = "error", error = %err, "failed to start the git status worker");
                 self.git_refresh.next_git_remote_status_refresh = refresh_deadline_after(now);
             }
         }

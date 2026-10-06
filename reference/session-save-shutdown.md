@@ -86,9 +86,9 @@ the autosave debounce. A termination signal also lets the server adopt pane
 exit candidates observed at the signal time before this capture.
 
 The final save is skipped while host-shutdown saves are frozen, because the
-checkpoint from the warning is the layout to restore. The `session.save.final`
-log records the save's outcome (such as `completed`, `failed` or `frozen`) and
-its duration. A failed final save is reported as an unclean exit, and to every
+checkpoint from the warning is the layout to restore. The `persist.save`
+log with `kind = "final"` records the save's outcome (such as `completed`,
+`failed` or `frozen`) and its duration. A failed final save is reported as an unclean exit, and to every
 client whose stop request the server accepted: the answer to `server.stop` and
 `server.stop_if_boot` waits for the final save and carries its error, if any.
 Before removing its socket, the server waits a short bound

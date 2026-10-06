@@ -31,9 +31,8 @@ pub fn install_present_integrations(paths: &AgentIntegrationPaths) {
                     crate::logging::artifact_installed(label, &artifact);
                 }
                 for notice in output.notices {
-                    tracing::info!(
-                        event = "integration.notice",
-                        subsystem = "integration",
+                    shepr_platform::structured_log!(
+                        INFO, event = integration.notice, outcome = "reported",
                         integration = label,
                         notice = %notice,
                         "integration installation notice"
@@ -42,7 +41,8 @@ pub fn install_present_integrations(paths: &AgentIntegrationPaths) {
             }
             Ok(None) => {}
             Err(error) => {
-                tracing::warn!(
+                shepr_platform::structured_log!(
+                    WARN, event = integration.install, outcome = "error",
                     integration = label,
                     error_kind = ?error.kind(),
                     %error,

@@ -23,7 +23,7 @@ use shepr_core::backoff::Backoff;
 use shepr_platform::ipc::{
     Accepted, FirstByte, LocalStream, PeerAdmission, accept_peer, peek_first_byte,
 };
-use tracing::{debug, error, info, warn};
+use tracing::debug;
 
 use super::api_service::{handle_connection, reject_busy_connection, send_busy_refusal};
 use super::client_protocol::{
@@ -189,7 +189,7 @@ fn spawn_refuser(dispatch: Dispatch) -> Option<SyncSender<Pending>> {
                     }
                     _ => {
                         if let Err(error) = dispatch.spawn(stream, accepted, service) {
-                            warn!(%error, "refuser could not spawn connection worker");
+                            shepr_platform::structured_log!(WARN, event = api.refuser_spawn, outcome = "error", %error, "refuser could not spawn connection worker");
                         }
                     }
                 }
@@ -197,7 +197,7 @@ fn spawn_refuser(dispatch: Dispatch) -> Option<SyncSender<Pending>> {
         }) {
         Ok(_) => Some(tx),
         Err(error) => {
-            warn!(%error, "connection refuser unavailable");
+            shepr_platform::structured_log!(WARN, event = api.refuser_start, outcome = "unavailable", %error, "connection refuser unavailable");
             None
         }
     }
@@ -296,7 +296,7 @@ fn start_listener_with_overflow_observer(
                         continue;
                     }
                     Accepted::Fatal(error) => {
-                        error!(%error, "server listener cannot accept connections; stopping server");
+                        shepr_platform::structured_log!(ERROR, event = ipc.accept, outcome = "stopped", %error, "server listener cannot accept connections; stopping server");
                         dispatch.stop.request();
                         break;
                     }
@@ -378,7 +378,7 @@ impl AcceptBackoff {
     fn failed(&mut self, what: &'static str, error: &io::Error) {
         self.failures = self.failures.saturating_add(1);
         if self.failures == 1 {
-            error!(%error, "{what}; retrying");
+            shepr_platform::structured_log!(ERROR, event = ipc.accept, outcome = "retry", %error, "{what}; retrying");
         } else {
             debug!(%error, failures = self.failures, "{what}; retrying");
         }
@@ -386,7 +386,13 @@ impl AcceptBackoff {
     }
     fn recovered(&mut self) {
         if self.failures > 0 {
-            info!(failures = self.failures, "server listener recovered");
+            shepr_platform::structured_log!(
+                INFO,
+                event = ipc.accept,
+                outcome = "recovered",
+                failures = self.failures,
+                "server listener recovered"
+            );
         }
         self.failures = 0;
     }

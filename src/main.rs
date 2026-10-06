@@ -34,7 +34,13 @@ impl ProcessExit {
                 Self::Stop(shepr_launch::stop::ServerStopExit::BootMismatch)
             }
             Some(ProcessStatus::AlreadyRunning | ProcessStatus::ConfigRefused) | None => {
-                tracing::error!(code, "CLI returned an invalid process exit status");
+                shepr_platform::structured_log!(
+                    ERROR,
+                    event = cli.exit_status,
+                    outcome = "invalid",
+                    code,
+                    "CLI returned an invalid process exit status"
+                );
                 Self::Failed
             }
         }
@@ -129,7 +135,13 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<ProcessExit> {
             // However the wait ended, the client that ran it checks the
             // machine again next; only a failure to wait at all is an error.
             let end = shepr_remote::wait_for_server(&paths)?;
-            tracing::info!(?end, "remote wait for a server ended");
+            shepr_platform::structured_log!(
+                INFO,
+                event = remote.server_wait,
+                outcome = "completed",
+                ?end,
+                "remote wait for a server ended"
+            );
             Ok(ProcessExit::Success)
         }
         cli::Launch::Cli(command) => cli::run(&command).map(ProcessExit::from_cli_code),
@@ -188,7 +200,7 @@ fn finish_bridge(outcome: shepr_remote::RemoteBridgeOutcome) -> CliResult<Proces
     match outcome {
         shepr_remote::RemoteBridgeOutcome::Closed => Ok(ProcessExit::Success),
         shepr_remote::RemoteBridgeOutcome::IdleExpired { idle_for } => {
-            tracing::warn!(idle_for = ?idle_for, "remote bridge idle timeout expired");
+            shepr_platform::structured_log!(WARN, event = remote.bridge_idle, outcome = "expired", idle_for = ?idle_for, "remote bridge idle timeout expired");
             Err(CliError::Io(shepr_remote::classified_bridge_failure(
                 shepr_launch::RemoteFailureClass::Retry,
                 io::ErrorKind::TimedOut,

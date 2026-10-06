@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::debug;
 
 use crate::app;
 use crate::limits::{
@@ -612,10 +612,9 @@ impl HeadlessServer {
         // The save can take seconds; the duration below and the teardown wait
         // after it read a fresh sample.
         self.refresh_app_clock();
-        info!(
-            event = "session.save.final",
-            subsystem = "persist",
-            kind = "final",
+        shepr_platform::structured_log!(
+            INFO,
+            event = persist.save,
             outcome = if final_save.is_err() {
                 "failed"
             } else if self.app.session_saves_stopped() {
@@ -627,6 +626,7 @@ impl HeadlessServer {
             } else {
                 "completed"
             },
+            kind = "final",
             duration_ms = self
                 .app
                 .clock()
@@ -650,8 +650,8 @@ impl HeadlessServer {
             self.app.shut_down_pane_runtimes(PANE_TEARDOWN_WAIT)
         };
         if !unfinished.is_empty() {
-            warn!(
-                event = "pane.teardown.timeout", subsystem = "shutdown",
+            shepr_platform::structured_log!(
+                WARN, event = shutdown.pane_teardown, outcome = "timeout",
                 count = unfinished.len(), panes = ?unfinished,
                 "pane session teardown did not finish before server exit"
             );
@@ -678,7 +678,12 @@ impl HeadlessServer {
         // log writer is built for several processes sharing one file (appends
         // under a shared flock, and each record follows another process's
         // rotation), so the two interleave lines and lose none.
-        info!("headless server exiting");
+        shepr_platform::structured_log!(
+            INFO,
+            event = server.shutdown,
+            outcome = "released",
+            "headless server exiting"
+        );
         run_error.map_or(Ok(()), Err)
     }
 
@@ -705,7 +710,8 @@ impl HeadlessServer {
                 None => {
                     self.api_request_open = false;
                     stop_signal.request();
-                    tracing::error!(
+                    shepr_platform::structured_log!(
+                        ERROR, event = api.channel, outcome = "closed",
                         "API request channel closed; stopping server"
                     );
                     LoopEvent::Timer
@@ -842,7 +848,7 @@ impl HeadlessServer {
             // The client is gone, so there is nobody to show a failure to.
             let result = apply_client_pane_input_events(runtime, &[held.release]);
             if let Err(err) = result {
-                warn!(?client_id, error = %err, "client shell teardown release failed");
+                shepr_platform::structured_log!(WARN, event = client.teardown_release, outcome = "error", ?client_id, error = %err, "client shell teardown release failed");
             }
         }
     }
@@ -857,7 +863,7 @@ impl HeadlessServer {
         pane_id: &shepr_protocol::PublicPaneId,
         failures: &crate::server::pane_input::PaneInputFailures,
     ) {
-        warn!(?client_id, public_pane_id = %pane_id, error = %failures, "targeted client shell input failed");
+        shepr_platform::structured_log!(WARN, event = client.input, outcome = "error", ?client_id, public_pane_id = %pane_id, error = %failures, "targeted client shell input failed");
         let dropped = failures.dropped_for_backpressure();
         if dropped == 0 {
             return;
@@ -900,7 +906,13 @@ impl HeadlessServer {
         }
         let mut departures = Vec::with_capacity(closed.len());
         for client_id in closed {
-            info!(?client_id, "client connection closed");
+            shepr_platform::structured_log!(
+                INFO,
+                event = client.connection,
+                outcome = "closed",
+                ?client_id,
+                "client connection closed"
+            );
             if let Some(departure) = self.clients.remove_client(client_id) {
                 departures.push((client_id, departure));
             }
@@ -1113,7 +1125,8 @@ impl HeadlessServer {
                 surface_active,
                 outbox,
             } => {
-                info!(
+                shepr_platform::structured_log!(
+                    INFO, event = client.connection, outcome = "connected",
                     ?client_id,
                     cols = geometry.cols(),
                     rows = geometry.rows(),
@@ -1158,7 +1171,10 @@ impl HeadlessServer {
                 };
                 self.refresh_stale_shell_session_cache();
                 let Some(session_cache) = self.shell_session_cache.as_ref() else {
-                    warn!(
+                    shepr_platform::structured_log!(
+                        WARN,
+                        event = client.session_cache,
+                        outcome = "missing",
                         ?client_id,
                         "shell session cache missing while seeding client"
                     );
@@ -1405,13 +1421,25 @@ impl HeadlessServer {
                 if !self.remove_client_if_present(client_id) {
                     return;
                 }
-                info!(?client_id, "client detached");
+                shepr_platform::structured_log!(
+                    INFO,
+                    event = client.connection,
+                    outcome = "detached",
+                    ?client_id,
+                    "client detached"
+                );
             }
             ServerEvent::Disconnected { client_id } => {
                 if !self.remove_client_if_present(client_id) {
                     return;
                 }
-                info!(?client_id, "client disconnected");
+                shepr_platform::structured_log!(
+                    INFO,
+                    event = client.connection,
+                    outcome = "disconnected",
+                    ?client_id,
+                    "client disconnected"
+                );
             }
         }
     }

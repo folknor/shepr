@@ -136,7 +136,8 @@ impl WorkspaceSet {
         };
         for workspace in workspaces {
             if let Err(refused) = set.insert(workspace) {
-                tracing::error!(
+                shepr_platform::structured_log!(
+                    ERROR, event = workspace.restore, outcome = "duplicate",
                     workspace = %refused.id,
                     reason = ?refused.reason,
                     "dropped a restored workspace that repeats an id or a pane"
@@ -223,7 +224,7 @@ impl WorkspaceSet {
             let record = match workspace.remove_pane(pane) {
                 Ok(record) => record,
                 Err(reason) => {
-                    tracing::error!(%workspace_id, %pane, ?reason, "pane removal refused after membership check");
+                    shepr_platform::structured_log!(ERROR, event = workspace.pane_remove, outcome = "refused", %workspace_id, %pane, ?reason, "pane removal refused after membership check");
                     return None;
                 }
             };

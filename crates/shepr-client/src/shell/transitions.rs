@@ -125,7 +125,10 @@ impl ClientShellState {
             .generation()
             .max(self.presentation.surfaces.baseline_generation());
         if Some(generation) < newest {
-            tracing::warn!(
+            shepr_platform::structured_log!(
+                WARN,
+                event = surface.receive,
+                outcome = "stale",
                 ?generation,
                 ?newest,
                 "dropping a pane surface from an older connection"

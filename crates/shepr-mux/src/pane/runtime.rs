@@ -21,7 +21,7 @@ use std::sync::{
 use bytes::Bytes;
 use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
-use tracing::{debug, error, warn};
+use tracing::debug;
 
 use super::PaneClearError;
 use super::detect::DetectorGateDiagnostics;

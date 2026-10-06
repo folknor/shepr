@@ -145,7 +145,12 @@ fn read_clipboard_text_bounded_with(
     use std::sync::atomic::Ordering;
 
     if in_flight.swap(true, Ordering::AcqRel) {
-        tracing::warn!("an earlier clipboard read is still running; paste skipped");
+        shepr_platform::structured_log!(
+            WARN,
+            event = clipboard.paste,
+            outcome = "busy",
+            "an earlier clipboard read is still running; paste skipped"
+        );
         return None;
     }
     let (sender, receiver) = std::sync::mpsc::sync_channel(CLIPBOARD_RESULT_QUEUE_CAPACITY);
@@ -161,7 +166,7 @@ fn read_clipboard_text_bounded_with(
         });
     if let Err(error) = spawned {
         in_flight.store(false, Ordering::Release);
-        tracing::warn!(%error, "could not start the clipboard reader; paste skipped");
+        shepr_platform::structured_log!(WARN, event = clipboard.paste, outcome = "error", %error, "could not start the clipboard reader; paste skipped");
         return None;
     }
     // The channel's timed wait is the deadline boundary here; this helper does not read or
@@ -169,7 +174,10 @@ fn read_clipboard_text_bounded_with(
     match receiver.recv_timeout(timeout) {
         Ok(text) => text,
         Err(_) => {
-            tracing::warn!(
+            shepr_platform::structured_log!(
+                WARN,
+                event = clipboard.paste,
+                outcome = "timeout",
                 timeout_ms = timeout.as_millis(),
                 "clipboard helper did not answer in time; paste skipped"
             );

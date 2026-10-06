@@ -37,10 +37,8 @@ impl App {
                 first_candidate_error,
             } => {
                 if let Some(error) = first_candidate_error {
-                    tracing::warn!(
-                        event = "pane.cwd.fallback",
-                        subsystem = "pane",
-                        outcome = "fallback",
+                    shepr_platform::structured_log!(
+                        WARN, event = pane.cwd, outcome = "fallback",
                         pane = %pane_id,
                         kind = ?kind,
                         requested_cwd = %requested_cwd.display(),
@@ -146,10 +144,8 @@ impl App {
         let command = pane
             .and_then(|pane| pane.terminal().agent_resume().plan())
             .map(shepr_agent::resume::AgentResumePlan::to_shell_command);
-        tracing::warn!(
-            event = "agent.resume.failure",
-            subsystem = "agent",
-            outcome = "unavailable",
+        shepr_platform::structured_log!(
+            WARN, event = agent.resume, outcome = "unavailable",
             command = command.as_deref(),
             workspace = ?public_id.map(|id| *id.workspace_id()),
             public_pane_id = ?public_id,

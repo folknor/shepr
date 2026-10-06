@@ -229,7 +229,7 @@ impl Drop for RunningCommand {
 /// reach it and the process may outlive shepr's interest in it.
 pub(crate) fn kill_child(child: &mut std::process::Child, what: &str) {
     if let Err(error) = child.kill() {
-        tracing::warn!(pid = child.id(), %error, "could not kill {what}");
+        shepr_platform::structured_log!(WARN, event = remote.child_kill, outcome = "error", pid = child.id(), %error, "could not kill {what}");
     }
 }
 
@@ -238,7 +238,7 @@ pub(crate) fn kill_child(child: &mut std::process::Child, what: &str) {
 pub(crate) fn kill_and_reap(child: &mut std::process::Child, what: &str) {
     kill_child(child, what);
     if let Err(error) = child.wait() {
-        tracing::warn!(pid = child.id(), %error, "could not reap {what}");
+        shepr_platform::structured_log!(WARN, event = remote.child_reap, outcome = "error", pid = child.id(), %error, "could not reap {what}");
     }
 }
 

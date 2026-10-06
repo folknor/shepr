@@ -304,14 +304,15 @@ impl EndpointSupervisors {
             // connection attempt); should it happen, the endpoint stops
             // retrying rather than issuing a duplicate.
             let Some(generation) = self.last_generation.checked_next() else {
-                tracing::error!(
+                shepr_platform::structured_log!(
+                    ERROR, event = endpoint.generation, outcome = "exhausted",
                     endpoint = ?endpoint_id,
                     "connection generations exhausted; not starting another attempt"
                 );
                 state.next_attempt = None;
                 continue;
             };
-            tracing::info!(endpoint = %endpoint_id, %generation, mode = ?operation, "endpoint operation starting");
+            shepr_platform::structured_log!(INFO, event = endpoint.operation, outcome = "started", endpoint = %endpoint_id, %generation, mode = ?operation, "endpoint operation starting");
             let target = match (&mut state.target, operation) {
                 (
                     ConnectTarget::Local {
@@ -463,7 +464,7 @@ impl EndpointSupervisors {
         if !matches!(state.target, ConnectTarget::Ssh { .. }) || state.online_since.is_some() {
             return false;
         }
-        tracing::info!(endpoint = %endpoint_id, generation = ?state.generation, ?mode, "endpoint operator request accepted");
+        shepr_platform::structured_log!(INFO, event = endpoint.operation, outcome = "accepted", endpoint = %endpoint_id, generation = ?state.generation, ?mode, "endpoint operator request accepted");
         state.requested = Some((mode, now));
         if let Some(cancel) = &state.watch_cancel {
             cancel.store(true, Ordering::Release);
@@ -501,7 +502,7 @@ impl EndpointSupervisors {
         {
             // The backoff `record_status` scheduled stays: a wait that keeps ending at
             // once cannot spin.
-            tracing::info!(endpoint = %endpoint_id, %generation, "endpoint wait for a server scheduled");
+            shepr_platform::structured_log!(INFO, event = endpoint.server_wait, outcome = "scheduled", endpoint = %endpoint_id, %generation, "endpoint wait for a server scheduled");
             state.scheduled = Scheduled::WatchForServer;
         }
         Some(status)
@@ -523,7 +524,7 @@ impl EndpointSupervisors {
         if state.generation != Some(generation) {
             return false;
         }
-        tracing::info!(endpoint = %endpoint_id, %generation, ?end, "endpoint wait for a server ended");
+        shepr_platform::structured_log!(INFO, event = endpoint.server_wait, outcome = "completed", endpoint = %endpoint_id, %generation, ?end, "endpoint wait for a server ended");
         state.in_flight = false;
         state.watch_cancel = None;
         state.attempt_started = None;

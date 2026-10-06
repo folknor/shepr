@@ -415,7 +415,7 @@ fn wait_for_process_exits_with_clock(
             )
         };
         if ready < 0 && std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
-            tracing::error!(error = %std::io::Error::last_os_error(), "could not poll process pidfds");
+            crate::structured_log!(ERROR, event = process.pidfd_poll, outcome = "error", error = %std::io::Error::last_os_error(), "could not poll process pidfds");
             return false;
         }
     }

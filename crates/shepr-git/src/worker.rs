@@ -286,7 +286,12 @@ impl<T: Send + 'static> GitStatusWorker<T> {
                 }
                 Err(mpsc::SendError(returned)) => {
                     thread.shared.unpublished.fetch_sub(1, Ordering::SeqCst);
-                    tracing::warn!("git status worker stopped; starting a new one");
+                    shepr_platform::structured_log!(
+                        WARN,
+                        event = git.worker,
+                        outcome = "restarting",
+                        "git status worker stopped; starting a new one"
+                    );
                     command = returned;
                     self.retire_current();
                 }
@@ -399,7 +404,8 @@ impl<T: Send + 'static> GitStatusWorker<T> {
         if self.abandoned.len() >= MAX_ABANDONED_GIT_REFRESH_THREADS {
             if !self.abandon_limit_logged {
                 self.abandon_limit_logged = true;
-                tracing::warn!(
+                shepr_platform::structured_log!(
+                    WARN, event = git.refresh, outcome = "abandon_limit",
                     paths = ?stuck,
                     abandoned = self.abandoned.len(),
                     "git status refresh is stalled, but the abandoned-thread limit is reached; \
@@ -416,12 +422,16 @@ impl<T: Send + 'static> GitStatusWorker<T> {
             // names what to keep out, but the handle is wedged behind the
             // thread, so it is abandoned all the same. It holds a slot until
             // it finishes, which bounds the threads a recurring one can hold.
-            tracing::warn!(
+            shepr_platform::structured_log!(
+                WARN,
+                event = git.refresh,
+                outcome = "abandoned",
                 "git status worker made no progress within its bound with no step running; \
                  abandoned its thread, with no paths to leave out of refreshes"
             );
         } else {
-            tracing::warn!(
+            shepr_platform::structured_log!(
+                WARN, event = git.refresh, outcome = "abandoned",
                 paths = ?stuck,
                 "git status refresh made no progress within its bound; abandoned its worker \
                  thread and left these paths out of refreshes until it finishes"
@@ -443,7 +453,8 @@ impl<T: Send + 'static> GitStatusWorker<T> {
         for thread in finished {
             thread.handle.join().ok();
             self.abandon_limit_logged = false;
-            tracing::info!(
+            shepr_platform::structured_log!(
+                INFO, event = git.worker, outcome = "recovered",
                 paths = ?thread.stuck,
                 "abandoned git status worker thread finished; refreshing its paths again"
             );

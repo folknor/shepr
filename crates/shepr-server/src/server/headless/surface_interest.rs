@@ -33,7 +33,10 @@ impl HeadlessServer {
                 .shell_state()
                 .projection_revision;
             let Some(raised) = current.checked_next() else {
-                warn!(
+                shepr_platform::structured_log!(
+                    WARN,
+                    event = surface.projection_revision,
+                    outcome = "exhausted",
                     ?client_id,
                     "projection revisions exhausted; dropping client"
                 );

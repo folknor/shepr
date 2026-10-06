@@ -49,7 +49,7 @@ impl AppState {
         };
         self.mark_session_dirty();
         self.mark_shell_projection_dirty();
-        crate::logging::pane_event("pane.split", public_id);
+        crate::logging::pane_split(public_id);
         Some(PaneCreationOutcome {
             workspace_id,
             pane_id,

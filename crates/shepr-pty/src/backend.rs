@@ -176,13 +176,13 @@ fn detach_reaper(pid: shepr_platform::Pid, wait: impl FnOnce() + Send + 'static)
         .name("pty-reaper".into())
         .spawn(wait)
     {
-        tracing::error!(%pid, %error, "could not start pane reaper; child may remain unreaped until server exit");
+        shepr_platform::structured_log!(ERROR, event = pty.reaper_start, outcome = "error", %pid, %error, "could not start pane reaper; child may remain unreaped until server exit");
     }
 }
 
 fn log_reap_failure(pid: shepr_platform::Pid, result: io::Result<ExitStatus>) {
     if let Err(error) = result {
-        tracing::error!(%pid, %error, "could not reap abandoned pane child");
+        shepr_platform::structured_log!(ERROR, event = pty.child_reap, outcome = "error", %pid, %error, "could not reap abandoned pane child");
     }
 }
 
@@ -263,14 +263,14 @@ fn enable_utf8_input(master: &OwnedFd) {
     // live, writable termios that tcgetattr fills in and does not retain.
     if unsafe { libc::tcgetattr(master.as_raw_fd(), &mut termios) } != 0 {
         let err = io::Error::last_os_error();
-        tracing::warn!(error = %err, "could not read PTY attributes to enable UTF-8 input");
+        shepr_platform::structured_log!(WARN, event = pty.attributes_read, outcome = "error", error = %err, "could not read PTY attributes to enable UTF-8 input");
         return;
     }
     termios.c_iflag |= libc::IUTF8;
     // SAFETY: as above; tcsetattr only reads `termios`.
     if unsafe { libc::tcsetattr(master.as_raw_fd(), libc::TCSANOW, &termios) } != 0 {
         let err = io::Error::last_os_error();
-        tracing::warn!(error = %err, "could not enable UTF-8 input on the PTY");
+        shepr_platform::structured_log!(WARN, event = pty.utf8_enable, outcome = "error", error = %err, "could not enable UTF-8 input on the PTY");
     }
 }
 
@@ -304,7 +304,7 @@ pub fn spawn_pty(
             // SAFETY: this fork has never been handed to a waiter, so its pid
             // cannot have been reused. This is only the failed acquisition path.
             if unsafe { libc::kill(pid.as_pid_t(), libc::SIGKILL) } != 0 {
-                tracing::warn!(pid = %pid, error = %io::Error::last_os_error(), "could not kill failed pane launch");
+                shepr_platform::structured_log!(WARN, event = pty.launch_kill, outcome = "error", pid = %pid, error = %io::Error::last_os_error(), "could not kill failed pane launch");
             }
             detach_reaper(pid, move || {
                 let result = wait_for_pid(pid.as_pid_t(), 0).and_then(|status| {

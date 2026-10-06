@@ -5,7 +5,6 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use tokio::sync::Notify;
-use tracing::info;
 
 use super::detect::{
     DetectorGateDiagnostics, DetectorState, ResumeDetectionIdentity, StateChangedUpdate, Step,
@@ -123,7 +122,8 @@ impl DetectionTask {
                     // agent and its session. A panic that poisoned the
                     // terminal core already ends the pane: the PTY actor
                     // checks the core on every loop (`core_broken`).
-                    tracing::error!(
+                    shepr_platform::structured_log!(
+                        ERROR, event = agent.detection, outcome = "panicked",
                         pane = %pane_id,
                         agent = ?last_agent,
                         ?error,
@@ -250,7 +250,8 @@ impl DetectionTask {
                 self.handles.terminal.clear_agent_osc_state();
             }
             if change.agent_changed {
-                info!(
+                shepr_platform::structured_log!(
+                    INFO, event = agent.identity, outcome = "changed",
                     pane = %self.pane_id,
                     previous_agent = ?change.previous_agent,
                     agent = ?change.agent,

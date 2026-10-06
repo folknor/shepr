@@ -252,14 +252,16 @@ fn kill_and_reap(child: &mut std::process::Child) {
     // `kill` succeeds on a helper that already exited but is not yet reaped,
     // so an error here means the signal did not reach it.
     if let Err(err) = child.kill() {
-        tracing::warn!(
+        crate::structured_log!(
+            WARN, event = clipboard.helper_kill, outcome = "error",
             pid,
             error_kind = ?err.kind(),
             "failed to kill clipboard helper"
         );
     }
     if let Err(err) = child.wait() {
-        tracing::warn!(
+        crate::structured_log!(
+            WARN, event = clipboard.helper_reap, outcome = "error",
             pid,
             error_kind = ?err.kind(),
             "failed to reap clipboard helper"
@@ -444,7 +446,8 @@ fn detach_clipboard_owner(child: std::process::Child) -> bool {
                 Err(poisoned) => poisoned.into_inner().wait(),
             };
             if let Err(err) = wait_result {
-                tracing::warn!(
+                crate::structured_log!(
+                    WARN, event = clipboard.owner_reap, outcome = "error",
                     pid,
                     error_kind = ?err.kind(),
                     "failed to reap clipboard selection owner"
@@ -453,7 +456,8 @@ fn detach_clipboard_owner(child: std::process::Child) -> bool {
         });
 
     if let Err(err) = reaper {
-        tracing::warn!(
+        crate::structured_log!(
+            WARN, event = clipboard.reaper_start, outcome = "error",
             pid,
             error_kind = ?err.kind(),
             "failed to start clipboard owner reaper"

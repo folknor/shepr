@@ -2,7 +2,7 @@ use shepr_core::geometry::{CellReport, GridSize, HostCell};
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use tracing::{debug, warn};
+use tracing::debug;
 
 use crate::events::ClientLoopEvent;
 use crate::input::ProbeAvailability;
@@ -47,7 +47,12 @@ impl SharedHostGeometry {
     pub(super) fn publish(&self, snapshot: HostGeometrySnapshot) {
         match self.0.write() {
             Ok(mut current) => *current = snapshot,
-            Err(_) => warn!("host geometry snapshot lock is poisoned"),
+            Err(_) => shepr_platform::structured_log!(
+                WARN,
+                event = terminal.geometry,
+                outcome = "poisoned",
+                "host geometry snapshot lock is poisoned"
+            ),
         }
     }
 
@@ -248,7 +253,8 @@ pub(super) fn query_host_terminal_appearance(writer: &mut impl io::Write) -> io:
             {
                 return Err(error);
             }
-            warn!(
+            shepr_platform::structured_log!(
+                WARN, event = terminal.scheme_query, outcome = "error",
                 error = %error,
                 "failed to send host terminal color scheme query; keeping default appearance"
             );
@@ -277,7 +283,8 @@ pub(super) fn query_host_terminal_theme(
             {
                 return Err(error);
             }
-            warn!(
+            shepr_platform::structured_log!(
+                WARN, event = terminal.theme_query, outcome = "error",
                 error = %error,
                 "failed to send host terminal theme query; keeping default theme"
             );
@@ -306,7 +313,8 @@ pub(super) fn query_host_cell_size(writer: &mut impl io::Write) -> io::Result<Pr
             {
                 return Err(error);
             }
-            warn!(
+            shepr_platform::structured_log!(
+                WARN, event = terminal.cell_query, outcome = "error",
                 error = %error,
                 default_width_px = DEFAULT_CELL_WIDTH_PX,
                 default_height_px = DEFAULT_CELL_HEIGHT_PX,

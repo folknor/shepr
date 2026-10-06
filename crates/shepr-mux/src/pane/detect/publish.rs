@@ -1,8 +1,6 @@
 //! The screen half of a tick: whether the screen is read, the cache that spares
 //! an unchanged screen a second match, and what reaches the server.
 
-use tracing::{info, warn};
-
 use super::state::{DetectorState, TickContext};
 use crate::pane::agent_detection::{
     DetectionPublishDecision, DetectionScreenReadDecision, DetectionScreenReadInput,
@@ -41,7 +39,8 @@ pub(in crate::pane) async fn publish_state_changed_event(
         })
         .await
     {
-        warn!(
+        shepr_platform::structured_log!(
+            WARN, event = agent.state_notify, outcome = "error",
             pane = %pane_id,
             error = %e,
             "failed to deliver StateChanged event"
@@ -59,7 +58,8 @@ pub(in crate::pane) async fn publish_agent_process_detected_event(
         .send(crate::events::RuntimeEvent::AgentProcessDetected { agent, observed_at })
         .await
     {
-        warn!(
+        shepr_platform::structured_log!(
+            WARN, event = agent.process_notify, outcome = "error",
             pane = %pane_id,
             error = %e,
             "failed to deliver AgentProcessDetected event"
@@ -159,10 +159,8 @@ impl DetectorState {
         {
             self.agent_absence_hold_until = None;
             if let Some(identity) = &self.resume_identity {
-                info!(
-                    event = "agent.resume.absence_hold_expired",
-                    subsystem = "agent",
-                    outcome = "agent_not_detected",
+                shepr_platform::structured_log!(
+                    INFO, event = agent.resume_hold, outcome = "agent_not_detected",
                     public_pane_id = %identity.public_pane_id,
                     session_ref = %identity.session_ref.value_str(),
                     session_ref_kind = ?identity.session_ref.kind(),
