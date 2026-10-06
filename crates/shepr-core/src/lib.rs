@@ -1,6 +1,7 @@
 pub mod absolute_path;
 pub mod agent_session;
 pub mod agent_state;
+pub mod backoff;
 pub mod chrome;
 pub mod env;
 pub mod geometry;

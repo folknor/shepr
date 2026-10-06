@@ -1,9 +1,4 @@
-use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
-use shepr_api::schema::ResponseResult;
-
-pub(crate) fn success(result: ResponseResult) -> ApiResult {
-    Ok(result)
-}
+use shepr_api::error::{ApiError, ApiErrorCode};
 
 /// A failed JSON API method. Client-shell commands answer with
 /// `EndpointError` instead (`endpoint.rs`).
@@ -17,10 +12,10 @@ pub(crate) fn failure<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_api::schema::ResponseResult;
 
     #[test]
-    fn response_builders_keep_typed_payloads() {
-        assert_eq!(success(ResponseResult::Ok {}), Ok(ResponseResult::Ok {}));
+    fn failure_preserves_typed_error() {
         assert_eq!(
             failure::<ResponseResult>(ApiErrorCode::InvalidRequest, "bad request"),
             Err(ApiError::new(ApiErrorCode::InvalidRequest, "bad request")),

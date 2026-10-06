@@ -2,13 +2,12 @@
 # installed by shepr
 # managed by shepr; every release shepr server launch on this host rewrites this file.
 # add custom hooks beside this file instead of editing it.
-# SHEPR_INTEGRATION_ID=mastracode
-# SHEPR_INTEGRATION_VERSION=3505296264
 
 set -eu
 
 # Every exit path of the hook ends here, so the agent always sees a clean exit.
 finish() {
+  cat >/dev/null 2>/dev/null || true
   exit 0
 }
 
@@ -18,13 +17,7 @@ finish() {
 # interpreter startup jitter reorder near-simultaneous events.
 hook_seq="$(date +%s%N 2>/dev/null || true)"
 action="${1:-}"
-hook_input_file="$(mktemp "${TMPDIR:-/tmp}/shepr-mastracode-hook.XXXXXX")" || {
-  cat >/dev/null 2>/dev/null || true
-  finish
-}
-trap 'rm -f "$hook_input_file"' 0
 trap 'finish' HUP INT TERM
-cat >"$hook_input_file" 2>/dev/null || true
 
 case "$action" in
   session|working|blocked|idle) ;;
@@ -39,8 +32,9 @@ command -v python3 >/dev/null 2>&1 || finish
 
 # A python failure must not fail the hook: under `set -eu` it would exit
 # non-zero with a traceback on stderr, which the agent may show to the user.
-SHEPR_ACTION="$action" SHEPR_HOOK_INPUT_FILE="$hook_input_file" SHEPR_HOOK_SEQ="${hook_seq:-}" python3 - 2>/dev/null <<'PY' || true
+SHEPR_ACTION="$action" SHEPR_HOOK_SEQ="${hook_seq:-}" python3 -c '
 import json
+import sys
 from types import SimpleNamespace
 import os
 import socket
@@ -59,7 +53,6 @@ EVENTS = ("SessionStart", "UserPromptSubmit", "AgentStart", "PreToolUse", "Permi
 action = os.environ.get("SHEPR_ACTION", "")
 pane_id = os.environ.get("SHEPR_PANE_ID")
 socket_path = os.environ.get("SHEPR_SOCKET_PATH")
-hook_input_file = os.environ.get("SHEPR_HOOK_INPUT_FILE")
 
 if not pane_id or not socket_path:
     raise SystemExit(0)
@@ -73,11 +66,9 @@ report_seq = int(raw_seq) if raw_seq.isdigit() else time.time_ns()
 
 
 def read_hook_input():
-    if not hook_input_file:
-        return {}
     try:
-        with open(hook_input_file, encoding="utf-8") as handle:
-            content = handle.read()
+        # Read bytes: json.loads detects the payload encoding, not the locale.
+        content = sys.stdin.buffer.read()
         if not content.strip():
             return {}
         parsed = json.loads(content)
@@ -140,11 +131,11 @@ session_id = first_text("session_id")
 if not session_id:
     raise SystemExit(0)
 if action == ACTION_SESSION:
-    # Preserve MastraCode's source for server validation. A bare SessionStart
+    # Preserve MastraCode'"'"'s source for server validation. A bare SessionStart
     # still identifies the start of a fresh root session, so use its known source.
     report_session(session_id, first_text("source") or START.startup)
 else:
     report_state(action, session_id)
-PY
+' 2>/dev/null || true
 
 finish

@@ -15,6 +15,20 @@
 //!   restarted while plans stay pending. A live host color report bypasses it.
 //!
 //! A live host color report bypasses the theme wait but never a barrier.
+//!
+//! ## Resume timeline tunables
+//!
+//! The complete set spans config, server and mux limits:
+//!
+//! - `[session] agent_resume_spacing_ms` in `shepr_config` sets the gap after
+//!   each dispatched resume command.
+//! - `PENDING_AGENT_RESUME_THEME_WAIT` in `shepr_server::limits` sets how long
+//!   eligible resumes wait for live host colors before using the saved theme;
+//!   `App::open_with_resume_theme_wait` is the app-level injection point.
+//! - `AGENT_ABSENCE_STARTUP_HOLD` in `shepr_mux::limits` holds back an absent
+//!   agent state after an `AgentResume` launch while the resumed process starts.
+//! - `LAUNCH_SETTLE_AFTER_PANE_END` in `shepr_mux::limits` bounds how long an
+//!   unsettled pane launch can remain pending after its pane ends.
 
 use std::time::{Duration, Instant};
 

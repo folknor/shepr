@@ -4,10 +4,10 @@
 
 use std::time::Instant;
 
-use crate::backoff::Backoff;
 use crate::limits::{
     DEFAULT_WORKSPACE_RETRY_MAX, DEFAULT_WORKSPACE_RETRY_MIN, MIN_RENDER_INTERVAL,
 };
+use shepr_core::backoff::Backoff;
 
 /// When the loop may render, and when a held render is due.
 #[derive(Default)]

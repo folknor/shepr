@@ -272,7 +272,10 @@ fn cleanup(path: &Path) {
     if let Err(error) = fs::remove_file(path)
         && error.kind() != io::ErrorKind::NotFound
     {
-        tracing::warn!(path = %path.display(), %error, "failed to remove publication artifact");
+        crate::structured_log!(
+            WARN, event = publish_file.cleanup, outcome = "remove_error",
+            path = %path.display(), %error, "failed to remove publication artifact"
+        );
     }
 }
 

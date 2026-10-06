@@ -1121,7 +1121,7 @@ fn ensure_running_hands_back_a_running_mismatch_for_the_bridge() {
 #[test]
 fn server_daemon_command_marks_the_client_spawn_and_nothing_else() {
     let command = build_server_daemon_command(
-        &PathBuf::from("/tmp/shepr-server-test"),
+        Path::new("/nonexistent/shepr-server-test"),
         Path::new("/"),
         None,
     );
@@ -1131,9 +1131,9 @@ fn server_daemon_command_marks_the_client_spawn_and_nothing_else() {
 
 #[test]
 fn server_daemon_command_passes_current_dir_as_startup_cwd() {
-    let expected = Path::new("/home/test");
+    let expected = Path::new("/nonexistent/test-home");
     let command = build_server_daemon_command(
-        &PathBuf::from("/tmp/shepr-test"),
+        Path::new("/nonexistent/shepr-test"),
         Path::new("/"),
         Some(expected),
     );
@@ -1145,53 +1145,20 @@ fn server_daemon_command_passes_current_dir_as_startup_cwd() {
 }
 
 #[test]
-fn server_daemon_runs_in_home_not_the_launch_directory() {
+fn server_daemon_runs_in_its_home_not_the_launch_directory() {
     let scratch = ScratchDir::new("daemon-working-dir");
-    let paths = shepr_paths::AppPaths::test_at(scratch.path());
-    let working_dir = server_daemon_working_dir(&paths);
-    assert_eq!(
-        Some(working_dir.as_path()),
-        paths
-            .home_dir()
-            .map(shepr_core::absolute_path::AbsolutePath::as_path)
-            .or(Some(Path::new("/")))
-    );
-
+    let home_dir = scratch.join("home");
     let launch_dir = scratch.join("launch");
+    let paths =
+        shepr_paths::AppPaths::rooted_at(scratch.path(), Some(&home_dir), Some(&launch_dir))
+            .expect("test paths");
     let command = build_server_daemon_command(
-        &PathBuf::from("/tmp/shepr-test"),
-        &working_dir,
+        Path::new("/nonexistent/shepr-test"),
+        &server_daemon_working_dir(&paths),
         Some(&launch_dir),
     );
-    assert_eq!(command.get_current_dir(), Some(working_dir.as_path()));
+    assert_eq!(command.get_current_dir(), Some(home_dir.as_path()));
     assert_ne!(command.get_current_dir(), Some(launch_dir.as_path()));
-}
-
-#[test]
-fn a_vanished_server_reads_as_gone_not_unresponsive() {
-    let scratch = ScratchDir::new("remote-vanished");
-    let socket = scratch.join("server.sock");
-    let listener = UnixListener::bind(&socket).expect("bind");
-    let path = socket.clone();
-    let server = std::thread::spawn(move || {
-        loop {
-            let (stream, _) = listener.accept().expect("accept");
-            let mut reader = BufReader::new(stream);
-            let mut line = String::new();
-            reader.read_line(&mut line).expect("request");
-            if line.is_empty() {
-                continue;
-            }
-            drop(listener);
-            std::fs::remove_file(path).expect("remove socket");
-            break;
-        }
-    });
-    assert!(matches!(
-        probe_server_at(&socket).expect("probe"),
-        Probed::NoServer
-    ));
-    server.join().expect("server");
 }
 
 #[test]

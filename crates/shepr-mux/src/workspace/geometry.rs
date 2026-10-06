@@ -28,11 +28,6 @@ impl SpawnGeometry {
             cell,
         }
     }
-
-    /// The pixel size of one cell, `None` when the host never reported one.
-    pub fn cell_px(&self) -> Option<CellPx> {
-        self.cell
-    }
 }
 
 /// Everything besides the layout tree that decides a pane's content size.
@@ -126,19 +121,14 @@ impl WorkspaceChrome {
         cell: Option<CellPx>,
     ) -> Option<PaneGeometry> {
         let grid = self.pane_size(layout, zoomed, pane_id)?;
-        Some(spawn_geometry(grid, cell))
+        Some(PaneGeometry::with_cell(grid.cols(), grid.rows(), cell))
     }
 
     /// The PTY geometry of the only pane of a new workspace.
     pub fn sole_pane_spawn_geometry(&self, cell: Option<CellPx>) -> PaneGeometry {
-        spawn_geometry(self.sole_pane_size(), cell)
+        let grid = self.sole_pane_size();
+        PaneGeometry::with_cell(grid.cols(), grid.rows(), cell)
     }
-}
-
-/// A PTY geometry of `grid` whose cells measure `cell` pixels; pixel-less when
-/// the cell size is unknown.
-pub fn spawn_geometry(grid: GridSize, cell: Option<CellPx>) -> PaneGeometry {
-    PaneGeometry::with_cell(grid.cols(), grid.rows(), cell)
 }
 
 #[cfg(test)]

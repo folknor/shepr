@@ -200,7 +200,6 @@ mod tests {
 
         let mut app = AppState::test_new();
         app.test_set_workspaces(vec![workspace]);
-        app.seed_bookmark_index(Some(0));
 
         let full_area = Rect::new(0, 0, 106, 20);
         let area = full_area;

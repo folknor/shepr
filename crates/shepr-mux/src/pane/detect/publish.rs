@@ -1,7 +1,7 @@
 //! The screen half of a tick: whether the screen is read, the cache that spares
 //! an unchanged screen a second match, and what reaches the server.
 
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::state::{DetectorState, TickContext};
 use crate::pane::agent_detection::{
@@ -149,6 +149,27 @@ impl DetectorState {
         detection: Option<Detection>,
         content_changed: bool,
     ) -> Option<StateChangedUpdate> {
+        // An expired hold is retired here, whether or not this tick has a
+        // detection to publish: a resumed pane whose agent never appears may
+        // have none, and its expiry must still be logged, once.
+        if agent.is_none()
+            && self
+                .agent_absence_hold_until
+                .is_some_and(|until| tick.now >= until)
+        {
+            self.agent_absence_hold_until = None;
+            if let Some(identity) = &self.resume_identity {
+                info!(
+                    event = "agent.resume.absence_hold_expired",
+                    subsystem = "agent",
+                    outcome = "agent_not_detected",
+                    public_pane_id = %identity.public_pane_id,
+                    session_ref = %identity.session_ref.value_str(),
+                    session_ref_kind = ?identity.session_ref.kind(),
+                    "resumed agent was not detected before the pane absence hold expired"
+                );
+            }
+        }
         let Some(detection) = detection else {
             self.pending_idle.clear();
             return None;
@@ -160,12 +181,8 @@ impl DetectorState {
             content_changed,
         );
         // Expiry means no agent was identified before the deadline, not that
-        // the agent rejected its session. This pure detector has neither the
-        // public pane identity nor the saved session reference, so it logs
-        // nothing here; a log of the expiry belongs to a caller holding both.
-        // Wiring that observation requires the runtime to carry the resume
-        // session and public pane id, not reconstruct them from screen text.
-        // An identified process also cannot confirm that it accepted a session.
+        // the agent rejected its session; an identified process cannot
+        // confirm that it accepted one either.
         if withhold_agent_absence(agent, &mut self.agent_absence_hold_until, tick.now) {
             self.pending_idle.clear();
             return None;

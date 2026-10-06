@@ -59,7 +59,7 @@ mod pane_tree;
 mod set;
 mod shape;
 
-pub use self::geometry::{SpawnGeometry, WorkspaceChrome, spawn_geometry};
+pub use self::geometry::{SpawnGeometry, WorkspaceChrome};
 pub use self::pane_tree::{
     PaneRecord, PaneTree, PreparedSplit, RemoveRefusal, SavedTreeState, SplitPreparationRefused,
     SplitRefused, TreePlan, TreeRejection,
@@ -101,7 +101,7 @@ pub struct Workspace {
     /// The name, set at creation and changed only by a rename. A `Label`, so it
     /// is never blank or padded, and a save always writes a name a restore
     /// accepts.
-    name: crate::terminal::Label,
+    name: crate::Label,
     /// Fallback workspace identity source for a missing runtime, fixed at
     /// construction.
     identity_cwd: AbsolutePath,
@@ -125,12 +125,11 @@ impl Workspace {
     /// workspace's resolved cwd.
     pub(crate) fn from_tree(
         id: WorkspaceId,
-        name: Option<crate::terminal::Label>,
+        name: Option<crate::Label>,
         identity_cwd: AbsolutePath,
         tree: pane_tree::PaneTree,
     ) -> Self {
-        let name =
-            name.unwrap_or_else(|| crate::terminal::Label::for_directory(identity_cwd.as_path()));
+        let name = name.unwrap_or_else(|| crate::Label::for_directory(identity_cwd.as_path()));
         Self {
             id,
             name,
@@ -162,7 +161,7 @@ impl Workspace {
     ) -> Self {
         Self::from_tree(
             id,
-            name.and_then(crate::terminal::Label::new),
+            name.and_then(crate::Label::new),
             identity_cwd.clone(),
             pane_tree::PaneTree::single(pane, terminal),
         )
@@ -180,12 +179,12 @@ impl Workspace {
     }
 
     /// The name as the label a save writes.
-    pub fn name_label(&self) -> &crate::terminal::Label {
+    pub fn name_label(&self) -> &crate::Label {
         &self.name
     }
 
     /// Renames the workspace. True when the name changed.
-    pub fn set_name(&mut self, name: crate::terminal::Label) -> bool {
+    pub fn set_name(&mut self, name: crate::Label) -> bool {
         let changed = self.name != name;
         self.name = name;
         changed
@@ -207,13 +206,9 @@ impl Workspace {
         self.spawn_geometry = Some(geometry);
     }
 
-    pub fn matches_identity_cwd(&self, cwd: &Path) -> bool {
-        matches!(&self.git, GitIdentity::Admitted(status) if status.cwd == cwd)
-    }
-
     pub fn git_status_key_for_cwd(&self, cwd: &Path) -> Option<&GitStatusKey> {
         match &self.git {
-            GitIdentity::Admitted(status) if self.matches_identity_cwd(cwd) => Some(&status.key),
+            GitIdentity::Admitted(status) if status.cwd == cwd => Some(&status.key),
             GitIdentity::Undiscovered | GitIdentity::Admitted(_) => None,
         }
     }
@@ -375,7 +370,7 @@ impl Workspace {
         let terminal = crate::terminal::TerminalState::new(identity_cwd.clone());
         Self::from_tree(
             test_workspace_id(),
-            crate::terminal::Label::new(name),
+            crate::Label::new(name),
             identity_cwd,
             pane_tree::PaneTree::single(PaneId::alloc(), terminal),
         )
@@ -607,7 +602,7 @@ mod tests {
     #[test]
     fn renaming_reports_whether_the_name_changed() {
         let mut ws = Workspace::test_new("first");
-        let label = |name| crate::terminal::Label::new(name).expect("test label");
+        let label = |name| crate::Label::new(name).expect("test label");
 
         assert!(!ws.set_name(label("first")));
         assert!(ws.set_name(label("second")));
@@ -893,13 +888,11 @@ mod tests {
     }
 
     #[test]
-    fn undiscovered_identity_never_matches_a_cwd() {
+    fn undiscovered_identity_has_no_git_status_key_for_its_cwd() {
         let ws = workspace_at(Path::new("/shepr-test/repo/sub"), "/shepr-test/repo/sub");
 
         assert_eq!(ws.name(), "sub");
         assert_eq!(ws.branch(), None);
-        assert!(!ws.matches_identity_cwd(ws.identity_cwd()));
-        assert!(!ws.matches_identity_cwd(Path::new("")));
         assert_eq!(ws.git_status_key_for_cwd(ws.identity_cwd()), None);
     }
 
@@ -918,7 +911,6 @@ mod tests {
         );
 
         assert_eq!(ws.name(), "sub");
-        assert!(!ws.matches_identity_cwd(ws.identity_cwd()));
         assert_eq!(ws.tree().len(), 1);
         assert_eq!(number_of(&ws, pane), Some(1));
         assert_eq!(ws.tree().root(), pane);

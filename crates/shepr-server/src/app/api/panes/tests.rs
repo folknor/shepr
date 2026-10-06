@@ -90,7 +90,7 @@ async fn clear_pane_mutates_endpoint_owned_history() {
     let command = EndpointCommand::PaneClear(PaneTarget {
         pane_id: public_pane_id,
     });
-    let response = app.handle_endpoint_command(command);
+    let response = app.handle_endpoint_command(command, &ctx()).result;
     assert_eq!(response, Ok(EndpointReply::Done));
     let runtime = app
         .terminal_runtimes
@@ -963,7 +963,7 @@ fn a_rejected_focus_command_moves_nobody() {
 
     for command in commands {
         let name = command.name();
-        let outcome = app.handle_endpoint_command_in(command, &ctx());
+        let outcome = app.handle_endpoint_command(command, &ctx());
         assert!(
             matches!(
                 outcome.result,
@@ -1012,7 +1012,7 @@ fn commands_that_only_change_state_in_place_navigate_nobody() {
 
     for command in commands {
         let name = command.name();
-        let outcome = app.handle_endpoint_command_in(command, &ctx());
+        let outcome = app.handle_endpoint_command(command, &ctx());
         assert!(outcome.result.is_ok(), "{name}: {:?}", outcome.result);
         assert_eq!(outcome.navigate, None, "{name}");
     }
@@ -1061,7 +1061,7 @@ async fn pane_split_request_focuses_the_new_pane_and_navigates_the_requester_onl
     app.state.seed_bookmark_index(Some(0));
     let command = split_of(&app, 1);
 
-    let outcome = app.handle_endpoint_command_in(command, &EndpointContext::without_geometry());
+    let outcome = app.handle_endpoint_command(command, &EndpointContext::without_geometry());
     let Ok(EndpointReply::PaneInfo { pane }) = outcome.result else {
         panic!("expected pane info");
     };
@@ -1103,10 +1103,9 @@ async fn a_split_pane_child_sees_the_public_id_the_reply_names() {
     // pane count, so only the number the split took can match.
     app.state
         .test_set_workspaces(vec![Workspace::test_adversarial_identity_state()]);
-    app.state.seed_bookmark_index(Some(0));
     let command = split_of(&app, 0);
 
-    let outcome = app.handle_endpoint_command_in(command, &EndpointContext::without_geometry());
+    let outcome = app.handle_endpoint_command(command, &EndpointContext::without_geometry());
     let Ok(EndpointReply::PaneInfo { pane }) = outcome.result else {
         panic!("expected pane info");
     };
@@ -1139,7 +1138,7 @@ async fn pane_split_request_splits_in_half_and_keeps_default_input_routing() {
         .test_set_workspaces(vec![Workspace::test_new("api-pane-split-half")]);
     let command = split_of(&app, 0);
 
-    let result = app.handle_endpoint_command(command);
+    let result = app.handle_endpoint_command(command, &ctx()).result;
     let Ok(EndpointReply::PaneInfo { pane }) = result else {
         panic!("expected pane info");
     };
@@ -1196,7 +1195,7 @@ async fn a_split_sizes_against_the_recorded_geometry_and_only_then_the_requester
     for (ws_idx, expected) in [(0, recorded), (1, requester)] {
         let command = split_of(&app, ws_idx);
         let Ok(EndpointReply::PaneInfo { pane }) =
-            app.handle_endpoint_command_in(command, &ctx).result
+            app.handle_endpoint_command(command, &ctx).result
         else {
             panic!("expected pane info");
         };
@@ -1236,16 +1235,20 @@ fn pane_close_request_closes_only_the_target_pane_when_others_remain() {
     let target_pane = workspace.tree().root();
     workspace.test_split(shepr_core::layout::Direction::Horizontal);
     app.state.test_set_workspaces(vec![workspace]);
-    app.state.seed_bookmark_index(Some(0));
 
     let target_pane_id = app
         .pane_info(target_pane)
         .expect("test precondition")
         .pane_id;
 
-    let result = app.handle_endpoint_command(EndpointCommand::PaneClose(PaneTarget {
-        pane_id: target_pane_id,
-    }));
+    let result = app
+        .handle_endpoint_command(
+            EndpointCommand::PaneClose(PaneTarget {
+                pane_id: target_pane_id,
+            }),
+            &ctx(),
+        )
+        .result;
 
     assert!(matches!(result, Ok(EndpointReply::Done)));
     assert_eq!(app.state.workspaces().len(), 1);
@@ -1258,7 +1261,6 @@ fn pane_close_request_closes_workspace_when_it_removes_the_last_pane() {
     let mut app = test_app();
     let workspace = Workspace::test_new("api-pane-close-last");
     app.state.test_set_workspaces(vec![workspace]);
-    app.state.seed_bookmark_index(Some(0));
 
     let target_pane = app.state.ws(0).tree().root();
     let target_pane_id = app
@@ -1266,9 +1268,14 @@ fn pane_close_request_closes_workspace_when_it_removes_the_last_pane() {
         .expect("test precondition")
         .pane_id;
 
-    let result = app.handle_endpoint_command(EndpointCommand::PaneClose(PaneTarget {
-        pane_id: target_pane_id,
-    }));
+    let result = app
+        .handle_endpoint_command(
+            EndpointCommand::PaneClose(PaneTarget {
+                pane_id: target_pane_id,
+            }),
+            &ctx(),
+        )
+        .result;
 
     assert!(matches!(result, Ok(EndpointReply::Done)));
     assert!(app.state.workspaces().is_empty());

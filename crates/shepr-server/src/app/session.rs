@@ -17,8 +17,9 @@
 
 use std::time::{Duration, Instant};
 
+use shepr_core::backoff::Backoff;
+
 use super::App;
-use crate::backoff::Backoff;
 use crate::limits::{CHECKPOINT_MAX_FAILURES, CHECKPOINT_RETRY_MIN};
 
 mod autosave;
@@ -87,6 +88,28 @@ enum NextSave {
         /// As `CheckpointTicket::host`.
         host: bool,
     },
+}
+
+/// A due checkpoint is distinct from an idle saver, even without a retry instant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SaveDeadline {
+    Idle,
+    Now,
+    At(Instant),
+}
+
+impl SaveDeadline {
+    pub(crate) fn wakeup(self, now: Instant) -> Option<Instant> {
+        match self {
+            Self::Idle => None,
+            Self::Now => Some(now),
+            Self::At(at) => Some(at),
+        }
+    }
+
+    fn is_due(self, now: Instant) -> bool {
+        self.wakeup(now).is_some_and(|at| now >= at)
+    }
 }
 
 /// Scheduling values belong to the saver, so fixtures can use virtual time
@@ -229,49 +252,39 @@ impl SessionSaver {
         self.exit.is_requested() || self.host.is_requested()
     }
 
-    /// When the loop should next try to start a save. A requested checkpoint
-    /// reports the later of the two machines' retries, and none when neither
-    /// carries one: it starts at once, from the call that requested it or
-    /// from the reap of the save before it. A persister that refused work
-    /// stops reporting deadlines for this boot.
-    pub(crate) fn deadline(&self) -> Option<Instant> {
+    /// The scheduling decision shared by the loop wakeup and save admission.
+    pub(crate) fn deadline(&self) -> SaveDeadline {
         if self.blocked() {
-            None
+            SaveDeadline::Idle
         } else if self.checkpoint_requested() {
             self.exit
                 .retry_at()
                 .into_iter()
                 .chain(self.host.retry_at())
                 .max()
+                .map_or(SaveDeadline::Now, SaveDeadline::At)
         } else {
-            self.autosave.deadline()
+            self.autosave
+                .deadline()
+                .map_or(SaveDeadline::Idle, SaveDeadline::At)
         }
     }
 
     pub(crate) fn is_due(&self, now: Instant) -> bool {
-        self.next_save(now).is_some()
+        self.deadline().is_due(now)
     }
 
-    /// The save to start now, including a checkpoint with no retry delay.
     fn next_save(&self, now: Instant) -> Option<NextSave> {
-        if self.blocked() {
-            None
-        } else if self.checkpoint_requested() {
-            if self
-                .exit
-                .retry_at()
-                .into_iter()
-                .chain(self.host.retry_at())
-                .any(|d| now < d)
-            {
-                return None;
-            }
+        if !self.is_due(now) {
+            return None;
+        }
+        if self.checkpoint_requested() {
             Some(NextSave::Checkpoint {
                 exit_generation: self.exit.pending_generation(),
                 host: self.host.is_requested(),
             })
         } else {
-            self.autosave.is_due(now).then_some(NextSave::Autosave)
+            Some(NextSave::Autosave)
         }
     }
 
@@ -801,6 +814,10 @@ impl App {
             self.finish_session_save(save.kind, result);
         }
 
+        // Final teardown makes one attempt and returns its outcome to the
+        // lifecycle. Retrying here would hold the lease and all shutdown
+        // callers through extra unbounded filesystem IO; ordinary and warning
+        // checkpoints have retry schedules because their event loop stays live.
         let pending = match self.submit_final_session_save() {
             Ok(Some(pending)) => pending,
             Ok(None) if self.session_saver.policy.is_unavailable() => {
@@ -889,8 +906,15 @@ impl SessionSaver {
         self.autosave.deadline()
     }
 
-    pub(crate) fn set_autosave_deadline(&mut self, deadline: Option<Instant>) {
-        self.autosave.set_deadline(deadline);
+    /// Inject the debounce policy and exercise the ordinary mutation scheduler.
+    pub(crate) fn schedule_test_autosave(&mut self, now: Instant, debounce: Duration) {
+        let config = SavePolicyConfig {
+            debounce,
+            ..self.config
+        };
+        self.config = config;
+        self.autosave = Autosave::with_config(config.debounce, config.retry);
+        self.note_mutation(now);
     }
 
     /// Whether a save is in flight.
@@ -943,30 +967,6 @@ impl SessionSaver {
 
 #[cfg(test)]
 impl App {
-    /// Retires the persister and starts a fresh one on the same scratch data
-    /// directory, firing `save_finished`, with saves admitted again. Test
-    /// apps already persist through their outputs' signal from `App::new`;
-    /// this only matters to a test that stopped or retired the saver.
-    /// `save_finished` is the signal
-    /// whoever owns this app's outputs waits on (`TestApp::persist`,
-    /// `HeadlessServer::persist_for_test`).
-    pub(crate) fn persist_with_signal(
-        &mut self,
-        save_finished: std::sync::Arc<tokio::sync::Notify>,
-    ) {
-        if let Some(persister) = self.session_saver.persister.as_mut() {
-            persister.retire();
-        }
-        let lease = shepr_mux::persist::DataDirLease::acquire(self.paths.data_dir())
-            .expect("the test data directory lease is free");
-        self.session_saver.persister = Some(shepr_mux::persist::SessionPersister::spawn(
-            lease,
-            shepr_mux::persist::SessionBackupPolicy::NoBackupNeeded,
-            save_finished,
-        ));
-        self.session_saver.policy.mode = SaveMode::Persisting;
-    }
-
     /// Drives the production reap until the current save completes.
     /// Synchronous event fixtures retain this driver because converting their
     /// callers to async would cross the app and pane-lifecycle test scopes.
@@ -1014,7 +1014,10 @@ mod tests {
         app.session_saver = SessionSaver::with_config(persister, config);
         app.state.mark_session_dirty();
         app.sync_session_save_schedule();
-        assert_eq!(app.session_saver.deadline(), Some(app.clock.now));
+        assert_eq!(
+            app.session_saver.deadline(),
+            SaveDeadline::At(app.clock.now)
+        );
         app.session_saver.host.request();
         app.finish_session_save(
             SaveKind::Checkpoint(CheckpointTicket {
@@ -1128,7 +1131,7 @@ mod tests {
     ) {
         use crate::test_support::WorkspaceFixture as _;
         let mut app = test_app();
-        app.persist();
+
         let mut workspace = shepr_mux::workspace::Workspace::test_new(name);
         let exiting = workspace.tree().root();
         let staying = workspace.test_split(shepr_core::layout::Direction::Horizontal);
@@ -1304,7 +1307,7 @@ mod tests {
     #[test]
     fn repeated_pane_exit_checkpoint_failures_release_the_held_exit() {
         let mut app = test_app();
-        app.persist();
+
         let generation = app.session_saver.exit.request(true).expect("held");
         for _ in 1..CHECKPOINT_MAX_FAILURES {
             app.finish_session_save(exit_kind(generation), disk_full());
@@ -1327,7 +1330,7 @@ mod tests {
     #[test]
     fn a_refused_save_stops_persistence_and_tells_every_client() {
         let mut app = test_app();
-        app.persist();
+
         let generation = app.session_saver.exit.request(true).expect("held");
         let projection_before = app.state.shell_projection_revision();
         assert!(!app.session_saves_stopped());
@@ -1343,13 +1346,13 @@ mod tests {
         assert_ne!(app.state.shell_projection_revision(), projection_before);
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
         assert_eq!(app.request_pane_exit_checkpoint(), None);
-        assert_eq!(app.session_saver.deadline(), None);
+        assert_eq!(app.session_saver.deadline(), SaveDeadline::Idle);
     }
 
     #[test]
     fn an_unreadable_backup_source_blocks_saves_and_projects_the_condition() {
         let mut app = test_app();
-        app.persist();
+
         let generation = app.session_saver.exit.request(true).expect("held");
         let projection_before = app.state.shell_projection_revision();
 
@@ -1364,7 +1367,7 @@ mod tests {
         assert!(!app.session_saves_stopped());
         assert_ne!(app.state.shell_projection_revision(), projection_before);
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
-        assert_eq!(app.session_saver.deadline(), None);
+        assert_eq!(app.session_saver.deadline(), SaveDeadline::Idle);
         assert!(!app.session_saver.policy.allows_saves());
     }
 
@@ -1374,7 +1377,7 @@ mod tests {
     #[test]
     fn a_capture_inconsistency_is_retried_rather_than_stopping_saves() {
         let mut app = test_app();
-        app.persist();
+
         let generation = app.session_saver.exit.request(true).expect("held");
 
         app.finish_session_save(
@@ -1399,7 +1402,8 @@ mod tests {
         let now = app.clock.now;
         assert!(!app.session_saver.is_due(now));
         app.session_saver.host.request();
-        assert_eq!(app.session_saver.deadline(), None);
+        assert_eq!(app.session_saver.deadline(), SaveDeadline::Now);
+        assert_eq!(app.next_deadline(false), Some(now));
         assert!(app.session_saver.is_due(now));
         app.service_session_saves(now);
         assert!(app.session_saver.save_in_flight());
@@ -1412,7 +1416,7 @@ mod tests {
         let mut app = test_app();
         let now = app.clock.now;
         let saver = &mut app.session_saver;
-        saver.set_autosave_deadline(Some(now));
+        saver.schedule_test_autosave(now, Duration::ZERO);
         let generation = saver.exit.request(false);
         assert!(
             matches!(saver.next_save(now), Some(NextSave::Checkpoint { exit_generation, host: false }) if exit_generation == generation)
@@ -1424,12 +1428,12 @@ mod tests {
         let mut app = test_app();
         let now = app.clock.now;
         let saver = &mut app.session_saver;
-        saver.set_autosave_deadline(Some(now));
+        saver.schedule_test_autosave(now, Duration::ZERO);
         saver.exit.request(false);
         saver.host.request();
         let completion = saver.hold_test_save_in_flight();
         assert!(saver.next_save(now).is_none());
-        assert_eq!(saver.deadline(), None);
+        assert_eq!(saver.deadline(), SaveDeadline::Idle);
         completion.complete(Ok(()));
         app.reap_finished_session_save();
     }
@@ -1457,7 +1461,7 @@ mod tests {
             Some(now + checkpoint_retry_delay(0))
         );
         assert_eq!(app.session_saver.host.retry_at(), Some(later));
-        assert_eq!(app.session_saver.deadline(), Some(later));
+        assert_eq!(app.session_saver.deadline(), SaveDeadline::At(later));
         assert!(
             app.session_saver
                 .next_save(later - Duration::from_nanos(1))
@@ -1495,7 +1499,7 @@ mod tests {
             );
         }
         assert!(app.session_saver.autosave_deadline().is_some());
-        assert_eq!(app.session_saver.deadline(), None);
+        assert_eq!(app.session_saver.deadline(), SaveDeadline::Idle);
         assert!(
             app.session_saver
                 .next_save(app.clock.now + SESSION_SAVE_RETRY_MIN * 100)
@@ -1796,7 +1800,7 @@ mod tests {
             let first = layout.panes()[0].public_number;
             WorkspaceSnapshot {
                 id: id.parse().expect("workspace id"),
-                name: shepr_mux::terminal::Label::new(name).expect("test workspace name"),
+                name: shepr_mux::Label::new(name).expect("test workspace name"),
                 layout,
                 next_public_pane_number: number(next),
                 zoomed: false,
@@ -1867,6 +1871,7 @@ mod tests {
     /// Autosave scheduling and checkpoints, run on the app fixture
     /// `app::tests` shares (it sets the test shell).
     mod autosave_and_checkpoints {
+        use crate::app::session::SaveDeadline;
         use crate::app::tests::test_app;
         use crate::app::*;
         use crate::limits::SESSION_SAVE_DEBOUNCE;
@@ -1910,7 +1915,7 @@ mod tests {
         #[test]
         fn session_dirty_flag_schedules_debounced_save() {
             let mut app = test_app();
-            app.persist();
+
             let sample = AppClock {
                 now: app.clock.now + Duration::from_secs(42),
                 wall_now: app.clock.wall_now,
@@ -1930,11 +1935,12 @@ mod tests {
         #[test]
         fn due_session_save_starts_background_writer() {
             let mut app = test_app();
-            app.persist();
+
             app.state
                 .test_set_workspaces(vec![Workspace::test_new("autosave")]);
             let now = app.clock.now;
-            app.session_saver.set_autosave_deadline(Some(now));
+            app.session_saver
+                .schedule_test_autosave(now, Duration::ZERO);
 
             app.start_background_session_save();
 
@@ -1951,19 +1957,23 @@ mod tests {
         #[test]
         fn background_session_save_reschedules_when_writer_is_busy() {
             let mut app = test_app();
-            app.persist();
+
             let release = app.session_saver.hold_test_save_in_flight();
             let now = app.clock.now;
-            app.session_saver.set_autosave_deadline(Some(now));
+            app.session_saver
+                .schedule_test_autosave(now, Duration::ZERO);
 
             app.start_background_session_save();
 
             assert!(app.session_saver.save_in_flight());
-            assert_eq!(app.session_saver.deadline(), None);
+            assert_eq!(app.session_saver.deadline(), SaveDeadline::Idle);
 
             release.complete(Ok(()));
             app.wait_for_session_save();
-            assert_eq!(app.session_saver.deadline(), Some(app.clock.now));
+            assert_eq!(
+                app.session_saver.deadline(),
+                SaveDeadline::At(app.clock.now)
+            );
             app.start_background_session_save();
             assert!(app.session_saver.save_in_flight());
             app.wait_for_session_save();
@@ -1997,7 +2007,7 @@ mod tests {
         async fn pane_exit_checkpoint_survives_automatic_workspace_creation_on_shutdown() {
             let mut server = crate::server::headless::tests::test_headless_server();
             server.install_test_app(test_app());
-            server.persist_for_test();
+
             let mut workspace = Workspace::test_new("preserved");
             let first_pane = workspace.tree().root();
             let second_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
@@ -2104,7 +2114,7 @@ mod tests {
                     .current_session_identity_for_persistence(),
                 Some(session.clone()),
             );
-            server.persist_for_test();
+
             server.app.state.mark_session_dirty();
             server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
                 &server.app,
@@ -2208,7 +2218,7 @@ mod tests {
                     .current_session_identity_for_persistence(),
                 None
             );
-            server.persist_for_test();
+
             server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
                 &server.app,
                 pane_id,
@@ -2240,7 +2250,7 @@ mod tests {
                     .current_session_identity_for_persistence(),
                 None
             );
-            app.persist();
+
             // The final save after a signal: the pane's death is never processed.
             let quit_at = app.clock.now + Duration::from_millis(100);
             app.state.adopt_checkpoint_candidates_for_shutdown(quit_at);
@@ -2265,7 +2275,7 @@ mod tests {
         async fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
             let mut server = crate::server::headless::tests::test_headless_server();
             server.install_test_app(test_app());
-            server.persist_for_test();
+
             let workspace = Workspace::test_new("closed");
             let pane_id = workspace.tree().root();
             server.app.state.test_set_workspaces(vec![workspace]);
@@ -2295,8 +2305,15 @@ mod tests {
             );
 
             // The loop starts the autosave once its debounce has elapsed.
-            let now = server.app.clock.now;
-            server.app.session_saver.set_autosave_deadline(Some(now));
+            let now = server
+                .app
+                .session_saver
+                .autosave_deadline()
+                .expect("scheduled autosave");
+            server.app.set_clock(crate::app::AppClock {
+                now,
+                wall_now: server.app.clock.wall_now,
+            });
             server.app.start_background_session_save();
             assert!(server.app.session_saver.save_in_flight());
             server.app.wait_for_session_save();
@@ -2318,7 +2335,7 @@ mod tests {
         fn reader_panic_removes_the_pane_without_a_checkpoint() {
             let mut server = crate::server::headless::tests::test_headless_server();
             server.install_test_app(test_app());
-            server.persist_for_test();
+
             let workspace = Workspace::test_new("broken");
             let pane_id = workspace.tree().root();
             server.app.state.test_set_workspaces(vec![workspace]);
@@ -2345,7 +2362,7 @@ mod tests {
             for another_interrupted_exit in [false, true] {
                 let mut server = crate::server::headless::tests::test_headless_server();
                 server.install_test_app(test_app());
-                server.persist_for_test();
+
                 let workspace = Workspace::test_new("old");
                 let pane_id = workspace.tree().root();
                 server.app.state.test_set_workspaces(vec![workspace]);

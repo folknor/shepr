@@ -17,8 +17,9 @@ use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
+use shepr_core::backoff::Backoff;
 use shepr_platform::ipc::{
     Accepted, FirstByte, LocalStream, PeerAdmission, accept_peer, peek_first_byte,
 };
@@ -258,7 +259,7 @@ fn start_listener_with_dispatch(
                 running: Arc::clone(&running),
                 stop: Arc::clone(&dispatch.stop),
             };
-            let mut backoff = AcceptBackoff::default();
+            let mut backoff = AcceptBackoff::new();
             loop {
                 if !running.load(Ordering::Acquire) {
                     break;
@@ -338,13 +339,19 @@ fn start_listener_with_dispatch(
         })
 }
 
-#[derive(Default)]
 struct AcceptBackoff {
-    delay: Option<Duration>,
-    failures: u64,
+    schedule: Backoff,
+    failures: u32,
 }
 
 impl AcceptBackoff {
+    fn new() -> Self {
+        Self {
+            schedule: Backoff::new(ACCEPT_BACKOFF_MIN, ACCEPT_BACKOFF_MAX),
+            failures: 0,
+        }
+    }
+
     fn failed(&mut self, what: &'static str, error: &io::Error) {
         self.failures = self.failures.saturating_add(1);
         if self.failures == 1 {
@@ -352,18 +359,12 @@ impl AcceptBackoff {
         } else {
             debug!(%error, failures = self.failures, "{what}; retrying");
         }
-        let delay = self
-            .delay
-            .map_or(ACCEPT_BACKOFF_MIN, |delay| delay.saturating_mul(2))
-            .min(ACCEPT_BACKOFF_MAX);
-        self.delay = Some(delay);
-        std::thread::sleep(delay);
+        std::thread::sleep(self.schedule.delay_after(self.failures.saturating_sub(1)));
     }
     fn recovered(&mut self) {
         if self.failures > 0 {
             info!(failures = self.failures, "server listener recovered");
         }
-        self.delay = None;
         self.failures = 0;
     }
 }
@@ -375,6 +376,7 @@ mod tests {
     use shepr_protocol::preamble::{local_preamble, read_preamble};
     use shepr_protocol::{ClientMessage, ServerMessage};
     use std::io::{BufRead, BufReader, Read, Write};
+    use std::time::Duration;
 
     fn dispatch() -> Dispatch {
         let (api_tx, _rx) = tokio::sync::mpsc::channel(1);

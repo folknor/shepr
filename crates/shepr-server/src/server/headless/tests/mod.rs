@@ -172,13 +172,6 @@ impl HeadlessServer {
         self.outputs = outputs;
     }
 
-    /// Restarts the production writer on the server's completion signal
-    /// (`TestApp::persist` for an app held outside a server).
-    pub(crate) fn persist_for_test(&mut self) {
-        let save_finished = self.outputs.save_finished_signal();
-        self.app.persist_with_signal(save_finished);
-    }
-
     /// Adds a client fixture the way a connection would: it starts at the
     /// session's bookmark, and the locations are then settled, which lands a
     /// client with no bookmark to start from on the first workspace.

@@ -82,3 +82,6 @@ pub const MIN_HISTORY_LINES: usize = 1_000;
 /// does not bound heap-held cell extras or history retained across a widening
 /// resize, so this caps the emulator's retained row count.
 pub const MAX_HISTORY_LINES: usize = 1_000_000;
+
+/// Growth factor of the shared exponential retry schedule.
+pub(crate) const BACKOFF_MULTIPLIER: u32 = 2;

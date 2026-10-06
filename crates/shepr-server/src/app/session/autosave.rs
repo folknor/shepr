@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::backoff::Backoff;
+use shepr_core::backoff::Backoff;
 
 /// The debounced save of the live layout, and the backoff shared by every
 /// kind of save.
@@ -28,14 +28,7 @@ impl Autosave {
         self.deadline
     }
 
-    /// The autosave's single deadline comparison, shared by scheduling and
-    /// its boundary tests; checkpoint readiness belongs to SessionSaver.
-    pub(super) fn is_due(&self, now: Instant) -> bool {
-        self.deadline.is_some_and(|d| now >= d)
-    }
-
-    /// A session mutation was observed: the save is due
-    /// `SESSION_SAVE_DEBOUNCE` from now.
+    /// A session mutation was observed: the save is due after the configured debounce.
     pub(super) fn schedule(&mut self, now: Instant) {
         self.deadline = Some(now + self.debounce);
     }
@@ -45,11 +38,8 @@ impl Autosave {
     }
 
     /// Counts the failure and arms the retry: the earlier of an existing
-    /// future deadline and a delay doubling from `SESSION_SAVE_RETRY_MIN` per
-    /// consecutive failure, capped at `SESSION_SAVE_RETRY_MAX`, so a
-    /// persistent failure (a full disk, an unwritable data directory) does
-    /// not re-capture and rewrite the whole session at the minimum delay over
-    /// and over.
+    /// future deadline and the configured exponential delay, so persistent
+    /// storage failures do not re-capture and rewrite on every retry minimum.
     /// Returns the failure count and the delay.
     pub(super) fn record_failure(&mut self, now: Instant) -> (u32, Duration) {
         let failures_before = self.failures;
@@ -72,13 +62,6 @@ impl Autosave {
 }
 
 #[cfg(test)]
-impl Autosave {
-    pub(super) fn set_deadline(&mut self, deadline: Option<Instant>) {
-        self.deadline = deadline;
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::limits::{SESSION_SAVE_DEBOUNCE, SESSION_SAVE_RETRY_MAX, SESSION_SAVE_RETRY_MIN};
@@ -89,6 +72,12 @@ mod tests {
         /// An autosave on the production policy constants.
         fn new() -> Self {
             Self::with_config(SESSION_SAVE_DEBOUNCE, RETRY_BACKOFF)
+        }
+
+        /// Boundary tests of the configured debounce; production readiness is
+        /// decided by the saver's combined deadline.
+        pub(in crate::app::session) fn is_due(&self, now: Instant) -> bool {
+            self.deadline.is_some_and(|d| now >= d)
         }
     }
 

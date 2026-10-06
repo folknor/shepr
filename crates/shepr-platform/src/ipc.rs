@@ -1058,7 +1058,9 @@ pub enum StreamFailure {
     Other,
 }
 
-/// Gives common local stream errors one transport meaning for all consumers.
+/// Gives local stream errors one transport meaning for all consumers.
+/// This answers whether a listener or connected peer left, not whether an SSH
+/// host is reachable or whether a launcher should retry its operation.
 pub fn classify_stream_error(kind: io::ErrorKind) -> StreamFailure {
     match kind {
         io::ErrorKind::BrokenPipe

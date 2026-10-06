@@ -123,7 +123,9 @@ fn log_filter(directives: Option<&str>) -> io::Result<EnvFilter> {
 }
 
 /// Installs the process-wide client file logger from the binary launch path.
-/// The client library reuses this subscriber and does not install one itself.
+/// `path` is supplied by `shepr-paths` from the client's profile-owned state
+/// directory, outside the server's leased data tree. The client library reuses
+/// this subscriber and does not install one itself.
 pub fn init_client_file_logging(
     path: &Path,
     config: FileLoggingConfig,
@@ -133,11 +135,10 @@ pub fn init_client_file_logging(
 
 /// The log files `--help` names: the only two any process writes.
 pub fn help_log_paths_summary(server_log: &Path, client_log: &Path) -> String {
-    let client_name = client_log.file_name().unwrap_or(client_log.as_os_str());
     format!(
-        "{} (and {} beside it)",
+        "{} (client log: {})",
         server_log.display(),
-        client_name.to_string_lossy()
+        client_log.display()
     )
 }
 
@@ -522,9 +523,14 @@ mod tests {
 
     #[test]
     fn help_names_only_the_logs_that_are_written() {
-        let summary =
-            help_log_paths_summary(Path::new("/data/server.log"), Path::new("/data/client.log"));
-        assert_eq!(summary, "/data/server.log (and client.log beside it)");
+        let summary = help_log_paths_summary(
+            Path::new("/data/server.log"),
+            Path::new("/state-client/client.log"),
+        );
+        assert_eq!(
+            summary,
+            "/data/server.log (client log: /state-client/client.log)"
+        );
     }
 
     #[test]

@@ -57,17 +57,16 @@ const NESTED_SHEPR_MESSAGES: &[&str] = &[
 ];
 
 mod cli;
-mod limits;
 mod preflight;
 mod tui;
 
 fn random_nested_message() -> &'static str {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.subsec_nanos() as usize);
-    let index = (nanos ^ (std::process::id() as usize)) % NESTED_SHEPR_MESSAGES.len();
+    // Each process prints one quip, so the variety has to come from outside
+    // it: the kernel random source, not a clock sample. Without one, the
+    // first quip is as good as any.
+    let token = shepr_platform::unpredictable_token().unwrap_or(0);
+    let count = u64::try_from(NESTED_SHEPR_MESSAGES.len()).unwrap_or(u64::MAX);
+    let index = usize::try_from(token % count).unwrap_or(0);
     NESTED_SHEPR_MESSAGES[index]
 }
 
@@ -352,10 +351,10 @@ mod tests {
 
     #[test]
     fn args_as_utf8_passes_through_valid_arguments() {
-        let args = ["shepr", "pane", "get", "pane-1"].map(std::ffi::OsString::from);
+        let args = ["shepr", "status", "--json"].map(std::ffi::OsString::from);
         assert_eq!(
             args_as_utf8(args).expect("test precondition"),
-            ["shepr", "pane", "get", "pane-1"]
+            ["shepr", "status", "--json"]
         );
     }
 
@@ -363,7 +362,7 @@ mod tests {
     fn args_as_utf8_reports_the_offending_argument_instead_of_panicking() {
         let args = vec![
             std::ffi::OsString::from("shepr"),
-            std::ffi::OsString::from("pane"),
+            std::ffi::OsString::from("status"),
             invalid_utf8_arg(),
         ];
         assert_eq!(

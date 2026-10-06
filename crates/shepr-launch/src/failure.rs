@@ -315,6 +315,8 @@ fn find_failure<'a>(error: &'a (dyn std::error::Error + 'static)) -> Option<&'a 
 /// mid-session (a broken pipe, an unexpected EOF) is a remote fault to retry,
 /// not evidence that the machine is unreachable.
 pub fn is_link_error_kind(kind: io::ErrorKind) -> bool {
+    // ConnectionReset during SSH discovery establishes no reachable endpoint;
+    // on an established local stream it instead means that the peer left.
     // AddrInUse is left out: it describes a local bind collision, not remote
     // reachability.
     matches!(
@@ -328,9 +330,34 @@ pub fn is_link_error_kind(kind: io::ErrorKind) -> bool {
     )
 }
 
+/// Whether retrying a local launch can recover from this IO failure.
+/// This is a launch policy, separate from stream termination and SSH reachability:
+/// a missing binary or permission failure needs repair rather than another start.
+pub(crate) fn launch_io_allows_retry(kind: io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        io::ErrorKind::TimedOut
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::BrokenPipe
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_retry_and_link_reachability_answer_different_questions() {
+        assert!(launch_io_allows_retry(io::ErrorKind::BrokenPipe));
+        assert!(!is_link_error_kind(io::ErrorKind::BrokenPipe));
+        assert!(launch_io_allows_retry(io::ErrorKind::ConnectionReset));
+        assert!(is_link_error_kind(io::ErrorKind::ConnectionReset));
+        assert!(!launch_io_allows_retry(io::ErrorKind::NotFound));
+        assert!(!launch_io_allows_retry(io::ErrorKind::PermissionDenied));
+    }
 
     #[test]
     fn typed_causes_survive_io_kinds_and_display_context() {

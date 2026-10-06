@@ -70,18 +70,6 @@ impl InstallError {
             Self::Shared(error) => error.kind(),
         }
     }
-
-    pub(crate) fn io_kind(&self) -> io::ErrorKind {
-        match self {
-            Self::Io(error) => error.kind(),
-            Self::Shared(error) => error.io_kind(),
-            _ => match self.kind() {
-                InstallErrorKind::ConfigChanged => io::ErrorKind::WouldBlock,
-                InstallErrorKind::AgentDirMissing => io::ErrorKind::NotFound,
-                _ => io::ErrorKind::InvalidData,
-            },
-        }
-    }
 }
 
 impl From<io::Error> for InstallError {
@@ -128,6 +116,9 @@ impl std::error::Error for InstallError {
     }
 }
 
+// Keep the repair reason in launch logs: distinguishing a user-edited script
+// from an inert registration explains why a server rewrote an integration.
+// Neither this diagnostic nor absence determines asset identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IntegrationOutdatedReason {
     Asset,
@@ -193,12 +184,11 @@ pub(crate) struct IntegrationStatus {
     pub state: IntegrationStatusKind,
     /// Which managed part needs repair when `state` is `Outdated`.
     pub outdated_reason: Option<IntegrationOutdatedReason>,
-    /// Version marker from the installed asset, for diagnostics only.
-    pub installed_version: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IntegrationStatusKind {
+    // Absence is useful in launch diagnostics, distinct from repair of an existing file.
     NotInstalled,
     Current,
     Outdated,
@@ -206,6 +196,19 @@ pub(crate) enum IntegrationStatusKind {
 
 #[cfg(test)]
 impl InstallError {
+    /// The I/O class of the failure, looking through shared errors.
+    pub(crate) fn io_kind(&self) -> io::ErrorKind {
+        match self {
+            Self::Io(error) => error.kind(),
+            Self::Shared(error) => error.io_kind(),
+            _ => match self.kind() {
+                InstallErrorKind::ConfigChanged => io::ErrorKind::WouldBlock,
+                InstallErrorKind::AgentDirMissing => io::ErrorKind::NotFound,
+                _ => io::ErrorKind::InvalidData,
+            },
+        }
+    }
+
     /// The OS error number of an I/O failure, looking through shared errors.
     pub(crate) fn raw_os_error(&self) -> Option<i32> {
         match self {

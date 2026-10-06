@@ -85,7 +85,6 @@ fn install_if_present(
             path = %status.path.display(),
             state = ?status.state,
             outdated_reason = ?status.outdated_reason,
-            installed_version = ?status.installed_version,
             "integration needs installation"
         ),
         Err(error) => {
@@ -194,5 +193,25 @@ mod tests {
 
         assert!(python3_available_on_path(Some(bin.as_os_str())));
         assert!(!python3_available_on_path(Some(empty.as_os_str())));
+    }
+    #[test]
+    fn current_integrations_skip_launch_installation_for_every_target() {
+        use super::{install_if_present, install_target};
+        use crate::env::AgentIntegrationPaths;
+        use crate::registry::target_directory;
+
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let paths = AgentIntegrationPaths::resolve();
+        for target in shepr_agent::IntegrationTarget::all() {
+            let directory = target_directory(&paths, target).expect("agent directory");
+            fs::create_dir_all(directory).expect("create agent directory");
+            install_target(&paths, target).expect("initial install");
+            assert!(
+                install_if_present(&paths, target, &mut Some(true))
+                    .expect("current integration status")
+                    .is_none(),
+                "{target:?}"
+            );
+        }
     }
 }

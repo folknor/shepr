@@ -162,10 +162,8 @@ impl PersistState {
             // the lease, so a failed persister cannot let another server
             // restore stale files while this server still owns live panes.
             self.accepting_jobs = false;
-            tracing::error!(
-                event = "persist.actor",
-                subsystem = "persist",
-                outcome = "panicked",
+            shepr_platform::structured_log!(
+                ERROR, event = persist.actor, outcome = "panicked",
                 "session persister stopped after a job panicked; holding the data directory lease until retirement"
             );
             Err(stopped_after_panic())
@@ -249,8 +247,8 @@ impl SessionPersister {
                 Err(mpsc::SendError(state)) => Worker::Inline(Box::new(state)),
             },
             Err(error) => {
-                tracing::error!(
-                    event = "persist.actor", subsystem = "persist", outcome = "spawn_error",
+                shepr_platform::structured_log!(
+                    ERROR, event = persist.actor, outcome = "spawn_error",
                     %error,
                     "failed to start the session persister thread; saving on the event loop"
                 );
@@ -295,9 +293,9 @@ impl SessionPersister {
                 if thread.join().is_err() {
                     // A job's panic is caught on the thread; one outside a job
                     // (retiring the writer) dropped its state, lease included.
-                    tracing::error!(
-                        event = "persist.actor",
-                        subsystem = "persist",
+                    shepr_platform::structured_log!(
+                        ERROR,
+                        event = persist.actor,
                         outcome = "panicked",
                         "session persister thread panicked"
                     );

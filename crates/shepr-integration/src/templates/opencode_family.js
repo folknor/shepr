@@ -4,6 +4,9 @@
 // would mark the pane idle while the root is still working. Only a child's
 // prompts for the user (blocked) and the replies to them (working) are
 // forwarded, attributed to the root session.
+// Retire ancestry on session.deleted. Do not evict live ancestry by age or
+// size: a later prompt from that child would otherwise claim the pane as a
+// root session. A hard cap needs an authoritative ancestry lookup first.
 const childSessions = new Map();
 const CHILD_EVENT_STATES = new Map([
   ["permission.asked", STATE.blocked],

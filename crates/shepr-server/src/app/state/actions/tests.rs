@@ -12,9 +12,6 @@ fn app_with_workspaces(names: &[&str]) -> AppState {
         let ws = Workspace::test_new(name);
         state.test_push_workspace(ws);
     }
-    if !state.workspaces.is_empty() {
-        state.seed_bookmark_index(Some(0));
-    }
     state
 }
 
@@ -55,13 +52,12 @@ fn send_endpoint_command(
     let context = crate::app::EndpointContext {
         requester_geometry: None,
     };
-    let outcome = app.handle_endpoint_command_with_render(command, &context);
+    let outcome = app.handle_endpoint_command(command, &context);
     assert!(outcome.result.is_ok(), "endpoint command should succeed");
 }
 
 fn toggle_focused_zoom(state: &mut AppState) {
-    let ws_idx = state.bookmark_index().expect("test precondition");
-    let pane_id = state.ws(ws_idx).tree().focused();
+    let pane_id = state.ws(0).tree().focused();
     state.toggle_pane_zoom(pane_id).expect("test precondition");
 }
 
@@ -320,6 +316,7 @@ fn set_bookmark_moves_it_and_saves_only_when_it_moved() {
 #[test]
 fn set_bookmark_of_a_workspace_that_is_gone_is_a_noop() {
     let mut state = app_with_workspaces(&["a"]);
+    state.seed_bookmark_index(Some(0));
     let gone = shepr_protocol::WorkspaceId::from_number(9_999).expect("nonzero number");
 
     assert!(!state.set_bookmark(&gone));
@@ -451,7 +448,7 @@ fn state_changed_updates_pane() {
 
 #[test]
 fn state_changed_events_advance_the_agent_state_change_sequence() {
-    let mut app = app_with_workspaces(&["active", "background"]);
+    let mut app = app_with_workspaces(&["first", "reported"]);
     let pane_id = app.ws(1).tree().root();
 
     let mut sequence = shepr_agent::StateChangeSeq::NEVER;
@@ -476,7 +473,7 @@ fn state_changed_events_advance_the_agent_state_change_sequence() {
 
 #[test]
 fn agent_state_change_sequence_ignores_idle_unknown_presentation_changes() {
-    let mut app = app_with_workspaces(&["active"]);
+    let mut app = app_with_workspaces(&["pane"]);
     let pane_id = app.ws(0).tree().root();
     let state_changed = |state| StateEvent::StateChanged {
         pane_id,
@@ -526,12 +523,11 @@ fn agent_state_change_sequence_ignores_idle_unknown_presentation_changes() {
 
 #[test]
 fn visible_blocker_overrides_hook_working() {
-    let mut state = app_with_workspaces(&["active", "background"]);
-    state.seed_bookmark_index(Some(0));
-    let bg_pane_id = state.ws(1).tree().root();
+    let mut state = app_with_workspaces(&["pane"]);
+    let pane_id = state.ws(0).tree().root();
 
     state.handle_state_event(StateEvent::StateChanged {
-        pane_id: bg_pane_id,
+        pane_id,
         agent: Some(Agent::Codex),
         detection: shepr_detect::Detection::new(AgentState::Idle, false),
         process_exited: false,
@@ -539,14 +535,14 @@ fn visible_blocker_overrides_hook_working() {
     });
     report_hook_state(
         &mut state,
-        bg_pane_id,
+        pane_id,
         shepr_agent::ReportOrigin::parse("shepr:codex").expect("test origin"),
         AgentState::Working,
         Some(1),
         shepr_agent::resume::AgentSessionRef::id("codex-session"),
     );
     state.handle_state_event(StateEvent::StateChanged {
-        pane_id: bg_pane_id,
+        pane_id,
         agent: Some(Agent::Codex),
         detection: shepr_detect::Detection::new(AgentState::Blocked, true),
 
@@ -554,14 +550,13 @@ fn visible_blocker_overrides_hook_working() {
         observed_at: std::time::Instant::now(),
     });
 
-    let terminal = state.terminal(bg_pane_id).expect("test precondition");
+    let terminal = state.terminal(pane_id).expect("test precondition");
     assert_eq!(terminal.ownership().state(), AgentState::Blocked);
 }
 
 #[test]
 fn reserved_native_state_report_does_not_override_screen_state() {
-    let mut state = app_with_workspaces(&["active"]);
-    state.seed_bookmark_index(Some(0));
+    let mut state = app_with_workspaces(&["pane"]);
     let pane_id = state.ws(0).tree().root();
 
     state.handle_state_event(StateEvent::StateChanged {
@@ -598,7 +593,7 @@ fn reserved_native_state_report_does_not_override_screen_state() {
 
 #[test]
 fn devin_state_report_refreshes_session_without_overriding_screen_state() {
-    let mut state = app_with_workspaces(&["active"]);
+    let mut state = app_with_workspaces(&["pane"]);
     let pane_id = state.ws(0).tree().root();
 
     state.handle_state_event(StateEvent::StateChanged {
@@ -625,7 +620,7 @@ fn devin_state_report_refreshes_session_without_overriding_screen_state() {
 
 #[test]
 fn session_ref_only_update_marks_session_dirty_without_visible_update() {
-    let mut state = app_with_workspaces(&["active"]);
+    let mut state = app_with_workspaces(&["pane"]);
     let pane_id = state.ws(0).tree().root();
 
     state.handle_state_event(StateEvent::StateChanged {
@@ -654,7 +649,7 @@ fn session_ref_only_update_marks_session_dirty_without_visible_update() {
 
 #[test]
 fn terminal_cwd_report_updates_terminal_cwd_and_marks_session_dirty() {
-    let mut state = app_with_workspaces(&["active"]);
+    let mut state = app_with_workspaces(&["pane"]);
     let pane_id = state.ws(0).tree().root();
     let scratch = crate::test_support::ScratchDir::new("cwd-report");
     let cwd = scratch.to_path_buf();
@@ -675,7 +670,7 @@ fn terminal_cwd_report_updates_terminal_cwd_and_marks_session_dirty() {
 
 #[test]
 fn cwd_report_for_missing_pane_is_ignored() {
-    let mut state = app_with_workspaces(&["active"]);
+    let mut state = app_with_workspaces(&["pane"]);
     let pane_id = state.ws(0).tree().root();
     let before = state
         .terminal(pane_id)
@@ -824,8 +819,7 @@ fn close_pane_removes_from_workspace() {
 
 #[test]
 fn pane_process_exit_publish_marks_agent_idle_before_pane_removal() {
-    let mut state = app_with_workspaces(&["active", "background"]);
-    state.seed_bookmark_index(Some(1));
+    let mut state = app_with_workspaces(&["pane"]);
     let pane_id = state.ws(0).tree().root();
     state
         .terminal_mut(pane_id)
@@ -969,19 +963,13 @@ fn projected_reducers_invalidate_without_an_endpoint_caller() {
     });
     advances(&mut state, |state| {
         assert_eq!(
-            state.rename_pane(
-                root,
-                Some(shepr_mux::terminal::Label::new("renamed").expect("label"))
-            ),
+            state.rename_pane(root, Some(shepr_mux::Label::new("renamed").expect("label"))),
             Some(ViewMutation::Metadata)
         );
     });
     advances(&mut state, |state| {
         assert_eq!(
-            state.rename_workspace(
-                &workspace,
-                shepr_mux::terminal::Label::new("renamed").expect("label")
-            ),
+            state.rename_workspace(&workspace, shepr_mux::Label::new("renamed").expect("label")),
             Some(ViewMutation::Metadata)
         );
     });
@@ -1018,10 +1006,7 @@ fn unchanged_projected_reducers_keep_the_revision() {
     );
     assert_eq!(state.rename_pane(pane, None), Some(ViewMutation::Unchanged));
     assert_eq!(
-        state.rename_workspace(
-            &workspace,
-            shepr_mux::terminal::Label::new("one").expect("label")
-        ),
+        state.rename_workspace(&workspace, shepr_mux::Label::new("one").expect("label")),
         Some(ViewMutation::Unchanged)
     );
     assert_eq!(

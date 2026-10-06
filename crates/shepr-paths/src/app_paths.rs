@@ -43,8 +43,8 @@ impl AppPaths {
         &self.state_dir
     }
 
-    /// The directory for the saved layout, its recovery files, the client and
-    /// server logs, and the lease that keeps one server per directory. For a
+    /// The directory for the saved layout, its recovery files, the server log,
+    /// and the lease that keeps one server per directory. For a
     /// release build it is [`state_dir`](Self::state_dir) itself; a dev build
     /// gets a `shepr-dev` sibling of it.
     pub fn data_dir(&self) -> &Path {
@@ -61,9 +61,9 @@ impl AppPaths {
         server_log_path(self.data_dir())
     }
 
-    /// The client log in this build profile's data directory.
+    /// The client log in this build profile's client-owned state directory.
     pub fn client_log(&self) -> PathBuf {
-        client_log_path(self.data_dir())
+        client_log_path(&self.client_state_dir)
     }
 
     /// The lease file inside [`data_dir`](Self::data_dir): the server that holds
@@ -454,7 +454,7 @@ mod tests {
         );
         assert_eq!(
             paths.client_log().as_path(),
-            Path::new("/r/state/shepr-client.log")
+            Path::new("/r/state-client/shepr-client.log")
         );
         assert_eq!(
             paths.session_file_path().as_path(),
@@ -599,6 +599,10 @@ mod tests {
             release.ssh_metadata_directory(),
             state.join("shepr-client/ssh-metadata")
         );
+        assert_eq!(
+            release.client_log(),
+            state.join("shepr-client/shepr-client.log")
+        );
         assert_eq!(release.runtime_dir(), runtime.join("shepr"));
         assert_eq!(
             release.server_address().socket(),
@@ -610,6 +614,10 @@ mod tests {
         assert_eq!(
             dev.ssh_metadata_directory(),
             state.join("shepr-dev-client/ssh-metadata")
+        );
+        assert_eq!(
+            dev.client_log(),
+            state.join("shepr-dev-client/shepr-client.log")
         );
         assert_eq!(dev.runtime_dir(), runtime.join("shepr-dev"));
         assert_eq!(

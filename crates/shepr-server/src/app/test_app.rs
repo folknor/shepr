@@ -55,12 +55,4 @@ impl TestApp {
     pub(crate) fn no_queued_events(&self) -> bool {
         self.outputs.no_queued_events()
     }
-
-    /// Restarts the production writer on this harness's completion signal
-    /// (see `App::persist_with_signal`). Test apps already persist in a fresh
-    /// scratch data directory without it.
-    pub(crate) fn persist(&mut self) {
-        let save_finished = self.outputs.save_finished_signal();
-        self.app.persist_with_signal(save_finished);
-    }
 }

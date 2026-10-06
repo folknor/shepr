@@ -26,6 +26,7 @@ pub mod publish_file;
 mod random;
 mod stderr_null;
 mod stream_wake;
+mod structured_log;
 mod terminal_environment;
 
 pub use boot_clock::boot_time_nanos;
@@ -69,6 +70,8 @@ pub use process::{
 pub use random::unpredictable_token;
 pub use stderr_null::redirect_stderr_to_null;
 pub use stream_wake::StreamWake;
+#[doc(hidden)]
+pub use structured_log::tracing_backend;
 
 /// The mode of a private runtime directory.
 pub const PRIVATE_DIRECTORY_MODE: u32 = limits::PRIVATE_DIRECTORY_MODE;

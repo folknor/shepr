@@ -6,7 +6,7 @@ use shepr_api::schema::{
 
 use crate::app::App;
 
-use super::responses::{failure, success};
+use super::responses::failure;
 
 /// One locked read of the detector's input, the same read the live detection
 /// tick takes, so the screen and OSC values describe one terminal state.
@@ -54,7 +54,7 @@ impl App {
 
         let capture = detection_capture(pane)
             .map_err(|error| detection_read_error(&target.pane_id, error))?;
-        success(ResponseResult::DetectCapture {
+        Ok(ResponseResult::DetectCapture {
             pane_id: public_id,
             capture,
         })
@@ -142,7 +142,7 @@ impl App {
                 }
             }
         };
-        success(ResponseResult::DetectExplain {
+        Ok(ResponseResult::DetectExplain {
             explain: Box::new(
                 DetectionExplanation::from(screen_explain)
                     .with_pane_decision(ownership.state(), state_source)
@@ -608,6 +608,7 @@ mod tests {
             .expect("test precondition"),
         );
         terminal
+            .ownership_mut()
             .set_hook_report_at(
                 shepr_agent::ReportOrigin::parse("shepr:omp").expect("test origin"),
                 AgentState::Working,

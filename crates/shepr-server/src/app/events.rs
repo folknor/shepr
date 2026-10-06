@@ -581,9 +581,6 @@ mod pane_exit_event_tests {
         let mut app = App::new(&shepr_config::ServerConfig::default());
         app.state
             .test_set_workspaces(names.iter().map(|name| Workspace::test_new(name)).collect());
-        if !app.state.workspaces().is_empty() {
-            app.state.seed_bookmark_index(Some(0));
-        }
         app
     }
 
@@ -613,7 +610,7 @@ mod pane_exit_event_tests {
         assert_eq!(app.state.workspaces().len(), 2);
         assert_eq!(
             app.state
-                .ws(app.state.bookmark_index().expect("active"))
+                .ws(app.state.bookmark_index().expect("bookmarked"))
                 .name(),
             "c"
         );
@@ -624,6 +621,7 @@ mod pane_exit_event_tests {
     #[test]
     fn pane_exit_clears_the_bookmark_when_it_removes_the_last_workspace() {
         let mut app = app_with_workspaces(&["only"]);
+        app.state.seed_bookmark_index(Some(0));
         let pane_id = app.state.ws(0).tree().root();
 
         report_pane_exit(&mut app, pane_id);

@@ -523,6 +523,16 @@ pattern = '\b(?:PathBuf::from|Path::new)\(\s*"\.[A-Za-z_]'
 paths = ["crates/**/*.rs", "src/**/*.rs"]
 message = "a relative dot-directory path resolves against the working directory, which under cargo test is the crate directory; in a test use shepr_test_support::ScratchDir, and for a path only compared or rendered spell it /nonexistent/..."
 
+# The launch and CLI tests below only compare or render these path values; a
+# host-rooted literal there disguises a developer's install or temp directory.
+[[textlint]]
+name = "compared-test-paths-use-nonexistent-root"
+pattern = '/(?:home|tmp)/'
+paths = ["crates/shepr-launch/src/local_server_tests.rs", "src/cli/status.rs"]
+allow_marker = "test-path-ok"
+allow_marker_above = 1
+message = "for a path only compared or rendered use /nonexistent/...; use ScratchDir for filesystem state (test-path-ok: <reason> when conventional path syntax is the behavior)"
+
 # Profile-owned file names are composed only by shepr-paths. No `region` is
 # set because the rule must inspect the string literals passed to path methods.
 [[textlint]]
@@ -567,8 +577,25 @@ allow_marker_above = 2
 [[textlint]]
 name = "no-borrowed-process-stand-ins"
 preset = "host-programs"
-pattern = '\b(?:(?:Pty)?Command::new|PaneShellConfig::new|interactive_shell)\(\s*"(?:/usr)?(?:/s?bin/)?(?:sh|bash|dash|zsh|sleep|true|false|yes|cat|echo|printf|head|tr|ps|env|git)"'
+pattern = '\b(?:(?:Pty)?Command::new|PaneShellConfig::new|interactive_shell|set_test_shell)\(\s*"(?:/usr)?(?:/s?bin/)?(?:sh|bash|dash|zsh|sleep|true|false|yes|cat|echo|printf|head|tr|ps|env|git)"'
 message = "spawn a shepr_test_support::fixture script; a borrowed host utility makes the fixture's behaviour the host's to define (host-program-ok: <why> where the host program is the subject)"
+
+[[textlint]]
+name = "no-host-shell-paths-in-fixture-crates"
+preset = "host-programs"
+paths = ["crates/shepr-test-fixtures/src/**/*.rs", "crates/shepr-test-support/src/**/*.rs"]
+pattern = '"(?:/usr)?/s?bin/(?:sh|bash|dash|zsh)"'
+message = "a fixture crate must not bake in a host shell path; use the shepr fixture program as a shell stand-in"
+
+# The fixture-shell seam of server config validation trusts a shell the
+# caller resolved. Only the config fixture may call it: a real config always
+# goes through `ValidatedServerConfig::validate`.
+[[textlint]]
+name = "fixture-shell-validation-stays-in-fixtures"
+pattern = '\bvalidate_for_test\s*\('
+paths = ["crates/**/*.rs", "src/**/*.rs"]
+exclude = ["crates/shepr-test-fixtures/src/**", "crates/shepr-config/src/validated.rs"]
+message = "ValidatedServerConfig::validate_for_test is the config fixture's seam; validate real configs with ValidatedServerConfig::validate"
 
 [[textlint]]
 name = "no-interpreter-stand-ins"
@@ -608,7 +635,8 @@ paths = ["crates/shepr-protocol/src/**/*.rs"]
 message = "the codec caps every collection at MAX_COLLECTION_ITEMS already; annotate bounded_vec only with a tighter cap"
 
 # Every numeric or Duration bound lives in its crate's `limits` module
-# (`crates/<crate>/src/limits.rs`, and `src/limits.rs` for the binary), named,
+# (`crates/<crate>/src/limits.rs`; the binary in `src/` has no bound of its own,
+# and one that gains one adds its limits module to both exclusion lists), named,
 # documented and beside the bounds it is coupled with. A value that is a format,
 # ABI or protocol definition rather than a tunable stays beside the code it
 # defines and carries `limits-exempt: <reason>` on its line or one of the two
@@ -636,7 +664,6 @@ pattern = '\b(?:const|static)\s+[A-Z][A-Z0-9_]*\s*:\s*(?:[ui](?:8|16|32|64|128|s
 paths = ["crates/*/src/**/*.rs", "src/**/*.rs"]
 exclude = [
     "crates/*/src/limits.rs",
-    "src/limits.rs",
     "crates/shepr-test-support/**",
     "crates/shepr-test-fixtures/**",
     "**/test_support.rs",
@@ -656,7 +683,6 @@ pattern = '\bDuration\s*::\s*from_(?:secs|millis|micros|nanos|mins|hours|secs_f3
 paths = ["crates/*/src/**/*.rs", "src/**/*.rs"]
 exclude = [
     "crates/*/src/limits.rs",
-    "src/limits.rs",
     "crates/shepr-test-support/**",
     "crates/shepr-test-fixtures/**",
     "**/test_support.rs",

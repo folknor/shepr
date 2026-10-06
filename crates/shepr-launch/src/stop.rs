@@ -244,6 +244,9 @@ enum StopOrigin {
     StartupRestart,
 }
 
+// This private seam and stop_socket_with_timeout let inline tests shorten both
+// socket and lease waits. Public stop commands deliberately use the operator
+// budgets; exposing test tuning there would expand the production API.
 fn stop_active_server_with_timeout(
     paths: &shepr_paths::AppPaths,
     origin: StopOrigin,
@@ -768,11 +771,6 @@ mod tests {
              inspect the server log before retrying. Forcing the process to exit can lose \
              the final save"
         );
-    }
-
-    #[test]
-    fn stop_wait_timeout_allows_slow_graceful_shutdown() {
-        assert_eq!(STOP_WAIT_TIMEOUT, Duration::from_secs(15));
     }
 
     #[test]

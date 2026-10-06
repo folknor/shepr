@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::terminal::Label;
+use crate::Label;
 use crate::workspace::Shape;
 use shepr_agent::resume::PersistedAgentSession;
 use shepr_core::absolute_path::AbsolutePath;

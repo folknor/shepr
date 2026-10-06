@@ -1,8 +1,6 @@
 // installed by shepr
 // managed by shepr; every release shepr server launch on this host rewrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
-// SHEPR_INTEGRATION_ID=opencode
-// SHEPR_INTEGRATION_VERSION=3864894411
 
 import net from "node:net";
 
@@ -112,6 +110,9 @@ function reportState(state, sessionID) {
 // would mark the pane idle while the root is still working. Only a child's
 // prompts for the user (blocked) and the replies to them (working) are
 // forwarded, attributed to the root session.
+// Retire ancestry on session.deleted. Do not evict live ancestry by age or
+// size: a later prompt from that child would otherwise claim the pane as a
+// root session. A hard cap needs an authoritative ancestry lookup first.
 const childSessions = new Map();
 const CHILD_EVENT_STATES = new Map([
   ["permission.asked", STATE.blocked],
@@ -253,6 +254,10 @@ export const SheprAgentStatePlugin = async () => {
       const properties = event?.properties ?? {};
       const sessionID = sessionIDFromProperties(properties);
 
+      if (type === "session.deleted") {
+        childSessions.delete(sessionID);
+        return;
+      }
       trackChildSession(properties.info);
       if (sessionID && childSessions.has(sessionID)) {
         const state = CHILD_EVENT_STATES.get(type);
@@ -305,10 +310,6 @@ export const SheprAgentStatePlugin = async () => {
           break;
         case "session.idle":
           await reportRootState(STATE.idle, sessionID);
-          break;
-        case "session.deleted":
-          break;
-        default:
           break;
       }
     },

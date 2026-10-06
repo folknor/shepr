@@ -48,7 +48,6 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
         .app
         .test_state_mut()
         .test_set_workspaces(vec![workspace]);
-    server.app.test_state_mut().seed_bookmark_index(Some(0));
 
     server.app.insert_idle_test_runtime(pane_id);
     let now = server.app.clock().now;

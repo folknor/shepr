@@ -3,16 +3,6 @@
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
-// Retry backoff
-// ---------------------------------------------------------------------------
-
-/// Growth factor of every retry backoff (`backoff::Backoff`): session writes,
-/// checkpoints, default workspace creation and logind reconnects. Doubling
-/// grows quickly after failure while each schedule's own cap (or, for
-/// checkpoints, attempt count) bounds it.
-pub(crate) const BACKOFF_MULTIPLIER: u32 = 2;
-
-// ---------------------------------------------------------------------------
 // Session saves and checkpoints
 // ---------------------------------------------------------------------------
 
@@ -42,11 +32,11 @@ pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
 /// Bounded queue capacity for events forwarded from client threads.
 pub(crate) const SERVER_EVENT_CHANNEL_CAPACITY: usize = 64;
 /// Bound queued API requests to the number of app-bound API requests in
-/// flight. Each has at most one request in the queue at a time. Requests whose
-/// connection gave up waiting stay queued, so a stalled loop can fill the
-/// queue; producers then refuse new requests with `server_unavailable` at
-/// once instead of growing it. A refused agent hook report is dropped, as it
-/// is when the server is down.
+/// flight. Each has at most one request in the queue at a time, and timed-out
+/// connection workers keep their app slots until the request is resolved or
+/// dropped. A full queue is refused as `endpoint_busy`, matching app-slot
+/// admission. A refused agent hook report is dropped, as it is when the server
+/// is down.
 pub(crate) const API_REQUEST_CHANNEL_CAPACITY: usize = shepr_api::MAX_APP_REQUESTS_IN_FLIGHT;
 
 // The three drain limits below share one purpose: each source of loop work
@@ -186,3 +176,5 @@ pub(crate) const SHUTDOWN_RECONNECT_INITIAL_DELAY: Duration = Duration::from_sec
 /// lost. The cap bounds recovery latency while keeping repeated failures
 /// inexpensive.
 pub(crate) const SHUTDOWN_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(60);
+/// A watch must stay connected this long before its reconnect failure streak resets.
+pub(crate) const SHUTDOWN_RECONNECT_STABLE_TIME: Duration = Duration::from_secs(60);

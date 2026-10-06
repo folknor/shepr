@@ -368,7 +368,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
 #[tokio::test]
 async fn a_frozen_persisting_server_runs_the_final_save_and_writes_nothing() {
     let mut server = test_headless_server();
-    server.persist_for_test();
+
     let workspace = shepr_mux::workspace::Workspace::test_new("frozen-final-save");
     let pane_id = workspace.tree().root();
     server
@@ -457,7 +457,7 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
 #[tokio::test]
 async fn refreshed_warning_requires_a_new_checkpoint_before_releasing_the_lock() {
     let mut server = test_headless_server();
-    server.persist_for_test();
+
     let mut checkpoints = server.lifecycle.test_warning_monitor();
     let finished = server.outputs.save_finished_signal();
     let old_checkpoint = server.app.test_saver().hold_test_host_checkpoint();
@@ -533,7 +533,7 @@ fn idle_host_checkpoint_subprocess_entry_point() {
         .expect("runtime")
         .block_on(async {
             let mut server = test_headless_server();
-            server.persist_for_test();
+
             let workspace = shepr_mux::workspace::Workspace::test_new("idle-host-warning");
             let pane = workspace.tree().root();
             server
@@ -567,5 +567,90 @@ fn idle_host_checkpoint_subprocess_entry_point() {
             // stopping retains that freeze, and the final save writes nothing.
             assert_eq!(server.lifecycle.phase(), ShutdownPhase::Stopping);
             assert!(!server.app.test_saver().save_in_flight());
+        });
+}
+
+#[test]
+fn the_run_loop_saves_mutations_before_releasing_its_socket() {
+    let output = shepr_test_support::command_in_scratch(
+        std::env::current_exe().expect("test executable"),
+        "final-save-run-loop",
+    )
+    .args([
+        "--exact",
+        "server::headless::tests::shutdown::final_save_run_loop_subprocess_entry_point",
+        "--ignored",
+        "--nocapture",
+    ])
+    .env("SHEPR_TEST_FINAL_SAVE_CHILD", "1")
+    .output()
+    .expect("run isolated server loop");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("1 passed"),
+        "child ran no test: {stdout}\n{stderr}"
+    );
+}
+
+#[test]
+#[ignore = "re-exec entry point for the_run_loop_saves_mutations_before_releasing_its_socket"]
+fn final_save_run_loop_subprocess_entry_point() {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the marker belongs to this test's re-exec harness"
+    )]
+    if std::env::var_os("SHEPR_TEST_FINAL_SAVE_CHILD").is_none() {
+        return;
+    }
+    let _env = IsolatedEnv::new();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let mut server = test_headless_server();
+            let paths = server.app.test_paths().clone();
+            let (tx, _rx) = tokio::sync::mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
+            server.api_server = Some(
+                shepr_api::start_server(
+                    tx,
+                    Arc::clone(server.lifecycle.stop_signal()),
+                    &paths,
+                    server.client_shell_boot_id.clone(),
+                )
+                .expect("real server socket"),
+            );
+            let socket = paths.server_address().socket().to_path_buf();
+            assert!(
+                socket.try_exists().expect("stat socket"),
+                "the socket must start live"
+            );
+            server.app.test_state_mut().test_set_workspaces(vec![
+                shepr_mux::workspace::Workspace::test_new("saved-by-run-loop"),
+            ]);
+            server.app.test_state_mut().mark_session_dirty();
+            let session = shepr_mux::persist::session_path(paths.data_dir());
+            assert!(
+                !session.try_exists().expect("stat session"),
+                "the mutation has not been autosaved"
+            );
+            server.initiate_shutdown();
+            tokio::time::timeout(crate::test_support::SESSION_WRITE_TEST_BOUND, server.run())
+                .await
+                .expect("server shutdown completed")
+                .expect("clean shutdown with final save");
+            assert!(
+                !socket.try_exists().expect("stat socket"),
+                "run released the socket"
+            );
+            let saved = std::fs::read_to_string(session).expect("final session exists after stop");
+            assert!(
+                saved.contains("saved-by-run-loop"),
+                "the final save contains the mutation"
+            );
+            shepr_mux::persist::schema::parse_session_file(&saved).expect("valid saved session");
+            assert!(shepr_mux::persist::DataDirLease::acquire(paths.data_dir()).is_ok());
         });
 }

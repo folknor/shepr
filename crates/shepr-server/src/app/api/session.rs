@@ -92,7 +92,6 @@ mod tests {
         let mut workspace = Workspace::test_new("snapshot");
         workspace.test_split(shepr_core::layout::Direction::Horizontal);
         app.state.test_set_workspaces(vec![workspace]);
-        app.state.seed_bookmark_index(Some(0));
         app
     }
 

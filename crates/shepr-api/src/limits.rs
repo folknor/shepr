@@ -51,9 +51,10 @@ pub(crate) const INITIAL_REQUEST_READ_CHUNK_BYTES: usize = 8 * 1024;
 /// stream state while allowing several clients and hooks.
 pub(crate) const MAX_API_INGRESS_CONNECTIONS: usize = 64;
 
-/// Maximum API requests waiting on, or writing, the app loop's answer. Kept
-/// apart from ingress so requests held by a stalled loop cannot keep a stop
-/// from being read.
+/// Maximum app-bound requests queued or executing. A socket timeout keeps its
+/// app slot until the app resolves or drops the request, so abandoned queue
+/// entries remain included in this bound. Kept apart from ingress so requests
+/// held by a stalled loop cannot keep a stop from being read.
 pub const MAX_APP_REQUESTS_IN_FLIGHT: usize = 64;
 
 /// Maximum connections queued for the refuser thread, of either kind: over a

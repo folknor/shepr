@@ -266,6 +266,8 @@ fn install_omp_creates_extensions_dir_when_agent_dir_exists() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_omp_errors_when_extension_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -419,6 +421,8 @@ fn launch_install_failure_for_one_agent_leaves_the_others() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_pi_errors_when_extension_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -582,6 +586,8 @@ fn install_claude_is_idempotent_for_hook_entries() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_claude_errors_when_claude_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -725,6 +731,8 @@ fn install_codex_is_idempotent_for_hook_entries_and_feature_flag() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_codex_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -868,6 +876,8 @@ fn install_kimi_is_idempotent_for_config_block() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_kimi_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -967,6 +977,8 @@ fn install_copilot_uses_copilot_home_env_and_is_idempotent() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_copilot_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -1062,6 +1074,8 @@ fn install_devin_is_idempotent_for_hook_entries() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_devin_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -1166,6 +1180,8 @@ fn install_droid_is_idempotent_for_hook_entries() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_droid_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -1565,6 +1581,8 @@ fn install_opencode_invalid_tui_config_does_not_write_plugins() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_opencode_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -1600,6 +1618,8 @@ fn install_kilo_writes_plugin_to_plugin_dir() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_kilo_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -2161,13 +2181,12 @@ fn shell_hooks_never_let_python_fail_the_hook() {
         ("mastracode", MASTRACODE_HOOK_ASSET),
         ("grok", GROK_HOOK_ASSET),
     ] {
-        let heredoc = asset.contains("python3 - 2>/dev/null <<'PY' || true");
         let inline = asset.contains("python3 -c '")
             && asset
                 .lines()
                 .any(|line| line.starts_with('\'') && line.ends_with("2>/dev/null || true"));
         assert!(
-            heredoc || inline,
+            inline,
             "{name} hook must run python as `2>/dev/null ... || true`"
         );
     }
@@ -2355,6 +2374,8 @@ fn cursor_required_version_is_added_and_checked_by_status() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_cursor_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -2545,6 +2566,8 @@ fn install_grok_is_idempotent() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_mastracode_refuses_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -2563,6 +2586,8 @@ fn install_mastracode_refuses_when_config_dir_missing() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_grok_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -2828,6 +2853,8 @@ fn install_antigravity_cli_rewrites_stale_shepr_block() {
 }
 
 #[test]
+// The launch presence check can race directory removal; this install guard
+// must reject absence rather than recreate an uninstalled agent's config.
 fn install_antigravity_cli_errors_when_config_dir_missing() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
@@ -3296,7 +3323,7 @@ fn installer_ignores_the_inherited_build_profile_marker() {
 }
 
 #[test]
-fn shell_hooks_reject_dev_panes_after_draining_input() {
+fn shell_hooks_report_release_sessions_and_reject_dev_panes() {
     let env = IsolatedEnv::new();
     let base = unique_base(&env);
     for target in shepr_agent::IntegrationTarget::all() {
@@ -3309,21 +3336,78 @@ fn shell_hooks_reject_dev_panes_after_draining_input() {
         fs::create_dir_all(&dir).expect("test precondition");
         let hook = dir.join("hook.sh");
         fs::write(&hook, asset).expect("test precondition");
-        // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
-        let mut command = shepr_test_support::command_in_scratch("sh", "dev-hook");
-        command.arg(&hook).arg("session").env(
-            shepr_core::env::EnvVar::SheprBuildProfile.name(),
-            shepr_paths::BuildProfile::Dev.marker(),
-        );
-        let capture = shepr_test_support::capture_hook(
-            command,
-            &dir.join("s.sock"),
-            &dir,
-            "w1:p2",
-            br#"{"session_id":"dev-session"}"#,
-        );
-        assert!(capture.status.success(), "{target:?}");
-        assert!(capture.stderr.is_empty(), "{target:?}");
-        assert!(capture.requests.is_empty(), "{target:?}");
+        let event = target
+            .hook_events()
+            .iter()
+            .find(|event| event.action == Some(shepr_agent::IntegrationHookAction::Session))
+            .or_else(|| target.hook_events().first())
+            .expect("shell hook has an event");
+        let payload = serde_json::json!({
+            "session_id": "test-session", "conversationId": "test-session",
+            "hook_event_name": event.event, "source": "startup",
+        })
+        .to_string();
+        for profile in [
+            shepr_paths::BuildProfile::Release,
+            shepr_paths::BuildProfile::Dev,
+        ] {
+            // host-program-ok: the shipped hook asset is the subject, run as its agent runs it
+            let mut command = shepr_test_support::command_in_scratch("sh", "profile-hook");
+            command.arg(&hook).arg("session").env(
+                shepr_core::env::EnvVar::SheprBuildProfile.name(),
+                profile.marker(),
+            );
+            let capture = shepr_test_support::capture_hook(
+                command,
+                &dir.join("s.sock"),
+                &dir,
+                "w1:p2",
+                payload.as_bytes(),
+            );
+            assert!(capture.status.success(), "{target:?} {profile:?}");
+            assert!(capture.stderr.is_empty(), "{target:?} {profile:?}");
+            assert_eq!(
+                capture.requests.is_empty(),
+                profile == shepr_paths::BuildProfile::Dev,
+                "{target:?} {profile:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn rejected_dev_shell_hooks_drain_large_input() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let env = IsolatedEnv::new();
+    let base = unique_base(&env);
+    fs::create_dir_all(&base).expect("create hook directory");
+    let payload = vec![b'x'; 1024 * 1024];
+    for target in shepr_agent::IntegrationTarget::all() {
+        let asset = integration_asset(target).expect("asset");
+        // host-program-ok: tells the shipped shell hooks from the script-language ones
+        if !asset.starts_with("#!/bin/sh") {
+            continue;
+        }
+        let hook = base.join(format!("{}.sh", target.label()));
+        fs::write(&hook, asset).expect("write hook");
+        // host-program-ok: verify the shipped hook drains rejected input under its shell
+        let mut child = shepr_test_support::command_in_scratch("sh", "drain-hook")
+            .arg(&hook)
+            .arg("session")
+            .env(shepr_core::env::EnvVar::SheprBuildProfile.name(), "dev")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start hook");
+        child
+            .stdin
+            .take()
+            .expect("hook stdin")
+            .write_all(&payload)
+            .expect("hook must consume every byte without BrokenPipe");
+        assert!(child.wait().expect("hook exit").success(), "{target:?}");
     }
 }

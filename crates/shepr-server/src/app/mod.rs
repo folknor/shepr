@@ -132,6 +132,25 @@ impl App {
         lease: shepr_mux::persist::DataDirLease,
         clock: AppClock,
     ) -> (Self, AppOutputs) {
+        Self::open_with_resume_theme_wait(
+            config,
+            paths,
+            lease,
+            clock,
+            PENDING_AGENT_RESUME_THEME_WAIT,
+        )
+    }
+
+    /// Opens the app with an explicit host-theme wait for deferred resumes.
+    /// The production entry point uses the server limit; this boundary lets
+    /// app-level callers control the wait without reaching into the schedule.
+    pub(crate) fn open_with_resume_theme_wait(
+        config: &shepr_config::ValidatedServerConfig,
+        paths: &shepr_paths::AppPaths,
+        lease: shepr_mux::persist::DataDirLease,
+        clock: AppClock,
+        resume_theme_wait: Duration,
+    ) -> (Self, AppOutputs) {
         let (event_tx, event_rx) = mpsc::channel::<AppEvent>(APP_EVENT_CHANNEL_CAPACITY);
         let render_notify = Arc::new(Notify::new());
         let pane_teardowns = Arc::new(shepr_mux::pane::PaneTeardownTracker::default());
@@ -197,7 +216,7 @@ impl App {
             terminal_runtimes: shepr_mux::pane::PaneRuntimeRegistry::default(),
             git_refresh,
             resume_schedule: resume_schedule::ResumeSchedule::new(
-                PENDING_AGENT_RESUME_THEME_WAIT,
+                resume_theme_wait,
                 config.session().agent_resume_spacing,
             ),
             session_saver: session::SessionSaver::new(persister),
@@ -257,6 +276,29 @@ impl App {
             })
     }
 
+    /// Launches a deferred agent-resume shell and supplies the saved session
+    /// reference to the pane detector's absence-hold report.
+    pub(super) fn launch_agent_resume_pane(
+        &self,
+        pane_id: shepr_core::layout::PaneId,
+        public_id: shepr_protocol::PublicPaneId,
+        geometry: shepr_core::geometry::PaneGeometry,
+        cwd: &shepr_core::absolute_path::AbsolutePath,
+        session_ref: &shepr_agent::resume::AgentSessionRef,
+    ) -> std::io::Result<shepr_mux::pane::PaneRuntime> {
+        self.pane_launcher.launch_agent_resume(
+            pane_id,
+            public_id,
+            geometry,
+            cwd,
+            session_ref,
+            shepr_mux::pane::LaunchPresentation::Live {
+                theme: self.state.host_terminal_theme(),
+                appearance: self.state.host_terminal_appearance(),
+            },
+        )
+    }
+
     /// Block until this app's pane session teardowns have finished, or
     /// `timeout` passes. Returns the unfinished pane identities.
     fn wait_for_pane_teardowns(&self, timeout: Duration) -> Vec<shepr_core::layout::PaneId> {
@@ -297,7 +339,7 @@ impl App {
         [
             git_refresh.then(|| self.git_refresh_deadline()).flatten(),
             self.pending_agent_resume_wakeup(),
-            self.session_saver.deadline(),
+            self.session_saver.deadline().wakeup(self.clock.now),
             self.pane_resize_deadline(),
         ]
         .into_iter()
@@ -436,7 +478,11 @@ mod tests {
             );
             let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
                 .expect("test session lease");
-            let (app, outputs) = Self::open(&config, &paths, lease, test_clock());
+            let (mut app, outputs) = Self::open(&config, &paths, lease, test_clock());
+            // The fixture config carries an absent sentinel shell. App tests
+            // that launch panes use the repo-built stand-in unless a test
+            // explicitly installs a different shell as its subject.
+            app.set_test_shell(shepr_test_support::fixture::idle_shell());
             TestApp::new(app, outputs)
         }
 
@@ -595,7 +641,7 @@ mod tests {
         let mut app = test_app();
         let now = Instant::now();
         app.session_saver
-            .set_autosave_deadline(Some(now + Duration::from_secs(2)));
+            .schedule_test_autosave(now, Duration::from_secs(2));
 
         assert_eq!(
             app.next_deadline(true),
@@ -606,7 +652,6 @@ mod tests {
     #[test]
     fn app_deadline_is_none_when_idle() {
         let mut app = test_app();
-        app.session_saver.set_autosave_deadline(None);
         app.state.test_set_workspaces(Vec::new());
 
         assert_eq!(app.next_deadline(true), None);

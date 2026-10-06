@@ -1,9 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use tracing::{error, warn};
-
+use crate::Label;
 use crate::pane::PaneRuntime;
-use crate::terminal::{Label, PaneStartFailure, TerminalState};
+use crate::terminal::{PaneStartFailure, TerminalState};
 use crate::workspace::{PaneTree, SavedTreeState, TreePlan, Workspace, WorkspaceChrome};
 use shepr_agent::{AgentState, resume::PersistedAgentSession};
 use shepr_core::absolute_path::AbsolutePath;
@@ -109,7 +108,8 @@ impl SessionRestorePlan {
                         .and_then(|workspace| workspace.pane_mut(launch.pane_id));
                     match record {
                         Some(record) => record.replace_terminal(terminal),
-                        None => error!(
+                        None => shepr_platform::structured_log!(
+                            ERROR, event = persist.restore, outcome = "missing_pane_record",
                             public_pane_id = %launch.public_id,
                             "a pane whose launch failed is not in its restored workspace"
                         ),
@@ -207,7 +207,8 @@ pub(super) fn plan_restore(
             // A duplicate at the end of the reserved number space has no
             // collision-free replacement. Keep the earlier workspace and drop
             // this one whole, counted like any other dropped workspace.
-            warn!(
+            shepr_platform::structured_log!(
+                WARN, event = persist.restore, outcome = "workspace_id_exhausted",
                 workspace = %saved_id,
                 "dropping saved workspace: duplicate ID has no available replacement"
             );
@@ -225,7 +226,8 @@ pub(super) fn plan_restore(
         if let Some((workspace, restored_launches, dropped_sessions)) = restored {
             if workspace_id != saved_id {
                 damage.renamed_workspaces += 1;
-                warn!(
+                shepr_platform::structured_log!(
+                    WARN, event = persist.restore, outcome = "workspace_id_reassigned",
                     workspace = %saved_id,
                     replacement = %workspace_id,
                     "reassigned duplicate saved workspace ID"
@@ -243,7 +245,10 @@ pub(super) fn plan_restore(
     let active = snapshot.active.and_then(|active| {
         if active >= restored_index.len() {
             damage.repaired_bookmark = true;
-            warn!(
+            shepr_platform::structured_log!(
+                WARN,
+                event = persist.restore,
+                outcome = "bookmark_repaired",
                 saved_index = active,
                 saved_workspaces = restored_index.len(),
                 "repairing out-of-range saved workspace bookmark"
@@ -393,7 +398,8 @@ fn plan_workspace(snapshot: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan<'
     let plan = match PaneTree::plan(shape, |pane| pane.public_number, saved) {
         Ok(plan) => plan,
         Err(rejection) => {
-            warn!(
+            shepr_platform::structured_log!(
+                WARN, event = persist.restore, outcome = "invalid_pane_tree",
                 workspace = %snapshot.id,
                 ?rejection,
                 "dropping saved workspace with invalid saved pane tree"
@@ -434,7 +440,8 @@ fn restore_workspace(
     let built = plan.build(|pane_id, saved| {
         if let Some(unusable) = &saved.unusable_agent_session {
             let public_id = PublicPaneId::new(&workspace_id, saved.public_number);
-            warn!(
+            shepr_platform::structured_log!(
+                WARN, event = persist.restore, outcome = "unusable_agent_session",
                 workspace = %workspace_id,
                 public_pane_id = %public_id,
                 source = unusable.source.as_deref().unwrap_or("unknown"),
@@ -456,7 +463,8 @@ fn restore_workspace(
         if duplicate_agent_session {
             let public_id = PublicPaneId::new(&workspace_id, saved.public_number);
             if let Some(session) = saved.agent_session.as_ref() {
-                warn!(
+                shepr_platform::structured_log!(
+                    WARN, event = persist.restore, outcome = "duplicate_agent_session",
                     workspace = %workspace_id,
                     public_pane_id = %public_id,
                     agent = session.agent().label(),
@@ -505,7 +513,8 @@ fn restore_workspace(
         Err(rejection) => {
             // Fresh IDs and a resolved focus rule this out, and planning
             // already refused every defect the saved data can have.
-            error!(
+            shepr_platform::structured_log!(
+                ERROR, event = persist.restore, outcome = "workspace_build_error",
                 workspace = %workspace_id,
                 ?rejection,
                 "a planned workspace failed to build; dropping it"
@@ -532,7 +541,8 @@ fn restore_workspace(
                     None,
                 ),
                 None => {
-                    crate::workspace::spawn_geometry(plan_context.chrome.sole_pane_size(), None)
+                    let grid = plan_context.chrome.sole_pane_size();
+                    shepr_core::geometry::PaneGeometry::with_cell(grid.cols(), grid.rows(), None)
                 }
             };
             launch.sized(grid)
@@ -742,7 +752,7 @@ mod tests {
         let highest = numbers.iter().map(|number| number.get()).max().unwrap_or(1);
         WorkspaceSnapshot {
             id: id.parse().expect("canonical workspace ID"),
-            name: crate::terminal::Label::new(name).expect("test workspace name"),
+            name: crate::Label::new(name).expect("test workspace name"),
             next_public_pane_number: number(highest + 1),
             layout,
             zoomed: false,

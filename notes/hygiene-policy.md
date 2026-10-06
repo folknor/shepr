@@ -22,16 +22,6 @@ reported it and says how the fixed form could be enforced.
 
 ---
 
-## POL-001 - Leftovers of the removed lease-only save mode
-
-Reported by: persistence, save-shutdown.
-
-The test-only "hold the lease, persist nothing" mode is gone. Remnants:
-`complete_shutdown` still returns a `Result` behind `RunServerError::Shutdown` for a
-phase guard the loop has already checked; and `TestApp::persist` /
-`HeadlessServer::persist_for_test` (18 call sites) are now nearly no-ops, since
-`App::new` already persists on the outputs' signal; they only restart the persister.
-
 ## POL-003 - Staging leftovers outside the data directory have no owner to reclaim them
 
 Reported by: persistence, integrations.
@@ -56,25 +46,6 @@ Mux and `ssh_metadata.rs` now use the platform's `prepare_private` /
 are not the private publisher's defaults; adopt the shared preparation where the
 policies match. The two best-effort cleanup functions stay separate on purpose (each
 logs with its own layer's fields), as commented at both.
-
-## POL-005 - Retry and backoff are spelled per site, with different growth and different reset rules
-
-Reported by: save-shutdown.
-
-- autosave backoff: `Backoff` over the `SESSION_SAVE_*` constants;
-- checkpoint backoff: `checkpoint_retry_delay` with its own minimum and a count cap;
-- logind reconnect: `Backoff`, with a pending-shutdown override that resets the
-  count; on `Ok(())` from `watch_shutdown` (owner change or signal stream end) the loop
-  reconnects with no delay and resets `failures`, so a logind or bus that accepts and
-  then drops connections repeatedly spins the task with a debug line at most. Apply the
-  backoff on both arms, resetting only after a connection has lived some minimum;
-- the final save: no retry at all (BUG-014);
-- `shepr-api/src/server/listener.rs` `AcceptBackoff` doubles with a literal `2` and
-  cannot see the server's `Backoff`.
-
-`BACKOFF_MULTIPLIER`'s "Growth factor of every retry backoff" is therefore false
-workspace-wide. Move `Backoff` down a layer (core or platform) for the API listener to
-share, or say why that one stays separate.
 
 ## POL-010 - Test-only shortcuts in production APIs, which nothing reports
 
@@ -125,34 +96,6 @@ slot; `tui_kit.js` and the TUI decoder retry every 500 ms indefinitely while the
 selection is current. `bundle.rs` documents the split, but each policy is hand-written
 per kit.
 
-## POL-022 - Unbounded growth in long-running agent plugins, and unbounded config reads
-
-Reported by: integrations.
-
-The owner runs agents for days:
-
-- `templates/opencode_family.js` `childSessions` gains an entry per subagent session and
-  never drops one (`session.deleted` is a no-op).
-- `decoders/opencode_tui.js` `tui()`: `ctx.events` accumulates every event while
-  `!ctx.hydrated`. Hydration throws "incomplete session snapshot" whenever
-  `session.status` returns a type outside `["busy", "retry", "idle"]`, so a new OpenCode
-  status type means hydration never succeeds, `ctx.events` grows for the life of the TUI,
-  and `state()` never returns idle. `ctx.deleted` also only grows.
-- Config and asset reads are unbounded: `read_config_bytes`, and
-  `registry::integration_state_for_path` / `file_matches_asset` use plain `fs::read`
-  after an `is_file` check, a second read policy beside `read_config_bytes`' pinned
-  regular-file open.
-
-## POL-023 - Hook payloads, including prompt text, are staged in `/tmp`
-
-Reported by: integrations.
-
-Every shell hook copies the agent's payload to `mktemp
-"${TMPDIR:-/tmp}/shepr-<agent>-hook.XXXXXX"`. For `UserPromptSubmit` (Codex, Kimi,
-MastraCode) that is the user's prompt text. `mktemp` makes it 0600 and the exit trap
-removes it, but a SIGKILL leaves it in `/tmp`. Pipe the payload straight into python3
-instead of staging it.
-
 ## POL-031 - Workspace model laterals
 
 Reported by: workspace-model.
@@ -172,47 +115,6 @@ Reported by: workspace-model.
   client's epoch is always from the current boot's projection, but a client reconnecting
   to a new boot with a cached epoch could match a different tree by accident.
 
-## POL-032 - IO-error classification is implemented four times with different tables
-
-Reported by: server-lifecycle.
-
-`shepr_platform::ipc::classify_stream_error` (stop, status, disconnect notices),
-`failure.rs` `is_link_error_kind` (which treats `ConnectionReset` as offline and
-deliberately differs), `LaunchError::remote_failure_class` (its own six kinds for
-Retry), and `stop.rs` `stop_request_error_allows_wait`. Each is defensible alone;
-together a `ConnectionReset` is "peer gone, retry", "offline" and "retry" depending on
-the caller. Name the questions (link-level reachability, peer left, retry the launch) and
-give each one table.
-
-## POL-033 - Deadlines and request paths are decided per call site
-
-Reported by: server-lifecycle.
-
-`ensure_running`, `wait_for_overridden_server` and
-`wait_for_server_socket_to_settle_until` each compute deadlines from `Instant::now()` +
-timeout; stop computes three of its own (BUG-059). `ApiClient` has two request paths with
-different policies: `request_value_with_timeout` (connect bound, write timeout, a read
-deadline that starts after the write) used by `request` / `ping`, and
-`request_value_until` (one shared deadline) used by launch and stop. Ambient reads in the
-CLI: `main.rs` `random_nested_message` reads the wall clock and pid for randomness, and
-`cli/status.rs` reads `SystemTime::now()` twice for one report (`overview.now` and the
-machines section), so local and machine uptimes can be computed against different instants.
-
-## POL-034 - "Server busy" is refused with two codes, and abandoned requests fill the channel
-
-Reported by: server-lifecycle.
-
-(The wire strictness half is done: seven routes refuse unknown params, with
-`pane.report_agent` the one stated exception.) The same condition (the app loop saturated) is refused with
-two codes: `EndpointBusy` when app-slot admission is full, and `ServerUnavailable`
-("server is busy handling API requests; retry later") when the channel is full, so a
-caller retrying on one and giving up on the other behaves differently for one cause. And
-`dispatch_to_app_result` leaves a timed-out request in the app channel after releasing its
-slot (the request "may still run"), so after timeouts slot admission no longer describes
-what is queued: abandoned requests occupy channel capacity (the same 64) that live
-requests then meet as `ServerUnavailable`. That is the only way the channel-full branch is
-reachable, which no comment says.
-
 ## POL-035 - A daemon that never redirected stderr grows the boot log without bound
 
 Reported by: server-lifecycle.
@@ -221,16 +123,10 @@ Reported by: server-lifecycle.
   from a different launch that never redirected stderr (its log file could not be
   opened, `ServerReady.log_file_unavailable`) keeps the boot log as stderr for life, and
   nothing caps it once `BOOT_LOG_MAX_BYTES` stops being checked, so its later stderr
-  (panics included) grows a tmpfs file without bound. Capping it needs a bounded
-  stderr sink; the gap is commented at `launch_with`.
-
-## POL-037 - The client log lives in the server's leased data directory
-
-Reported by: the wave review.
-
-The ssh metadata cache moved to a client-owned per-profile directory, but the client
-log is still at `client_log_path(data_dir)`, inside the data directory the server
-holds a lease on and sweeps at startup. Move it beside the metadata cache.
+  (panics included) grows a tmpfs file without bound. A launcher-side cap cannot
+  work (the launcher exits; a pipe needs a draining owner; an rlimit hits unrelated
+  writes). The fix is server-side: when file logging fails, the server redirects its
+  own stderr to a bounded sink. The gap is commented at `launch_with`.
 
 ## POL-038 - Wave 7 laterals
 
@@ -255,3 +151,23 @@ Reported by: the wave review.
 - `api.rs` and `events.rs` detect a projection change by `revision != before`, which a
   saturated revision hides (unreachable in practice; render uses
   `shell_projection_is_current`).
+
+## POL-039 - Wave 8 laterals
+
+Reported by: the wave review.
+
+- `shepr-test-support` `hook_capture.rs` still sets `TMPDIR` for hooks and documents
+  why, though no shipped hook stages files any more.
+- `shepr-server` `agent_report_test_support.rs` validates `ServerConfig::default()`
+  through the real `validate`, so it depends on the host `SHELL` / `PATH` resolving.
+- The client log moved to the client state directory; existing installs keep an
+  orphaned `shepr-client.log` and its rotations in the old data directory.
+- `ApiClient::request_value_with_timeout` now starts the read budget before connect;
+  check `ORDINARY_RESPONSE_TIMEOUT`'s margin over the server bound still holds when
+  connect is slow under a full backlog.
+- `Autosave::is_due` survives only as a `#[cfg(test)]` method on a production type.
+- "Current implies a no-op install" is still unproven: nothing catches a target that
+  reads Current while an install would rewrite different bytes (Cursor's inserted
+  `version` was the example).
+- A non-regular object at an integration asset path is now a `NotRegularFile` error
+  instead of reading as not installed.

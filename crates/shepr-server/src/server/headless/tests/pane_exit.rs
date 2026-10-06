@@ -16,12 +16,11 @@ fn server_with_runtime_pane(
         .app
         .test_state_mut()
         .test_set_workspaces(vec![workspace]);
-    server.app.test_state_mut().seed_bookmark_index(Some(0));
 
     let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     let generation = runtime.generation();
     server.app.insert_test_runtime(pane_id, runtime);
-    server.persist_for_test();
+
     (server, pane_id, generation)
 }
 
@@ -232,6 +231,7 @@ impl HeadlessServer {
                 self.app
                     .test_saver()
                     .deadline()
+                    .wakeup(self.app.clock().now)
                     .unwrap_or(self.app.clock().now)
             };
             self.app.set_clock(crate::app::AppClock {

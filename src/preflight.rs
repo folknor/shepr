@@ -166,7 +166,6 @@ fn restart_local(
     decide: Option<&mut dyn FnMut(&RuntimeStatus) -> RestartDecision>,
 ) -> RestartResult {
     RestartResult::offer(
-        crate::limits::MAX_LOCAL_OFFERS,
         decide,
         &mut probe,
         |status| !status.build_id.is_this_build(),
@@ -664,7 +663,7 @@ mod tests {
             vec![true, true],
         );
         assert!(matches!(script.run(true), RestartResult::OccupantChanged));
-        assert_eq!(script.asked.len(), crate::limits::MAX_LOCAL_OFFERS);
+        assert_eq!(script.asked.len(), shepr_launch::limits::MAX_RESTART_OFFERS);
     }
 
     #[test]

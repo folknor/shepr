@@ -899,9 +899,9 @@ pub fn resolved_shell(path: impl AsRef<Path>) -> shepr_core::shell::ResolvedShel
         .unwrap_or_else(|error| panic!("test shell {}: {error}", path.display()))
 }
 
-/// A stand-in pane shell named `sh` that reads its terminal until it closes
-/// and prints nothing, for tests that need a pane to have a live shell
-/// without depending on the host's. One per test process.
+/// A stand-in pane shell named `sh` that drains its terminal without
+/// interpreting commands and prints nothing, for tests that need a pane to
+/// stay live without depending on the host's shell. One per test process.
 ///
 /// # Panics
 ///

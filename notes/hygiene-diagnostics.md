@@ -21,37 +21,12 @@ enforced.
 
 ---
 
-## DIAG-001 - The `event` / `subsystem` / `outcome` field convention is hand-written per crate and unevenly applied
+## DIAG-001 - Only persistence uses the shared structured log macro
 
 Reported by: persistence, integrations, save-shutdown.
 
-Each crate writes its own helper for the project's structured fields (persist,
-pane, ipc, api, client, server, integration), and many lines skip them:
-
-- `persist/capture.rs`: two `tracing::error!`s ("workspace focus or root has no pane
-  record; not saved", "workspace layout and pane records disagree") have
-  `workspace` but no `event` / `subsystem`.
-- `persist/open.rs`: the partial-restore warn has `dropped_workspaces` and
-  `restore_damage` but no `event`, `subsystem` or `path`; the `log_restore` info
-  right after has all three.
-- `writer.rs` states event literals "are the emitted log schema, so the names stay
-  visible at the event site"; `recovery.rs` routes `persist.snapshot` /
-  `persist.backup` through `RecoveryKind::event()` in two helpers and spells
-  `"persist.snapshot"` inline three more times; `persist.restore` is spelled in
-  `files.rs` and `open.rs`. No list of persistence events exists.
-
-Fix: one shared macro or helper owning the field set, and one convention for event
-names. Enforceable by a script check (multi-line, so not a single-line textlint)
-requiring `event =` in every `tracing::(warn|error|info)!` under the persistence
-and lifecycle modules.
-
-## DIAG-004 - Resume outcomes have no channel; a resume that did not happen is mostly silent
-
-Reported by: restore-resume.
-
-Resume counts, suppressed duplicates and dispatches are now logged and reported.
-Remaining: after the command is typed, success is never confirmed. When the absence
-hold expires in an `AgentResume` pane without the agent appearing, nothing is logged;
-the detector has no pane or session identity to log (a boundary comment in mux
-`pane/detect/publish.rs` marks it), so the caller has to carry the session reference
-and public pane id to that point.
+`shepr-platform`'s `structured_log` macro now owns `event`, `subsystem` and `outcome`
+with `subsystem.operation` names, and mux persistence and `publish_file` use it. The
+other crates (pane, ipc, api, client, server lifecycle, integration) still hand-write
+their own helpers or skip the fields. Adopt the macro there, and add a script check
+requiring `event =` in every `tracing::(warn|error|info)!` once adoption is complete.

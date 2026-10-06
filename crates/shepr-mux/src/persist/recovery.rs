@@ -137,8 +137,8 @@ impl SnapshotState {
     fn report_failure(&mut self, path: &Path, error: &io::Error) {
         let message = error.to_string();
         if self.failure.as_ref() != Some(&message) {
-            tracing::warn!(
-                event = "persist.snapshot", subsystem = "persist", outcome = "error",
+            shepr_platform::structured_log!(
+                WARN, event = persist.snapshot, outcome = "error",
                 path = %path.display(), error = %error,
                 "failed to preserve session snapshot"
             );
@@ -230,13 +230,6 @@ impl RecoveryKind {
         match self {
             Self::Snapshot => SNAPSHOT_LIMIT,
             Self::Backup => BACKUP_LIMIT,
-        }
-    }
-
-    fn event(self) -> &'static str {
-        match self {
-            Self::Snapshot => "persist.snapshot",
-            Self::Backup => "persist.backup",
         }
     }
 }
@@ -505,13 +498,13 @@ fn preserve_opened_source(
 
 fn log_recovery_preserved(kind: RecoveryKind, path: &Path, backup: &Path) {
     match kind {
-        RecoveryKind::Snapshot => tracing::info!(
-            event = kind.event(), subsystem = "persist", outcome = "ok",
+        RecoveryKind::Snapshot => shepr_platform::structured_log!(
+            INFO, event = persist.snapshot, outcome = "ok",
             path = %path.display(), backup_path = %backup.display(),
             "preserved session snapshot"
         ),
-        RecoveryKind::Backup => tracing::info!(
-            event = kind.event(), subsystem = "persist", outcome = "ok",
+        RecoveryKind::Backup => shepr_platform::structured_log!(
+            INFO, event = persist.backup, outcome = "ok",
             path = %path.display(), backup_path = %backup.display(),
             "preserved session recovery copy"
         ),
@@ -520,13 +513,13 @@ fn log_recovery_preserved(kind: RecoveryKind, path: &Path, backup: &Path) {
 
 fn log_recovery_prune_failure(kind: RecoveryKind, path: &Path, directory: &Path, err: &io::Error) {
     match kind {
-        RecoveryKind::Snapshot => tracing::warn!(
-            event = kind.event(), subsystem = "persist", outcome = "prune_error",
+        RecoveryKind::Snapshot => shepr_platform::structured_log!(
+            WARN, event = persist.snapshot, outcome = "prune_error",
             path = %path.display(), recovery_directory = %directory.display(), error = %err,
             "preserved session snapshot but could not prune old copies"
         ),
-        RecoveryKind::Backup => tracing::warn!(
-            event = kind.event(), subsystem = "persist", outcome = "prune_error",
+        RecoveryKind::Backup => shepr_platform::structured_log!(
+            WARN, event = persist.backup, outcome = "prune_error",
             path = %path.display(), recovery_directory = %directory.display(), error = %err,
             "preserved session recovery copy but could not prune old copies"
         ),

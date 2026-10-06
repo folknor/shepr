@@ -510,7 +510,6 @@ impl AppState {
         state.test_set_workspaces(vec![
             shepr_mux::workspace::Workspace::test_adversarial_identity_state(),
         ]);
-        state.seed_bookmark_index(Some(0));
         state
     }
 }
@@ -547,6 +546,7 @@ mod tests {
         let mut state = AppState::test_with_adversarial_identity_state();
         let second_id =
             state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("second"));
+        state.seed_bookmark_index(Some(0));
         let first_area = Rect::new(0, 0, 97, 33);
         let first_cell = shepr_core::geometry::CellPx::new(9, 18);
         let first_id = state.ws(0).id();
@@ -586,10 +586,7 @@ mod tests {
             Some(second)
         );
         assert_eq!(
-            state.rename_workspace(
-                &first,
-                shepr_mux::terminal::Label::new("renamed").expect("test name")
-            ),
+            state.rename_workspace(&first, shepr_mux::Label::new("renamed").expect("test name")),
             Some(crate::app::actions::ViewMutation::Metadata)
         );
         assert_eq!(
@@ -632,10 +629,7 @@ mod tests {
         assert!(state.close_workspace(&only).is_none());
         assert!(
             state
-                .rename_workspace(
-                    &only,
-                    shepr_mux::terminal::Label::new("gone").expect("test name")
-                )
+                .rename_workspace(&only, shepr_mux::Label::new("gone").expect("test name"))
                 .is_none()
         );
     }

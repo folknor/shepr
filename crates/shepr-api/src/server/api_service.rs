@@ -158,16 +158,24 @@ pub(super) fn handle_connection(
                 let busy = error_response_json(
                     &request_id,
                     crate::error::ApiErrorCode::EndpointBusy,
-                    format!(
-                        "API server is at its limit of {} requests waiting on the server loop",
-                        app_requests.limit().max()
-                    ),
+                    APP_REQUEST_BUSY_MESSAGE.to_owned(),
                 );
                 return finish_api_response(&mut stream, &request_id, method_traits, &busy);
             };
             drop(ingress);
-            let response = dispatch_to_app(request, api_tx);
-            let written = finish_api_response(&mut stream, &request_id, method_traits, &response);
+            let dispatch = dispatch_to_app(request, api_tx);
+            let written =
+                finish_api_response(&mut stream, &request_id, method_traits, &dispatch.response);
+            // A timeout response ends the socket request, but the app request
+            // can still be queued or executing. Keep its admission slot until
+            // the app replies so abandoned work remains included in the bound.
+            drop(stream);
+            if let Some(late_completion) = dispatch.late_completion {
+                // A value and a dropped sender both mean the app is done with it.
+                match late_completion.recv() {
+                    Ok(_) | Err(_) => {}
+                }
+            }
             drop(app_slot);
             return written;
         }
@@ -392,51 +400,71 @@ fn write_api_json_line_allow_disconnect<T: serde::Serialize>(
     }
 }
 
-fn dispatch_to_app(
-    request: AppRequest,
-    api_tx: &ApiRequestSender,
-) -> crate::error::EncodedApiResponse {
+fn dispatch_to_app(request: AppRequest, api_tx: &ApiRequestSender) -> AppDispatchOutcome {
     let request_id = request.id.clone();
-    crate::error::encode_result_with_outcome(request_id, dispatch_to_app_result(request, api_tx))
+    let (result, late_completion) = dispatch_to_app_result(request, api_tx);
+    AppDispatchOutcome {
+        response: crate::error::encode_result_with_outcome(request_id, result),
+        late_completion,
+    }
+}
+
+struct AppDispatchOutcome {
+    response: crate::error::EncodedApiResponse,
+    /// Kept alive after a timeout so the connection worker can retain its app
+    /// admission slot until the queued or executing request is resolved.
+    late_completion: Option<std::sync::mpsc::Receiver<crate::error::ApiResult>>,
 }
 
 fn dispatch_to_app_result(
     request: AppRequest,
     api_tx: &ApiRequestSender,
-) -> crate::error::ApiResult {
+) -> (
+    crate::error::ApiResult,
+    Option<std::sync::mpsc::Receiver<crate::error::ApiResult>>,
+) {
     let (respond_to, response_rx) = std::sync::mpsc::channel();
     let request_id = request.id.clone();
     if let Err(err) = api_tx.try_send(ApiRequestMessage {
         request,
         respond_to,
     }) {
-        let message = match err {
-            tokio::sync::mpsc::error::TrySendError::Full(_) => {
-                "server is busy handling API requests; retry later"
-            }
-            tokio::sync::mpsc::error::TrySendError::Closed(_) => {
-                "API request handler is unavailable"
-            }
+        // A full queue is app-loop saturation too; keep its retry category in
+        // step with the app-slot admission refusal above.
+        let (code, message) = match err {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => (
+                crate::error::ApiErrorCode::EndpointBusy,
+                APP_REQUEST_BUSY_MESSAGE,
+            ),
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => (
+                crate::error::ApiErrorCode::ServerUnavailable,
+                "API request handler is unavailable",
+            ),
         };
         tracing::debug!(request_id, %message, "API request was not queued");
-        return Err(crate::error::ApiError::new(
-            crate::error::ApiErrorCode::ServerUnavailable,
-            message,
-        ));
+        return (Err(crate::error::ApiError::new(code, message)), None);
     }
 
     match response_rx.recv_timeout(ORDINARY_REQUEST_TIMEOUT) {
-        Ok(response) => response,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(crate::error::ApiError::new(
-            crate::error::ApiErrorCode::Timeout,
-            ORDINARY_REQUEST_TIMEOUT_MESSAGE,
-        )),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(crate::error::ApiError::new(
-            crate::error::ApiErrorCode::ServerUnavailable,
-            "request handling failed: app response channel closed",
-        )),
+        Ok(response) => (response, None),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => (
+            Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::Timeout,
+                ORDINARY_REQUEST_TIMEOUT_MESSAGE,
+            )),
+            Some(response_rx),
+        ),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => (
+            Err(crate::error::ApiError::new(
+                crate::error::ApiErrorCode::ServerUnavailable,
+                "request handling failed: app response channel closed",
+            )),
+            None,
+        ),
     }
 }
+
+const APP_REQUEST_BUSY_MESSAGE: &str = "server is busy handling API requests; retry later";
 
 fn error_response_json(
     id: &str,
@@ -479,7 +507,7 @@ mod tests {
     ) -> crate::error::EncodedApiResponse {
         match route_request(request, server_stop, &this_boot(), gate) {
             Route::Immediate(response) => response,
-            Route::App(request) => dispatch_to_app(request, api_tx),
+            Route::App(request) => dispatch_to_app(request, api_tx).response,
         }
     }
 
@@ -922,10 +950,10 @@ mod tests {
             &tx,
         );
         let response: serde_json::Value =
-            serde_json::from_str(&response.body).expect("test precondition");
+            serde_json::from_str(&response.response.body).expect("test precondition");
 
         assert_eq!(response["id"], "overflow");
-        assert_eq!(response["error"]["code"], "server_unavailable");
+        assert_eq!(response["error"]["code"], "endpoint_busy");
         assert_eq!(
             response["error"]["message"],
             "server is busy handling API requests; retry later"

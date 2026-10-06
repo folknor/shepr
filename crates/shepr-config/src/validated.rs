@@ -115,7 +115,7 @@ pub enum NewTerminalCwd {
 
 #[derive(Debug, Clone)]
 pub struct ValidatedTerminalConfig {
-    /// Absolute, recognized shell selected and resolved at process launch.
+    /// Absolute shell path resolved at launch or supplied by a test fixture.
     pub default_shell: ResolvedShell,
     pub login_shell: bool,
     pub new_cwd: NewTerminalCwd,
@@ -125,16 +125,20 @@ impl ValidatedTerminalConfig {
     fn parse(
         config: &TerminalConfig,
         paths: &AppPaths,
+        fixture_default_shell: Option<shepr_core::shell::ResolvedShell>,
     ) -> Result<Self, Vec<super::ConfigDiagnostic>> {
-        let default_shell =
-            resolve_default_shell(config.default_shell.as_deref(), paths).map_err(|error| {
-                super::ConfigDiagnostic::path_at(
-                    super::ConfigKeyPath::root()
-                        .key("terminal")
-                        .key("default_shell"),
-                    error,
-                )
-            });
+        let default_shell = match (config.default_shell.as_deref(), fixture_default_shell) {
+            (None, Some(shell)) => Ok(shell),
+            (configured, _) => resolve_default_shell(configured, paths),
+        }
+        .map_err(|error| {
+            super::ConfigDiagnostic::path_at(
+                super::ConfigKeyPath::root()
+                    .key("terminal")
+                    .key("default_shell"),
+                error,
+            )
+        });
         let new_cwd = Self::parse_new_cwd(&config.new_cwd, paths).map_err(|error| {
             super::ConfigDiagnostic::path_at(
                 super::ConfigKeyPath::root().key("terminal").key("new_cwd"),
@@ -260,6 +264,7 @@ fn resolve_default_shell(
         );
     }
 
+    // host-program-ok: production default shell when neither the config nor the environment names one
     resolve_recognized_shell(
         OsStr::new("/bin/sh"),
         "the default shell",
@@ -637,11 +642,19 @@ pub(crate) fn validate_server(
     config: &super::ServerConfig,
     paths: AppPaths,
 ) -> Result<ValidatedServerConfig, Vec<super::ConfigDiagnostic>> {
+    validate_server_with_fixture_default_shell(config, paths, None)
+}
+
+fn validate_server_with_fixture_default_shell(
+    config: &super::ServerConfig,
+    paths: AppPaths,
+    fixture_default_shell: Option<shepr_core::shell::ResolvedShell>,
+) -> Result<ValidatedServerConfig, Vec<super::ConfigDiagnostic>> {
     let headless_size =
         BoundedGridSize::new(config.server.headless_cols, config.server.headless_rows)
             .ok()
             .map(BoundedGridSize::grid);
-    let terminal = ValidatedTerminalConfig::parse(&config.terminal, &paths);
+    let terminal = ValidatedTerminalConfig::parse(&config.terminal, &paths, fixture_default_shell);
     let mut diagnostics = Vec::new();
     if headless_size.is_none() {
         diagnostics.push(super::ConfigDiagnostic::validation_related(
@@ -714,6 +727,21 @@ impl ValidatedServerConfig {
         paths: AppPaths,
     ) -> Result<Self, Vec<super::ConfigDiagnostic>> {
         validate_server(config, paths)
+    }
+
+    /// Validate a server config for a fixture that supplies its own shell.
+    /// The supplied `ResolvedShell` is trusted as the fallback only when the
+    /// config leaves `terminal.default_shell` unset; explicit settings still
+    /// go through normal launch validation. Fixture shells may be stand-ins
+    /// that are not present until a test creates them, so launch code must not
+    /// use this constructor.
+    #[doc(hidden)]
+    pub fn validate_for_test(
+        config: &super::ServerConfig,
+        paths: AppPaths,
+        default_shell: shepr_core::shell::ResolvedShell,
+    ) -> Result<Self, Vec<super::ConfigDiagnostic>> {
+        validate_server_with_fixture_default_shell(config, paths, Some(default_shell))
     }
     pub fn paths(&self) -> &AppPaths {
         &self.paths
@@ -1056,6 +1084,7 @@ mod tests {
         let validated = validate().expect("an unset SHELL means /bin/sh");
         assert_eq!(
             validated.terminal().default_shell.path(),
+            // host-program-ok: the production default shell is the subject
             Path::new("/bin/sh")
         );
     }

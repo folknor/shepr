@@ -1,8 +1,6 @@
 // installed by shepr
 // managed by shepr; every release shepr server launch on this host rewrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
-// SHEPR_INTEGRATION_ID=omp
-// SHEPR_INTEGRATION_VERSION=627737121
 // @ts-nocheck
 
 import net from "node:net";

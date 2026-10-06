@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
+use crate::Label;
 use shepr_agent::AgentState;
 
-pub use names::Label;
 use shepr_detect::ownership::AgentOwnership;
-pub use shepr_detect::ownership::{EffectiveStateChange, HookAuthority, HookClockSample};
+pub use shepr_detect::ownership::{EffectiveStateChange, HookAuthority};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TerminalTitleChange {
@@ -280,9 +280,8 @@ impl TerminalState {
     }
 }
 
-mod hooks;
 mod init;
-mod names;
+mod labels;
 mod resume;
 mod titles;
 

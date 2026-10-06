@@ -32,6 +32,15 @@ function normalize(requests: unknown[]): unknown[] {
     }
     const params = { ...request.params };
     if (typeof params.seq === "number") {
+      expect(request.id).toBe(`${String(params.source)}:${params.seq}`);
+    } else {
+      // TUI selection reports have their own clock seed and no state seq.
+      expect(typeof request.id).toBe("string");
+      const prefix = `${String(params.source)}:`;
+      expect(String(request.id).startsWith(prefix)).toBe(true);
+      expect(String(request.id).slice(prefix.length)).toMatch(/^\d+$/);
+    }
+    if (typeof params.seq === "number") {
       params.seq = seqs.indexOf(params.seq) + 1;
     }
     return { ...request, id: `${String(params.source)}:${params.seq ?? 0}`, params };

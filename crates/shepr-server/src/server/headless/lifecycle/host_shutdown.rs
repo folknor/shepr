@@ -22,8 +22,10 @@ use futures_util::StreamExt;
 use tokio::sync::watch;
 
 use super::WarningGeneration;
-use crate::backoff::Backoff;
-use crate::limits::{SHUTDOWN_RECONNECT_INITIAL_DELAY, SHUTDOWN_RECONNECT_MAX_DELAY};
+use crate::limits::{
+    SHUTDOWN_RECONNECT_INITIAL_DELAY, SHUTDOWN_RECONNECT_MAX_DELAY, SHUTDOWN_RECONNECT_STABLE_TIME,
+};
+use shepr_core::backoff::Backoff;
 
 /// Watches logind for host shutdown warnings and cancellations. Dropping it
 /// stops the watch and releases any delay inhibitor it holds.
@@ -157,65 +159,83 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<Option<Wa
     // The sender lives in the handle, whose drop also aborts this task; a
     // closed channel only means the abort has not landed yet.
     while checkpoints.has_changed().is_ok() {
-        match watch_shutdown(&shared, &mut checkpoints, refresh_pending_warning).await {
+        let mut connected_at = None;
+        let result = watch_shutdown(
+            &shared,
+            &mut checkpoints,
+            refresh_pending_warning,
+            &mut connected_at,
+        )
+        .await;
+        let shutdown_pending = shared.requested.load(Ordering::Acquire);
+        refresh_pending_warning |= shutdown_pending;
+        let lived = connected_at.map_or(std::time::Duration::ZERO, |at| at.elapsed());
+        let retry_delay =
+            reconnect_delay(reconnect_backoff, &mut failures, shutdown_pending, lived);
+        match result {
             Ok(()) => {
-                failures = 0;
-                refresh_pending_warning = shared.requested.load(Ordering::Acquire);
+                refresh_pending_warning = shutdown_pending;
+                tracing::debug!(
+                    event = "host.shutdown.notification",
+                    subsystem = "shutdown",
+                    outcome = "disconnected",
+                    retry_seconds = retry_delay.as_secs(),
+                    "host shutdown notification stream ended"
+                );
             }
             Err(err) => {
-                let shutdown_pending = shared.requested.load(Ordering::Acquire);
-                refresh_pending_warning |= shutdown_pending;
-                // A pending shutdown keeps retries at the initial delay and
-                // restarts the count, so once the warning clears ordinary
-                // absence backs off again from the initial delay.
-                let failures_before = if shutdown_pending { 0 } else { failures };
-                let retry_delay = reconnect_backoff.delay_after(failures_before);
-                failures = if shutdown_pending {
-                    0
-                } else {
-                    failures.saturating_add(1)
-                };
-                // Losing logind while a shutdown is pending may cost the session
-                // checkpoint, so that case warns. Without one pending it is
-                // routine on hosts without a system bus and would repeat every
-                // retry for the life of the server, so it stays diagnostic.
+                // Missing logind is routine unless a shutdown warning is pending.
                 if shutdown_pending {
                     tracing::warn!(
-                        event = "host.shutdown.notification",
-                        subsystem = "shutdown",
-                        outcome = "unavailable",
-                        shutdown_pending,
+                        event = "host.shutdown.notification", subsystem = "shutdown",
+                        outcome = "unavailable", shutdown_pending,
                         generation = shared.generation.load(Ordering::Acquire),
-                        error = %err,
-                        retry_seconds = retry_delay.as_secs(),
+                        error = %err, retry_seconds = retry_delay.as_secs(),
                         "host shutdown notification unavailable"
                     );
                 } else {
                     tracing::debug!(
-                        event = "host.shutdown.notification",
-                        subsystem = "shutdown",
-                        outcome = "unavailable",
-                        shutdown_pending,
+                        event = "host.shutdown.notification", subsystem = "shutdown",
+                        outcome = "unavailable", shutdown_pending,
                         generation = shared.generation.load(Ordering::Acquire),
-                        error = %err,
-                        retry_seconds = retry_delay.as_secs(),
+                        error = %err, retry_seconds = retry_delay.as_secs(),
                         "host shutdown notification unavailable"
                     );
                 }
-                // A lost signal stream leaves cancellation unobservable until
-                // reconnecting, so retry promptly while a warning is pending.
-                tokio::time::sleep(retry_delay).await;
             }
         }
+        // Owner changes and clean stream ends also need spacing: a bus that
+        // repeatedly accepts and drops watches must not spin this task.
+        tokio::time::sleep(retry_delay).await;
     }
+}
+
+/// Pending warnings retry promptly without erasing the ordinary failure
+/// streak. Only a connection that survived the stability interval resets it.
+fn reconnect_delay(
+    backoff: Backoff,
+    failures: &mut u32,
+    shutdown_pending: bool,
+    lived: std::time::Duration,
+) -> std::time::Duration {
+    if lived >= SHUTDOWN_RECONNECT_STABLE_TIME {
+        *failures = 0;
+    }
+    let delay = backoff.delay_after(if shutdown_pending { 0 } else { *failures });
+    *failures = failures.saturating_add(1);
+    delay
 }
 
 async fn watch_shutdown(
     shared: &Shared,
     checkpoints: &mut watch::Receiver<Option<WarningGeneration>>,
     refresh_pending_warning: bool,
+    connected_at: &mut Option<tokio::time::Instant>,
 ) -> zbus::Result<()> {
     let connection = zbus::Connection::system().await?;
+    // headless-clock-sample-ok: measure the real bus watch lifetime, independent
+    // of the app event loop, to decide when reconnect failures may reset.
+    *connected_at = Some(tokio::time::Instant::now());
     watch_connection(connection, shared, checkpoints, refresh_pending_warning).await
 }
 
@@ -365,6 +385,35 @@ mod tests {
     use std::process::{Child, Stdio};
     use std::sync::Mutex;
     use std::time::Duration;
+
+    #[test]
+    fn short_watches_back_off_and_only_stable_watches_reset() {
+        let retry = Backoff::new(
+            SHUTDOWN_RECONNECT_INITIAL_DELAY,
+            SHUTDOWN_RECONNECT_MAX_DELAY,
+        );
+        let mut failures = 0;
+        for earlier in 0..4 {
+            assert_eq!(
+                reconnect_delay(retry, &mut failures, false, Duration::ZERO),
+                retry.delay_after(earlier)
+            );
+        }
+        assert_eq!(
+            reconnect_delay(retry, &mut failures, true, Duration::ZERO),
+            retry.delay_after(0)
+        );
+        assert_eq!(failures, 5, "a pending warning retains the failure streak");
+        assert_eq!(
+            reconnect_delay(retry, &mut failures, false, Duration::ZERO),
+            retry.delay_after(5)
+        );
+        assert_eq!(
+            reconnect_delay(retry, &mut failures, false, SHUTDOWN_RECONNECT_STABLE_TIME),
+            retry.delay_after(0)
+        );
+        assert_eq!(failures, 1);
+    }
 
     #[tokio::test]
     async fn stale_checkpoint_cannot_release_a_new_warning() {

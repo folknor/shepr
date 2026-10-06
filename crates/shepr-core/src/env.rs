@@ -67,13 +67,8 @@ pub const SHEPR_ENV_IN_PANE: &str = "1";
 /// clear these names and the agent crate's asset test check against the same
 /// list, without making them process configuration.
 pub const SHEPR_ASSET_INTERNAL_NAMES: &[&str] = &[
-    // Header markers install and status code parse out of an asset's text;
-    // they are not environment variables.
-    "SHEPR_INTEGRATION_ID",
-    "SHEPR_INTEGRATION_VERSION",
     // A hook script handing its arguments to the interpreter it runs.
     "SHEPR_ACTION",
-    "SHEPR_HOOK_INPUT_FILE",
     "SHEPR_HOOK_SEQ",
 ];
 

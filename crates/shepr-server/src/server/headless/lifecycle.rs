@@ -377,7 +377,9 @@ impl HeadlessServer {
     pub(super) async fn complete_shutdown(&mut self) -> Result<(), UnexpectedPhase> {
         // Completing is only legal once `initiate_shutdown` marked the server
         // stopping. The run loop checks the phase before calling; this guard
-        // refuses a premature completion before any transport is closed.
+        // refuses a premature completion before any transport is closed. Keep
+        // this guard at the destructive boundary rather than relying on its
+        // current caller: direct lifecycle drivers also invoke this method.
         self.lifecycle
             .require_phase(ShutdownStep::CompleteShutdown, ShutdownPhase::Stopping)?;
         info!("completing server shutdown");

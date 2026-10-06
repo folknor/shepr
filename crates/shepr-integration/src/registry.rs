@@ -1,5 +1,4 @@
 use crate::types::InstallResult;
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -689,54 +688,14 @@ fn hook_registration_is_current(
 }
 
 fn file_matches_asset(path: &Path, asset: &str) -> InstallResult<bool> {
-    let installed = super::file_ops::is_file(path).map_err(|error| {
-        InstallError::from(io::Error::new(
-            error.io_kind(),
-            format!("cannot stat {}: {error}", path.display()),
-        ))
-    })?;
-    if !installed {
-        return Ok(false);
-    }
-    let content = fs::read(path).map_err(|error| {
-        InstallError::from(io::Error::new(
-            error.kind(),
-            format!("cannot read {}: {error}", path.display()),
-        ))
-    })?;
-    Ok(content.as_slice() == asset.as_bytes())
+    Ok(super::file_ops::read_config_bytes(path)?
+        .is_some_and(|content| content.as_slice() == asset.as_bytes()))
 }
 
-fn integration_state_for_path(
-    path: &Path,
-    expected_asset: &str,
-) -> InstallResult<(Option<bool>, Option<u32>)> {
-    let installed = super::file_ops::is_file(path).map_err(|error| {
-        InstallError::from(io::Error::new(
-            error.io_kind(),
-            format!("cannot stat {}: {error}", path.display()),
-        ))
-    })?;
-    if !installed {
-        return Ok((None, None));
-    }
-
-    let content = fs::read(path).map_err(|error| {
-        InstallError::from(io::Error::new(
-            error.kind(),
-            format!("cannot read {}: {error}", path.display()),
-        ))
-    })?;
-    let installed_version = std::str::from_utf8(&content)
-        .ok()
-        .and_then(parse_integration_version);
-    // Only release launches install these shared artifacts. Exact bytes detect
-    // edits; the version marker is only reported.
-    // Dev launches must skip status-driven installation altogether.
-    Ok((
-        Some(content.as_slice() == expected_asset.as_bytes()),
-        installed_version,
-    ))
+fn integration_state_for_path(path: &Path, expected_asset: &str) -> InstallResult<Option<bool>> {
+    // Exact bytes are the sole asset identity; pin and bound every asset read.
+    Ok(super::file_ops::read_config_bytes(path)?
+        .map(|content| content.as_slice() == expected_asset.as_bytes()))
 }
 
 /// The status of the integration installed at `path`. A stat or read error on
@@ -750,14 +709,13 @@ fn integration_status_at_with_paths(
 ) -> Result<super::IntegrationStatus, InstallError> {
     let spec = spec_for(target);
     let expected_asset = spec.primary_asset.contents;
-    let (asset_current, installed_version) = integration_state_for_path(&path, expected_asset)?;
+    let asset_current = integration_state_for_path(&path, expected_asset)?;
     let Some(asset_current) = asset_current else {
         return Ok(super::IntegrationStatus {
             target,
             path,
             state: super::IntegrationStatusKind::NotInstalled,
             outdated_reason: None,
-            installed_version,
         });
     };
     let registration_current = hook_registration_is_current(spec, &path, paths)?;
@@ -782,24 +740,6 @@ fn integration_status_at_with_paths(
         path,
         state,
         outdated_reason,
-        installed_version,
-    })
-}
-
-/// Parses the optional marker for logs. It does not determine whether an
-/// installed integration is current.
-fn parse_integration_version(content: &str) -> Option<u32> {
-    content.lines().find_map(|line| {
-        let marker_line = line
-            .trim()
-            .trim_start_matches('/')
-            .trim_start_matches('#')
-            .trim();
-        marker_line
-            .strip_prefix(super::INTEGRATION_VERSION_MARKER)?
-            .trim()
-            .parse()
-            .ok()
     })
 }
 
@@ -840,6 +780,8 @@ pub(crate) fn integration_status_rows(
 
 #[cfg(test)]
 mod registration_tests {
+    use std::fs;
+
     use super::super::command::hook_command;
     use super::*;
     use crate::IntegrationStatusKind;
@@ -990,16 +932,6 @@ mod registration_tests {
                 "{} must register its bundled assets",
                 spec.target.label()
             );
-            for (index, asset) in std::iter::once(&spec.primary_asset)
-                .chain(spec.additional_assets.iter())
-                .enumerate()
-            {
-                assert!(
-                    parse_integration_version(asset.contents).is_some(),
-                    "{} bundled asset {index} must carry diagnostic version metadata",
-                    spec.target.label()
-                );
-            }
         }
     }
 
@@ -1026,8 +958,12 @@ mod registration_tests {
                     agent.label()
                 );
                 assert!(
-                    asset.contents.contains(agent.label()),
-                    "{} bundled asset {index} must report its canonical label",
+                    asset.contents.lines().any(|line| {
+                        line == format!("const SOURCE = \"{source}\";")
+                            || line == format!("const source = \"{source}\";")
+                            || line == format!("SOURCE = \"{source}\"")
+                    }),
+                    "{} bundled asset {index} must declare its source on a generated SOURCE line",
                     agent.label()
                 );
             }

@@ -22,9 +22,9 @@ pub fn server_log_path(data_dir: &Path) -> PathBuf {
     data_dir.join(SERVER_LOG_FILE_NAME)
 }
 
-/// The client log in the session data directory.
-pub fn client_log_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(CLIENT_LOG_FILE_NAME)
+/// The client log in the client's profile-owned state directory.
+pub fn client_log_path(client_state_dir: &Path) -> PathBuf {
+    client_state_dir.join(CLIENT_LOG_FILE_NAME)
 }
 
 /// The saved layout in the session data directory.

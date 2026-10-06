@@ -4,7 +4,7 @@ use shepr_protocol::command::{
     WorkspaceCreateSource, WorkspaceMoveParams, WorkspaceRenameParams, WorkspaceTarget,
 };
 
-use shepr_mux::terminal::Label;
+use shepr_mux::Label;
 
 use super::endpoint::{
     EndpointEffects, Handled, HandlerError, HandlerResult, internal_with_effects, workspace_missing,
@@ -199,7 +199,6 @@ mod tests {
         let mut app = app();
         app.state
             .test_set_workspaces(vec![Workspace::test_new("first")]);
-        app.state.seed_bookmark_index(Some(0));
         shutdown_test_runtimes(&mut app);
 
         let source_scratch = crate::test_support::ScratchDir::new("ws-source");
@@ -474,7 +473,7 @@ mod tests {
     #[test]
     fn workspace_rename_uses_the_shared_dirty_schedule() {
         let mut app = app();
-        app.persist();
+
         app.state
             .test_set_workspaces(vec![Workspace::test_new("before")]);
         let workspace_id = app.state.ws(0).id();

@@ -814,3 +814,48 @@ test("V2 resends the latest state after a failed delivery", async () => {
   expect(states().at(-1)).toBe("idle");
   dispose();
 });
+
+
+test("V1 unknown status kinds do not prevent snapshot hydration", async () => {
+  const tui = familyApi();
+  tui.statuses.root = { type: "future-status" };
+  await (await loadPlugin()).tui(tui.api);
+  await flushReports();
+  expect(states().at(-1)).toBe("idle");
+  tui.emit("session.status", { sessionID: "root", status: { type: "busy" } });
+  await flushReports();
+  expect(states().at(-1)).toBe("working");
+  tui.emit("session.status", { sessionID: "root", status: { type: "future-status" } });
+  await flushReports();
+  expect(states().at(-1)).toBe("idle");
+});
+
+test("V1 failed hydration bounds event retention by taking a fresh snapshot", async () => {
+  const tui = familyApi();
+  let attempts = 0;
+  tui.api.client.session.status = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("snapshot unavailable");
+    return { data: {} };
+  };
+  await (await loadPlugin()).tui(tui.api);
+  await flushReports();
+  for (let index = 0; index < 4097; index += 1) {
+    tui.emit("session.updated", { info: { id: "root" } });
+  }
+  await flushReports();
+  expect(attempts).toBe(2);
+  expect(states().at(-1)).toBe("idle");
+});
+
+test("V1 deletion tombstones retire with a fresh context at their limit", async () => {
+  const tui = familyApi();
+  await (await loadPlugin()).tui(tui.api);
+  await flushReports();
+  for (let index = 0; index < 4097; index += 1) {
+    tui.emit("session.deleted", { sessionID: `retired-${index}` });
+  }
+  await flushReports();
+  expect(tui.calls.filter((call) => call === "status").length).toBe(2);
+  expect(states().at(-1)).toBe("idle");
+});

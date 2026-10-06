@@ -182,3 +182,18 @@ for (const profile of ["dev", "unknown", undefined]) {
     }
   });
 }
+
+
+test("deletion retires child ancestry before an id is reused", async () => {
+  const plugin = await loadPlugin();
+  await plugin.event({ event: {
+    type: "session.created", properties: { info: { id: "reused", parentID: "old-root" } },
+  } });
+  await plugin.event({ event: {
+    type: "session.deleted", properties: { info: { id: "reused", parentID: "old-root" } },
+  } });
+  await plugin.event({ event: {
+    type: "permission.asked", properties: { sessionID: "reused" },
+  } });
+  expect(requests.map((request) => requestParam(request, "agent_session_id"))).toEqual(["reused"]);
+});

@@ -42,6 +42,10 @@ export const SheprAgentStatePlugin = async () => {
       const properties = event?.properties ?? {};
       const sessionID = sessionIDFromProperties(properties);
 
+      if (type === "session.deleted") {
+        childSessions.delete(sessionID);
+        return;
+      }
       trackChildSession(properties.info);
       if (sessionID && childSessions.has(sessionID)) {
         const state = CHILD_EVENT_STATES.get(type);
@@ -85,10 +89,6 @@ export const SheprAgentStatePlugin = async () => {
           break;
         case "session.idle":
           await reportState(STATE.idle, sessionID);
-          break;
-        case "session.deleted":
-          break;
-        default:
           break;
       }
     },

@@ -14,8 +14,9 @@ normally serializes writes on its own thread. If that thread cannot be started,
 the persister logs the failure and runs writes inline, where filesystem work
 can block the event loop. A save already in flight finishes before the next
 save starts. Retryable autosave failures use
-`SESSION_SAVE_RETRY_MIN`, `SESSION_SAVE_RETRY_MAX`, and `BACKOFF_MULTIPLIER`;
-the failure delay grows up to the autosave cap.
+`SESSION_SAVE_RETRY_MIN` and `SESSION_SAVE_RETRY_MAX`, growing by the shared
+`BACKOFF_MULTIPLIER` (`crates/shepr-core/src/limits.rs`, applied by
+`shepr_core::backoff::Backoff`); the failure delay grows up to the autosave cap.
 
 The persister publishes the session file atomically and maintains recovery
 snapshots according to `SNAPSHOT_INTERVAL`, `SNAPSHOT_LIMIT`, and
@@ -30,8 +31,9 @@ that boot; a non-retryable persistence failure stops it for that boot.
 
 When a pane exits, the server can hold the exit while a checkpoint makes
 the corresponding layout durable. Checkpoint retries use
-`CHECKPOINT_RETRY_MIN`, `BACKOFF_MULTIPLIER`, and `CHECKPOINT_MAX_FAILURES` in
-`crates/shepr-server/src/limits.rs`. The attempt count bounds the retry schedule,
+`CHECKPOINT_RETRY_MIN` and `CHECKPOINT_MAX_FAILURES` in
+`crates/shepr-server/src/limits.rs`, with the same `BACKOFF_MULTIPLIER`
+growth. The attempt count bounds the retry schedule,
 but each save attempt includes filesystem work without a duration bound.
 
 On success, the pane exit can be applied to the live layout while its durable
@@ -61,8 +63,13 @@ cancelled while saves remain enabled. If it cancels after the server froze
 saves, the server thaws them and marks the live layout dirty again.
 
 `SHUTDOWN_RECONNECT_INITIAL_DELAY` and `SHUTDOWN_RECONNECT_MAX_DELAY` in
-`crates/shepr-server/src/limits.rs` govern reconnect attempts if the logind
-signal stream is lost. They do not bound checkpoint or shutdown duration.
+`crates/shepr-server/src/limits.rs` govern reconnect attempts whenever the
+logind watch ends, whether it failed or its stream closed cleanly (an owner
+change, a dropped bus connection), so a bus that keeps accepting and dropping
+watches cannot spin the monitor. The failure streak resets only after a watch
+stayed connected for `SHUTDOWN_RECONNECT_STABLE_TIME`. While a shutdown warning
+is pending, each reconnect waits only the initial delay, without resetting the
+streak. These delays do not bound checkpoint or shutdown duration.
 
 ## Server stop and final save
 
@@ -81,8 +88,12 @@ exit candidates observed at the signal time before this capture.
 The final save is skipped while host-shutdown saves are frozen, because the
 checkpoint from the warning is the layout to restore. The `session.save.final`
 log records `completed`, `failed`, or `frozen` and the save duration. A failed
-final save is reported as an unclean exit. The final save has no deadline, and
-there is no forced stop; `SIGKILL` is the external escape hatch.
+final save is reported as an unclean exit. The final save is deliberately a
+single attempt with no retry schedule, unlike autosaves and checkpoints: the
+event loop no longer runs, and retries would hold the lease, the socket and
+every stopping client through more unbounded filesystem work. The final save
+has no deadline, and there is no forced stop; `SIGKILL` is the external escape
+hatch.
 
 After the save, the server drops pane runtimes and starts session teardown on
 background threads. `PANE_TEARDOWN_STEPS` in

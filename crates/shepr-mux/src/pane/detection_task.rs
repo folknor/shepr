@@ -8,8 +8,9 @@ use tokio::sync::Notify;
 use tracing::info;
 
 use super::detect::{
-    DetectorGateDiagnostics, DetectorState, StateChangedUpdate, Step, Tick, TickContext,
-    TickOutput, publish_agent_process_detected_event, publish_state_changed_event,
+    DetectorGateDiagnostics, DetectorState, ResumeDetectionIdentity, StateChangedUpdate, Step,
+    Tick, TickContext, TickOutput, publish_agent_process_detected_event,
+    publish_state_changed_event,
 };
 use super::exit_arbiter::PaneExitArbiter;
 use super::launch::LaunchKind;
@@ -66,6 +67,7 @@ impl DetectionTask {
     pub(super) fn spawn(
         pane_id: PaneId,
         launch_purpose: LaunchKind,
+        resume_identity: Option<ResumeDetectionIdentity>,
         mut launch: LaunchWatch,
         handles: DetectionHandles,
     ) -> tokio::task::AbortHandle {
@@ -74,7 +76,8 @@ impl DetectionTask {
                 return;
             }
             // clock-io-ok: detection samples elapsed time at its observation boundary.
-            let detector = DetectorState::new(Instant::now(), launch_purpose);
+            let detector = DetectorState::new(Instant::now(), launch_purpose)
+                .with_resume_identity(resume_identity);
             handles.detector_gate_diagnostics.update(&detector);
             let task = Self {
                 pane_id,

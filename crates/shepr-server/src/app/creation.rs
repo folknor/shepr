@@ -115,7 +115,7 @@ impl App {
         let runtime = self.launch_pane(
             prepared.root_pane(),
             prepared.root_public_id(),
-            chrome.sole_pane_spawn_geometry(geometry.cell_px()),
+            chrome.sole_pane_spawn_geometry(geometry.cell),
             initial_cwd,
             shepr_mux::pane::LaunchKind::Fresh,
         )?;

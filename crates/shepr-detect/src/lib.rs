@@ -1173,6 +1173,7 @@ mod tests {
             processes: vec![foreground_process(
                 1,
                 "sh",
+                // host-program-ok: a shell-wrapped agent's argv is the subject
                 &["/bin/sh", "/tmp/test-bin/pi"],
             )],
         };

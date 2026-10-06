@@ -17,4 +17,6 @@ pub(super) use publish::{
     StateChangedUpdate, publish_agent_process_detected_event, publish_state_changed_event,
 };
 pub use state::{DetectorGate, DetectorGateDiagnostics};
-pub(super) use state::{DetectorState, Step, Tick, TickContext, TickOutput};
+pub(super) use state::{
+    DetectorState, ResumeDetectionIdentity, Step, Tick, TickContext, TickOutput,
+};

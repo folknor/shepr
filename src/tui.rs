@@ -109,28 +109,25 @@ fn local_startup_notice(error: &shepr_launch::local_server::LaunchError) -> Stri
 mod tests {
     use super::*;
 
-    /// The refusal reaches the operator whole, guidance included, instead of
-    /// a log line nothing receives.
+    /// The user-facing notice preserves every line of the startup refusal.
     #[test]
-    fn the_local_startup_notice_carries_the_whole_refusal() {
-        let address = shepr_paths::ServerAddress::for_runtime_dir(
-            std::path::Path::new("/run/user/1/shepr"),
-            None,
-        )
-        .expect("valid test socket path");
+    fn the_local_startup_notice_preserves_the_full_refusal() {
         let error = shepr_launch::local_server::LaunchError::DifferentBuild {
-            message: format!(
-                "the running shepr server is a different build; restart it before attaching.\n\n{}",
-                shepr_launch::guidance::build_mismatch_guidance(&address)
-            ),
+            message: concat!(
+                "the running server refused this build. ",
+                "Stopping it also exits its pane processes; run `shepr stop`, then `shepr`."
+            )
+            .to_owned(),
         };
         let notice = local_startup_notice(&error);
-        assert!(
-            notice.contains("configured machines stay available"),
-            "{notice}"
+        assert_eq!(
+            notice,
+            concat!(
+                "shepr: the local server is unavailable; configured machines stay available.\n",
+                "the running server refused this build. Stopping it also exits its pane processes; ",
+                "run `shepr stop`, then `shepr`."
+            )
         );
-        let stop_command = format!("{} stop", shepr_launch::guidance::operator_entrypoint());
-        assert!(notice.contains(&stop_command), "{notice}");
         assert!(!notice.contains("--force"), "{notice}");
     }
 }

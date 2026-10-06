@@ -1,8 +1,6 @@
 // installed by shepr
 // managed by shepr; every release shepr server launch on this host rewrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
-// SHEPR_INTEGRATION_ID=opencode-tui
-// SHEPR_INTEGRATION_VERSION=560307084
 
 import net from "node:net";
 
@@ -104,6 +102,7 @@ const ROUTE_POLL_INTERVAL_MS = 100;
 const RETRY_WAIT_MS = 500;
 const REQUEST_WAIT_MS = 5000;
 const SELECTION_RETRY_DELAYS_MS = [100, 400, 1000];
+const MAX_RETAINED_EVENTS = 4096;
 
 export default {
   id: "shepr.opencode.session-selection",
@@ -306,7 +305,8 @@ async function tui(api) {
         if (status === "busy" || status === "retry") {
           ctx.statuses.set(id, status);
           ctx.errors.delete(id);
-        } else if (status === "idle") {
+        } else if (typeof status === "string") {
+          // Unknown status kinds follow the same idle projection as snapshots.
           ctx.statuses.delete(id);
           ctx.errors.delete(id);
         }
@@ -337,7 +337,7 @@ async function tui(api) {
         read(ctx, (options) => api.client.question.list(undefined, options)),
       ]);
       if (!statuses || typeof statuses !== "object" || Array.isArray(statuses) ||
-          !Object.values(statuses).every((s) => ["busy", "retry", "idle"].includes(s?.type)) ||
+          !Object.values(statuses).every((s) => typeof s?.type === "string") ||
           !Array.isArray(permissions) || !Array.isArray(questions)) {
         throw new Error("incomplete session snapshot");
       }
@@ -427,8 +427,15 @@ async function tui(api) {
   ].map((type) => api.event.on(type, (event) => {
     if (type === "message.part.updated" && !terminalTool(event.properties?.part)) return;
     syncSelection();
-    const ctx = context;
+    let ctx = context;
     if (!ctx || ctx.settled) return;
+    // Persistent failures cannot retain unbounded deltas or tombstones. A new
+    // context aborts old reads and takes a fresh snapshot before reporting idle.
+    if (ctx.events.length >= MAX_RETAINED_EVENTS || ctx.deleted.size >= MAX_RETAINED_EVENTS) {
+      syncSelection(true);
+      ctx = context;
+      if (!ctx || ctx.settled) return;
+    }
     if (ctx.loading || !ctx.hydrated) ctx.events.push(event);
     apply(ctx, event);
     reconcile(ctx);

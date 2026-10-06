@@ -1,5 +1,4 @@
 pub(crate) mod app;
-pub(crate) mod backoff;
 mod limits;
 pub(crate) mod logging;
 pub(crate) mod server;

@@ -5,6 +5,7 @@
 //! machine's server of another build is offered no restart at startup; the
 //! client's Restart entry for it stops it by the same conditional stop.
 
+use crate::limits::MAX_RESTART_OFFERS;
 use crate::stop::ServerStopError;
 
 /// How a conditional stop ended when it did not fail.
@@ -42,13 +43,13 @@ pub enum RestartResult {
 impl RestartResult {
     /// Offers to restart the different-build server found by `observe`.
     /// After a changed boot identity, the server is observed again and another
-    /// offer is made only while the new observation still needs a restart.
+    /// offer is made only while the new observation still needs a restart, at
+    /// most [`MAX_RESTART_OFFERS`] times in all.
     ///
     /// `decide` is absent when there is no terminal on which to ask. `observe`
     /// returns `None` when no server answers; a present server that
     /// `restartable` rejects is a replacement that does not need this offer.
     pub fn offer<S>(
-        max_offers: usize,
         decide: Option<&mut dyn FnMut(&S) -> RestartDecision>,
         mut observe: impl FnMut() -> Option<S>,
         mut restartable: impl FnMut(&S) -> bool,
@@ -61,7 +62,7 @@ impl RestartResult {
             return Self::NoTerminal;
         };
 
-        for offer in 1..=max_offers {
+        for offer in 1..=MAX_RESTART_OFFERS {
             if decide(&server) == RestartDecision::Keep {
                 return Self::Declined;
             }
@@ -73,7 +74,7 @@ impl RestartResult {
                     let Some(next) = observe() else {
                         return Self::NoServer;
                     };
-                    if !restartable(&next) || offer == max_offers {
+                    if !restartable(&next) || offer == MAX_RESTART_OFFERS {
                         return Self::OccupantChanged;
                     }
                     server = next;

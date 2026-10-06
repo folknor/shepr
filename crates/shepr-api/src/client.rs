@@ -73,22 +73,14 @@ impl ApiClient {
         self.request_value_with_timeout(request, ORDINARY_RESPONSE_TIMEOUT)
     }
 
-    /// Like [`Self::request_value`] with an explicit bound. The bound is a
-    /// send timeout for writing and one overall deadline for reading. A timeout
-    /// surfaces as `ErrorKind::TimedOut`, even if the server trickles out a
-    /// partial response.
+    /// Like [`Self::request_value`] with one budget for connect, write and read.
     fn request_value_with_timeout(
         &self,
         request: &Request,
         timeout: Duration,
     ) -> Result<serde_json::Value, ApiClientError> {
-        let mut stream = self.connect(timeout)?;
-        stream.set_write_timeout(Some(timeout))?;
-        write_request(&mut stream, request).map_err(normalize_socket_timeout)?;
-
-        let deadline = deadline_after(timeout)?;
-        let mut reader = BufReader::new(LocalStreamDeadlineReader::new(&mut stream, deadline));
-        read_response_value(&mut reader, &request.id).map_err(normalize_socket_timeout)
+        self.request_value_until(request, deadline_after(timeout)?)
+            .map_err(ApiClientDeadlineError::into_client_error)
     }
 
     /// Sends one request and reads its single-line response, all of it bounded
@@ -102,6 +94,12 @@ impl ApiClient {
     ) -> Result<serde_json::Value, ApiClientDeadlineError> {
         // clock-io-ok: the connect is bounded by what is left of the deadline.
         let connect_timeout = deadline.saturating_duration_since(Instant::now());
+        if connect_timeout.is_zero() {
+            return Err(ApiClientDeadlineError::Connect(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "api request deadline expired before connecting",
+            )));
+        }
         let mut stream = self
             .connect(connect_timeout)
             .map_err(ApiClientDeadlineError::Connect)?;
@@ -145,19 +143,8 @@ impl ApiClient {
 
     /// Asks the server for its identity and readiness within one status window.
     pub fn ping(&self) -> Result<Pong, ApiClientError> {
-        // clock-io-ok: one deadline bounds connect, write and response read.
-        let deadline = Instant::now()
-            .checked_add(STATUS_REQUEST_TIMEOUT)
-            .ok_or_else(|| {
-                ApiClientError::Io(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "api status timeout is too large",
-                ))
-            })?;
-        self.ping_until(deadline).map_err(|error| match error {
-            ApiClientDeadlineError::Connect(error) => ApiClientError::Io(error),
-            ApiClientDeadlineError::Request(error) => error,
-        })
+        self.ping_until(deadline_after(STATUS_REQUEST_TIMEOUT)?)
+            .map_err(ApiClientDeadlineError::into_client_error)
     }
 
     /// [`Self::ping`] bounded by one `deadline`.
@@ -220,12 +207,11 @@ fn pong(response: SuccessResponse) -> Result<Pong, ApiClientError> {
 }
 
 fn deadline_after(timeout: Duration) -> io::Result<Instant> {
-    // clock-io-ok: the response deadline begins after the request write and
-    // bounds real socket reads.
+    // clock-io-ok: one budget begins before connect and bounds real socket IO.
     Instant::now().checked_add(timeout).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
-            "api response timeout is too large",
+            "api request timeout is too large",
         )
     })
 }
@@ -266,6 +252,15 @@ pub enum ApiClientDeadlineError {
     Connect(io::Error),
     /// The connection was made and the request or its response failed.
     Request(ApiClientError),
+}
+
+impl ApiClientDeadlineError {
+    fn into_client_error(self) -> ApiClientError {
+        match self {
+            Self::Connect(error) => ApiClientError::Io(error),
+            Self::Request(error) => error,
+        }
+    }
 }
 
 impl fmt::Display for ApiClientDeadlineError {
@@ -359,6 +354,20 @@ pub fn parse_response_value(value: serde_json::Value) -> Result<SuccessResponse,
 mod tests {
     use super::*;
     use crate::schema::{Method, PingParams};
+
+    #[test]
+    fn an_expired_request_budget_cannot_connect() {
+        let scratch = shepr_test_support::ScratchDir::new("expired-request-budget");
+        let path = scratch.join("api.sock");
+        let _listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test precondition");
+        let error = ApiClient::for_socket(path)
+            .request_value_with_timeout(&Request::ping(), Duration::ZERO)
+            .expect_err("an expired budget cannot send a request");
+        assert!(
+            matches!(error, ApiClientError::Io(error) if error.kind() == io::ErrorKind::TimedOut)
+        );
+    }
 
     #[test]
     fn local_client_targets_the_build_runtime_socket() {
@@ -468,7 +477,7 @@ mod tests {
 
     #[test]
     fn socket_path_target_uses_explicit_path() {
-        let path = PathBuf::from("/tmp/shepr-test.sock");
+        let path = PathBuf::from("/nonexistent/shepr-test.sock");
         let client = ApiClient::for_socket(path.clone());
         assert_eq!(client.socket_path(), path);
     }

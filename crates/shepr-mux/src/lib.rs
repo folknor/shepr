@@ -2,6 +2,8 @@
 mod cwd;
 pub mod events;
 pub use cwd::UsableCwd;
+mod label;
+pub use label::Label;
 /// The Git vocabulary a workspace's identity carries. `shepr-git` owns it,
 /// along with the refresh that produces it.
 pub mod git {

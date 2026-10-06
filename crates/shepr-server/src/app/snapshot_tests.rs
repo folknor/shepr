@@ -56,9 +56,6 @@ fn first_pane_snapshot(workspace: &WorkspaceSnapshot) -> &PaneSnapshot {
 fn state_with_workspaces(names: &[&str]) -> AppState {
     let mut state = AppState::test_new();
     state.test_set_workspaces(names.iter().map(|name| Workspace::test_new(name)).collect());
-    if !state.workspaces().is_empty() {
-        state.seed_bookmark_index(Some(0));
-    }
     state
 }
 
@@ -77,7 +74,7 @@ fn send_endpoint_command(
     let context = crate::app::EndpointContext {
         requester_geometry: None,
     };
-    let outcome = app.handle_endpoint_command_with_render(command, &context);
+    let outcome = app.handle_endpoint_command(command, &context);
     assert!(outcome.result.is_ok(), "endpoint command should succeed");
 }
 
@@ -181,13 +178,13 @@ fn round_trip_layout_snapshot() {
 #[test]
 fn round_trip_full_workspace_snapshot() {
     let mut website = saved_pane(2, "/home/can/Projects/website");
-    website.label = Some(shepr_mux::terminal::Label::new("website").expect("test label"));
+    website.label = Some(shepr_mux::Label::new("website").expect("test label"));
 
     let snap = SessionSnapshot {
         host_theme: Default::default(),
         workspaces: vec![WorkspaceSnapshot {
             id: "w1".parse().expect("id"),
-            name: shepr_mux::terminal::Label::new("pi-mono").expect("test name"),
+            name: shepr_mux::Label::new("pi-mono").expect("test name"),
             next_public_pane_number: number(3),
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
@@ -221,7 +218,7 @@ fn round_trip_full_workspace_snapshot() {
         pane_snapshot(&restored.workspaces[0], 2)
             .label
             .as_ref()
-            .map(shepr_mux::terminal::Label::as_str),
+            .map(shepr_mux::Label::as_str),
         Some("website")
     );
 }
@@ -246,7 +243,7 @@ fn capture_contract_tracks_workspace_names() {
     let mut state = state_with_workspaces(&["one"]);
     state
         .ws_mut(0)
-        .set_name(shepr_mux::terminal::Label::new("renamed-workspace").expect("test name"));
+        .set_name(shepr_mux::Label::new("renamed-workspace").expect("test name"));
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];
@@ -405,7 +402,6 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
     let new = std::fs::canonicalize(scratch.path()).expect("test precondition");
     let mut state = AppState::test_new();
     state.test_set_workspaces(vec![Workspace::test_at(Some("cwd-source"), &old)]);
-    state.seed_bookmark_index(Some(0));
     let pane_id = state.ws(0).tree().root();
     let (events, _rx) = tokio::sync::mpsc::channel(32);
     // A stand-in pane shell that moves to `new` while reporting `old` over
@@ -545,7 +541,7 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         )
         .expect("test session is valid"),
     );
-    terminal.set_hook_report_at(
+    terminal.ownership_mut().set_hook_report_at(
         shepr_agent::ReportOrigin::parse("shepr:pi").expect("test origin"),
         shepr_agent::AgentState::Working,
         shepr_agent::resume::AgentSessionRef::path(session_path.clone()),
@@ -640,7 +636,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
         host_theme: Default::default(),
         workspaces: vec![WorkspaceSnapshot {
             id: "w1".parse().expect("id"),
-            name: shepr_mux::terminal::Label::new("fallback test").expect("test name"),
+            name: shepr_mux::Label::new("fallback test").expect("test name"),
             next_public_pane_number: number(3),
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,

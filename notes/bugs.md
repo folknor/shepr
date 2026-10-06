@@ -40,18 +40,16 @@ quote per shell family, or launch the resumed agent by a path that does not go
 through the interactive shell's grammar. Enforce with a test per accepted shell
 family, or a type pairing a resolved shell with its quoting.
 
-## BUG-014 - A failed final save is retried never and reported to no operator command
+## BUG-014 - A failed final save is reported to no operator command
 
 Reported by: save-shutdown, persistence.
 
-The final save now has its own must-use outcome, logs the data directory and the
-error without retry wording, keeps the join error as source, and makes `run()`
-exit with failure. What remains: the final save has no retry at all, unlike
-checkpoints, so a transient EIO on the last save loses everything since the last
-autosave; and `shepr stop` reports only that the server went away, so the
-operator who stopped it learns of a failed final save only from the server log.
-Consider giving the final save the checkpoint's retries, and carrying its
-outcome to the stopping client (or the stop's exit status).
+The final save has its own must-use outcome, logs the data directory and the error,
+and makes `run()` exit with failure; its single attempt is deliberate (reasoned in
+`app/session.rs`: retries would lengthen teardown). What remains: `shepr stop`
+reports only that the server went away, so the operator who stopped it learns of a
+failed final save only from the server log. Carry the outcome to the stopping client
+or the stop's exit status.
 
 ## BUG-022 - `SHEPR_BIN_PATH` names the server binary, is set inconsistently, and nothing reads it
 

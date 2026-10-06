@@ -11,8 +11,9 @@ use super::chrome::{overlay_buffer, put_run_with};
 use super::scrollbar::render_pane_scrollbar;
 use super::text::truncate_end;
 use crate::app::AppState;
+use shepr_mux::Label;
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
-use shepr_mux::terminal::{Label, PaneStartFailure};
+use shepr_mux::terminal::PaneStartFailure;
 use shepr_protocol::{CellData, ChromeRole, FrameData, WireColor};
 
 // Two pane-edge cells and the title's two padding cells leave one column for
@@ -459,9 +460,6 @@ fn line_cell_symbol(line: LineCell) -> &'static str {
 /// The cell strip a split divider can be grabbed on: the divider line itself
 /// when neighbouring panes share one, or that line and the border of the pane
 /// before it when `pane_gaps` keeps each pane's own box.
-/// The cell strip a split divider can be grabbed on: the divider line itself
-/// when neighbouring panes share one, or that line and the border of the pane
-/// before it when `pane_gaps` keeps each pane's own box.
 pub(crate) fn split_hit_rect(split: &shepr_core::layout::SplitBorder, pane_gaps: bool) -> Rect {
     match (split.direction, pane_gaps) {
         (shepr_core::layout::Direction::Horizontal, false) => {
@@ -564,7 +562,6 @@ mod tests {
     fn unavailable_pane_renders_restore_failure_without_a_runtime() {
         let mut app = AppState::test_new();
         app.test_set_workspaces(vec![Workspace::test_new("unavailable")]);
-        app.seed_bookmark_index(Some(0));
         let pane_id = app.ws(0).tree().root();
         app.terminal_mut(pane_id)
             .record_start_failure(PaneStartFailure::DirectoryUnavailable {
@@ -659,9 +656,7 @@ mod tests {
         ws.pane_mut(pane_id)
             .expect("the root pane has a record")
             .terminal_mut()
-            .set_manual_label(
-                shepr_mux::terminal::Label::new("1 模块组织（已定）").expect("test label"),
-            );
+            .set_manual_label(shepr_mux::Label::new("1 模块组织（已定）").expect("test label"));
 
         let mut frame = FrameData::blank(12, 3).expect("test frame size is valid");
         render_pane_borders(&app, &ws, &pane_infos, &[], &mut frame);
@@ -680,7 +675,7 @@ mod tests {
         ws.pane_mut(pane)
             .expect("root pane")
             .terminal_mut()
-            .set_manual_label(shepr_mux::terminal::Label::new("build").expect("test label"));
+            .set_manual_label(shepr_mux::Label::new("build").expect("test label"));
         let surface = |is_focused| PaneSurface {
             id: pane,
             rect: Rect::new(0, 0, 12, 3),

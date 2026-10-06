@@ -7,7 +7,6 @@ async fn headless_api_reads_latest_title() {
         .app
         .test_state_mut()
         .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("one")]);
-    server.app.test_state_mut().seed_bookmark_index(Some(0));
     let pane_id = server.app.state().ws(0).tree().root();
     server
         .app

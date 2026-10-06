@@ -42,7 +42,6 @@ mod tests {
         let mut app = App::new(&ServerConfig::default());
         app.state
             .test_set_workspaces(vec![Workspace::test_new("one")]);
-        app.state.seed_bookmark_index(Some(0));
         let pane_id = app.state.ws(0).tree().root();
         let terminal = app.state.terminal_mut(pane_id);
         terminal
@@ -113,7 +112,6 @@ mod tests {
         let mut app = App::new(&ServerConfig::default());
         app.state
             .test_set_workspaces(vec![Workspace::test_new("one")]);
-        app.state.seed_bookmark_index(Some(0));
         let pane_id = app.state.ws(0).tree().root();
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
         runtime.test_process_pty_bytes(b"\x1b]0;building\x07");

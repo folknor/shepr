@@ -590,22 +590,17 @@ mod tests {
     }
 
     #[test]
-    fn the_default_entry_point_is_this_builds() {
-        let address = runtime_address();
-        let entrypoint = operator_entrypoint();
-        assert_eq!(attach_command(&address), entrypoint);
-        assert_eq!(
-            detach_guidance(&address, false),
-            detach_guidance_with(&address, &entrypoint, false)
-        );
-        assert_eq!(
-            build_mismatch_guidance(&address),
-            build_mismatch_guidance_with(&address, &entrypoint)
-        );
-        assert_eq!(
-            status_build_mismatch_hint(&address),
-            status_build_mismatch_hint_with(&address, &entrypoint)
-        );
+    fn operator_entrypoint_matches_the_build_profile() {
+        match BuildProfile::current() {
+            BuildProfile::Release => assert_eq!(operator_entrypoint(), "shepr"),
+            BuildProfile::Dev => {
+                let executable = std::env::current_exe().expect("test executable path");
+                assert_eq!(
+                    operator_entrypoint(),
+                    shepr_core::shell_quote::quote(&executable.to_string_lossy())
+                );
+            }
+        }
     }
 
     #[test]

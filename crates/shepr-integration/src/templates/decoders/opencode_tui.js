@@ -7,6 +7,7 @@ const ROUTE_POLL_INTERVAL_MS = @TUI_POLL_MS@;
 const RETRY_WAIT_MS = @TUI_RETRY_MS@;
 const REQUEST_WAIT_MS = @TUI_REQUEST_MS@;
 const SELECTION_RETRY_DELAYS_MS = @TUI_SELECTION_DELAYS_MS@;
+const MAX_RETAINED_EVENTS = @TUI_MAX_RETAINED@;
 
 export default {
   id: "shepr.opencode.session-selection",
@@ -209,7 +210,8 @@ async function tui(api) {
         if (status === "busy" || status === "retry") {
           ctx.statuses.set(id, status);
           ctx.errors.delete(id);
-        } else if (status === "idle") {
+        } else if (typeof status === "string") {
+          // Unknown status kinds follow the same idle projection as snapshots.
           ctx.statuses.delete(id);
           ctx.errors.delete(id);
         }
@@ -240,7 +242,7 @@ async function tui(api) {
         read(ctx, (options) => api.client.question.list(undefined, options)),
       ]);
       if (!statuses || typeof statuses !== "object" || Array.isArray(statuses) ||
-          !Object.values(statuses).every((s) => ["busy", "retry", "idle"].includes(s?.type)) ||
+          !Object.values(statuses).every((s) => typeof s?.type === "string") ||
           !Array.isArray(permissions) || !Array.isArray(questions)) {
         throw new Error("incomplete session snapshot");
       }
@@ -330,8 +332,15 @@ async function tui(api) {
   ].map((type) => api.event.on(type, (event) => {
     if (type === "message.part.updated" && !terminalTool(event.properties?.part)) return;
     syncSelection();
-    const ctx = context;
+    let ctx = context;
     if (!ctx || ctx.settled) return;
+    // Persistent failures cannot retain unbounded deltas or tombstones. A new
+    // context aborts old reads and takes a fresh snapshot before reporting idle.
+    if (ctx.events.length >= MAX_RETAINED_EVENTS || ctx.deleted.size >= MAX_RETAINED_EVENTS) {
+      syncSelection(true);
+      ctx = context;
+      if (!ctx || ctx.settled) return;
+    }
     if (ctx.loading || !ctx.hydrated) ctx.events.push(event);
     apply(ctx, event);
     reconcile(ctx);

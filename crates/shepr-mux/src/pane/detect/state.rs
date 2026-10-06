@@ -22,8 +22,30 @@ use crate::pane::launch::LaunchKind;
 use crate::pane::process_probe::ProcessProbeResult;
 use crate::pane::terminal::AgentDetectionInputs;
 use shepr_agent::Agent;
+use shepr_agent::resume::AgentSessionRef;
 use shepr_detect::Detection;
 use shepr_platform::Pgid;
+
+/// Resume details needed to explain an absence hold expiring in the detector.
+/// The internal pane id is already owned by the runtime; logs use the stable
+/// public pane identity and the saved session reference.
+#[derive(Debug, Clone)]
+pub(in crate::pane) struct ResumeDetectionIdentity {
+    pub(super) public_pane_id: shepr_protocol::PublicPaneId,
+    pub(super) session_ref: AgentSessionRef,
+}
+
+impl ResumeDetectionIdentity {
+    pub(in crate::pane) fn new(
+        public_pane_id: shepr_protocol::PublicPaneId,
+        session_ref: AgentSessionRef,
+    ) -> Self {
+        Self {
+            public_pane_id,
+            session_ref,
+        }
+    }
+}
 
 /// One tick's observations. The runtime passes one set (time, group, content
 /// sequence) through a tick; the detector adds what the tick itself decides,
@@ -198,6 +220,7 @@ pub(in crate::pane) struct DetectorState {
     pub(super) agent_startup_grace_until: Option<Instant>,
     pub(super) pending_idle: PendingIdleConfirmation,
     pub(super) agent_absence_hold_until: Option<Instant>,
+    pub(super) resume_identity: Option<ResumeDetectionIdentity>,
 }
 
 impl DetectorState {
@@ -218,7 +241,16 @@ impl DetectorState {
             agent_startup_grace_until: None,
             pending_idle: PendingIdleConfirmation::default(),
             agent_absence_hold_until,
+            resume_identity: None,
         }
+    }
+
+    pub(in crate::pane) fn with_resume_identity(
+        mut self,
+        resume_identity: Option<ResumeDetectionIdentity>,
+    ) -> Self {
+        self.resume_identity = resume_identity;
+        self
     }
 
     /// All scheduling, identity, screen-cache and publication transitions run

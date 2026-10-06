@@ -67,7 +67,7 @@ pub struct ApiRequestMessage {
 }
 
 /// The bounded queue from socket connection threads to the app loop. A full
-/// queue refuses the request with `server_unavailable` instead of waiting.
+/// queue refuses the request with `endpoint_busy`, matching app admission.
 pub type ApiRequestSender = mpsc::Sender<ApiRequestMessage>;
 
 #[cfg(test)]

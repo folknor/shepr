@@ -14,7 +14,6 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .app
         .test_state_mut()
         .test_set_workspaces(vec![workspace]);
-    server.app.test_state_mut().seed_bookmark_index(Some(0));
     server
         .app
         .test_state_mut()
@@ -66,7 +65,6 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         .app
         .test_state_mut()
         .test_set_workspaces(vec![workspace]);
-    server.app.test_state_mut().seed_bookmark_index(Some(0));
     server
         .app
         .test_state_mut()

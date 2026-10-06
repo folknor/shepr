@@ -20,26 +20,6 @@ the hunts that reported it and says how the fixed form could be enforced.
 
 ---
 
-## VAL-014 - The resume timeline's tunables are spread across three crates with nothing naming the set
-
-Reported by: restore-resume.
-
-When and how a resume happens is decided by `[session] agent_resume_spacing_ms`
-(config), `PENDING_AGENT_RESUME_THEME_WAIT` (750 ms, server limits),
-`AGENT_ABSENCE_STARTUP_HOLD` (30 s, mux limits) and `LAUNCH_SETTLE_AFTER_PANE_END`
-(mux limits). Each is named in its crate's limits, but nothing tells a reader these
-four are the resume timeline. Add a section in `reference/` or a module doc in
-`resume_schedule.rs` naming them. The theme wait has an injection point at
-`ResumeSchedule::new` but none at the `App` (it always passes the constant).
-
-## VAL-021 - Most save tests still hand-set deadlines
-
-Reported by: save-shutdown.
-
-`SessionSaver::with_config` now takes a `SavePolicyConfig`, but only one test injects
-it; most save tests still use `set_autosave_deadline`. Move them onto the injected
-config.
-
 ## VAL-042 - The integration asset list is written three times
 
 Reported by: integrations.
@@ -82,18 +62,7 @@ fake in `shepr-launch/src/status.rs`. Separately, "is this build" has two spelli
 
 Reported by: server-lifecycle.
 
-- `STATUS_REQUEST_TIMEOUT`, `STOP_WAIT_TIMEOUT` and `SERVER_READY_TIMEOUT` have no
-  injection point at the public entry points, so tests wait them out (three tests
-  each sit through the full 2 s). Only `stop_active_server_with_timeout` is
-  parameterised.
 - `launch_with` and `acquire_launch_lock_with` take `now` / `sleep` seams that every
   test fills with `Instant::now` and `std::thread::sleep`, so the tests run on real
   time and `a_holder_that_never_leaves..` asserts a 2..=4 restart count from
   wall-clock pacing. Drive them with a fake clock or drop the seam.
-- `SOCKET_POLL_INTERVAL` is also the poll of a child process
-  (`read_server_version_line`), named for something else.
-- `MAX_LOCAL_OFFERS` lives in the binary's `src/limits.rs` while the restart
-  policy lives in launch.
-- The lifecycle tunables are split over five limits modules (launch, api, remote,
-  server, binary). The remote start and stop budgets are now tied to launch by
-  `const` asserts, but nothing names which timeouts must stay ordered with which.

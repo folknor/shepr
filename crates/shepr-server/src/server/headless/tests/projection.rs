@@ -256,14 +256,14 @@ async fn workspace_rename_reprojects_without_copying_connection_config() {
     server.render_now();
     assert!(control.try_recv().is_err());
 
-    let outcome = server.app.handle_endpoint_command_with_render(
+    let outcome = server.app.handle_endpoint_command(
         EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
             workspace_id: first.workspaces[0].workspace_id,
             label: Some("renamed".into()),
         }),
         &crate::app::EndpointContext::without_geometry(),
     );
-    assert!(outcome.view_changed());
+    assert_ne!(outcome.invalidation, crate::app::Invalidation::None);
     server.render_now();
     let renamed = client_shell_snapshot(&control);
     assert_eq!(renamed.workspaces[0].label, "renamed");
@@ -382,7 +382,7 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
         .app
         .test_state_mut()
         .ws_mut(0)
-        .set_name(shepr_mux::terminal::Label::new("silent").expect("test name"));
+        .set_name(shepr_mux::Label::new("silent").expect("test name"));
     server.render_now();
     assert!(control.try_recv().is_err(), "no event reported the change");
     age_cache(&mut server);

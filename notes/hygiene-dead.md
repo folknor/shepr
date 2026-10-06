@@ -56,14 +56,9 @@ Reported by: agent-state, workspace-model.
 
 Reported by: integrations.
 
-- `SHEPR_INTEGRATION_ID` (read by nothing), and `SHEPR_INTEGRATION_VERSION` (now a
-  content-derived marker) with `installed_version`, `parse_integration_version`,
-  `IntegrationOutdatedReason` and the `NotInstalled` / `Outdated` split: all exist only
-  to be logged, since currentness is exact bytes.
 - The `pi.events.on("shepr:blocked")` listener in `decoders/pi.ts` and
   `decoders/omp.ts`: an inbound event nothing in shepr emits and nothing documents (its
   payload's `label` field is a remnant). Document it as a feature or delete it.
-- `case "session.deleted": break; default: break;` in both OpenCode-family decoders.
 
 ## DEAD-014 - Workspace model leftovers: misplaced agent types, stale module names, small duplicates
 
@@ -74,20 +69,6 @@ Reported by: workspace-model.
   `shepr-protocol` imports one directly although it may depend on `shepr-agent`.
   AGENTS.md places agent identity in `shepr-agent`. Move them; the `shepr-core-layer`
   rule then keeps core free of agent types.
-- `terminal/state/` module names no longer describe their contents: `sessions.rs`
-  holds only a `cfg(test)` seed; `detection.rs` holds title handling and resume
-  abandonment; `hooks.rs` is three one-line forwarders to `AgentOwnership` (two used only
-  by tests); `names.rs` holds the workspace name type. `Label` (a workspace name and a
-  pane label) living under `terminal::state` is why `Workspace` imports
-  `crate::terminal::Label`.
-- `SpawnGeometry::cell_px()` duplicates the public `cell` field; `spawn_geometry(grid,
-  cell)` wraps `PaneGeometry::with_cell`; `Workspace::matches_identity_cwd` compares the
-  Git status cwd, not `identity_cwd`; `responses::success` is `Ok`;
-  `EndpointOutcome::view_changed` and the `App` test adapters `handle_endpoint_command`,
-  `handle_endpoint_command_in` and `handle_endpoint_command_with_render` are three names
-  for one call.
-- `ui/panes.rs` carries a duplicated doc comment above `split_hit_rect` (reported by
-  the pane chrome fix).
 
 ## DEAD-015 - Server lifecycle types, payloads and arms with one value or no reader
 

@@ -276,8 +276,13 @@ impl AppState {
                 session_ref,
             } => self.update_terminal_state(pane_id, |terminal| {
                 let source = *origin.source();
-                let outcome =
-                    terminal.report_hook_outcome_at(origin, state, session_ref, seq, sample);
+                let outcome = terminal.ownership_mut().report_hook_outcome_at(
+                    origin,
+                    state,
+                    session_ref,
+                    seq,
+                    sample,
+                );
                 admit_hook_outcome(
                     pane_id,
                     shepr_detect::ownership::HookReportKind::State(state),
@@ -296,7 +301,7 @@ impl AppState {
                 session_start_source,
             } => self.update_terminal_state(pane_id, |terminal| {
                 let source = *origin.source();
-                let outcome = terminal.report_session_start_outcome_at(
+                let outcome = terminal.ownership_mut().report_session_start_outcome_at(
                     &origin,
                     session_ref,
                     seq,

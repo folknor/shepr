@@ -454,7 +454,6 @@ test("Pi serializes its agent-start session report before its working state", as
     "pane.report_agent",
   ]);
   expect(requestStates(requests)).toEqual(["idle", "working"]);
-  expect(requests.some(requestHasMessage)).toBe(false);
   const sequences = requests.map(requestSeq);
   for (let index = 1; index < sequences.length; index += 1) {
     expect(sequences[index]).toBe((sequences[index - 1] as number) + 1);
@@ -620,7 +619,6 @@ test("Oh My Pi reports session-bound state", async () => {
   );
   await waitFor(() => requests.length >= 2);
   expect(requestStates(requests)).toEqual(["working"]);
-  expect(requests.some(requestHasMessage)).toBe(false);
   expectContractTrace("omp", requests);
 });
 
@@ -774,10 +772,6 @@ function requestState(request: unknown): unknown {
     return undefined;
   }
   return request.params.state;
-}
-
-function requestHasMessage(request: unknown): boolean {
-  return isRecord(request) && isRecord(request.params) && "message" in request.params;
 }
 
 function requestSeq(request: unknown): unknown {

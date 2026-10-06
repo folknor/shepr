@@ -4,6 +4,7 @@ use std::io::{self, Read};
 use std::path::Path;
 
 use super::atomic_replace::{AtomicReplace, PermissionPolicy};
+use crate::limits::MAX_INTEGRATION_FILE_BYTES;
 
 /// Whether `path` is a regular file (following symlinks). Absence is `false`;
 /// any other stat error (`EACCES`, `ELOOP`) is returned, not read as absence.
@@ -29,7 +30,7 @@ pub(crate) fn is_dir(path: &Path) -> InstallResult<bool> {
 /// Pin the object before reading so a FIFO never blocks and a concurrent path
 /// replacement cannot swap a checked regular file for a device or pipe.
 pub(super) fn read_config_bytes(path: &Path) -> InstallResult<Option<Vec<u8>>> {
-    let mut file = match shepr_platform::open_regular_file(path) {
+    let file = match shepr_platform::open_regular_file(path) {
         Ok(Ok(file)) => file,
         Ok(Err(error)) => return Err(error.into()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -41,7 +42,19 @@ pub(super) fn read_config_bytes(path: &Path) -> InstallResult<Option<Vec<u8>>> {
         }
     };
     let mut contents = Vec::new();
-    file.read_to_end(&mut contents)?;
+    // Read one byte past the cap so a file that grew after it was opened is
+    // refused on what was read, not on a stat taken earlier.
+    file.take(MAX_INTEGRATION_FILE_BYTES.saturating_add(1))
+        .read_to_end(&mut contents)?;
+    if u64::try_from(contents.len()).unwrap_or(u64::MAX) > MAX_INTEGRATION_FILE_BYTES {
+        return Err(InstallError::from(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} exceeds the {MAX_INTEGRATION_FILE_BYTES}-byte integration file limit",
+                path.display()
+            ),
+        )));
+    }
     Ok(Some(contents))
 }
 
@@ -186,5 +199,25 @@ mod tests {
             .filter_map(Result::ok)
             .count();
         assert_eq!(entries, 1);
+    }
+
+    #[test]
+    fn config_read_takes_a_file_at_the_cap_and_refuses_one_past_it() {
+        let dir = ScratchDir::new("oversized-integration-config");
+        let path = dir.join("config.json");
+        let file = fs::File::create(&path).expect("create config");
+        file.set_len(MAX_INTEGRATION_FILE_BYTES)
+            .expect("grow config");
+        let read = read_config_bytes(&path)
+            .expect("a config at the cap is read")
+            .expect("the config exists");
+        assert_eq!(
+            u64::try_from(read.len()).expect("length fits"),
+            MAX_INTEGRATION_FILE_BYTES
+        );
+        file.set_len(MAX_INTEGRATION_FILE_BYTES + 1)
+            .expect("grow config");
+        let error = read_config_bytes(&path).expect_err("oversized config rejected");
+        assert_eq!(error.io_kind(), std::io::ErrorKind::InvalidData);
     }
 }

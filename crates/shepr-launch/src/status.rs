@@ -47,6 +47,8 @@ pub enum RuntimeLifecycle {
     Stopping,
 }
 
+// Presence probes expose their duration at read_server_presence_at; keep the
+// same duration here rather than adding a process-wide clock or timeout override.
 pub(crate) fn read_runtime_status_at(
     socket_path: &Path,
     timeout: Duration,

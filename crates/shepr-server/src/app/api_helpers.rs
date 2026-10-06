@@ -21,8 +21,8 @@ pub(super) fn pane_agent_status(state: shepr_agent::AgentState) -> shepr_api::sc
 /// A user-given pane label as the server stores it: trimmed, and `None` when
 /// absent or empty once trimmed, which clears the pane's custom label. Keep the
 /// validated value typed through the reducer.
-pub(super) fn normalized_user_label(label: Option<String>) -> Option<shepr_mux::terminal::Label> {
-    shepr_mux::terminal::Label::new(label?)
+pub(super) fn normalized_user_label(label: Option<String>) -> Option<shepr_mux::Label> {
+    shepr_mux::Label::new(label?)
 }
 
 #[cfg(test)]

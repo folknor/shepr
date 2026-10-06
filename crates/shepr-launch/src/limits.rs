@@ -3,6 +3,10 @@
 
 use std::time::Duration;
 
+// Keep budgets with the layer that owns the operation. API, SSH and server
+// limits cannot all move here without reversing the crate dependency graph;
+// exported worst-case budgets below let higher layers assert their ordering.
+
 /// A connected client probes an endpoint that keeps a heartbeat after this
 /// much silence, and the server answers. The interval leaves room for routine
 /// SSH and server scheduling delays. It is the one timing fact both ends of a
@@ -11,10 +15,10 @@ use std::time::Duration;
 /// these intervals before it gives up, and asserts that against this value.
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How often a launching client checks its spawned server and the launch lock.
+/// How often lifecycle waits check sockets, child processes and the launch lock.
 /// The interval notices a daemon that died during boot and makes startup
 /// visible promptly without a busy wait.
-pub(crate) const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
+pub(crate) const LIFECYCLE_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Least time between two starts of the server daemon in one launch. A daemon
 /// that found the data directory held while nothing listened (the holder was
@@ -73,6 +77,12 @@ pub(crate) const STOP_STATUS_PROBE_TIMEOUT: Duration = Duration::from_millis(250
 /// to disappear. It bounds shutdown detection latency without rapid repeated
 /// probes.
 pub(crate) const STOP_WAIT_POLL: Duration = Duration::from_millis(25);
+
+/// How many times one startup restart offer asks about a server of another
+/// build. A server replaced between the observation and the stop is a new
+/// occupant and is offered once more; beyond that something keeps restarting
+/// it.
+pub const MAX_RESTART_OFFERS: usize = 2;
 
 /// Status counts are optional; a stalled application loop must not hold up a probe.
 pub const STATUS_SUMMARY_TIMEOUT: Duration = STATUS_REQUEST_TIMEOUT;

@@ -167,7 +167,7 @@ impl App {
                 }
                 _ => Default::default(),
             };
-            let cell = ws.spawn_geometry().and_then(|geometry| geometry.cell_px());
+            let cell = ws.spawn_geometry().and_then(|geometry| geometry.cell);
             infos.into_iter().filter_map(move |info| {
                 let (plan, cwd) = self.resume_candidate(ws, info.chrome.id)?;
                 let public_id = shepr_protocol::PublicPaneId::new(
@@ -231,12 +231,12 @@ impl App {
         // hung mount holds only this pane. How it went arrives as the launch's
         // settlement (`pane_launch`), which types the command or abandons the
         // plan with the reason.
-        let runtime = match self.launch_pane(
+        let runtime = match self.launch_agent_resume_pane(
             pane_id,
             public_id,
             geometry,
             cwd,
-            shepr_mux::pane::LaunchKind::AgentResume,
+            plan.key().session_ref(),
         ) {
             Ok(runtime) => runtime,
             Err(err) => {
@@ -331,7 +331,6 @@ mod tests {
                 .map(|_| shepr_mux::workspace::Workspace::test_new("restore"))
                 .collect(),
         );
-        app.state.seed_bookmark_index(Some(0));
         app.state
             .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
         let missing =
@@ -380,8 +379,6 @@ mod tests {
             shepr_mux::workspace::Workspace::test_new("idle"),
             pending_workspace,
         ]);
-        app.state.seed_bookmark_index(Some(0));
-
         // Nothing pending anywhere.
         app.state
             .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
@@ -425,7 +422,6 @@ mod tests {
         let workspace = shepr_mux::workspace::Workspace::test_new("unlaid");
         let unlaid_pane = workspace.tree().root();
         unlaid.state.test_set_workspaces(vec![workspace]);
-        unlaid.state.seed_bookmark_index(Some(0));
         unlaid.state.terminal_mut(unlaid_pane).plan_agent_resume(
             crate::test_support::test_codex_plan("probe-session", long_running_test_argv()),
         );
@@ -444,7 +440,6 @@ mod tests {
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.tree().root();
         app.state.test_set_workspaces(vec![workspace]);
-        app.state.seed_bookmark_index(Some(0));
         app.state
             .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
         app.state
@@ -506,7 +501,6 @@ mod tests {
             let workspace = shepr_mux::workspace::Workspace::test_new("unavailable");
             let pane_id = workspace.tree().root();
             app.state.test_set_workspaces(vec![workspace]);
-            app.state.seed_bookmark_index(Some(0));
             if missing_shell {
                 app.set_test_shell("/__shepr_missing_resume_shell__");
             }
@@ -631,10 +625,13 @@ mod tests {
     #[tokio::test]
     async fn pending_agent_resume_waits_for_live_host_theme_before_launch() {
         let mut app = test_app();
+        // This test checks that the restored command is parsed and executed
+        // by a POSIX shell; the shell is the subject of that assertion.
+        // host-program-ok: the restored command's quoting and execution are under test.
+        app.set_test_shell("/bin/sh");
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.tree().root();
         app.state.test_set_workspaces(vec![workspace]);
-        app.state.seed_bookmark_index(Some(0));
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
         let terminal = app.state.terminal_mut(pane_id);
@@ -686,7 +683,6 @@ mod tests {
         app.state.test_set_workspaces(vec![workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
-        app.state.seed_bookmark_index(Some(0));
         app.state
             .terminal_mut(pane_id)
             .plan_agent_resume(crate::test_support::test_codex_plan(
@@ -710,17 +706,16 @@ mod tests {
     #[tokio::test]
     async fn pending_agent_resume_launches_hidden_panes_with_current_terminal_area() {
         let mut app = test_app();
-        let active_workspace = shepr_mux::workspace::Workspace::test_new("active");
-        let active_pane = active_workspace.tree().root();
+        let first_workspace = shepr_mux::workspace::Workspace::test_new("first");
+        let first_pane = first_workspace.tree().root();
         let hidden_workspace = shepr_mux::workspace::Workspace::test_new("hidden");
         let hidden_pane = hidden_workspace.tree().root();
         app.state
-            .test_set_workspaces(vec![active_workspace, hidden_workspace]);
+            .test_set_workspaces(vec![first_workspace, hidden_workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
-        app.state.seed_bookmark_index(Some(0));
         report_test_host_theme(&mut app);
-        for pane in [active_pane, hidden_pane] {
+        for pane in [first_pane, hidden_pane] {
             app.state
                 .terminal_mut(pane)
                 .plan_agent_resume(crate::test_support::test_codex_plan(
@@ -731,7 +726,7 @@ mod tests {
 
         let now = Instant::now();
         assert!(app.start_pending_agent_resumes(now).consumed);
-        assert!(app.terminal_runtimes.get(&active_pane).is_some());
+        assert!(app.terminal_runtimes.get(&first_pane).is_some());
         assert!(app.terminal_runtimes.get(&hidden_pane).is_none());
         // The launch spaces the next one out; the wakeup is the barrier.
         let barrier = now
@@ -764,7 +759,6 @@ mod tests {
         app.state.test_set_workspaces(vec![workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
-        app.state.seed_bookmark_index(Some(0));
         report_test_host_theme(&mut app);
         app.state.terminal_mut(hidden_pane).plan_agent_resume(
             crate::test_support::test_codex_plan("zoom-hidden-session", long_running_test_argv()),
@@ -790,26 +784,28 @@ mod tests {
     #[tokio::test]
     async fn pending_agent_resume_uses_current_terminal_area_for_background_panes() {
         let mut app = test_app();
-        let previous_workspace = shepr_mux::workspace::Workspace::test_new("previous");
-        let previous_pane = previous_workspace.tree().root();
-        let current_workspace = shepr_mux::workspace::Workspace::test_new("current");
+        let other_workspace = shepr_mux::workspace::Workspace::test_new("other");
+        let other_pane = other_workspace.tree().root();
+        let later_workspace = shepr_mux::workspace::Workspace::test_new("later");
         app.state
-            .test_set_workspaces(vec![previous_workspace, current_workspace]);
+            .test_set_workspaces(vec![other_workspace, later_workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 80, 24));
-        app.state.seed_bookmark_index(Some(1));
         report_test_host_theme(&mut app);
-        app.state.terminal_mut(previous_pane).plan_agent_resume(
-            crate::test_support::test_codex_plan("codex-session", long_running_test_argv()),
-        );
+        app.state
+            .terminal_mut(other_pane)
+            .plan_agent_resume(crate::test_support::test_codex_plan(
+                "codex-session",
+                long_running_test_argv(),
+            ));
 
         assert!(app.start_pending_agent_resumes(Instant::now()).consumed);
-        assert!(app.terminal_runtimes.get(&previous_pane).is_some());
+        assert!(app.terminal_runtimes.get(&other_pane).is_some());
         settle_resume_launches(&mut app).await;
         assert!(
             !app.state
-                .terminal(previous_pane)
-                .expect("previous terminal should still exist")
+                .terminal(other_pane)
+                .expect("the other terminal should still exist")
                 .agent_resume()
                 .is_pending(),
             "background restored panes should not wait for focus once terminal area is known"
@@ -833,7 +829,6 @@ mod tests {
         let area = ratatui::layout::Rect::new(0, 0, 100, 30);
         app.state.test_set_workspaces(vec![workspace]);
         app.state.test_record_all_workspace_areas(area);
-        app.state.seed_bookmark_index(Some(0));
         let target = crate::ui::SurfaceTarget {
             index: 0,
             id: app.state.ws(0).id(),

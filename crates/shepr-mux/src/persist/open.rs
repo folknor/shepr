@@ -97,10 +97,8 @@ pub fn open_session(
 }
 
 fn log_restore(path: &std::path::Path, summary: SessionRestoreSummary) {
-    tracing::info!(
-        event = "persist.restore",
-        subsystem = "persist",
-        outcome = summary.outcome.as_log_value(),
+    shepr_platform::structured_log!(
+        INFO, event = persist.restore, outcome = summary.outcome.as_log_value(),
         path = %path.display(),
         workspaces = summary.workspaces,
         resumes_planned = summary.resumes_planned,
@@ -167,7 +165,9 @@ fn open_and_summarize(
                     .count();
                 if let Some(damage) = restore_loss {
                     backup_policy = SessionBackupPolicy::PreserveExisting;
-                    tracing::warn!(
+                    shepr_platform::structured_log!(
+                        WARN, event = persist.restore, outcome = "partial",
+                        path = %session_path(lease.directory()).display(),
                         dropped_workspaces = damage.dropped_workspaces,
                         renamed_workspaces = damage.renamed_workspaces,
                         repaired_bookmark = damage.repaired_bookmark,
@@ -351,7 +351,7 @@ mod tests {
         let first = layout.panes()[0].public_number;
         WorkspaceSnapshot {
             id: id.parse().expect("workspace id"),
-            name: crate::terminal::Label::new(name).expect("test workspace name"),
+            name: crate::Label::new(name).expect("test workspace name"),
             layout,
             next_public_pane_number: number(next),
             zoomed: false,

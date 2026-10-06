@@ -14,7 +14,7 @@ use super::super::api_helpers::{detect_state_from_api, normalized_user_label};
 use super::endpoint::{
     EndpointEffects, Handled, HandlerError, HandlerResult, internal_with_effects, pane_missing,
 };
-use super::responses::{failure, success};
+use super::responses::failure;
 
 mod copy;
 mod geometry;
@@ -49,32 +49,27 @@ impl App {
                 shepr_core::layout::Direction::Vertical
             }
         };
-        let prepared = match ws.prepare_split(
-            target_pane_id,
-            direction,
-            &chrome,
-            geometry.cell_px(),
-            split_cwd,
-        ) {
-            Ok(prepared) => prepared,
-            Err(shepr_mux::workspace::SplitPreparationRefused::TargetGone) => {
-                return Err(pane_missing(&params.pane_id).into());
-            }
-            Err(shepr_mux::workspace::SplitPreparationRefused::NumberExhausted) => {
-                return Err(
-                    shepr_protocol::command::EndpointError::ResourceFailure(format!(
-                        "the pane number space is exhausted in workspace {workspace_id}"
-                    ))
-                    .into(),
-                );
-            }
-            Err(shepr_mux::workspace::SplitPreparationRefused::LayoutRefused) => {
-                return Err(shepr_protocol::command::EndpointError::ResourceFailure(
-                    "the workspace layout could not accept the split".to_owned(),
-                )
-                .into());
-            }
-        };
+        let prepared =
+            match ws.prepare_split(target_pane_id, direction, &chrome, geometry.cell, split_cwd) {
+                Ok(prepared) => prepared,
+                Err(shepr_mux::workspace::SplitPreparationRefused::TargetGone) => {
+                    return Err(pane_missing(&params.pane_id).into());
+                }
+                Err(shepr_mux::workspace::SplitPreparationRefused::NumberExhausted) => {
+                    return Err(
+                        shepr_protocol::command::EndpointError::ResourceFailure(format!(
+                            "the pane number space is exhausted in workspace {workspace_id}"
+                        ))
+                        .into(),
+                    );
+                }
+                Err(shepr_mux::workspace::SplitPreparationRefused::LayoutRefused) => {
+                    return Err(shepr_protocol::command::EndpointError::ResourceFailure(
+                        "the workspace layout could not accept the split".to_owned(),
+                    )
+                    .into());
+                }
+            };
         let runtime = match self.launch_pane(
             prepared.pane_id(),
             prepared.public_id(),

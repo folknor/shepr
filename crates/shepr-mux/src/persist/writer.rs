@@ -11,14 +11,11 @@ use super::files;
 use super::recovery::{self, SessionBackupPolicy, SnapshotPlan, SnapshotState};
 use super::schema::SessionSnapshot;
 
-// The session save and clear events. These literals are the emitted log
-// schema, so the names stay visible at the event site.
+// Session save and clear events use the shared subsystem.operation convention.
 
 fn session_saved(path: &Path, workspaces: usize) {
-    tracing::info!(
-        event = "persist.save",
-        subsystem = "persist",
-        outcome = "ok",
+    shepr_platform::structured_log!(
+        INFO, event = persist.save, outcome = "ok",
         path = %path.display(),
         workspaces,
         "session saved"
@@ -26,10 +23,8 @@ fn session_saved(path: &Path, workspaces: usize) {
 }
 
 fn session_save_failed(path: &Path, err: &str) {
-    tracing::error!(
-        event = "persist.save",
-        subsystem = "persist",
-        outcome = "error",
+    shepr_platform::structured_log!(
+        ERROR, event = persist.save, outcome = "error",
         path = %path.display(),
         error = err,
         "failed to save session"
@@ -37,20 +32,16 @@ fn session_save_failed(path: &Path, err: &str) {
 }
 
 fn session_cleared(path: &Path) {
-    tracing::info!(
-        event = "persist.clear",
-        subsystem = "persist",
-        outcome = "ok",
+    shepr_platform::structured_log!(
+        INFO, event = persist.clear, outcome = "ok",
         path = %path.display(),
         "session cleared"
     );
 }
 
 fn session_clear_failed(path: &Path, err: &str) {
-    tracing::error!(
-        event = "persist.clear",
-        subsystem = "persist",
-        outcome = "error",
+    shepr_platform::structured_log!(
+        ERROR, event = persist.clear, outcome = "error",
         path = %path.display(),
         error = err,
         "failed to clear session"
@@ -145,8 +136,8 @@ impl SessionWriter {
             // committed layout, so the unloaded-file guard is released and
             // the snapshot step runs, exactly as for a durable save.
             Ok(files::Published::NotDurable(err)) => {
-                tracing::warn!(
-                    event = "persist.save", subsystem = "persist", outcome = "not_durable",
+                shepr_platform::structured_log!(
+                    WARN, event = persist.save, outcome = "not_durable",
                     path = %self.path.display(), error = %err,
                     "session saved but not confirmed durable"
                 );
@@ -260,8 +251,8 @@ mod tests {
         )
     }
 
-    fn test_name(name: &str) -> crate::terminal::Label {
-        crate::terminal::Label::new(name).expect("test workspace name")
+    fn test_name(name: &str) -> crate::Label {
+        crate::Label::new(name).expect("test workspace name")
     }
 
     fn snapshot() -> SessionSnapshot {

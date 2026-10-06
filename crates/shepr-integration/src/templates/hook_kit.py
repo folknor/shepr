@@ -1,4 +1,5 @@
 import json
+import sys
 from types import SimpleNamespace
 import os
 import socket
@@ -17,7 +18,6 @@ EVENTS = @EVENTS@
 action = os.environ.get("SHEPR_ACTION", "")
 pane_id = os.environ.get("@ENV_PANE@")
 socket_path = os.environ.get("@ENV_SOCKET@")
-hook_input_file = os.environ.get("SHEPR_HOOK_INPUT_FILE")
 
 if not pane_id or not socket_path:
     raise SystemExit(0)
@@ -31,11 +31,9 @@ report_seq = int(raw_seq) if raw_seq.isdigit() else time.time_ns()
 
 
 def read_hook_input():
-    if not hook_input_file:
-        return {}
     try:
-        with open(hook_input_file, encoding="utf-8") as handle:
-            content = handle.read()
+        # Read bytes: json.loads detects the payload encoding, not the locale.
+        content = sys.stdin.buffer.read()
         if not content.strip():
             return {}
         parsed = json.loads(content)

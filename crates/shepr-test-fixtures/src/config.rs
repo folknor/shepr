@@ -13,11 +13,6 @@ use shepr_paths::AppPaths;
 /// need real directories root their paths in a `shepr_test_support::ScratchDir`.
 const UNWRITABLE_ROOT: &str = "/nonexistent/shepr-test-config";
 
-/// The pane shell fixture configs name when a test leaves it unset. Launch
-/// validation only inspects it (it must exist and be executable); no fixture
-/// config runs it.
-const FIXTURE_SHELL: &str = "/bin/sh";
-
 /// The local server's name in fixture client configs that leave
 /// `local.label` unset. No fixture machine uses it.
 pub const FIXTURE_LOCAL_LABEL: &str = "Desk";
@@ -108,19 +103,31 @@ impl ValidatedServerConfigFixture for ValidatedServerConfig {
     }
 
     fn test_from_config_with_paths(mut config: ServerConfig, paths: AppPaths) -> Self {
-        // `validate` reads `SHELL` and `PATH` even with an explicit shell.
-        // This fixed absolute path makes both values irrelevant for default
-        // fixtures; callers testing a relative shell must isolate their env.
-        // Do not acquire `IsolatedEnv` here: callers may already hold its
-        // non-reentrant process-environment lock while building a fixture.
-        if config
+        // A config fixture needs a shell-shaped value, but it must not borrow
+        // the host's shell just to validate. This absent path is a sentinel:
+        // app test constructors replace it with a repo-built shell fixture,
+        // and a test that launches directly from this config must supply one.
+        let default_shell = if config
             .terminal
             .default_shell
             .as_deref()
             .is_none_or(|shell| shell.trim().is_empty())
         {
-            config.terminal.default_shell = Some(FIXTURE_SHELL.to_owned());
+            config.terminal.default_shell = None;
+            Some(
+                shepr_core::shell::ResolvedShell::validate(
+                    Path::new(UNWRITABLE_ROOT).join("sh"),
+                    |_| Ok(()),
+                )
+                .expect("the fixture shell sentinel is absolute"),
+            )
+        } else {
+            None
+        };
+        match default_shell {
+            Some(shell) => Self::validate_for_test(&config, paths, shell),
+            None => Self::validate(&config, paths),
         }
-        Self::validate(&config, paths).expect("test config is valid")
+        .expect("test config is valid")
     }
 }

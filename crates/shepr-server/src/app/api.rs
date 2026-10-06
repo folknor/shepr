@@ -199,14 +199,6 @@ impl App {
 use shepr_protocol::command::EndpointCommand;
 
 #[cfg(test)]
-impl EndpointOutcome {
-    /// Whether the command left any render owed.
-    pub(crate) fn view_changed(&self) -> bool {
-        self.invalidation != Invalidation::None
-    }
-}
-
-#[cfg(test)]
 impl EndpointContext {
     /// A requester that presents no geometry of its own.
     pub(crate) fn without_geometry() -> Self {
@@ -231,7 +223,7 @@ impl App {
 
     /// Test adapter for the wire command. Production dispatch accepts only
     /// `EndpointAppCommand`, so loop-owned commands cannot reach the app.
-    pub(crate) fn handle_endpoint_command_with_render(
+    pub(crate) fn handle_endpoint_command(
         &mut self,
         command: EndpointCommand,
         ctx: &EndpointContext,
@@ -248,27 +240,6 @@ impl App {
                 invalidation: Invalidation::None,
             },
         }
-    }
-
-    /// Runs the App handler for a test with explicitly prepared state and no
-    /// requester geometry. Pending events must be handled by the headless
-    /// server before a test relies on them.
-    pub(crate) fn handle_endpoint_command(
-        &mut self,
-        command: EndpointCommand,
-    ) -> Result<EndpointReply, EndpointError> {
-        self.handle_endpoint_command_with_render(command, &EndpointContext::without_geometry())
-            .result
-    }
-
-    /// As `handle_endpoint_command`, for a requester with `ctx`, returning the
-    /// whole outcome (the navigation effect included).
-    pub(crate) fn handle_endpoint_command_in(
-        &mut self,
-        command: EndpointCommand,
-        ctx: &EndpointContext,
-    ) -> EndpointOutcome {
-        self.handle_endpoint_command_with_render(command, ctx)
     }
 }
 
@@ -299,11 +270,16 @@ mod tests {
     fn the_viewing_request_answered_by_the_loop_is_reported_as_misrouted() {
         let mut app = App::new(&shepr_config::ServerConfig::default());
 
-        let surface = app.handle_endpoint_command(EndpointCommand::ClientShellSurfaceSet(
-            shepr_protocol::command::ClientShellSurfaceSetParams { active: true },
-        ));
+        let surface = app.handle_endpoint_command(
+            EndpointCommand::ClientShellSurfaceSet(
+                shepr_protocol::command::ClientShellSurfaceSetParams { active: true },
+            ),
+            &EndpointContext::without_geometry(),
+        );
         assert!(matches!(
-            surface.expect_err("viewing request is answered by the loop"),
+            surface
+                .result
+                .expect_err("viewing request is answered by the loop"),
             EndpointError::Internal(_)
         ));
     }
@@ -311,7 +287,7 @@ mod tests {
     #[test]
     fn read_only_commands_do_not_force_a_render() {
         let mut app = App::new(&shepr_config::ServerConfig::default());
-        let read = app.handle_endpoint_command_with_render(
+        let read = app.handle_endpoint_command(
             EndpointCommand::PaneSelectionRead(shepr_protocol::command::PaneSelectionReadParams {
                 pane_id: PublicPaneId::new(
                     &WorkspaceId::from_number(1).expect("number"),
@@ -328,9 +304,9 @@ mod tests {
             }),
             &EndpointContext::without_geometry(),
         );
-        assert!(!read.view_changed());
+        assert_eq!(read.invalidation, Invalidation::None);
 
-        let rename = app.handle_endpoint_command_with_render(
+        let rename = app.handle_endpoint_command(
             EndpointCommand::PaneRename(shepr_protocol::command::PaneRenameParams {
                 pane_id: PublicPaneId::new(
                     &WorkspaceId::from_number(1).expect("number"),
@@ -340,7 +316,7 @@ mod tests {
             }),
             &EndpointContext::without_geometry(),
         );
-        assert!(!rename.view_changed());
+        assert_eq!(rename.invalidation, Invalidation::None);
         assert!(rename.result.is_err());
     }
 
@@ -352,7 +328,7 @@ mod tests {
         let workspace_id = app.state.ws(0).id();
         let mut rename = |label: &str| {
             let before = app.state.shell_projection_revision();
-            let outcome = app.handle_endpoint_command_with_render(
+            let outcome = app.handle_endpoint_command(
                 EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
                     workspace_id,
                     label: Some(label.into()),
@@ -360,7 +336,7 @@ mod tests {
                 &EndpointContext::without_geometry(),
             );
             assert!(outcome.result.is_ok(), "{label:?}");
-            let view_changed = outcome.view_changed();
+            let view_changed = outcome.invalidation != Invalidation::None;
             (
                 app.state.ws(0).name().to_owned(),
                 outcome.effects,
@@ -497,6 +473,7 @@ mod tests {
         // so the probe is stamped after the detection seeded above.
         let observed_at = std::time::Instant::now();
         terminal
+            .ownership_mut()
             .set_hook_report_at(
                 shepr_agent::ReportOrigin::parse("shepr:codex").expect("test origin"),
                 AgentState::Working,

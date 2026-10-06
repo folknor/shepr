@@ -25,7 +25,7 @@ impl App {
         // A parked or rejected report is still answered with success: hooks
         // are fire-and-forget, and the admission outcome is logged where it
         // is decided (`admit_hook_outcome`).
-        success(ResponseResult::Ok {})
+        Ok(ResponseResult::Ok {})
     }
 
     pub(crate) fn handle_pane_report_agent_session(
@@ -71,7 +71,7 @@ impl App {
             session_start_source,
         ));
 
-        success(ResponseResult::Ok {})
+        Ok(ResponseResult::Ok {})
     }
 
     /// The server clock a hook report is admitted at, as the event path

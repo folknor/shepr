@@ -35,9 +35,8 @@ use crate::failure::RemoteFailureClass;
 use crate::guidance;
 use crate::invocation::{SERVER_BINARY_NAME, ServerInvocation, parse_server_version_line};
 use crate::limits::{
-    BOOT_LOG_MAX_BYTES, DAEMON_RESTART_INTERVAL, LAUNCH_LOCK_WAIT_GRACE,
-    SIBLING_VERSION_OUTPUT_BYTES, SIBLING_VERSION_TIMEOUT, SOCKET_POLL_INTERVAL,
-    STATUS_REQUEST_TIMEOUT,
+    BOOT_LOG_MAX_BYTES, DAEMON_RESTART_INTERVAL, LAUNCH_LOCK_WAIT_GRACE, LIFECYCLE_POLL_INTERVAL,
+    SIBLING_VERSION_OUTPUT_BYTES, SIBLING_VERSION_TIMEOUT, STATUS_REQUEST_TIMEOUT,
 };
 use crate::status::{RuntimeStatus, ServerPresence};
 
@@ -119,15 +118,13 @@ impl LaunchError {
             // A timeout, or a peer that went away mid-answer (a server dying
             // or restarting while the boot probe talks to it), is transient;
             // any other IO failure is the host's to fix.
-            Self::LaunchLock(error) | Self::Io(error) => match error.kind() {
-                io::ErrorKind::TimedOut
-                | io::ErrorKind::ConnectionReset
-                | io::ErrorKind::ConnectionRefused
-                | io::ErrorKind::ConnectionAborted
-                | io::ErrorKind::UnexpectedEof
-                | io::ErrorKind::BrokenPipe => Retry,
-                _ => Repair,
-            },
+            Self::LaunchLock(error) | Self::Io(error) => {
+                if crate::failure::launch_io_allows_retry(error.kind()) {
+                    Retry
+                } else {
+                    Repair
+                }
+            }
         }
     }
 }
@@ -179,6 +176,9 @@ pub enum BuildCheck {
 /// A server this call starts is verified to be this build before it returns,
 /// whatever the policy: the policy governs only a server that was already
 /// running.
+// `timeout` is already an explicit tuning point. The lock, socket transition
+// and daemon readiness are separate phases: a lock waiter must still give its
+// own daemon a full boot window after the prior launcher leaves.
 pub fn ensure_running(
     paths: &shepr_paths::AppPaths,
     timeout: Duration,
@@ -368,7 +368,7 @@ fn wait_for_server_socket_to_settle_until(
         if remaining.is_zero() {
             return Err(server_transition_timeout(paths, timeout));
         }
-        std::thread::sleep(SOCKET_POLL_INTERVAL.min(remaining));
+        std::thread::sleep(LIFECYCLE_POLL_INTERVAL.min(remaining));
     }
 }
 
@@ -601,7 +601,7 @@ fn read_server_version_line(server: &Path, timeout: Duration) -> io::Result<Stri
                 ),
             ));
         }
-        std::thread::sleep(SOCKET_POLL_INTERVAL);
+        std::thread::sleep(LIFECYCLE_POLL_INTERVAL);
     };
     if !status.success() {
         return Err(io::Error::other(format!(
@@ -647,6 +647,8 @@ fn acquire_launch_lock(paths: &shepr_paths::AppPaths, wait: Duration) -> io::Res
     )
 }
 
+// Keep clock and sleep paired: callers can advance a fake monotonic clock on
+// each sleep without waiting out a contended lock's production budget.
 fn acquire_launch_lock_with(
     lock_path: &Path,
     wait: Duration,
@@ -671,7 +673,7 @@ fn acquire_launch_lock_with(
                         ),
                     ));
                 }
-                sleep(SOCKET_POLL_INTERVAL);
+                sleep(LIFECYCLE_POLL_INTERVAL);
             }
             Err(error) => {
                 return Err(io::Error::new(
@@ -761,6 +763,8 @@ fn launch_daemon(
 /// starting before its socket bind, or one that has released its socket and
 /// still holds its lease. The launch is owed a daemon of its own once the
 /// lease is free.
+// The injected clock and sleeper also permit deterministic daemon restart
+// pacing; real subprocess IO tests may still choose the real clock.
 fn launch_with(
     files: &LaunchFiles<'_>,
     timeout: Duration,
@@ -845,8 +849,12 @@ fn launch_with(
             if status.build_id.is_this_build() {
                 // Empty startup diagnostics after readiness. This is not a
                 // lifetime cap: a daemon whose file logging failed may keep
-                // stderr here. Capping that stream needs a bounded stderr
-                // sink owned by the server, beyond this launch-time guard.
+                // stderr here, unbounded. A launcher cannot cap it after it
+                // exits: a pipe needs an owner that keeps draining it, and an
+                // rlimit would also cap the server's other file writes. The
+                // cap has to come from the server redirecting its own stderr
+                // to a bounded sink when file logging fails, which it does not
+                // do yet.
                 if let Err(error) = boot_log_handle.set_len(0) {
                     tracing::debug!(%error, "could not empty the server boot log");
                 }
@@ -904,7 +912,7 @@ fn launch_with(
             exited = None;
             continue;
         }
-        sleep(SOCKET_POLL_INTERVAL);
+        sleep(LIFECYCLE_POLL_INTERVAL);
     }
 }
 

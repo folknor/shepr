@@ -1,4 +1,3 @@
-use super::TerminalState;
 use serde::{Deserialize, Serialize};
 
 /// A nonempty user-facing label with surrounding whitespace removed.
@@ -37,20 +36,5 @@ impl<'de> Deserialize<'de> for Label {
             ));
         }
         Ok(Self(value))
-    }
-}
-
-impl TerminalState {
-    /// Stores a label its caller validated at its input boundary.
-    pub fn set_manual_label(&mut self, label: Label) {
-        self.manual_label = Some(label);
-    }
-
-    pub fn clear_manual_label(&mut self) {
-        self.manual_label = None;
-    }
-
-    pub fn is_agent_terminal(&self) -> bool {
-        self.ownership.has_agent()
     }
 }

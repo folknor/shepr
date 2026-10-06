@@ -125,17 +125,18 @@ fn print_full_status(
         binary: current_exe_label(),
         sibling: shepr_launch::local_server::sibling_server_status(),
     };
+    let report_now = SystemTime::now();
     let overview = Overview {
         installation: &installation,
         server: &server,
         summary,
         address,
         mismatch_hint: &shepr_launch::guidance::status_build_mismatch_hint(address),
-        now: SystemTime::now(),
+        now: report_now,
     };
     print!("{}", render_overview(&overview));
     if let Some(machines) = machines {
-        print!("{}", render_machines(&machines, paths, SystemTime::now()));
+        print!("{}", render_machines(&machines, paths, report_now));
     }
     Ok(0)
 }
@@ -709,9 +710,9 @@ mod tests {
             version: "0.1.0".into(),
             build_id: THIS_BUILD.parse().expect("build identity"),
             profile: BuildProfile::Release,
-            binary: "/home/folk/.cargo/bin/shepr".into(),
+            binary: "/nonexistent/shepr/bin/shepr".into(),
             sibling: SiblingServerJson {
-                binary: Some("/home/folk/.cargo/bin/shepr-server".into()),
+                binary: Some("/nonexistent/shepr/bin/shepr-server".into()),
                 identity: sibling
                     .map(|(version, build_id)| shepr_protocol::BuildVersion {
                         version: version.into(),
@@ -762,7 +763,7 @@ mod tests {
                 None,
                 &runtime_address()
             ),
-            "shepr 0.1.0 (release, build 38df64ce2909c428)\n  /home/folk/.cargo/bin/shepr\n\nserver: not running\n  socket  /run/user/1000/shepr/shepr.sock\n"
+            "shepr 0.1.0 (release, build 38df64ce2909c428)\n  /nonexistent/shepr/bin/shepr\n\nserver: not running\n  socket  /run/user/1000/shepr/shepr.sock\n"
         );
     }
 
@@ -777,7 +778,7 @@ mod tests {
                 Some(Ok(summary(1))),
                 &runtime_address()
             ),
-            "shepr 0.1.0 (release, build 38df64ce2909c428)\n  /home/folk/.cargo/bin/shepr\n\nserver: running, pid 41233, up 3h12m\n  workspaces 3   panes 7   agents 4 (1 blocked)\n  socket  /run/user/1000/shepr/shepr.sock\n"
+            "shepr 0.1.0 (release, build 38df64ce2909c428)\n  /nonexistent/shepr/bin/shepr\n\nserver: running, pid 41233, up 3h12m\n  workspaces 3   panes 7   agents 4 (1 blocked)\n  socket  /run/user/1000/shepr/shepr.sock\n"
         );
         let unblocked = render(
             &installation,
@@ -807,7 +808,7 @@ mod tests {
         let server = ServerPresence::Running(booted("0.1.0", OTHER_BUILD));
         assert_eq!(
             render(&installation, &server, None, &runtime_address()),
-            "shepr 0.1.0 (release, build 38df64ce2909c428)\n  /home/folk/.cargo/bin/shepr\n\nserver: running a different build (5a1c09e2...), unusable by this shepr\n  run `shepr stop`, then `shepr`\n  socket  /run/user/1000/shepr/shepr.sock\n"
+            "shepr 0.1.0 (release, build 38df64ce2909c428)\n  /nonexistent/shepr/bin/shepr\n\nserver: running a different build (5a1c09e2...), unusable by this shepr\n  run `shepr stop`, then `shepr`\n  socket  /run/user/1000/shepr/shepr.sock\n"
         );
         let older = ServerPresence::Starting(booted("0.0.9", OTHER_BUILD));
         let rendered = render(&installation, &older, None, &runtime_address());
@@ -868,20 +869,20 @@ mod tests {
     #[test]
     fn the_sibling_server_is_shown_only_when_it_differs() {
         let header =
-            "shepr 0.1.0 (release, build 38df64ce2909c428)\n  /home/folk/.cargo/bin/shepr\n";
+            "shepr 0.1.0 (release, build 38df64ce2909c428)\n  /nonexistent/shepr/bin/shepr\n";
         for (sibling, expected) in [
             (Ok(("0.1.0", THIS_BUILD)), String::new()),
             (
                 Ok(("0.1.0", OTHER_BUILD)),
-                "shepr-server 0.1.0 (build 5a1c09e2...), a different build\n  /home/folk/.cargo/bin/shepr-server\n".to_owned(),
+                "shepr-server 0.1.0 (build 5a1c09e2...), a different build\n  /nonexistent/shepr/bin/shepr-server\n".to_owned(),
             ),
             (
                 Ok(("0.0.9", OTHER_BUILD)),
-                "shepr-server 0.0.9 (build 5a1c09e2...), a different version\n  /home/folk/.cargo/bin/shepr-server\n".to_owned(),
+                "shepr-server 0.0.9 (build 5a1c09e2...), a different version\n  /nonexistent/shepr/bin/shepr-server\n".to_owned(),
             ),
             (
-                Err("shepr-server was not found at /home/folk/.cargo/bin/shepr-server"),
-                "shepr-server unusable\n  shepr-server was not found at /home/folk/.cargo/bin/shepr-server\n".to_owned(),
+                Err("shepr-server was not found at /nonexistent/shepr/bin/shepr-server"),
+                "shepr-server unusable\n  shepr-server was not found at /nonexistent/shepr/bin/shepr-server\n".to_owned(),
             ),
         ] {
             let mut out = String::new();
@@ -1057,7 +1058,7 @@ mod tests {
                 (
                     &dm6,
                     Ok(MachineStatus {
-                        executable: "/home/u/.cargo/bin/shepr".into(),
+                        executable: "/nonexistent/remote/bin/shepr".into(),
                         overview: remote_overview(shepr_protocol::BUILD_ID, None, None),
                     }),
                 ),

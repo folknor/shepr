@@ -317,6 +317,38 @@ impl PaneLauncher {
     /// this side of the launch touches the user's filesystem, and the child
     /// reports its chdir and exec through the launch settlement.
     pub fn launch(&self, request: PaneLaunchRequest<'_>) -> std::io::Result<PaneRuntime> {
+        self.launch_inner(request, None)
+    }
+
+    /// Starts a deferred agent-resume pane and gives its detector the saved
+    /// session reference it needs to report an expired absence hold.
+    pub fn launch_agent_resume(
+        &self,
+        pane_id: PaneId,
+        public_id: shepr_protocol::PublicPaneId,
+        geometry: shepr_core::geometry::PaneGeometry,
+        cwd: &shepr_core::absolute_path::AbsolutePath,
+        session_ref: &shepr_agent::resume::AgentSessionRef,
+        presentation: LaunchPresentation,
+    ) -> std::io::Result<PaneRuntime> {
+        self.launch_inner(
+            PaneLaunchRequest {
+                pane_id,
+                public_id,
+                geometry,
+                cwd,
+                kind: LaunchKind::AgentResume,
+                presentation,
+            },
+            Some(session_ref),
+        )
+    }
+
+    fn launch_inner(
+        &self,
+        request: PaneLaunchRequest<'_>,
+        resume_session_ref: Option<&shepr_agent::resume::AgentSessionRef>,
+    ) -> std::io::Result<PaneRuntime> {
         let PaneLaunchRequest {
             pane_id,
             public_id,
@@ -325,6 +357,15 @@ impl PaneLauncher {
             kind: launch_kind,
             presentation,
         } = request;
+        if launch_kind == LaunchKind::AgentResume && resume_session_ref.is_none() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "agent-resume launches require the saved session reference",
+            ));
+        }
+        let resume_identity = resume_session_ref.map(|session_ref| {
+            crate::pane::detect::ResumeDetectionIdentity::new(public_id, session_ref.clone())
+        });
         let launch_env = PaneLaunchEnv::new(self.handles.socket_path.clone(), public_id);
         let (host_terminal_theme, host_terminal_appearance) = match presentation {
             LaunchPresentation::Live { theme, appearance } => (theme, appearance),
@@ -435,6 +476,7 @@ impl PaneLauncher {
         let detect_handle = Some(super::detection_task::DetectionTask::spawn(
             pane_id,
             launch_kind,
+            resume_identity,
             launch,
             super::detection_task::DetectionHandles {
                 terminal: Arc::clone(&terminal),
