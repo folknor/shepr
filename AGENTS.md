@@ -477,6 +477,13 @@ every agent integration reports through it.
   pane with `shepr detect capture <pane>`, encode
   invariant controls as explicit AND/OR gates, and never use the user-visible
   viewport (users scroll it).
+- **Detection manifests follow upstream.** shepr keeps no capture corpus, and
+  most bundled manifests are pinned by no captured-screen test; that is
+  deliberate and is not a gap to fill. Upstream herdr maintains the manifests
+  against live agents, and `scripts/upstream_watch.py` (its docstring has the
+  flags) reports what upstream changed so manifest fixes are taken from there.
+  A manifest defect found here is first looked for upstream; a local fix needs
+  captures of that agent to test against.
 - **Hot paths multiply.** Work reachable from view computation, rendering,
   PTY parsing, detection or client frame fanout runs per byte or event, times
   panes, times clients. Inside those loops use narrow accessors, keep

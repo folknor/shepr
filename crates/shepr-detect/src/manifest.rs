@@ -580,6 +580,10 @@ fn default_state() -> AgentState {
 
 /// The bundled screen-detection rules for `agent`, or `None` for an agent
 /// without screen detection. Exhaustive, so a new agent is classified here.
+///
+/// Most of these manifests are pinned by no captured-screen test, and that is
+/// deliberate: shepr keeps no capture corpus of its own. Manifest fixes come
+/// from upstream herdr, which `scripts/upstream_watch.py` surfaces.
 pub const fn bundled_manifest_source(agent: Agent) -> Option<&'static str> {
     match agent {
         Agent::Pi => Some(include_str!("manifests/pi.toml")),
