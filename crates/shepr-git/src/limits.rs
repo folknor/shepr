@@ -20,27 +20,11 @@ pub(crate) const GIT_REFRESH_STALL_BOUND: Duration = GIT_COMMAND_TIMEOUT.saturat
 /// the global budget; past it a stalled refresh is waited out.
 pub(crate) const MAX_ABANDONED_GIT_REFRESH_THREADS: usize = 4;
 
-/// Polling interval while waiting for a Git probe and its output readers. The
-/// interval keeps exit detection responsive without a busy loop.
-pub(crate) const GIT_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
-
-/// How long a probe that timed out waits for its killed child to be reaped
-/// before the child is handed to the background reaper. A child in an
-/// uninterruptible wait on a hung mount ignores SIGKILL until the kernel call
-/// returns, so the caller must not wait for it.
-pub(crate) const GIT_KILL_REAP_GRACE: Duration = Duration::from_millis(250);
-
-/// Most killed Git children the background reaper holds at once. A child past
-/// it is dropped unreaped, a zombie until shepr exits, rather than growing
-/// without bound under a mount that stays hung.
-pub(crate) const MAX_UNREAPED_GIT_CHILDREN: usize = 16;
-
-/// How often the background reaper checks the children it holds.
-pub(crate) const UNREAPED_GIT_CHILD_POLL_INTERVAL: Duration = Duration::from_millis(100);
-
-/// Bytes read from a Git probe's output pipe per read call. Large enough that
-/// typical status output drains in a few reads.
-pub(crate) const GIT_PIPE_READ_CHUNK_BYTES: usize = 8192;
+/// Git probes that may be running or waiting to be reaped at once. A probe
+/// stuck on a hung mount keeps its slot until the kernel releases it; past
+/// this, new probes are refused rather than piling up processes. Refresh
+/// threads run one probe at a time, so this is mostly stuck probes.
+pub(crate) const GIT_CHILD_BUDGET: usize = 16;
 
 /// Maximum retained bytes from each Git output stream. Config listings are
 /// user-controlled; exceeding this budget fails the probe instead of returning

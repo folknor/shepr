@@ -34,6 +34,7 @@ from _brokkr_config import ROOT, repository_sources
 SUBSYSTEMS = {
     'agent': 'agent identity, detection, state and session reports for a pane',
     'api': 'the JSON API listener and its requests',
+    'child': 'supervised host-utility children: admission, deadlines and reaping',
     'cli': 'the command line process',
     'client': 'the client process (TUI launch, startup, shutdown, its own files)',
     'clipboard': 'clipboard copy, paste, OSC 52 and the helper processes',

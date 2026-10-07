@@ -28,6 +28,7 @@ mod random;
 mod stderr_null;
 mod stream_wake;
 mod structured_log;
+pub mod supervised;
 mod terminal_environment;
 
 pub use boot_clock::boot_time_nanos;

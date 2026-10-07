@@ -37,6 +37,31 @@ pub(super) const RUNTIME_OWNER_MAX_BYTES: u64 = 128;
 /// The interval keeps exit detection responsive without a busy loop.
 pub(super) const HELPER_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
+/// Polling interval while a supervised child runs: how soon its exit, its
+/// deadline or a terminating overflow is noticed, without a busy loop.
+pub(super) const SUPERVISED_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Longest single wait of a supervised child's stream reader or stdin writer,
+/// so cancellation is noticed within it even while the pipe stays idle.
+pub(super) const SUPERVISED_CANCEL_SLICE: Duration = Duration::from_millis(50);
+
+/// How long a killed supervised child is waited for before it goes to the
+/// background reaper. A child in an uninterruptible wait ignores SIGKILL
+/// until the kernel call returns, so the caller must not wait for it.
+pub(super) const SUPERVISED_KILL_REAP_GRACE: Duration = Duration::from_millis(250);
+
+/// How long past a supervised run's deadline its caller waits for the report:
+/// enough for the kill, one cancel slice and the reap grace on a healthy
+/// host. Past it the caller gets a bare timeout and the supervisor thread
+/// finishes cleanup on its own.
+pub(super) const SUPERVISED_RESULT_GRACE: Duration = Duration::from_secs(1);
+
+/// How often the background reaper checks the killed children it holds.
+pub(super) const SUPERVISED_REAPER_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Bytes read from a supervised child's stream per read call.
+pub(super) const SUPERVISED_READ_CHUNK_BYTES: usize = 8192;
+
 /// Poll interval used to bound cancellation latency on client streams.
 /// The interval limits shutdown delay without continuously polling.
 pub(super) const CLIENT_STREAM_POLL_INTERVAL: Duration = Duration::from_millis(100);

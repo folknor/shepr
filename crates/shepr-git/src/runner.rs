@@ -2,28 +2,38 @@
 //! terminal, no prompts and no repository selection inherited from the
 //! caller's environment. Status, discovery and every other Git probe go
 //! through [`run_git`]; what the output means stays with each caller.
+//!
+//! The child itself is supervised by `shepr_platform::supervised`: its
+//! deadline, output caps, process-group kill and reaping, under Git's own
+//! child budget so a hung mount's stuck probes cannot take another
+//! subsystem's capacity.
 
 use std::ffi::OsStr;
-use std::io::{self, Read};
-use std::os::fd::AsRawFd;
+use std::io;
 use std::path::Path;
-use std::process::{Child, Command, Output, Stdio};
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
-use crate::limits::{
-    GIT_COMMAND_TIMEOUT, GIT_KILL_REAP_GRACE, GIT_PROCESS_POLL_INTERVAL, MAX_UNREAPED_GIT_CHILDREN,
-    UNREAPED_GIT_CHILD_POLL_INTERVAL,
+use shepr_platform::supervised::{
+    ChildBudget, ChildEnd, ChildStream, Overflow, PreparedChild, StreamSpec, SupervisedRun,
+    run_supervised,
 };
+
+use crate::limits::{GIT_CHILD_BUDGET, GIT_COMMAND_TIMEOUT, MAX_GIT_PIPE_BYTES};
+
+/// Git probes running or waiting to be reaped. A probe stuck on a hung mount
+/// keeps its slot until the kernel releases it.
+static GIT_CHILDREN: ChildBudget = ChildBudget::new("git", GIT_CHILD_BUDGET);
 
 /// Why a Git probe produced no output to interpret.
 #[derive(Debug)]
 pub enum GitCommandError {
-    /// The Git executable could not be started.
+    /// The Git executable could not be started, or Git's child budget is
+    /// spent on probes that are still stuck.
     Spawn(io::Error),
     /// The Git probe did not finish before the deadline.
     TimedOut,
-    /// The child could not be waited for, or its output could not be read.
+    /// The child could not be supervised, or its output was unusable.
     Process(io::Error),
 }
 
@@ -40,17 +50,11 @@ impl std::fmt::Display for GitCommandError {
 impl std::error::Error for GitCommandError {}
 
 /// Runs Git in `cwd` with one budget for launch, execution and pipe draining.
-/// The synchronous OS spawn cannot be interrupted; if it exceeds
-/// `GIT_COMMAND_TIMEOUT`, the child is stopped as soon as spawn returns.
-/// Past that spawn, the call returns within the budget plus
-/// `GIT_KILL_REAP_GRACE` and a few poll intervals: a child that outlives its
-/// SIGKILL (stuck in an uninterruptible wait) is handed to a background
-/// reaper rather than waited for, and the pipe reader threads stop reading at
-/// the budget's deadline themselves, so no thread outlives it by more than one
-/// poll. A killed child still stuck is a process that lives on until the kernel
-/// releases it; only its reaping is deferred.
-/// A nonzero exit is an `Ok` output; the caller decides which failures are
-/// ordinary answers.
+/// The call returns within the budget plus the supervisor's kill grace; a
+/// child that outlives its SIGKILL is reaped in the background. A nonzero
+/// exit is an `Ok` output; the caller decides which failures are ordinary
+/// answers. Output past the per-stream cap fails the probe rather than
+/// returning a prefix that could hide config dependencies or refs.
 pub fn run_git(cwd: &Path, args: &[&str]) -> Result<Output, GitCommandError> {
     crate::access::check_command().map_err(GitCommandError::Spawn)?;
     let program = crate::access::git_program().map_err(GitCommandError::Spawn)?;
@@ -76,6 +80,7 @@ fn run_git_with_program_and_clock(
     timeout: Duration,
     now: &dyn Fn() -> Instant,
 ) -> Result<Output, GitCommandError> {
+    let deadline = now() + timeout;
     crate::access::check_command().map_err(GitCommandError::Spawn)?;
     let mut command = git_command(program, cwd).map_err(GitCommandError::Spawn)?;
     command
@@ -103,33 +108,45 @@ fn run_git_with_program_and_clock(
         .env_remove("GIT_PREFIX")
         .env_remove("GIT_ASKPASS")
         .env_remove(shepr_core::env::ChildEnv::SshAskpass)
-        .env_remove(shepr_core::env::ChildEnv::SshAskpassRequire)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let deadline = now() + timeout;
-    let mut child = command.spawn().map_err(GitCommandError::Spawn)?;
-    // Both pipes are drained while the child runs, so output larger than a
-    // pipe buffer cannot stall Git into a spurious timeout.
-    let stdout = child.stdout.take().map(|pipe| drain_pipe(pipe, deadline));
-    let stderr = child.stderr.take().map(|pipe| drain_pipe(pipe, deadline));
-    let status = loop {
-        if now() >= deadline {
-            kill_and_reap(child, GIT_KILL_REAP_GRACE);
-            return Err(GitCommandError::TimedOut);
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => {
-                std::thread::sleep(GIT_PROCESS_POLL_INTERVAL);
-            }
-            Err(error) => {
-                kill_and_reap(child, GIT_KILL_REAP_GRACE);
-                return Err(GitCommandError::Process(error));
-            }
-        }
+        .env_remove(shepr_core::env::ChildEnv::SshAskpassRequire);
+    let capture = |stream| StreamSpec {
+        stream,
+        cap: MAX_GIT_PIPE_BYTES,
+        overflow: Overflow::Terminate,
     };
-    let (stdout, stderr) = join_drains_until(stdout, stderr, deadline, now)?;
+    let report = run_supervised(
+        SupervisedRun {
+            budget: &GIT_CHILDREN,
+            extra_pipes: 0,
+            streams: vec![capture(ChildStream::Stdout), capture(ChildStream::Stderr)],
+            deadline,
+        },
+        |_| PreparedChild {
+            command,
+            stdin: None,
+        },
+    );
+    let status = match report.end {
+        ChildEnd::Exited(status) => status,
+        ChildEnd::TimedOut => return Err(GitCommandError::TimedOut),
+        ChildEnd::Overflowed => {
+            return Err(GitCommandError::Process(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "git output exceeds the per-stream byte limit",
+            )));
+        }
+        ChildEnd::Exhausted => {
+            return Err(GitCommandError::Spawn(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "every git probe slot is held by a probe that is still stuck",
+            )));
+        }
+        ChildEnd::Spawn(error) => return Err(GitCommandError::Spawn(error)),
+        ChildEnd::Supervision(error) => return Err(GitCommandError::Process(error)),
+    };
+    let mut streams = report.streams.into_iter();
+    let stdout = complete_stream(streams.next())?;
+    let stderr = complete_stream(streams.next())?;
     Ok(Output {
         status,
         stdout,
@@ -137,7 +154,23 @@ fn run_git_with_program_and_clock(
     })
 }
 
-type Drain = Result<std::thread::JoinHandle<io::Result<Vec<u8>>>, io::Error>;
+/// A stream's bytes, only when it was read to its end: a read failure is a
+/// failed probe, never a prefix to interpret.
+fn complete_stream(
+    report: Option<shepr_platform::supervised::StreamReport>,
+) -> Result<Vec<u8>, GitCommandError> {
+    let report = report.unwrap_or_default();
+    if let Some(kind) = report.error {
+        return Err(GitCommandError::Process(io::Error::from(kind)));
+    }
+    if report.overflowed || !report.eof {
+        return Err(GitCommandError::Process(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "git output was not read to its end",
+        )));
+    }
+    Ok(report.bytes)
+}
 
 /// Exec from the local root, then let Git change directory. A pre-exec chdir
 /// into a hung workspace would retain every inherited server fd (including
@@ -154,186 +187,6 @@ fn git_command(program: &OsStr, cwd: &Path) -> io::Result<Command> {
     let mut command = shepr_platform::child_command(program, Path::new("/"));
     command.arg("-C").arg(cwd);
     Ok(command)
-}
-
-/// Reads `pipe` to its end on its own thread, or until `deadline` passes,
-/// which fails the read with [`io::ErrorKind::TimedOut`]. The thread waits for
-/// readiness with a timeout, so a descendant that keeps the pipe's write end
-/// open after Git is gone cannot hold it past the deadline. Output beyond the
-/// per-stream byte budget fails with [`io::ErrorKind::InvalidData`].
-fn drain_pipe<R: Read + AsRawFd + Send + 'static>(mut pipe: R, deadline: Instant) -> Drain {
-    std::thread::Builder::new()
-        .name("shepr-git-pipe".into())
-        .spawn(move || read_until(&mut pipe, deadline))
-}
-
-fn read_until(pipe: &mut (impl Read + AsRawFd), deadline: Instant) -> io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    let mut chunk = [0_u8; crate::limits::GIT_PIPE_READ_CHUNK_BYTES];
-    loop {
-        // clock-io-ok: the reader thread runs against the real clock.
-        let Some(remaining) = shepr_platform::remaining_until(deadline, Instant::now()) else {
-            return Err(io::ErrorKind::TimedOut.into());
-        };
-        match shepr_platform::poll_fd_readable(pipe.as_raw_fd(), remaining) {
-            Ok(true) => {}
-            Ok(false) => return Err(io::ErrorKind::TimedOut.into()),
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
-        }
-        // Readable, or hung up: the read returns data or the end at once.
-        match pipe.read(&mut chunk) {
-            Ok(0) => return Ok(bytes),
-            Ok(count) => {
-                if count > crate::limits::MAX_GIT_PIPE_BYTES - bytes.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "git output exceeds the per-stream byte limit",
-                    ));
-                }
-                bytes.extend_from_slice(&chunk[..count]);
-            }
-            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-fn join_drain(drain: Option<Drain>) -> Result<Vec<u8>, GitCommandError> {
-    let Some(drain) = drain else {
-        return Ok(Vec::new());
-    };
-    let handle = drain.map_err(GitCommandError::Process)?;
-    match handle.join() {
-        Ok(Err(error)) if error.kind() == io::ErrorKind::TimedOut => Err(GitCommandError::TimedOut),
-        Ok(read) => read.map_err(GitCommandError::Process),
-        Err(_) => Err(GitCommandError::Process(io::Error::other(
-            "git output reader panicked",
-        ))),
-    }
-}
-
-/// Waits for both pipe readers without extending the child deadline. A child
-/// can exit while a descendant still holds one of its inherited pipe ends; the
-/// readers give up at that same deadline on their own, so a reader this
-/// returns without joining is already on its way out.
-fn join_drains_until(
-    stdout: Option<Drain>,
-    stderr: Option<Drain>,
-    deadline: Instant,
-    now: &dyn Fn() -> Instant,
-) -> Result<(Vec<u8>, Vec<u8>), GitCommandError> {
-    loop {
-        if drain_finished(&stdout) && drain_finished(&stderr) {
-            break;
-        }
-        if now() >= deadline {
-            return Err(GitCommandError::TimedOut);
-        }
-        std::thread::sleep(GIT_PROCESS_POLL_INTERVAL);
-    }
-    Ok((join_drain(stdout)?, join_drain(stderr)?))
-}
-
-fn drain_finished(drain: &Option<Drain>) -> bool {
-    match drain {
-        Some(Ok(handle)) => handle.is_finished(),
-        None | Some(Err(_)) => true,
-    }
-}
-
-/// Kills `child` and waits at most `grace` for it to be reaped. A child that
-/// is still alive after that (SIGKILL does not act on a process in an
-/// uninterruptible wait until the kernel call returns) goes to the background
-/// reaper, so the caller is never held by it.
-fn kill_and_reap(mut child: Child, grace: Duration) {
-    if let Err(error) = child.kill()
-        && error.kind() != io::ErrorKind::InvalidInput
-    {
-        tracing::debug!(%error, "failed to stop a git probe");
-    }
-    // clock-io-ok: the grace is a real-time bound on the caller.
-    let give_up = Instant::now() + grace;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => return,
-            Ok(None) => {}
-            Err(error) => {
-                tracing::debug!(%error, "failed to reap a git probe");
-                return;
-            }
-        }
-        // clock-io-ok: as above.
-        if Instant::now() >= give_up {
-            break;
-        }
-        std::thread::sleep(GIT_PROCESS_POLL_INTERVAL);
-    }
-    hand_to_reaper(child);
-}
-
-/// Killed children that outlived their grace, and whether the thread that
-/// reaps them is running. One thread polls them all and exits when none is
-/// left, so a hung mount costs one thread however many probes it stalls.
-struct Reaper {
-    children: Vec<Child>,
-    running: bool,
-}
-
-static REAPER: Mutex<Reaper> = Mutex::new(Reaper {
-    children: Vec::new(),
-    running: false,
-});
-
-fn lock_reaper() -> MutexGuard<'static, Reaper> {
-    // Every critical section is a push, a retain or a flag, so a panic on the
-    // holder leaves the value whole.
-    REAPER.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn hand_to_reaper(child: Child) {
-    let mut reaper = lock_reaper();
-    if reaper.children.len() >= MAX_UNREAPED_GIT_CHILDREN {
-        shepr_platform::structured_log!(
-            WARN,
-            event = git.probe_reap,
-            outcome = Exhausted,
-            pid = child.id(),
-            "too many killed git probes are still unreaped; leaving this one a zombie until \
-             shepr exits"
-        );
-        return;
-    }
-    tracing::debug!(pid = child.id(), "handed a killed git probe to the reaper");
-    reaper.children.push(child);
-    if reaper.running {
-        return;
-    }
-    reaper.running = true;
-    if let Err(error) = std::thread::Builder::new()
-        // Linux exposes at most 15 bytes through `pthread_setname_np`.
-        .name("git-reaper".into())
-        .spawn(reap_until_empty)
-    {
-        // The children stay queued; the next hand-over starts the thread again.
-        reaper.running = false;
-        tracing::debug!(%error, "could not start the git probe reaper");
-    }
-}
-
-fn reap_until_empty() {
-    loop {
-        std::thread::sleep(UNREAPED_GIT_CHILD_POLL_INTERVAL);
-        let mut reaper = lock_reaper();
-        // A child that cannot be waited for any more has nothing left to reap.
-        reaper
-            .children
-            .retain_mut(|child| matches!(child.try_wait(), Ok(None)));
-        if reaper.children.is_empty() {
-            reaper.running = false;
-            return;
-        }
-    }
 }
 
 #[cfg(test)]
@@ -371,37 +224,6 @@ mod tests {
     }
 
     #[test]
-    fn pipe_output_limit_accepts_the_boundary_and_refuses_overflow() {
-        for extra in [0, 1] {
-            let (mut reader, mut writer) =
-                std::os::unix::net::UnixStream::pair().expect("socket pair");
-            let writing = std::thread::spawn(move || {
-                use std::io::Write;
-                let chunk = [b'x'; crate::limits::GIT_PIPE_READ_CHUNK_BYTES];
-                for _ in 0..crate::limits::MAX_GIT_PIPE_BYTES / chunk.len() {
-                    writer.write_all(&chunk).expect("write up to limit");
-                }
-                if extra > 0 {
-                    writer.write_all(b"x").expect("write overflow byte");
-                }
-            });
-            let result = read_until(&mut reader, Instant::now() + Duration::from_secs(30));
-            writing.join().expect("writer finished");
-            if extra == 0 {
-                assert_eq!(
-                    result.expect("output at limit").len(),
-                    crate::limits::MAX_GIT_PIPE_BYTES
-                );
-            } else {
-                assert_eq!(
-                    result.expect_err("oversized output").kind(),
-                    io::ErrorKind::InvalidData
-                );
-            }
-        }
-    }
-
-    #[test]
     fn git_runner_refuses_oversized_output_instead_of_returning_a_prefix() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let root = shepr_test_support::ScratchDir::new("git-runner-output-limit");
@@ -410,7 +232,7 @@ mod tests {
             "fake-git",
             &[Step::Fill {
                 byte: b'x',
-                count: crate::limits::MAX_GIT_PIPE_BYTES + 1,
+                count: MAX_GIT_PIPE_BYTES + 1,
             }],
         );
         let result = run_git_with_program(
@@ -423,6 +245,28 @@ mod tests {
             result,
             Err(GitCommandError::Process(error)) if error.kind() == io::ErrorKind::InvalidData
         ));
+    }
+
+    #[test]
+    fn git_runner_accepts_output_at_the_limit() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let root = shepr_test_support::ScratchDir::new("git-runner-output-boundary");
+        let fake_git = stand_in(
+            root.path(),
+            "fake-git",
+            &[Step::Fill {
+                byte: b'x',
+                count: MAX_GIT_PIPE_BYTES,
+            }],
+        );
+        let output = run_git_with_program(
+            fake_git.as_os_str(),
+            root.path(),
+            &[],
+            Duration::from_secs(30),
+        )
+        .expect("output at the limit is complete");
+        assert_eq!(output.stdout.len(), MAX_GIT_PIPE_BYTES);
     }
 
     #[test]
@@ -486,25 +330,14 @@ mod tests {
             &[Step::Sleep(Duration::from_secs(30))],
         );
         let started = Instant::now();
-        let deadline = started + Duration::from_millis(20);
-        let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let reads_for_clock = std::sync::Arc::clone(&reads);
-        let now = move || {
-            if reads_for_clock.fetch_add(1, std::sync::atomic::Ordering::Relaxed) == 0 {
-                started
-            } else {
-                deadline
-            }
-        };
-        let result = run_git_with_program_and_clock(
+        let result = run_git_with_program(
             slow_git.as_os_str(),
             root.path(),
             &[],
-            Duration::from_millis(20),
-            &now,
+            Duration::from_millis(200),
         );
         assert!(matches!(result, Err(GitCommandError::TimedOut)));
-        assert_eq!(reads.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 
     /// Output larger than a pipe buffer is drained while Git runs rather
@@ -529,100 +362,6 @@ mod tests {
         )
         .expect("fake git should finish");
         assert_eq!(output.stdout.len(), 1024 * 1024);
-    }
-
-    #[test]
-    fn git_runner_deadline_also_covers_output_drain_after_child_exit() {
-        let (release, wait) = std::sync::mpsc::channel();
-        let stdout: Drain = Ok(std::thread::spawn(move || {
-            // A release or a dropped sender both end the wait.
-            let _released = wait.recv();
-            Ok(Vec::new())
-        }));
-        let deadline = Instant::now() + Duration::from_millis(30);
-        let started = Instant::now();
-        let result = join_drains_until(Some(stdout), None, deadline, &Instant::now);
-        let elapsed = started.elapsed();
-        release.send(()).expect("release the detached reader");
-
-        assert!(matches!(result, Err(GitCommandError::TimedOut)));
-        assert!(
-            elapsed < Duration::from_secs(1),
-            "pipe drain exceeded its deadline: {elapsed:?}"
-        );
-    }
-
-    /// A descendant that keeps the pipe's write end open must not keep the
-    /// reader thread alive past the deadline.
-    #[test]
-    fn pipe_reader_gives_up_at_its_deadline_while_the_write_end_stays_open() {
-        let (reader, _writer) = std::os::unix::net::UnixStream::pair().expect("socket pair");
-        let started = Instant::now();
-        let drain = drain_pipe(reader, started + Duration::from_millis(50)).expect("reader starts");
-        let finished = loop {
-            if drain.is_finished() {
-                break true;
-            }
-            if started.elapsed() > Duration::from_secs(10) {
-                break false;
-            }
-            std::thread::sleep(Duration::from_millis(5));
-        };
-        assert!(finished, "the reader outlived its deadline");
-        let error = drain
-            .join()
-            .expect("reader did not panic")
-            .expect_err("the reader timed out");
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-    }
-
-    #[test]
-    fn pipe_reader_returns_what_was_written_once_the_write_end_closes() {
-        use std::io::Write;
-        let (reader, mut writer) = std::os::unix::net::UnixStream::pair().expect("socket pair");
-        let drain =
-            drain_pipe(reader, Instant::now() + Duration::from_secs(30)).expect("reader starts");
-        writer.write_all(b"status").expect("write");
-        drop(writer);
-        let bytes = drain
-            .join()
-            .expect("reader did not panic")
-            .expect("reader finished");
-        assert_eq!(bytes, b"status");
-    }
-
-    /// A killed child that is not reaped within the grace is handed to the
-    /// background reaper: the caller returns at once and the child is still
-    /// reaped later (a zombie stays in /proc until it is).
-    #[test]
-    fn a_killed_child_not_reaped_in_its_grace_is_reaped_in_the_background() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let root = shepr_test_support::ScratchDir::new("git-runner-reaper");
-        let slow = stand_in(
-            root.path(),
-            "slow-git",
-            &[Step::Sleep(Duration::from_secs(30))],
-        );
-        let child = shepr_platform::child_command(slow.as_os_str(), root.path())
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("stand-in starts");
-        let proc_entry = std::path::PathBuf::from(format!("/proc/{}", child.id()));
-
-        let started = Instant::now();
-        kill_and_reap(child, Duration::ZERO);
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "the caller waited for the child"
-        );
-
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while proc_entry.try_exists().expect("stat the proc entry") {
-            assert!(Instant::now() < deadline, "the child was never reaped");
-            std::thread::sleep(Duration::from_millis(10));
-        }
     }
 
     /// The child starts in `/` and names `cwd` once, as an absolute `-C`
