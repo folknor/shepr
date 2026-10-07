@@ -131,16 +131,6 @@ observation, but the stored cwd is what saves and identity fall back to once
 the runtime has no observation. The settlement should only seed the stored cwd
 when no report has been accepted for that runtime yet.
 
-## MUX-005 - Stale comment: recovery copies are published exclusively
-
-`RECOVERY_SEQUENCE_LIMIT` in `crates/shepr-mux/src/limits.rs` says "The publish
-is not exclusive against a second writer and does not need to be."
-`recovery::copy_recovery` publishes with `PublishTarget::CreateOnly`, which
-`files::publish_private_file` documents as "an existing `target` is atomically
-refused with `AlreadyExists`", and `preserve_opened_source` has an
-`AlreadyExists` arm for exactly that. The comment is wrong; the code is
-exclusive.
-
 ## MUX-006 - `ResumeFailed` renders two guidance sentences and two `Error:` prefixes
 
 `PaneStartFailure::cause` for `ResumeFailed` formats the inner failure with
@@ -214,34 +204,3 @@ directory with `O_PATH` in a short-lived thread and use `fchdir` in a
 `pre_exec` after `close_range`), so no inherited fd outlives a hung chdir; or
 spawn helpers from a small fork-server process that holds none of the server's
 fds.
-
-## MUX-011 - A cwd that becomes its own repository keeps the enclosing checkout's branch for up to five minutes
-
-Raised as a lateral observation; the hunter calls the behaviour designed but
-documented only in a comment.
-
-With a known key, `refresh::compute_refresh` rereads status from the key's
-path, not the cwd. A cwd that becomes its own repository in place (`git init`
-in the pane's directory) keeps the enclosing checkout's branch until the next
-rediscovery (`GIT_REPO_DISCOVERY_REFRESH_INTERVAL`, 5 minutes). The
-rediscovery comment is the only place it is stated.
-
-## MUX-012 - `follow_cwd` and `foreground_cwd` read `/proc/<pgid>/cwd` without a pidfd
-
-Raised as a lateral observation.
-
-`follow_cwd` and `foreground_cwd` (`pane/runtime/cwd.rs`) read
-`/proc/<pgid>/cwd` of the foreground group's leader pid without a pidfd: once
-that leader has exited while its group lives on (`a | b` with `a` gone), the
-pid can name an unrelated process, whose cwd a split would then inherit.
-Everything else in the pane runtime goes through `ChildLiveness::observe` to
-avoid exactly this.
-
-## MUX-013 - OSC 7 never accepts a directory whose name ends in whitespace or is not UTF-8
-
-Raised as a lateral observation.
-
-`osc7::parse_reported_cwd` trims the payload before percent-decoding and
-`percent_decode_utf8` refuses non-UTF-8 bytes, so a directory whose name ends
-in whitespace, or is not UTF-8, is never taken from OSC 7 (the saved schema
-goes out of its way to keep non-UTF-8 paths).

@@ -36,9 +36,13 @@ impl AppPaths {
         &self.config_dir
     }
 
-    /// The state directory shared by every build profile. It holds
-    /// client-owned state; the saved layout and its recovery files live in
-    /// [`data_dir`](Self::data_dir).
+    /// The state directory shared by every build profile. It holds the
+    /// client's sidebar preferences (keyed by server socket), which for a
+    /// release build sit inside the server's leased
+    /// [`data_dir`](Self::data_dir) because the two are the same directory. The
+    /// client log and the SSH metadata cache are per profile and live elsewhere
+    /// (see [`client_log`](Self::client_log)). The saved layout and its
+    /// recovery files live in [`data_dir`](Self::data_dir).
     pub fn state_dir(&self) -> &Path {
         &self.state_dir
     }

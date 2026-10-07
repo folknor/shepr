@@ -167,82 +167,6 @@ Which side is wrong: the code. Answer the preamble always, then refuse with a
 typed reason (a `ServerStopping` refusal, or the shutdown notice in all three
 places) so the client can show Stopping rather than a transient retry.
 
-## SRV-006 - Two docs promise reply "focus flags" that no reply carries
-
-Claim broken: `handle_client_shell_app_command` doc
-(`server/headless/endpoint_requests.rs`), step 6: "fill the reply's focus flags
-against the requester's location"; and
-`App::handle_endpoint_app_command_with_render` (`app/api.rs`): the loop "owns
-... the reply's focus flags that follow".
-
-What the code does: nothing fills anything after the command;
-`outcome.result` is returned unchanged. `EndpointReply` has no focus field, and
-`shepr_protocol::command::PaneInfo` says "Focus is part of the
-requester-specific shell snapshot". The docs are stale.
-
-Which side is wrong: the docs. Drop step 6 and the clause in `app/api.rs`.
-(`EndpointCommandTraits::changes_focus` is also unused by the server; check
-whether the client still reads it.)
-
-## SRV-007 - "A second surface changes no workspace's size" is false
-
-Claim broken: the comment before `claim_client_geometry(.., Connect)` in the
-`ShellConnected` arm (`server/headless.rs`): "A second surface changes no
-workspace's size: controlled workspaces keep their controller and uncontrolled
-ones keep theirs."
-
-What the code does: while one client presents, the PTY size rule sizes every
-workspace for it, but `reapply_controlled_shell_workspace_geometry` records a
-controller only for workspaces that client views. A second client that lands
-on a workspace the first is not viewing finds it uncontrolled,
-`claim_unowned_geometry` succeeds, and `apply_shell_geometry` resizes that
-workspace to the newcomer (which is also what the rule says once two clients
-present: the only viewer wins). So a second surface does resize panes.
-
-Which side is wrong: the comment. The behaviour follows the documented rule;
-reword it to say a second surface takes only workspaces nobody else views.
-
-## SRV-008 - A stop accepted during startup can get an empty answer if startup fails after the bind
-
-Claim broken: `reference/session-save-shutdown.md`: "A server that exits
-without reaching its final save (its run failed first) answers every waiting
-stop with an explicit error rather than an empty answer";
-`ServerStopSignal::complete_unfinished_final_save` ("The server calls this on
-every exit path").
-
-What the code does: `complete_unfinished_final_save` is called only from
-`HeadlessServer::release_socket_after_save_observed`, i.e. once a
-`HeadlessServer` exists. `start_server` binds the socket (stops are accepted
-and waiting from that moment) and can still fail before `HeadlessServer::new`:
-the Tokio runtime build (`RunServerError::Runtime`). That path drops `Reserved`
-and returns; nobody publishes a result, the process exits under the waiting
-connection thread, and the stopper reads `EmptyResponse`, which
-`send_stop_request` counts as an accepted stop with no save failure.
-
-Which side is wrong: the code, though the window is tiny. Publish the
-unfinished result from `start_server`'s error path too (or own the stop signal
-in `Reserved` with a drop guard).
-
-## SRV-009 - A late stop arriving after the server waited for answers can still read as a clean stop
-
-Claim broken: `ServerStopSignal::wait_for_stop_answers` doc: "an exit under an
-answer still being written would close the connection unanswered, and the
-stopping client would read that as a stop with no save failure to report".
-
-What the code does: `run` waits for owed answers once, after pane teardown and
-writer retirement, then removes the socket and exits. A `server.stop` accepted
-on a connection thread after that wait (the socket is still bound until
-`release_socket_after_save` drops the handle, and the runtime then has
-`TOKIO_RUNTIME_SHUTDOWN_TIMEOUT` before exit) registers itself as unanswered,
-reads the already-published result at once and starts writing while the
-process exits. If the final save failed, that client gets `EmptyResponse` and
-reports success. Second stoppers are rare (two operators, a retry, `stop --all`
-racing a local `shepr stop`), so this is low severity.
-
-Which side is wrong: the code. Either refuse new stops once the result is
-published and the answer wait has run (answer `server_unavailable` "already
-stopped"), or wait for answers again immediately before the socket goes.
-
 ## SRV-010 - Title changes on panes with no agent bump the shared projection and the server-wide view epoch
 
 The server app hunt filed this as F1 and the two stale comments as a separate
@@ -302,7 +226,7 @@ What happens: if the policy is `Stopped` or `BlockedOnBackup`,
 `submit_final_session_save` returns `Ok(None)`. The
 `Ok(None) if self.session_saver.policy.is_unavailable()` arm then turns that
 into `Err("session persistence was blocked before the final save")`. The caller
-logs every `Err` at ERROR with `outcome = Error`. Its INFO branch has arms for
+logs every `Err` at error level with `outcome = Error`. Its info-level branch has arms for
 `Outcome::Stopped` and `Outcome::BlockedOnBackup`, but those arms cannot run:
 with either mode set, the app always returns `Err`. The only non-error outcomes
 that can actually be logged are `ok` and `frozen`. The `Err` also becomes
@@ -323,30 +247,6 @@ owner. Either way, one side has to change, and so does the "blocked" wording
 for `Stopped`. No test covers a final save under `Stopped` or
 `BlockedOnBackup`. See also SRV-015 on how `run_server` labels a final-save
 failure.
-
-## SRV-012 - A combined checkpoint waits for the later of the two retry schedules, so the host checkpoint inherits the pane-exit backoff and the reverse
-
-Where: `SessionSaver::deadline` (`app/session.rs`):
-`self.exit.retry_at().into_iter().chain(self.host.retry_at()).max()`.
-
-What happens: one save answers both a held pane exit and the logind warning.
-After a combined failure, each machine arms its own retry, from its own failure
-count (`failed_with_config`), and the save waits for the later one.
-
-- If the pane exit had earlier consecutive failures, the host checkpoint waits
-  out the exit's longer backoff, while logind's delay inhibitor is held.
-- In the other direction, a pane exit newly requested after a host failure
-  starts with `retry_at: None`, which reads as "start at once". It still waits
-  for the host's retry, and the dead pane stays on screen the whole time.
-
-Claim broken: `request_host_checkpoint` calls `exit.expedite_retry()` so that
-"the combined save starts at once instead of waiting for it". The intent is
-that the host checkpoint does not wait on the exit's schedule. That holds only
-until the first combined failure, after which `max` restores the coupling.
-
-Severity: low. `CHECKPOINT_MAX_FAILURES` is 3 and `CHECKPOINT_RETRY_MIN` is
-250 ms, so the extra wait is a few hundred ms. Taking `min` (run the combined
-save as soon as either machine is due) matches the stated intent.
 
 ## SRV-013 - A workspace created with an explicit cwd silently starts elsewhere when that directory cannot be entered, and keeps the name of the directory it is not in
 
@@ -392,7 +292,7 @@ The same arm for a non-resume pane records
   status channel failing.
 - The `error` is dropped from the `fail_agent_resume` log line, which its own
   doc comment calls "the one log line for the failure". The mux coordinator did
-  log the channel error, but as a separate ERROR line under another event.
+  log the channel error, but as a separate error-level line under another event.
 
 Claim broken: the `fail_agent_resume` doc ("`detail` carries the cause a caller
 observed ... so the caller does not log it again"), and the distinction
@@ -433,34 +333,6 @@ automatic workspace) already does its own reconcile, geometry and focus
 settlement, and no API method changes topology; the block is dead weight on
 every hook report.
 
-## SRV-018 - `detect explain` reports the raw `AgentState`, while AGENTS.md says Unknown presents as Idle
-
-Raised as a lower-severity observation by the serving hunt.
-
-`detect explain` reports the raw `AgentState` (`"state": "unknown"` in its own
-test), while AGENTS.md says "Unknown presents as Idle". As a diagnostic the raw
-state may be intended; if so, AGENTS.md's description of `detect explain`
-("shows the pane's state") could say it is the internal state.
-
-## SRV-019 - An unrepresentable render would re-plan a full render on every pass forever
-
-Raised as a lower-severity observation by the serving hunt.
-
-A `SurfaceRenderDeferred::Unrepresentable` render returns `Owed`, and an owed,
-deliverable client is planned `full` again on every pass, so a client whose
-area somehow escapes the clamp re-renders at the render cadence forever. The
-guard is unreachable today (sizes are clamped at the handshake and resize), but
-the loop it would cause is silent.
-
-## SRV-020 - Redundant lookups on the pane input path
-
-Raised as a lower-severity observation by the serving hunt; cold enough not to
-matter, noted because the arm is on the input path.
-
-`ShellPaneInput` resolves `pane_runtime` three times and the client twice in
-one arm; `refresh_client_view_keys` rebuilds a `HashMap` of every client on
-every call.
-
 ## SRV-021 - Two terminal-core reads per pane where one would do on the render path
 
 Raised as a lateral observation by the server app hunt.
@@ -472,42 +344,6 @@ through `pane_is_scrolled_back(runtime)`, which calls
 pane (alternate-screen state, then scroll metrics). These are per pane, per
 client, per pass. One read returning both would follow "keep terminal-core
 locks short".
-
-## SRV-022 - A ui test name suggests the alternate screen never resizes panes
-
-Raised as a lateral observation by the server app hunt.
-
-In `ui/panes.rs`, the test name
-`alternate_screen_reclaims_scrollbar_gutter_without_resizing_panes` describes
-the pure computation only. The server does resize the PTY when the screen flips
-(`settle_workspace_geometry_before_plan`, tested by
-`first_shell_surface_resizes_a_pane_that_entered_alternate_screen`). The
-behaviour is consistent, but a reader of the ui test alone could conclude the
-opposite. Renaming it to say "computes without resizing" would remove the trap.
-
-## SRV-023 - A pending resume plan on a pane with a runtime would keep the retired-plan scan running for the boot
-
-Raised as a lateral observation by the server app hunt.
-
-`has_pending_agent_resumes` walks every pane record on every loop iteration
-until the schedule retires. A plan whose pane already has a runtime
-(`candidate(true)` is `None`) but stays `is_pending()` would keep the schedule
-unretired, and the scan running, for the boot. The hunter found no path that
-creates that state today: restore mints plans only on runtimeless panes. If one
-ever appears, the cost is silent.
-
-## SRV-024 - Unreachable branch at the end of `handle_workspace_create`
-
-Raised as a lateral observation by the server app hunt.
-
-`handle_workspace_create` ends with
-`if self.state.workspace(&workspace_id).is_none() { internal_with_effects(...) }`,
-which cannot fire. `commit_workspace_creation` just inserted the workspace and
-nothing runs in between.
-
-## SRV-025 - `handle_detect_capture` and `handle_detect_explain` take `&mut self` but only read
-
-Raised as a lateral observation by the server app hunt.
 
 ## SRV-026 - A released pane exit during a host-shutdown freeze is recorded as `CheckpointDecision::Settled`
 

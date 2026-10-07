@@ -309,6 +309,11 @@ impl HookSessionPolicy {
         state_requires_current_session: true,
         ..Self::DEFAULT
     };
+    // Kimi and Mastracode list `Startup` as a replacement without the nested
+    // process guard Codex, OMP and Claude have. A `kimi` or `mastracode` that
+    // one of these agents launched from inside the pane would replace the
+    // pane's root session. Accepted: neither agent is known to spawn itself,
+    // and a guard needs an environment marker neither one sets.
     const MASTRACODE: Self = Self {
         replacement_starts: &[resume::AgentSessionStartSource::Startup],
         state_requires_session_ref: true,

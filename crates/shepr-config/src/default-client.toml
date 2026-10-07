@@ -2,9 +2,9 @@
 # Place this file at ~/.config/shepr/client.toml
 # Only the shepr client reads this file, on the host it runs on. It decides
 # keys, the sidebar, prompts, mouse and copy behaviour and the machines shown.
-# Pane shells, sessions, and whether panes have borders belong in server.toml,
-# which only shepr-server reads. An unknown or misplaced setting fails the
-# launch.
+# Pane shells, sessions, and whether split panes share a divider or draw
+# adjacent borders belong in server.toml, which only shepr-server reads. An
+# unknown or misplaced setting fails the launch.
 #
 # There is no colour theme. Every colour shepr draws, the pane borders and
 # scrollbars each server draws included, is derived from the background,
@@ -70,7 +70,7 @@
 # Navigate mode (entered with workspace_picker). These are its only keys: every
 # other key, the prefix included, does nothing while it is open. They do not
 # include prefix+. Up and down move one selection through the workspaces (a
-# machine's Connect or Restart entry in place of its workspaces) and then the
+# machine's Connect, Restart or login entry in place of its workspaces) and then the
 # agents below them; enter opens a workspace, focuses an agent's pane, or
 # chooses the entry; back leaves navigate mode.
 # navigate_back = "esc"
@@ -153,8 +153,8 @@
 # against the tint, with every host's accent equally bright. Where your
 # terminal reports its own colour of that name, its hue is used. Without a
 # reported background there is no tint: the accent is the terminal's own ANSI
-# colour and the second line is drawn dim. Entries of an unreachable machine
-# lose the colour. Token styles set in [ui.sidebar] still win.
+# colour and the second line is drawn dim. The local server's entries lose the
+# colour while it reconnects. Token styles set in [ui.sidebar] still win.
 # [[machines]]
 # label = "build"
 # ssh = "dev@build"

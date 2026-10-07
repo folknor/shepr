@@ -243,8 +243,9 @@ pub(in crate::shell) fn draw_expanded(
                         selected,
                         navigating: inputs.selected.is_some(),
                         dragged,
-                        // An unreachable machine's entries lose its colours along
-                        // with the rest of their highlight.
+                        // A stale endpoint's entries (only the local server keeps
+                        // its last snapshot listed while it reconnects) lose
+                        // their colours along with the rest of their highlight.
                         look: PillLook::for_endpoint(
                             &config.host_hues,
                             inputs.host_pills,
@@ -333,7 +334,7 @@ fn draw_machine_slot(buffer: &mut Buffer, rect: Rect, endpoint: usize, inputs: &
 }
 
 /// Draws the state entry of the machine at `endpoint` in `inputs.endpoints`, nested
-/// under its machine row like a workspace. An entry that offers Connect or Restart
+/// under its machine row like a workspace. An entry that offers an action
 /// is drawn as something to activate, and highlighted while navigate mode selects it.
 fn draw_machine_entry(
     buffer: &mut Buffer,

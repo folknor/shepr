@@ -299,8 +299,7 @@ pub enum ClientPaneInputEvent {
 }
 
 /// Messages sent from the client to the server over the client protocol socket.
-/// Not `Eq`: an endpoint command can carry a split ratio.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ClientMessage {
     /// Graceful disconnect request.
     Detach,

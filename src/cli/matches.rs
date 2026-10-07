@@ -1,5 +1,7 @@
 //! Typed reads from the `ArgMatches` that `spec.rs` produces. Clap's lookup
-//! errors mean the spec and handler disagree. Root help and version flags keep
+//! errors mean the spec and handler disagree; clap raises the undeclared-id
+//! error only under `debug_assertions`, so that guard is a dev-build check
+//! backed by tests, and a release build reads such an id as absent. Root help and version flags keep
 //! their default-on-error read; typed command parsers use fallible helpers so a
 //! mismatch rejects the command instead of changing an option's meaning.
 

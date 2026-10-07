@@ -212,18 +212,6 @@ Related documented behaviour worth a second look (not a defect, the limits doc
 says it): the stall check only runs when input next arrives, so an
 unterminated paste stays invisible until the user presses another key.
 
-## CUI-008 - The copy-mode `^b` page-up binding is unreachable with the default prefix
-
-Hunter's label: confirmed, low.
-
-`COPY_MODE_BINDINGS` in `shepr-termio/src/copy_mode.rs` binds `control('b')` to
-PageUp, but `route_key_press` in Copy mode checks the prefix first (when no
-search prompt is open), and the default prefix is `ctrl+b`. The binding never
-fires unless the user moves the prefix. It is not in a help group, so nothing
-displays it; it is dead code under defaults rather than a broken promise, but a
-fixed table entry that the default config shadows is worth either removing or
-documenting.
-
 ## CUI-009 - Frame write failure can leave the blitter's cursor-shape cache wrong
 
 Hunter's label: confirmed, very low.
@@ -236,30 +224,6 @@ emits the shape only when it differs from the cached value, so if the next
 frame wants the old shape back the host keeps the shape the failed write set. A
 forced repaint should also re-emit the cursor shape (and visibility), i.e.
 reset `last_cursor_shape` to an "unknown" value on a refused frame.
-
-## CUI-010 - Machine entry docs enumerate Connect and Restart but the code also handles the login entry
-
-`MachineEntryHit::actionable` doc ("The entry offers Connect or Restart:
-clicking it acts") is stale: it is computed from `state.action()`, which also
-covers Retry (the SSH login entry), and `activate_machine_entry` handles Retry.
-`handle_endpoint_machine_click`'s comment says "A machine that offers Connect or
-Restart: its row acts as its entry"; the call also handles Retry. The code is
-right; reword both so they do not enumerate.
-
-## CUI-011 - The raw input framer parses every event twice
-
-Not a bug, but on the per-keystroke path.
-`RawInputFramer::framed_events_from_chunks` re-parses every chunk the framer
-already classified (`extract_one_event` runs twice per event). The framer could
-return the event with the chunk.
-
-## CUI-012 - A palette reply released by the held-input flush waits for the next keystroke
-
-`flush_idle_input` in `input.rs`: after the second (held-input) flush it sends
-chunks but does not flush `pending_palette`. A palette reply emitted by that
-second flush waits for the next stdin read, which blocks until the user types.
-Only reachable when a palette reply is released by a held-input flush, so very
-narrow.
 
 ## CUI-013 - The clipboard read path does not follow the write route over SSH
 

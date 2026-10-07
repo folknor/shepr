@@ -288,6 +288,10 @@ impl RawInputFramer {
         self.byte_framer.held_input_flush_timeout()
     }
 
+    // Each chunk is parsed again here although the byte framer already
+    // classified it. The parse is cheap and bounded by one event, and having
+    // the byte framer hand back parsed events would couple its framing to the
+    // key parser for a cost no one has measured, so the repeat is accepted.
     fn framed_events_from_chunks(chunks: Vec<Vec<u8>>) -> Vec<FramedRawInputEvent> {
         chunks
             .into_iter()

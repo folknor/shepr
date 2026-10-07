@@ -33,7 +33,7 @@ pub(crate) struct ClientShellEndpoint {
 
 /// What a configured machine's sidebar entry says while the machine is not
 /// connected. A failed attempt sets it from what the failure says
-/// ([`MachineState::after_failure`]); a Connect or Restart entry changes only
+/// ([`MachineState::after_failure`]); an entry that offers an action changes only
 /// after its request is accepted by the endpoint supervisor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MachineState {
@@ -538,8 +538,8 @@ impl ClientShellState {
         self.reconcile_navigate_machine_entry();
     }
 
-    /// Records a Connect or Restart only after its endpoint supervisor accepted
-    /// the request. The shell's action handlers emit the request without
+    /// Records a machine entry's request only after its endpoint supervisor
+    /// accepted it. The shell's action handlers emit the request without
     /// changing the entry optimistically.
     pub(crate) fn machine_request_accepted(
         &mut self,

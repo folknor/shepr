@@ -265,7 +265,7 @@ macro_rules! define_endpoint_commands {
     ) => {
         /// One endpoint operation a client shell asks of the server it is connected
         /// to; nothing outside this set can be asked through a client shell.
-        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
         pub enum EndpointCommand {
             $($loop_variant($loop_params),)+
             $($app_variant($app_params),)+

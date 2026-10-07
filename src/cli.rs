@@ -198,6 +198,7 @@ pub(crate) fn print_help() {
                 shepr_platform::logging::help_log_paths_summary(
                     &paths.server_log(),
                     &paths.client_log(),
+                    &paths.boot_log_path(),
                 )
             );
         }

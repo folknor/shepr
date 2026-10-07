@@ -224,7 +224,8 @@ fn flush_idle_input(
         if !framer.has_pending_input() {
             *pending_mode = None;
         }
-        return send_unix_input_chunks(chunks, event_tx, pending_palette, sgr_pixels, geometry);
+        return send_unix_input_chunks(chunks, event_tx, pending_palette, sgr_pixels, geometry)
+            && flush_unix_palette_input(event_tx, pending_palette);
     }
     true
 }

@@ -54,6 +54,12 @@ impl SshTarget {
         if value.len() > MAX_SSH_TARGET_BYTES {
             return Err(SshTargetError::TooLong);
         }
+        // A heuristic, not a URI parse: any ':' before the last '@' counts as
+        // a password, and only a leading `ssh://` is stripped, so a path or
+        // port after the host (`ssh://host:22/x@y`) is read as part of the
+        // userinfo. The edge only errs toward refusing a launch loudly, and
+        // such a target has a plain form (`user@host` or an ssh_config alias),
+        // so a full URI parser is not worth carrying.
         let authority = value.strip_prefix("ssh://").unwrap_or(&value);
         if authority
             .rsplit_once('@')

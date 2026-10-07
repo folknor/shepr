@@ -211,6 +211,11 @@ fn compute_refresh<T>(
                 .chain(job.targets.iter().map(|(_, cwd)| cwd.clone()))
                 .collect(),
         );
+        // A target with a known key rereads status from the key's path, not
+        // its cwd. A cwd that becomes its own repository in place (`git init`
+        // in the pane's directory) therefore keeps the enclosing checkout's
+        // branch until the caller next supplies a target without a key.
+        // Accepted: it is rare, and the caller's periodic rediscovery heals it.
         let (snapshot, cache_entry) = match job.discovery {
             Some(discovery) => git_status_snapshot_for_discovery(discovery),
             None => git_status_snapshot_for_cwd(job.key.as_path(), job.cached.as_ref()),

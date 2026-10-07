@@ -23,6 +23,15 @@ pub(crate) const TOML_BASIC_STRING_DELIMITER_BYTES: usize = 2;
 // handed in, so their bun tests wait in real time (up to a few seconds), and
 // some decoder literals live in the decoders rather than here. Both are
 // accepted: a clock seam in the kits buys only faster tests.
+//
+// The JavaScript reporters also seed their `seq` once per module load, from
+// `Date.now() * 1000`, and never re-sample. If the host clock steps backwards
+// and the extension then reloads in a live process (Pi `/reload`), the new
+// instance's seqs sit below the old instance's, and the server drops them
+// until wall time passes the old base. The server's backwards-step re-anchor
+// covers reports arriving across the step, not a reload after it. Accepted:
+// it needs a backwards clock step and a reload in the same live process, and
+// it clears itself as wall time catches up.
 
 /// How long a bundled hook waits to connect to the shepr socket before giving
 /// up. Generated into every hook asset, so the agent is never held longer than

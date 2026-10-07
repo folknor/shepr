@@ -1213,9 +1213,11 @@ impl HeadlessServer {
                 if first_app_client {
                     self.app.mark_git_status_refresh_due(self.app.clock().now);
                 }
-                // A second surface changes no workspace's size: controlled
-                // workspaces keep their controller and uncontrolled ones keep
-                // theirs.
+                // A second surface takes only workspaces nobody else
+                // views: a workspace with a controller keeps it, and one an
+                // earlier surface merely sized for itself, without viewing
+                // it, has no controller and goes to the newcomer that views
+                // it.
                 if self.claim_client_geometry(client_id, client_views::GeometryClaimReason::Connect)
                 {
                     self.mark_view_changed();
@@ -1333,6 +1335,12 @@ impl HeadlessServer {
                 pane_id,
                 events,
             } => {
+                // Accepted cost: this arm looks the client and the pane
+                // runtime up more than once, each a small map lookup, and
+                // `refresh_client_view_keys` rebuilds a map of the connected
+                // clients per call. Both are a few entries per input batch;
+                // folding them would trade clear early returns for no
+                // measurable gain.
                 if !self
                     .clients
                     .get(&client_id)

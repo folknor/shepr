@@ -782,10 +782,16 @@ fn keybinding_conflict_diagnostic(
     }
 }
 
+const PREFIX_MARKER: &str = "prefix+";
+
 fn parse_binding_string(raw: &str) -> Option<ParsedBinding> {
     let trimmed = raw.trim();
-    let (trigger_prefix, body) = if let Some(rest) = trimmed.strip_prefix("prefix+") {
-        (true, rest)
+    // The marker is matched like key names, apart from ASCII case.
+    let (trigger_prefix, body) = if trimmed
+        .get(..PREFIX_MARKER.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(PREFIX_MARKER))
+    {
+        (true, &trimmed[PREFIX_MARKER.len()..])
     } else {
         (false, trimmed)
     };
@@ -1185,6 +1191,22 @@ prefix = "ö"
             )),
             "alt+x"
         );
+    }
+
+    #[test]
+    fn prefix_marker_is_case_insensitive() {
+        for raw in ["Prefix+n", "PREFIX+n", "pReFiX+n"] {
+            let parsed = parse_binding_string(raw).expect(raw);
+            assert!(
+                matches!(
+                    parsed,
+                    ParsedBinding::Single(ResolvedBinding {
+                        trigger: BindingTrigger::Prefix(_)
+                    })
+                ),
+                "{raw}"
+            );
+        }
     }
 
     #[test]

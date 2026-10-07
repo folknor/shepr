@@ -486,8 +486,8 @@ impl ClientShellState {
                 if target.target == LocationTarget::Machine
                     && self.machine_entry_action(&target.endpoint).is_some()
                 {
-                    // Opening a machine that offers Connect or Restart does what its
-                    // entry does; a Restart question replaces the navigator.
+                    // Opening a machine that offers an action does what its
+                    // entry does; a confirmation question replaces the navigator.
                     self.overlay = None;
                     self.activate_machine_entry(&target.endpoint, outcome);
                     outcome.repaint = true;

@@ -352,6 +352,11 @@ fn wait_for_stopped_server(
             BootStopWait::TimedOut => false,
         }
     } else {
+        // Success here is "the socket stopped accepting connections", so an
+        // unconditional stop cannot tell its server's exit from a successor
+        // that binds the socket within the wait; that case reports `TimedOut`.
+        // Accepted: only an operator action starts a server, and a conditional
+        // stop (which names the boot) is the form that detects a successor.
         wait_until_stopped_until(socket_path, deadline).map_err(|source| ServerStopError::Io {
             context: "could not check whether the server stopped".to_owned(),
             source,

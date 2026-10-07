@@ -390,10 +390,16 @@ impl EndpointHub {
         let id = &failure.endpoint_id;
         let notice = failure.failure.disconnect_notice();
         let status = EndpointFailureStatus::after_failure(&failure.failure);
-        self.supervisors
-            .record_failure(id, failure.generation, &failure.failure, now);
-        shell.set_machine_diagnostic(id, &failure.failure);
-        shell.set_machine_state(id, shell::MachineState::after_failure(&failure.failure));
+        // The lane below ends whatever the generation, but the machine's entry follows
+        // only a failure the supervisor took as its endpoint's current one.
+        if self
+            .supervisors
+            .record_failure(id, failure.generation, &failure.failure, now)
+            .is_some()
+        {
+            shell.set_machine_diagnostic(id, &failure.failure);
+            shell.set_machine_state(id, shell::MachineState::after_failure(&failure.failure));
+        }
         let (lost, cancellation_repaint) = self.requests_lost(shell, id, status);
         if cancellation_repaint.is_needed() {
             effects.push(HubEffect::ChromeDirty);

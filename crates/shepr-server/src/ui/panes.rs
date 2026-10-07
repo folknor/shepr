@@ -844,7 +844,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn alternate_screen_reclaims_scrollbar_gutter_without_resizing_panes() {
+    async fn alternate_screen_pane_computation_reclaims_scrollbar_gutter_without_resizing() {
         let mut app = AppState::test_new();
         let workspace = Workspace::test_new("test");
         let root_pane = workspace.tree().root();

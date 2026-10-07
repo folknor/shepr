@@ -46,7 +46,7 @@ impl App {
     /// or not: capturing an agent the manifests do not recognise yet is exactly
     /// when manifest work needs it. The screen is the whole detection snapshot,
     /// never the scrolled viewport.
-    pub(super) fn handle_detect_capture(&mut self, target: &PaneTarget) -> ApiResult {
+    pub(super) fn handle_detect_capture(&self, target: &PaneTarget) -> ApiResult {
         let (public_id, pane_id) = self.json_pane_with_id(&target.pane_id)?;
         let Some(pane) = self.lookup_runtime(pane_id) else {
             return Err(self.detect_terminal_unavailable_error(pane_id, &target.pane_id));
@@ -64,7 +64,7 @@ impl App {
     /// evaluation of the same screen input the live detector reads. Hook
     /// authority includes its screen-detection skip reason. The answer also
     /// carries the pane's last parked or rejected hook report.
-    pub(super) fn handle_detect_explain(&mut self, target: &PaneTarget) -> ApiResult {
+    pub(super) fn handle_detect_explain(&self, target: &PaneTarget) -> ApiResult {
         let pane_id = self.json_pane(&target.pane_id)?;
         let Some(terminal) = self.state.terminal(pane_id) else {
             return Err(ApiError::pane_not_found(&target.pane_id));

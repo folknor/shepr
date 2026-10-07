@@ -357,6 +357,13 @@ async fn settle(
                 candidate_index,
                 first_candidate_errno,
             }) => {
+                // Known race, accepted: a kernel closes a dying task's fds
+                // before the pidfd reads as exited, so a child killed after
+                // its chdir report but before execve (only the envp lookup
+                // sits between) can show EOF here with `has_exited()` still
+                // false and settle as launched. The pane then ends through
+                // the ordinary death path; the window is too small to pay a
+                // grace delay on every launch.
                 return if child_liveness.has_exited() {
                     LaunchOutcome::Unconfirmed
                 } else {

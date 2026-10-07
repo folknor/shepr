@@ -173,6 +173,10 @@ enum StopPlan {
     Stop(shepr_protocol::BootId),
 }
 
+/// Unlike a Restart (`stop_server_of_another_build`, which treats a stopping
+/// server as none because its starting bridge waits the shutdown out), a fleet
+/// stop has nothing after it to wait, so it stops a stopping server by its
+/// boot and lets the remote command wait for that boot to go.
 fn stop_plan(state: &ServerStatus) -> io::Result<StopPlan> {
     match state {
         ServerStatus::Gone => Ok(StopPlan::Nothing),

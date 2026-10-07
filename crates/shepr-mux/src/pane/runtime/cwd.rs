@@ -222,6 +222,13 @@ impl PaneRuntime {
     /// The shell's OSC 7 arbitration applies while its own process group is in
     /// the foreground; a foreground job's group leader takes precedence while
     /// a different group owns the terminal.
+    ///
+    /// Known race, accepted: the foreground group's leader pid is read from
+    /// /proc without a pidfd of its own (the pane child's pidfd pins only the
+    /// shell). If that leader has exited while its group lives on (`a | b`
+    /// with `a` gone) and the pid was reused within the same instant, the
+    /// cwd of an unrelated process is inherited. Pinning the leader would not
+    /// prove it still leads the group, so the window is left open.
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
         if self.child_liveness.live_process_id().is_none() {
             return self.cwd.resolve(None);

@@ -67,8 +67,8 @@ const GROK_HOOK_ASSET: &str = include_str!("assets/grok/shepr-agent-state.sh");
 
 // Hook assets deliver reports best-effort and discard failures, because the
 // host agent may show a failing hook to the operator. The server refuses a
-// report for a pane it does not know or with an empty agent label; the hook
-// drops that refusal like any other failure.
+// report for a pane it does not know or from a `source` that is not a
+// supported integration's; the hook drops that refusal like any other failure.
 //
 // Every asset opens the API socket itself and builds one envelope shape: the
 // pane gate (a release pane with a socket and a pane id), a single JSON

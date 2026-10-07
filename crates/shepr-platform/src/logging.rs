@@ -134,12 +134,15 @@ pub fn init_client_file_logging(
     init_file_logging_with_config(path, config)
 }
 
-/// The log files `--help` names: the only two any process writes.
-pub fn help_log_paths_summary(server_log: &Path, client_log: &Path) -> String {
+/// The log files `--help` names: the server and client logs, plus the boot
+/// log that holds a client-launched server's stderr until its own log is open
+/// (and is the only record when that log could not be opened).
+pub fn help_log_paths_summary(server_log: &Path, client_log: &Path, boot_log: &Path) -> String {
     format!(
-        "{} (client log: {})",
+        "{} (client log: {}; server boot log: {})",
         server_log.display(),
-        client_log.display()
+        client_log.display(),
+        boot_log.display()
     )
 }
 
@@ -256,7 +259,12 @@ use super::limits::PATH_RECHECK_AFTER_WRITES;
 
 impl RotatingFileState {
     /// Write one chunk. The local state mutex protects the cached descriptor;
-    /// file-level flocks coordinate writes and rotation across processes.
+    /// file-level flocks keep writes and rotation from interleaving across
+    /// processes. The size cap is soft: between path rechecks the size check
+    /// uses this process's cached size, so several processes appending to one
+    /// log can overshoot the cap by up to `PATH_RECHECK_AFTER_WRITES` writes
+    /// each before a rotation. That is accepted, since the cap only bounds disk
+    /// use and exact accounting would need a stat on every write.
     fn write_once(&mut self, buf: &[u8], pending_reason: Option<&str>) -> io::Result<usize> {
         let resumed = if let Some(reason) = pending_reason {
             let mut message =
@@ -527,10 +535,11 @@ mod tests {
         let summary = help_log_paths_summary(
             Path::new("/data/server.log"),
             Path::new("/state-client/client.log"),
+            Path::new("/run/server-boot.log"),
         );
         assert_eq!(
             summary,
-            "/data/server.log (client log: /state-client/client.log)"
+            "/data/server.log (client log: /state-client/client.log; server boot log: /run/server-boot.log)"
         );
     }
 

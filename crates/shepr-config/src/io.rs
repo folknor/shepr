@@ -8,44 +8,14 @@ use super::{
     ServerConfig, ValidatedClientConfig, ValidatedServerConfig,
 };
 
-/// Normalize UTF-8 byte-order marks in config text.
-///
-/// TOML tolerates a single BOM at the very start of the document, but a BOM at
-/// the start of a later line makes the parser reject the whole file. A
-/// line-oriented edit can displace a leading BOM into the middle of the file,
-/// so drop line-start BOMs that the TOML parser actually rejects. A U+FEFF that
-/// is valid string data is kept, because its parse error would not point at it.
+/// Strip the single UTF-8 byte-order mark TOML tolerates at the very start of
+/// the document. A U+FEFF anywhere else is left for the TOML parser to judge,
+/// so a file it rejects fails the launch.
 fn normalize_utf8_bom(content: &str) -> String {
-    let content = content.strip_prefix('\u{feff}').unwrap_or(content);
-    if !content.contains('\u{feff}') {
-        return content.to_owned();
-    }
-
-    let mut normalized = content.to_owned();
-    // `toml::Table`, not `toml::Value`: since toml 0.9, `Value::from_str`
-    // parses a single value expression rather than a document.
-    while let Err(error) = normalized.parse::<toml::Table>() {
-        let Some(span) = error.span() else {
-            break;
-        };
-        // toml reads a line-start BOM as the start of a bare key and reports
-        // the error just past it ("key with no value"), so look for a BOM at
-        // the start of the error's line rather than under the span.
-        let bom_len = '\u{feff}'.len_utf8();
-        let Some(before) = normalized.get(..span.start) else {
-            break;
-        };
-        let bom_start = before.rfind('\n').map_or(0, |newline| newline + 1);
-        if span.start > bom_start + bom_len
-            || !normalized
-                .get(bom_start..)
-                .is_some_and(|line| line.starts_with('\u{feff}'))
-        {
-            break;
-        }
-        normalized.replace_range(bom_start..bom_start + bom_len, "");
-    }
-    normalized
+    content
+        .strip_prefix('\u{feff}')
+        .unwrap_or(content)
+        .to_owned()
 }
 
 fn read_optional_config(path: &Path) -> std::io::Result<Option<String>> {
@@ -1002,11 +972,11 @@ id = "example"
     }
 
     #[test]
-    fn normalize_utf8_bom_recovers_from_a_displaced_mid_file_bom() {
+    fn normalize_utf8_bom_leaves_a_mid_file_bom_for_the_parser_to_reject() {
         let content = "[ui]\n\u{feff}[terminal]\ndefault_shell = \"zsh\"\n";
         let normalized = normalize_utf8_bom(content);
-        assert_eq!(normalized, "[ui]\n[terminal]\ndefault_shell = \"zsh\"\n");
-        assert!(normalized.parse::<toml::Table>().is_ok());
+        assert_eq!(normalized, content);
+        assert!(normalized.parse::<toml::Table>().is_err());
     }
 
     #[test]

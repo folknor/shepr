@@ -85,6 +85,13 @@ pub(crate) fn remote_display_value(value: Option<&str>) -> RemoteText {
 /// Before an operator's Restart starts this build's server on a machine:
 /// stops the running server of another build there, naming the boot its
 /// status reported. No server, and a server of this build, need no stop.
+///
+/// A stopping server is deliberately treated as no server here, while the
+/// fleet stop (`fleet::stop_plan`) stops it by its boot. A Restart goes on to
+/// a starting bridge, which waits out the shutdown and starts the successor
+/// itself, so stopping again would only add a round trip and a boot-changed
+/// race. The fleet stop has no successor to wait for: its caller reports "no
+/// server" only once the stopping one is really gone, so it waits on it.
 pub(crate) fn stop_server_of_another_build(
     ssh: &RemoteSsh,
     executable: &RemoteExecutable,

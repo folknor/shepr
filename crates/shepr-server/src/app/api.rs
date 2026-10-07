@@ -132,8 +132,8 @@ impl App {
     /// has already drained internal events into. Targets, the creation source
     /// and recorded geometry are all resolved here, against that state. The
     /// command's navigation effect is returned, not applied: navigation is per
-    /// client and the loop owns it, as it owns the reconcile, the geometry
-    /// settlement and the reply's focus flags that follow.
+    /// client and the loop owns it, as it owns the reconcile and the geometry
+    /// settlement that follow.
     pub(crate) fn handle_endpoint_app_command_with_render(
         &mut self,
         command: EndpointAppCommand,

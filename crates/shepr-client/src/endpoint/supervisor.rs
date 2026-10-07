@@ -295,6 +295,17 @@ impl EndpointSupervisors {
         // every loop pass would repeat that work for nothing.
         let mut options = None;
         for (endpoint_id, state) in &mut self.endpoints {
+            // No connector means an attempt lost it; nothing can start, and an
+            // operator's request must stay pending rather than be taken and dropped.
+            if matches!(
+                state.target,
+                ConnectTarget::Ssh {
+                    connector: None,
+                    ..
+                }
+            ) {
+                continue;
+            }
             let requested = state.requested.is_some();
             let Some(operation) = state.due_operation(now) else {
                 continue;

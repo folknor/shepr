@@ -7,8 +7,10 @@
 //! This clap schema is deliberately the only parser and there is no separate
 //! declarative invocation model beside it. The typed parsers read
 //! `ArgMatches` through ids declared here, including shepr-launch's command
-//! and flag constants. `matches.rs` rejects an id the spec never declared,
-//! so a spec and a parser that disagree fail loudly instead of drifting.
+//! and flag constants. In a dev build `matches.rs` rejects an id the spec never
+//! declared (clap checks ids only under `debug_assertions`), and its tests keep
+//! a spec and a parser that disagree from drifting. A release build reads an
+//! undeclared id as absent.
 
 use clap::{Arg, ArgAction, Command, ValueHint};
 

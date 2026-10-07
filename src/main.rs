@@ -33,6 +33,10 @@ impl ProcessExit {
             Some(ProcessStatus::BootMismatch) => {
                 Self::Stop(shepr_launch::stop::ServerStopExit::BootMismatch)
             }
+            // The daemon-only codes (`AlreadyRunning`, `ConfigRefused`) are
+            // never a CLI result: no CLI command returns them today, so they
+            // are reported as invalid and fail. A CLI command that one day
+            // legitimately returns one must get its own arm here.
             Some(ProcessStatus::AlreadyRunning | ProcessStatus::ConfigRefused) | None => {
                 shepr_platform::structured_log!(
                     ERROR,

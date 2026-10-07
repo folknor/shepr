@@ -224,7 +224,10 @@ impl Write for FramedPayloadBuffer {
 /// Reassembles partial reads correctly. Rejects a frame over `MAX_FRAME_SIZE`
 /// or a message over the cap without panicking, before allocating for it. An
 /// accepted frame's claimed length is allocated before its bytes are read, so
-/// at most one frame is allocated ahead of the bytes that actually arrive.
+/// the buffer is sized for at most one frame beyond the bytes that arrived,
+/// plus the `Vec`'s geometric growth slack (capacity can approach twice the
+/// bytes received on a long multi-frame message). Untouched pages are not
+/// resident.
 pub fn read_message<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> Result<M, FramingError> {

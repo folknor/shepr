@@ -52,6 +52,10 @@ pub(crate) const GETDENTS_READ_BUFFER_BYTES: usize = 4 * KIBIBYTE_BYTES;
 /// pane has no IO.
 pub(crate) const ACTOR_IDLE_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// Shortest idle poll a caller may configure. A zero timeout would turn the
+/// actor's `poll` into a busy loop, so a shorter request is raised to this.
+pub(crate) const ACTOR_IDLE_POLL_MIN: std::time::Duration = std::time::Duration::from_millis(1);
+
 /// Total queued PTY input and terminal-reply bytes allowed while other items
 /// are outstanding. A lone oversized item is admitted by the inbox; this
 /// budget bounds accumulation without rejecting one paste when the queue is

@@ -370,7 +370,7 @@ pub(in crate::shell) struct MachineEntryHit {
     pub(in crate::shell) rect: Rect,
     /// The machine the entry belongs to.
     pub(in crate::shell) location: Location,
-    /// The entry offers Connect or Restart: clicking it acts.
+    /// The entry offers an action: clicking it acts.
     pub(in crate::shell) actionable: bool,
 }
 

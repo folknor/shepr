@@ -147,7 +147,7 @@ is a connection-scoped resource owned in one place, with an explicit `close()`
 that sets `should_stop` and is called by whoever fails the connection, rather
 than an Arc shared by reader and writer with teardown left to the last drop.
 
-## RMT-004 - Link losses that OpenSSH logs below ERROR read as "needs attention", most visibly for the remote wait
+## RMT-004 - Link losses that OpenSSH logs below `ERROR` read as "needs attention", most visibly for the remote wait
 
 Claim broken: AGENTS.md, Offline "(unreachable; the machine row's diagnostic
 badge carries the reason, and it is retried with the reconnect backoff)";
@@ -263,34 +263,6 @@ stop the local server with the operator's consent. Only afterwards does
 `EndpointSupervisors::new` find `launch_fatal_setup_error` and fail the launch.
 The operator restarted a server for a launch that was never going to happen.
 The connector admission check belongs before preflight.
-
-## RMT-010 - `spawn_due` consumes an operator request before it knows it can start it
-
-`ReconnectState::due_operation` takes `requested` and only then does
-`spawn_due` find `connector: None` and `continue`, dropping the request
-silently. Today a connector is missing only after a panicked attempt, which
-ends the client, so this is latent; but it is the kind of ordering that
-`next_retry_deadline` explicitly guards against ("It skips the same states
-`spawn_due` skips"), and the request should be taken only once the attempt is
-certain to start.
-
-## RMT-011 - Restart and the fleet stop disagree on what a stopping server needs
-
-Raised as a smaller note.
-
-`stop_server_of_another_build` (Restart) treats a `Stopping` server as no
-server and goes straight to a starting bridge; `stop_plan` in `fleet.rs` stops
-a `Stopping` server by its boot. Both are defensible, but one rule should own
-it.
-
-## RMT-012 - `EndpointHub::endpoint_lost` updates the shell for a stale failure
-
-Raised as a smaller note.
-
-`EndpointHub::endpoint_lost` ignores `record_failure`'s `None` (stale
-generation) and still sets the machine state and diagnostic. The comment in
-`reconcile` argues no stale failure can reach it, so this is harmless now, but
-the result should gate the shell update as `attempt_failed` does.
 
 ## RMT-013 - Small inconsistencies in remote status and the server wait
 

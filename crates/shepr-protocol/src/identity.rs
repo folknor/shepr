@@ -27,8 +27,8 @@ impl BootId {
     }
 
     /// The pid of the server process this boot identity names.
-    pub fn process_id(&self) -> Option<u32> {
-        Some(self.process_id)
+    pub fn process_id(&self) -> u32 {
+        self.process_id
     }
 
     pub fn clock_nanos(&self) -> u128 {

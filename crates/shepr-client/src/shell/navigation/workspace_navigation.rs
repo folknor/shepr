@@ -154,7 +154,7 @@ impl ClientShellState {
 
     /// Whether `target` still names something navigate mode can act on: a workspace, or
     /// an agent's pane, of the snapshot it was pinned from on a usable endpoint, or a
-    /// configured machine's entry while it offers its Connect or Restart.
+    /// configured machine's entry while it offers an action.
     pub(in crate::shell) fn navigation_target_valid(&self, target: &PinnedLocation) -> bool {
         if target.is_machine_entry() {
             return self
@@ -197,7 +197,7 @@ impl ClientShellState {
 
     /// The workspaces and machine entries navigate mode steps through, in sidebar
     /// order: each usable endpoint's workspaces, and in place of a configured
-    /// machine's workspaces its entry while that offers Connect or Restart.
+    /// machine's workspaces its entry while that offers an action.
     fn navigate_list_targets(&self) -> Vec<PinnedLocation> {
         self.endpoints
             .iter()
@@ -353,7 +353,7 @@ impl ClientShellState {
     }
 
     /// Moves the Navigate selection `delta` steps through one list: every workspace in
-    /// sidebar order (a configured machine's Connect or Restart entry in place of its
+    /// sidebar order (a configured machine's state entry in place of its
     /// workspaces), then every selectable agent in the agent panel's order, wrapping at
     /// both ends. Moving only highlights; Enter acts.
     pub(in crate::shell) fn move_navigate_selection(&mut self, delta: isize) {

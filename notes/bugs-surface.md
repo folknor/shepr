@@ -166,34 +166,3 @@ and the one consumer treats odd values as certifying equality.
 Fix direction: give `changed_since` the parity rule
 (`!self.is_stable() || self != earlier`) and use it at the call site.
 `changed_since` exists for this and is currently unused there.
-
-## SURF-006 - `ClientMessage` gives a stale reason for not being `Eq`
-
-`ClientMessage` (`crates/shepr-protocol/src/input.rs`) says "Not `Eq`: an
-endpoint command can carry a split ratio". `SplitRatio` implements `Eq`
-(`shepr-core/src/layout.rs`, with a comment saying why), and
-`LayoutSetSplitRatioParams` derives `Eq`. Nothing stops `EndpointCommand` or
-`ClientMessage` from deriving `Eq`, so the stated reason is stale.
-
-## SURF-007 - `read_message` claims at most one frame is allocated ahead of the bytes received
-
-The `read_message` doc in `crates/shepr-protocol/src/framing.rs` says "at most
-one frame is allocated ahead of the bytes that actually arrive".
-`payload.resize` grows the `Vec` geometrically, so on a long multi-frame
-message the reserved capacity can reach about twice the bytes received, not
-"one frame ahead". The untouched pages are not committed on Linux, so this is a
-statement about allocation, not resident memory. Either reserve exactly
-(`reserve_exact` before `resize`) or reword the doc.
-
-## SURF-008 - `BootId::process_id` returns an `Option` that is always `Some`
-
-`BootId::process_id` returns `Option<u32>` but is always `Some`: every `BootId`
-holds a pid. The signature suggests a case that does not exist.
-
-## SURF-009 - `MIN_ENCODED_CELL_BYTES` underestimates the encoded cell size
-
-`MIN_ENCODED_CELL_BYTES = 5` (`crates/shepr-surface/src/limits.rs`) is a valid
-lower bound. The true minimum is 7, because `WireStyle` always encodes two
-bytes. Its comment says it ignores the style, which is true. This is only a
-note that the full-size estimate is about 30 percent low, so `delta::message`
-sends `Full` for some deltas that would have been smaller.

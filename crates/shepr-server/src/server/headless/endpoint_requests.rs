@@ -82,8 +82,7 @@ impl HeadlessServer {
     /// 3. apply the command's navigation effect to the requesting client;
     /// 4. reconcile every client's location, and the workspace geometry;
     /// 5. settle geometry controllers on the workspace the requester views
-    ///    now, never on the workspace the command acted on;
-    /// 6. fill the reply's focus flags against the requester's location.
+    ///    now, never on the workspace the command acted on.
     ///
     /// Pane focus is shared per workspace; only which workspace a client views
     /// is its own. Shared changes advance the view epoch; navigation is

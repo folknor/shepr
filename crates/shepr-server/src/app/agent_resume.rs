@@ -26,6 +26,11 @@ pub(crate) struct ResumeOutcome {
 }
 
 impl App {
+    /// Accepted edge: a plan that is still pending on a pane that already has a
+    /// runtime (so it is never a launch candidate) would keep the schedule
+    /// unretired and this scan running every loop pass for the boot. Restore
+    /// mints plans only on runtimeless panes, so no such plan exists; the scan
+    /// is a cheap walk of the pane records until the schedule retires.
     pub(crate) fn has_pending_agent_resumes(&self) -> bool {
         if self.resume_schedule.is_retired() {
             return false;

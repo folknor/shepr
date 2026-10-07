@@ -526,9 +526,7 @@ fn render_server(out: &mut String, overview: &Overview<'_>) {
 /// `, pid N` and, given the time now, `, up 3h12m`, from what the boot
 /// identity records: the server's pid and the wall clock at its start.
 fn process_facts(boot_id: &shepr_protocol::BootId, now: Option<SystemTime>) -> String {
-    let pid = boot_id
-        .process_id()
-        .map_or_else(String::new, |pid| format!(", pid {pid}"));
+    let pid = format!(", pid {}", boot_id.process_id());
     let up = now
         .and_then(|now| uptime(boot_id, now))
         .map_or_else(String::new, |uptime| {

@@ -951,7 +951,7 @@ mod tests {
         let other_boot = running();
         let refused = stop_with(
             Some(shepr_protocol::BootId::from_process_clock(
-                boot_id.process_id().unwrap_or_default().wrapping_add(1),
+                boot_id.process_id().wrapping_add(1),
                 Ok(Duration::ZERO),
             )),
             &other_boot,

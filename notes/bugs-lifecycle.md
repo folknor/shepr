@@ -127,23 +127,6 @@ the first one's palette is used; that duplicate is never reported.
 Fix: make the uniqueness check use `same_name` (and report a second local
 entry as a duplicate).
 
-## LIFE-005 - The "spec and parser disagree fail loudly" guard is debug-only
-
-Where: `src/cli/matches.rs`, `src/cli/spec.rs` module docs.
-
-Claim broken: spec.rs says "`matches.rs` rejects an id the spec never declared,
-so a spec and a parser that disagree fail loudly instead of drifting", and the
-matches.rs test `missing_match_is_not_fabricated_as_an_empty_value` asserts
-it.
-
-What happens: clap 4's `ArgMatches::try_get_one` checks the id only under
-`#[cfg(debug_assertions)]` (`clap_builder` `verify_arg`). A release build (the
-installed `shepr`) reads an undeclared id as `Ok(None)`, i.e. "absent", which
-is the silent drift the comment says cannot happen. The tests only ever run the
-dev profile, so they cannot notice. Either state that the guard is a dev-build
-check backed by tests, or verify ids against `Command::get_arguments` at parse
-time.
-
 ## LIFE-006 - `detect explain --file --agent <label>` accepts any label and exits 0
 
 Where: `src/cli/spec.rs` (`option("agent", "LABEL")` has no value parser),
@@ -170,60 +153,6 @@ Where: `src/cli/status.rs`, `parse`.
 Every other unknown or misplaced flag is a usage error
 (`unknown_commands_flags_and_arguments_are_rejected`). Make `--all` conflict
 with the subcommands, or move it so clap rejects the combination.
-
-## LIFE-008 - A mid-file BOM is silently repaired instead of failing the launch
-
-Where: `crates/shepr-config/src/io.rs`, `normalize_utf8_bom`.
-
-Claim broken: AGENTS.md "Any config problem fails the launch; no fallbacks";
-docs/config.md "Problems include: TOML syntax errors ...".
-
-A U+FEFF at the start of a non-first line is a TOML syntax error. The loader
-deletes it and parses the edited text, so a file `toml` itself rejects is
-accepted. (A single leading BOM is legal TOML and is fine to strip.) Either
-drop the mid-file repair or document it as a deliberate exception; as written
-the code contradicts the no-fallback rule.
-
-## LIFE-009 - Stale statements in the default config templates
-
-Where: `crates/shepr-config/src/default-client.toml` (and docs/config.md, see
-last bullet).
-
-- Header: "Pane shells, sessions, and whether panes have borders belong in
-  server.toml". Pane borders are always drawn (AGENTS.md, default-server.toml,
-  docs/config.md); server.toml only chooses shared divider vs adjacent borders
-  (`pane_gaps`). The client template is wrong.
-- `[[machines]]` comment: "Entries of an unreachable machine lose the colour."
-  AGENTS.md says a machine that is not connected shows a state entry "and no
-  workspaces or agents of its last snapshot", so there are no entries to lose
-  colour. Wrong as written.
-- Navigate-mode comment: "a machine's Connect or Restart entry in place of its
-  workspaces" omits the login entry, which docs/config.md and AGENTS.md list as
-  a navigate stop.
-- docs/config.md "Host colours": "The local server's entries lose the colour
-  while it reconnects." Worth checking against the client: if the local server
-  follows the same not-connected rule as machines, this sentence describes
-  entries that are not shown either.
-
-## LIFE-010 - Profile and state-directory docs misdescribe where client state lives
-
-Where: `crates/shepr-paths/src/profile.rs` (`BuildProfile` docs),
-`crates/shepr-paths/src/app_paths.rs` (`state_dir` docs),
-`crates/shepr-paths/src/layout.rs` (`ssh_metadata_directory` docs).
-
-- profile.rs: "Both config files and the client-owned state stay shared by
-  every profile." The client log and the SSH metadata cache live in a
-  per-profile `shepr-client` / `shepr-dev-client` directory (the paths tests
-  assert it), so most client-owned state is not shared.
-- app_paths.rs: `state_dir` "holds client-owned state". For a release build
-  `state_dir` is the server's leased data directory itself
-  (`data_dir == state_dir`), so the client's sidebar preferences
-  (`shepr-client` `preferences::path_for_local_endpoint`,
-  `client-shell/local-*.json`) are written inside the release server's leased
-  data tree. layout.rs gives the SSH cache a separate directory precisely to
-  stay "outside the server's leased data tree"; the preferences file breaks
-  that rule for release only. Either move the preferences under the client
-  state directory or correct both docs.
 
 ## LIFE-011 - Operator guidance that is wrong for a socket override
 
@@ -263,17 +192,6 @@ connect by the remaining phase budget or count it in the worst cases. See also
 SRV-003 and RMT-007, which are about other budgets on the same stop and
 remote-command paths.
 
-## LIFE-013 - `--help` says the server and client logs are "the only two any process writes"
-
-Where: `crates/shepr-platform/src/logging.rs`, `help_log_paths_summary`; used
-by `src/cli.rs`, `print_help`.
-
-The client-spawned server's boot log (`server-boot.log` in the runtime
-directory) is a log file too, and for a server whose own log could not be
-opened it is the only record (local_server.rs and shepr-daemon say so).
-`shepr --help` lists config and log paths for exactly this kind of diagnosis
-and omits it. Name the boot log, or reword the doc comment.
-
 ## LIFE-014 - `shepr stop` (and status) fail on an unusable `XDG_CONFIG_HOME` they never read
 
 Where: `crates/shepr-paths/src/app_paths.rs`, `resolve_paths_from_env`;
@@ -297,52 +215,3 @@ error into `HostStop::Failed(format!("stop failed: {error}"))`. The host did
 end with no server; the row should say "stopped; final save failed: ...", as
 `guidance::local_notice` already does for the restart path. Exit status 1 is
 defensible, the wording is not.
-
-## LIFE-016 - An unconditional stop reports a successor's bind as a timed-out stop
-
-Raised as a lateral note.
-
-`crates/shepr-launch/src/stop.rs`, unconditional stop: success is "the socket
-stopped accepting connections". A successor that binds the socket within the
-stop's wait (any client that auto-launches) turns a successful stop into
-`TimedOut` with "the server may still be saving its layout" wording. Low
-likelihood today because only operator actions start servers, but the error
-text would be misleading.
-
-## LIFE-017 - Log rotation can overshoot its cap with several writers
-
-Raised as a lateral note; probably acceptable for a soft cap.
-
-`crates/shepr-platform/src/logging.rs`, rotation: the size check uses the
-cached `current.size` between path rechecks, while several processes (TUI,
-every remote bridge, `remote-wait-for-server`) append to the same client log.
-The cap can overshoot by up to `PATH_RECHECK_AFTER_WRITES` writes per process.
-Noted because the doc comment presents the flock coordination as making
-rotation exact.
-
-## LIFE-018 - The `prefix+` key marker is case-sensitive while key names are documented as case-insensitive
-
-Raised as a lateral note.
-
-`crates/shepr-config/src/keybinds.rs`, `parse_binding_string`: the `prefix+`
-marker is matched case-sensitively, while docs/config.md says key "Names are
-case-insensitive". `Prefix+z` fails as an unknown key rather than being read as
-the prefix. Either accept it or say `prefix` is lowercase-only.
-
-## LIFE-019 - `SshTarget::parse` classifies passwords on a heuristic
-
-Raised as a lateral note; harmless in practice, noted for completeness.
-
-`crates/shepr-config/src/machine.rs`, `SshTarget::parse`: the password check
-looks for `:` in everything before the last `@`, after stripping only a
-leading `ssh://`. An `ssh://host/path@x` style string or an alias containing
-`@` and `:` is classified on that heuristic.
-
-## LIFE-020 - `ProcessExit::from_cli_code` maps daemon exit codes by convention only
-
-Raised as a lateral note.
-
-`src/main.rs`, `ProcessExit::from_cli_code`: `AlreadyRunning` and
-`ConfigRefused` codes are logged as invalid CLI statuses and mapped to
-`Failed`; correct today because nothing in the CLI returns them, but the
-mapping relies on that by convention only.

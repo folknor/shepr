@@ -69,7 +69,7 @@ override like the restart guidance. Workspaces and panes are managed from the TU
 is no CLI group for them, and no CLI attach to a single terminal. `shepr
 detect capture <pane>` prints the screen text and OSC title and progress the
 detector evaluates for a pane, as JSON that `detect explain --file` reads back,
-and `shepr detect explain <pane>` shows the pane's state and what owns it
+and `shepr detect explain <pane>` shows the pane's internal state (Unknown included, not the presented Idle) and what owns it
 (the screen, a hook or the process exit) beside the verdict the screen rules
 give now and the rule that matched.
 `shepr status` prints this installation (version, build profile and build

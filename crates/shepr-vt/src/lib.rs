@@ -300,8 +300,10 @@ impl Terminal {
     }
 
     /// Turns the collection of complete OSC bodies on or off. While on,
-    /// [`TerminalEffects::osc_bodies`] carries every OSC the terminal saw,
-    /// framed the way the parser framed it. Off by default.
+    /// [`TerminalEffects::osc_bodies`] carries each OSC the terminal saw,
+    /// framed the way the parser framed it, except that a body over the
+    /// scanner's size bound is left out entirely (not truncated). Off by
+    /// default.
     pub fn set_osc_body_capture(&mut self, capture: bool) {
         self.scanner.set_capture_osc_bodies(capture);
     }

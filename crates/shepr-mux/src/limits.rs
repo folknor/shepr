@@ -212,8 +212,8 @@ pub(crate) const SNAPSHOT_LIMIT: usize =
 pub(crate) const BACKUP_LIMIT: usize = 3;
 /// Name attempts per recovery timestamp. The data directory lease admits one
 /// writer, so a name that is already taken is a leftover, not a concurrent
-/// writer. The loop skips such names. The publish is not exclusive against a
-/// second writer and does not need to be.
+/// writer. The loop skips such names; the publish itself is create-only, so a
+/// name that is taken is refused rather than overwritten.
 pub(crate) const RECOVERY_SEQUENCE_LIMIT: usize = 128;
 /// The session layout file's size bound, for saves and for the reads restore
 /// and snapshot recovery make, so a damaged file cannot allocate without limit.

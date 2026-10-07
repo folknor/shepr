@@ -6,9 +6,7 @@ use shepr_protocol::command::{
 
 use shepr_mux::Label;
 
-use super::endpoint::{
-    EndpointEffects, Handled, HandlerError, HandlerResult, internal_with_effects, workspace_missing,
-};
+use super::endpoint::{EndpointEffects, Handled, HandlerError, HandlerResult, workspace_missing};
 
 impl App {
     /// Creates a workspace and moves the requester onto it. Its first pane
@@ -38,9 +36,6 @@ impl App {
             self.state.rename_workspace(&workspace_id, label);
         }
         let effects = EndpointEffects::from(&outcome);
-        if self.state.workspace(&workspace_id).is_none() {
-            return internal_with_effects("the new workspace is unavailable", effects);
-        }
         Handled::navigating_with_effects(EndpointReply::Done, workspace_id, effects)
     }
 

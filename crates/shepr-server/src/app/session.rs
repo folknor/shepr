@@ -257,11 +257,15 @@ impl SessionSaver {
         if self.blocked() {
             SaveDeadline::Idle
         } else if self.checkpoint_requested() {
-            self.exit
-                .retry_at()
-                .into_iter()
-                .chain(self.host.retry_at())
-                .max()
+            // The combined save starts as soon as either requested machine is
+            // due: a machine with no retry pending (`None`) is due at once,
+            // and `None` orders before every `Some`.
+            let exit = self.exit.is_requested().then(|| self.exit.retry_at());
+            let host = self.host.is_requested().then(|| self.host.retry_at());
+            exit.into_iter()
+                .chain(host)
+                .min()
+                .flatten()
                 .map_or(SaveDeadline::Now, SaveDeadline::At)
         } else {
             self.autosave
@@ -1441,7 +1445,7 @@ mod tests {
     }
 
     #[test]
-    fn a_checkpoint_waits_for_the_later_of_the_two_retry_deadlines() {
+    fn a_checkpoint_starts_at_the_earlier_of_the_two_retry_deadlines() {
         let mut app = test_app();
         let now = app.clock.now;
         let generation = app.session_saver.exit.request(false).expect("exit");
@@ -1457,20 +1461,20 @@ mod tests {
             }),
             disk_full(),
         );
-        let later = now + checkpoint_retry_delay(1);
+        let earlier = now + checkpoint_retry_delay(0);
+        assert_eq!(app.session_saver.exit.retry_at(), Some(earlier));
         assert_eq!(
-            app.session_saver.exit.retry_at(),
-            Some(now + checkpoint_retry_delay(0))
+            app.session_saver.host.retry_at(),
+            Some(now + checkpoint_retry_delay(1))
         );
-        assert_eq!(app.session_saver.host.retry_at(), Some(later));
-        assert_eq!(app.session_saver.deadline(), SaveDeadline::At(later));
+        assert_eq!(app.session_saver.deadline(), SaveDeadline::At(earlier));
         assert!(
             app.session_saver
-                .next_save(later - Duration::from_nanos(1))
+                .next_save(earlier - Duration::from_nanos(1))
                 .is_none()
         );
         assert!(
-            matches!(app.session_saver.next_save(later), Some(NextSave::Checkpoint { exit_generation: Some(g), host: true }) if g == generation)
+            matches!(app.session_saver.next_save(earlier), Some(NextSave::Checkpoint { exit_generation: Some(g), host: true }) if g == generation)
         );
     }
 

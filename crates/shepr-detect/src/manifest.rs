@@ -316,6 +316,11 @@ struct CompiledContains {
 }
 
 impl CompiledContains {
+    // Edge case, accepted: `str::to_lowercase` applies final sigma in the
+    // needle's own context, while `matches` lowercases the text per character
+    // with a context-aware sigma. A needle ending in capital sigma (U+03A3)
+    // therefore lowercases to a final sigma and cannot match mid-word text.
+    // Bundled manifests are English and never hit it.
     fn new(needle: &str) -> Result<Self, String> {
         let case_ignorable = case_ignorable_regex()?;
         let cased = cased_regex()?;

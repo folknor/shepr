@@ -995,7 +995,7 @@ fn launch_with(
 /// The Linux process id in a canonical boot identity; `None` when its number
 /// is outside the valid Linux pid range.
 fn boot_id_process_id(boot_id: &shepr_protocol::BootId) -> Option<shepr_platform::Pid> {
-    shepr_platform::Pid::new(boot_id.process_id()?)
+    shepr_platform::Pid::new(boot_id.process_id())
 }
 
 /// The daemon exited during boot: how, and what it printed.

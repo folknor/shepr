@@ -229,7 +229,17 @@ fn start_server(
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(RunServerError::Runtime)?;
+        .map_err(|error| {
+            // The socket is bound, so a stop may already be waiting on the
+            // final save result; a failed start owes it an explicit answer,
+            // written before `reserved` drops and the socket goes.
+            if stop_signal
+                .complete_unfinished_final_save(super::lifecycle::UNFINISHED_FINAL_SAVE_MESSAGE)
+            {
+                stop_signal.wait_for_stop_answers(crate::limits::STOP_ANSWER_WAIT);
+            }
+            RunServerError::Runtime(error)
+        })?;
 
     // The restore spawns pane tasks, so it runs inside the runtime.
     let (server, ready) = runtime.block_on(async move {

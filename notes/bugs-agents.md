@@ -24,7 +24,7 @@ Hunter's severity: medium.
 Claim broken: `HookSessionPolicy::CLAUDE` in `crates/shepr-agent/src/lib.rs`:
 "`startup` reports a new process, which has no live session in this pane to
 replace." The same reasoning holds up every policy that leaves `Startup` out of
-`replacement_starts` (Claude, Pi, Grok, OpenCode, and DEFAULT for Copilot,
+`replacement_starts` (Claude, Pi, Grok, OpenCode, and `DEFAULT` for Copilot,
 Cursor, Devin, Droid): it only works if the old process's exit always reaches
 ownership before the new process's start does.
 
@@ -211,15 +211,6 @@ it. Make `session_ref_for_agent_report` take one already-chosen reference, and
 reword the `AgentResumeKey` doc to say the bundled extensions send exactly one
 kind.
 
-## AGT-006 - Stale fact in the integration crate's header comment
-
-Hunter's severity: low (doc).
-
-`crates/shepr-integration/src/lib.rs` says the server refuses a report "with an
-empty agent label". Reports carry no agent label any more. The server refuses
-an unsupported `source` (`ReportOrigin::parse`, answering `invalid_agent`), and
-there is no label to be empty. Reword it to name the source refusal.
-
 ## AGT-007 - Codex and other partial-state reports are lost after an exit
 
 Raised as a lateral observation.
@@ -243,19 +234,6 @@ Path references (Pi, OMP) skip it entirely
 persisted path and no authority, any same-owner start replaces the session,
 whatever its source.
 
-## AGT-009 - JS reporters seed `seq` once per module load and never re-sample
-
-Raised as a lateral observation; the hunter rates the impact low.
-
-The JS reporters seed `seq` once per module load (`Date.now() * 1000`) and
-never re-sample. Suppose the host clock steps backwards and the extension then
-reloads in a live process, such as Pi `/reload`. The new instance's seqs sit
-below the old instance's, and the server's wall clock has not reversed
-relative to its last acceptance. So `HookSequence::supersedes` drops the new
-reports until wall time passes the old base. `seq_units.txt` and `limits.rs`
-(`HOOK_SEQUENCE_REANCHOR_AFTER`) say a backwards step re-anchors. That is true
-for reports arriving across the step, not for a reload after it.
-
 ## AGT-010 - A rule reference with an explicit `region = "whole_recent"` passes silently
 
 Raised as a lateral observation.
@@ -264,21 +242,3 @@ In `expand_rule_gate` (`manifest.rs`), a rule that combines `rule = "..."` with
 an explicit `region = "whole_recent"` passes the "rule reference with inline
 region" check, because it compares against the default string, and the region
 is silently ignored. Bundled-only, so it bites only a manifest author.
-
-## AGT-011 - `CompiledContains` mishandles a needle ending in final sigma
-
-Raised as a lateral observation.
-
-It lowercases the needle with `str::to_lowercase`, which applies final sigma
-in the needle's own context, but the text per character. So a needle ending in
-capital sigma (U+03A3) cannot match it mid-word. English manifests never hit it.
-
-## AGT-012 - Kimi and MastraCode have no nested-process guard
-
-Raised as a lateral observation; the hunter calls it speculative.
-
-Both put `Startup` in `replacement_starts`, and their decoders have none of the
-guards Codex (`CODEX_THREAD_ID`), OMP (`OMPCODE`) and Claude (`agent_id`,
-`CLAUDE_JOB_DIR`) have. A nested `kimi` or `mastracode` started from inside the
-pane's agent would replace the pane's root session. It depends on whether those
-agents ever spawn themselves.

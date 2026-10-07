@@ -104,6 +104,11 @@ pub(super) fn render_pane_surface(
         layout,
         area,
     ) else {
+        // Accepted edge: this defers as owed, so a client whose area could
+        // never be represented would be planned a full render again on every
+        // pass. It cannot happen today, since surface sizes are clamped at
+        // the handshake and on every resize, and a guard that gave up would
+        // only hide a broken clamp from the logs.
         return Err(SurfaceRenderDeferred::Unrepresentable);
     };
     // Each pane's draw says in its own core hold whether the screen was drawn,

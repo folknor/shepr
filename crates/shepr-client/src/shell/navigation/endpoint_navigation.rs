@@ -59,7 +59,7 @@ impl ClientShellState {
             return false;
         };
         let endpoint_id = hit.location.endpoint.clone();
-        // A machine that offers Connect or Restart: its row acts as its entry.
+        // A machine whose state offers an action: its row acts as its entry.
         if self.activate_machine_entry(&endpoint_id, outcome) {
             return true;
         }
@@ -83,8 +83,8 @@ impl ClientShellState {
         true
     }
 
-    /// A click on a configured machine's state entry: Connect or Restart when it offers
-    /// one; an entry that offers neither takes the click and does nothing.
+    /// A click on a configured machine's state entry: its action when it offers
+    /// one; an entry that offers none takes the click and does nothing.
     pub(in crate::shell) fn handle_machine_entry_click(
         &mut self,
         point: (u16, u16),

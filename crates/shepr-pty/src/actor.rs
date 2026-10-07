@@ -118,9 +118,11 @@ impl PtyIoActorConfig {
     }
 
     /// Set the idle wait used to check for a core poisoned on another thread.
-    /// It must be nonzero; PTY readiness and the wake pipe still drive normal IO.
+    /// A zero duration is raised to `ACTOR_IDLE_POLL_MIN`, since zero would turn
+    /// the actor's poll into a busy loop; PTY readiness and the wake pipe still
+    /// drive normal IO.
     pub fn with_idle_poll(mut self, idle_poll: std::time::Duration) -> Self {
-        self.idle_poll = idle_poll;
+        self.idle_poll = idle_poll.max(crate::limits::ACTOR_IDLE_POLL_MIN);
         self
     }
 }

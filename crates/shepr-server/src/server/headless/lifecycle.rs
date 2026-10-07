@@ -12,7 +12,7 @@ use host_shutdown::HostShutdownMonitor;
 
 /// The final save result a stop request is answered with when the server
 /// exits without having run its final save.
-const UNFINISHED_FINAL_SAVE_MESSAGE: &str =
+pub(super) const UNFINISHED_FINAL_SAVE_MESSAGE: &str =
     "the server exited before it ran its final session save";
 
 /// The server lifecycle states that can affect saves or request handling.

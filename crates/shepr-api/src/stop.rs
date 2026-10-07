@@ -120,6 +120,15 @@ impl ServerStopSignal {
     /// exits: an exit under an answer still being written would close the
     /// connection unanswered, and the stopping client would read that as a
     /// stop with no save failure to report.
+    ///
+    /// Accepted edge: a `server.stop` that arrives after this wait has run
+    /// (the socket stays bound until the server releases it, and the runtime
+    /// then gets a short shutdown timeout) reads the published result at once
+    /// and may be cut off mid-write by the exit. If the final save failed,
+    /// that second stopper sees a closed connection and counts the stop as
+    /// accepted without the failure. It needs a second operator, retry or
+    /// `stop --all` racing a local stop inside a window of milliseconds, and
+    /// the first stopper still gets the full answer, so it is not closed.
     pub fn wait_for_stop_answers(&self, timeout: std::time::Duration) -> bool {
         let completion = match self.final_save.lock() {
             Ok(completion) => completion,

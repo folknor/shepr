@@ -9,8 +9,9 @@ include!(concat!(env!("OUT_DIR"), "/build_profile.rs"));
 /// cargo dev profile) uses `shepr-dev` in place of `shepr` for the runtime
 /// directory and the saved-layout directory, so a dev server and the installed
 /// release server hold different sockets, locks and saved layouts without any
-/// flag. Both config files and the client-owned state stay shared by every
-/// profile.
+/// flag. Both config files and the state directory (which holds the client's
+/// sidebar preferences) stay shared by every profile; the client log and the
+/// SSH metadata cache live in a per-profile client state directory.
 /// A server of another build is still refused by the build-identity checks,
 /// which is what tells the two apart once they can no longer collide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

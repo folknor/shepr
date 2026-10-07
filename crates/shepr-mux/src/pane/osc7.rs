@@ -16,6 +16,11 @@ pub(super) fn parse_reported_cwd(
     let payload = match report {
         WorkingDirectoryReport::Uri(payload) | WorkingDirectoryReport::Path(payload) => payload,
     };
+    // Known limit, accepted: the payload is trimmed and must be UTF-8 (and
+    // percent-decoding refuses non-UTF-8 bytes too), so a directory whose name
+    // ends in whitespace or is not UTF-8 is never taken from OSC 7. The pane's
+    // /proc cwd still names it, and such directories are too rare to be worth
+    // telling payload padding from a real trailing space.
     let value = std::str::from_utf8(payload).ok()?.trim();
     match report {
         // A hand-rolled prompt may send a bare absolute path in OSC 7; any

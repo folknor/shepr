@@ -99,7 +99,6 @@ const COPY_MODE_BINDINGS: &[Binding] = &[
     binding(Command::PageDown, code(KeyCode::PageDown), None),
     binding(Command::LineStart, code(KeyCode::Home), None),
     binding(Command::LineEnd, code(KeyCode::End), None),
-    binding(Command::PageUp, control('b'), None),
     binding(Command::PageDown, control('f'), None),
     binding(Command::HalfPageUp, control('u'), None),
     binding(Command::HalfPageDown, control('d'), None),

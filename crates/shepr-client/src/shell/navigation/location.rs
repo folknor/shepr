@@ -68,7 +68,7 @@ struct SnapshotIdentity {
 
 /// A location captured from one snapshot. It is valid only while both snapshot identity
 /// components still match the endpoint's current presentation. A configured machine's
-/// state entry (its Connect or Restart) is pinned to no snapshot: the machine shows it
+/// state entry is pinned to no snapshot: the machine shows it
 /// only while it has none to present, and it stays valid while the entry offers its
 /// action.
 #[derive(Clone, Debug, PartialEq, Eq)]
