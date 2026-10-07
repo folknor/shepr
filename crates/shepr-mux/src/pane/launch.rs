@@ -25,12 +25,23 @@ fn scrubbed_pane_names() -> impl Iterator<Item = RegisteredEnv> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchKind {
+    /// A new pane or workspace the user asked for. Its shell starts in the
+    /// requested directory, else falls back to the home directory (then `/`):
+    /// the directory comes from the `[terminal].new_cwd` policy, often a
+    /// followed pane's, and may have been removed since; a working shell the
+    /// user can `cd` from is worth more than a placeholder. Splits and new
+    /// workspaces alike.
     Fresh,
+    /// A pane rebuilt from the saved layout, which must start where it was.
     Restored,
+    /// A restored pane that resumes an agent's conversation in its directory.
     AgentResume,
 }
 
 impl LaunchKind {
+    /// Whether the shell must start in the requested directory or not at all
+    /// (the pane then becomes a placeholder that says why). Only a fresh
+    /// launch may fall back.
     pub fn requires_cwd(self) -> bool {
         !matches!(self, Self::Fresh)
     }
@@ -129,6 +140,13 @@ pub(super) fn pane_shell_command_builder(
 mod tests {
     use super::*;
     use shepr_test_support::fixture::resolved_shell as test_shell;
+
+    #[test]
+    fn only_a_fresh_launch_may_fall_back_from_its_cwd() {
+        assert!(!LaunchKind::Fresh.requires_cwd());
+        assert!(LaunchKind::Restored.requires_cwd());
+        assert!(LaunchKind::AgentResume.requires_cwd());
+    }
 
     /// Every registered name with its pane policy, across both vocabularies.
     fn every_policy() -> Vec<(RegisteredEnv, PaneEnvPolicy)> {

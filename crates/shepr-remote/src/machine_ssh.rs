@@ -10,7 +10,10 @@ use crate::discovery::{
 };
 use crate::failure::{attempt_deadline_passed, failure_evidence, local_setup_error};
 use crate::host::BridgeMode;
-use crate::limits::{PIPE_DRAIN_GRACE, SERVER_WATCH_POLL_INTERVAL, SSH_STDERR_CAPTURE_LIMIT};
+use crate::limits::{
+    PIPE_DRAIN_GRACE, SERVER_WATCH_POLL_INTERVAL, SSH_STDERR_CAPTURE_LIMIT,
+    SSH_WAIT_STDOUT_CAPTURE_LIMIT,
+};
 use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
 use crate::process::{PipeCapture, kill_and_reap};
 use crate::server_lifecycle::{remote_server_status, stop_server_of_another_build};
@@ -527,7 +530,7 @@ impl MachineSshConnector {
         let stdout = child
             .stdout
             .take()
-            .map(|stdout| PipeCapture::spawn_tail(stdout, SSH_STDERR_CAPTURE_LIMIT));
+            .map(|stdout| PipeCapture::spawn_tail(stdout, SSH_WAIT_STDOUT_CAPTURE_LIMIT));
         // Held open for the life of the wait; dropped with the child at the end.
         let _stdin = child.stdin.take();
         let stderr = child

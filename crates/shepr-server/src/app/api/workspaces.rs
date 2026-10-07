@@ -17,6 +17,12 @@ impl App {
         params: WorkspaceCreateParams,
         ctx: &EndpointContext,
     ) -> HandlerResult {
+        // The TUI sends `Cwd` with the `new_workspace_cwd` its projection
+        // carried: this server's `[terminal].new_cwd` policy, resolved when
+        // the projection was built, so a followed pane directory may have
+        // vanished since. The launch is `Fresh` either way, as for a split:
+        // a shell that cannot enter the directory starts in the home
+        // directory rather than leaving the new workspace a placeholder.
         let cwd = match &params.source {
             WorkspaceCreateSource::Cwd(raw) => super::cwd::launch_cwd(raw)?,
             WorkspaceCreateSource::Default => self.resolve_new_terminal_cwd(None),
@@ -225,6 +231,91 @@ mod tests {
             canonical(app.state.ws(2).identity_cwd()),
             canonical(&source_cwd)
         );
+        shutdown_test_runtimes(&mut app);
+    }
+
+    #[tokio::test]
+    async fn a_vanished_explicit_cwd_starts_the_shell_in_a_fallback_directory() {
+        use super::super::test_support::shutdown_test_runtimes;
+        use shepr_mux::events::{AppEvent, RuntimeEvent};
+        use shepr_mux::pane::{LaunchKind, LaunchOutcome};
+        use std::time::Duration;
+
+        // A shell that stays up, so the launch settles as launched rather than
+        // racing the child's exit into an unconfirmed settlement.
+        let mut app = app();
+        app.set_test_shell(shepr_test_support::fixture::idle_shell());
+        let scratch = crate::test_support::ScratchDir::new("ws-unavailable-cwd");
+        let missing_cwd = scratch.to_path_buf().join("directory-does-not-exist");
+        assert!(!missing_cwd.try_exists().expect("scratch dir is readable"));
+
+        let handled = app
+            .handle_workspace_create(
+                create(WorkspaceCreateSource::Cwd(missing_cwd.clone().into())),
+                &EndpointContext::without_geometry(),
+            )
+            .expect("the workspace is created");
+        let workspace_id = handled
+            .navigate
+            .expect("creation navigates to the workspace");
+        let pane_id = app
+            .state
+            .workspace(&workspace_id)
+            .expect("created workspace")
+            .tree()
+            .root();
+
+        // Other app events (a Git refresh, say) may be queued first; the
+        // runtime publishes this pane's settlement before anything else of its.
+        let launch_event = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let event = app.next_event().await;
+                if matches!(
+                    &event,
+                    AppEvent::Runtime { event, .. }
+                        if matches!(event.as_ref(), RuntimeEvent::PaneLaunchSettled { .. })
+                ) {
+                    break event;
+                }
+                app.handle_internal_event_with_view_change(event);
+            }
+        })
+        .await
+        .expect("the child reports where it launched");
+        let AppEvent::Runtime {
+            event: runtime_event,
+            ..
+        } = &launch_event
+        else {
+            unreachable!("the loop above returns only a runtime event");
+        };
+        let RuntimeEvent::PaneLaunchSettled { settlement } = runtime_event.as_ref() else {
+            unreachable!("the loop above returns only a launch settlement");
+        };
+        assert_eq!(settlement.kind, LaunchKind::Fresh);
+        let LaunchOutcome::Launched {
+            cwd,
+            requested_cwd,
+            candidate_index,
+            first_candidate_error,
+        } = &settlement.outcome
+        else {
+            panic!("the shell launches in a fallback: {:?}", settlement.outcome);
+        };
+        assert_eq!(requested_cwd.as_path(), missing_cwd.as_path());
+        assert_ne!(cwd.as_path(), missing_cwd.as_path());
+        assert!(*candidate_index > 0, "a fallback candidate was entered");
+        assert_eq!(
+            first_candidate_error.as_ref().map(std::io::Error::kind),
+            Some(std::io::ErrorKind::NotFound)
+        );
+        let fallback_cwd = cwd.as_path().to_path_buf();
+
+        assert!(app.handle_internal_event_with_view_change(launch_event));
+        let terminal = app.state.terminal(pane_id).expect("the pane remains");
+        assert!(terminal.start_failure().is_none(), "no placeholder");
+        assert_eq!(terminal.cwd().as_path(), fallback_cwd.as_path());
+        assert!(app.terminal_runtimes.get(&pane_id).is_some());
         shutdown_test_runtimes(&mut app);
     }
 

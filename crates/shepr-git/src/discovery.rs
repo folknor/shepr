@@ -77,7 +77,13 @@ fn git_common_dir_for_git_dir(git_dir: &Path) -> io::Result<PathBuf> {
         Err(error) if is_absence(&error) => return Ok(git_dir.to_path_buf()),
         Err(error) => return Err(error),
     };
-    let path = Path::new(contents.trim());
+    // setup.c removes line endings from commondir, not surrounding path
+    // whitespace. Leading or trailing spaces and tabs can be path bytes.
+    let mut end = contents.len();
+    while end > 0 && matches!(contents.as_bytes()[end - 1], b'\r' | b'\n') {
+        end -= 1;
+    }
+    let path = Path::new(&contents[..end]);
     Ok(if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -185,10 +191,6 @@ fn is_dir_entry(path: &Path) -> std::io::Result<bool> {
     Ok(matches!(entry_type(path)?, Some(kind) if kind.is_dir()))
 }
 
-fn is_file_entry(path: &Path) -> std::io::Result<bool> {
-    Ok(matches!(entry_type(path)?, Some(kind) if kind.is_file()))
-}
-
 /// [`locate_git_dir`] with filesystem and Git probe errors kept apart from
 /// "not a checkout root", so the discovery walk can stop instead of ascending.
 fn locate_git_dir(repo_root: &Path) -> Result<Option<LocatedGitDir>, GitReadError> {
@@ -252,37 +254,109 @@ fn file_read_error(path: &Path, error: &std::io::Error) -> GitReadError {
 
 fn git_directory_is_readable(git_dir: &LocatedGitDir) -> std::io::Result<bool> {
     let head = git_dir.path.join("HEAD");
-    let is_file = is_file_entry(&head)?;
-    // Git can skip a `.git` directory without HEAD, but a gitfile target must
-    // identify a usable repository and cannot be treated as absent.
-    if !is_file && git_dir.from_gitfile {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "gitfile target has no regular HEAD file",
-        ));
-    }
-    if is_file && git_dir.from_gitfile {
-        drop(crate::access::open(head)?);
-    }
-    if !is_file {
-        return Ok(false);
+    let head_is_valid = validate_git_head(&head)?;
+    // A plain .git directory with an invalid HEAD can be skipped in favour of
+    // an enclosing checkout. A .git file claims a specific target, so a bad
+    // target must stop discovery rather than silently changing repositories.
+    if !head_is_valid {
+        return if git_dir.from_gitfile {
+            Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "gitfile target has no valid HEAD",
+            ))
+        } else {
+            Ok(false)
+        };
     }
     // Linked worktrees keep objects and refs in their common directory.
     let common = git_common_dir_for_git_dir(&git_dir.path)?;
-    let valid = is_dir_entry(&common.join("objects"))? && is_dir_entry(&common.join("refs"))?;
+    // setup.c uses access(X_OK), which checks search permission and follows
+    // symlinks; it does not require these paths to be regular directories.
+    let valid = crate::access::has_execute_access(&common.join("objects"))?
+        && crate::access::has_execute_access(&common.join("refs"))?;
     if !valid && git_dir.from_gitfile {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "gitfile target has no objects or refs directory",
+            "gitfile target has no searchable objects or refs path",
         ));
     }
     Ok(valid)
 }
 
+/// setup.c's `validate_headref`: accept a symbolic link whose target begins
+/// with refs/, or else (following any link, as Git's open does) a `ref:` file
+/// whose target begins with refs/, or a hexadecimal object id at the start of
+/// the file. Ordinary missing, unreadable and malformed HEADs are not a valid
+/// repository marker, so the walk ascends past them as Git does; WouldBlock is
+/// retained for the Git worker's mount guard.
+fn validate_git_head(path: &Path) -> io::Result<bool> {
+    let metadata = match crate::access::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
+        Err(_) => return Ok(false),
+    };
+    if metadata.file_type().is_symlink() {
+        let target = match crate::access::read_link(path) {
+            Ok(target) => target,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
+            Err(_) => return Ok(false),
+        };
+        if target.as_os_str().as_bytes().starts_with(b"refs/") {
+            return Ok(true);
+        }
+    }
+    let metadata = if metadata.file_type().is_symlink() {
+        match crate::access::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
+            Err(_) => return Ok(false),
+        }
+    } else {
+        metadata
+    };
+    // Git opens whatever HEAD names. Shepr reads only a regular file: opening
+    // a FIFO or device in a malformed marker could block a refresh.
+    if !metadata.file_type().is_file() {
+        return Ok(false);
+    }
+
+    let file = match crate::access::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
+        Err(_) => return Ok(false),
+    };
+    let mut contents = Vec::new();
+    if let Err(error) = file
+        .take(crate::limits::MAX_GIT_HEAD_VALIDATION_BYTES)
+        .read_to_end(&mut contents)
+    {
+        if error.kind() == io::ErrorKind::WouldBlock {
+            return Err(error);
+        }
+        return Ok(false);
+    }
+
+    let contents = contents.split(|byte| *byte == 0).next().unwrap_or_default();
+    if let Some(reference) = contents.strip_prefix(b"ref:") {
+        // Git's own isspace: space, tab, LF and CR.
+        let start = reference
+            .iter()
+            .position(|byte| !matches!(byte, b' ' | b'\t' | b'\n' | b'\r'))
+            .unwrap_or(reference.len());
+        return Ok(reference[start..].starts_with(b"refs/"));
+    }
+    Ok([40, 64].into_iter().any(|length| {
+        contents.len() >= length && contents[..length].iter().all(u8::is_ascii_hexdigit)
+    }))
+}
+
 fn path_is_git_dir_layout(path: &Path) -> std::io::Result<bool> {
-    Ok(is_file_entry(&path.join("HEAD"))?
-        && is_dir_entry(&path.join("objects"))?
-        && is_dir_entry(&path.join("refs"))?)
+    if !validate_git_head(&path.join("HEAD"))? {
+        return Ok(false);
+    }
+    let common = git_common_dir_for_git_dir(path)?;
+    Ok(crate::access::has_execute_access(&common.join("objects"))?
+        && crate::access::has_execute_access(&common.join("refs"))?)
 }
 
 pub(super) enum SymbolicHeadProbe {
@@ -500,8 +574,39 @@ fn git_worktree_location_below(
     start: &Path,
     ceilings: &GitCeilings,
 ) -> Result<Option<(PathBuf, LocatedGitDir)>, GitReadError> {
+    let across_filesystems = discovery_across_filesystems_from_env();
+    let mounts = match crate::access::mount_table() {
+        Ok(mounts) => mounts,
+        Err(error) => {
+            shepr_platform::structured_log!(WARN, event = git.mount_table, outcome = Error, %error, "failed to read mount table for Git discovery");
+            shepr_platform::mounts::MountTable::default()
+        }
+    };
+    git_worktree_location_below_with(start, ceilings, across_filesystems, &mounts)
+}
+
+fn discovery_across_filesystems_from_env() -> bool {
+    match shepr_core::env::read_os(shepr_core::env::EnvVar::GitDiscoveryAcrossFilesystem) {
+        Ok(Some(value)) => super::config::git_config_bool(value.as_bytes()).unwrap_or(false),
+        Ok(None) => false,
+        Err(error) => {
+            shepr_platform::structured_log!(WARN, event = git.discovery_across_filesystem, outcome = Error, %error, "failed to read Git filesystem discovery setting");
+            false
+        }
+    }
+}
+
+fn git_worktree_location_below_with(
+    start: &Path,
+    ceilings: &GitCeilings,
+    across_filesystems: bool,
+    mounts: &shepr_platform::mounts::MountTable,
+) -> Result<Option<(PathBuf, LocatedGitDir)>, GitReadError> {
     // OSC 7 may supply a logical symlink spelling. Git changes directory
-    // before discovery and ascends physical parents, not that spelling.
+    // before discovery and ascends physical parents, not that spelling. The
+    // root returned is therefore physical too: it must not be compared as a
+    // prefix of the logical cwd, and anything displaying it shows the
+    // resolved path.
     let physical =
         crate::access::canonicalize(start).map_err(|error| file_read_error(start, &error))?;
     let mut current = match is_dir_entry(&physical) {
@@ -529,9 +634,17 @@ fn git_worktree_location_below(
         if let Some(git_dir) = found {
             return Ok(Some((current, git_dir)));
         }
-        if !current.pop() || ceilings.contains(&current) {
+        let mut parent = current.clone();
+        if !parent.pop() {
             return Ok(None);
         }
+        if !across_filesystems && mounts.is_filesystem_boundary(&current, &parent) == Some(true) {
+            return Ok(None);
+        }
+        if ceilings.contains(&parent) {
+            return Ok(None);
+        }
+        current = parent;
     }
 }
 
@@ -678,6 +791,19 @@ pub(super) fn git_repo_root(start: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 fn git_repo_root_below(start: &Path, ceilings: &GitCeilings) -> Option<PathBuf> {
     git_repo_root_below_with_errors(start, ceilings, &mut Vec::new())
+}
+
+#[cfg(test)]
+fn git_repo_root_below_with_mounts(
+    start: &Path,
+    ceilings: &GitCeilings,
+    across_filesystems: bool,
+    mounts: &shepr_platform::mounts::MountTable,
+) -> Option<PathBuf> {
+    git_worktree_location_below_with(start, ceilings, across_filesystems, mounts)
+        .ok()
+        .flatten()
+        .map(|(repo_root, _)| repo_root)
 }
 
 #[cfg(test)]
@@ -1042,6 +1168,157 @@ mod tests {
                 .expect_err("symlink loop")
                 .raw_os_error(),
             Some(libc::ELOOP)
+        );
+    }
+
+    #[test]
+    fn commondir_strips_line_endings_but_preserves_path_whitespace() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let base = temp_test_dir("commondir-whitespace");
+        let git_dir = base.join("admin");
+        let common_dir = git_dir.join(" common \t ");
+        std::fs::create_dir_all(&git_dir).expect("test precondition");
+        std::fs::write(git_dir.join("commondir"), " common \t \r\n").expect("test precondition");
+
+        assert_eq!(
+            git_common_dir_for_git_dir(&git_dir).expect("commondir"),
+            common_dir
+        );
+    }
+
+    #[test]
+    fn discovery_checks_head_contents_and_accepts_git_head_forms() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let outer = temp_test_dir("head-validation-outer");
+        mark_checkout(&outer);
+        let nested = outer.join("nested");
+        let nested_git = nested.join(".git");
+        std::fs::create_dir_all(nested_git.join("objects")).expect("test precondition");
+        std::fs::create_dir_all(nested_git.join("refs")).expect("test precondition");
+
+        for invalid in [
+            "",
+            "not a head\n",
+            "ref: HEAD\n",
+            "ref: refs-invalid/main\n",
+        ] {
+            std::fs::write(nested_git.join("HEAD"), invalid).expect("HEAD");
+            assert_eq!(
+                git_repo_root_below(&nested, &GitCeilings::default()),
+                Some(outer.clone()),
+                "invalid HEAD should not make a .git directory a repository: {invalid:?}"
+            );
+        }
+
+        std::fs::write(nested_git.join("HEAD"), "ref:\trefs/heads/main\n").expect("symbolic HEAD");
+        assert_eq!(
+            git_repo_root_below(&nested, &GitCeilings::default()),
+            Some(nested.clone())
+        );
+
+        for oid_length in [40, 64] {
+            std::fs::write(
+                nested_git.join("HEAD"),
+                format!("{} detached suffix\n", "A".repeat(oid_length)),
+            )
+            .expect("detached HEAD");
+            assert_eq!(
+                git_repo_root_below(&nested, &GitCeilings::default()),
+                Some(nested.clone())
+            );
+        }
+
+        std::fs::remove_file(nested_git.join("HEAD")).expect("remove HEAD");
+        std::os::unix::fs::symlink("refs/heads/missing", nested_git.join("HEAD"))
+            .expect("symbolic link HEAD");
+        assert_eq!(
+            git_repo_root_below(&nested, &GitCeilings::default()),
+            Some(nested)
+        );
+    }
+
+    #[test]
+    fn discovery_checks_search_permission_for_objects_and_refs() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let outer = temp_test_dir("search-permission-outer");
+        mark_checkout(&outer);
+        for inaccessible in ["objects", "refs"] {
+            let nested = outer.join(inaccessible);
+            let nested_git = nested.join(".git");
+            let inaccessible_path = nested_git.join(inaccessible);
+            std::fs::create_dir_all(nested_git.join("objects")).expect("test precondition");
+            std::fs::create_dir_all(nested_git.join("refs")).expect("test precondition");
+            std::fs::write(nested_git.join("HEAD"), "ref: refs/heads/main\n")
+                .expect("test precondition");
+            std::fs::set_permissions(&inaccessible_path, std::fs::Permissions::from_mode(0o600))
+                .expect("remove search permission");
+
+            assert_eq!(
+                git_repo_root_below(&nested, &GitCeilings::default()),
+                Some(outer.clone()),
+                "Git rejects a repository whose {inaccessible} path is not searchable"
+            );
+        }
+    }
+
+    #[test]
+    fn discovery_stops_at_filesystem_boundary_unless_enabled() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let outer = temp_test_dir("filesystem-boundary");
+        mark_checkout(&outer);
+        let mount = outer.join("mount");
+        let work = mount.join("work");
+        std::fs::create_dir_all(&work).expect("test precondition");
+        let mounts = shepr_platform::mounts::MountTable::from_mountinfo(&format!(
+            "1 0 8:1 / / rw - ext4 root rw\n2 1 8:2 / {} rw - ext4 other rw\n",
+            mount.display()
+        ));
+
+        env.set(shepr_core::env::EnvVar::GitDiscoveryAcrossFilesystem, "OFF");
+        assert_eq!(
+            git_repo_root_below_with_mounts(
+                &work,
+                &GitCeilings::default(),
+                discovery_across_filesystems_from_env(),
+                &mounts,
+            ),
+            None
+        );
+
+        env.set(shepr_core::env::EnvVar::GitDiscoveryAcrossFilesystem, "yes");
+        assert_eq!(
+            git_repo_root_below_with_mounts(
+                &work,
+                &GitCeilings::default(),
+                discovery_across_filesystems_from_env(),
+                &mounts,
+            ),
+            Some(outer)
+        );
+    }
+
+    #[test]
+    fn deleted_cwd_remains_a_git_read_error() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let deleted = temp_test_dir("deleted-git-cwd");
+        std::fs::remove_dir_all(&deleted).expect("remove test cwd");
+        let mut errors = Vec::new();
+
+        assert_eq!(
+            git_repo_root_below_with_errors(&deleted, &GitCeilings::default(), &mut errors),
+            None
+        );
+        assert!(
+            errors.iter().any(|error| matches!(
+                error,
+                GitReadError::FileRead {
+                    path,
+                    reason: FileReadReason::Io(_),
+                } if path == &deleted
+            )),
+            "deleted cwd should be reported as a Git read error: {errors:?}"
         );
     }
 

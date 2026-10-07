@@ -220,6 +220,9 @@ env_vocabulary! {
         /// list of absolute directories repository discovery does not ascend
         /// into. Git children read it themselves too.
         GitCeilingDirectories => "GIT_CEILING_DIRECTORIES", PaneEnvPolicy::Allowed,
+        /// `GIT_DISCOVERY_ACROSS_FILESYSTEM`: Git's boolean control for
+        /// whether repository discovery continues across filesystem boundaries.
+        GitDiscoveryAcrossFilesystem => "GIT_DISCOVERY_ACROSS_FILESYSTEM", PaneEnvPolicy::Allowed,
         /// `GIT_CONFIG_GLOBAL`: replace both default global config files with
         /// this one file, as Git does. Preserve the path's OS bytes.
         GitConfigGlobal => "GIT_CONFIG_GLOBAL", PaneEnvPolicy::Allowed,
@@ -465,6 +468,7 @@ impl EnvVar {
             Self::Shell
             | Self::Path
             | Self::GitCeilingDirectories
+            | Self::GitDiscoveryAcrossFilesystem
             | Self::GitConfigGlobal
             | Self::GitConfigSystem
             | Self::GitConfigNoSystem
@@ -950,6 +954,11 @@ mod tests {
             (
                 EnvVar::GitCeilingDirectories,
                 "GIT_CEILING_DIRECTORIES",
+                Raw,
+            ),
+            (
+                EnvVar::GitDiscoveryAcrossFilesystem,
+                "GIT_DISCOVERY_ACROSS_FILESYSTEM",
                 Raw,
             ),
             (EnvVar::GitConfigGlobal, "GIT_CONFIG_GLOBAL", Raw),

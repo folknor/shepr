@@ -856,6 +856,18 @@ fn candidate_order_prefers_path_and_deduplicates_known_locations() {
 }
 
 #[test]
+fn candidates_stop_at_the_bound_the_operator_budgets_cover() {
+    let known = ["/a/shepr", "/b/shepr", "/c/shepr", "/d/shepr"]
+        .map(|path| RemoteExecutable::parse(path).expect("candidate"));
+    let candidates = ordered_candidates(None, known.to_vec());
+    assert_eq!(
+        candidates.len(),
+        usize::try_from(MAX_REMOTE_EXECUTABLE_CANDIDATES).expect("small bound")
+    );
+    assert_eq!(candidates, known[..candidates.len()].to_vec());
+}
+
+#[test]
 fn json_records_skip_noise_and_choose_the_last_matching_record() {
     let stdout = "banner\n[1]\nnoise\n[2]\ntrailer\n";
     assert_eq!(last_json_record::<Vec<u32>>(stdout), Some(vec![2]));

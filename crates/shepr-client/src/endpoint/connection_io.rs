@@ -225,10 +225,7 @@ fn server_reader_thread(
         stopped: transport_stopped,
     };
     loop {
-        if transport_stopped.load(Ordering::Acquire) {
-            if let Some(connection) = remote_connection {
-                connection.close();
-            }
+        if close_if_stopped(transport_stopped, remote_connection) {
             break;
         }
 
@@ -257,45 +254,30 @@ fn server_reader_thread(
                     break;
                 }
             }
-            Err(EndpointReadError::Framing(shepr_protocol::FramingError::UnexpectedEof)) => {
-                if transport_stopped.load(Ordering::Acquire) {
-                    if let Some(connection) = remote_connection {
-                        connection.close();
-                    }
+            // `EndpointReader` waits out WouldBlock itself, so any error here,
+            // EOF or not, is final.
+            Err(err) => {
+                if close_if_stopped(transport_stopped, remote_connection) {
                     break;
                 }
-                debug!(
-                    endpoint = %endpoint_id,
-                    %generation,
-                    "server closed connection"
-                );
-                report_disconnect(
-                    event_tx,
-                    ClientLoopEvent::ServerDisconnected {
-                        endpoint_id: endpoint_id.clone(),
-                        generation,
-                        error: connection_end(
-                            remote_connection,
-                            read_error_to_io(
-                                EndpointReadError::Framing(
-                                    shepr_protocol::FramingError::UnexpectedEof,
-                                ),
-                                endpoint_id.clone(),
-                            ),
-                        ),
-                    },
-                );
-                break;
-            }
-            // `EndpointReader` waits out WouldBlock itself, so any error here is final.
-            Err(err) => {
-                shepr_platform::structured_log!(
-                    WARN, event = endpoint.read, outcome = Error,
-                    endpoint = %endpoint_id,
-                    %generation,
-                    error = %err,
-                    "server read error"
-                );
+                if matches!(
+                    err,
+                    EndpointReadError::Framing(shepr_protocol::FramingError::UnexpectedEof)
+                ) {
+                    debug!(
+                        endpoint = %endpoint_id,
+                        %generation,
+                        "server closed connection"
+                    );
+                } else {
+                    shepr_platform::structured_log!(
+                        WARN, event = endpoint.read, outcome = Error,
+                        endpoint = %endpoint_id,
+                        %generation,
+                        error = %err,
+                        "server read error"
+                    );
+                }
                 report_disconnect(
                     event_tx,
                     ClientLoopEvent::ServerDisconnected {
@@ -321,6 +303,23 @@ fn report_disconnect(
     disconnect: ClientLoopEvent,
 ) {
     event_tx.blocking_send(disconnect).ok();
+}
+
+/// A local transport stop owns the end of the connection. Whether the reader
+/// is between frames or holds a read error (EOF or not) that raced the stop,
+/// it closes the SSH connection and reports nothing, so it neither logs a
+/// disconnect nor classifies the already-stopped connection as a new failure.
+fn close_if_stopped(
+    transport_stopped: &AtomicBool,
+    remote_connection: Option<&shepr_remote::MachineSshConnection>,
+) -> bool {
+    if !transport_stopped.load(Ordering::Acquire) {
+        return false;
+    }
+    if let Some(connection) = remote_connection {
+        connection.close();
+    }
+    true
 }
 
 fn read_error_to_io(
@@ -405,6 +404,12 @@ mod tests {
     use super::*;
     use crate::endpoint::EndpointTransport as _;
     use std::time::Duration;
+
+    #[test]
+    fn local_stop_discards_a_concurrent_reader_error() {
+        assert!(close_if_stopped(&AtomicBool::new(true), None));
+        assert!(!close_if_stopped(&AtomicBool::new(false), None));
+    }
 
     #[test]
     fn server_reader_errors_keep_eof_io_and_decode_causes() {

@@ -20,6 +20,7 @@ pub use args::RemoteCliCommand;
 pub use host::{BridgeMode, classified_bridge_failure, run_remote_client_bridge};
 pub use limits::{
     SSH_CONNECTION_ATTEMPT_BUDGET, SSH_RESTART_ATTEMPT_BUDGET, SSH_START_ATTEMPT_BUDGET,
+    SSH_START_BRIDGE_BUDGET,
 };
 pub use machine::SshTarget;
 pub use machine_ssh::{ConnectMode, MachineSshConnection, MachineSshConnector, ServerWatchEnd};

@@ -54,10 +54,18 @@ pub fn run_remote_client_bridge(
     paths: &shepr_paths::AppPaths,
     mode: BridgeMode,
 ) -> io::Result<RemoteBridgeOutcome> {
+    run_remote_client_bridge_with_answer(paths, mode, answer_remote_bridge)
+}
+
+fn run_remote_client_bridge_with_answer(
+    paths: &shepr_paths::AppPaths,
+    mode: BridgeMode,
+    mut answer: impl FnMut(&[u8]) -> io::Result<()>,
+) -> io::Result<RemoteBridgeOutcome> {
     // The executable's identity is independent of the server's. Send it
     // before even probing or starting a server, so a replaced installation
     // cannot masquerade as an old server that still matches the client.
-    answer_remote_bridge(&shepr_protocol::preamble::local_preamble())?;
+    answer(&shepr_protocol::preamble::local_preamble())?;
     let status = match mode {
         BridgeMode::Attach => attached_server_status(paths)?,
         BridgeMode::Start => ensure_remote_server_running(paths)?,
@@ -67,7 +75,7 @@ pub fn run_remote_client_bridge(
     // client must still read a typed mismatch rather than an EOF it would
     // retry forever.
     if !status.build_id.is_this_build() {
-        answer_remote_bridge(&shepr_protocol::preamble::preamble_for(
+        answer(&shepr_protocol::preamble::preamble_for(
             &status.build_id.to_string(),
         ))?;
         return Ok(RemoteBridgeOutcome::Closed);
@@ -158,8 +166,16 @@ mod tests {
             .expect("scratch roots fit a socket");
         let runtime_before = std::fs::read_dir(paths.runtime_dir()).map_or(0, Iterator::count);
 
-        let error = run_remote_client_bridge(&paths, BridgeMode::Attach)
-            .expect_err("no server runs, and an attach-only bridge starts none");
+        let mut stdout = Vec::new();
+        let error = run_remote_client_bridge_with_answer(&paths, BridgeMode::Attach, |bytes| {
+            stdout.extend_from_slice(bytes);
+            Ok(())
+        })
+        .expect_err("no server runs, and an attach-only bridge starts none");
+        assert_eq!(
+            stdout.as_slice(),
+            shepr_protocol::preamble::local_preamble().as_slice()
+        );
 
         let message = error.to_string();
         assert!(

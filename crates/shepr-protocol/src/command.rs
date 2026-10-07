@@ -32,7 +32,9 @@ pub enum SplitDirection {
     Down,
 }
 
-/// Where a new workspace's first pane starts.
+/// Where a new workspace's first pane starts. Its shell falls back to the
+/// home directory (or `/`) when it cannot enter the directory, as a split's
+/// does.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceCreateSource {
     /// An explicit working directory.
@@ -45,7 +47,9 @@ pub enum WorkspaceCreateSource {
 pub struct WorkspaceCreateParams {
     pub source: WorkspaceCreateSource,
     /// The new workspace's name. `None`, or a label that is empty once
-    /// trimmed, names it after the directory it starts in.
+    /// trimmed, names it after the directory it is created for (the source's
+    /// directory, even when the shell had to start elsewhere; a blank rename
+    /// later takes the directory the workspace is in by then).
     pub label: Option<String>,
 }
 

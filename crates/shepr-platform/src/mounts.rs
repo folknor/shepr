@@ -73,6 +73,25 @@ impl MountTable {
         Self { entries }
     }
 
+    /// Whether `path` and `parent` are on different filesystems, using the
+    /// device number Linux reports in mountinfo for the deepest mount covering
+    /// each. That is the superblock's device, which is `st_dev` for most
+    /// filesystems; a btrfs subvolume reached without its own mount reports a
+    /// distinct `st_dev` that mountinfo does not show, so it is no boundary
+    /// here. Nothing is stat'ed, so a hung mount cannot block the answer.
+    /// `None` means this snapshot has no mount covering one path.
+    pub fn is_filesystem_boundary(&self, path: &Path, parent: &Path) -> Option<bool> {
+        Some(self.device_for(path)? != self.device_for(parent)?)
+    }
+
+    fn device_for(&self, path: &Path) -> Option<&str> {
+        self.entries
+            .iter()
+            .filter(|(root, _)| path.starts_with(root))
+            .max_by_key(|(root, _)| root.components().count())
+            .map(|(_, device)| device.as_str())
+    }
+
     /// Whether the deepest mount is quarantined. A healthy nested mount is
     /// independent of its parent. Non-mount paths are a conservative fallback
     /// when mountinfo was unavailable or a caller names a synthetic step.
@@ -140,6 +159,32 @@ mod tests {
         assert_eq!(
             table.stall_paths(Path::new("/network")),
             [PathBuf::from("/")]
+        );
+    }
+
+    #[test]
+    fn filesystem_boundary_uses_the_deepest_mount_and_device_number() {
+        let table = MountTable::from_mountinfo(
+            "1 0 8:1 / / rw - ext4 root rw\n2 1 8:2 / /net rw - ext4 other rw\n3 1 8:1 /sub /alias rw - ext4 root rw\n",
+        );
+
+        assert_eq!(
+            table.is_filesystem_boundary(Path::new("/net/work"), Path::new("/")),
+            Some(true)
+        );
+        assert_eq!(
+            table.is_filesystem_boundary(Path::new("/alias/work"), Path::new("/")),
+            Some(false),
+            "a bind mount of the same device is not a st_dev boundary"
+        );
+        assert_eq!(
+            table.is_filesystem_boundary(Path::new("/unknown/work"), Path::new("/")),
+            Some(false)
+        );
+        assert_eq!(
+            MountTable::default().is_filesystem_boundary(Path::new("/unknown"), Path::new("/")),
+            None,
+            "a missing mount snapshot provides no boundary evidence"
         );
     }
 }

@@ -2,6 +2,11 @@
 
 use std::time::Duration;
 
+/// Full discovery produces at most one PATH candidate and the two known
+/// install locations (`discovery::ordered_candidates` holds it to this). The
+/// Connect and Restart deadlines include a status probe for each.
+pub(crate) const MAX_REMOTE_EXECUTABLE_CANDIDATES: u32 = 3;
+
 /// Maximum UTF-8 bytes in an absolute remote executable path. The bound
 /// admits normal paths while rejecting unexpectedly large host output before
 /// it is reused in a shell command.
@@ -59,6 +64,12 @@ pub(crate) const SSH_STDOUT_CAPTURE_LIMIT: usize = 1024 * 1024;
 /// Bytes retained from SSH stderr. The cap is enough for useful SSH
 /// diagnostics while bounding untrusted remote error output.
 pub(crate) const SSH_STDERR_CAPTURE_LIMIT: usize = 16 * 1024;
+
+/// Bytes retained from the tail of the remote server-wait command's stdout.
+/// The wait itself writes nothing there; the only evidence read from it is the
+/// wrapper's output marker, which follows any shell startup noise, so a tail
+/// as small as the stderr cap keeps it without the discovery-output allowance.
+pub(crate) const SSH_WAIT_STDOUT_CAPTURE_LIMIT: usize = 16 * 1024;
 
 /// Time a pipe reader may continue after the SSH child exits. OpenSSH points
 /// a detached ControlPersist master's standard streams at `/dev/null`, but a
@@ -118,16 +129,30 @@ pub(crate) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(8);
 pub const SSH_CONNECTION_ATTEMPT_BUDGET: Duration =
     SSH_COMMAND_TIMEOUT.saturating_add(SSH_ATTEMPT_SLACK);
 
-/// An operator's Connect also allows the remote launch to finish before the
-/// bridge can relay the handshake. Automatic attaches never start a daemon.
-pub const SSH_START_ATTEMPT_BUDGET: Duration =
+// Both operator modes re-verify a cached executable. If it no longer matches,
+// resolution can run the two discovery commands and probe each candidate.
+const SSH_OPERATOR_MAX_RESOLUTION_COMMANDS: u32 = 1 + 2 + MAX_REMOTE_EXECUTABLE_CANDIDATES;
+
+/// The bridge phase of an operator's Connect or Restart: one connection
+/// attempt with the remote launch inside it, since a starting bridge launches
+/// the host's server before it relays the handshake. It also bounds the
+/// client's wait for a machine's Welcome, which starts after resolution.
+pub const SSH_START_BRIDGE_BUDGET: Duration =
     SSH_CONNECTION_ATTEMPT_BUDGET.saturating_add(shepr_launch::limits::START_WORST_CASE);
 
-/// The longest an operator's Restart of a configured machine may run: the
-/// conditional stop of the server of another build, with its own timeout, and
-/// then an ordinary connection attempt that starts this build's server.
-pub const SSH_RESTART_ATTEMPT_BUDGET: Duration =
-    SSH_START_ATTEMPT_BUDGET.saturating_add(REMOTE_STOP_SSH_TIMEOUT);
+/// An operator's Connect allows executable verification (including full
+/// discovery when a cached path is rejected), then the remote launch to finish
+/// before the bridge relays the handshake. Automatic attaches never start a daemon.
+pub const SSH_START_ATTEMPT_BUDGET: Duration = SSH_COMMAND_TIMEOUT
+    .saturating_mul(SSH_OPERATOR_MAX_RESOLUTION_COMMANDS)
+    .saturating_add(SSH_START_BRIDGE_BUDGET);
+
+/// The longest an operator's Restart of a configured machine may run: cached
+/// executable verification with a full-discovery fallback, the server-status
+/// read and conditional stop, then a bridge that starts this build's server.
+pub const SSH_RESTART_ATTEMPT_BUDGET: Duration = SSH_START_ATTEMPT_BUDGET
+    .saturating_add(SSH_COMMAND_TIMEOUT)
+    .saturating_add(REMOTE_STOP_SSH_TIMEOUT);
 
 /// How long the startup check of every configured machine may take in all. The
 /// checks run concurrently, so this is a bound on the whole phase, not per
@@ -233,3 +258,31 @@ const _: () = assert!(
 // then fails as a connection error (Offline) rather than as a command that used
 // its whole budget, which reads as a possible authentication wait.
 const _: () = assert!(SSH_CONNECT_TIMEOUT.as_millis() < SSH_COMMAND_TIMEOUT.as_millis());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operator_budgets_cover_verification_discovery_status_stop_and_start() {
+        assert_eq!(MAX_REMOTE_EXECUTABLE_CANDIDATES, 3);
+        assert_eq!(SSH_OPERATOR_MAX_RESOLUTION_COMMANDS, 6);
+        assert_eq!(
+            SSH_START_ATTEMPT_BUDGET,
+            SSH_COMMAND_TIMEOUT
+                .saturating_mul(SSH_OPERATOR_MAX_RESOLUTION_COMMANDS)
+                .saturating_add(SSH_CONNECTION_ATTEMPT_BUDGET)
+                .saturating_add(shepr_launch::limits::START_WORST_CASE)
+        );
+        assert_eq!(
+            SSH_START_BRIDGE_BUDGET,
+            SSH_CONNECTION_ATTEMPT_BUDGET.saturating_add(shepr_launch::limits::START_WORST_CASE)
+        );
+        assert_eq!(
+            SSH_RESTART_ATTEMPT_BUDGET,
+            SSH_START_ATTEMPT_BUDGET
+                .saturating_add(SSH_COMMAND_TIMEOUT)
+                .saturating_add(REMOTE_STOP_SSH_TIMEOUT)
+        );
+    }
+}

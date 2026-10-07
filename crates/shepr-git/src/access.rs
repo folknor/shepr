@@ -47,6 +47,16 @@ pub(crate) fn scoped_with_mounts<R>(
     work()
 }
 
+pub(crate) fn mount_table() -> std::io::Result<MountTable> {
+    if let Some(mounts) =
+        CONTEXT.with(|slot| slot.borrow().as_ref().map(|context| context.mounts.clone()))
+    {
+        Ok(mounts)
+    } else {
+        MountTable::read()
+    }
+}
+
 fn announce(path: &Path) -> std::io::Result<()> {
     CONTEXT.with(|slot| {
         if let Some(context) = slot.borrow().as_ref() {
@@ -121,6 +131,19 @@ fn resolve(path: &Path, follow_final: bool) -> std::io::Result<PathBuf> {
 
 pub(crate) fn canonicalize(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     resolve(path.as_ref(), true)
+}
+
+pub(crate) fn has_execute_access(path: &Path) -> std::io::Result<bool> {
+    let physical = match resolve(path, true) {
+        Ok(physical) => physical,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return Err(error),
+        Err(_) => return Ok(false),
+    };
+    Ok(shepr_platform::has_execute_access(&physical))
+}
+
+pub(crate) fn read_link(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::read_link(resolve(path, false)?)
 }
 
 pub(crate) fn metadata(path: impl AsRef<Path>) -> std::io::Result<std::fs::Metadata> {

@@ -333,6 +333,7 @@ fn classify_unix_input(
     geometry: Option<shepr_termio::input::mouse::HostPixelExtent>,
     keyboard_mode: shepr_termio::input::HostKeyboardInputMode,
 ) -> Option<ParsedHostInput> {
+    let keyboard_mode = keyboard_mode_for_input(&input, keyboard_mode);
     let pixel_mouse = if sgr_pixels && input.raw.starts_with(b"\x1b[<") {
         let shepr_termio::input::raw_input::RawInputEvent::Mouse(mouse) = &input.event else {
             return None;
@@ -365,6 +366,39 @@ fn classify_unix_input(
         pixel_mouse,
         keyboard_mode,
     })
+}
+
+fn keyboard_mode_for_input(
+    input: &shepr_termio::input::raw_input::FramedRawInputEvent,
+    mode: shepr_termio::input::HostKeyboardInputMode,
+) -> shepr_termio::input::HostKeyboardInputMode {
+    if !matches!(
+        &input.event,
+        shepr_termio::input::raw_input::RawInputEvent::Key(_)
+    ) {
+        return mode;
+    }
+
+    // The terminal has no acknowledgement for a keyboard-mode write, so the
+    // snapshot says report-all from the moment shepr wrote the push. The key
+    // bytes tell whether the host had applied it: under report-all every key
+    // arrives as a CSI sequence (CSI u, or the legacy-final forms such as
+    // `CSI A` and `CSI 2 ~` that Kitty keeps for cursor and editing keys), so
+    // a key that arrives as plain UTF-8 text or a legacy C0 or ESC-prefixed
+    // byte was typed before the push took effect and has no release coming.
+    // Only report-all is withdrawn: event types were confirmed by the startup
+    // query, and `press_takes_lease` already gives text keys and unmodified
+    // Enter, Tab and Backspace no lease without report-all, while CSI cursor,
+    // editing and function keys keep the lease their release honours.
+    let csi = input.raw.len() > 2 && input.raw.starts_with(b"\x1b[");
+    if mode.reports_all_keys && !csi {
+        shepr_termio::input::HostKeyboardInputMode {
+            reports_all_keys: false,
+            ..mode
+        }
+    } else {
+        mode
+    }
 }
 
 fn flush_unix_palette_input(
@@ -452,7 +486,85 @@ mod tests {
         ));
         let parsed =
             classify_unix_input(framed(&raw).remove(0), false, None, mode).expect("keyboard event");
-        assert_eq!(parsed.keyboard_mode, mode);
+        assert_eq!(
+            parsed.keyboard_mode, mode,
+            "a CSI arrow keeps the event-types release Kitty reports for it"
+        );
+        let report_all = shepr_termio::input::HostKeyboardInputMode {
+            reports_event_types: true,
+            reports_all_keys: true,
+        };
+        let parsed = classify_unix_input(framed(&raw).remove(0), false, None, report_all)
+            .expect("keyboard event");
+        assert_eq!(
+            parsed.keyboard_mode, report_all,
+            "Kitty reports cursor keys in their CSI legacy-final form under report-all"
+        );
+    }
+
+    #[test]
+    fn keyboard_mode_snapshot_is_narrowed_to_each_key_encoding() {
+        let report_all = shepr_termio::input::HostKeyboardInputMode {
+            reports_event_types: true,
+            reports_all_keys: true,
+        };
+
+        let plain_text = classify_unix_input(framed(b"a").remove(0), false, None, report_all)
+            .expect("plain key");
+        assert_eq!(
+            plain_text.keyboard_mode,
+            shepr_termio::input::HostKeyboardInputMode {
+                reports_event_types: true,
+                reports_all_keys: false,
+            },
+            "a UTF-8 key typed before the host applies report-all was not reported-all"
+        );
+        let shepr_termio::input::raw_input::RawInputEvent::Key(plain_key) = &plain_text.event
+        else {
+            panic!("expected plain key");
+        };
+        let plain_lease_key = shepr_termio::input::InputLeaseKey::new(0_u8, plain_key);
+        let mut plain_leases = shepr_termio::input::InputLeaseTable::<u8, u8, u8>::default();
+        plain_leases.complete_press(
+            plain_lease_key,
+            plain_key,
+            Some(&1),
+            Some(&1),
+            Some(2),
+            plain_text.keyboard_mode,
+        );
+        assert_eq!(
+            plain_leases.plan_repeat(plain_lease_key, Some(&1)),
+            shepr_termio::input::RepeatPlan::Reprocess,
+            "plain UTF-8 text must not leave a lease awaiting a release"
+        );
+
+        let kitty_key = classify_unix_input(
+            framed(b"\x1b[97;1:1;97u").remove(0),
+            false,
+            None,
+            report_all,
+        )
+        .expect("Kitty key");
+        assert_eq!(kitty_key.keyboard_mode, report_all);
+        let shepr_termio::input::raw_input::RawInputEvent::Key(kitty_key) = &kitty_key.event else {
+            panic!("expected Kitty key");
+        };
+        let kitty_lease_key = shepr_termio::input::InputLeaseKey::new(0_u8, kitty_key);
+        let mut kitty_leases = shepr_termio::input::InputLeaseTable::<u8, u8, u8>::default();
+        kitty_leases.complete_press(
+            kitty_lease_key,
+            kitty_key,
+            Some(&1),
+            Some(&1),
+            Some(2),
+            report_all,
+        );
+        assert_eq!(
+            kitty_leases.plan_repeat(kitty_lease_key, Some(&1)),
+            shepr_termio::input::RepeatPlan::Forwarded(2),
+            "a Kitty report-all key keeps its host release lease"
+        );
     }
 
     #[test]

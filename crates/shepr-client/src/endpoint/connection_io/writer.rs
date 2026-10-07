@@ -99,6 +99,9 @@ impl NativeEndpointTransport {
         Ok(transport)
     }
 
+    /// The worker owns `lifetime` until it exits. Production passes `()`, and
+    /// the stalled-peer teardown test supplies a drop probe to verify that
+    /// cancellation releases worker-owned resources promptly.
     pub(crate) fn with_lifetime(
         mut stream: LocalStream,
         lifetime: impl Send + 'static,

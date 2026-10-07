@@ -86,8 +86,9 @@ fn run_git_with_program_and_clock(
         .env("LC_ALL", "C")
         // Repository selectors from the caller's environment would point the
         // probe at some other repository than `cwd`'s; prompt helpers could
-        // open a dialog. Config-source overrides and GIT_CEILING_DIRECTORIES
-        // stay, so Git follows the user's own configuration and discovery.
+        // open a dialog. Config-source overrides, GIT_CEILING_DIRECTORIES and
+        // GIT_DISCOVERY_ACROSS_FILESYSTEM stay, so Git follows the user's own
+        // configuration and discovery.
         // GIT_CONFIG selects a file only for `git config`, not for Git's
         // ordinary repository commands. Keep origin probes on the same
         // effective chain as the ref queries they cache.

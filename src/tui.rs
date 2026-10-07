@@ -15,9 +15,12 @@ pub(crate) fn launch(
 ) -> CliResult<ProcessExit> {
     ensure_terminal_geometry().map_err(CliError::Terminal)?;
 
+    // Admission constructs and immediately drops a connector for each
+    // machine; setup failures can log during construction. Give those warnings
+    // a destination before the disposable connectors are created.
+    init_client_logging(paths)?;
     preflight::check_connector_admission(loaded_config, paths)
         .map_err(|error| CliError::Client(error.into()))?;
-    init_client_logging(paths)?;
     // Prompts and restart offers must run before the client takes the
     // terminal: it connects to machines with BatchMode and cannot answer one.
     let connectors = preflight::run(loaded_config, paths);

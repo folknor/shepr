@@ -169,11 +169,12 @@ pub(crate) const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
 /// A local client talks to an already-connected server, so this deadline only
 /// needs room for the welcome response.
 pub(crate) const LOCAL_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
-/// Maximum machine Welcome wait, using the operator Connect budget. Ordinary
-/// attaches and Connect are bounded by their attempt deadlines first; Restart
-/// has a longer deadline because it runs the conditional stop first, so this
-/// cap applies to a Restart's handshake after a quick stop.
-pub(crate) const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = shepr_remote::SSH_START_ATTEMPT_BUDGET;
+/// Maximum machine Welcome wait: the bridge phase of an operator's Connect,
+/// which has the remote server launch inside it. Ordinary attaches are bounded
+/// by their attempt deadline first. Connect and Restart deadlines also cover
+/// executable resolution (and Restart the conditional stop) before the
+/// bridge, so when those finish quickly this cap ends the handshake first.
+pub(crate) const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = shepr_remote::SSH_START_BRIDGE_BUDGET;
 
 /// Timeout for a client request sent to an endpoint.
 ///

@@ -551,6 +551,13 @@ empty `SHELL` means `/bin/sh`.
 The directory is resolved when the server starts and must exist then. An
 empty string is an error; write `"follow"` for the default.
 
+A new pane or workspace whose directory cannot be entered (a followed
+directory that has been removed since, say) still opens: its shell starts in
+your home directory, or `/` if that fails too. A new workspace keeps the name
+it was given in the prompt. Panes restored from a saved layout are the
+exception: they start in their own directory or not at all, and the pane
+says why.
+
 ## [session]
 
 | Setting | Type | Default | What it does |

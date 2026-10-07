@@ -8,6 +8,7 @@ use crate::failure::{
     RemoteExit, SshExit, failure_evidence, remote_candidate_mismatch_error,
     remote_compatibility_error,
 };
+use crate::limits::MAX_REMOTE_EXECUTABLE_CANDIDATES;
 use crate::machine::{RemoteExecutable, RemoteExecutableError, SshTarget};
 use crate::server_lifecycle::remote_display_value;
 use crate::shell_command::PosixScript;
@@ -284,6 +285,10 @@ fn ordered_candidates(
     for candidate in path.into_iter().chain(known) {
         push_if_new_remote_binary_candidate(&mut candidates, candidate);
     }
+    // The known-locations script emits at most two paths, but its stdout is
+    // the host's: output a shell startup file adds could list more. Probing
+    // stops at the bound the operator budgets were sized for.
+    candidates.truncate(MAX_REMOTE_EXECUTABLE_CANDIDATES as usize);
     candidates
 }
 
@@ -300,6 +305,9 @@ fn push_if_new_remote_binary_candidate(
 /// the local bin path also covers manual installs. These are checked after
 /// `command -v`, which misses them when a non-interactive SSH shell has a
 /// minimal PATH. Installs elsewhere on a login-profile-only PATH are not discovered.
+/// It emits at most two locations; with the PATH candidate that is
+/// `MAX_REMOTE_EXECUTABLE_CANDIDATES`, the bound the Connect and Restart
+/// deadlines are sized for.
 pub(crate) fn known_remote_binary_candidate_script() -> String {
     format!(
         r#"home=${{HOME:-}}

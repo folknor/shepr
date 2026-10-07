@@ -101,6 +101,10 @@ impl App {
             .map(|outcome| outcome.workspace_id)
     }
 
+    /// Like a split, the first pane is a `Fresh` launch: a shell that cannot
+    /// enter `initial_cwd` starts in the home directory instead (see
+    /// `LaunchKind::Fresh`). The workspace keeps the name it was given; its
+    /// identity cwd follows the root pane's actual directory.
     pub(crate) fn create_workspace_outcome(
         &mut self,
         initial_cwd: &AbsolutePath,
@@ -112,12 +116,6 @@ impl App {
             .prepare_workspace(initial_cwd)
             .ok_or_else(|| std::io::Error::other("workspace ID space exhausted"))?;
         let public_id = prepared.root_public_id();
-        // A workspace created at an explicit path launches here too, and a
-        // Fresh launch falls back to the home directory when the child cannot
-        // enter `initial_cwd`, so that workspace can start somewhere other
-        // than the path it is named after. Holding it to the path needs a
-        // required-cwd launch kind in shepr-mux: Restored requires its cwd
-        // but would mislabel this launch as a restore.
         let runtime = self.launch_pane(
             prepared.root_pane(),
             prepared.root_public_id(),

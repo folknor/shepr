@@ -51,6 +51,11 @@ pub(crate) const MAX_GIT_PIPE_BYTES: usize = 8 * 1024 * 1024;
 /// it bounds the read of a corrupt or hostile file.
 pub(crate) const MAX_GIT_REF_FILE_BYTES: usize = 64 * 1024;
 
+/// Bytes of a HEAD file read when deciding whether a directory is a Git
+/// directory. Git's own check (`validate_headref` in setup.c) reads at most
+/// this many into a 256-byte buffer; a valid symref or object ID fits.
+pub(crate) const MAX_GIT_HEAD_VALIDATION_BYTES: u64 = 255;
+
 /// Retry delay after Git status refresh fails, avoiding repeated filesystem
 /// and subprocess work for a broken or unavailable checkout. It is also how
 /// long a branch config whose dependencies cannot be tracked (`ConfigCtx` with
