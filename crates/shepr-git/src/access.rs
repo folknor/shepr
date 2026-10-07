@@ -107,24 +107,33 @@ pub(crate) fn mount_table() -> MountTable {
         .unwrap_or_else(mount_snapshot)
 }
 
+/// Refuses `path` if its filesystem is quarantined, and otherwise makes it the
+/// refresh's current step until the next announcement.
+///
+/// The step is deliberately not settled when the access returns. The syscall
+/// that follows a walk (`metadata`, `read_link`, the execute check) and the reads on a
+/// file `open` returned all run after this, on the announced mount, with no
+/// announcement of their own; settled, a read stalled on a hung mount would
+/// be abandoned naming no paths, and every replacement would enter that mount
+/// again and take another abandonment slot. The price is accepted: a thread
+/// that stalls after an access, outside the filesystem, is attributed to the
+/// path it last announced, which stays quarantined until that thread finishes.
+/// Nothing reaches that today: the work between accesses is in memory, and a
+/// Git probe announces its executable and is held to its own deadline, far
+/// below the stall bound.
 pub(crate) fn announce(path: &Path) -> std::io::Result<()> {
     CONTEXT.with(|slot| {
         if let Some(context) = slot.borrow().as_ref() {
             let (stall_paths, mount_known) = context.mounts.stall_paths_with_coverage(path);
-            if context
+            if !context
                 .progress
-                .excludes(&context.mounts, path, &stall_paths)
+                .announce(&context.mounts, path, stall_paths, mount_known)
             {
                 DENIED.with(|denied| *denied.borrow_mut() = Some(path.to_path_buf()));
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
                     "Git dependency is on a quarantined filesystem",
                 ));
-            }
-            if mount_known {
-                context.progress.step(stall_paths);
-            } else {
-                context.progress.step_on_unknown_mount(stall_paths);
             }
         }
         Ok(())

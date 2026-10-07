@@ -39,14 +39,16 @@ type RefreshFn<T> = dyn Fn(&mut GitRefresher, Vec<RefreshTarget<T>>, &RefreshPro
     + Sync;
 
 fn lock<V>(mutex: &Mutex<V>) -> MutexGuard<'_, V> {
-    // Every critical section here is an assignment or a clone, so a panic
-    // elsewhere on the holding thread leaves the value whole.
+    // Every critical section here reads, compares, clones or assigns whole
+    // fields, so a panic elsewhere on the holding thread leaves the value
+    // whole. No section nests another lock or touches the filesystem.
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Where a refresh is: when it last made progress, and the paths and mount
-/// evidence for its current step, if any. The worker reads it to tell a refresh
-/// that is slow from one that is stuck and what it must quarantine.
+/// Where a refresh is: when it last made progress, the paths and mount
+/// evidence for its current step, if any, and whether its thread is running,
+/// publishing or abandoned, all under one lock. The worker reads it to tell a
+/// refresh that is slow from one that is stuck and what it must quarantine.
 #[derive(Clone)]
 pub struct RefreshProgress {
     activity: Arc<Mutex<Activity>>,
@@ -58,6 +60,7 @@ struct Activity {
     since: Instant,
     paths: Vec<PathBuf>,
     unknown_mount: bool,
+    phase: Phase,
 }
 
 /// Evidence from the stalled step. An unknown mount is deliberately distinct
@@ -81,6 +84,7 @@ impl Default for RefreshProgress {
                 since: Instant::now(),
                 paths: Vec::new(),
                 unknown_mount: false,
+                phase: Phase::Running,
             })),
             excluded: Arc::new(Mutex::new(ExcludedMounts::default())),
             cancelled: Arc::new(AtomicBool::new(false)),
@@ -91,23 +95,52 @@ impl Default for RefreshProgress {
 impl RefreshProgress {
     /// Records that a step reading `paths` starts now. A refresh that blocks
     /// in that step is abandoned with these paths, which later refreshes
-    /// leave out until it finishes.
+    /// leave out until it finishes. Once the thread is abandoned the record
+    /// keeps the stalled step and later steps are ignored.
     pub fn step(&self, paths: Vec<PathBuf>) {
-        self.record_step(paths, false);
-    }
-
-    /// Records a step whose filesystem could not be identified from mountinfo.
-    /// The paths are useful for diagnostics, but cannot safely narrow the
-    /// quarantine if a later snapshot becomes readable.
-    pub(crate) fn step_on_unknown_mount(&self, paths: Vec<PathBuf>) {
-        self.record_step(paths, true);
-    }
-
-    fn record_step(&self, paths: Vec<PathBuf>, unknown_mount: bool) {
         let mut activity = lock(&self.activity);
+        if activity.phase != Phase::Abandoned {
+            activity.since = Instant::now();
+            activity.paths = paths;
+            activity.unknown_mount = false;
+        }
+    }
+
+    /// Checks a filesystem access against the current quarantine and, if it
+    /// is admitted, starts its progress step. The step is recorded under the
+    /// same lock abandonment takes to capture the stalled step and mark the
+    /// phase, so the two serialize: if this gets the lock first, a later
+    /// abandonment captures these paths; if abandonment gets it first, the
+    /// access is refused before entering the filesystem.
+    ///
+    /// The exclusion check runs before that lock and is never nested in it:
+    /// the handle replaces the exclusions without the activity lock, so
+    /// holding it across the check would order nothing, and only lengthen the
+    /// section the handle's stall checks wait on. Nothing here touches the
+    /// filesystem; the mount table is a snapshot.
+    pub(crate) fn announce(
+        &self,
+        mounts: &shepr_platform::mounts::MountTable,
+        path: &std::path::Path,
+        stall_paths: Vec<PathBuf>,
+        mount_known: bool,
+    ) -> bool {
+        {
+            let excluded = lock(&self.excluded);
+            if excluded.unknown_mount
+                || mounts.is_quarantined_with_stall_paths(path, &excluded.paths, &stall_paths)
+            {
+                return false;
+            }
+        }
+        let mut activity = lock(&self.activity);
+        if activity.phase == Phase::Abandoned {
+            return false;
+        }
         activity.since = Instant::now();
-        activity.paths = paths;
-        activity.unknown_mount = unknown_mount;
+        activity.paths = stall_paths;
+        activity.unknown_mount = !mount_known;
+        true
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
@@ -121,35 +154,32 @@ impl RefreshProgress {
         };
     }
 
-    pub(crate) fn excludes(
-        &self,
-        mounts: &shepr_platform::mounts::MountTable,
-        path: &std::path::Path,
-        stall_paths: &[PathBuf],
-    ) -> bool {
-        if self.is_cancelled() {
-            return true;
-        }
-        let excluded = lock(&self.excluded);
-        excluded.unknown_mount
-            || mounts.is_quarantined_with_stall_paths(path, &excluded.paths, stall_paths)
-    }
-
     /// Records progress outside any step.
     fn settle(&self) {
         self.step(Vec::new());
     }
 
-    /// The paths of the current step, if no progress was made in the stall
-    /// bound before `now`.
+    /// The evidence for the current step, if the thread is running and made
+    /// no progress in the stall bound before `now`; see [`Activity::stalled`].
     pub(crate) fn stalled_paths(&self, now: Instant) -> Option<StalledPaths> {
-        let activity = lock(&self.activity);
-        (now.saturating_duration_since(activity.since) >= GIT_REFRESH_STALL_BOUND).then(|| {
-            StalledPaths {
-                paths: activity.paths.clone(),
-                unknown_mount: activity.unknown_mount,
-            }
-        })
+        lock(&self.activity).stalled(now)
+    }
+}
+
+impl Activity {
+    /// The evidence for the current step, if the thread is running and made
+    /// no progress in the stall bound before `now`. A thread inside the
+    /// caller's `publish` is never stalled, however long `publish` takes, as
+    /// it cannot be abandoned half way; nor is one already abandoned. Reading
+    /// the phase and the step from one guard is what lets abandonment act on
+    /// exactly the step it saw.
+    fn stalled(&self, now: Instant) -> Option<StalledPaths> {
+        (self.phase == Phase::Running
+            && now.saturating_duration_since(self.since) >= GIT_REFRESH_STALL_BOUND)
+            .then(|| StalledPaths {
+                paths: self.paths.clone(),
+                unknown_mount: self.unknown_mount,
+            })
     }
 }
 
@@ -171,7 +201,6 @@ struct ThreadShared {
     /// once the thread has finished it counts exactly the accepted refreshes
     /// it never published.
     unpublished: AtomicUsize,
-    phase: Mutex<Phase>,
     progress: RefreshProgress,
 }
 
@@ -179,41 +208,56 @@ impl ThreadShared {
     fn new() -> Self {
         Self {
             unpublished: AtomicUsize::new(0),
-            phase: Mutex::new(Phase::Running),
             progress: RefreshProgress::default(),
         }
     }
 
-    /// Moves a running thread to `phase`. False when it is publishing or
-    /// already abandoned. Abandonment and publication both leave `Running`
-    /// through here, so exactly one of them happens to an outcome.
-    fn leave_running(&self, phase: Phase) -> bool {
-        let mut current = lock(&self.phase);
-        if *current != Phase::Running {
+    /// Moves a running thread into publishing. False when it was abandoned.
+    /// This and [`Self::abandon_if_stalled`] both leave `Running` under the
+    /// progress lock, so only one of them claims the refresh outcome.
+    fn start_publishing(&self) -> bool {
+        let mut activity = lock(&self.progress.activity);
+        if activity.phase != Phase::Running {
             return false;
         }
-        *current = phase;
+        activity.phase = Phase::Publishing;
         true
     }
 
     fn finish_publishing(&self) {
-        let mut current = lock(&self.phase);
-        if *current == Phase::Publishing {
-            *current = Phase::Running;
+        let mut activity = lock(&self.progress.activity);
+        if activity.phase == Phase::Publishing {
+            activity.phase = Phase::Running;
         }
     }
 
     fn is_abandoned(&self) -> bool {
-        *lock(&self.phase) == Phase::Abandoned
+        lock(&self.progress.activity).phase == Phase::Abandoned
     }
 
     /// The filesystem evidence for a thread's stalled step, if it owes a
-    /// refresh and has made no progress in the stall bound before `now`.
+    /// refresh, is running (not publishing) and has made no progress in the
+    /// stall bound before `now`. Only reports; [`Self::abandon_if_stalled`]
+    /// acts on the same answer.
     fn stall(&self, now: Instant) -> Option<StalledPaths> {
         if self.unpublished.load(Ordering::SeqCst) == 0 {
             return None;
         }
         self.progress.stalled_paths(now)
+    }
+
+    /// Captures the stalled step and abandons it under the same lock used by
+    /// step announcements. A step that starts first is the one quarantined; if
+    /// abandonment wins, later announcements are refused before filesystem IO.
+    fn abandon_if_stalled(&self, now: Instant) -> Option<StalledPaths> {
+        if self.unpublished.load(Ordering::SeqCst) == 0 {
+            return None;
+        }
+        let mut activity = lock(&self.progress.activity);
+        let stuck = activity.stalled(now)?;
+        self.progress.cancelled.store(true, Ordering::SeqCst);
+        activity.phase = Phase::Abandoned;
+        Some(stuck)
     }
 }
 
@@ -487,8 +531,8 @@ impl<T: Send + 'static> GitStatusWorker<T> {
         if handle.is_finished() {
             return None;
         }
-        let stuck = shared.stall(now)?;
         if self.abandoned.len() >= MAX_ABANDONED_GIT_REFRESH_THREADS {
+            let stuck = shared.stall(now)?;
             if !self.abandon_limit_logged {
                 self.abandon_limit_logged = true;
                 shepr_platform::structured_log!(
@@ -502,10 +546,7 @@ impl<T: Send + 'static> GitStatusWorker<T> {
             }
             return None;
         }
-        if !shared.leave_running(Phase::Abandoned) {
-            return None;
-        }
-        shared.progress.cancelled.store(true, Ordering::SeqCst);
+        let stuck = shared.abandon_if_stalled(now)?;
         if stuck.paths.is_empty() && !stuck.unknown_mount {
             // Blocked with no step running (in a destructor, say): nothing
             // names what to keep out, but the handle is wedged behind the
@@ -699,7 +740,7 @@ fn run<T>(
                 shared.progress.settle();
                 // The handle abandoned this refresh while it ran: the outcome
                 // is late and is dropped unpublished.
-                if !shared.leave_running(Phase::Publishing) {
+                if !shared.start_publishing() {
                     return;
                 }
                 let publishing = PublishingGuard(shared);
@@ -751,6 +792,70 @@ mod tests {
         assert!(
             targets.is_empty(),
             "unknown mount aliases require fail-closed filtering"
+        );
+    }
+
+    #[test]
+    fn filesystem_announcement_and_abandonment_share_one_progress_state() {
+        let mounts = shepr_platform::mounts::MountTable::from_mountinfo(
+            "1 0 8:1 / / rw - ext4 root rw\n2 1 0:42 / /net rw - nfs stuck:/ rw\n3 1 8:2 / /srv rw - ext4 healthy rw\n",
+        );
+        let stalled_path = PathBuf::from("/net/stalled");
+        let next_path = PathBuf::from("/srv/next");
+
+        // When the next access registers first, abandonment sees that mount
+        // and quarantines it if the access later stalls.
+        let announced = ThreadShared::new();
+        announced.unpublished.store(1, Ordering::SeqCst);
+        announced.progress.step(vec![stalled_path.clone()]);
+        assert!(announced.progress.announce(
+            &mounts,
+            &next_path,
+            mounts.stall_paths(&next_path),
+            true,
+        ));
+        {
+            let mut activity = lock(&announced.progress.activity);
+            activity.since = Instant::now() - GIT_REFRESH_STALL_BOUND;
+        }
+        assert_eq!(
+            announced.abandon_if_stalled(Instant::now()),
+            Some(StalledPaths {
+                paths: vec![PathBuf::from("/srv")],
+                unknown_mount: false,
+            })
+        );
+
+        // When abandonment registers first, the next access cannot pass the
+        // check and start filesystem work; the original mount remains named.
+        let abandoned = ThreadShared::new();
+        abandoned.unpublished.store(1, Ordering::SeqCst);
+        abandoned.progress.step(vec![stalled_path.clone()]);
+        {
+            let mut activity = lock(&abandoned.progress.activity);
+            activity.since = Instant::now() - GIT_REFRESH_STALL_BOUND;
+        }
+        let stuck = abandoned
+            .abandon_if_stalled(Instant::now())
+            .expect("stalled worker is abandoned");
+        assert_eq!(stuck.paths, [stalled_path]);
+        assert!(
+            !abandoned
+                .progress
+                .announce(&mounts, &next_path, mounts.stall_paths(&next_path), true,),
+            "abandonment refuses the access before filesystem IO"
+        );
+        assert_eq!(
+            lock(&abandoned.progress.activity).paths,
+            stuck.paths,
+            "a refused next access cannot replace the quarantined step"
+        );
+        assert_eq!(
+            abandoned
+                .progress
+                .stalled_paths(Instant::now() + GIT_REFRESH_STALL_BOUND),
+            None,
+            "an abandoned thread is not reported stalled again"
         );
     }
 
@@ -1435,6 +1540,10 @@ mod tests {
         assert!(!worker.abandon_stalled(past_the_stall_bound()));
         assert!(worker.thread.is_some());
         assert_eq!(worker.abandoned.len(), MAX_ABANDONED_GIT_REFRESH_THREADS);
+        assert!(
+            worker.abandon_limit_logged,
+            "a stall waited out at the limit is logged"
+        );
 
         // Only the thread that was waited out publishes.
         released.store(true, Ordering::SeqCst);
@@ -1443,5 +1552,64 @@ mod tests {
         wait_for_abandoned_threads(&mut worker);
         assert!(!worker.take_lost_refresh());
         assert!(outcomes.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_thread_slow_in_publish_is_neither_abandoned_nor_reported_stalled() {
+        let scratch = shepr_test_support::ScratchDir::new("git-worker-slow-publish");
+        let (sender, outcomes) = mpsc::channel();
+        let (publishing, publishing_receiver) = mpsc::channel();
+        let released = Arc::new(AtomicBool::new(false));
+        let publish_released = Arc::clone(&released);
+        let mut worker = GitStatusWorker::with_refresh(
+            move |outcome: RefreshOutcome<usize>| {
+                publishing.send(()).ok();
+                let deadline = Instant::now() + WAIT;
+                while !publish_released.load(Ordering::SeqCst) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                sender.send(outcome).ok();
+            },
+            |targets, _| answer_all(targets),
+        );
+
+        worker
+            .refresh(vec![target(0, &scratch.join("cwd"))])
+            .expect("worker starts");
+        publishing_receiver
+            .recv_timeout(WAIT)
+            .expect("refresh is publishing");
+
+        // Below the limit, a publishing thread is not abandoned.
+        assert!(!worker.abandon_stalled(past_the_stall_bound()));
+        assert!(worker.thread.is_some());
+
+        // At the limit, it is not reported as a stall waiting for a slot.
+        for _ in 0..MAX_ABANDONED_GIT_REFRESH_THREADS {
+            let held = Arc::clone(&released);
+            worker.abandoned.push(AbandonedThread {
+                handle: std::thread::spawn(move || {
+                    let deadline = Instant::now() + WAIT;
+                    while !held.load(Ordering::SeqCst) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }),
+                stuck: StalledPaths::default(),
+            });
+        }
+        assert!(!worker.abandon_stalled(past_the_stall_bound()));
+        assert!(worker.thread.is_some());
+        assert!(
+            !worker.abandon_limit_logged,
+            "a thread inside publish is not logged as stalled at the limit"
+        );
+
+        released.store(true, Ordering::SeqCst);
+        assert_eq!(
+            owners(&outcomes.recv_timeout(WAIT).expect("refresh outcome")),
+            [0]
+        );
+        wait_for_abandoned_threads(&mut worker);
+        assert!(!worker.take_lost_refresh());
     }
 }

@@ -171,6 +171,10 @@ fn group_targets<T>(
         let (key, discovery) = match target.known_key {
             Some(key) => (key, None),
             None => {
+                // A logical step, superseded by the mount paths of the first
+                // access discovery makes. Filesystem IO in a refresh goes
+                // through `crate::access`, which announces it; IO made here
+                // directly would stall under this logical path, not its mount.
                 progress.step(vec![target.cwd.clone()]);
                 let discovery = git_status_discovery(&target.cwd);
                 (discovery.cache_key().clone(), Some(discovery))
@@ -208,6 +212,8 @@ fn compute_refresh<T>(
 
     for job in group_targets(targets, cache, progress) {
         crate::access::start_job();
+        // Logical paths again, as in `group_targets`: the job's filesystem IO
+        // goes through `crate::access`, which announces each mount it enters.
         progress.step(
             std::iter::once(job.key.as_path().to_path_buf())
                 .chain(job.targets.iter().map(|(_, cwd)| cwd.clone()))
