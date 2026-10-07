@@ -1,6 +1,7 @@
 //! Every direct filesystem read announces its physical path
 //! before entering the kernel. Replacement workers refuse quarantined mounts,
-//! including shared config/include and common-directory dependencies.
+//! or all access when a stalled filesystem was unidentified, including shared
+//! config/include and common-directory dependencies.
 
 use crate::worker::RefreshProgress;
 use shepr_platform::mounts::{MountTable, PathWalkFailure};
@@ -47,7 +48,8 @@ pub(crate) fn read_mount_table() -> std::io::Result<MountTable> {
                     outcome = Fallback,
                     %error,
                     "failed to read mount table; until it is readable, Git discovery does not \
-                     stop at filesystem boundaries and a stalled Git access quarantines every path"
+                     stop at filesystem boundaries, and a Git access that stalls meanwhile \
+                     quarantines every path until its thread finishes"
                 );
             }
             Err(error)
@@ -58,13 +60,13 @@ pub(crate) fn read_mount_table() -> std::io::Result<MountTable> {
 /// The mount snapshot a refresh or an unscoped discovery works from. When
 /// mountinfo cannot be read this is the empty table, a degraded mode that keeps
 /// Git status computed: no filesystem boundary is known, so discovery may
-/// ascend across one, and the quarantine stays sound by being coarse. An
-/// empty table maps every path to the stall path `/`, so while mountinfo stays
-/// unreadable a stalled access quarantines every path until its thread
-/// finishes (once it is readable, `/` names only the root mount's device
-/// again), and stuck paths recorded
-/// from an earlier readable snapshot (which list every alias mount point of the
-/// stalled device) are matched by path prefix.
+/// ascend across one, and the quarantine stays sound by being coarse. A step on
+/// a path no mount covers is recorded as on an unknown mount (its `/` stall
+/// path is diagnostic only), and a stall in it quarantines every path until
+/// its thread finishes, through a later readable snapshot too, where `/` would
+/// name only the root filesystem. Stuck paths recorded from a readable
+/// snapshot list every alias mount point of the stalled device, and an empty
+/// table matches them by path prefix.
 fn mount_snapshot() -> MountTable {
     read_mount_table().unwrap_or_default()
 }
@@ -105,10 +107,10 @@ pub(crate) fn mount_table() -> MountTable {
         .unwrap_or_else(mount_snapshot)
 }
 
-fn announce(path: &Path) -> std::io::Result<()> {
+pub(crate) fn announce(path: &Path) -> std::io::Result<()> {
     CONTEXT.with(|slot| {
         if let Some(context) = slot.borrow().as_ref() {
-            let stall_paths = context.mounts.stall_paths(path);
+            let (stall_paths, mount_known) = context.mounts.stall_paths_with_coverage(path);
             if context
                 .progress
                 .excludes(&context.mounts, path, &stall_paths)
@@ -119,7 +121,11 @@ fn announce(path: &Path) -> std::io::Result<()> {
                     "Git dependency is on a quarantined filesystem",
                 ));
             }
-            context.progress.step(stall_paths);
+            if mount_known {
+                context.progress.step(stall_paths);
+            } else {
+                context.progress.step_on_unknown_mount(stall_paths);
+            }
         }
         Ok(())
     })
@@ -298,10 +304,10 @@ mod tests {
     fn unreadable_mount_table_keeps_access_and_quarantines_coarsely() {
         // The empty table is what a refresh runs with when mountinfo cannot
         // be read: access stays available, a path under a stuck root is still
-        // refused, and a step names `/` so that a stall in it quarantines
-        // every path.
+        // refused, and a step is recorded as on an unknown mount, so that a
+        // stall in it quarantines every path.
         let progress = RefreshProgress::default();
-        progress.set_excluded(vec![PathBuf::from("/net")]);
+        progress.set_excluded(vec![PathBuf::from("/net")], false);
         scoped_with_mounts(&progress, MountTable::default(), || {
             start_job();
             assert_eq!(
@@ -316,7 +322,10 @@ mod tests {
         assert_eq!(
             progress
                 .stalled_paths(std::time::Instant::now() + crate::limits::GIT_REFRESH_STALL_BOUND),
-            Some(vec![PathBuf::from("/")])
+            Some(crate::worker::StalledPaths {
+                paths: vec![PathBuf::from("/")],
+                unknown_mount: true,
+            })
         );
     }
 
@@ -334,13 +343,13 @@ mod tests {
             let first = git_program().expect("resolve executable");
             std::fs::remove_file(&program).expect("remove fixture");
             assert_eq!(git_program().expect("cached executable"), first);
-            progress.set_excluded(vec![PathBuf::from("/")]);
+            progress.set_excluded(vec![PathBuf::from("/")], false);
             assert_eq!(
                 git_program().err().map(|error| error.kind()),
                 Some(std::io::ErrorKind::WouldBlock)
             );
         });
-        progress.set_excluded(Vec::new());
+        progress.set_excluded(Vec::new(), false);
         scoped_with_mounts(&progress, mounts, || {
             assert_eq!(
                 git_program().err().map(|error| error.kind()),
@@ -352,7 +361,7 @@ mod tests {
     #[test]
     fn sibling_checkouts_and_shared_dependencies_refuse_a_stalled_mount() {
         let progress = RefreshProgress::default();
-        progress.set_excluded(vec![PathBuf::from("/net")]);
+        progress.set_excluded(vec![PathBuf::from("/net")], false);
         let mounts = MountTable::from_mountinfo(
             "1 0 8:1 / / rw - ext4 root rw\n2 1 0:42 / /net rw - nfs host:/ rw\n",
         );
@@ -392,7 +401,7 @@ mod tests {
         let target = PathBuf::from("/net/config");
         std::os::unix::fs::symlink(&target, &link).expect("symlink");
         let progress = RefreshProgress::default();
-        progress.set_excluded(vec![PathBuf::from("/net")]);
+        progress.set_excluded(vec![PathBuf::from("/net")], false);
         let mounts = MountTable::from_mountinfo(
             "1 0 8:1 / / rw - ext4 root rw\n2 1 0:42 / /net rw - nfs host:/ rw\n",
         );
@@ -414,7 +423,10 @@ mod tests {
         assert_eq!(
             progress
                 .stalled_paths(std::time::Instant::now() + crate::limits::GIT_REFRESH_STALL_BOUND),
-            Some(vec![PathBuf::from("/net"), PathBuf::from("/alias")])
+            Some(crate::worker::StalledPaths {
+                paths: vec![PathBuf::from("/net"), PathBuf::from("/alias")],
+                unknown_mount: false,
+            })
         );
     }
 }

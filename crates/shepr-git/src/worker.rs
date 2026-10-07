@@ -9,9 +9,11 @@
 //! [`GitStatusWorker::abandon_stalled`] gives up on one that owes a refresh and
 //! has made none for [`GIT_REFRESH_STALL_BOUND`]. An abandoned thread is left
 //! detached and joined only once it has finished; it publishes nothing more,
-//! and the mount paths of its blocking filesystem access are quarantined until
-//! it finishes. Shared dependencies are checked at each access, independently
-//! of the checkout. Lookup reads mountinfo and never stats from the handle.
+//! and its blocking filesystem is quarantined until it finishes. If mountinfo
+//! did not identify that filesystem, the quarantine stays global even after
+//! mountinfo recovers. Shared dependencies are checked at each access,
+//! independently of the checkout. Lookup reads mountinfo and never stats from
+//! the handle.
 //! At most [`MAX_ABANDONED_GIT_REFRESH_THREADS`] are left alive at once; stalls
 //! on distinct filesystems or outside filesystem access can exhaust that cap.
 
@@ -42,19 +44,34 @@ fn lock<V>(mutex: &Mutex<V>) -> MutexGuard<'_, V> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Where a refresh is: when it last made progress, and the paths of the step
-/// it is running, if any. The worker reads it to tell a refresh that is slow
-/// from one that is stuck, and which paths a stuck one is stuck on.
+/// Where a refresh is: when it last made progress, and the paths and mount
+/// evidence for its current step, if any. The worker reads it to tell a refresh
+/// that is slow from one that is stuck and what it must quarantine.
 #[derive(Clone)]
 pub struct RefreshProgress {
     activity: Arc<Mutex<Activity>>,
-    excluded: Arc<Mutex<Vec<PathBuf>>>,
+    excluded: Arc<Mutex<ExcludedMounts>>,
     cancelled: Arc<AtomicBool>,
 }
 
 struct Activity {
     since: Instant,
     paths: Vec<PathBuf>,
+    unknown_mount: bool,
+}
+
+/// Evidence from the stalled step. An unknown mount is deliberately distinct
+/// from `/`: after mountinfo recovers, `/` identifies only the root filesystem.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StalledPaths {
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) unknown_mount: bool,
+}
+
+#[derive(Default)]
+struct ExcludedMounts {
+    paths: Vec<PathBuf>,
+    unknown_mount: bool,
 }
 
 impl Default for RefreshProgress {
@@ -63,8 +80,9 @@ impl Default for RefreshProgress {
             activity: Arc::new(Mutex::new(Activity {
                 since: Instant::now(),
                 paths: Vec::new(),
+                unknown_mount: false,
             })),
-            excluded: Arc::new(Mutex::new(Vec::new())),
+            excluded: Arc::new(Mutex::new(ExcludedMounts::default())),
             cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -75,17 +93,32 @@ impl RefreshProgress {
     /// in that step is abandoned with these paths, which later refreshes
     /// leave out until it finishes.
     pub fn step(&self, paths: Vec<PathBuf>) {
+        self.record_step(paths, false);
+    }
+
+    /// Records a step whose filesystem could not be identified from mountinfo.
+    /// The paths are useful for diagnostics, but cannot safely narrow the
+    /// quarantine if a later snapshot becomes readable.
+    pub(crate) fn step_on_unknown_mount(&self, paths: Vec<PathBuf>) {
+        self.record_step(paths, true);
+    }
+
+    fn record_step(&self, paths: Vec<PathBuf>, unknown_mount: bool) {
         let mut activity = lock(&self.activity);
         activity.since = Instant::now();
         activity.paths = paths;
+        activity.unknown_mount = unknown_mount;
     }
 
     pub(crate) fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::SeqCst)
     }
 
-    pub(crate) fn set_excluded(&self, paths: Vec<PathBuf>) {
-        *lock(&self.excluded) = paths;
+    pub(crate) fn set_excluded(&self, paths: Vec<PathBuf>, unknown_mount: bool) {
+        *lock(&self.excluded) = ExcludedMounts {
+            paths,
+            unknown_mount,
+        };
     }
 
     pub(crate) fn excludes(
@@ -94,8 +127,12 @@ impl RefreshProgress {
         path: &std::path::Path,
         stall_paths: &[PathBuf],
     ) -> bool {
-        self.is_cancelled()
-            || mounts.is_quarantined_with_stall_paths(path, &lock(&self.excluded), stall_paths)
+        if self.is_cancelled() {
+            return true;
+        }
+        let excluded = lock(&self.excluded);
+        excluded.unknown_mount
+            || mounts.is_quarantined_with_stall_paths(path, &excluded.paths, stall_paths)
     }
 
     /// Records progress outside any step.
@@ -105,10 +142,14 @@ impl RefreshProgress {
 
     /// The paths of the current step, if no progress was made in the stall
     /// bound before `now`.
-    pub(crate) fn stalled_paths(&self, now: Instant) -> Option<Vec<PathBuf>> {
+    pub(crate) fn stalled_paths(&self, now: Instant) -> Option<StalledPaths> {
         let activity = lock(&self.activity);
-        (now.saturating_duration_since(activity.since) >= GIT_REFRESH_STALL_BOUND)
-            .then(|| activity.paths.clone())
+        (now.saturating_duration_since(activity.since) >= GIT_REFRESH_STALL_BOUND).then(|| {
+            StalledPaths {
+                paths: activity.paths.clone(),
+                unknown_mount: activity.unknown_mount,
+            }
+        })
     }
 }
 
@@ -166,9 +207,9 @@ impl ThreadShared {
         *lock(&self.phase) == Phase::Abandoned
     }
 
-    /// The paths the thread is stuck on, if it owes a refresh and has made no
-    /// progress in the stall bound before `now`.
-    fn stall(&self, now: Instant) -> Option<Vec<PathBuf>> {
+    /// The filesystem evidence for a thread's stalled step, if it owes a
+    /// refresh and has made no progress in the stall bound before `now`.
+    fn stall(&self, now: Instant) -> Option<StalledPaths> {
         if self.unpublished.load(Ordering::SeqCst) == 0 {
             return None;
         }
@@ -193,8 +234,8 @@ struct RetiringThread {
 /// can be joined without blocking.
 struct AbandonedThread {
     handle: JoinHandle<()>,
-    /// The paths its stalled step reads, which refreshes leave out meanwhile.
-    stuck: Vec<PathBuf>,
+    /// The stalled step's mount paths, or a global quarantine if unidentified.
+    stuck: StalledPaths,
 }
 
 /// The handle to the Git status worker. The thread starts with the first
@@ -284,10 +325,10 @@ impl<T: Send + 'static> GitStatusWorker<T> {
     /// abandoned by [`Self::abandon_stalled`]; an error means the worker
     /// thread could not be started and none of those will happen.
     ///
-    /// A target whose cwd or known checkout lies under a path an abandoned
-    /// thread is still stuck on is left out, and the outcome carries no
-    /// status for it. Every target is left out while such a thread lives and
-    /// mountinfo cannot be read.
+    /// A target whose cwd or known checkout lies on a filesystem an abandoned
+    /// thread is still stuck on is left out, and the outcome carries no status
+    /// for it. Every target is left out while such a thread lives and mountinfo
+    /// cannot be read or the stalled filesystem was not identified.
     pub fn refresh(&mut self, mut targets: Vec<RefreshTarget<T>>) -> std::io::Result<()> {
         self.reap_abandoned();
         let requested = targets.len();
@@ -305,10 +346,17 @@ impl<T: Send + 'static> GitStatusWorker<T> {
         let excluded: Vec<_> = self
             .abandoned
             .iter()
-            .flat_map(|thread| thread.stuck.iter().cloned())
+            .flat_map(|thread| thread.stuck.paths.iter().cloned())
             .collect();
+        let unknown_mount_excluded = self
+            .abandoned
+            .iter()
+            .any(|thread| thread.stuck.unknown_mount);
         if let Some(thread) = &self.thread {
-            thread.shared.progress.set_excluded(excluded.clone());
+            thread
+                .shared
+                .progress
+                .set_excluded(excluded.clone(), unknown_mount_excluded);
         }
         let mut command = Command::Refresh(targets);
         if let Some(thread) = &self.thread {
@@ -332,7 +380,10 @@ impl<T: Send + 'static> GitStatusWorker<T> {
             }
         }
         let thread = self.spawn()?;
-        thread.shared.progress.set_excluded(excluded);
+        thread
+            .shared
+            .progress
+            .set_excluded(excluded, unknown_mount_excluded);
         Self::count_sent_refresh(&thread.shared);
         thread
             .commands
@@ -388,8 +439,9 @@ impl<T: Send + 'static> GitStatusWorker<T> {
     /// limit are still alive. True when that gave up on an accepted refresh:
     /// it will never be published nor reported lost. The next
     /// [`Self::refresh`] starts a new thread with an empty cache, and leaves
-    /// out the targets under the paths an abandoned thread's stalled step
-    /// reads until that thread finishes. Never blocks.
+    /// out the targets on filesystems an abandoned thread's stalled step reads
+    /// until that thread finishes. An unidentified filesystem keeps every
+    /// target out. Never blocks.
     pub fn abandon_stalled(&mut self, now: Instant) -> bool {
         self.reap_abandoned();
         let mut gave_up = false;
@@ -423,13 +475,13 @@ impl<T: Send + 'static> GitStatusWorker<T> {
     }
 
     /// Marks a thread abandoned if it is alive, stalled and an abandonment
-    /// slot is free, returning the paths it is stuck on.
+    /// slot is free, returning the filesystem evidence for its stalled step.
     fn abandon_if_stalled(
         &mut self,
         shared: &ThreadShared,
         handle: &JoinHandle<()>,
         now: Instant,
-    ) -> Option<Vec<PathBuf>> {
+    ) -> Option<StalledPaths> {
         // A finished thread is joined by `take_lost_refresh`, which reports
         // what it left unpublished.
         if handle.is_finished() {
@@ -441,7 +493,8 @@ impl<T: Send + 'static> GitStatusWorker<T> {
                 self.abandon_limit_logged = true;
                 shepr_platform::structured_log!(
                     WARN, event = git.refresh, outcome = Exhausted,
-                    paths = ?stuck,
+                    paths = ?stuck.paths,
+                    unknown_mount = stuck.unknown_mount,
                     abandoned = self.abandoned.len(),
                     "git status refresh is stalled, but the abandoned-thread limit is reached; \
                      waiting for it"
@@ -453,7 +506,7 @@ impl<T: Send + 'static> GitStatusWorker<T> {
             return None;
         }
         shared.progress.cancelled.store(true, Ordering::SeqCst);
-        if stuck.is_empty() {
+        if stuck.paths.is_empty() && !stuck.unknown_mount {
             // Blocked with no step running (in a destructor, say): nothing
             // names what to keep out, but the handle is wedged behind the
             // thread, so it is abandoned all the same. It holds a slot until
@@ -468,16 +521,17 @@ impl<T: Send + 'static> GitStatusWorker<T> {
         } else {
             shepr_platform::structured_log!(
                 WARN, event = git.refresh, outcome = Abandoned,
-                paths = ?stuck,
+                paths = ?stuck.paths,
+                unknown_mount = stuck.unknown_mount,
                 "git status refresh made no progress within its bound; abandoned its worker \
-                 thread and left these paths out of refreshes until it finishes"
+                 thread and kept its filesystem quarantine until it finishes"
             );
         }
         Some(stuck)
     }
 
     /// Joins the abandoned threads that have finished, which lifts their
-    /// stuck paths.
+    /// filesystem quarantines.
     fn reap_abandoned(&mut self) {
         if self.abandoned.is_empty() {
             return;
@@ -491,8 +545,9 @@ impl<T: Send + 'static> GitStatusWorker<T> {
             self.abandon_limit_logged = false;
             shepr_platform::structured_log!(
                 INFO, event = git.worker, outcome = Recovered,
-                paths = ?thread.stuck,
-                "abandoned git status worker thread finished; refreshing its paths again"
+                paths = ?thread.stuck.paths,
+                unknown_mount = thread.stuck.unknown_mount,
+                "abandoned git status worker thread finished; lifting its filesystem quarantine"
             );
         }
     }
@@ -503,18 +558,21 @@ impl<T: Send + 'static> GitStatusWorker<T> {
         mounts: &shepr_platform::mounts::MountTable,
     ) -> bool {
         self.abandoned.iter().any(|thread| {
-            mounts.is_quarantined(&target.cwd, &thread.stuck)
+            thread.stuck.unknown_mount
+                || mounts.is_quarantined(&target.cwd, &thread.stuck.paths)
                 || target
                     .known_key
                     .as_ref()
-                    .is_some_and(|key| mounts.is_quarantined(key.as_path(), &thread.stuck))
+                    .is_some_and(|key| mounts.is_quarantined(key.as_path(), &thread.stuck.paths))
         })
     }
 
-    /// Whether an abandoned thread names paths to leave out. One abandoned
+    /// Whether an abandoned thread has a filesystem quarantine. One abandoned
     /// with no step running names none and excludes nothing.
     fn has_stuck_paths(&self) -> bool {
-        self.abandoned.iter().any(|thread| !thread.stuck.is_empty())
+        self.abandoned
+            .iter()
+            .any(|thread| thread.stuck.unknown_mount || !thread.stuck.paths.is_empty())
     }
 
     fn exclude_abandoned_targets(
@@ -530,8 +588,9 @@ impl<T: Send + 'static> GitStatusWorker<T> {
             // device (a bind mount made since the stall is an alias no stuck
             // path names), so no target is admitted while a thread is stuck.
             // The refresh thread itself degrades instead (see
-            // `access::mount_snapshot`); this holds only until the stuck
-            // thread finishes or mountinfo is readable again.
+            // `access::mount_snapshot`). An unknown-mount stall remains a
+            // global quarantine after recovery too; it lifts only when that
+            // stalled thread finishes.
             targets.clear();
             return;
         };
@@ -677,7 +736,10 @@ mod tests {
         let mut worker = GitStatusWorker::with_refresh(|_| {}, |targets, _| answer_all(targets));
         worker.abandoned.push(AbandonedThread {
             handle: std::thread::spawn(|| {}),
-            stuck: vec![PathBuf::from("/net")],
+            stuck: StalledPaths {
+                paths: vec![PathBuf::from("/net")],
+                unknown_mount: false,
+            },
         });
         let mut targets = vec![
             target(1, std::path::Path::new("/tmp/healthy")),
@@ -693,11 +755,145 @@ mod tests {
     }
 
     #[test]
+    fn unknown_mount_stall_stays_global_until_its_thread_finishes() {
+        let (sender, outcomes) = mpsc::channel();
+        let (entered, entered_receiver) = mpsc::channel();
+        let released = Arc::new(AtomicBool::new(false));
+        let release = Arc::clone(&released);
+        let first = AtomicBool::new(true);
+        let (probe, probes) = mpsc::channel();
+        let readable = shepr_platform::mounts::MountTable::from_mountinfo(
+            "1 0 8:1 / / rw - ext4 root rw\n2 1 8:2 / /srv rw - ext4 healthy rw\n3 1 0:42 / /net rw - nfs host:/ rw\n",
+        );
+        let replacement_mounts = readable.clone();
+        let mut worker = GitStatusWorker::with_refresh(
+            move |outcome: RefreshOutcome<usize>| {
+                sender.send(outcome).ok();
+            },
+            move |targets, progress| {
+                if first.swap(false, Ordering::SeqCst) {
+                    crate::access::scoped_with_mounts(
+                        progress,
+                        shepr_platform::mounts::MountTable::default(),
+                        || {
+                            crate::access::announce(std::path::Path::new("/net/stalled"))
+                                .expect("announce a path without mount information");
+                            entered.send(()).ok();
+                            let deadline = Instant::now() + WAIT;
+                            while !release.load(Ordering::SeqCst) && Instant::now() < deadline {
+                                std::thread::sleep(Duration::from_millis(1));
+                            }
+                            answer_all(targets)
+                        },
+                    )
+                } else {
+                    // What the replacement's own access layer admits, with the
+                    // exclusions the handle handed it and a readable table.
+                    let admitted = crate::access::scoped_with_mounts(
+                        progress,
+                        replacement_mounts.clone(),
+                        || {
+                            crate::access::announce(std::path::Path::new("/srv/healthy"))
+                                .map_err(|error| error.kind())
+                        },
+                    );
+                    probe.send(admitted).ok();
+                    answer_all(targets)
+                }
+            },
+        );
+
+        worker
+            .refresh(vec![target(
+                0,
+                std::path::Path::new("/net/stalled/checkout"),
+            )])
+            .expect("worker starts");
+        entered_receiver
+            .recv_timeout(WAIT)
+            .expect("unknown-mount access is stalled");
+        assert!(worker.abandon_stalled(past_the_stall_bound()));
+        assert_eq!(
+            worker.abandoned[0].stuck,
+            StalledPaths {
+                paths: vec![PathBuf::from("/")],
+                unknown_mount: true,
+            },
+            "the fallback slash must retain its unknown-mount meaning"
+        );
+
+        let mut targets = vec![
+            target(1, std::path::Path::new("/srv/healthy")),
+            target(2, std::path::Path::new("/net/stalled/checkout")),
+        ];
+        worker.exclude_abandoned_targets(&mut targets, Some(&readable));
+        assert!(
+            targets.is_empty(),
+            "a recovered table cannot prove any path is clear of the unknown mount"
+        );
+
+        worker
+            .refresh(vec![target(3, std::path::Path::new("/srv/healthy"))])
+            .expect("replacement worker starts");
+        assert_eq!(
+            probes.recv_timeout(WAIT).expect("replacement probe"),
+            Err(std::io::ErrorKind::WouldBlock),
+            "the replacement's access layer refuses a readable healthy mount during the \
+             global quarantine"
+        );
+        assert!(
+            outcomes
+                .recv_timeout(WAIT)
+                .expect("replacement result")
+                .statuses
+                .is_empty(),
+            "the worker handle rejects healthy-looking targets during the global quarantine"
+        );
+
+        // Still held while the stalled thread lives, however many refreshes
+        // pass.
+        worker
+            .refresh(vec![target(4, std::path::Path::new("/srv/healthy"))])
+            .expect("replacement worker takes another refresh");
+        assert_eq!(
+            probes.recv_timeout(WAIT).expect("replacement probe"),
+            Err(std::io::ErrorKind::WouldBlock)
+        );
+        assert!(
+            outcomes
+                .recv_timeout(WAIT)
+                .expect("replacement result")
+                .statuses
+                .is_empty()
+        );
+
+        released.store(true, Ordering::SeqCst);
+        wait_for_abandoned_threads(&mut worker);
+        worker
+            .refresh(vec![target(5, std::path::Path::new("/srv/healthy"))])
+            .expect("replacement worker takes a refresh after the reap");
+        assert_eq!(
+            probes.recv_timeout(WAIT).expect("replacement probe"),
+            Ok(()),
+            "reaping the stalled thread lifts the access quarantine"
+        );
+        assert_eq!(
+            outcomes
+                .recv_timeout(WAIT)
+                .expect("replacement result")
+                .statuses
+                .len(),
+            1,
+            "reaping the stalled thread lifts the target quarantine"
+        );
+    }
+
+    #[test]
     fn abandoned_thread_with_no_stuck_paths_excludes_nothing_without_a_mount_table() {
         let mut worker = GitStatusWorker::with_refresh(|_| {}, |targets, _| answer_all(targets));
         worker.abandoned.push(AbandonedThread {
             handle: std::thread::spawn(|| {}),
-            stuck: Vec::new(),
+            stuck: StalledPaths::default(),
         });
         let mut targets = vec![target(1, std::path::Path::new("/srv/healthy"))];
 
@@ -1191,7 +1387,8 @@ mod tests {
         entered_receiver.recv_timeout(WAIT).expect("blocked");
         assert!(worker.abandon_stalled(past_the_stall_bound()));
         assert_eq!(worker.abandoned.len(), 1);
-        assert!(worker.abandoned[0].stuck.is_empty());
+        assert!(worker.abandoned[0].stuck.paths.is_empty());
+        assert!(!worker.abandoned[0].stuck.unknown_mount);
 
         // Nothing is kept out: the same cwd is refreshed by the replacement.
         worker

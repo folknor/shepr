@@ -116,6 +116,12 @@ impl MountTable {
     /// Mount points sharing the deepest matching mount's device, including
     /// bind mounts. Paths must be absolute and have resolved symlink parents.
     pub fn stall_paths(&self, path: &Path) -> Vec<PathBuf> {
+        self.stall_paths_with_coverage(path).0
+    }
+
+    /// The matching mount's aliases and whether this snapshot covered `path`.
+    /// A missing covering mount returns the coarse `/` fallback with `false`.
+    pub fn stall_paths_with_coverage(&self, path: &Path) -> (Vec<PathBuf>, bool) {
         let Some((_, device)) = self
             .entries
             .iter()
@@ -124,13 +130,16 @@ impl MountTable {
         else {
             // Without namespace evidence, quarantine conservatively rather
             // than spending one thread for each path on an unknown mount.
-            return vec![PathBuf::from("/")];
+            return (vec![PathBuf::from("/")], false);
         };
-        self.entries
-            .iter()
-            .filter(|(_, candidate)| candidate == device)
-            .map(|(root, _)| root.clone())
-            .collect()
+        (
+            self.entries
+                .iter()
+                .filter(|(_, candidate)| candidate == device)
+                .map(|(root, _)| root.clone())
+                .collect(),
+            true,
+        )
     }
 }
 
@@ -159,6 +168,21 @@ mod tests {
         assert_eq!(
             table.stall_paths(Path::new("/network")),
             [PathBuf::from("/")]
+        );
+    }
+
+    #[test]
+    fn coverage_tells_the_root_mount_from_the_unknown_mount_fallback() {
+        let table = MountTable::from_mountinfo("1 0 8:1 / / rw - ext4 root rw\n");
+        assert_eq!(
+            table.stall_paths_with_coverage(Path::new("/srv/a")),
+            (vec![PathBuf::from("/")], true),
+            "the root mount names `/` and is known"
+        );
+        assert_eq!(
+            MountTable::default().stall_paths_with_coverage(Path::new("/srv/a")),
+            (vec![PathBuf::from("/")], false),
+            "the same `/` from an empty table is the unknown-mount fallback"
         );
     }
 

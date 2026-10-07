@@ -355,7 +355,8 @@ mod tests {
         let stalled = progress
             .stalled_paths(Instant::now() + crate::limits::GIT_REFRESH_STALL_BOUND)
             .expect("the step is the last progress");
-        assert_eq!(stalled, [key, cwds[0].clone(), cwds[1].clone()]);
+        assert_eq!(stalled.paths, [key, cwds[0].clone(), cwds[1].clone()]);
+        assert!(!stalled.unknown_mount);
     }
 
     #[test]

@@ -11,14 +11,17 @@
 
 Laterals raised while resolving the defect hunt filed in commit 21dfcea4.
 
-## FUP-004 - A stall recorded while mountinfo was unreadable stops being quarantined once it is readable again
+## FUP-005 - A stall can be abandoned under the wrong step
 
-Raised as a lateral by the wave 6 reviewer.
+Raised as a lateral by the wave 7 reviewer, who judged it not worth fixing
+unless seen.
 
-With `/proc/self/mountinfo` unreadable, Git access falls back to an empty mount
-table (`crates/shepr-git/src/access.rs`), and a stall is recorded as stuck on
-`/`. Once mountinfo is readable again, `/` names only the root mount's device,
-so a hung non-root mount stops being quarantined and a replacement refresh
-thread can block on it again. Bounded by `MAX_ABANDONED_GIT_REFRESH_THREADS`.
-A fix would record an "unknown mount" stall that stays global until its thread
-finishes, rather than `/`.
+`abandon_if_stalled` (`crates/shepr-git/src/worker.rs`) reads the stalled
+step, then marks the phase abandoned and sets `cancelled`. If the thread makes
+a step on another mount in that window and blocks there, the abandoned record
+names the earlier step, and the replacement is not kept off the mount that
+actually hung. `cancelled` closes the window for every later announce, so it
+needs a thread silent for the whole stall bound to wake and block within
+microseconds; it is bounded by `MAX_ABANDONED_GIT_REFRESH_THREADS`. Either
+close it (read the step and mark the phase under one lock) or record at the
+code site why it is accepted.
