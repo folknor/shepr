@@ -1494,6 +1494,9 @@ impl HeadlessServer {
         if self.has_connection() {
             self.app.start_git_status_refresh_if_due(now);
         }
+        // Usage is polled only while someone is attached, like Git status; a
+        // client that only lists this server in its sidebar counts.
+        self.app.service_usage(self.has_connection());
 
         self.app.service_session_saves(now);
         // Reaping can make the warning checkpoint ready without another wake.

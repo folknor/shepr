@@ -20,6 +20,7 @@ mod runtime;
 mod session;
 pub(crate) mod state;
 mod terminal_titles;
+mod usage;
 
 pub(crate) use events::{Admitted, PaneDeath, PaneExitPrepared, PreparedPaneExit};
 pub(crate) use pane_resize::PaneResizeTiming;
@@ -109,6 +110,9 @@ pub(crate) struct App {
     /// Set when this boot's restore did not bring the saved session back in
     /// full; sent to every client that connects, for the life of the boot.
     restore_notice: Option<shepr_protocol::SessionRestoreNotice>,
+    /// Subscription usage tracking, started by the server bootstrap; absent
+    /// in apps built for tests, which must not read credentials.
+    usage: Option<usage::UsageTracking>,
 }
 
 /// The pure render inputs: shared references to the state and the runtimes.
@@ -227,6 +231,7 @@ impl App {
             pane_launcher,
             paths,
             restore_notice,
+            usage: None,
         };
         // Restore keys its runtimes by pane; `install_runtime` drops one whose
         // pane is not in the restored state.
@@ -340,6 +345,7 @@ impl App {
     pub(crate) fn next_deadline(&self, git_refresh: bool) -> Option<Instant> {
         [
             git_refresh.then(|| self.git_refresh_deadline()).flatten(),
+            self.usage_deadline(),
             self.pending_agent_resume_wakeup(),
             self.session_saver.deadline().wakeup(self.clock.now),
             self.pane_resize_deadline(),

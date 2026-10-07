@@ -27,6 +27,7 @@ shepr-protocol = { path = "../shepr-protocol" }
 shepr-pty = { path = "../shepr-pty" }
 shepr-surface = { path = "../shepr-surface" }
 shepr-term = { path = "../shepr-term" }
+shepr-usage = { path = "../shepr-usage" }
 shepr-vt = { path = "../shepr-vt" }
 # `net` provides `AsyncFd`, which the headless loop waits on its listeners with.
 tokio = { workspace = true, features = ["net"] }

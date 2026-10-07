@@ -22,9 +22,10 @@ pub use self::error::PathsError;
 pub use self::layout::{
     BACKUP_DIRECTORY_NAME, BOOT_LOG_FILE_NAME, CLIENT_LOG_FILE_NAME, DATA_DIR_LEASE_FILE_NAME,
     LAUNCH_LOCK_FILE_NAME, SERVER_LOG_FILE_NAME, SERVER_SOCKET_FILE_NAME, SESSION_FILE_NAME,
-    SNAPSHOT_DIRECTORY_NAME, boot_log_path, client_log_path, data_dir_lease_path, launch_lock_path,
-    server_log_path, server_socket_path, session_backup_directory, session_file_path,
-    session_snapshot_directory, socket_startup_lock_path, ssh_metadata_directory,
+    SNAPSHOT_DIRECTORY_NAME, USAGE_SOURCES_FILE_NAME, boot_log_path, client_log_path,
+    data_dir_lease_path, launch_lock_path, server_log_path, server_socket_path,
+    session_backup_directory, session_file_path, session_snapshot_directory,
+    socket_startup_lock_path, ssh_metadata_directory, usage_sources_path,
 };
 pub use self::profile::{BuildProfile, in_own_profile_pane};
 

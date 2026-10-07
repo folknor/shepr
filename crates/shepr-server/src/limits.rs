@@ -8,6 +8,30 @@ use std::time::Duration;
 
 /// Coalesce ordinary session writes to avoid saving on every event.
 pub(crate) const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
+
+/// How often every pane running Claude or Codex is scanned for the config
+/// directory its agent uses, while a client is attached. A change of a
+/// pane's agent triggers a scan at once.
+pub(crate) const USAGE_DISCOVERY_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Most discovery scans alive at once, stuck ones included: a `/proc` read
+/// has no time bound, so a scan that hangs keeps its slot until it ends.
+pub(crate) const MAX_USAGE_DISCOVERY_SCANS: usize = 2;
+
+/// How long one discovery scan may take before its result is no longer
+/// accepted. Its thread keeps its slot until it really ends.
+pub(crate) const USAGE_DISCOVERY_SCAN_DEADLINE: Duration = Duration::from_secs(5);
+
+/// First delay before a pane whose scan was uncertain is scanned again; it
+/// doubles per uncertain scan up to the discovery interval.
+pub(crate) const USAGE_DISCOVERY_RETRY_START: Duration = Duration::from_secs(5);
+
+/// How soon the loop looks again while discovery scans are running, so
+/// their results are taken without an event to carry them.
+pub(crate) const USAGE_DISCOVERY_POLL: Duration = Duration::from_secs(1);
+
+/// How often the server reads the usage worker's latest snapshot.
+pub(crate) const USAGE_SNAPSHOT_READ_INTERVAL: Duration = Duration::from_secs(10);
 /// First session-save retry: prompt recovery without a busy loop.
 pub(crate) const SESSION_SAVE_RETRY_MIN: Duration = Duration::from_millis(250);
 /// Longest session-save retry, limiting failing-disk pressure.

@@ -87,6 +87,11 @@ impl AppPaths {
         session_file_path(self.data_dir())
     }
 
+    /// The usage tracker's remembered credential directories.
+    pub fn usage_sources_path(&self) -> PathBuf {
+        crate::usage_sources_path(self.data_dir())
+    }
+
     /// The directory for recovery snapshots of the saved layout.
     pub fn session_snapshot_directory(&self) -> PathBuf {
         session_snapshot_directory(self.data_dir())

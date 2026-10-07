@@ -1078,15 +1078,20 @@ impl Worker {
             return;
         }
         self.start_reads(now);
+        // curl is probed only once there is something to ask: a host with no
+        // usable Claude or Codex credential never runs it.
+        let has_work = [Host::Anthropic, Host::ChatGpt]
+            .into_iter()
+            .any(|host| !self.candidate_jobs(host, now, wall).is_empty());
         match &self.transport {
-            Transport::Unprobed => self.start_probe(now),
-            Transport::Failed { retry, .. } if now >= *retry => self.start_probe(now),
+            Transport::Unprobed if has_work => self.start_probe(now),
+            Transport::Failed { retry, .. } if has_work && now >= *retry => self.start_probe(now),
             Transport::Ready => {
                 for host in [Host::Anthropic, Host::ChatGpt] {
                     self.start_request(host, now, wall);
                 }
             }
-            Transport::Probing | Transport::Failed { .. } => {}
+            Transport::Unprobed | Transport::Probing | Transport::Failed { .. } => {}
         }
     }
 

@@ -1572,6 +1572,7 @@ dependencies = [
  "shepr-term",
  "shepr-test-fixtures",
  "shepr-test-support",
+ "shepr-usage",
  "shepr-vt",
  "tokio",
  "toml",

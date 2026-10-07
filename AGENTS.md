@@ -300,6 +300,13 @@ orientation, and nothing checks them:
   the long-lived worker thread that owns that cache. It takes targets (a cwd,
   a known checkout key and an opaque owner) and returns statuses and read
   errors; it knows nothing of workspaces, server events or refresh cadence.
+- `shepr-usage`: subscription usage of the host's Claude and Codex accounts
+  (the five-hour and weekly limits): credential reads, the providers' usage
+  endpoints through the system `curl` as a supervised child (no TLS is
+  compiled in), identity, scheduling and the worker thread. It never
+  refreshes a token or writes an agent file. Only the server links it; it
+  takes credential directories and whether a client is attached, and knows
+  nothing of panes or clients.
 - `shepr-mux`: terminals, panes, workspaces (each holding the Git status last
   applied to it), events and persistence.
 - `shepr-server`: application state, UI and serving.

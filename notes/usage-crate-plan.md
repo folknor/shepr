@@ -315,6 +315,18 @@ Directory aliases:
 - **`/profile` success:** never advances usage freshness and never clears a
   usage backoff.
 
+## Server wiring amendments
+
+- **Snapshot reads:** while nothing displays the snapshot, the worker's wake
+  is a no-op and the server reads the latest snapshot every 10 s, active or
+  not. The display work may restore an event-driven wake.
+- **The server's own environment** is read through the shepr-core env
+  registry, the project's single sealed path, under its kind policy: empty
+  means unset, and a refused value names nothing. Each provider's default
+  directory under HOME is always tracked, beside any override the registry
+  accepts, so neither an empty override nor a refused one redirects
+  anything.
+
 ## Persistence
 
 - **Remembered sources:** stored in their own file in the data directory,

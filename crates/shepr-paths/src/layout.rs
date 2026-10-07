@@ -11,6 +11,13 @@ pub const BACKUP_DIRECTORY_NAME: &str = "session-backups";
 pub const SERVER_SOCKET_FILE_NAME: &str = "shepr.sock";
 pub const LAUNCH_LOCK_FILE_NAME: &str = "launch.lock";
 pub const BOOT_LOG_FILE_NAME: &str = "server-boot.log";
+pub const USAGE_SOURCES_FILE_NAME: &str = "usage-sources.json";
+
+/// The usage tracker's remembered credential directories, in the session data
+/// directory. Paths only, never a credential.
+pub fn usage_sources_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(USAGE_SOURCES_FILE_NAME)
+}
 
 /// The lease file inside the session data directory.
 pub fn data_dir_lease_path(data_dir: &Path) -> PathBuf {

@@ -250,6 +250,7 @@ fn start_server(
             file_logging,
         } = reserved;
         let (mut app, outputs) = app::App::open(config, paths, lease, super::sample_app_clock());
+        app.start_usage_tracking();
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
         on_step(StartupStep::PanesRestored);
         let server = HeadlessServer::new(app, outputs, api_rx, api, stop_signal, boot_id);
