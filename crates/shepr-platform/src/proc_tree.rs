@@ -34,6 +34,39 @@ pub struct ForegroundProcess {
     pub pid: Pid,
     pub name: String,
     pub argv: Option<Vec<String>>,
+    /// The process start time from the same stat read as `name`, which makes
+    /// `(pid, start_ticks)` the incarnation these facts describe.
+    pub start_ticks: u64,
+}
+
+impl ForegroundProcess {
+    /// The process incarnation these facts were read from.
+    pub fn instance(&self) -> crate::ProcessInstance {
+        crate::ProcessInstance {
+            pid: self.pid,
+            start_ticks: self.start_ticks,
+        }
+    }
+}
+
+/// The current facts of one process (comm, state-gated argv and start time),
+/// read fresh: for re-recognizing a process selected earlier. `None` when it
+/// is gone or unreadable.
+pub fn process_facts(pid: Pid) -> Option<ForegroundProcess> {
+    let (_, name, state, start_ticks) = process_pgrp_comm_and_state(pid)?;
+    if state.is_finished() {
+        return None;
+    }
+    let argv = state
+        .allows_remote_memory_read()
+        .then(|| process_argv(pid))
+        .flatten();
+    Some(ForegroundProcess {
+        pid,
+        name,
+        argv,
+        start_ticks,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +103,7 @@ struct ProcGroupMember {
     pid: Pid,
     comm: String,
     state: ProcState,
+    start_ticks: u64,
 }
 
 pub fn foreground_job(child_pid: Pid) -> Option<ForegroundJob> {
@@ -87,7 +121,7 @@ pub fn suspended_processes(child_pid: Pid) -> Vec<ForegroundProcess> {
     process_tree_pids([child_pid], process_task_ids, process_task_children)
         .into_iter()
         .filter_map(|pid| {
-            let (_, name, state) = process_pgrp_comm_and_state(pid)?;
+            let (_, name, state, start_ticks) = process_pgrp_comm_and_state(pid)?;
             if pid == child_pid || !state.is_stopped() {
                 return None;
             }
@@ -95,7 +129,12 @@ pub fn suspended_processes(child_pid: Pid) -> Vec<ForegroundProcess> {
                 .allows_remote_memory_read()
                 .then(|| process_argv(pid))
                 .flatten();
-            Some(ForegroundProcess { pid, name, argv })
+            Some(ForegroundProcess {
+                pid,
+                name,
+                argv,
+                start_ticks,
+            })
         })
         .collect()
 }
@@ -119,6 +158,7 @@ fn foreground_job_from_members(
                 pid: member.pid,
                 name: member.comm,
                 argv,
+                start_ticks: member.start_ticks,
             }
         })
         .collect::<Vec<_>>();
@@ -301,13 +341,18 @@ fn push_pid_token(pids: &mut Vec<Pid>, token: &mut Vec<u8>, budget: &mut Foregro
 }
 
 fn live_process_group_member(process_group_id: Pgid, pid: Pid) -> Option<ProcGroupMember> {
-    let (pgrp, comm, state) = process_pgrp_comm_and_state(pid)?;
-    (pgrp == process_group_id).then_some(ProcGroupMember { pid, comm, state })
+    let (pgrp, comm, state, start_ticks) = process_pgrp_comm_and_state(pid)?;
+    (pgrp == process_group_id).then_some(ProcGroupMember {
+        pid,
+        comm,
+        state,
+        start_ticks,
+    })
 }
 
 pub fn foreground_group_leader_job(process_group_id: Pgid) -> Option<ForegroundJob> {
     let leader_pid = process_group_id.leader_pid();
-    let (pgrp, name, state) = process_pgrp_comm_and_state(leader_pid)?;
+    let (pgrp, name, state, start_ticks) = process_pgrp_comm_and_state(leader_pid)?;
     if pgrp != process_group_id {
         return None;
     }
@@ -322,6 +367,7 @@ pub fn foreground_group_leader_job(process_group_id: Pgid) -> Option<ForegroundJ
             pid: leader_pid,
             name,
             argv,
+            start_ticks,
         }],
     })
 }
@@ -330,9 +376,9 @@ pub fn foreground_process_group_id(child_pid: Pid) -> Option<Pgid> {
     ProcStat::read(child_pid).ok()?.foreground_group
 }
 
-fn process_pgrp_comm_and_state(pid: Pid) -> Option<(Pgid, String, ProcState)> {
+fn process_pgrp_comm_and_state(pid: Pid) -> Option<(Pgid, String, ProcState, u64)> {
     let stat = ProcStat::read(pid).ok()?;
-    Some((stat.process_group, stat.comm, stat.state))
+    Some((stat.process_group, stat.comm, stat.state, stat.start_ticks))
 }
 
 /// The argv of `pid`, or `None` when it is empty, unreadable or longer than
@@ -371,9 +417,9 @@ pub fn process_cwd(pid: Pid) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-fn process_pgrp_comm_and_state_from_stat(stat: &str) -> Option<(Pgid, String, ProcState)> {
+fn process_pgrp_comm_and_state_from_stat(stat: &str) -> Option<(Pgid, String, ProcState, u64)> {
     let stat = ProcStat::parse(stat)?;
-    Some((stat.process_group, stat.comm, stat.state))
+    Some((stat.process_group, stat.comm, stat.state, stat.start_ticks))
 }
 
 /// The production traversal driven by numeric test fixtures.

@@ -20,6 +20,7 @@ pub mod logging;
 pub mod mounts;
 mod owned_runtime;
 mod private_file;
+mod proc_environ;
 mod proc_tree;
 mod process;
 mod process_identity;
@@ -62,9 +63,10 @@ pub use private_file::{
     NotRegularFile, PrivateDirError, create_private_file, open_regular_file,
     require_private_directory, sync_directory,
 };
+pub use proc_environ::{EnvironRefusal, ProcessInstance, read_allowlisted_environ};
 pub use proc_tree::{
     ForegroundJob, ForegroundProcess, foreground_group_leader_job, foreground_job,
-    foreground_process_group_id, process_cwd, suspended_processes,
+    foreground_process_group_id, process_cwd, process_facts, suspended_processes,
 };
 pub use process::{
     Pgid, Pid, ProcStat, ProcState, ProcessHandle, SessionId, Signal, reap_pidfd, session_members,

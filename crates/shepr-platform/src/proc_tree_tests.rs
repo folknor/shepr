@@ -62,6 +62,7 @@ fn foreground_members_follow_the_pane_tree_and_filter_by_process_group() {
                 pid: process_id(pid),
                 comm: (*comm).to_string(),
                 state: ProcState::Sleeping,
+                start_ticks: 0,
             })
         },
     )
@@ -120,6 +121,7 @@ fn foreground_tree_traversal_is_bounded_by_the_scan_limit() {
                 pid: process_id(pid),
                 comm: format!("p{pid}"),
                 state: ProcState::Sleeping,
+                start_ticks: 0,
             })
         },
     )
@@ -175,6 +177,7 @@ fn foreground_tree_traversal_shares_the_scan_limit_between_roots() {
                 pid: process_id(pid),
                 comm: format!("p{pid}"),
                 state: ProcState::Sleeping,
+                start_ticks: 0,
             })
         },
     )
@@ -261,6 +264,7 @@ fn foreground_members_degrade_to_the_direct_group_leader() {
                 pid: process_id(pid),
                 comm: "leader".to_string(),
                 state: ProcState::Sleeping,
+                start_ticks: 0,
             })
         },
     )
@@ -272,6 +276,7 @@ fn foreground_members_degrade_to_the_direct_group_leader() {
             pid: process_id(200),
             comm: "leader".to_string(),
             state: ProcState::Sleeping,
+            start_ticks: 0,
         }]
     );
 }
@@ -298,6 +303,7 @@ fn foreground_members_observe_new_children_without_a_snapshot_cache() {
                         pid: process_id(pid),
                         comm: format!("member-{pid}"),
                         state: ProcState::Sleeping,
+                        start_ticks: 0,
                     })
                     .filter(|_| process_group_id == 200)
             },
@@ -322,7 +328,8 @@ fn proc_stat_parsing_keeps_group_leader_inputs_live() {
         Some((
             Pgid::new(456).expect("group"),
             "name with ) paren".to_string(),
-            ProcState::Sleeping
+            ProcState::Sleeping,
+            0
         ))
     );
 }
@@ -337,11 +344,13 @@ fn foreground_job_does_not_read_remote_memory_for_uninterruptible_members() {
                 pid: process_id(200),
                 comm: "codex".to_string(),
                 state: ProcState::Uninterruptible,
+                start_ticks: 0,
             },
             ProcGroupMember {
                 pid: process_id(201),
                 comm: "helper".to_string(),
                 state: ProcState::Sleeping,
+                start_ticks: 0,
             },
         ],
         |pid| {

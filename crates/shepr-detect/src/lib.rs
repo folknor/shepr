@@ -99,16 +99,33 @@ impl AgentDetection {
 /// The string is the selected process's display name, preserving a comm alias;
 /// identification and ranking carry `Agent` and provenance before producing it.
 pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
+    select_agent_process_in_job(job).map(|selected| (selected.agent, selected.display_name))
+}
+
+/// The agent a job runs, the process it was recognized from and that
+/// process's display name. The process carries the start time read with its
+/// name and state, so `process.instance()` names the incarnation recognized.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedAgentProcess<'a> {
+    pub agent: Agent,
+    pub process: &'a ForegroundProcess,
+    pub display_name: String,
+}
+
+/// [`identify_agent_in_job`] keeping the process it selected. Blocking, as
+/// that is.
+pub fn select_agent_process_in_job(job: &ForegroundJob) -> Option<SelectedAgentProcess<'_>> {
     if let Some(process) = job
         .processes
         .iter()
         .find(|process| process.pid == job.process_group_id.leader_pid())
         && let Some(identified) = identify_process(process)
     {
-        return Some((
-            identified.agent,
-            identified_display_name(process, identified),
-        ));
+        return Some(SelectedAgentProcess {
+            agent: identified.agent,
+            process,
+            display_name: identified_display_name(process, identified),
+        });
     }
 
     let mut best: Option<(ProcessPriority, Identified, &ForegroundProcess)> = None;
@@ -128,12 +145,17 @@ pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
         }
     }
 
-    best.map(|(_, identified, process)| {
-        (
-            identified.agent,
-            identified_display_name(process, identified),
-        )
+    best.map(|(_, identified, process)| SelectedAgentProcess {
+        agent: identified.agent,
+        process,
+        display_name: identified_display_name(process, identified),
     })
+}
+
+/// The agent one process is recognized as, by the same rules job selection
+/// applies to each member. Blocking, as path-shaped argv tokens are resolved.
+pub fn identify_agent_process(process: &ForegroundProcess) -> Option<Agent> {
+    identify_process(process).map(|identified| identified.agent)
 }
 
 /// Blocking: scans descendants of the pane shell for job-control-stopped
@@ -726,6 +748,7 @@ mod tests {
             pid: Pid::new(pid).expect("test process id"),
             name: name.to_string(),
             argv: Some(argv.iter().map(|arg| (*arg).to_string()).collect()),
+            start_ticks: 0,
         }
     }
 

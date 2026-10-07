@@ -117,8 +117,24 @@ One runner, used by shepr-git and shepr-usage. Git's private runner goes away.
 
 ## Agent environment evidence
 
-- **shepr-detect:** recognition returns the selected process: its pid, the
-  start-time identity captured with the process facts, and its name.
+- **shepr-detect:** recognition can return the selected process: its pid,
+  the start-time identity captured in the same stat read as its name and
+  state, and the recognition evidence (agent, name, argv). The detector
+  itself is unchanged.
+- **Independent recognition in discovery:** the server's discovery task
+  recognizes processes on its own, inside its capped boundary.
+  - **When it scans:** every 60 s while active, and at once when a pane's
+    agent identity changes. The pane's reported identity is only a
+    scheduling hint.
+  - **Before scanning:** it validates the pane shell's incarnation.
+  - **Selecting the job:** the same path as the detector: the foreground
+    group's leader job first, then the shell's foreground job.
+  - **The provider:** taken from the fresh recognition. A mismatch with the
+    pane's hint counts as uncertain and is retried.
+  - **Accepted gaps:**
+    - a short-lived agent instance between scans
+    - suspended or backgrounded agents
+    Remembered sources and the server's own defaults cover them.
 - **shepr-platform environ reader:** the caller passes the allowlist; the
   names come from the shepr-agent descriptors (`config_dir_override`, plus
   `HOME`). The reader:

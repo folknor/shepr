@@ -157,6 +157,12 @@ pub(super) const FOREGROUND_CHILD_PID_LIMIT: usize = 2_048;
 /// amortizes reads without allocating in proportion to the entire child list.
 pub(super) const PROC_CHILDREN_READ_BUFFER_BYTES: usize = 4096;
 
+/// Bytes of one `/proc/<pid>/environ` read for agent configuration evidence.
+/// Linux caps argv plus environment near 2 MiB, so a real environment fits;
+/// a larger one is refused rather than searched as a prefix, since the
+/// variable sought could lie past the cut.
+pub(super) const PROCESS_ENVIRON_BYTE_LIMIT: usize = 4 * 1024 * 1024;
+
 /// Bytes of one `/proc/<pid>/cmdline` the foreground probe reads. A longer argv
 /// is not returned at all, so one process with a huge command line cannot turn
 /// every detection probe into an unbounded procfs read and allocation.

@@ -147,6 +147,7 @@ mod tests {
                 pid: shepr_platform::Pid::new(shell_pid).expect("test shell pid"),
                 name: "zsh".to_string(),
                 argv: Some(vec!["zsh".to_string()]),
+                start_ticks: 0,
             }],
         }
     }
@@ -167,6 +168,7 @@ mod tests {
                     pid: shepr_platform::Pid::new(42).expect("test pid"),
                     name: "droid".to_string(),
                     argv: Some(vec!["droid".to_string()]),
+                    start_ticks: 0,
                 }],
             }),
         ));

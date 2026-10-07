@@ -182,6 +182,7 @@ mod tests {
             pid: test_pid(pid),
             name: name.to_string(),
             argv: None,
+            start_ticks: 0,
         }
     }
 
