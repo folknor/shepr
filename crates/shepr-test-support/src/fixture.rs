@@ -28,6 +28,7 @@
 //! |---|---|
 //! | `sleep <seconds>` | [`Step::Sleep`] |
 //! | `print <text>` | [`Step::Print`] |
+//! | `print-file <path>` | [`Step::PrintFile`] |
 //! | `print-err <text>` | [`Step::PrintErr`] |
 //! | `print-args` | [`Step::PrintArgs`] |
 //! | `print-arg <n>` | [`Step::PrintArg`] |
@@ -96,6 +97,9 @@ pub enum Step {
     Sleep(Duration),
     /// Write the text to stdout, with no newline added.
     Print(String),
+    /// Write a file's bytes to stdout unchanged, including NUL and non-UTF-8
+    /// bytes that cannot travel in the fixture's argv or stand-in script.
+    PrintFile(PathBuf),
     /// Write the text to stderr, with no newline added.
     PrintErr(String),
     /// Write each operand to stdout followed by a newline.
@@ -229,6 +233,7 @@ fn encode(steps: &[Step], out: &mut Vec<OsString>) {
         match step {
             Step::Sleep(duration) => out.extend(["sleep".into(), seconds(*duration)]),
             Step::Print(text) => out.extend(["print".into(), text.into()]),
+            Step::PrintFile(path) => out.extend(["print-file".into(), path.as_os_str().to_owned()]),
             Step::PrintErr(text) => out.extend(["print-err".into(), text.into()]),
             Step::PrintArgs => out.push("print-args".into()),
             Step::PrintArg(index) => out.extend(["print-arg".into(), index.to_string().into()]),
@@ -354,6 +359,7 @@ fn parse_steps(cursor: &mut Tokens<'_>, in_when: bool) -> Result<Vec<Step>, Stri
             "end" if in_when => return Ok(steps),
             "sleep" => Step::Sleep(cursor.duration("a sleep")?),
             "print" => Step::Print(cursor.text("the text to print")?),
+            "print-file" => Step::PrintFile(cursor.take("a file to print")?.into()),
             "print-err" => Step::PrintErr(cursor.text("the text to print")?),
             "print-args" => Step::PrintArgs,
             "print-arg" => Step::PrintArg(cursor.number("an operand number")?),
@@ -600,6 +606,11 @@ impl Run {
                 // SAFETY: getsid(0) takes no pointer and reads this process's session.
                 let session = unsafe { libc::getsid(0) };
                 write_stdout(session.to_string().as_bytes())?;
+            }
+            Step::PrintFile(path) => {
+                let bytes = std::fs::read(path)
+                    .map_err(|error| format!("reading {}: {error}", path.display()))?;
+                write_stdout(&bytes)?;
             }
             Step::PrintEnv(name) => Self::print_env(name)?,
             Step::Fill { byte, count } => {
@@ -922,11 +933,26 @@ pub fn idle_shell() -> &'static str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn print_file_preserves_binary_output_in_a_stand_in() {
+        let scratch = crate::ScratchDir::new("fixture-binary-output");
+        let bytes = [0, 255, 10, 0, 128];
+        let file = scratch.join("bytes");
+        std::fs::write(&file, bytes).expect("binary fixture");
+        let program = stand_in(scratch.path(), "binary", &[Step::PrintFile(file)]);
+        let output = crate::command_in_scratch(program, "fixture-binary-process")
+            .output()
+            .expect("binary stand-in");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, bytes);
+    }
+
     fn every_step() -> Vec<Step> {
         vec![
             Step::Sleep(Duration::from_millis(1500)),
             Step::Print("two words\nand a line".into()),
             Step::PrintErr(String::new()),
+            Step::PrintFile("/nonexistent/binary".into()),
             Step::PrintArgs,
             Step::PrintArg(2),
             Step::PrintPid,

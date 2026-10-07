@@ -644,6 +644,20 @@ pub(crate) fn managed_ssh_options_for_test(
 
 #[cfg(test)]
 impl RemoteSsh {
+    pub(crate) fn for_test(target: SshTarget, paths: &shepr_paths::AppPaths) -> io::Result<Self> {
+        let runtime_dir = ensure_ssh_runtime_dir(paths)?;
+        // Stand-in SSH never binds a control socket. Keep path admission out
+        // of connection tests, as managed_ssh_options_for_test already does.
+        let control_path = crate::ssh_paths::ssh_control_path_under(
+            Path::new("/nonexistent/ssh"),
+            SshControlKey::for_target(&target),
+        )?;
+        Ok(Self::test_with_state(
+            target,
+            write_managed_ssh_config_at(runtime_dir, control_path)?,
+        ))
+    }
+
     fn test_with_state(target: SshTarget, managed_config: ManagedSshConfig) -> Self {
         let deadline = Instant::now() + SSH_COMMAND_TIMEOUT;
         Self {

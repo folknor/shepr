@@ -185,10 +185,12 @@ impl SshFailureDiagnostic {
     /// text is deliberately irrelevant: SSH output classification and typed
     /// remote status errors are the only sources of install evidence.
     fn evidence(&self) -> FailureEvidence {
+        // The candidate guard's reserved exit and the shell's exec failures
+        // all prove that the remembered executable could not run.
         if matches!(
             self.origin,
             SshFailureOrigin::SshOutput(SshExit::Remote(
-                RemoteExit::NotExecutable | RemoteExit::NotFound
+                RemoteExit::CandidateMissing | RemoteExit::NotExecutable | RemoteExit::NotFound
             ))
         ) {
             return FailureEvidence::InstallStale;

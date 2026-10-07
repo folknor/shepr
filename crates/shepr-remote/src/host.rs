@@ -44,13 +44,20 @@ pub fn classified_bridge_failure(
 }
 
 /// Relays this process's stdio to the server socket until either side
-/// closes or the idle watchdog fires. The outcome goes back to the binary: on
+/// closes or the idle watchdog fires. Before anything else it writes this
+/// executable's own build preamble, so the client can tell a replaced
+/// installation from a server of another build; the server's preamble follows
+/// in the relayed stream. The outcome goes back to the binary: on
 /// [`RemoteBridgeOutcome::IdleExpired`] it must end the
 /// process promptly with status 1, without writing to stdout.
 pub fn run_remote_client_bridge(
     paths: &shepr_paths::AppPaths,
     mode: BridgeMode,
 ) -> io::Result<RemoteBridgeOutcome> {
+    // The executable's identity is independent of the server's. Send it
+    // before even probing or starting a server, so a replaced installation
+    // cannot masquerade as an old server that still matches the client.
+    answer_remote_bridge(&shepr_protocol::preamble::local_preamble())?;
     let status = match mode {
         BridgeMode::Attach => attached_server_status(paths)?,
         BridgeMode::Start => ensure_remote_server_running(paths)?,

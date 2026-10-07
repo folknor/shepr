@@ -142,3 +142,31 @@ fn server_status_skips_shell_noise_before_and_after_the_record() {
         parse_remote_server_status_json(&status).expect("plain status"),
     );
 }
+
+#[test]
+fn a_vanished_status_executable_uses_the_candidate_missing_evidence() {
+    use shepr_test_support::fixture::{self, Step};
+    let env = shepr_test_support::IsolatedEnv::new();
+    let scratch = shepr_test_support::ScratchDir::new("status-candidate-missing");
+    let _ssh = fixture::stand_in(
+        scratch.path(),
+        "ssh",
+        &[
+            // host-program-ok: the generated candidate guard is the subject, run as sshd runs it
+            Step::Exec(vec!["/bin/sh".into(), "-s".into()]),
+        ],
+    );
+    env.set("PATH", scratch.path());
+    let paths =
+        shepr_paths::AppPaths::rooted_at(&scratch, Some(&scratch), None).expect("scratch roots");
+    let ssh = RemoteSsh::for_test(
+        crate::machine::SshTarget::parse("build.example").expect("target"),
+        &paths,
+    )
+    .expect("managed SSH");
+    let remote = RemoteExecutable::parse(scratch.join("vanished").to_str().expect("path"))
+        .expect("executable path");
+    let error = remote_server_status(&ssh, &remote).expect_err("candidate vanished");
+    assert!(error.to_string().contains("exit status: 125"), "{error}");
+    assert!(crate::failure::failure_evidence(&error).invalidates_executable());
+}

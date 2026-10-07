@@ -15,6 +15,9 @@ use crate::child_io::{Wait, read_fd};
 pub enum DirectoryWake {
     /// A watched event occurred, or the inotify queue overflowed.
     Changed,
+    /// The directory was removed, moved, or its watch was retired. Rebuild
+    /// the watch on the pathname before waiting again.
+    Invalidated,
     /// The input descriptor is readable or closed.
     Input,
     /// The wait ran out, or a signal interrupted it.
@@ -22,7 +25,9 @@ pub enum DirectoryWake {
 }
 
 /// An inotify watch on one directory for entries created, moved in, or whose
-/// attributes changed. A socket bound in the directory counts as created.
+/// attributes changed. A socket bound in the directory counts as created. The
+/// directory's own removal or move retires the watch, which a wait reports as
+/// [`DirectoryWake::Invalidated`]; a retired watch never wakes again.
 pub struct DirectoryWatch {
     fd: OwnedFd,
 }
@@ -45,7 +50,12 @@ impl DirectoryWatch {
             libc::inotify_add_watch(
                 fd.as_raw_fd(),
                 path.as_ptr(),
-                libc::IN_CREATE | libc::IN_MOVED_TO | libc::IN_ATTRIB | libc::IN_ONLYDIR,
+                libc::IN_CREATE
+                    | libc::IN_MOVED_TO
+                    | libc::IN_ATTRIB
+                    | libc::IN_ONLYDIR
+                    | libc::IN_DELETE_SELF
+                    | libc::IN_MOVE_SELF,
             )
         };
         if watch < 0 {
@@ -122,7 +132,10 @@ impl DirectoryWatch {
                 return Ok(DirectoryWake::Input);
             }
             if descriptors[0].revents != 0 {
-                let changed = self.drain(entry_name)?;
+                let (changed, invalidated) = self.drain(entry_name)?;
+                if invalidated {
+                    return Ok(DirectoryWake::Invalidated);
+                }
                 if entry_name.is_none() || changed {
                     return Ok(DirectoryWake::Changed);
                 }
@@ -135,22 +148,21 @@ impl DirectoryWatch {
 
     /// Drains queued records and says whether one named the requested entry.
     /// With no requested name, any record counts as a change.
-    fn drain(&self, entry_name: Option<&OsStr>) -> io::Result<bool> {
+    fn drain(&self, entry_name: Option<&OsStr>) -> io::Result<(bool, bool)> {
         let mut buffer = [0_u8; crate::limits::DIRECTORY_WATCH_READ_BYTES];
         let mut matched = false;
+        let mut invalidated = false;
         loop {
             match read_fd(self.fd.as_raw_fd(), &mut buffer) {
-                Ok(0) => return Ok(matched),
+                Ok(0) => return Ok((matched, invalidated)),
                 Ok(read) => {
-                    if let Some(entry_name) = entry_name {
-                        matched |= contains_entry_event(&buffer[..read], entry_name)?;
-                    } else {
-                        matched = true;
-                    }
+                    let (changed, retired) = directory_events(&buffer[..read], entry_name)?;
+                    matched |= changed;
+                    invalidated |= retired;
                 }
                 Err(error) => match error.kind() {
                     io::ErrorKind::Interrupted => {}
-                    io::ErrorKind::WouldBlock => return Ok(matched),
+                    io::ErrorKind::WouldBlock => return Ok((matched, invalidated)),
                     _ => return Err(error),
                 },
             }
@@ -164,18 +176,21 @@ fn poll_clock() -> Instant {
     Instant::now()
 }
 
-/// Whether an inotify read contains an event for `entry_name` or an overflow
-/// that may have dropped that event. Inotify returns whole event records; the
+/// The entry-change and watch-retirement flags of one inotify batch. An
+/// overflow counts as a change; every record is examined so an earlier socket
+/// event cannot hide a later retirement. Inotify returns whole records; the
 /// byte parser still checks each bound before inspecting the variable-length
 /// name so a malformed buffer cannot panic. The record layout is the kernel's
 /// `struct inotify_event`, read through libc's definition of it.
-fn contains_entry_event(events: &[u8], entry_name: &OsStr) -> io::Result<bool> {
+fn directory_events(events: &[u8], entry_name: Option<&OsStr>) -> io::Result<(bool, bool)> {
     const HEADER_BYTES: usize = std::mem::size_of::<libc::inotify_event>();
     const MASK_OFFSET: usize = std::mem::offset_of!(libc::inotify_event, mask);
     const NAME_LENGTH_OFFSET: usize = std::mem::offset_of!(libc::inotify_event, len);
     const FIELD_BYTES: usize = std::mem::size_of::<u32>();
     let mut offset = 0;
-    let wanted = entry_name.as_bytes();
+    let wanted = entry_name.map(OsStr::as_bytes);
+    let mut changed = false;
+    let mut invalidated = false;
     while offset < events.len() {
         let header_end = offset.checked_add(HEADER_BYTES).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "inotify event header overflow")
@@ -191,9 +206,8 @@ fn contains_entry_event(events: &[u8], entry_name: &OsStr) -> io::Result<bool> {
                 .try_into()
                 .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid inotify mask"))?,
         );
-        if mask & libc::IN_Q_OVERFLOW != 0 {
-            return Ok(true);
-        }
+        changed |= mask & libc::IN_Q_OVERFLOW != 0;
+        invalidated |= mask & (libc::IN_IGNORED | libc::IN_DELETE_SELF | libc::IN_MOVE_SELF) != 0;
         let raw_name_length = u32::from_ne_bytes(
             events[offset + NAME_LENGTH_OFFSET..offset + NAME_LENGTH_OFFSET + FIELD_BYTES]
                 .try_into()
@@ -222,13 +236,16 @@ fn contains_entry_event(events: &[u8], entry_name: &OsStr) -> io::Result<bool> {
                 .iter()
                 .position(|byte| *byte == 0)
                 .unwrap_or(name.len())];
-            if name == wanted {
-                return Ok(true);
-            }
+            changed |= wanted.is_none_or(|wanted| name == wanted);
         }
         offset = event_end;
     }
-    Ok(false)
+    Ok((changed, invalidated))
+}
+
+#[cfg(test)]
+fn contains_entry_event(events: &[u8], entry_name: &OsStr) -> io::Result<bool> {
+    directory_events(events, Some(entry_name)).map(|(changed, _)| changed)
 }
 
 #[cfg(test)]
@@ -293,6 +310,32 @@ mod tests {
         assert!(
             contains_entry_event(&overflow, OsStr::new("server.sock"))
                 .expect("parse overflow event")
+        );
+    }
+
+    #[test]
+    fn directory_retirement_is_reported_even_when_filtering_for_a_socket() {
+        let scratch = shepr_test_support::ScratchDir::new("watch-retired");
+        let dir = scratch.join("runtime");
+        std::fs::create_dir(&dir).expect("directory");
+        let watch = DirectoryWatch::new(&dir).expect("watch");
+        let (input, _peer) = std::os::unix::net::UnixStream::pair().expect("open input");
+        std::fs::remove_dir(&dir).expect("remove watched directory");
+        assert_eq!(
+            watch
+                .wait_for_entry(
+                    raw(&input),
+                    OsStr::new("server.sock"),
+                    Duration::from_secs(1)
+                )
+                .expect("retired watch wakes"),
+            DirectoryWake::Invalidated
+        );
+        let mut events = inotify_event(libc::IN_CREATE, b"server.sock");
+        events.extend(inotify_event(libc::IN_IGNORED, b""));
+        assert_eq!(
+            directory_events(&events, Some(OsStr::new("server.sock"))).expect("parse whole batch"),
+            (true, true)
         );
     }
 

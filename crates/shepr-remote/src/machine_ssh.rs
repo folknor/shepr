@@ -38,7 +38,11 @@ fn ensure_managed_ssh(
 /// One machine's executable resolution and preflight server validation. Disk metadata is an
 /// untrusted hint until the installed client and sibling have been verified. A
 /// verified hint is reused during this process; only evidence about that executable
-/// invalidates it. Discovery itself owns the rule for retaining completed round
+/// invalidates it. An incompatible answer (the bridge's own build differs, or
+/// its opening is not one this build reads) and an operator's Connect or
+/// Restart turn it back into a hint, so the next resolution verifies the
+/// installed pair again with one round trip. A server of another build behind
+/// a bridge of this build does not: it says nothing about the install. Discovery itself owns the rule for retaining completed round
 /// trips across transient network failures and authentication waits, and clearing them
 /// after SSH process failures such as authentication rejection or host-key errors.
 #[derive(Default)]
@@ -104,8 +108,10 @@ impl MachineProbe {
         )
     }
 
-    fn has_verified_executable(&self) -> bool {
-        matches!(&self.executable, ProbeExecutable::Verified(_))
+    fn recheck_executable(&mut self) {
+        if let ProbeExecutable::Verified(remote) = &self.executable {
+            self.executable = ProbeExecutable::Hint(remote.clone());
+        }
     }
 
     /// The IO seam keeps preflight resolution and server-judgment failures in one
@@ -198,27 +204,68 @@ impl MachineProbe {
             self.invalidate(cache);
             true
         } else {
+            // Only an incompatible answer can be the installed executable's: the
+            // bridge's own preamble proves its build first, so a server of
+            // another build (DifferentBuild) says nothing about the install,
+            // and Restart, its remedy, verifies the install anyway.
+            if EndpointFailure::from_error(error).cause() == FailureCause::Incompatible {
+                self.recheck_executable();
+            }
             false
         }
     }
 }
 
-pub struct MachineSshBridge {
+/// Owns the socket and SSH worker for one connection. All connection ends,
+/// including failed handshakes, pass through this boundary before the client
+/// interprets their endpoint failure. The raw diagnostic retains executable
+/// evidence until the connector has observed it.
+pub struct MachineSshConnection {
+    stream: shepr_platform::ipc::LocalStream,
     bridge: SshStdioBridge,
+    end: std::sync::Mutex<Option<(io::ErrorKind, crate::failure::SshFailureDiagnostic)>>,
 }
 
-impl MachineSshBridge {
-    /// The SSH failure behind a connection that closed early, if the bridge reported one
-    /// (joins its connection worker after EOF). SSH stderr otherwise only reaches the log,
-    /// and the caller would see a bare end of stream.
-    pub fn reported_failure(&self) -> Option<io::Error> {
-        self.bridge.reported_failure()
+impl MachineSshConnection {
+    /// A transport handle; ownership and end classification stay here.
+    pub fn stream(&self) -> io::Result<shepr_platform::ipc::LocalStream> {
+        self.stream.try_clone()
+    }
+
+    /// Cancel a locally abandoned connection without waiting for peer EOF.
+    pub fn close(&self) {
+        self.bridge.close();
+        self.stream.shutdown(std::net::Shutdown::Both).ok();
+    }
+
+    /// The connection's end, classified once: the stream is shut down first,
+    /// then the SSH worker is joined, and SSH's diagnostic wins over
+    /// `fallback` when it has one. This also covers malformed or partial
+    /// protocol openings. Later calls return the first result. The join is
+    /// bounded (the bridge's shutdown grace and pipe drains) but blocks, so
+    /// call it from a reader or attempt thread, never the client loop.
+    pub fn ended(&self, fallback: io::Error) -> io::Error {
+        let mut end = self
+            .end
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (kind, diagnostic) = end.get_or_insert_with(|| {
+            self.bridge.diagnose_end();
+            self.stream.shutdown(std::net::Shutdown::Both).ok();
+            let error = self.bridge.reported_failure().unwrap_or(fallback);
+            (
+                error.kind(),
+                crate::failure::SshFailureDiagnostic::from_error(&error),
+            )
+        });
+        io::Error::new(*kind, diagnostic.clone())
     }
 }
 
-pub struct MachineSshStream {
-    pub stream: shepr_platform::ipc::LocalStream,
-    pub bridge: MachineSshBridge,
+impl Drop for MachineSshConnection {
+    fn drop(&mut self) {
+        self.close();
+    }
 }
 
 /// What one connection attempt to a configured machine may do to its server.
@@ -393,13 +440,16 @@ impl MachineSshConnector {
         Ok((&*ssh, probe))
     }
 
-    /// Starts a bridge in the mode `mode` allows and hands its stream to
-    /// `establish`, which runs the endpoint handshake. Exclusive access keeps all
-    /// mutable connection state owned by the one supervisor attempt using this
-    /// connector. The handshake result is returned as-is unless the remote
-    /// command failed to execute the remembered path. A [`ConnectMode::Restart`]
-    /// first stops a running server of another build, by the boot identity
-    /// its status reports.
+    /// Starts a bridge in the mode `mode` allows, reads the bridge's own build
+    /// preamble, and hands the connection to `establish`, which runs the
+    /// endpoint handshake. Exclusive access keeps all mutable connection state
+    /// owned by the one supervisor attempt using this connector. A bridge of
+    /// another build fails the attempt as an install mismatch before any server
+    /// byte is read. The handshake result is returned as-is unless the remote
+    /// command failed to execute the remembered path. [`ConnectMode::Start`] and
+    /// [`ConnectMode::Restart`] first verify the installed pair again, and a
+    /// Restart then stops a running server of another build, by the boot
+    /// identity its status reports.
     ///
     /// Discovery commands use the smaller of their command timeout and the time left,
     /// and refuse to start once `deadline` has passed. The stdio bridge does not receive
@@ -410,47 +460,41 @@ impl MachineSshConnector {
         &mut self,
         deadline: std::time::Instant,
         mode: ConnectMode,
-        mut establish: impl FnMut(MachineSshStream) -> io::Result<T>,
+        mut establish: impl FnMut(MachineSshConnection) -> io::Result<T>,
     ) -> io::Result<T> {
         let metadata_cache = SshMetadataCache::new(&self.paths, &self.target);
         let target = self.target.clone();
         let (ssh, probe) = self.transport(deadline)?;
 
+        if mode != ConnectMode::Attach {
+            // The installed pair can change while the client is running. Verify
+            // it before a start or a destructive stop, even if its path is
+            // unchanged: a Start-mode bridge launches the host's server before
+            // the client reads its build, so a replaced install would otherwise
+            // start a server of another build. A reinstall between this check
+            // and the bridge can still do so. That window is accepted: what
+            // starts is the build installed on that host, the one its own
+            // `shepr` would start, nothing is stopped, and the bridge's
+            // preamble then reports the install mismatch.
+            probe.recheck_executable();
+        }
         let remote = probe.resolve_remote(ssh, &metadata_cache)?;
-        let established_session = probe.has_verified_executable();
         if mode == ConnectMode::Restart {
             stop_server_of_another_build(ssh, &remote).inspect_err(|error| {
                 probe.observe_failure(&metadata_cache, error);
             })?;
         }
         let bridge_mode = mode.bridge_mode();
-        match Self::attempt(
-            ssh,
-            &target,
-            &remote,
-            bridge_mode,
-            established_session,
-            deadline,
-            &mut establish,
-        ) {
+        match Self::attempt(ssh, &target, &remote, bridge_mode, deadline, &mut establish) {
             Ok(connected) => Ok(connected),
             Err(error) if probe.observe_failure(&metadata_cache, &error) => {
                 // The remote command proved the path stale after probing. Resolve
                 // once more within the same deadline, through the same state machine.
                 let remote = probe.resolve_remote(ssh, &metadata_cache)?;
-                let established_session = probe.has_verified_executable();
-                Self::attempt(
-                    ssh,
-                    &target,
-                    &remote,
-                    bridge_mode,
-                    established_session,
-                    deadline,
-                    &mut establish,
-                )
-                .inspect_err(|error| {
-                    probe.observe_failure(&metadata_cache, error);
-                })
+                Self::attempt(ssh, &target, &remote, bridge_mode, deadline, &mut establish)
+                    .inspect_err(|error| {
+                        probe.observe_failure(&metadata_cache, error);
+                    })
             }
             Err(error) => Err(error),
         }
@@ -471,16 +515,19 @@ impl MachineSshConnector {
         let target = self.target.clone();
         let (ssh, probe) = self.transport(deadline)?;
         let remote = probe.resolve_remote(ssh, &metadata_cache)?;
-        let established_session = probe.has_verified_executable();
         let mut command = ssh_invocation(&target, ssh.options(), SshMode::Batch);
         command
             .arg(remote.wait_for_server_command().as_str())
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = command
             .spawn()
             .map_err(|error| local_setup_error("could not start local ssh", error))?;
+        let stdout = child
+            .stdout
+            .take()
+            .map(|stdout| PipeCapture::spawn_tail(stdout, SSH_STDERR_CAPTURE_LIMIT));
         // Held open for the life of the wait; dropped with the child at the end.
         let _stdin = child.stdin.take();
         let stderr = child
@@ -510,6 +557,21 @@ impl MachineSshConnector {
             Some(capture) => capture.finish(PIPE_DRAIN_GRACE)?,
             None => Vec::new(),
         };
+        // Stdout is only evidence for the classification below; a failed read
+        // of it means no marker was seen, not a failure of its own that would
+        // hide ssh's diagnostic.
+        let stdout = match stdout {
+            Some(capture) => capture.finish(PIPE_DRAIN_GRACE).unwrap_or_else(|error| {
+                tracing::debug!(%error, "could not read the server wait's stdout");
+                Vec::new()
+            }),
+            None => Vec::new(),
+        };
+        // Evidence from this wait, not an earlier discovery command. The
+        // wrapper's output marker proves this invocation reached the host's
+        // shell, even if shepr itself never printed anything.
+        let established_session =
+            crate::bridge::discard_remote_output_preamble(&mut stdout.as_slice()).is_ok();
         let error = if established_session {
             ssh_bridge_exit_error_after_session(status, &stderr)
         } else {
@@ -524,30 +586,59 @@ impl MachineSshConnector {
         target: &SshTarget,
         remote_shepr: &RemoteExecutable,
         mode: BridgeMode,
-        established_session: bool,
         deadline: std::time::Instant,
-        establish: &mut impl FnMut(MachineSshStream) -> io::Result<T>,
+        establish: &mut impl FnMut(MachineSshConnection) -> io::Result<T>,
     ) -> io::Result<T> {
         // clock-io-ok: discovery and bridge setup may have consumed the attempt budget.
         if std::time::Instant::now() >= deadline {
             return Err(attempt_deadline_passed());
         }
-        let (bridge, stream) = SshStdioBridge::start(
-            target.clone(),
-            remote_shepr,
-            mode,
-            established_session,
-            ssh.options(),
-        )
-        .map_err(|error| local_setup_error("could not start local SSH bridge", error))?;
+        let (bridge, stream) =
+            SshStdioBridge::start(target.clone(), remote_shepr, mode, ssh.options())
+                .map_err(|error| local_setup_error("could not start local SSH bridge", error))?;
         // clock-io-ok: starting the bridge spent real time; establishment has its own bound.
         if std::time::Instant::now() >= deadline {
             return Err(attempt_deadline_passed());
         }
-        establish(MachineSshStream {
+        let mut connection = MachineSshConnection {
             stream,
-            bridge: MachineSshBridge { bridge },
-        })
+            bridge,
+            end: std::sync::Mutex::new(None),
+        };
+        // The remote bridge writes its own build's preamble before it probes or
+        // starts a server, then relays the server's (see
+        // `run_remote_client_bridge`). Reading the first one here is what tells
+        // a replaced installation apart from a server of another build.
+        let mut reader =
+            shepr_platform::ipc::LocalStreamDeadlineReader::new(&mut connection.stream, deadline);
+        if let Err(error) = shepr_protocol::preamble::read_preamble(&mut reader) {
+            let fallback = match error {
+                // A whole preamble of another build is this invocation's own
+                // answer. Close without consulting the bridge: the remote
+                // bridge goes on to probe the server, and a quick failure there
+                // (no server, say) must not replace the install mismatch.
+                shepr_protocol::preamble::PreambleError::DifferentBuild(peer) => {
+                    connection.close();
+                    return Err(crate::failure::remote_compatibility_error(format!(
+                        "remote executable build check failed: the shepr installed there is build {}, and this client is build {}; install this build there",
+                        peer.build_id,
+                        shepr_protocol::BuildIdentity::for_this_build(),
+                    )));
+                }
+                shepr_protocol::preamble::PreambleError::UnexpectedEof => io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    EndpointFailure::retry(
+                        "connection closed before the remote executable answered",
+                    ),
+                ),
+                shepr_protocol::preamble::PreambleError::Io(error) => error,
+                error => crate::failure::remote_compatibility_error(format!(
+                    "remote executable build check failed: {error}"
+                )),
+            };
+            return Err(connection.ended(fallback));
+        }
+        establish(connection)
     }
 }
 
@@ -681,9 +772,522 @@ mod tests {
         RemoteExecutable::parse(path).expect("test precondition")
     }
 
+    fn fake_bridge_attempt<T>(
+        steps: &[shepr_test_support::fixture::Step],
+        mut establish: impl FnMut(MachineSshConnection) -> io::Result<T>,
+    ) -> io::Result<T> {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("connection-end");
+        let _ssh = shepr_test_support::fixture::stand_in(scratch.path(), "ssh", steps);
+        env.set("PATH", scratch.path());
+        env.set("HOME", scratch.path());
+        env.set("CARGO_HOME", scratch.path());
+        let paths = shepr_paths::AppPaths::rooted_at(&scratch, Some(&scratch), None)?;
+        let target = SshTarget::parse("build.example").map_err(io::Error::other)?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let ssh = RemoteSsh::for_test(target.clone(), &paths)?;
+        MachineSshConnector::attempt(
+            &ssh,
+            &target,
+            &executable("/old/shepr"),
+            BridgeMode::Attach,
+            deadline,
+            &mut establish,
+        )
+    }
+
+    fn test_connector(paths: &shepr_paths::AppPaths, target: &SshTarget) -> MachineSshConnector {
+        MachineSshConnector {
+            paths: paths.clone(),
+            label: MachineLabel::parse("build").expect("label"),
+            target: target.clone(),
+            state: ConnectorState {
+                ssh: Some(RemoteSsh::for_test(target.clone(), paths).expect("stand-in SSH")),
+                ..ConnectorState::default()
+            },
+        }
+    }
+
+    fn installed_status(build_id: shepr_protocol::BuildIdentity) -> String {
+        serde_json::to_string(&shepr_api::schema::ClientStatusJson {
+            identity: Some(shepr_protocol::BuildVersion {
+                version: shepr_protocol::build_version(),
+                build_id,
+            }),
+            binary: None,
+            server: Some(shepr_api::schema::SiblingServerJson {
+                binary: None,
+                identity: Ok(shepr_protocol::BuildVersion {
+                    version: shepr_protocol::build_version(),
+                    build_id: shepr_protocol::BuildIdentity::for_this_build(),
+                }),
+            }),
+        })
+        .expect("client status JSON")
+    }
+
+    #[test]
+    fn a_running_connector_rediscovers_a_vanished_path_and_completes_a_wire_handshake() {
+        use shepr_test_support::fixture::{self, Step};
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("stale-live-handshake");
+        let mut bytes = shepr_protocol::preamble::local_preamble().to_vec();
+        bytes.extend_from_slice(&shepr_protocol::preamble::local_preamble());
+        bytes.extend_from_slice(
+            &shepr_protocol::encode_message(&shepr_protocol::ServerMessage::EndpointWelcome(
+                shepr_protocol::endpoint::EndpointServerWelcome::accepted(),
+            ))
+            .expect("welcome frame"),
+        );
+        let opening_file = scratch.join("opening");
+        std::fs::write(&opening_file, bytes).expect("binary server opening");
+        let opening = vec![Step::PrintFile(opening_file), Step::Drain, Step::Exit(0)];
+        let remote = fixture::stand_in(
+            scratch.path(),
+            "shepr",
+            &[
+                Step::When {
+                    operands: vec!["status".into(), "client".into(), "--json".into()],
+                    steps: vec![
+                        Step::Print(installed_status(
+                            shepr_protocol::BuildIdentity::for_this_build(),
+                        )),
+                        Step::Exit(0),
+                    ],
+                },
+                Step::When {
+                    operands: vec!["remote-client-bridge".into()],
+                    steps: opening,
+                },
+                Step::Exit(42),
+            ],
+        );
+        let paths = shepr_paths::AppPaths::rooted_at(&scratch, Some(&scratch), None)
+            .expect("scratch roots");
+        let target = SshTarget::parse("build.example").expect("target");
+        let mut connector = test_connector(&paths, &target);
+        let cache = SshMetadataCache::new(&paths, &target);
+        let vanished = executable(scratch.join("vanished").to_str().expect("old path"));
+        cache.store(&vanished).expect("cached old executable");
+        connector.state.probe.executable = ProbeExecutable::Verified(vanished.clone());
+        // Execute the actual account-shell commands for both bridges. Other
+        // round trips execute the actual discovery script on their stdin.
+        let mut ssh_steps = Vec::new();
+        for path in [vanished, executable(remote.to_str().expect("new path"))] {
+            let account_command = path.bridge_command(BridgeMode::Attach);
+            let mut command = ssh_invocation(
+                &target,
+                connector.state.ssh.as_ref().expect("managed SSH").options(),
+                SshMode::Batch,
+            );
+            command.arg(account_command.as_str());
+            ssh_steps.push(Step::When {
+                operands: command
+                    .get_args()
+                    .map(|arg| arg.to_str().expect("SSH arg").to_owned())
+                    .collect(),
+                // host-program-ok: execute the generated account-shell command under test, as sshd does
+                steps: vec![Step::Exec(vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    account_command.as_str().into(),
+                ])],
+            });
+        }
+        // host-program-ok: the generated discovery scripts are the subject, run as sshd runs them
+        ssh_steps.push(Step::Exec(vec!["/bin/sh".into(), "-s".into()]));
+        let _ssh = fixture::stand_in(scratch.path(), "ssh", &ssh_steps);
+        env.set("PATH", scratch.path());
+        env.set("HOME", scratch.path());
+        env.set("CARGO_HOME", scratch.path());
+        let verification = verify_remote_shepr(
+            connector.state.ssh.as_ref().expect("managed SSH"),
+            &executable(remote.to_str().expect("fixture path")),
+        );
+        assert!(
+            matches!(verification, Ok(true)),
+            "fixture verification: {verification:?}"
+        );
+        let mut handshakes = 0;
+        connector
+            .connect(
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
+                ConnectMode::Attach,
+                |connection| {
+                    handshakes += 1;
+                    let mut stream = connection.stream()?;
+                    use std::io::Write as _;
+                    stream.write_all(&shepr_protocol::preamble::local_preamble())?;
+                    shepr_protocol::write_message(
+                        &mut stream,
+                        &shepr_protocol::ClientMessage::EndpointHello(
+                            shepr_protocol::endpoint::EndpointClientHello {
+                                geometry: shepr_protocol::TerminalGeometry::from_host(
+                                    shepr_core::geometry::GridSize::clamped(80, 24),
+                                    shepr_core::geometry::HostCell::from_host(8, 16, false),
+                                ),
+                                mouse_capture: false,
+                                surface_active: false,
+                            },
+                        ),
+                    )
+                    .map_err(io::Error::other)?;
+                    shepr_protocol::preamble::read_preamble(&mut stream)
+                        .map_err(io::Error::other)?;
+                    let welcome = shepr_protocol::read_message::<_, shepr_protocol::ServerMessage>(
+                        &mut stream,
+                    )
+                    .map_err(io::Error::other)?;
+                    assert!(matches!(
+                        welcome,
+                        shepr_protocol::ServerMessage::EndpointWelcome(_)
+                    ));
+                    Ok(())
+                },
+            )
+            .expect("rediscovered path handshakes in the same attempt");
+        assert_eq!(handshakes, 1);
+        assert_eq!(
+            cache.load(),
+            Some(executable(remote.to_str().expect("new path")))
+        );
+    }
+
+    /// Connect and Restart both act on the host's server before the client
+    /// reads the bridge's build: Restart stops one, and a Start-mode bridge
+    /// starts one. Each verifies the installed pair first, even on a path that
+    /// was verified before, and runs nothing more on a replaced install.
+    #[test]
+    fn start_and_restart_reverify_the_install_before_acting_on_the_server() {
+        for mode in [ConnectMode::Start, ConnectMode::Restart] {
+            operator_mode_reverifies_the_install(mode);
+        }
+    }
+
+    fn operator_mode_reverifies_the_install(mode: ConnectMode) {
+        use shepr_test_support::fixture::{self, Step};
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("operator-reinstalled");
+        let unexpected = scratch.join("unexpected-command");
+        let status = installed_status(
+            shepr_test_fixtures::other_build_id()
+                .parse()
+                .expect("other identity"),
+        );
+        let remote = fixture::stand_in(
+            scratch.path(),
+            "shepr",
+            &[
+                Step::When {
+                    operands: vec!["status".into(), "client".into(), "--json".into()],
+                    steps: vec![Step::Print(status), Step::Exit(0)],
+                },
+                Step::To(unexpected.clone()),
+                Step::PrintArgs,
+                Step::Exit(42),
+            ],
+        );
+        // /bin/sh is the remote command interpreter under test, rather than
+        // a shell script standing in for the installed shepr or SSH process.
+        let _ssh = fixture::stand_in(
+            scratch.path(),
+            "ssh",
+            &[
+                // host-program-ok: run the actual installed-pair verification script, as sshd does
+                Step::Exec(vec!["/bin/sh".into(), "-s".into()]),
+            ],
+        );
+        env.set("PATH", scratch.path());
+        env.set("HOME", scratch.path());
+        env.set("CARGO_HOME", scratch.path());
+        let paths = shepr_paths::AppPaths::rooted_at(&scratch, Some(&scratch), None)
+            .expect("scratch roots");
+        let mut connector =
+            test_connector(&paths, &SshTarget::parse("build.example").expect("target"));
+        connector.state.probe.executable =
+            ProbeExecutable::Verified(executable(remote.to_str().expect("path")));
+        let error = connector
+            .connect::<()>(
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
+                mode,
+                |_| panic!("a different installed build cannot start a bridge"),
+            )
+            .expect_err("installed executable was replaced");
+        assert!(
+            !unexpected.try_exists().expect("unexpected command check"),
+            "{mode:?} unexpected command: {:?}; failure: {error}",
+            std::fs::read_to_string(&unexpected)
+        );
+        assert_eq!(
+            EndpointFailure::from_error(&error).cause(),
+            FailureCause::Incompatible,
+            "{mode:?}: {error}"
+        );
+    }
+
+    #[test]
+    fn a_stale_path_through_the_real_build_exchange_keeps_rediscovery_evidence() {
+        use shepr_test_support::fixture::Step;
+        let error = fake_bridge_attempt::<()>(
+            &[
+                Step::Print("shepr-remote-output-ready\n".into()),
+                Step::PrintErr("/old/shepr: not found\n".into()),
+                Step::Exit(127),
+            ],
+            |_| panic!("an executable that vanished cannot reach the server handshake"),
+        )
+        .expect_err("stale executable");
+        assert!(remote_executable_must_be_rediscovered(&error));
+        let scratch = shepr_test_support::ScratchDir::new("handshake-stale-cache");
+        let cache = cache_in(&scratch);
+        cache
+            .store(&executable("/old/shepr"))
+            .expect("cached executable");
+        let mut probe = MachineProbe {
+            executable: ProbeExecutable::Verified(executable("/old/shepr")),
+            ..MachineProbe::default()
+        };
+        assert!(probe.observe_failure(&cache, &error));
+        assert!(cache.load().is_none());
+        assert_eq!(
+            probe
+                .resolve(
+                    &cache,
+                    |_| panic!("no stale hint"),
+                    |_| Ok(executable("/new/shepr"))
+                )
+                .expect("rediscovered"),
+            executable("/new/shepr")
+        );
+    }
+
+    #[test]
+    fn failed_server_openings_keep_ssh_diagnostics_and_classify_only_once() {
+        use shepr_test_support::fixture::Step;
+        for opening in [
+            "",
+            "partial",
+            "garbage that is longer than a complete preamble by quite a bit",
+        ] {
+            let own_preamble =
+                String::from_utf8(shepr_protocol::preamble::local_preamble().to_vec())
+                    .expect("ASCII preamble");
+            let error = fake_bridge_attempt::<()>(
+                &[
+                    Step::Print(format!(
+                        "shepr-remote-output-ready\n{own_preamble}{opening}"
+                    )),
+                    Step::Sleep(std::time::Duration::from_millis(50)),
+                    Step::PrintErr("remote executable disappeared\n".into()),
+                    Step::Exit(127),
+                ],
+                |connection| {
+                    use std::io::Write as _;
+                    let mut stream = connection.stream().expect("transport handle");
+                    stream
+                        .write_all(&shepr_protocol::preamble::local_preamble())
+                        .expect("client opening");
+                    let error = shepr_protocol::preamble::read_preamble(&mut stream)
+                        .expect_err("failed server opening");
+                    let first = connection.ended(io::Error::other(error.to_string()));
+                    let second = connection.ended(io::Error::other("different fallback"));
+                    assert_eq!(first.to_string(), second.to_string());
+                    assert!(remote_executable_must_be_rediscovered(&second));
+                    Err(first)
+                },
+            )
+            .expect_err("failed handshake");
+            assert!(
+                remote_executable_must_be_rediscovered(&error),
+                "{opening}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bridge_build_is_checked_before_the_server_handshake() {
+        use shepr_test_support::fixture::Step;
+        let mut preamble = shepr_protocol::preamble::local_preamble();
+        let index = shepr_protocol::preamble::PREAMBLE_MAGIC.len();
+        preamble[index] = if preamble[index] == b'0' { b'1' } else { b'0' };
+        let preamble = String::from_utf8(preamble.to_vec()).expect("ASCII preamble");
+        let error = fake_bridge_attempt::<()>(
+            &[
+                Step::Print(format!("shepr-remote-output-ready\n{preamble}")),
+                // A live bridge must be ended without waiting for its peer.
+                Step::Drain,
+            ],
+            |_| panic!("an install mismatch must not reach the server handshake"),
+        )
+        .expect_err("reinstalled host");
+        assert_eq!(
+            EndpointFailure::from_error(&error).cause(),
+            FailureCause::Incompatible
+        );
+        assert!(error.to_string().contains("remote executable build check"));
+    }
+
+    /// The remote bridge goes on to probe its server after writing its own
+    /// build. A failure it then reports (here: no server) must not replace the
+    /// install mismatch the client already read.
+    #[test]
+    fn a_bridge_build_mismatch_is_not_replaced_by_the_bridges_later_failure() {
+        use shepr_test_support::fixture::Step;
+        let mut preamble = shepr_protocol::preamble::local_preamble();
+        let index = shepr_protocol::preamble::PREAMBLE_MAGIC.len();
+        preamble[index] = if preamble[index] == b'0' { b'1' } else { b'0' };
+        let preamble = String::from_utf8(preamble.to_vec()).expect("ASCII preamble");
+        let error = fake_bridge_attempt::<()>(
+            &[
+                Step::Print(format!("shepr-remote-output-ready\n{preamble}")),
+                Step::PrintErr(format!(
+                    "{}{}\nno shepr server is running\n",
+                    crate::host::BRIDGE_FAILURE_MARKER,
+                    shepr_launch::RemoteFailureClass::NoServer.token(),
+                )),
+                Step::Exit(1),
+            ],
+            |_| panic!("an install mismatch must not reach the server handshake"),
+        )
+        .expect_err("reinstalled host with no server");
+        assert_eq!(
+            EndpointFailure::from_error(&error).cause(),
+            FailureCause::Incompatible,
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn closing_a_connection_ends_ssh_while_transport_handles_still_exist() {
+        use shepr_test_support::fixture::Step;
+        let own_preamble = String::from_utf8(shepr_protocol::preamble::local_preamble().to_vec())
+            .expect("ASCII preamble");
+        fake_bridge_attempt(
+            &[
+                Step::Print(format!("shepr-remote-output-ready\n{own_preamble}")),
+                Step::Drain,
+            ],
+            |connection| {
+                let _reader = connection.stream().expect("reader handle");
+                let _writer = connection.stream().expect("writer handle");
+                let started = std::time::Instant::now();
+                connection.close();
+                connection.ended(io::Error::other("cancelled"));
+                assert!(started.elapsed() < std::time::Duration::from_secs(1));
+                Ok(())
+            },
+        )
+        .expect("local cancellation");
+    }
+
+    #[test]
+    fn an_install_mismatch_and_restart_make_the_verified_path_a_hint_again() {
+        let scratch = shepr_test_support::ScratchDir::new("recheck-install");
+        let cache = cache_in(&scratch);
+        let mut probe = MachineProbe {
+            executable: ProbeExecutable::Verified(executable("/installed/shepr")),
+            ..MachineProbe::default()
+        };
+        let bridge_changed = io::Error::other(EndpointFailure::incompatible("bridge changed"));
+        assert!(!probe.observe_failure(&cache, &bridge_changed));
+        assert!(matches!(probe.executable, ProbeExecutable::Hint(_)));
+        probe
+            .resolve(&cache, |_| Ok(true), |_| panic!("same path verified"))
+            .expect("reverified");
+        probe.recheck_executable();
+        assert!(matches!(probe.executable, ProbeExecutable::Hint(_)));
+    }
+
+    /// The bridge proves its own build before the server's preamble, so a
+    /// server of another build is no evidence about the installed executable
+    /// and costs no verification round trip on the next attempt.
+    #[test]
+    fn a_server_of_another_build_keeps_the_verified_path() {
+        let scratch = shepr_test_support::ScratchDir::new("server-other-build");
+        let cache = cache_in(&scratch);
+        let mut probe = MachineProbe {
+            executable: ProbeExecutable::Verified(executable("/installed/shepr")),
+            ..MachineProbe::default()
+        };
+        let server_changed = io::Error::other(EndpointFailure::different_build("server changed"));
+        assert!(!probe.observe_failure(&cache, &server_changed));
+        assert!(matches!(probe.executable, ProbeExecutable::Verified(_)));
+        probe
+            .resolve(&cache, |_| panic!("no recheck"), |_| panic!("no discovery"))
+            .expect("still verified");
+    }
+
+    #[test]
+    fn a_silent_255_uses_evidence_from_this_bridge_not_cached_verification() {
+        use shepr_test_support::fixture::Step;
+        let preamble = String::from_utf8(shepr_protocol::preamble::local_preamble().to_vec())
+            .expect("ASCII preamble");
+        let before = fake_bridge_attempt::<()>(&[Step::Exit(255)], |_| panic!("no remote opening"))
+            .expect_err("SSH failed before output");
+        let after = fake_bridge_attempt::<()>(
+            &[
+                Step::Print(format!("shepr-remote-output-ready\n{preamble}")),
+                Step::Exit(255),
+            ],
+            |connection| Err(connection.ended(io::Error::other("EOF"))),
+        )
+        .expect_err("SSH failed after output");
+        assert_ne!(
+            EndpointFailure::from_error(&before).cause(),
+            EndpointFailure::from_error(&after).cause()
+        );
+        assert_eq!(
+            EndpointFailure::from_error(&after).cause(),
+            FailureCause::Ssh(shepr_launch::SshFailureClass::Link)
+        );
+    }
+
+    #[test]
+    fn server_wait_uses_its_own_output_marker_for_a_silent_255() {
+        use shepr_test_support::fixture::{self, Step};
+        for (output, expected) in [
+            (String::new(), shepr_launch::SshFailureClass::Unrecognized),
+            // The wait prints nothing itself; the shell marker alone proves
+            // this SSH invocation got past authentication.
+            (
+                "shepr-remote-output-ready\n".into(),
+                shepr_launch::SshFailureClass::Link,
+            ),
+            (
+                format!("{}\nshepr-remote-output-ready\n", "banner".repeat(8192)),
+                shepr_launch::SshFailureClass::Link,
+            ),
+        ] {
+            let env = shepr_test_support::IsolatedEnv::new();
+            let scratch = shepr_test_support::ScratchDir::new("wait-session-evidence");
+            let _ssh = fixture::stand_in(
+                scratch.path(),
+                "ssh",
+                &[Step::Print(output), Step::Exit(255)],
+            );
+            env.set("PATH", scratch.path());
+            let paths = shepr_paths::AppPaths::rooted_at(&scratch, Some(&scratch), None)
+                .expect("scratch roots");
+            let target = SshTarget::parse("build.example").expect("target");
+            let mut connector = test_connector(&paths, &target);
+            connector.state.probe.executable =
+                ProbeExecutable::Verified(executable("/installed/shepr"));
+            let error = connector
+                .wait_for_server(
+                    std::time::Instant::now() + std::time::Duration::from_secs(5),
+                    &AtomicBool::new(false),
+                )
+                .expect_err("silent SSH exit");
+            assert_eq!(
+                EndpointFailure::from_error(&error).cause(),
+                FailureCause::Ssh(expected)
+            );
+        }
+    }
+
     #[test]
     fn typed_install_evidence_invalidates_a_remembered_path() {
-        for exit_code in [126, 127] {
+        for exit_code in [125, 126, 127] {
             let diagnostic = SshFailureDiagnostic::from_ssh_output(
                 Some(exit_code),
                 &format!("remote command failed (exit status {exit_code})"),

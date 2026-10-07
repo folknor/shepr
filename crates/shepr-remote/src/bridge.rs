@@ -24,6 +24,7 @@ use crate::ssh::{ManagedSshOptions, SshMode, ssh_invocation};
 
 pub(crate) struct SshStdioBridge {
     should_stop: Arc<AtomicBool>,
+    diagnose_end: Arc<AtomicBool>,
     worker: std::sync::Mutex<Option<JoinHandle<io::Result<()>>>>,
 }
 
@@ -32,26 +33,21 @@ impl SshStdioBridge {
         target: SshTarget,
         remote_shepr: &RemoteExecutable,
         mode: BridgeMode,
-        established_session: bool,
         ssh_options: &ManagedSshOptions,
     ) -> io::Result<(Self, shepr_platform::ipc::LocalStream)> {
-        Self::start_command_with_session(
-            target,
-            remote_shepr.bridge_command(mode),
-            established_session,
-            ssh_options,
-        )
+        Self::start_command(target, remote_shepr.bridge_command(mode), ssh_options)
     }
 
-    fn start_command_with_session(
+    fn start_command(
         target: SshTarget,
         remote_command: AccountShellCommand,
-        established_session: bool,
         ssh_options: &ManagedSshOptions,
     ) -> io::Result<(Self, shepr_platform::ipc::LocalStream)> {
         let (client, stream) = shepr_platform::ipc::LocalStream::pair()?;
         let should_stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&should_stop);
+        let diagnose_end = Arc::new(AtomicBool::new(false));
+        let thread_diagnose_end = Arc::clone(&diagnose_end);
         let ssh_options = ssh_options.clone();
         // Worker setup errors return immediately; connection setup errors
         // return through its joined result. The supervisor logs the transition.
@@ -62,25 +58,36 @@ impl SshStdioBridge {
                     stream,
                     &target,
                     &remote_command,
-                    established_session,
                     &ssh_options,
                     &thread_stop,
+                    &thread_diagnose_end,
                 )
             })
             .map_err(|error| local_setup_error("could not start local ssh bridge worker", error))?;
         Ok((
             Self {
                 should_stop,
+                diagnose_end,
                 worker: std::sync::Mutex::new(Some(worker)),
             },
             client,
         ))
     }
 
-    /// The connection's failure, joining its worker; `None` once taken. Call
-    /// it after the endpoint stream closes: the bridge has then ended its
-    /// connection, and only its bounded pipe drains remain before the worker
-    /// returns. Called earlier, it waits for the connection itself to end.
+    /// Preserve a remote diagnostic even though the connection owner has
+    /// closed its socket to end a failed handshake or protocol read.
+    pub(crate) fn diagnose_end(&self) {
+        self.diagnose_end.store(true, Ordering::Release);
+    }
+
+    /// Stops the worker without waiting: it kills the ssh child on its next
+    /// poll, and a connection stopped this way reports no SSH diagnostic.
+    pub(crate) fn close(&self) {
+        self.should_stop.store(true, Ordering::Release);
+    }
+
+    /// Joins after the connection owner closes its socket or observes peer
+    /// EOF. The worker's child shutdown and pipe drains are bounded.
     pub(crate) fn reported_failure(&self) -> Option<io::Error> {
         self.finish().err()
     }
@@ -102,10 +109,35 @@ impl SshStdioBridge {
 
 impl Drop for SshStdioBridge {
     fn drop(&mut self) {
-        self.should_stop.store(true, Ordering::Release);
-        if let Err(error) = self.finish() {
-            tracing::debug!(%error, "remote bridge ended during teardown");
+        self.close();
+        let worker = self
+            .worker
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(worker) = worker {
+            // The last connection handle can belong to the client loop. Stop
+            // immediately, but leave bounded SSH pipe drains off that loop.
+            // The worker still owns and retires its SSH teardown registrations.
+            if worker.is_finished() {
+                log_worker_end(worker);
+            } else if let Err(error) = thread::Builder::new()
+                .name("shepr-ssh-reaper".into())
+                .spawn(move || log_worker_end(worker))
+            {
+                // A dropped JoinHandle detaches, so even a failed reaper launch
+                // leaves the already-cancelled worker finishing its own cleanup.
+                tracing::debug!(%error, "could not join cancelled SSH worker in background");
+            }
         }
+    }
+}
+
+fn log_worker_end(worker: JoinHandle<io::Result<()>>) {
+    match worker.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => tracing::debug!(%error, "remote bridge ended during teardown"),
+        Err(_) => tracing::debug!("remote bridge worker panicked during teardown"),
     }
 }
 
@@ -284,9 +316,9 @@ fn bridge_connection(
     stream: shepr_platform::ipc::LocalStream,
     target: &SshTarget,
     remote_command: &AccountShellCommand,
-    established_session: bool,
     ssh_options: &ManagedSshOptions,
     bridge_stop: &Arc<AtomicBool>,
+    diagnose_end: &AtomicBool,
 ) -> io::Result<()> {
     let mut command = ssh_invocation(target, ssh_options, SshMode::Batch);
     command
@@ -330,9 +362,12 @@ fn bridge_connection(
     let download_done_worker = Arc::clone(&download_done);
     let download_upload_stop = Arc::clone(&upload_stop);
     let download_worker_wake = Arc::clone(&download_wake);
+    let remote_reached = Arc::new(AtomicBool::new(false));
+    let download_remote_reached = Arc::clone(&remote_reached);
     let download = BridgeDownload::spawn(move || {
         let mut child_stdout = io::BufReader::new(child_stdout);
         let result = discard_remote_output_preamble(&mut child_stdout).and_then(|()| {
+            download_remote_reached.store(true, Ordering::Release);
             copy_reader_to_local_stream(
                 &mut child_stdout,
                 &mut child_to_stream,
@@ -399,11 +434,17 @@ fn bridge_connection(
     // stderr even though OpenSSH redirects its detached master by default.
     let stderr = stderr_reader.finish(PIPE_DRAIN_GRACE)?;
     let status = status_result?;
-    let established_session = established_session
-        || matches!(&download_result, BridgeDownloadEnd::Complete(Ok(bytes)) if *bytes > 0);
+    // The output marker proves this invocation reached the remote shell.
+    // A successful discovery on an earlier session says nothing about whether
+    // this invocation authenticated before a silent exit 255.
+    let established_session = remote_reached.load(Ordering::Acquire);
 
     let stopping = bridge_stop.load(Ordering::Acquire);
-    if child_exited && !status.success() && !stopping && !client_closed {
+    if child_exited
+        && !status.success()
+        && !stopping
+        && (!client_closed || diagnose_end.load(Ordering::Acquire))
+    {
         return Err(ssh_bridge_exit_error_with_session(
             status,
             &stderr,
@@ -444,9 +485,9 @@ pub(crate) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[
     ssh_bridge_exit_error_with_session(status, stderr, false)
 }
 
-/// Variant for a bridge or remote wait started after executable verification.
-/// A silent ssh-owned exit 255 can then be a keepalive failure on the previously
-/// established machine connection.
+/// Variant for a command that produced output on this SSH session. A silent
+/// ssh-owned exit 255 after that evidence is a link loss, including a keepalive
+/// failure, rather than evidence of an authentication refusal.
 pub(crate) fn ssh_bridge_exit_error_after_session(
     status: std::process::ExitStatus,
     stderr: &[u8],

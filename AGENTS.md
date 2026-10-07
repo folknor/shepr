@@ -493,7 +493,13 @@ every agent integration reports through it.
   panes, times clients. Inside those loops use narrow accessors, keep
   terminal-core locks short, and preserve the hidden-pane early exits.
 - **No wire compatibility obligations.** Client and server are always the same
-  build. Change the protocol freely; there are no frozen fixtures.
+  build. Change the protocol freely; there are no frozen fixtures. The one
+  exception is the raw build preamble that opens every client-protocol
+  connection (`crates/shepr-protocol/src/preamble.rs`): its fixed layout lets
+  any two builds read each other's, and over SSH the remote bridge writes its
+  own build's preamble before the server's, so a mismatch in the first is an
+  install mismatch and one in the second a server of another build. Keep both
+  the layout and that order.
 - **Wire encoding is shepr's own.** Frames are `[u32 LE length][payload]`;
   a server message too large for one frame spans several, the top bit of the
   length marking that more follow (`crates/shepr-protocol/src/framing.rs`),

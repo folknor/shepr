@@ -174,32 +174,6 @@ impl HandshakeError {
     }
 }
 
-/// Applies Local's launch guidance and the SSH bridge's stderr to the same classified handshake
-/// result for both initial and supervised attachment.
-pub(crate) fn classify_handshake_error(
-    error: crate::errors::HandshakeError,
-    mismatch_guidance: Option<&str>,
-    ssh_bridge: Option<&shepr_remote::MachineSshBridge>,
-) -> std::io::Error {
-    let error = error.class(mismatch_guidance);
-    // An SSH endpoint that closes before Welcome usually means ssh itself failed. The bridge
-    // holds the real stderr; prefer it so diagnosis and attention classification use its cause.
-    if error.kind() == std::io::ErrorKind::UnexpectedEof
-        && let Some(failure) = ssh_bridge
-            .and_then(shepr_remote::MachineSshBridge::reported_failure)
-            .map(|failure| {
-                let kind = failure.kind();
-                let diagnostic = shepr_launch::EndpointFailure::from_error(&failure)
-                    .with_context(HANDSHAKE_CONTEXT);
-                std::io::Error::new(kind, diagnostic)
-            })
-    {
-        failure
-    } else {
-        error
-    }
-}
-
 /// The shell status line and machine notice title supply the endpoint label;
 /// keep only the failing phase here so it is not repeated in the displayed error.
 const HANDSHAKE_CONTEXT: &str = "handshake failed";

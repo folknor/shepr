@@ -985,7 +985,10 @@ mod tests {
             Some(physical.clone())
         );
         assert_eq!(
-            git_repo_root_below(&link, &ceilings(physical.to_str().expect("utf-8 scratch path"))),
+            git_repo_root_below(
+                &link,
+                &ceilings(physical.to_str().expect("utf-8 scratch path"))
+            ),
             None
         );
         std::fs::remove_dir_all(physical.join(".git")).expect("test precondition");

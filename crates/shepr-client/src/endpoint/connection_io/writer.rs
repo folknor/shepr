@@ -76,8 +76,9 @@ enum WriterCommand {
 
 /// The UI batches complete frames until the worker claims them, so a short burst of tiny input
 /// frames does not exhaust command slots. Frames retain their individual write boundaries.
-/// A worker owns partial writes, cancellation, and the bridge lifetime; socket backpressure and
-/// bridge teardown never block other endpoints.
+/// A worker owns partial writes and cancellation. The transport closes its remote
+/// connection explicitly on disconnect; socket backpressure and SSH teardown
+/// never block other endpoints.
 pub(crate) struct NativeEndpointTransport {
     sender: mpsc::SyncSender<WriterCommand>,
     pending_batch: Option<Arc<Mutex<FrameBatch>>>,
@@ -85,9 +86,19 @@ pub(crate) struct NativeEndpointTransport {
     stopped: Arc<AtomicBool>,
     error: Arc<Mutex<Option<io::Error>>>,
     read_activity: Arc<EndpointReadActivity>,
+    remote_connection: Option<Arc<shepr_remote::MachineSshConnection>>,
 }
 
 impl NativeEndpointTransport {
+    pub(crate) fn with_remote_connection(
+        stream: LocalStream,
+        connection: Arc<shepr_remote::MachineSshConnection>,
+    ) -> io::Result<Self> {
+        let mut transport = Self::with_lifetime(stream, ())?;
+        transport.remote_connection = Some(connection);
+        Ok(transport)
+    }
+
     pub(crate) fn with_lifetime(
         mut stream: LocalStream,
         lifetime: impl Send + 'static,
@@ -136,6 +147,7 @@ impl NativeEndpointTransport {
             stopped,
             error,
             read_activity,
+            remote_connection: None,
         })
     }
 
@@ -220,6 +232,9 @@ impl EndpointTransport for NativeEndpointTransport {
 
     fn disconnect(&mut self) {
         self.stopped.store(true, Ordering::Release);
+        if let Some(connection) = &self.remote_connection {
+            connection.close();
+        }
     }
 
     fn flush(&mut self, deadline: Instant) -> io::Result<()> {
@@ -254,7 +269,7 @@ impl EndpointTransport for NativeEndpointTransport {
 
 impl Drop for NativeEndpointTransport {
     fn drop(&mut self) {
-        self.stopped.store(true, Ordering::Release);
+        self.disconnect();
     }
 }
 
@@ -552,6 +567,7 @@ mod tests {
                 stopped: Arc::new(AtomicBool::new(false)),
                 error: Arc::new(Mutex::new(None)),
                 read_activity: Arc::new(EndpointReadActivity::new(Instant::now())),
+                remote_connection: None,
             },
             receiver,
         )

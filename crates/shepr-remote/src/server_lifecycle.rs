@@ -26,7 +26,7 @@ pub(crate) fn remote_server_status(
     remote_shepr: &RemoteExecutable,
 ) -> io::Result<RemoteServerStatus> {
     let args = RemoteCliCommand::ServerStatus.args();
-    let script = remote_shepr.command(&args);
+    let script = crate::discovery::candidate_command(remote_shepr, &remote_shepr.command(&args));
     let output = ssh.sh_output(&script)?;
     if !output.status.success() {
         return Err(command_failed(

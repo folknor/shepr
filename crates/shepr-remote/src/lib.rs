@@ -22,9 +22,7 @@ pub use limits::{
     SSH_CONNECTION_ATTEMPT_BUDGET, SSH_RESTART_ATTEMPT_BUDGET, SSH_START_ATTEMPT_BUDGET,
 };
 pub use machine::SshTarget;
-pub use machine_ssh::{
-    ConnectMode, MachineSshBridge, MachineSshConnector, MachineSshStream, ServerWatchEnd,
-};
+pub use machine_ssh::{ConnectMode, MachineSshConnection, MachineSshConnector, ServerWatchEnd};
 pub use preflight::{AuthenticationError, MachineCheck, MachineSshPreflight, PreflightOutcome};
 pub use relay::RemoteBridgeOutcome;
 pub use server_wait::{ServerWaitEnd, wait_for_server};

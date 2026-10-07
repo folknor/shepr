@@ -710,8 +710,8 @@ fn connect_once(
         }
         AttemptTarget::Ssh { connector, mode } => connector.connect(deadline, *mode, |connected| {
             establish(
-                connected.stream,
-                EndpointLink::Ssh(connected.bridge),
+                connected.stream()?,
+                EndpointLink::Ssh(connected),
                 options,
                 endpoint_id.clone(),
                 generation,
@@ -786,12 +786,12 @@ fn attempt_time_remaining(deadline: Instant) -> Result<Duration, std::io::Error>
     Ok(remaining)
 }
 
-/// Connection-owned state needed after connect: SSH keeps its bridge for stderr and lifetime,
+/// Connection-owned state needed after connect: SSH owns its stream, worker and end classification,
 /// while Local carries the mismatch guidance available from its local launch check. This is
 /// separate from EndpointPolicy, which selects behavior from the endpoint identity.
 enum EndpointLink<'a> {
     Local { mismatch_guidance: &'a str },
-    Ssh(shepr_remote::MachineSshBridge),
+    Ssh(shepr_remote::MachineSshConnection),
 }
 
 /// Handshakes over a fresh endpoint stream and hands the connection to the loop.
@@ -804,10 +804,10 @@ fn establish(
     deadline: Instant,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
-    // The link carries the SSH bridge's lifetime and diagnostics, or Local's mismatch guidance.
-    let (ssh_bridge, mismatch_guidance) = match link {
+    // The link carries the remote connection's ownership and end classification, or Local's mismatch guidance.
+    let (remote_connection, mismatch_guidance) = match link {
         EndpointLink::Local { mismatch_guidance } => (None, Some(mismatch_guidance)),
-        EndpointLink::Ssh(bridge) => (Some(bridge), None),
+        EndpointLink::Ssh(connection) => (Some(connection), None),
     };
     let attached = crate::endpoint::connection_io::attach_endpoint_stream(
         stream,
@@ -820,7 +820,7 @@ fn establish(
         endpoint_id.policy(),
         Some(deadline),
         mismatch_guidance,
-        ssh_bridge,
+        remote_connection,
     )?;
     let connection = crate::endpoint::connection_io::EndpointConnectionIo::start(
         attached,

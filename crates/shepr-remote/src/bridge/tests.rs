@@ -334,10 +334,9 @@ fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
     )
     .expect("managed ssh options");
 
-    let (bridge, mut stream) = SshStdioBridge::start_command_with_session(
+    let (bridge, mut stream) = SshStdioBridge::start_command(
         SshTarget::parse("example").expect("target"),
         AccountShellCommand::from_account_shell_text("unused"),
-        false,
         &ssh_options,
     )
     .expect("socket pair bridge");
@@ -361,10 +360,9 @@ fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
     drop(bridge);
     // Dropping a live bridge stops its one worker while the endpoint is still
     // open.
-    let (idle_bridge, idle_stream) = SshStdioBridge::start_command_with_session(
+    let (idle_bridge, idle_stream) = SshStdioBridge::start_command(
         SshTarget::parse("example").expect("target"),
         AccountShellCommand::from_account_shell_text("unused"),
-        false,
         &ssh_options,
     )
     .expect("idle socket pair bridge");
@@ -376,10 +374,9 @@ fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
     // The next connection fails without a client close. Its own worker must
     // return the typed SSH diagnostic after EOF.
     env.set("PATH", &failing_dir);
-    let (bridge, mut stream) = SshStdioBridge::start_command_with_session(
+    let (bridge, mut stream) = SshStdioBridge::start_command(
         SshTarget::parse("example").expect("target"),
         AccountShellCommand::from_account_shell_text("unused"),
-        false,
         &ssh_options,
     )
     .expect("second socket pair bridge");
@@ -400,10 +397,38 @@ fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
 }
 
 #[test]
+fn dropping_the_last_bridge_owner_does_not_wait_for_pipe_drains() {
+    let should_stop = Arc::new(AtomicBool::new(false));
+    let (release, wait_for_release) = mpsc::channel();
+    let (dropped, wait_for_drop) = mpsc::channel();
+    let bridge = SshStdioBridge {
+        should_stop: Arc::clone(&should_stop),
+        diagnose_end: Arc::new(AtomicBool::new(false)),
+        worker: std::sync::Mutex::new(Some(thread::spawn(move || {
+            wait_for_release
+                .recv()
+                .expect("release simulated pipe drain");
+            Ok(())
+        }))),
+    };
+    let owner = thread::spawn(move || {
+        drop(bridge);
+        dropped.send(()).expect("report drop");
+    });
+    let result = wait_for_drop.recv_timeout(Duration::from_secs(1));
+    // Release even on failure so the test never leaves a stuck worker.
+    release.send(()).expect("finish simulated drain");
+    owner.join().expect("owner exits");
+    result.expect("last-owner drop must not join a live worker on the client loop");
+    assert!(should_stop.load(Ordering::Acquire));
+}
+
+#[test]
 fn bridge_worker_failure_is_returned_once_and_drop_is_safe() {
     let should_stop = Arc::new(AtomicBool::new(false));
     let bridge = SshStdioBridge {
         should_stop,
+        diagnose_end: Arc::new(AtomicBool::new(false)),
         worker: std::sync::Mutex::new(Some(thread::spawn(move || {
             Err(local_setup_error(
                 "test SSH setup",

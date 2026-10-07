@@ -30,8 +30,8 @@ pub(crate) const SERVER_WAIT_RECHECK: Duration = Duration::from_secs(30);
 pub(crate) const SERVER_WAIT_SETTLING_RECHECK: Duration = Duration::from_millis(500);
 
 /// How often a remote wait for a server checks while the runtime directory
-/// does not exist yet and so cannot be watched. A local check on that host,
-/// not an SSH round trip.
+/// does not exist (yet, or since it was removed) and so cannot be watched. A
+/// local check on that host, not an SSH round trip.
 pub(crate) const SERVER_WAIT_UNWATCHED_RECHECK: Duration = Duration::from_secs(2);
 
 /// The longest a remote wait for a server runs before it exits and the client

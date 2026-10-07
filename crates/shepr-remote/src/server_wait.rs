@@ -192,6 +192,11 @@ fn wait_for_server_with(
                 }
             }
         };
+        if wake == DirectoryWake::Invalidated {
+            // The runtime directory was removed or moved; the next pass
+            // watches whatever directory has its pathname then.
+            watch = None;
+        }
         if wake == DirectoryWake::Input && input_closed(input)? {
             return Ok(ServerWaitEnd::ClientGone);
         }
@@ -237,6 +242,49 @@ mod tests {
         } else {
             ServerSeen::Absent
         }
+    }
+
+    #[test]
+    fn the_wait_rebuilds_its_watch_when_the_runtime_directory_is_replaced() {
+        let scratch = shepr_test_support::ScratchDir::new("server-wait-replaced");
+        let dir = scratch.join("runtime");
+        std::fs::create_dir(&dir).expect("runtime directory");
+        let socket = dir.join("server.sock");
+        let (input, _client) = std::os::unix::net::UnixStream::pair().expect("open input");
+        let (replace, replacement) = std::sync::mpsc::channel();
+        let binder = {
+            let dir = dir.clone();
+            let socket = socket.clone();
+            std::thread::spawn(move || {
+                replacement.recv().expect("watch installed");
+                std::fs::remove_dir(&dir).expect("remove watched directory");
+                std::fs::create_dir(&dir).expect("replace directory");
+                std::thread::sleep(Duration::from_millis(100));
+                std::os::unix::net::UnixListener::bind(socket).expect("new server socket")
+            })
+        };
+        let mut replace = Some(replace);
+        let started = Instant::now();
+        let mut times = watched_times();
+        times.unwatched_recheck = Duration::from_millis(10);
+        // A failed watch recovery expires quickly instead of hanging the test.
+        times.max = Duration::from_secs(3);
+        let end = wait_for_server_with(
+            &dir,
+            OsStr::new("server.sock"),
+            raw(&input),
+            || {
+                if let Some(replace) = replace.take() {
+                    replace.send(()).expect("replace directory");
+                }
+                Ok(seen(socket.try_exists().unwrap_or(false)))
+            },
+            times,
+        )
+        .expect("wait recovers");
+        let _listener = binder.join().expect("binder finished");
+        assert_eq!(end, ServerWaitEnd::Ready);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

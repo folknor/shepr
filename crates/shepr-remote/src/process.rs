@@ -35,7 +35,7 @@ impl PipeCapture {
     }
 
     /// Retains trailing command output so a large login banner cannot hide its result.
-    fn spawn_tail(reader: impl Read + Send + 'static, limit: usize) -> Self {
+    pub(crate) fn spawn_tail(reader: impl Read + Send + 'static, limit: usize) -> Self {
         Self::spawn_with_retention(reader, limit, CaptureRetention::Tail)
     }
 

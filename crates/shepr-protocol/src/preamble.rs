@@ -21,6 +21,17 @@
 //! it refuses the connection, so each side learns the other's identity. On
 //! another build's preamble the server writes its own and closes without
 //! decoding the hello, whose layout is that build's.
+//!
+//! A connection to a configured machine runs through the remote
+//! `shepr remote-client-bridge`, and there the client reads two preambles.
+//! The bridge writes its own build's first, before it probes or starts a
+//! server, then relays the server's (or, for a server of another build, writes
+//! that build's preamble in its place and closes). The first tells the client
+//! whether the executable installed on the machine is its build, which a
+//! server of the client's build behind a replaced bridge would otherwise hide;
+//! a mismatch there is an install mismatch, and only a mismatch in the second
+//! is a server of another build. Every bridge build opens this way, since a
+//! client of any build may read it.
 
 use std::io::{self, Read};
 
