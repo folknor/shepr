@@ -166,6 +166,7 @@ fn group_targets<T>(
     let mut jobs = Vec::<RefreshJob<T>>::new();
 
     for target in targets {
+        crate::access::start_job();
         let reconcile = target.known_key.is_none();
         let (key, discovery) = match target.known_key {
             Some(key) => (key, None),
@@ -206,6 +207,7 @@ fn compute_refresh<T>(
     let mut cache_updates = Vec::new();
 
     for job in group_targets(targets, cache, progress) {
+        crate::access::start_job();
         progress.step(
             std::iter::once(job.key.as_path().to_path_buf())
                 .chain(job.targets.iter().map(|(_, cwd)| cwd.clone()))

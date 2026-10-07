@@ -187,9 +187,10 @@ impl PaneStartFailure {
                 // The outer Display supplies this resume failure's guidance
                 // and its single `Error:` label. Use the nested cause only;
                 // formatting the nested failure here would repeat both.
-                let failure_cause = failure
-                    .cause()
-                    .map_or_else(|| failure.guidance().to_owned(), std::borrow::Cow::into_owned);
+                let failure_cause = failure.cause().map_or_else(
+                    || failure.guidance().to_owned(),
+                    std::borrow::Cow::into_owned,
+                );
                 let failure_cause = match failure.as_ref() {
                     Self::DirectoryUnavailable { path, .. }
                     | Self::DirectoryUnreadable { path, .. } => {

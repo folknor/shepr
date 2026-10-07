@@ -1,7 +1,7 @@
 use crate::types::{InstallError, InstallResult};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{collections::HashMap, io::ErrorKind};
 
 use shepr_agent::{Agent, IntegrationTarget};
@@ -80,9 +80,9 @@ impl IntegrationEnvironment {
 /// Agent-owned config locations, resolved once by the caller that starts an
 /// install (the server, at launch). Install and status code receives this
 /// value and never consults the process environment while it is choosing
-/// files to read or write. Agent-specific overrides expand `~` and must be
-/// absolute: relative config paths would resolve against the server's cwd here
-/// and the pane's cwd in the agent.
+/// files to read or write. Most agent-specific overrides expand `~` and must
+/// be absolute. OMP's `PI_CONFIG_DIR` is a home-relative config root, matching
+/// OMP's own path resolution.
 ///
 /// The environment read is the server's, not that of the agents in its panes.
 /// A server started over SSH runs under a non-interactive shell, which reads
@@ -157,14 +157,35 @@ pub(super) fn pi_extension_dir(environment: &IntegrationEnvironment) -> InstallR
 }
 
 pub(super) fn omp_extension_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
-    let config_dir =
-        agent_config_override(environment, Agent::Omp)?.unwrap_or_else(|| ".omp".into());
+    Ok(omp_config_root(environment)?
+        .join("agent")
+        .join("extensions"))
+}
+
+fn omp_config_root(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
+    let home = environment.home_dir()?;
+    let config_dir = environment
+        .path(EnvVar::PiConfigDir)?
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| ".omp".into());
+    let bytes = config_dir.as_os_str().as_bytes();
+
+    // Keep the shell command's tilde convenience while treating every other
+    // PI_CONFIG_DIR value as a component beneath home. OMP joins this setting
+    // to home even when it begins with `/`.
+    if bytes == b"~" {
+        return Ok(home);
+    }
+    if let Some(relative) = bytes.strip_prefix(b"~/") {
+        return Ok(home.join(Path::new(std::ffi::OsStr::from_bytes(relative))));
+    }
+
     let config_dir = if config_dir.is_absolute() {
-        config_dir
+        config_dir.strip_prefix("/").unwrap_or(&config_dir)
     } else {
-        environment.home_dir()?.join(config_dir)
+        config_dir.as_path()
     };
-    Ok(config_dir.join("agent").join("extensions"))
+    Ok(home.join(config_dir))
 }
 
 pub(super) fn claude_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
@@ -331,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn relative_agent_config_overrides_are_refused() {
+    fn relative_config_overrides_are_refused_for_agents_other_than_omp() {
         let values = HashMap::from([
             (EnvVar::Home, OsString::from("/test/home")),
             (EnvVar::ClaudeConfigDir, OsString::from("relative/config")),
@@ -345,7 +366,6 @@ mod tests {
                 EnvVar::AntigravityCliConfigDir,
                 OsString::from("relative/config"),
             ),
-            (EnvVar::PiConfigDir, OsString::from("relative/config")),
         ]);
         let environment = IntegrationEnvironment::capture(|variable| {
             shepr_core::env::resolve_path(variable, values.get(&variable).map(OsString::as_os_str))
@@ -361,7 +381,6 @@ mod tests {
             (Agent::Grok, EnvVar::GrokHome),
             (Agent::Pi, EnvVar::PiCodingAgentDir),
             (Agent::Antigravity, EnvVar::AntigravityCliConfigDir),
-            (Agent::Omp, EnvVar::PiConfigDir),
         ] {
             let error = agent_config_override(&environment, agent)
                 .expect_err("a relative agent config override is refused");
@@ -379,6 +398,25 @@ mod tests {
             directory(&env, IntegrationTarget::Omp).expect("test precondition"),
             PathBuf::from("/test/home/.omp2/agent/extensions")
         );
+    }
+
+    #[test]
+    fn omp_pi_config_dir_is_resolved_under_home_for_relative_and_absolute_values() {
+        for (value, expected) in [
+            (
+                "relative/omp-work",
+                "/test/home/relative/omp-work/agent/extensions",
+            ),
+            ("/tmp/omp-work", "/test/home/tmp/omp-work/agent/extensions"),
+            ("", "/test/home/.omp/agent/extensions"),
+        ] {
+            let env = paths_with(&[(EnvVar::Home, "/test/home"), (EnvVar::PiConfigDir, value)]);
+            assert_eq!(
+                directory(&env, IntegrationTarget::Omp).expect("OMP config root"),
+                PathBuf::from(expected),
+                "PI_CONFIG_DIR={value:?}"
+            );
+        }
     }
 
     #[test]

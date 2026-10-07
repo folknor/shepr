@@ -274,10 +274,15 @@ impl HookSessionPolicy {
     // integration's hook matcher is built from it (shepr-integration's
     // `registration`), so the
     // sources Claude reports and the sources that replace stay one list.
-    // `startup` reports a new process. The detector releases the previous
-    // session on exit or a changed identified process group before accepting
-    // replacement presence; startup itself cannot replace a live session.
-    // Hooks arriving before that process evidence may still be refused. Every
+    // `startup` reports a new process, which may be a nested `claude` the
+    // pane's own agent runs, so it cannot replace a live session. The
+    // detector releases the previous session on exit or a changed identified
+    // process group before accepting replacement presence. A relaunch's
+    // startup that arrives before that process evidence is held by ownership
+    // (shepr-detect's `ReplacementStart`) and admitted once the detector
+    // reports the exit and the replacement within their windows; unconfirmed,
+    // it is lost rather than applied. The same holds for every agent that
+    // leaves `startup` out of its replacements. Every
     // other source puts a different session id in the pane's
     // own process: `--fork-session` and `/branch` switch the pane into the
     // fork (Claude Code reported these as `resume` before it added `fork`).

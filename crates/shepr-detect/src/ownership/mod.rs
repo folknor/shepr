@@ -194,6 +194,59 @@ struct CheckpointCandidate {
     observed_at: Instant,
 }
 
+pub use crate::limits::{REPLACEMENT_START_EXIT_WINDOW, REPLACEMENT_START_PRESENCE_GAP};
+
+/// A `startup` refused because the detector still held a live process of the
+/// same agent with another session, held for a relaunch.
+///
+/// For most agents `startup` is not a session replacement: a nested run of the
+/// agent (one the pane's agent starts as a tool) sends one too, and must not
+/// take over the pane's conversation. But a relaunch (`claude; claude`, or
+/// quitting and restarting between two process probes) also sends its startup
+/// before the detector has seen the old process go, and refusing it outright
+/// loses the new session: the exit that follows clears the old one and nothing
+/// carries the new one. So the start is held instead of dropped. When the
+/// detector reports that agent's exit within `REPLACEMENT_START_EXIT_WINDOW`
+/// of the start's arrival, then the replacement process's presence within
+/// `REPLACEMENT_START_PRESENCE_GAP` of that exit, the start is admitted again,
+/// as it would have been had it arrived after the exit. A nested run leaves
+/// the foreground process alone, so no exit follows and it is never admitted.
+///
+/// Anything else discards it: another start from its source (which supersedes
+/// it, held or not), a detector observation of another agent, a second exit,
+/// a window running out, a restored identity, or the pane's ending.
+///
+/// Two outcomes remain. A nested start followed, within the windows, by the
+/// user quitting and relaunching the agent, whose own startup arrives only
+/// after the detector reported the relaunch, selects the nested session and
+/// leaves the relaunch's start held behind it. And a relaunch the detector
+/// does not confirm within the windows loses its session as an unheld start
+/// would: the exit still clears the old session, so the pane holds none
+/// rather than the wrong one, and a full-lifecycle source waits for its next
+/// start. A save or a pane ending before the exit still holds the old session.
+#[derive(Debug, Clone)]
+struct ReplacementStart {
+    origin: ReportOrigin,
+    session: shepr_agent::resume::PersistedAgentSession,
+    seq: Option<u64>,
+    session_start_source: ReportedSessionStart,
+    received: HookClockSample,
+    /// When the detector reported the held-against process's exit.
+    exit_observed_at: Option<Instant>,
+}
+
+impl ReplacementStart {
+    /// The latest observation that can still advance this start: the exit's,
+    /// until one is seen, then the replacement presence's.
+    fn deadline(&self) -> Instant {
+        let (from, window) = match self.exit_observed_at {
+            None => (self.received.monotonic, REPLACEMENT_START_EXIT_WINDOW),
+            Some(exit) => (exit, REPLACEMENT_START_PRESENCE_GAP),
+        };
+        from.checked_add(window).unwrap_or(from)
+    }
+}
+
 /// Why a terminal's saved identity is being resolved, for the checkpoint
 /// candidate: an ordinary save never uses it.
 #[derive(Debug, Clone, Copy)]
@@ -225,6 +278,10 @@ pub struct AgentOwnership {
     last_agent_state_change_seq: Option<shepr_agent::StateChangeSeq>,
     process_evidence: AgentProcessEvidence,
     checkpoint_candidate: Option<CheckpointCandidate>,
+    /// A refused `startup` held for a relaunch the detector has not yet
+    /// confirmed. It is not ownership: nothing reads it but the detector
+    /// observations that may admit it and the parked-report diagnostic.
+    replacement_start: Option<ReplacementStart>,
     /// Diagnostic only: the last report that changed nothing and why. No
     /// arbitration reads it.
     last_unapplied_hook_report: Option<UnappliedHookRecord>,

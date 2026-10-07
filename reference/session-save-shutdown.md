@@ -86,12 +86,22 @@ the autosave debounce. A termination signal also lets the server adopt pane
 exit candidates observed at the signal time before this capture.
 
 The final save is skipped while host-shutdown saves are frozen, because the
-checkpoint from the warning is the layout to restore. The `persist.save`
-log with `kind = "final"` records the save's outcome (`ok`, `error`, `stopped`,
-`blocked_on_backup` or `frozen`) and its duration, once per final save: a
-failure is logged at error level with its cause in the `error` field, any other
-outcome at info level. A failed final save is reported as an unclean exit, and to every
-client whose stop request the server accepted: the answer to `server.stop` and
+checkpoint from the warning is the layout to restore. If persistence stopped
+or became blocked on a required backup earlier in this boot, the final save
+does not submit another write; it reports `stopped` or `blocked_on_backup` as
+the final outcome. The earlier persistence failure was already logged at error
+level when that condition began, and attached clients were shown it as a
+notice. These outcomes mean shutdown completed, so the stop succeeds and its
+answer carries no error; they do not confirm that mutations made since the
+last durable save were persisted. A stop that failed for the rest of the boot
+would repeat one known fault on every stop and restart without telling the
+operator anything new. The
+`persist.save` log with `kind = "final"` records the save's outcome (`ok`,
+`error`, `stopped`, `blocked_on_backup` or `frozen`) and its duration, once per
+final save: a failure is logged at error level with its cause in the `error`
+field, any other outcome at info level. An error from an attempted final save
+is reported as an unclean exit, and to every client whose stop request the
+server accepted: the answer to `server.stop` and
 `server.stop_if_boot` waits for the final save and carries its error, if any.
 That wait is bounded by `FINAL_SAVE_ANSWER_TIMEOUT` in
 `crates/shepr-api/src/limits.rs`; past it the answer says the server has not
@@ -126,13 +136,20 @@ present after the final-save log.
 
 ## Client-side stop waits
 
-`shepr stop` uses `STOP_WAIT_TIMEOUT` while waiting for the named server to stop
-answering, then `STOP_LEASE_WAIT_TIMEOUT` if the data-directory lease remains
-held. `STOP_STATUS_PROBE_TIMEOUT` and `STOP_WAIT_POLL` bound the observations
-within those waits; `STOP_WORST_CASE` summarizes the stop client's own wait
-budget in `crates/shepr-launch/src/limits.rs`. The wait for the stop request's
-answer, which arrives once the final save is done, shares the
-`STOP_WAIT_TIMEOUT` deadline. A server reporting a failed final save fails the
-stop even when the server then goes. A client timeout does not kill
+`shepr stop` first waits for the stop request's answer, which arrives once the
+final save is done, under `STOP_REQUEST_TIMEOUT`: it is derived in
+`crates/shepr-api/src/limits.rs` from the connect bound,
+`FINAL_SAVE_ANSWER_TIMEOUT`, the response write bound and a scheduling margin,
+so the server's own "not reported" answer always reaches the client. A busy
+refusal is retried within that budget. Only after the answer does it use
+`STOP_WAIT_TIMEOUT` while waiting for the named server to stop answering, then
+`STOP_LEASE_WAIT_TIMEOUT` if the data-directory lease remains held.
+`STOP_STATUS_PROBE_TIMEOUT` and `STOP_WAIT_POLL` bound the observations within
+those waits, and a busy status answer reads as no answer yet;
+`STOP_WORST_CASE` summarizes the stop client's own wait budget in
+`crates/shepr-launch/src/limits.rs`. A server reporting a failed final save
+fails the stop even when the server then goes, and an answer that the final
+save was not reported fails it as unconfirmed once the server has gone. A
+client timeout does not kill
 the server. In particular, it can expire while the server is still completing
 its unbounded final save or retiring the writer.

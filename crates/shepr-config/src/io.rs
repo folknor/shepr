@@ -599,8 +599,8 @@ palette = "cyan"
     }
 
     /// The local server is named by `local.label`, or by this host's short
-    /// hostname, which a machine label may not repeat in any case. "Local" is
-    /// an ordinary name.
+    /// hostname, which at most one machine label may match apart from ASCII
+    /// case. "Local" is an ordinary name.
     #[test]
     fn the_local_server_is_named_by_its_label_or_the_hostname_and_skips_its_own_entry() {
         let _env = shepr_test_support::IsolatedEnv::new();
@@ -727,6 +727,17 @@ palette = "purple"
             (
                 "[[machines]]\nlabel = \"a\"\nssh = \"h1\"\npalette = \"red\"\n\
                  [[machines]]\nlabel = \"a\"\nssh = \"h2\"\npalette = \"red\"\n",
+                "duplicates an earlier machine (related: machines[0].label)",
+            ),
+            (
+                "[[machines]]\nlabel = \"Build\"\nssh = \"h1\"\npalette = \"red\"\n\
+                 [[machines]]\nlabel = \"build\"\nssh = \"h2\"\npalette = \"red\"\n",
+                "duplicates an earlier machine (related: machines[0].label)",
+            ),
+            (
+                "[local]\nlabel = \"desk\"\n\
+                 [[machines]]\nlabel = \"desk\"\nssh = \"h1\"\npalette = \"green\"\n\
+                 [[machines]]\nlabel = \"DESK\"\nssh = \"h2\"\npalette = \"red\"\n",
                 "duplicates an earlier machine (related: machines[0].label)",
             ),
             (

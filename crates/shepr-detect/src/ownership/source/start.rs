@@ -146,7 +146,14 @@ impl AgentOwnership {
             .conflicting_same_owner_session_ref(origin, &session_ref, session_start_source)
             .is_some()
         {
-            return HookOutcome::Rejected(HookRejection::ReplacedSession);
+            return self.refuse_replaced_session_start(
+                origin,
+                persisted_session,
+                seq,
+                session_start_source,
+                sample,
+                process_present,
+            );
         }
         let replaced_hook_session =
             self.same_owner_full_lifecycle_hook_authority_session_ref(origin, &session_ref);
@@ -154,7 +161,14 @@ impl AgentOwnership {
         // identity. A different ref alone can be delayed cross-talk; releasing
         // authority here would let an unrecognized start withdraw a live agent.
         if replaced_hook_session.is_some() && !session_replacement_allowed {
-            return HookOutcome::Rejected(HookRejection::ReplacedSession);
+            return self.refuse_replaced_session_start(
+                origin,
+                persisted_session,
+                seq,
+                session_start_source,
+                sample,
+                process_present,
+            );
         }
 
         if !unsequenced_selection && !self.hook_report_order_allows(&source, seq, sample) {
@@ -216,5 +230,39 @@ impl AgentOwnership {
             session_ref_changed: previous_session != current_session,
             agent_released: false,
         })
+    }
+
+    /// A start that would replace this owner's session without a permitted
+    /// replacement source. A `startup` that arrives while the detector holds
+    /// a live process of its agent may be that process's relaunch, which the
+    /// detector has not probed yet: it is held (`ReplacementStart`) rather
+    /// than dropped, and reads as parked. Any other such start is refused.
+    /// The held start has not been ordered yet; one its source's ordering
+    /// already refuses is refused here, as it would be after the exit.
+    fn refuse_replaced_session_start(
+        &mut self,
+        origin: &ReportOrigin,
+        session: shepr_agent::resume::PersistedAgentSession,
+        seq: Option<u64>,
+        session_start_source: ReportedSessionStart,
+        sample: HookClockSample,
+        process_present: bool,
+    ) -> HookOutcome {
+        let relaunch_candidate = process_present
+            && session_start_source
+                == ReportedSessionStart::Known(AgentSessionStartSource::Startup)
+            && self.hook_report_order_allows(origin.source(), seq, sample);
+        if !relaunch_candidate {
+            return HookOutcome::Rejected(HookRejection::ReplacedSession);
+        }
+        self.replacement_start = Some(ReplacementStart {
+            origin: *origin,
+            session,
+            seq,
+            session_start_source,
+            received: sample,
+            exit_observed_at: None,
+        });
+        HookOutcome::Parked
     }
 }

@@ -4,11 +4,31 @@
 
 use super::schedule::{ProbeFinding, ProbeScheduleDecision};
 use super::state::{DetectorState, TickContext};
-use crate::limits::{AGENT_MISS_CONFIRMATION_ATTEMPTS, AGENT_STARTUP_GRACE_WINDOW};
+use crate::limits::{
+    AGENT_MISS_CONFIRMATION_ATTEMPTS, AGENT_STARTUP_GRACE_WINDOW, PROCESS_RECHECK_ACTIVE_AGENT,
+    PROCESS_RECHECK_IDENTIFIED,
+};
 use crate::pane::process_probe::ProcessProbeResult;
 use shepr_agent::Agent;
 use shepr_detect::Detection;
 use shepr_platform::Pgid;
+
+// A relaunch's session start can reach the server before the probe that sees
+// the new process group. Ownership holds such a start until this module
+// reports the old process's exit and then the replacement's presence, each
+// within a window of the one before. The exit comes from the first probe after
+// the group change: the next tick when the foreground group can be read, the
+// identified-process recheck when it cannot. The presence comes from the probe
+// of the tick after the exit is reported, which runs because that exit is
+// still to be withdrawn.
+const _: () = assert!(
+    shepr_detect::ownership::REPLACEMENT_START_EXIT_WINDOW.as_millis()
+        >= PROCESS_RECHECK_IDENTIFIED.as_millis() + PROCESS_RECHECK_ACTIVE_AGENT.as_millis()
+);
+const _: () = assert!(
+    shepr_detect::ownership::REPLACEMENT_START_PRESENCE_GAP.as_millis()
+        >= 2 * PROCESS_RECHECK_ACTIVE_AGENT.as_millis()
+);
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AgentDetectionPresence {

@@ -303,6 +303,90 @@ fn machine_diagnostic_badge_reopens_its_notice() {
 }
 
 #[test]
+fn machine_badge_release_finishes_a_pane_mouse_gesture_started_elsewhere() {
+    let (mut state, id) = state_with_remote();
+    state.set_endpoint_status(&id, EndpointFailureStatus::Attention);
+    state.set_machine_diagnostic(
+        &id,
+        &shepr_launch::EndpointFailure::unclassified("remote unavailable"),
+    );
+
+    let generation = state
+        .endpoints
+        .active
+        .generation()
+        .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST);
+    let mut next_surface = surface();
+    next_surface.surface_revision = next_surface
+        .surface_revision
+        .checked_next()
+        .expect("next surface revision");
+    next_surface.panes[0].mouse_reporting = true;
+    state.receive_pane_surface_from(next_surface, generation);
+    state.compose(120, 40).expect("pane and badge hits");
+
+    let pane = state.pane_hits()[0].clone();
+    let badge = state
+        .drawn()
+        .machines()
+        .find(|hit| hit.location.endpoint == id)
+        .expect("diagnostic badge")
+        .status_badge;
+    let mouse = |kind, column, row| {
+        RawInputEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+
+    let down = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        pane.content_rect.x + 1,
+        pane.content_rect.y + 1,
+    )]);
+    assert!(state.pointer.pane_mouse_gesture.is_some());
+    assert!(matches!(
+        &down.requests[..],
+        [crate::shell::state::ClientShellRequest::Shown(
+            shepr_protocol::ClientMessage::ClientShellPaneInput { events, .. }
+        )] if matches!(
+            &events[..],
+            [shepr_protocol::ClientPaneInputEvent::Mouse {
+                kind: shepr_protocol::ClientMouseKind::Down(
+                    shepr_protocol::ClientMouseButton::Left
+                ),
+                ..
+            }]
+        )
+    ));
+
+    let release = state.handle_raw_events(vec![mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        badge.x,
+        badge.y,
+    )]);
+
+    assert!(state.pointer.pane_mouse_gesture.is_none());
+    assert!(matches!(
+        &release.requests[..],
+        [crate::shell::state::ClientShellRequest::Shown(
+            shepr_protocol::ClientMessage::ClientShellPaneInput { pane_id, events }
+        )] if pane_id == &crate::tests::test_pane_id("w1:p1")
+            && matches!(
+                &events[..],
+                [shepr_protocol::ClientPaneInputEvent::Mouse {
+                    kind: shepr_protocol::ClientMouseKind::Up(
+                        shepr_protocol::ClientMouseButton::Left
+                    ),
+                    ..
+                }]
+            )
+    ));
+}
+
+#[test]
 fn machine_diagnostic_card_replaces_tabs_and_preserves_lines() {
     let (mut state, id) = state_with_remote();
     state.set_endpoint_status(&id, EndpointFailureStatus::Attention);

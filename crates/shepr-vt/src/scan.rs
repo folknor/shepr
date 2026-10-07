@@ -188,9 +188,9 @@ pub(super) struct Scanner {
     /// Separators observed in the current OSC. OSC 52's supported store form
     /// has exactly two before its base64 payload.
     osc_separators: usize,
-    /// Whether the current OSC has the `52;c;`, `52;p;` or `52;s;` store
-    /// prefix, and whether every payload byte so far could be base64.
-    osc52_store_payload: bool,
+    /// Non-separator byte count of a recognized OSC 52 store prefix.
+    /// An omitted target defaults to `c` in vte.
+    osc52_store_prefix_bytes: Option<usize>,
     osc52_payload_is_base64: bool,
     /// The current OSC passed `MAX_OSC_RAW_BYTES` and the parser was ended.
     osc_cut: bool,
@@ -260,6 +260,8 @@ impl Scanner {
             },
             State::Osc => match byte {
                 0x07 | 0x18 | 0x1a => {
+                    // vte 0.15 calls `osc_end` for CAN and SUB as well as BEL,
+                    // so the emulator dispatches these OSC bodies too.
                     if self.osc_cut {
                         // The parser already left the OSC at the cut; this
                         // terminator is skipped with the body, so a BEL does
@@ -306,17 +308,22 @@ impl Scanner {
                     if byte == b';' {
                         if self.osc_separators == 1 {
                             let prefix = self.buffer.as_slice();
-                            self.osc52_store_payload =
-                                prefix == b"52;c" || prefix == b"52;p" || prefix == b"52;s";
-                            self.osc52_payload_is_base64 = true;
+                            self.osc52_store_prefix_bytes = if prefix == b"52;" {
+                                Some(2)
+                            } else if prefix == b"52;c" || prefix == b"52;p" || prefix == b"52;s" {
+                                Some(3)
+                            } else {
+                                None
+                            };
+                            self.osc52_payload_is_base64 = self.osc52_store_prefix_bytes.is_some();
                         }
                         self.osc_separators = self.osc_separators.saturating_add(1);
                     } else {
-                        if self.osc52_store_payload && self.osc_separators == 2 {
+                        if self.osc52_store_prefix_bytes.is_some() && self.osc_separators == 2 {
                             // Padding is only valid at the end of a complete
                             // base64 payload. A store still has bytes past
                             // this cut, so an earlier `=` cannot decode.
-                            if !is_base64_byte(byte) || byte == b'=' {
+                            if !is_base64_byte(byte) {
                                 self.osc52_payload_is_base64 = false;
                             }
                         }
@@ -407,25 +414,23 @@ impl Scanner {
         self.overflow = false;
         self.osc_raw_bytes = 0;
         self.osc_separators = 0;
-        self.osc52_store_payload = false;
+        self.osc52_store_prefix_bytes = None;
         self.osc52_payload_is_base64 = false;
         self.osc_cut = false;
     }
 
     fn cut_clipboard_store_size_lower_bound(&self, next_byte: u8) -> Option<usize> {
-        if self.osc_separators != 2
-            || !self.osc52_store_payload
-            || !self.osc52_payload_is_base64
-            || !is_base64_byte(next_byte)
-        {
+        if self.osc_separators != 2 || !self.osc52_payload_is_base64 || !is_base64_byte(next_byte) {
             return None;
         }
 
-        // A supported target contributes three non-separator bytes (`52`
-        // and `c`, `p` or `s`). Count only complete base64 quartets so the
-        // result remains a lower bound even though the original terminator
-        // and any remaining payload have not arrived yet.
-        let encoded_bytes = self.osc_raw_bytes.checked_sub(3)?;
+        // A target contributes two non-separator bytes (`52`) and a named
+        // target contributes one more. Count only complete base64 quartets so
+        // the result remains a lower bound without the original terminator or
+        // any remaining payload.
+        let encoded_bytes = self
+            .osc_raw_bytes
+            .checked_sub(self.osc52_store_prefix_bytes?)?;
         let decoded_lower_bound = encoded_bytes / 4 * 3;
         (decoded_lower_bound > MAX_CLIPBOARD_BYTES).then_some(decoded_lower_bound)
     }

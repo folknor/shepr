@@ -94,6 +94,7 @@ impl AgentOwnership {
         let mutation = match event {
             HookEvent::RestoreSession(session) => {
                 self.checkpoint_candidate = None;
+                self.replacement_start = None;
                 self.apply_source_effect(HookSourceEffects::Commit {
                     authority: AuthorityEffect::Keep,
                     persisted: Some(session),

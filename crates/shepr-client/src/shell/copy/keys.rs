@@ -111,7 +111,8 @@ impl ClientShellState {
                     rows,
                     ClientCopySearchResult {
                         matches: search.matches,
-                        total: search.total,
+                        total: Some(search.total),
+                        history_origin: search.history_origin,
                         current: search.current,
                     },
                     outcome,
@@ -589,9 +590,13 @@ impl ClientShellState {
             search.direction = Some(direction);
         }
         search.results = ClientCopySearchResult { current, ..result };
-        if let Some(target) =
-            current.and_then(|position| search.results.matches.get(position.window_index).copied())
-        {
+        super::prune_evicted_search_matches(copy_mode);
+        if let Some(target) = copy_mode.search.as_ref().and_then(|search| {
+            search
+                .results
+                .current
+                .and_then(|position| search.results.matches.get(position.window_index).copied())
+        }) {
             copy_mode.cursor = target.start;
             self.reveal_copy_cursor(outcome);
             self.sync_copy_selection();

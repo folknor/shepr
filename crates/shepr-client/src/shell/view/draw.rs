@@ -546,22 +546,24 @@ fn render_mode_bar(
                     "select"
                 };
                 let search = copy_mode.search.as_ref();
-                let match_status = search
-                    .and_then(|search| {
-                        search.results.current.map(|current| {
-                            format!(
-                                " {}/{}",
-                                current.global_index.saturating_add(1),
-                                search.results.total
+                let match_status =
+                    search
+                        .and_then(|search| {
+                            if !search.query.is_empty() && search.results.total.is_none() {
+                                return Some(" ?/?".to_owned());
+                            }
+                            search.results.current.zip(search.results.total).map(
+                                |(current, total)| {
+                                    format!(" {}/{}", current.global_index.saturating_add(1), total)
+                                },
                             )
                         })
-                    })
-                    .or_else(|| {
-                        search
-                            .is_some_and(|search| !search.query.is_empty())
-                            .then(|| " 0/0".to_owned())
-                    })
-                    .unwrap_or_default();
+                        .or_else(|| {
+                            search
+                                .is_some_and(|search| !search.query.is_empty())
+                                .then(|| " 0/0".to_owned())
+                        })
+                        .unwrap_or_default();
                 let quit_keys = shepr_termio::copy_mode::copy_mode_help_keys(
                     shepr_termio::copy_mode::CopyModeHelpGroup::Exit,
                 );

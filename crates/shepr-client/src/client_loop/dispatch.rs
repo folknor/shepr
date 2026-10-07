@@ -41,12 +41,9 @@ impl ClientLoop {
                         shell::PatchPresentation::Held,
                     ) => {}
                     shell::ClientPaneSurfacePatchOutcome::Rejected(reason) => {
-                        // The patch does not follow the shell's baseline, which mirrors the
-                        // reader's. Either the two disagree about a baseline both derive from
-                        // the same wire, or the server sent a patch the decoder accepts and the
-                        // shell does not (a pane geometry change, or a row on a pane the
-                        // patch does not list; the decoder checks neither). Both are bugs, and
-                        // reconnecting for a fresh full surface baseline is the one response.
+                        // The shell repeats the shared admission rule against its presented
+                        // baseline. A rejection means the shell and reader no longer share the
+                        // baseline the connection decoded, so reconnect for a fresh full one.
                         shepr_platform::structured_log!(
                             ERROR, event = surface.patch, outcome = Refused,
                             endpoint = %endpoint_id,

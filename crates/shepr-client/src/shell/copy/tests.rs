@@ -50,6 +50,92 @@ fn session() -> CopySession {
 }
 
 #[test]
+fn pending_scroll_keeps_the_absolute_copy_viewport_when_output_grows_history() {
+    use crate::shell::input::scroll_lanes::ScrollLanes;
+    use crate::shell::input::selection::MouseSelection;
+    use crate::shell::ledger::Ledger;
+
+    let mut copy = session();
+    copy.scroll = shepr_term::ScrollMetrics::new(3, 10, 2, shepr_term::AbsRow(0));
+    copy.geometry = (4, 2);
+    copy.cursor.row = shepr_term::AbsRow(7);
+    copy.selection = Some(ClientCopySelection::Linewise {
+        anchor_row: shepr_term::AbsRow(7),
+    });
+    let lanes = ScrollLanes::pending(pane_id(), copy.scroll);
+    let mut surface = surface();
+    surface.panes[0].scroll = Some(shepr_term::ScrollMetrics::new(
+        0,
+        14,
+        2,
+        shepr_term::AbsRow(0),
+    ));
+    let mut copy = Some(copy);
+    let mut selection = MouseSelection::default();
+    let mut ledger = Ledger::default();
+    super::surface_presented(&mut copy, &mut selection, &lanes, &mut ledger, &surface);
+    let copy = copy.expect("copy session remains active");
+    assert_eq!(copy.viewport_top(), shepr_term::AbsRow(7));
+    assert_eq!(copy.scroll.offset_from_bottom, 7);
+    assert_eq!(copy.cursor.row, shepr_term::AbsRow(7));
+    assert_eq!(
+        copy.projected_selection()
+            .expect("retained selection")
+            .ordered_rows()
+            .0
+            .row,
+        shepr_term::AbsRow(7),
+    );
+}
+
+#[test]
+fn search_counts_become_unknown_when_eviction_is_outside_the_returned_window() {
+    let mut copy = session();
+    copy.scroll = shepr_term::ScrollMetrics::new(0, 100, 2, shepr_term::AbsRow(0));
+    let found = shepr_protocol::command::PaneTextRange {
+        start: shepr_term::Point::new(shepr_term::AbsRow(50), 0),
+        end: shepr_term::Point::new(shepr_term::AbsRow(50), 1),
+    };
+    copy.search = Some(super::ClientCopySearch {
+        query: crate::shell::state::TypedText::from("needle"),
+        results: super::ClientCopySearchResult {
+            matches: vec![found],
+            total: Some(100),
+            history_origin: Some(shepr_term::AbsRow(0)),
+            current: Some(shepr_protocol::command::PaneCopySearchPosition {
+                window_index: 0,
+                global_index: 50,
+            }),
+        },
+        ..Default::default()
+    });
+    super::prune_evicted_search_matches(&mut copy);
+    assert_eq!(
+        copy.search.as_ref().expect("search retained").results.total,
+        Some(100)
+    );
+    copy.scroll = shepr_term::ScrollMetrics::new(0, 100, 2, shepr_term::AbsRow(5));
+    super::prune_evicted_search_matches(&mut copy);
+    let result = &copy.search.as_ref().expect("search retained").results;
+    assert_eq!(result.matches, vec![found]);
+    assert_eq!(
+        result.current.expect("retained current match").window_index,
+        0
+    );
+    assert_eq!(result.total, None);
+
+    // A new server snapshot at the current origin restores an exact count.
+    let result = &mut copy.search.as_mut().expect("search retained").results;
+    result.history_origin = Some(shepr_term::AbsRow(5));
+    result.total = Some(95);
+    super::prune_evicted_search_matches(&mut copy);
+    assert_eq!(
+        copy.search.as_ref().expect("search retained").results.total,
+        Some(95)
+    );
+}
+
+#[test]
 fn ending_a_session_discards_its_queue() {
     let mut state = copy_shell();
     // A word motion goes to the server, and `j` typed behind it waits for its answer.
@@ -2226,12 +2312,12 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     let copy_mode = state.copy.as_ref().expect("copy mode retained");
     let search = copy_mode.search.as_ref().expect("search state retained");
     assert_eq!(search.results.matches, vec![found_on(6)]);
-    assert_eq!(search.results.total, 1);
+    assert_eq!(search.results.total, None);
     assert_eq!(
         search.results.current,
         Some(shepr_protocol::command::PaneCopySearchPosition {
             window_index: 0,
-            global_index: 0,
+            global_index: 1,
         })
     );
     assert_eq!(copy_mode.scroll.history_origin, shepr_term::AbsRow(5));
@@ -2258,6 +2344,8 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
         .surface_revision
         .checked_next()
         .expect("test precondition");
+    let frame = state.compose(106, 20).expect("copy frame after eviction");
+    assert!(frame_rows(&frame).join("\n").contains(" ?/?"));
     pane_surface.panes[0].content_rect.width -= 1;
     state.receive_pane_surface_from(
         pane_surface,
@@ -2270,7 +2358,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     let copy_mode = state.copy.as_ref().expect("copy mode retained");
     let search = copy_mode.search.as_ref().expect("search state retained");
     assert!(search.results.matches.is_empty());
-    assert_eq!(search.results.total, 0);
+    assert_eq!(search.results.total, None);
     assert_eq!(search.results.current, None);
 }
 

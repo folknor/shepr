@@ -1480,6 +1480,84 @@ fn pixel_mouse_down(
     )
 }
 
+#[test]
+fn pixel_release_outside_ioctl_extent_is_clamped_and_ends_the_gesture() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].mouse_reporting = true;
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.compose(106, 20).expect("pane frame");
+    let pane = state.pane_hits()[0].clone();
+    let geometry = shepr_termio::input::mouse::HostPixelExtent::new(106, 20, 1060, 400)
+        .expect("host geometry");
+
+    let outside_press = state.handle_host_input(
+        vec![crate::events::ParsedHostInput {
+            event: RawInputEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+            pixel_mouse: Some(shepr_termio::input::mouse::HostPixels {
+                x: geometry.width_px() + 1,
+                y: geometry.height_px() + 1,
+                geometry,
+            }),
+        }],
+        false,
+        Instant::now(),
+    );
+    assert!(outside_press.requests.is_empty());
+    assert!(state.pointer.pane_mouse_gesture.is_none());
+
+    let down = pixel_mouse_down(&mut state, &pane, (1, 0), (1, 1));
+    assert!(state.pointer.pane_mouse_gesture.is_some());
+    assert!(!down.requests.is_empty());
+
+    let release = state.handle_host_input(
+        vec![crate::events::ParsedHostInput {
+            event: RawInputEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 0,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+            pixel_mouse: Some(shepr_termio::input::mouse::HostPixels {
+                x: 0,
+                y: geometry.height_px() + 1,
+                geometry,
+            }),
+        }],
+        false,
+        Instant::now(),
+    );
+
+    assert!(state.pointer.pane_mouse_gesture.is_none());
+    assert!(matches!(
+        &release.requests[..],
+        [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
+            if pane_id == &test_pane_id("w1:p1")
+                && matches!(
+                    &events[..],
+                    [ClientPaneInputEvent::Mouse {
+                        kind: shepr_protocol::ClientMouseKind::Up(
+                            shepr_protocol::ClientMouseButton::Left
+                        ),
+                        ..
+                    }]
+                )
+    ));
+}
+
 fn pixel_pane_state(
     pane_pixel_mouse: shepr_term::mouse::PanePixelMouse,
 ) -> (ClientShellState, crate::shell::view::PaneHit) {

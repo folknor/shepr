@@ -13,6 +13,7 @@ pub mod delta;
 pub mod glyph_repair;
 mod limits;
 pub mod pane_row;
+pub mod patch;
 pub mod ratatui_conversion;
 
 /// Counters at small positions for this crate's tests, reached the way an

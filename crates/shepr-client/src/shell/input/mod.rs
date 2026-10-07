@@ -282,8 +282,24 @@ impl ClientShellState {
                 let RawInputEvent::Mouse(mut mouse) = input.event else {
                     continue;
                 };
-                let Some((column, row)) = pixels.geometry.cell(pixels.x, pixels.y) else {
+                let Some((column, row)) = pixels
+                    .geometry
+                    .cell_for_event(pixels.x, pixels.y, mouse.kind)
+                else {
                     continue;
+                };
+                let pixels = if matches!(
+                    mouse.kind,
+                    crossterm::event::MouseEventKind::Drag(_)
+                        | crossterm::event::MouseEventKind::Up(_)
+                ) {
+                    shepr_termio::input::mouse::HostPixels {
+                        x: pixels.x.clamp(1, pixels.geometry.width_px()),
+                        y: pixels.y.clamp(1, pixels.geometry.height_px()),
+                        ..pixels
+                    }
+                } else {
+                    pixels
                 };
                 mouse.column = column;
                 mouse.row = row;

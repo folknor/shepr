@@ -7,6 +7,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use shepr_api::client::{ApiClient, ApiClientDeadlineError, ApiClientError, Pong};
+use shepr_api::error::ApiErrorCode;
 
 /// A server's identity and readiness, as its `ping` answer gave them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,8 +48,8 @@ pub enum RuntimeLifecycle {
     Stopping,
 }
 
-// Presence probes expose their duration at read_server_presence_at; keep the
-// same duration here rather than adding a process-wide clock or timeout override.
+// The presence probe passes its remaining phase budget here; keep each API
+// request deadline explicit rather than adding a process-wide timeout override.
 pub(crate) fn read_runtime_status_at(
     socket_path: &Path,
     timeout: Duration,
@@ -75,14 +76,18 @@ pub(crate) fn read_runtime_status_at(
     match read_runtime_status_until(socket_path, deadline) {
         Ok(status) => Ok(Some(status)),
         Err(error) if status_probe_has_no_answer(&error) => Ok(None),
-        Err(
-            ApiClientDeadlineError::Connect(error)
-            | ApiClientDeadlineError::Request(ApiClientError::Io(error)),
-        ) => Err(error),
-        Err(ApiClientDeadlineError::Request(error @ ApiClientError::Json(_))) => {
-            Err(io::Error::new(io::ErrorKind::InvalidData, error))
+        Err(error) => Err(status_probe_io_error(error)),
+    }
+}
+
+fn status_probe_io_error(error: ApiClientDeadlineError) -> io::Error {
+    match error {
+        ApiClientDeadlineError::Connect(error)
+        | ApiClientDeadlineError::Request(ApiClientError::Io(error)) => error,
+        ApiClientDeadlineError::Request(error @ ApiClientError::Json(_)) => {
+            io::Error::new(io::ErrorKind::InvalidData, error)
         }
-        Err(ApiClientDeadlineError::Request(error)) => Err(io::Error::other(error)),
+        ApiClientDeadlineError::Request(error) => io::Error::other(error),
     }
 }
 
@@ -98,9 +103,9 @@ pub(crate) fn read_runtime_status_until(
         .map(RuntimeStatus::from)
 }
 
-/// A closed stream, missing listener or timed-out operation means the socket
-/// gave no status answer. Decoded API failures are not that: they are errors,
-/// never evidence that a server went away.
+/// A closed stream, missing listener, timed-out operation or busy refusal
+/// means the socket gave no status answer. Other decoded API failures are not
+/// evidence that a server went away.
 pub(crate) fn status_probe_has_no_answer(error: &ApiClientDeadlineError) -> bool {
     match error {
         ApiClientDeadlineError::Connect(error)
@@ -113,12 +118,21 @@ pub(crate) fn status_probe_has_no_answer(error: &ApiClientDeadlineError) -> bool
             )
         }
         ApiClientDeadlineError::Request(ApiClientError::EmptyResponse) => true,
+        ApiClientDeadlineError::Request(ApiClientError::ErrorResponse(response)) => {
+            response.error.code == ApiErrorCode::EndpointBusy
+        }
         ApiClientDeadlineError::Request(
-            ApiClientError::Json(_)
-            | ApiClientError::ErrorResponse(_)
-            | ApiClientError::UnexpectedResult(_),
+            ApiClientError::Json(_) | ApiClientError::UnexpectedResult(_),
         ) => false,
     }
+}
+
+pub(crate) fn status_probe_is_busy(error: &ApiClientDeadlineError) -> bool {
+    matches!(
+        error,
+        ApiClientDeadlineError::Request(ApiClientError::ErrorResponse(response))
+            if response.error.code == ApiErrorCode::EndpointBusy
+    )
 }
 
 /// Presence of the server socket and its readiness for TUI connections.
@@ -143,8 +157,16 @@ pub enum ServerPresence {
 /// between the two reads as gone rather than unresponsive. A liveness probe
 /// that cannot decide is the error.
 pub fn read_server_presence_at(socket: &Path, timeout: Duration) -> io::Result<ServerPresence> {
+    // One deadline covers both liveness connects and the ping, so this
+    // presence probe stays within the phase budget its caller allocated.
+    // clock-io-ok: the deadline bounds real socket connects and a request.
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "presence timeout is too large")
+    })?;
     let live = || {
-        shepr_platform::ipc::socket_is_live(socket).map_err(|error| {
+        // clock-io-ok: each liveness connect gets what is left of the real budget.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        shepr_platform::ipc::socket_is_live_within(socket, remaining).map_err(|error| {
             io::Error::new(
                 error.kind(),
                 format!(
@@ -157,15 +179,17 @@ pub fn read_server_presence_at(socket: &Path, timeout: Duration) -> io::Result<S
     if !live()? {
         return Ok(ServerPresence::Gone);
     }
-    let status = read_runtime_status_at(socket, timeout).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!(
-                "the shepr server at {} did not give a usable status answer: {error}",
-                socket.display()
-            ),
-        )
-    })?;
+    // clock-io-ok: the status request gets what is left of the real budget.
+    let status = read_runtime_status_at(socket, deadline.saturating_duration_since(Instant::now()))
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!(
+                    "the shepr server at {} did not give a usable status answer: {error}",
+                    socket.display()
+                ),
+            )
+        })?;
     match status {
         Some(status) if status.lifecycle == RuntimeLifecycle::Stopping => {
             Ok(ServerPresence::Stopping(status))
@@ -174,8 +198,18 @@ pub fn read_server_presence_at(socket: &Path, timeout: Duration) -> io::Result<S
             Ok(ServerPresence::Starting(status))
         }
         Some(status) => Ok(ServerPresence::Running(status)),
-        None if !live()? => Ok(ServerPresence::Gone),
-        None => Ok(ServerPresence::Unresponsive),
+        // A ping that timed out has spent the budget, so this second connect
+        // may have none left. An absent socket still reads as gone without
+        // connecting; one whose connect cannot be made in time is taken for
+        // the live, silent server it was a moment ago.
+        None => match live() {
+            Ok(false) => Ok(ServerPresence::Gone),
+            Ok(true) => Ok(ServerPresence::Unresponsive),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                Ok(ServerPresence::Unresponsive)
+            }
+            Err(error) => Err(error),
+        },
     }
 }
 
@@ -323,6 +357,27 @@ mod tests {
                 "invalid status result".into()
             ),)
         ));
+        let busy = ApiClientDeadlineError::Request(ApiClientError::ErrorResponse(
+            shepr_api::schema::ErrorResponse {
+                id: None,
+                error: shepr_api::schema::ErrorBody::new(
+                    &ApiErrorCode::EndpointBusy,
+                    "server is busy",
+                ),
+            },
+        ));
+        assert!(status_probe_has_no_answer(&busy));
+        assert!(status_probe_is_busy(&busy));
+        let unavailable = ApiClientDeadlineError::Request(ApiClientError::ErrorResponse(
+            shepr_api::schema::ErrorResponse {
+                id: None,
+                error: shepr_api::schema::ErrorBody::new(
+                    &ApiErrorCode::ServerUnavailable,
+                    "server is stopping",
+                ),
+            },
+        ));
+        assert!(!status_probe_has_no_answer(&unavailable));
     }
 
     #[test]

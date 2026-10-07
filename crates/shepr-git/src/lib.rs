@@ -14,6 +14,7 @@
 
 use std::path::PathBuf;
 
+mod access;
 mod config;
 mod discovery;
 mod identity;

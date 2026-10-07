@@ -69,18 +69,46 @@ impl Dependencies {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(super) struct ConfigCtx {
     pub(super) branch: BranchName,
     pub(super) config: Option<BranchConfig>,
     pub(super) dependencies: Dependencies,
+    /// When this was read; only `current` consults it.
+    pub(super) read_at: std::time::Instant,
+}
+
+// Equality is the content: a status fingerprint compares its config context,
+// and a reread that found the same mapping must not read as a change that
+// recomputes ahead/behind.
+impl PartialEq for ConfigCtx {
+    fn eq(&self, other: &Self) -> bool {
+        self.branch == other.branch
+            && self.config == other.config
+            && self.dependencies == other.dependencies
+    }
+}
+
+impl Eq for ConfigCtx {}
+
+impl ConfigCtx {
+    pub(super) fn current(&self) -> bool {
+        // A dependency set we cannot prove current is periodically reread.
+        // Keep both successful mappings and refusals between retries instead
+        // of spawning config probes on every sidebar refresh.
+        match &self.dependencies {
+            Dependencies::Uncacheable => {
+                self.read_at.elapsed() < crate::limits::GIT_STATUS_RETRY_DELAY
+            }
+            tracked => deps_current(tracked),
+        }
+    }
 }
 
 pub(super) fn stamp(path: PathBuf, canonical_target: Option<PathBuf>) -> FileDependency {
-    // This may block on a shared user config or include outside the checkout
-    // paths the worker records. Mount isolation needs this actual dependency
-    // tracked before metadata, not just the refresh job's cwd and key.
-    let stamp = match std::fs::metadata(&path) {
+    // Announce this dependency before metadata, even when it lives outside
+    // the checkout (user config, includes and linked-worktree common dirs).
+    let stamp = match crate::access::metadata(&path) {
         Ok(metadata) => DependencyStamp::Present {
             file: shepr_platform::FileStamp::from_metadata(&metadata),
         },
@@ -272,6 +300,7 @@ pub(super) fn read_config_for_status(
                 branch: branch.clone(),
                 config: None,
                 dependencies: Dependencies::Uncacheable,
+                read_at: std::time::Instant::now(),
             };
         }
     };
@@ -283,6 +312,7 @@ pub(super) fn read_config_for_status(
                 branch: branch.clone(),
                 config: None,
                 dependencies: Dependencies::Uncacheable,
+                read_at: std::time::Instant::now(),
             };
         }
     };
@@ -298,6 +328,7 @@ pub(super) fn read_config_for_status(
         branch: branch.clone(),
         config,
         dependencies: deps,
+        read_at: std::time::Instant::now(),
     }
 }
 

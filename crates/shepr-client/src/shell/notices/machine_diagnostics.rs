@@ -121,12 +121,14 @@ impl ClientShellState {
             }
             return false;
         }
+        // A badge owns its press, but releases belong to the mouse router:
+        // they may finish a pane gesture or a selection that began elsewhere.
+        if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
+            return false;
+        }
         let Some(id) = hit else {
             return false;
         };
-        if mouse.kind == MouseEventKind::Up(MouseButton::Left) {
-            return true;
-        }
         if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
             return false;
         }

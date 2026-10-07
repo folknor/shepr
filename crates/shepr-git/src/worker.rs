@@ -9,21 +9,14 @@
 //! [`GitStatusWorker::abandon_stalled`] gives up on one that owes a refresh and
 //! has made none for [`GIT_REFRESH_STALL_BOUND`]. An abandoned thread is left
 //! detached and joined only once it has finished; it publishes nothing more,
-//! and the paths its stalled step names are left out of later refreshes until
-//! it finishes. These are nominal cwd/checkout paths, not the actual blocking
-//! dependency or its mount: sibling checkouts on one hung mount can each
-//! consume a slot, as can checkouts sharing a hung user config outside those
-//! paths. Quarantining a mount requires observing each filesystem access and
-//! resolving its mount without statting the hung filesystem. Prefix filtering
-//! of targets alone cannot provide that isolation. A thread stalled with no
-//! step running (blocked in a destructor, say) is abandoned too, since the
-//! handle is wedged behind it, but it has no
-//! paths to keep out; a recurring one holds an abandonment slot each time
-//! until it finishes. At most [`MAX_ABANDONED_GIT_REFRESH_THREADS`] are left
-//! alive at once, and past that a stall is waited out.
+//! and the mount paths of its blocking filesystem access are quarantined until
+//! it finishes. Shared dependencies are checked at each access, independently
+//! of the checkout. Lookup reads mountinfo and never stats from the handle.
+//! At most [`MAX_ABANDONED_GIT_REFRESH_THREADS`] are left alive at once; stalls
+//! on distinct filesystems or outside filesystem access can exhaust that cap.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -52,8 +45,11 @@ fn lock<V>(mutex: &Mutex<V>) -> MutexGuard<'_, V> {
 /// Where a refresh is: when it last made progress, and the paths of the step
 /// it is running, if any. The worker reads it to tell a refresh that is slow
 /// from one that is stuck, and which paths a stuck one is stuck on.
+#[derive(Clone)]
 pub struct RefreshProgress {
-    activity: Mutex<Activity>,
+    activity: Arc<Mutex<Activity>>,
+    excluded: Arc<Mutex<Vec<PathBuf>>>,
+    cancelled: Arc<AtomicBool>,
 }
 
 struct Activity {
@@ -64,10 +60,12 @@ struct Activity {
 impl Default for RefreshProgress {
     fn default() -> Self {
         Self {
-            activity: Mutex::new(Activity {
+            activity: Arc::new(Mutex::new(Activity {
                 since: Instant::now(),
                 paths: Vec::new(),
-            }),
+            })),
+            excluded: Arc::new(Mutex::new(Vec::new())),
+            cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -80,6 +78,22 @@ impl RefreshProgress {
         let mut activity = lock(&self.activity);
         activity.since = Instant::now();
         activity.paths = paths;
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn set_excluded(&self, paths: Vec<PathBuf>) {
+        *lock(&self.excluded) = paths;
+    }
+
+    pub(crate) fn excludes(
+        &self,
+        mounts: &shepr_platform::mounts::MountTable,
+        path: &std::path::Path,
+    ) -> bool {
+        self.is_cancelled() || mounts.is_quarantined(path, &lock(&self.excluded))
     }
 
     /// Records progress outside any step.
@@ -274,12 +288,25 @@ impl<T: Send + 'static> GitStatusWorker<T> {
     pub fn refresh(&mut self, mut targets: Vec<RefreshTarget<T>>) -> std::io::Result<()> {
         self.reap_abandoned();
         let requested = targets.len();
-        targets.retain(|target| !self.is_stuck(target));
+        let mounts = if self.abandoned.is_empty() {
+            shepr_platform::mounts::MountTable::default()
+        } else {
+            shepr_platform::mounts::MountTable::read().unwrap_or_default()
+        };
+        targets.retain(|target| !self.is_stuck(target, &mounts));
         if targets.len() < requested {
             tracing::debug!(
                 skipped = requested - targets.len(),
                 "left Git status targets on a stalled path out of this refresh"
             );
+        }
+        let excluded: Vec<_> = self
+            .abandoned
+            .iter()
+            .flat_map(|thread| thread.stuck.iter().cloned())
+            .collect();
+        if let Some(thread) = &self.thread {
+            thread.shared.progress.set_excluded(excluded.clone());
         }
         let mut command = Command::Refresh(targets);
         if let Some(thread) = &self.thread {
@@ -303,6 +330,7 @@ impl<T: Send + 'static> GitStatusWorker<T> {
             }
         }
         let thread = self.spawn()?;
+        thread.shared.progress.set_excluded(excluded);
         Self::count_sent_refresh(&thread.shared);
         thread
             .commands
@@ -422,6 +450,7 @@ impl<T: Send + 'static> GitStatusWorker<T> {
         if !shared.leave_running(Phase::Abandoned) {
             return None;
         }
+        shared.progress.cancelled.store(true, Ordering::SeqCst);
         if stuck.is_empty() {
             // Blocked with no step running (in a destructor, say): nothing
             // names what to keep out, but the handle is wedged behind the
@@ -466,22 +495,18 @@ impl<T: Send + 'static> GitStatusWorker<T> {
         }
     }
 
-    fn is_stuck(&self, target: &RefreshTarget<T>) -> bool {
-        // This only matches nominal step inputs. It cannot match a sibling
-        // checkout on the same mount, or a user config/include/common dir
-        // outside those inputs. Expanding prefixes to parents would suppress
-        // unrelated healthy checkouts too; mount identity must come from a
-        // platform lookup that does not touch the potentially hung mount.
-        self.abandoned
-            .iter()
-            .flat_map(|thread| &thread.stuck)
-            .any(|stuck| {
-                target.cwd.starts_with(stuck)
-                    || target
-                        .known_key
-                        .as_ref()
-                        .is_some_and(|key| key.as_path().starts_with(stuck))
-            })
+    fn is_stuck(
+        &self,
+        target: &RefreshTarget<T>,
+        mounts: &shepr_platform::mounts::MountTable,
+    ) -> bool {
+        self.abandoned.iter().any(|thread| {
+            mounts.is_quarantined(&target.cwd, &thread.stuck)
+                || target
+                    .known_key
+                    .as_ref()
+                    .is_some_and(|key| mounts.is_quarantined(key.as_path(), &thread.stuck))
+        })
     }
 
     /// Drops every cached miss once the commands sent before it have run.
@@ -580,7 +605,9 @@ fn run<T>(
         match command {
             Command::Refresh(targets) => {
                 shared.progress.settle();
-                let outcome = refresh(&mut refresher, targets, &shared.progress);
+                let outcome = crate::access::scoped(&shared.progress, || {
+                    refresh(&mut refresher, targets, &shared.progress)
+                });
                 shared.progress.settle();
                 // The handle abandoned this refresh while it ran: the outcome
                 // is late and is dropped unpublished.
@@ -601,7 +628,6 @@ fn run<T>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
 
     use super::*;
@@ -713,6 +739,72 @@ mod tests {
             id,
             drop_gate: None,
         }
+    }
+
+    #[test]
+    fn one_stalled_mount_holds_one_thread_across_sibling_checkouts() {
+        let scratch = shepr_test_support::ScratchDir::new("git-worker-mount");
+        let stuck = scratch.join("mount");
+        std::fs::create_dir(&stuck).expect("mount fixture");
+        let mounts = shepr_platform::mounts::MountTable::from_mountinfo(&format!(
+            "1 0 8:1 / / rw - ext4 root rw\n2 1 0:42 / {} rw - nfs host:/ rw\n",
+            stuck.display(),
+        ));
+        let (sender, outcomes) = mpsc::channel();
+        let (entered, entered_receiver) = mpsc::channel();
+        let released = Arc::new(AtomicBool::new(false));
+        let release = Arc::clone(&released);
+        let first = AtomicBool::new(true);
+        let double_stuck = stuck.clone();
+        let mut worker = GitStatusWorker::with_refresh(
+            move |outcome: RefreshOutcome<usize>| {
+                sender.send(outcome).ok();
+            },
+            move |targets, progress| {
+                crate::access::scoped_with_mounts(progress, mounts.clone(), || {
+                    if first.swap(false, Ordering::SeqCst) {
+                        // Announce the actual dependency mount, then simulate
+                        // its kernel access refusing to return.
+                        crate::access::metadata(double_stuck.join("a")).ok();
+                        entered.send(()).ok();
+                        let deadline = Instant::now() + WAIT;
+                        while !release.load(Ordering::SeqCst) && Instant::now() < deadline {
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    } else {
+                        assert_eq!(
+                            crate::access::metadata(double_stuck.join("b"))
+                                .expect_err("same mount refused")
+                                .kind(),
+                            std::io::ErrorKind::WouldBlock
+                        );
+                    }
+                    answer_all(targets)
+                })
+            },
+        );
+        worker
+            .refresh(vec![target(0, &scratch.join("checkout-one"))])
+            .expect("worker");
+        entered_receiver.recv_timeout(WAIT).expect("stalled access");
+        assert!(worker.abandon_stalled(past_the_stall_bound()));
+        // These checkouts live elsewhere but share the dependency mount.
+        for owner in 1..4 {
+            worker
+                .refresh(vec![target(
+                    owner,
+                    &scratch.join(format!("checkout-{owner}")),
+                )])
+                .expect("replacement");
+            assert_eq!(
+                owners(&outcomes.recv_timeout(WAIT).expect("healthy refresh")),
+                [owner]
+            );
+            assert_eq!(worker.abandoned.len(), 1);
+        }
+        released.store(true, Ordering::SeqCst);
+        wait_for_abandoned_threads(&mut worker);
+        assert!(outcomes.try_recv().is_err());
     }
 
     #[test]

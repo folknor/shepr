@@ -14,6 +14,7 @@ impl AgentOwnership {
             last_agent_state_change_seq: None,
             process_evidence: AgentProcessEvidence::default(),
             checkpoint_candidate: None,
+            replacement_start: None,
             last_unapplied_hook_report: None,
             pane_ended: false,
         }

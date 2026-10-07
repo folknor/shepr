@@ -615,7 +615,9 @@ fn pi_startup_preserves_persisted_session_without_live_authority() {
         Instant::now(),
     );
 
-    assert!(startup.is_none());
+    // Held for a relaunch the detector might confirm, but never applied
+    // without one.
+    assert_eq!(startup, Some(AgentOwnershipMutation::default()));
     assert_eq!(
         terminal.current_session_identity_for_persistence(),
         Some(
@@ -666,7 +668,13 @@ fn pi_non_replacement_reports_preserve_full_lifecycle_authority() {
             Instant::now(),
         );
 
-        assert!(session_report.is_none());
+        // A `startup` is held for a relaunch the detector might confirm
+        // (parked, changing nothing); the other sources are refused.
+        if reason == Some("startup") {
+            assert_eq!(session_report, Some(AgentOwnershipMutation::default()));
+        } else {
+            assert!(session_report.is_none());
+        }
         assert!(working.is_none());
         assert_eq!(terminal.state, AgentState::Idle);
         assert_eq!(
@@ -4355,4 +4363,374 @@ fn persisted_paths_reject_unrecognized_same_owner_replacements() {
             );
         }
     }
+}
+
+fn startup_source() -> ReportedSessionStart {
+    ReportedSessionStart::Known(AgentSessionStartSource::Startup)
+}
+
+/// A pane whose detector holds a live `agent` process at `now`, with `old` as
+/// the pane's session and no hook authority: a restored identity, or a
+/// screen-owned agent's own startup.
+fn running_agent_with_session(
+    agent: Agent,
+    old: &shepr_agent::resume::AgentSessionRef,
+    now: Instant,
+) -> AgentOwnership {
+    let mut terminal = test_terminal();
+    terminal.set_detected_agent_process_at(agent, now);
+    let origin = ReportOrigin::official(agent).expect("official integration");
+    terminal.set_persisted_agent_session(
+        PersistedAgentSession::new(*origin.source(), old.clone()).expect("test session"),
+    );
+    terminal
+}
+
+fn current_session_ref(terminal: &AgentOwnership) -> Option<shepr_agent::resume::AgentSessionRef> {
+    terminal
+        .current_session_identity_for_persistence()
+        .map(|session| session.session_ref().clone())
+}
+
+/// A screen-owned agent (Claude) and a full-lifecycle one (Pi, whose restored
+/// path is the same case as a live one), each with an old and a new session.
+fn relaunch_rows() -> Vec<(
+    Agent,
+    shepr_agent::resume::AgentSessionRef,
+    shepr_agent::resume::AgentSessionRef,
+)> {
+    vec![
+        (
+            Agent::Claude,
+            shepr_agent::resume::AgentSessionRef::id("claude-old").expect("session id"),
+            shepr_agent::resume::AgentSessionRef::id("claude-new").expect("session id"),
+        ),
+        (
+            Agent::Pi,
+            shepr_agent::resume::AgentSessionRef::path(test_session_path("relaunch-old.jsonl"))
+                .expect("session path"),
+            shepr_agent::resume::AgentSessionRef::path(test_session_path("relaunch-new.jsonl"))
+                .expect("session path"),
+        ),
+    ]
+}
+
+#[test]
+fn a_relaunch_startup_that_beats_the_exit_is_admitted_with_the_replacement() {
+    for (agent, old, new) in relaunch_rows() {
+        let now = Instant::now();
+        let mut terminal = running_agent_with_session(agent, &old, now);
+        let origin = ReportOrigin::official(agent).expect("official integration");
+        // `claude; claude`: the new process's startup reaches the server
+        // before the probe that sees the new process group.
+        let received = now + Duration::from_millis(10);
+        assert_eq!(
+            terminal.report_session_start_outcome_at(
+                &origin,
+                Some(new.clone()),
+                Some(10),
+                startup_source(),
+                received,
+            ),
+            HookOutcome::Parked,
+            "{agent}"
+        );
+        assert_eq!(current_session_ref(&terminal), Some(old.clone()), "{agent}");
+        assert_eq!(
+            terminal
+                .last_unapplied_hook_report(received)
+                .map(|report| report.disposition),
+            Some(UnappliedHookDisposition::Parked(
+                ParkedHookAwaiting::Process {
+                    expires_at: received + REPLACEMENT_START_EXIT_WINDOW,
+                }
+            )),
+            "{agent}"
+        );
+
+        // That probe reports the old process's exit, which clears its session,
+        // and the next one the replacement process.
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(agent),
+            AgentState::Idle,
+            false,
+            true,
+            now + Duration::from_millis(300),
+        );
+        assert_eq!(current_session_ref(&terminal), None, "{agent}");
+        let presence =
+            terminal.set_detected_agent_process_at(agent, now + Duration::from_millis(600));
+
+        assert!(presence.session_ref_changed, "{agent}");
+        assert_eq!(current_session_ref(&terminal), Some(new), "{agent}");
+        assert!(terminal.replacement_start.is_none(), "{agent}");
+        assert!(
+            terminal
+                .last_unapplied_hook_report(now + Duration::from_millis(600))
+                .is_none(),
+            "{agent}"
+        );
+    }
+}
+
+#[test]
+fn a_fresh_pi_before_the_restored_one_was_identified_takes_the_pane() {
+    // A restored Pi path, and a detector that has not identified any process
+    // yet: the restored Pi quit early and a fresh one started. Its startup
+    // parks for process evidence, which the first presence supplies.
+    let (agent, restored, fresh) = relaunch_rows().remove(1);
+    let now = Instant::now();
+    let mut terminal = test_terminal();
+    let origin = ReportOrigin::official(agent).expect("official Pi");
+    terminal.set_persisted_agent_session(
+        PersistedAgentSession::new(*origin.source(), restored.clone()).expect("test session"),
+    );
+    assert_eq!(
+        terminal.report_session_start_outcome_at(
+            &origin,
+            Some(fresh.clone()),
+            Some(10),
+            startup_source(),
+            now + Duration::from_millis(10),
+        ),
+        HookOutcome::Parked
+    );
+    assert_eq!(current_session_ref(&terminal), Some(restored));
+    terminal.set_detected_agent_process_at(agent, now + Duration::from_millis(500));
+    assert_eq!(current_session_ref(&terminal), Some(fresh));
+}
+
+#[test]
+fn a_full_lifecycle_relaunch_carries_its_reports_parked_after_the_exit() {
+    let (agent, old, new) = relaunch_rows().remove(1);
+    let now = Instant::now();
+    let mut terminal = running_agent_with_session(agent, &old, now);
+    terminal.set_hook_authority_at(
+        "shepr:pi",
+        AgentState::Idle,
+        Some(old.clone()),
+        Some(5),
+        now + Duration::from_millis(1),
+    );
+    let origin = ReportOrigin::official(agent).expect("official Pi");
+    assert_eq!(
+        terminal.report_session_start_outcome_at(
+            &origin,
+            Some(new.clone()),
+            Some(10),
+            startup_source(),
+            now + Duration::from_millis(10),
+        ),
+        HookOutcome::Parked
+    );
+    terminal.set_detected_state_with_screen_signals_at(
+        Some(agent),
+        AgentState::Idle,
+        false,
+        true,
+        now + Duration::from_millis(300),
+    );
+    // A report of the relaunch's session between the exit and the presence
+    // waits for a start, which the held one then supplies.
+    assert_eq!(
+        terminal.report_hook_outcome_at(
+            origin,
+            AgentState::Working,
+            Some(new.clone()),
+            Some(11),
+            HookClockSample::from(now + Duration::from_millis(350)),
+        ),
+        HookOutcome::Parked
+    );
+    terminal.set_detected_agent_process_at(agent, now + Duration::from_millis(600));
+
+    assert_eq!(current_session_ref(&terminal), Some(new.clone()));
+    assert!(terminal.full_lifecycle_hook_authority_active());
+    assert_eq!(terminal.state, AgentState::Working);
+    assert!(
+        terminal
+            .set_hook_authority_at(
+                "shepr:pi",
+                AgentState::Idle,
+                Some(new),
+                Some(12),
+                now + Duration::from_millis(700),
+            )
+            .is_some()
+    );
+    assert_eq!(terminal.state, AgentState::Idle);
+}
+
+#[test]
+fn a_nested_startup_is_never_admitted_without_a_relaunch() {
+    for (agent, old, nested) in relaunch_rows() {
+        let now = Instant::now();
+        let mut terminal = running_agent_with_session(agent, &old, now);
+        let origin = ReportOrigin::official(agent).expect("official integration");
+        let received = now + Duration::from_millis(10);
+        assert_eq!(
+            terminal.report_session_start_outcome_at(
+                &origin,
+                Some(nested),
+                Some(10),
+                startup_source(),
+                received,
+            ),
+            HookOutcome::Parked,
+            "{agent}"
+        );
+        // The pane's own agent keeps running in its process group: the
+        // detector reports it present, never gone, until the window ends.
+        terminal.set_detected_agent_process_at(agent, now + Duration::from_secs(1));
+        assert!(terminal.replacement_start.is_some(), "{agent}");
+        let late = received + REPLACEMENT_START_EXIT_WINDOW + Duration::from_millis(1);
+        assert_eq!(terminal.last_unapplied_hook_report(late), None, "{agent}");
+        terminal.set_detected_agent_process_at(agent, late);
+        assert!(terminal.replacement_start.is_none(), "{agent}");
+        assert_eq!(current_session_ref(&terminal), Some(old), "{agent}");
+
+        // A later quit and relaunch does not bring the nested session back.
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(agent),
+            AgentState::Idle,
+            false,
+            true,
+            late + Duration::from_secs(1),
+        );
+        terminal.set_detected_agent_process_at(agent, late + Duration::from_millis(1300));
+        assert_eq!(current_session_ref(&terminal), None, "{agent}");
+    }
+}
+
+#[test]
+fn a_relaunch_the_detector_confirms_too_late_loses_its_session() {
+    let exit_window = REPLACEMENT_START_EXIT_WINDOW;
+    let gap = REPLACEMENT_START_PRESENCE_GAP;
+    // (exit after the start, presence after the exit)
+    for (exit_after, presence_after) in [
+        (
+            exit_window + Duration::from_millis(1),
+            Duration::from_millis(300),
+        ),
+        (Duration::from_millis(300), gap + Duration::from_millis(1)),
+    ] {
+        for (agent, old, new) in relaunch_rows() {
+            let now = Instant::now();
+            let mut terminal = running_agent_with_session(agent, &old, now);
+            let origin = ReportOrigin::official(agent).expect("official integration");
+            let received = now + Duration::from_millis(10);
+            terminal.report_session_start_outcome_at(
+                &origin,
+                Some(new),
+                Some(10),
+                startup_source(),
+                received,
+            );
+            let exited_at = received + exit_after;
+            terminal.set_detected_state_with_screen_signals_at(
+                Some(agent),
+                AgentState::Idle,
+                false,
+                true,
+                exited_at,
+            );
+            terminal.set_detected_agent_process_at(agent, exited_at + presence_after);
+            // The old session is gone with its process; the unconfirmed one
+            // is never installed in its place.
+            assert_eq!(current_session_ref(&terminal), None, "{agent}");
+            assert!(terminal.replacement_start.is_none(), "{agent}");
+        }
+    }
+}
+
+#[test]
+fn a_later_start_from_the_source_supersedes_a_held_one() {
+    let now = Instant::now();
+    let old = shepr_agent::resume::AgentSessionRef::id("claude-old").expect("session id");
+    let mut terminal = running_agent_with_session(Agent::Claude, &old, now);
+    let origin = ReportOrigin::official(Agent::Claude).expect("official Claude");
+    for (seq, id) in [(10, "claude-nested"), (11, "claude-relaunch")] {
+        assert_eq!(
+            terminal.report_session_start_outcome_at(
+                &origin,
+                shepr_agent::resume::AgentSessionRef::id(id),
+                Some(seq),
+                startup_source(),
+                now + Duration::from_millis(seq),
+            ),
+            HookOutcome::Parked
+        );
+    }
+    terminal.set_detected_state_with_screen_signals_at(
+        Some(Agent::Claude),
+        AgentState::Idle,
+        false,
+        true,
+        now + Duration::from_millis(300),
+    );
+    terminal.set_detected_agent_process_at(Agent::Claude, now + Duration::from_millis(600));
+    assert_eq!(
+        current_session_ref(&terminal),
+        shepr_agent::resume::AgentSessionRef::id("claude-relaunch")
+    );
+}
+
+#[test]
+fn only_a_startup_against_a_live_process_is_held() {
+    let now = Instant::now();
+    let old = shepr_agent::resume::AgentSessionRef::id("claude-old").expect("session id");
+    let origin = ReportOrigin::official(Agent::Claude).expect("official Claude");
+    // An omitted or unknown start source is no process start.
+    for source in [
+        ReportedSessionStart::Omitted,
+        ReportedSessionStart::Unrecognized,
+    ] {
+        let mut terminal = running_agent_with_session(Agent::Claude, &old, now);
+        assert_eq!(
+            terminal.report_session_start_outcome_at(
+                &origin,
+                shepr_agent::resume::AgentSessionRef::id("claude-other"),
+                Some(10),
+                source,
+                now + Duration::from_millis(10),
+            ),
+            HookOutcome::Rejected(HookRejection::ReplacedSession)
+        );
+        assert!(terminal.replacement_start.is_none());
+    }
+    // With no live process held, nothing can confirm a relaunch.
+    let mut terminal = test_terminal();
+    terminal.set_persisted_agent_session(
+        PersistedAgentSession::new(*origin.source(), old.clone()).expect("test session"),
+    );
+    assert_eq!(
+        terminal.report_session_start_outcome_at(
+            &origin,
+            shepr_agent::resume::AgentSessionRef::id("claude-other"),
+            Some(10),
+            startup_source(),
+            now + Duration::from_millis(10),
+        ),
+        HookOutcome::Rejected(HookRejection::ReplacedSession)
+    );
+    assert!(terminal.replacement_start.is_none());
+}
+
+#[test]
+fn the_pane_ending_discards_a_held_relaunch_start() {
+    let now = Instant::now();
+    let old = shepr_agent::resume::AgentSessionRef::id("claude-old").expect("session id");
+    let mut terminal = running_agent_with_session(Agent::Claude, &old, now);
+    let origin = ReportOrigin::official(Agent::Claude).expect("official Claude");
+    terminal.report_session_start_outcome_at(
+        &origin,
+        shepr_agent::resume::AgentSessionRef::id("claude-new"),
+        Some(10),
+        startup_source(),
+        now + Duration::from_millis(10),
+    );
+    terminal.set_pane_process_exit_at(true, now + Duration::from_millis(20));
+    assert!(terminal.replacement_start.is_none());
+    // The checkpoint keeps what the pane held when it died.
+    assert_eq!(current_session_ref(&terminal), Some(old));
 }

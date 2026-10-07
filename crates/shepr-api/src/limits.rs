@@ -94,10 +94,23 @@ pub(crate) const MAX_UNCLASSIFIED_CONNECTIONS: usize = 64;
 pub(crate) const BUSY_CLIENT_HANDSHAKE_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Bounds how long a stop request's connection thread waits for the server's
-/// final session save result. The server keeps its socket through that save
-/// and the save itself has no deadline, but a stopping client gives up at its
-/// own stop budget (`ORDINARY_REQUEST_TIMEOUT` for the request, which the
-/// launcher's stop budget matches), so a thread that waits past the client's
-/// response window answers nobody. It guards a server that dies or wedges
-/// before it publishes a result.
+/// final session save result. The save itself has no deadline, so this keeps a
+/// request worker and its ingress slot finite if the server dies or wedges
+/// before publishing a result. The launcher's request budget includes this
+/// wait, the maximum socket connect and response-write times, and scheduling
+/// margin, leaving a separate budget for the server to finish shutting down.
 pub(crate) const FINAL_SAVE_ANSWER_TIMEOUT: Duration = ORDINARY_RESPONSE_TIMEOUT;
+
+/// Maximum duration of the launcher's stop request, from starting its socket
+/// connect through receiving the server's stop answer. This covers the
+/// maximum connect, the server's final-save wait, a bounded response write,
+/// and a short scheduling margin. The launcher starts its server-exit wait
+/// only after this answer arrives.
+pub const STOP_REQUEST_TIMEOUT: Duration = ORDINARY_CONNECT_TIMEOUT
+    .saturating_add(FINAL_SAVE_ANSWER_TIMEOUT)
+    .saturating_add(STREAM_WRITE_TIMEOUT)
+    .saturating_add(STOP_REQUEST_SCHEDULING_GRACE);
+
+/// Room for request parsing, response serialization and local scheduling
+/// around the separately bounded socket operations.
+const STOP_REQUEST_SCHEDULING_GRACE: Duration = Duration::from_secs(5);

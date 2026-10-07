@@ -399,6 +399,14 @@ pub fn local_notice(local: &crate::restart::RestartResult) -> Option<String> {
         }) => Some(format!(
             "shepr: stopped the local server of a different build, but its final session save failed: {message}; the saved layout may lack its latest changes. One of this build starts now."
         )),
+        crate::restart::RestartResult::Failed(
+            crate::stop::ServerStopError::FinalSaveUnreported {
+                message,
+                stop_error: None,
+            },
+        ) => Some(format!(
+            "shepr: stopped the local server of a different build, but it did not report its final session save: {message}. One of this build starts now."
+        )),
         crate::restart::RestartResult::Failed(error) => {
             Some(format!("shepr: could not stop the local server: {error}"))
         }

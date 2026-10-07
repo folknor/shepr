@@ -919,12 +919,32 @@ fn osc52_clipboard_and_selection_stores_are_forwarded_as_copies() {
         shepr_core::scrollback::ScrollbackBudget::new(0),
     );
 
-    for target in ["c", "p", "s"] {
+    // An omitted target defaults to `c` in vte.
+    for target in ["", "c", "p", "s"] {
         terminal.write(format!("\x1b]52;{target};Y2xpcA==\x07").as_bytes());
         assert_eq!(
             terminal.take_effects().clipboard_writes,
             vec![b"clip".to_vec()]
         );
+    }
+}
+
+#[test]
+fn osc52_can_and_sub_terminators_are_dispatched_like_vte() {
+    for terminator in [b"\x18".as_slice(), b"\x1a".as_slice()] {
+        let mut terminal = Terminal::new(
+            shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+            shepr_core::scrollback::ScrollbackBudget::new(0),
+        );
+        terminal.set_osc_body_capture(true);
+        let mut sequence = b"\x1b]52;c;YQ==".to_vec();
+        sequence.extend_from_slice(terminator);
+
+        terminal.write(&sequence);
+
+        let effects = terminal.take_effects();
+        assert_eq!(effects.clipboard_writes, vec![b"a".to_vec()]);
+        assert_eq!(effects.osc_bodies, vec![b"52;c;YQ==".to_vec()]);
     }
 }
 
@@ -967,6 +987,25 @@ fn oversized_osc52_cut_reports_a_decoded_size_lower_bound() {
     let effects = terminal.take_effects();
     assert!(effects.clipboard_writes.is_empty());
     let minimum_bytes = (MAX_OSC_RAW_BYTES - 3) / 4 * 3;
+    assert!(minimum_bytes > MAX_CLIPBOARD_BYTES);
+    assert_eq!(
+        effects.dropped_clipboard_store_sizes,
+        vec![ClipboardStoreSize::AtLeast(minimum_bytes)]
+    );
+}
+
+#[test]
+fn oversized_osc52_store_with_omitted_target_reports_its_size_lower_bound() {
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+    let encoded_payload = "A".repeat(MAX_OSC_RAW_BYTES + 8);
+    terminal.write(format!("\x1b]52;;{encoded_payload}\x07").as_bytes());
+
+    let effects = terminal.take_effects();
+    assert!(effects.clipboard_writes.is_empty());
+    let minimum_bytes = (MAX_OSC_RAW_BYTES - 2) / 4 * 3;
     assert!(minimum_bytes > MAX_CLIPBOARD_BYTES);
     assert_eq!(
         effects.dropped_clipboard_store_sizes,

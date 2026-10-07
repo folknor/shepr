@@ -397,6 +397,7 @@ async fn copy_search_uses_endpoint_terminal_matches_and_wraps() {
         panic!("expected copy search");
     };
     assert_eq!(pane_id, public_pane_id);
+    assert_eq!(search.history_origin, Some(shepr_vt::AbsRow(0)));
     assert_eq!(search.matches.len(), 2);
     assert_eq!(
         search.matches[0].start,

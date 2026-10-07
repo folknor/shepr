@@ -77,6 +77,16 @@ impl AgentOwnership {
             session_ref: session_ref.clone(),
             received: sample,
         };
+        // A newer start from the source supersedes a held relaunch start,
+        // whatever becomes of it: it is either the relaunch's own start again
+        // or evidence that the held one was not the source's latest word.
+        if self
+            .replacement_start
+            .as_ref()
+            .is_some_and(|held| held.origin.source() == origin.source())
+        {
+            self.replacement_start = None;
+        }
         let outcome = self.transition_start(origin, session_ref, seq, session_start_source, sample);
         self.record_hook_outcome(report, &outcome);
         outcome
@@ -94,12 +104,29 @@ impl AgentOwnership {
     /// start's expiry is only applied when process evidence for its agent
     /// arrives. Each of those leaves the record reading as gone here, exactly
     /// as the source now stands, so a report that can no longer be promoted
-    /// is never shown as parked.
+    /// is never shown as parked. A start held for a relaunch
+    /// (`ReplacementStart`) lives beside the source record rather than in it,
+    /// and is judged against that hold and its deadline the same way.
     pub fn last_unapplied_hook_report(&self, now: Instant) -> Option<UnappliedHookReport> {
         let last = self.last_unapplied_hook_report.as_ref()?;
-        let disposition = match last.rejection {
-            Some(reason) => UnappliedHookDisposition::Rejected(reason),
-            None => UnappliedHookDisposition::Parked(
+        let held = self.replacement_start.as_ref().filter(|held| {
+            matches!(last.kind, HookReportKind::SessionStart(_))
+                && held.origin.source() == last.origin.source()
+                && held.seq == last.seq
+                && last.session_ref.as_ref() == Some(held.session.session_ref())
+        });
+        let disposition = match (last.rejection, held) {
+            (Some(reason), _) => UnappliedHookDisposition::Rejected(reason),
+            // A held relaunch start awaits the detector's exit, then the
+            // replacement's presence, each by its own deadline.
+            (None, Some(held)) => {
+                let expires_at = held.deadline();
+                if now > expires_at {
+                    return None;
+                }
+                UnappliedHookDisposition::Parked(ParkedHookAwaiting::Process { expires_at })
+            }
+            (None, None) => UnappliedHookDisposition::Parked(
                 self.hook_sources
                     .get(last.origin.source())?
                     .parked_awaiting(last.kind, last.seq, last.session_ref.as_ref(), now)?,

@@ -43,8 +43,12 @@ enum ClientCopyOperation {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::shell) struct ClientCopySearchResult {
     pub(in crate::shell) matches: Vec<shepr_protocol::command::PaneTextRange>,
-    pub(in crate::shell) total: usize,
-    /// Both indexes identify the same match in the returned window and full result set.
+    /// Unknown after eviction: the returned window cannot count evicted matches
+    /// outside it. The next search or repeat replaces the count from the server.
+    pub(in crate::shell) total: Option<usize>,
+    history_origin: Option<shepr_term::AbsRow>,
+    /// The window index follows pruning; the global index belongs to the snapshot
+    /// and is displayed only while `total` is known.
     pub(in crate::shell) current: Option<shepr_protocol::command::PaneCopySearchPosition>,
 }
 
@@ -278,10 +282,18 @@ pub(in crate::shell) fn surface_presented(
         session.rows = ledger.ticket();
     }
     if let Some(scroll) = pane.scroll {
+        let top = session.viewport_top();
         let offset = if lanes.target(&pane.pane_id).is_none() {
             scroll.offset_from_bottom
+        } else if lanes.target(&pane.pane_id) == Some(0) {
+            0
         } else {
-            session.scroll.offset_from_bottom
+            // Preserve the optimistic absolute viewport while the requested scroll
+            // is outstanding; retaining its bottom offset would drift on new output.
+            scroll.max_offset_from_bottom.saturating_sub(
+                usize::try_from(top.0.saturating_sub(scroll.history_origin.0))
+                    .unwrap_or(usize::MAX),
+            )
         };
         session.scroll = scroll.with_offset(offset);
         let retained_cursor_row = session.retained_row(session.cursor.row);
@@ -317,16 +329,22 @@ pub(in crate::shell) fn surface_presented(
     }
 }
 
-/// Drops search matches whose rows scrolled out of history. They name rows
-/// that no longer exist, so they could never render or be copied; the oldest
-/// rows go first, so each dropped match was ahead of the current one in the
-/// server's global count.
+/// Drops unretained highlights and repairs the current window index. Global
+/// counts belong to the server's full search snapshot; eviction can remove
+/// matches before this window, so no local subtraction can keep those counts
+/// exact. Show them as unknown until the next search refreshes the snapshot.
 fn prune_evicted_search_matches(session: &mut CopySession) {
     let Some(search) = session.search.as_mut() else {
         return;
     };
     let origin = session.scroll.history_origin;
-    let before = search.results.matches.len();
+    if search
+        .results
+        .history_origin
+        .is_none_or(|searched_origin| origin > searched_origin)
+    {
+        search.results.total = None;
+    }
     let current = search.results.current.and_then(|position| {
         search
             .results
@@ -339,11 +357,6 @@ fn prune_evicted_search_matches(session: &mut CopySession) {
         .results
         .matches
         .retain(|found| found.start.row >= origin);
-    let removed = before - search.results.matches.len();
-    if removed == 0 {
-        return;
-    }
-    search.results.total = search.results.total.saturating_sub(removed);
     search.results.current = current.and_then(|(current, global_index)| {
         search
             .results
@@ -353,7 +366,7 @@ fn prune_evicted_search_matches(session: &mut CopySession) {
             .map(
                 |window_index| shepr_protocol::command::PaneCopySearchPosition {
                     window_index,
-                    global_index: global_index.saturating_sub(removed),
+                    global_index,
                 },
             )
     });

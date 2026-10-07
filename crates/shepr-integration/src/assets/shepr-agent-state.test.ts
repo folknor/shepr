@@ -138,7 +138,7 @@ test("OpenCode stays disabled without the Shepr socket environment", async () =>
 });
 
 for (const integration of integrations) {
-  test(`${integration.name} reload preserves working state when the agent is active`, async () => {
+  test(`${integration.name} reload preserves working state without a new session report`, async () => {
     const requests = await startRecordingServer(
       integration.name.toLowerCase().replaceAll(" ", "-"),
     );
@@ -178,6 +178,47 @@ for (const integration of integrations) {
     await waitFor(() => reportedState() !== undefined);
 
     expect(reportedState()).toBe("working");
+    const sessionReport = requests.find(
+      (request) => isRecord(request) && request.method === "pane.report_agent_session",
+    );
+    expect(sessionReport).toBeUndefined();
+  });
+
+  test(`${integration.name} preserves agent-supplied unknown start sources`, async () => {
+    const requests = await startRecordingServer(
+      `${integration.name.toLowerCase().replaceAll(" ", "-")}-unknown-start`,
+    );
+    const { handlers, pi } = createExtensionHarness();
+
+    const { default: install } = await importFresh(integration.modulePath);
+    install(pi);
+
+    await handlers.get("session_start")?.(
+      { reason: "future-source" },
+      {
+        hasUI: true,
+        mode: "tui",
+        isIdle: () => true,
+        sessionManager: {
+          getSessionFile: () => undefined,
+          getSessionId: () => "integration-session",
+        },
+      },
+    );
+    await waitFor(() =>
+      requests.some(
+        (request) => isRecord(request) && request.method === "pane.report_agent_session",
+      ),
+    );
+
+    const sessionReport = requests.find(
+      (request) => isRecord(request) && request.method === "pane.report_agent_session",
+    );
+    expect(
+      isRecord(sessionReport) && isRecord(sessionReport.params)
+        ? sessionReport.params.session_start_source
+        : undefined,
+    ).toBe("future-source");
   });
 }
 
@@ -303,7 +344,7 @@ test("Pi reports the session replacement source", async () => {
     .toBe("new");
 });
 
-test("Pi serializes its agent-start session report before its working state", async () => {
+test("Pi reports the session before state and does not refresh it on agent start", async () => {
   const directory = await createAssetScratchDir("pi-order");
   activeScratchDirs.push(directory);
   const recordingSocketPath = join(directory, "s.sock");
@@ -377,24 +418,10 @@ test("Pi serializes its agent-start session report before its working state", as
 
   idle = false;
   handlers.get("agent_start")?.({}, context);
-  await waitFor(() => acknowledgeSessionReport !== undefined);
-  expect(acknowledgeSessionReport).toBeDefined();
-  await nextEventLoopTurn();
-  expect(requests.map((request) => (isRecord(request) ? request.method : undefined))).toEqual([
-    "pane.report_agent_session",
-    "pane.report_agent",
-    "pane.report_agent_session",
-  ]);
-  expect(requestStates(requests)).toEqual(["idle"]);
-
-  const acknowledgeAgentStart = acknowledgeSessionReport;
-  acknowledgeSessionReport = undefined;
-  acknowledgeAgentStart?.();
   await waitFor(() => requestStates(requests).length >= 2);
   expect(requests.map((request) => (isRecord(request) ? request.method : undefined))).toEqual([
     "pane.report_agent_session",
     "pane.report_agent",
-    "pane.report_agent_session",
     "pane.report_agent",
   ]);
   expect(requestStates(requests)).toEqual(["idle", "working"]);
@@ -564,6 +591,67 @@ test("Oh My Pi reports session-bound state", async () => {
   await waitFor(() => requests.length >= 2);
   expect(requestStates(requests)).toEqual(["working"]);
   expectContractTrace("omp", requests);
+});
+
+test("Oh My Pi does not refresh the session on each agent start", async () => {
+  const requests = await startRecordingServer("omp-agent-start-refresh");
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./omp/shepr-agent-state.ts");
+  install(pi, { idleDebounceMs: 0 });
+
+  let idle = true;
+  const context = {
+    hasUI: true,
+    isIdle: () => idle,
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => "omp-agent-start-refresh",
+    },
+  };
+  handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestStates(requests).length === 1);
+
+  idle = false;
+  handlers.get("agent_start")?.({}, context);
+  await waitFor(() => requestStates(requests).length === 2);
+  expect(
+    requests.filter(
+      (request) => isRecord(request) && request.method === "pane.report_agent_session",
+    ),
+  ).toHaveLength(1);
+});
+
+test("Oh My Pi marks its first agent-start fallback as startup", async () => {
+  const requests = await startRecordingServer("omp-agent-start-fallback");
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./omp/shepr-agent-state.ts");
+  install(pi, { idleDebounceMs: 0 });
+
+  handlers.get("agent_start")?.(
+    {},
+    {
+      hasUI: true,
+      isIdle: () => false,
+      sessionManager: {
+        getSessionFile: () => undefined,
+        getSessionId: () => "omp-agent-start-fallback",
+      },
+    },
+  );
+  await waitFor(() =>
+    requests.some(
+      (request) => isRecord(request) && request.method === "pane.report_agent_session",
+    ),
+  );
+
+  const sessionReport = requests.find(
+    (request) => isRecord(request) && request.method === "pane.report_agent_session",
+  );
+  expect(
+    isRecord(sessionReport) && isRecord(sessionReport.params)
+      ? sessionReport.params.session_start_source
+      : undefined,
+  ).toBe("startup");
 });
 
 test("Oh My Pi forwards the session-start reason when the agent supplies it", async () => {

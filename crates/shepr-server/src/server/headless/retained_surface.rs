@@ -4,6 +4,7 @@ use crate::server::clients::ClientPaneIdentity;
 use crate::server::committed_baseline::CommittedPane;
 use crate::server::pane_surface::PaneSurfaceMetadata;
 use shepr_mux::pane::PatchRow;
+use shepr_surface::patch::{PatchSpanCollector, PatchSpanLimitExceeded};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -17,6 +18,7 @@ pub(super) enum RetainedSurfaceFallback {
     AlternateScreenGeometry,
     Hyperlink,
     InvalidPatch,
+    PatchSpanLimit,
     ScrollbarPatch,
     SynchronizedDuringPatch,
     PatchAdmission(crate::server::render_stream::PatchPreparationFailure),
@@ -50,27 +52,44 @@ fn patch_intersects_hyperlinks(
         })
 }
 
-fn changed_rows(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatchRowsError {
+    Invalid,
+    SpanLimit,
+}
+
+impl From<PatchSpanLimitExceeded> for PatchRowsError {
+    fn from(_: PatchSpanLimitExceeded) -> Self {
+        Self::SpanLimit
+    }
+}
+
+fn append_changed_rows(
     frame: &FrameData,
     area: shepr_protocol::SurfaceRect,
     patch: &shepr_mux::pane::TerminalDirtyPatch,
-) -> Option<Vec<shepr_protocol::PaneSurfacePatchRow>> {
+    rows: &mut PatchSpanCollector<shepr_protocol::PaneSurfacePatchRow>,
+) -> Result<(), PatchRowsError> {
     if !rect_fits_frame(area, frame) {
-        return None;
+        return Err(PatchRowsError::Invalid);
     }
-    let mut rows = Vec::new();
     for PatchRow { y: local_y, cells } in &patch.rows {
         if *local_y >= area.height {
             continue;
         }
         let width = usize::from(area.width);
         if cells.len() < width {
-            return None;
+            return Err(PatchRowsError::Invalid);
         }
         let y = area.y + *local_y;
         let frame_start = usize::from(y) * usize::from(frame.width()) + usize::from(area.x);
-        let frame_end = frame_start.checked_add(width)?;
-        let existing = frame.cells().get(frame_start..frame_end)?;
+        let frame_end = frame_start
+            .checked_add(width)
+            .ok_or(PatchRowsError::Invalid)?;
+        let existing = frame
+            .cells()
+            .get(frame_start..frame_end)
+            .ok_or(PatchRowsError::Invalid)?;
         // The row was collected at the widest recipient's width; a narrower
         // cut can split a pair the collection kept whole, so it gets the
         // same rule a full render at this width applies. The shared row is
@@ -103,14 +122,18 @@ fn changed_rows(
             // grapheme width even when that logical neighbor is unchanged.
             let end = offset.saturating_add(1).min(width);
             rows.push(shepr_protocol::PaneSurfacePatchRow {
-                x: area.x.checked_add(u16::try_from(start).ok()?)?,
+                x: area
+                    .x
+                    .checked_add(u16::try_from(start).map_err(|_| PatchRowsError::Invalid)?)
+                    .ok_or(PatchRowsError::Invalid)?,
                 y,
                 cells: desired[start..end].to_vec(),
-            });
+            })
+            .map_err(PatchRowsError::from)?;
             offset = end;
         }
     }
-    Some(rows)
+    Ok(())
 }
 
 /// The rows that bring the pane's scrollbar column in `frame` to what the ui
@@ -121,41 +144,54 @@ fn retained_scrollbar_patch(
     pane: &mut shepr_protocol::PaneSurfacePane,
     look: &crate::ui::PaneSurface,
     metrics: Option<shepr_mux::pane::ScrollMetrics>,
-) -> Option<Vec<shepr_protocol::PaneSurfacePatchRow>> {
+    rows: &mut PatchSpanCollector<shepr_protocol::PaneSurfacePatchRow>,
+) -> Result<(), PatchRowsError> {
     let look = look.clone().with_scroll(metrics);
     let paint = look.scrollbar_paint(pane.scrollbar_rect, metrics);
     pane.scrollbar_rect = look
         .scrollbar_rect
         .map(shepr_surface::ratatui_conversion::surface_rect);
     let Some(paint) = paint else {
-        return Some(Vec::new());
+        return Ok(());
     };
     // Only a track cell that differs from the baseline becomes a patch row.
     // This runs per scrolled pane per recipient on every retained pass, and a
     // settled track changes no row, so the steady state allocates nothing
     // here. A column the frame does not reach yields no patch.
     let rect = paint.rect;
-    let mut rows = Vec::new();
     let mut reached = true;
+    let mut limit_exceeded = false;
     paint.visit(|offset, cell| {
-        let Some(existing) = rect
-            .y
-            .checked_add(offset)
-            .and_then(|y| Some((y, frame_cell(frame, rect.x, y)?)))
-        else {
+        if limit_exceeded || !reached {
+            return;
+        }
+        let Some(y) = rect.y.checked_add(offset) else {
             reached = false;
             return;
         };
-        let (y, existing) = existing;
-        if *existing != cell {
-            rows.push(shepr_protocol::PaneSurfacePatchRow {
-                x: rect.x,
-                y,
-                cells: vec![cell],
-            });
+        let Some(existing) = frame_cell(frame, rect.x, y) else {
+            reached = false;
+            return;
+        };
+        if *existing != cell
+            && rows
+                .push(shepr_protocol::PaneSurfacePatchRow {
+                    x: rect.x,
+                    y,
+                    cells: vec![cell],
+                })
+                .is_err()
+        {
+            limit_exceeded = true;
         }
     });
-    reached.then_some(rows)
+    if limit_exceeded {
+        Err(PatchRowsError::SpanLimit)
+    } else if reached {
+        Ok(())
+    } else {
+        Err(PatchRowsError::Invalid)
+    }
 }
 
 /// The frame cell at `(x, y)`, or `None` when the frame does not reach it.
@@ -366,7 +402,7 @@ impl HeadlessServer {
             let projection_revision = surface.projection_revision;
             let base_surface_revision = surface.surface_revision;
             let mut changed_panes = Vec::with_capacity(collected.len());
-            let mut patch_rows = Vec::new();
+            let mut patch_rows = PatchSpanCollector::new();
             let mut metadata_changed = false;
             for collected_pane in &collected {
                 let Some((pane_index, _)) = recipient
@@ -394,21 +430,37 @@ impl HeadlessServer {
                     fallback!(RetainedSurfaceFallback::Hyperlink, client_id, 'recipients);
                 }
                 let previous_pane = pane.clone();
-                let Some(rows) =
-                    changed_rows(&surface.frame, pane.content_rect, &collected_pane.patch)
-                else {
-                    fallback!(RetainedSurfaceFallback::InvalidPatch, client_id, 'recipients);
-                };
-                patch_rows.extend(rows);
-                let Some(scrollbar_rows) = retained_scrollbar_patch(
+                if let Err(reason) = append_changed_rows(
+                    &surface.frame,
+                    pane.content_rect,
+                    &collected_pane.patch,
+                    &mut patch_rows,
+                ) {
+                    match reason {
+                        PatchRowsError::Invalid => {
+                            fallback!(RetainedSurfaceFallback::InvalidPatch, client_id, 'recipients)
+                        }
+                        PatchRowsError::SpanLimit => {
+                            fallback!(RetainedSurfaceFallback::PatchSpanLimit, client_id, 'recipients)
+                        }
+                    }
+                }
+                if let Err(reason) = retained_scrollbar_patch(
                     &surface.frame,
                     pane,
                     &recipient.panes[pane_index].look,
                     collected_pane.metadata.scroll(),
-                ) else {
-                    fallback!(RetainedSurfaceFallback::ScrollbarPatch, client_id, 'recipients);
-                };
-                patch_rows.extend(scrollbar_rows);
+                    &mut patch_rows,
+                ) {
+                    match reason {
+                        PatchRowsError::Invalid => {
+                            fallback!(RetainedSurfaceFallback::ScrollbarPatch, client_id, 'recipients)
+                        }
+                        PatchRowsError::SpanLimit => {
+                            fallback!(RetainedSurfaceFallback::PatchSpanLimit, client_id, 'recipients)
+                        }
+                    }
+                }
                 collected_pane.metadata.apply(pane);
                 metadata_changed |= *pane != previous_pane;
                 changed_panes.push(pane.clone());
@@ -416,7 +468,7 @@ impl HeadlessServer {
 
             // Collection is pane by pane; put spans in the row-major order required
             // by the shared baseline admission in prepare_pane_surface_patch below.
-            shepr_protocol::sort_patch_rows(&mut patch_rows);
+            shepr_protocol::sort_patch_rows(patch_rows.as_mut_slice());
             let cursor = retained_cursor(&self.app, &recipient.panes);
             let cursor_changed = cursor.as_ref() != surface.frame.cursor();
             let patch = shepr_protocol::PaneSurfacePatch {
@@ -428,7 +480,7 @@ impl HeadlessServer {
                 // is dropped unsent. The client would also refuse any revision
                 // that is not its baseline's exact successor.
                 surface_revision: shepr_protocol::SurfaceRevision::ZERO,
-                rows: patch_rows,
+                rows: patch_rows.into_vec(),
                 panes: changed_panes,
                 cursor,
             };
@@ -513,6 +565,17 @@ mod tests {
     use super::*;
     use crate::server::committed_baseline::CommittedBaseline;
     use crate::test_support::WorkspaceFixture as _;
+
+    /// One pane's changed rows on their own, `None` for any refusal.
+    fn changed_rows(
+        frame: &FrameData,
+        area: shepr_protocol::SurfaceRect,
+        patch: &shepr_mux::pane::TerminalDirtyPatch,
+    ) -> Option<Vec<shepr_protocol::PaneSurfacePatchRow>> {
+        let mut rows = PatchSpanCollector::new();
+        append_changed_rows(frame, area, patch, &mut rows).ok()?;
+        Some(rows.into_vec())
+    }
 
     fn cell(symbol: &str) -> shepr_protocol::CellData {
         shepr_protocol::CellData {
@@ -635,11 +698,17 @@ mod tests {
         assert_eq!(resolved[0].look.scrollbar_gutter, None);
         let metrics = shepr_mux::pane::ScrollMetrics::new(1, 4, 3, shepr_vt::AbsRow(1));
 
-        let rows =
-            retained_scrollbar_patch(&surface.frame, &mut pane, &resolved[0].look, Some(metrics))
-                .expect("a pane without a reserved gutter needs no scrollbar patch");
+        let mut rows = PatchSpanCollector::new();
+        retained_scrollbar_patch(
+            &surface.frame,
+            &mut pane,
+            &resolved[0].look,
+            Some(metrics),
+            &mut rows,
+        )
+        .expect("a pane without a reserved gutter needs no scrollbar patch");
 
-        assert!(rows.is_empty());
+        assert!(rows.as_slice().is_empty());
         assert_eq!(pane.scrollbar_rect, None);
     }
 
@@ -697,8 +766,10 @@ mod tests {
 
         // The first pass draws the track over the blank baseline.
         let mut frame = surface.frame;
-        let drawn = retained_scrollbar_patch(&frame, &mut pane, look, Some(metrics))
+        let mut collected = PatchSpanCollector::new();
+        retained_scrollbar_patch(&frame, &mut pane, look, Some(metrics), &mut collected)
             .expect("a valid scrollbar patch");
+        let drawn = collected.into_vec();
         assert!(!drawn.is_empty(), "test precondition: the track draws");
         let track = pane.scrollbar_rect;
         assert!(track.is_some());
@@ -708,8 +779,10 @@ mod tests {
         }
 
         // With the track committed, the same scroll position changes no row.
-        let settled = retained_scrollbar_patch(&frame, &mut pane, look, Some(metrics))
+        let mut collected = PatchSpanCollector::new();
+        retained_scrollbar_patch(&frame, &mut pane, look, Some(metrics), &mut collected)
             .expect("a valid scrollbar patch");
+        let settled = collected.into_vec();
         assert!(settled.is_empty());
         assert_eq!(pane.scrollbar_rect, track);
     }
@@ -893,5 +966,42 @@ mod tests {
         .expect("valid patch");
 
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn retained_row_collection_stops_at_the_shared_span_limit() {
+        let width = 200u16;
+        let height = 42u16;
+        let frame = test_frame(width, height, vec![cell(" "); usize::from(width * height)]);
+        let patch = shepr_mux::pane::TerminalDirtyPatch {
+            rows: (0..height)
+                .map(|y| PatchRow {
+                    y,
+                    cells: (0..width)
+                        .map(|x| if x % 2 == 0 { cell("z") } else { cell(" ") })
+                        .collect(),
+                })
+                .collect(),
+        };
+        let mut spans = PatchSpanCollector::new();
+
+        assert_eq!(
+            append_changed_rows(
+                &frame,
+                shepr_protocol::SurfaceRect {
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                },
+                &patch,
+                &mut spans,
+            ),
+            Err(PatchRowsError::SpanLimit)
+        );
+        assert_eq!(
+            spans.as_slice().len(),
+            shepr_surface::patch::MAX_PATCH_SPANS
+        );
     }
 }

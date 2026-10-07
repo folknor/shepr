@@ -52,7 +52,9 @@ impl std::error::Error for GitCommandError {}
 /// A nonzero exit is an `Ok` output; the caller decides which failures are
 /// ordinary answers.
 pub fn run_git(cwd: &Path, args: &[&str]) -> Result<Output, GitCommandError> {
-    run_git_with_program(OsStr::new("git"), cwd, args, GIT_COMMAND_TIMEOUT)
+    crate::access::check_command().map_err(GitCommandError::Spawn)?;
+    let program = crate::access::git_program().map_err(GitCommandError::Spawn)?;
+    run_git_with_program(&program, cwd, args, GIT_COMMAND_TIMEOUT)
 }
 
 /// [`run_git`] with the program and deadline handed in, for tests that stand
@@ -74,6 +76,7 @@ fn run_git_with_program_and_clock(
     timeout: Duration,
     now: &dyn Fn() -> Instant,
 ) -> Result<Output, GitCommandError> {
+    crate::access::check_command().map_err(GitCommandError::Spawn)?;
     let mut command = git_command(program, cwd).map_err(GitCommandError::Spawn)?;
     command
         .args(["-c", "core.fsmonitor=false"])

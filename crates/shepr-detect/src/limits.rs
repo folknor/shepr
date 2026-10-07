@@ -75,6 +75,22 @@ pub(crate) const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5)
 /// temporal attribution rather than proving identity. Both ends are monotonic
 /// `Instant`s, so a wall-clock step cannot expire or extend a start.
 pub const PARKED_START_LIFETIME: Duration = Duration::from_secs(120);
+/// How long after a start held for a relaunch arrives (ownership's
+/// `ReplacementStart`) the detector may report the exit of the process it was
+/// refused against. The detector sees a relaunch as the same agent in a new
+/// foreground process group, which its next tick normally probes; with no
+/// readable foreground group it waits for the identified-process recheck, and
+/// the mux asserts that this window covers that recheck and one tick. Longer
+/// widens the time in which a nested run's startup, followed by the user
+/// quitting and relaunching the agent, can win over the relaunch's own.
+pub const REPLACEMENT_START_EXIT_WINDOW: Duration = Duration::from_secs(6);
+/// How soon after that exit the replacement process's presence must be
+/// observed for the held start to be admitted. The detector reports the exit,
+/// then probes again on its next tick to withdraw it, and that probe reports
+/// the replacement; the mux asserts that this gap covers two such ticks. A
+/// relaunch typed at the shell takes longer than this, and its own startup
+/// then arrives after the exit, where it needs no hold.
+pub const REPLACEMENT_START_PRESENCE_GAP: Duration = Duration::from_secs(2);
 /// Maximum stale lifecycle sessions remembered per hook source, bounding
 /// deduplication memory while retaining recent reports.
 pub(crate) const MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE: usize = 64;

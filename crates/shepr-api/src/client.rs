@@ -9,7 +9,7 @@ use crate::limits::{ORDINARY_CONNECT_TIMEOUT, ORDINARY_RESPONSE_TIMEOUT};
 use crate::schema::{ErrorResponse, Request, ResponseResult, SuccessResponse};
 use shepr_platform::ipc::{LocalStreamDeadlineReader, TrustedServerStream};
 
-pub use crate::limits::STATUS_REQUEST_TIMEOUT;
+pub use crate::limits::{STATUS_REQUEST_TIMEOUT, STOP_REQUEST_TIMEOUT};
 
 /// A decoded `ping` answer: the identity the server reports and its readiness
 /// flags, as they crossed the wire. What they mean for a launch or a stop is
@@ -95,16 +95,19 @@ impl ApiClient {
     }
 
     /// Sends one request and reads its single-line response, all of it bounded
-    /// by one `deadline`: the connect, the write and the read share it, so a
-    /// caller polling a server keeps one budget across requests. A failure to
-    /// reach the socket is told apart from a failure of the request itself.
+    /// by one `deadline`: the connect, the write and the read share it, and
+    /// connect also keeps the ordinary local-connect cap. A caller polling a
+    /// server keeps one budget across requests. A failure to reach the socket
+    /// is told apart from a failure of the request itself.
     pub fn request_value_until(
         &self,
         request: &Request,
         deadline: Instant,
     ) -> Result<serde_json::Value, ApiClientDeadlineError> {
         // clock-io-ok: the connect is bounded by what is left of the deadline.
-        let connect_timeout = deadline.saturating_duration_since(Instant::now());
+        let connect_timeout = deadline
+            .saturating_duration_since(Instant::now())
+            .min(ORDINARY_CONNECT_TIMEOUT);
         if connect_timeout.is_zero() {
             return Err(ApiClientDeadlineError::Connect(io::Error::new(
                 io::ErrorKind::TimedOut,
@@ -351,7 +354,11 @@ fn read_response_value(
 ) -> Result<serde_json::Value, ApiClientError> {
     let value = read_json_line::<serde_json::Value>(reader)?;
     let response_id = value.get("id").and_then(serde_json::Value::as_str);
-    if response_id != Some(expected_id) {
+    // Each stream carries one request, so an idless refusal on that stream is
+    // still its answer; responses naming another request remain invalid.
+    let idless_error =
+        value.get("error").is_some() && value.get("id").is_none_or(serde_json::Value::is_null);
+    if response_id != Some(expected_id) && !idless_error {
         return Err(ApiClientError::Io(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("API response id mismatch: expected {expected_id:?}, received {response_id:?}"),
@@ -492,6 +499,32 @@ mod tests {
             matches!(&error, ApiClientError::Io(error) if error.kind() == io::ErrorKind::InvalidData),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn an_error_without_a_request_id_is_still_the_connection_answer() {
+        let mut reader = BufReader::new(
+            br#"{"id":null,"error":{"code":"endpoint_busy","message":"busy"}}"#.as_slice(),
+        );
+        let value = read_response_value(&mut reader, "ping").expect("idless refusal is answer");
+        assert!(matches!(
+            parse_response_value(value),
+            Err(ApiClientError::ErrorResponse(ErrorResponse {
+                id: None,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn an_error_with_another_request_id_is_still_rejected() {
+        let mut reader = BufReader::new(
+            br#"{"id":"other","error":{"code":"endpoint_busy","message":"busy"}}"#.as_slice(),
+        );
+        assert!(matches!(
+            read_response_value(&mut reader, "ping"),
+            Err(ApiClientError::Io(error)) if error.kind() == io::ErrorKind::InvalidData
+        ));
     }
 
     #[test]

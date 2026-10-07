@@ -44,9 +44,11 @@ pub struct PaneReportAgentSessionParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// An agent session ID. Mutually exclusive with agent_session_path; both
+    /// supplied is a bad request.
     pub agent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    /// Mutually exclusive with agent_session_id; both supplied is a bad request.
+    /// An absolute agent session path, mutually exclusive with agent_session_id.
     pub agent_session_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(with = "session_start_source_wire")]

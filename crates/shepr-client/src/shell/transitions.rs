@@ -183,11 +183,7 @@ pub(in crate::shell) fn surface_presented(
     selection.surface_presented(before, surface);
     for pane in &surface.panes {
         if let Some(scroll) = pane.scroll {
-            lanes.shown(
-                &pane.pane_id,
-                scroll.offset_from_bottom,
-                scroll.max_offset_from_bottom,
-            );
+            lanes.shown(&pane.pane_id, scroll);
         }
     }
     crate::shell::copy::surface_presented(copy, selection, lanes, ledger, surface);

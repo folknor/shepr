@@ -382,6 +382,12 @@ impl HeadlessServer {
         loop {
             // If shutdown has been initiated, complete it and exit.
             if self.lifecycle.phase() == ShutdownPhase::Stopping {
+                // A stop can arrive while `next_loop_event` is asleep. Its
+                // wake branch settles only the selected event, so apply the
+                // rest of the events already queued before the final save.
+                // Signal quits still leave pane deaths unapplied in
+                // `handle_admitted_pane_death`.
+                self.drain_all_internal_events_with_forwarding();
                 // Release any reply still held before waiting for client
                 // flushes. Replies held when shutdown began were already
                 // queued ahead of the shutdown notice.

@@ -832,9 +832,11 @@ impl App {
         let pending = match self.submit_final_session_save() {
             Ok(Some(pending)) => pending,
             Ok(None) if self.session_saver.policy.is_unavailable() => {
-                return self.finish_final_session_save(Err(std::io::Error::other(
-                    "session persistence was blocked before the final save",
-                )));
+                // The persistence failure that disabled saves for this boot
+                // was already recorded when it happened. There is no new
+                // final-save attempt to fail; the final outcome carries the
+                // existing Stopped or BlockedOnBackup condition.
+                return self.finish_final_session_save(Ok(()));
             }
             Ok(None) => return Ok(()),
             Err(error) => {
@@ -1112,6 +1114,41 @@ mod tests {
             app.session_saver.policy.save_status(),
             shepr_protocol::SessionSaveStatus::Stopped
         );
+    }
+
+    #[tokio::test]
+    async fn a_final_save_without_available_persistence_keeps_its_status_as_the_outcome() {
+        for status in [
+            shepr_protocol::SessionSaveStatus::Stopped,
+            shepr_protocol::SessionSaveStatus::BlockedOnBackup,
+        ] {
+            let mut app = test_app();
+            match status {
+                shepr_protocol::SessionSaveStatus::Stopped => {
+                    app.session_saver.stop_persistence();
+                }
+                shepr_protocol::SessionSaveStatus::BlockedOnBackup => {
+                    app.session_saver.block_persistence_on_backup();
+                }
+                shepr_protocol::SessionSaveStatus::Ready => unreachable!("test unavailable status"),
+            }
+            app.state.record_session_save_status(status);
+
+            app.save_session_before_teardown_async()
+                .await
+                .expect("an unavailable final save is a completed no-op");
+
+            assert_eq!(app.session_save_status(), status);
+            assert!(!app.session_saver.save_in_flight());
+            assert!(app.session_saver.autosave_deadline().is_none());
+            assert!(
+                !shepr_mux::persist::session_path(app.paths.data_dir())
+                    .try_exists()
+                    .expect("stat session"),
+                "the unavailable policy does not submit another save"
+            );
+            app.retire_session_writer();
+        }
     }
 
     #[test]
@@ -2011,8 +2048,10 @@ mod tests {
             let release = app.session_saver.hold_test_save_in_flight();
             let mut final_save = Box::pin(app.save_session_before_teardown_async());
             // Poll the actual final-save future while completion is withheld.
-            // The failure below also proves the joined outcome is applied
-            // before the final save admits a new capture.
+            // The stopped persistence below also proves the joined outcome is
+            // applied before the final save admits a new capture; the final
+            // save then completes as a no-op, as the failure was already
+            // recorded when it was joined.
             assert!(
                 std::future::poll_fn(|cx| {
                     std::task::Poll::Ready(
@@ -2024,7 +2063,7 @@ mod tests {
             release.complete(Err(shepr_mux::persist::SaveError::Abandoned));
             final_save
                 .await
-                .expect_err("the joined background failure stops final-save admission");
+                .expect("the joined background failure leaves the final save a no-op");
             assert!(app.session_saves_stopped());
             assert!(!app.session_saver.save_in_flight());
         }

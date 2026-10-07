@@ -116,6 +116,12 @@ impl App {
                 end: previous.end,
             });
         let direction = params.direction;
+        // Observe before scanning: if output evicts rows between these separate
+        // terminal reads, the client conservatively treats the counts as stale.
+        let history_origin = runtime
+            .read()
+            .scroll_metrics()
+            .map(|scroll| scroll.history_origin);
         let result = runtime
             .read()
             .search_text_window(shepr_mux::pane::TerminalTextSearch {
@@ -137,6 +143,7 @@ impl App {
         Handled::reply(EndpointReply::PaneCopySearch {
             pane_id: params.pane_id,
             search: shepr_protocol::command::PaneCopySearch {
+                history_origin,
                 matches,
                 total: result.total,
                 current: result.current.map(|position| {

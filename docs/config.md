@@ -387,7 +387,8 @@ Rules:
 
 - A label must not be blank, contain control characters, or start or end with
   whitespace. Inner spaces and non-ASCII characters are fine.
-- Labels must be unique.
+- Labels must be unique ignoring ASCII case (`Build` and `build` count as
+  duplicates).
 - An ssh target must not be empty, start with `-`, contain control
   characters, include a password (`user:password@host`), or be longer than
   1024 bytes.

@@ -17,6 +17,7 @@ mod host;
 pub mod ipc;
 mod limits;
 pub mod logging;
+pub mod mounts;
 mod owned_runtime;
 mod private_file;
 mod proc_tree;

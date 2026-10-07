@@ -444,7 +444,17 @@ impl UiPalette {
         let active_row_bg = neutral(UI_ACTIVE_ROW_CONTRAST);
         let selection_bg = neutral(UI_SELECTION_CONTRAST);
         let surface0 = neutral(UI_SURFACE0_CONTRAST);
-        let surfaces = [background, panel_bg, active_row_bg, selection_bg, surface0];
+        let surface1 = neutral(UI_SURFACE1_CONTRAST);
+        // Copy-search matches use surface1 as a background, so text and hues
+        // must meet their contrast there too.
+        let surfaces = [
+            background,
+            panel_bg,
+            active_row_bg,
+            selection_bg,
+            surface0,
+            surface1,
+        ];
         let mut readable = true;
         let mut on_surfaces = |color: Oklch, contrast: f32| {
             let (rgb, met) = with_contrast(color, &surfaces, contrast, away);
@@ -479,7 +489,7 @@ impl UiPalette {
                 active_row_bg,
                 selection_bg,
                 surface0,
-                surface1: neutral(UI_SURFACE1_CONTRAST),
+                surface1,
                 surface_dim: neutral(UI_SURFACE_DIM_CONTRAST),
                 overlay0,
                 overlay1,
@@ -984,16 +994,26 @@ mod tests {
                     (ui.panel_bg, UI_PANEL_CONTRAST),
                     (ui.active_row_bg, UI_ACTIVE_ROW_CONTRAST),
                     (ui.selection_bg, UI_SELECTION_CONTRAST),
+                    (ui.surface0, UI_SURFACE0_CONTRAST),
                     (ui.surface1, UI_SURFACE1_CONTRAST),
+                    (ui.surface_dim, UI_SURFACE_DIM_CONTRAST),
                 ] {
                     assert!(surface.contrast_with(bg) >= minimum, "{context}: {ui:?}");
                 }
                 assert_ne!(ui.active_row_bg, ui.selection_bg, "{context}");
-                let surfaces = [bg, ui.panel_bg, ui.active_row_bg, ui.selection_bg];
+                let surfaces = [
+                    bg,
+                    ui.panel_bg,
+                    ui.active_row_bg,
+                    ui.selection_bg,
+                    ui.surface0,
+                    ui.surface1,
+                ];
                 for (color, minimum) in [
                     (ui.text, HOST_TEXT_MIN_CONTRAST),
                     (ui.subtext0, UI_SUBTEXT_CONTRAST),
                     (ui.overlay0, UI_OVERLAY0_CONTRAST),
+                    (ui.overlay1, UI_OVERLAY1_CONTRAST),
                     (ui.accent, HOST_ACCENT_MIN_CONTRAST),
                     (ui.green, HOST_ACCENT_MIN_CONTRAST),
                     (ui.yellow, HOST_ACCENT_MIN_CONTRAST),

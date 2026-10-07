@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 // on accept is theirs, so nothing here needs the staged bind or `SO_PEERCRED`.
 
 use crate::limits::{
-    STOP_LEASE_WAIT_TIMEOUT, STOP_STATUS_PROBE_TIMEOUT, STOP_WAIT_POLL, STOP_WAIT_TIMEOUT,
+    STOP_LEASE_WAIT_TIMEOUT, STOP_REQUEST_TIMEOUT, STOP_STATUS_PROBE_TIMEOUT, STOP_WAIT_POLL,
+    STOP_WAIT_TIMEOUT,
 };
 
 /// The exit status `shepr stop` ends with when no server is running at
@@ -76,6 +77,12 @@ pub enum ServerStopError {
         timeout: Duration,
         socket: PathBuf,
     },
+    /// The server kept refusing stop requests as busy until the bounded
+    /// request window ended; no stop was accepted by this caller.
+    RequestBusy {
+        timeout: Duration,
+        socket: PathBuf,
+    },
     /// The server no longer answers, or its socket disappeared, but a process
     /// still holds the data directory lease.
     LeaseHeld {
@@ -104,6 +111,14 @@ pub enum ServerStopError {
     /// The server reported that its final session save failed. The stop may
     /// also have failed to finish cleanly after that result was received.
     FinalSaveFailed {
+        message: String,
+        stop_error: Option<Box<ServerStopError>>,
+    },
+    /// The server accepted the stop but did not report its final-save result
+    /// within its answer window (`message` is its own words). The process
+    /// exit is still awaited, so `stop_error` is `None` when the server did
+    /// stop and only the save's outcome is unknown.
+    FinalSaveUnreported {
         message: String,
         stop_error: Option<Box<ServerStopError>>,
     },
@@ -157,6 +172,12 @@ impl std::fmt::Display for ServerStopError {
             Self::TimedOut { timeout, socket } => {
                 f.write_str(&crate::guidance::stop_timeout(*timeout, socket))
             }
+            Self::RequestBusy { timeout, socket } => write!(
+                f,
+                "the server kept refusing stop requests as busy for {}ms at {}; no stop was accepted",
+                timeout.as_millis(),
+                socket.display()
+            ),
             Self::LeaseHeld { timeout, path } => write!(
                 f,
                 "the data directory lease at {} was still held {}ms after the server stopped answering or its socket disappeared; another process may still be using it",
@@ -188,6 +209,16 @@ impl std::fmt::Display for ServerStopError {
                 }
                 Ok(())
             }
+            Self::FinalSaveUnreported {
+                message,
+                stop_error,
+            } => {
+                write!(f, "the final session save is unconfirmed: {message}")?;
+                if let Some(stop_error) = stop_error {
+                    write!(f, "; the stop outcome was also not confirmed: {stop_error}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -199,6 +230,10 @@ impl std::error::Error for ServerStopError {
             | Self::Unreachable { source, .. }
             | Self::Io { source, .. } => Some(source),
             Self::FinalSaveFailed {
+                stop_error: Some(error),
+                ..
+            }
+            | Self::FinalSaveUnreported {
                 stop_error: Some(error),
                 ..
             } => Some(error.as_ref()),
@@ -314,20 +349,72 @@ fn stop_socket_with_timeout(
     origin: StopOrigin,
     expected_boot_id: Option<&BootId>,
 ) -> Result<(), ServerStopError> {
-    // clock-io-ok: one deadline bounds the real stop request's socket reads
-    // and the server process's exit, so it must share their real clock.
-    let deadline = Instant::now() + timeout;
+    stop_socket_with_budgets(
+        socket_path,
+        lease,
+        STOP_REQUEST_TIMEOUT,
+        timeout,
+        origin,
+        expected_boot_id,
+    )
+}
+
+fn stop_socket_with_budgets(
+    socket_path: &Path,
+    lease: Option<(&Path, Duration)>,
+    request_timeout: Duration,
+    timeout: Duration,
+    origin: StopOrigin,
+    expected_boot_id: Option<&BootId>,
+) -> Result<(), ServerStopError> {
     let request = server_stop_request(origin, expected_boot_id);
-    let final_save_error = send_stop_request(socket_path, &request, deadline, expected_boot_id)?;
+    // The server's answer can wait for its final save, so it has a separate
+    // budget derived from the API's connect, save-answer and response-write
+    // limits. Busy refusals retry inside that same request window.
+    // clock-io-ok: the request deadline bounds real socket requests.
+    let request_deadline = Instant::now() + request_timeout;
+    let answer = loop {
+        match send_stop_request(socket_path, &request, request_deadline, expected_boot_id)? {
+            StopRequestAnswer::Busy => {
+                // clock-io-ok: a busy retry waits within the real request window.
+                let remaining = request_deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(ServerStopError::RequestBusy {
+                        timeout: request_timeout,
+                        socket: socket_path.to_path_buf(),
+                    });
+                }
+                std::thread::sleep(STOP_WAIT_POLL.min(remaining));
+            }
+            answer => break answer,
+        }
+    };
+
+    // clock-io-ok: the post-answer deadline bounds the real server shutdown.
+    let deadline = Instant::now() + timeout;
     let stop_result =
         wait_for_stopped_server(socket_path, lease, timeout, deadline, expected_boot_id);
-    match final_save_error {
-        Some(message) => Err(ServerStopError::FinalSaveFailed {
+    match answer {
+        StopRequestAnswer::Accepted(Some(message)) => Err(ServerStopError::FinalSaveFailed {
             message,
             stop_error: stop_result.err().map(Box::new),
         }),
-        None => stop_result,
+        StopRequestAnswer::FinalSaveUnreported(message) => {
+            Err(ServerStopError::FinalSaveUnreported {
+                message,
+                stop_error: stop_result.err().map(Box::new),
+            })
+        }
+        StopRequestAnswer::Accepted(None) => stop_result,
+        StopRequestAnswer::Busy => unreachable!("busy answers are retried before waiting"),
     }
+}
+
+#[derive(Debug)]
+enum StopRequestAnswer {
+    Accepted(Option<String>),
+    FinalSaveUnreported(String),
+    Busy,
 }
 
 /// The waits of [`stop_socket_with_timeout`] after its stop request was
@@ -533,6 +620,7 @@ fn probe_boot(
         {
             Ok(BootProbe::Unanswered)
         }
+        Err(error) if crate::status::status_probe_is_busy(&error) => Ok(BootProbe::Unanswered),
         Err(error) if crate::status::status_probe_has_no_answer(&error) => Ok(BootProbe::Gone),
         Err(error) => Err(status_probe_error(error)),
     }
@@ -572,16 +660,27 @@ fn wait_until_socket_stopped_or_new_boot(
     deadline: Instant,
 ) -> Result<BootStopWait, ServerStopError> {
     loop {
+        // clock-io-ok: the wait bounds real probes of a shutting-down server.
+        if deadline.saturating_duration_since(Instant::now()).is_zero() {
+            return Ok(BootStopWait::TimedOut);
+        }
         match probe_boot(socket_path, expected_boot_id, deadline)? {
             BootProbe::Gone | BootProbe::Expected | BootProbe::Unanswered => {}
             BootProbe::Changed(actual_boot_id) => {
                 return Ok(BootStopWait::Changed(actual_boot_id));
             }
         }
+        // clock-io-ok: the liveness connect gets what is left of the real wait.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(BootStopWait::TimedOut);
+        }
         let socket_stopped =
-            server_socket_is_stopped(socket_path).map_err(|source| ServerStopError::Io {
-                context: "could not check whether the server stopped".to_owned(),
-                source,
+            server_socket_is_stopped_within(socket_path, remaining).map_err(|source| {
+                ServerStopError::Io {
+                    context: "could not check whether the server stopped".to_owned(),
+                    source,
+                }
             })?;
         if socket_stopped {
             return Ok(BootStopWait::Gone);
@@ -655,7 +754,7 @@ fn send_stop_request(
     request: &Request,
     deadline: Instant,
     expected_boot_id: Option<&BootId>,
-) -> Result<Option<String>, ServerStopError> {
+) -> Result<StopRequestAnswer, ServerStopError> {
     // clock-io-ok: the deadline is the one the real socket reader below keeps.
     if deadline.saturating_duration_since(Instant::now()).is_zero() {
         return Err(ServerStopError::Io {
@@ -671,14 +770,18 @@ fn send_stop_request(
         Ok(response) => match response.result {
             // Older servers acknowledge a stop with `ok`; their final save
             // result cannot be recovered by this client.
-            ResponseResult::Ok {} => Ok(None),
-            ResponseResult::ServerStopCompleted { final_save_error } => Ok(final_save_error),
+            ResponseResult::Ok {} => Ok(StopRequestAnswer::Accepted(None)),
+            ResponseResult::ServerStopCompleted { final_save_error } => {
+                Ok(StopRequestAnswer::Accepted(final_save_error))
+            }
             _ => Err(ServerStopError::Protocol(
                 "unexpected stop result from server".into(),
             )),
         },
         Err(ApiClientDeadlineError::Connect(error)) => {
-            Err(stop_socket_io_error(socket_path, error))
+            // clock-io-ok: the liveness connect gets what is left of the real request.
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            Err(stop_socket_io_error(socket_path, error, remaining))
         }
         // A connection closed without an answer is ambiguous. The server may
         // have begun stopping before it wrote one, or it may have dropped the
@@ -690,11 +793,13 @@ fn send_stop_request(
         // that never arrived then ends in the wait's `TimedOut`, whose
         // wording reads as though the stop was delivered; that ambiguity is
         // accepted rather than resolved.
-        Err(ApiClientDeadlineError::Request(ApiClientError::EmptyResponse)) => Ok(None),
+        Err(ApiClientDeadlineError::Request(ApiClientError::EmptyResponse)) => {
+            Ok(StopRequestAnswer::Accepted(None))
+        }
         Err(ApiClientDeadlineError::Request(ApiClientError::Io(error)))
             if stop_request_error_allows_wait(&error) =>
         {
-            Ok(None)
+            Ok(StopRequestAnswer::Accepted(None))
         }
         Err(ApiClientDeadlineError::Request(ApiClientError::Io(source))) => {
             Err(ServerStopError::Io {
@@ -716,6 +821,17 @@ fn send_stop_request(
                         detail: response.error.message,
                     })
                 }
+                _ if response.error.code == ApiErrorCode::EndpointBusy => {
+                    Ok(StopRequestAnswer::Busy)
+                }
+                // A stop method answers `server_unavailable` only when it
+                // accepted the stop and its final save did not report within
+                // the server's answer window. The named server is already
+                // stopping, so wait for it to finish before returning the
+                // unreported outcome.
+                _ if response.error.code == ApiErrorCode::ServerUnavailable => Ok(
+                    StopRequestAnswer::FinalSaveUnreported(response.error.message),
+                ),
                 _ => Err(ServerStopError::Protocol(response.error.message)),
             }
         }
@@ -725,8 +841,12 @@ fn send_stop_request(
     }
 }
 
-fn stop_socket_io_error(socket_path: &Path, error: io::Error) -> ServerStopError {
-    match shepr_platform::ipc::socket_is_live(socket_path) {
+fn stop_socket_io_error(
+    socket_path: &Path,
+    error: io::Error,
+    remaining: Duration,
+) -> ServerStopError {
+    match shepr_platform::ipc::socket_is_live_within(socket_path, remaining) {
         Ok(false) => ServerStopError::NotRunning {
             path: socket_path.into(),
             source: error,
@@ -768,17 +888,36 @@ fn stop_request_error_allows_wait(err: &std::io::Error) -> bool {
 }
 
 /// Whether the server socket has no listener. Errors never prove absence.
-fn server_socket_is_stopped(socket: &Path) -> io::Result<bool> {
-    shepr_platform::ipc::socket_is_live(socket).map(|live| !live)
+fn server_socket_is_stopped_within(socket: &Path, timeout: Duration) -> io::Result<bool> {
+    match shepr_platform::ipc::socket_is_live_within(socket, timeout) {
+        Ok(live) => Ok(!live),
+        // A full backlog can hide a live listener until this phase's budget
+        // ends. Keep waiting; only a confirmed stale or absent socket is
+        // evidence that the server stopped.
+        Err(error)
+            if matches!(
+                shepr_platform::ipc::classify_stream_error(error.kind()),
+                shepr_platform::ipc::StreamFailure::TimedOut
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn wait_until_stopped_until(socket_path: &Path, deadline: Instant) -> io::Result<bool> {
     loop {
         // clock-io-ok: polls another process's socket while it exits.
         let remaining = deadline.saturating_duration_since(Instant::now());
-        if server_socket_is_stopped(socket_path)? {
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        if server_socket_is_stopped_within(socket_path, remaining)? {
             return Ok(true);
         }
+        // clock-io-ok: the poll sleeps within the same real wait.
+        let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Ok(false);
         }
@@ -806,7 +945,11 @@ mod tests {
         let scratch = ScratchDir::new("stop-probe-error");
         let socket = scratch.join("loop.sock");
         std::os::unix::fs::symlink(&socket, &socket).expect("symlink loop");
-        let error = stop_socket_io_error(&socket, io::Error::other("original connect failure"));
+        let error = stop_socket_io_error(
+            &socket,
+            io::Error::other("original connect failure"),
+            Duration::from_millis(20),
+        );
         assert!(matches!(error, ServerStopError::Io { .. }));
         let message = error.to_string();
         assert!(message.contains("original connect failure"));
@@ -888,6 +1031,118 @@ mod tests {
     }
 
     #[test]
+    fn a_busy_stop_refusal_is_retried_until_the_server_accepts_it() {
+        let scratch = ScratchDir::new("stop-busy-retry");
+        let socket_path = scratch.join("server.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind socket");
+        let server = std::thread::spawn(move || {
+            let mut requests = Vec::new();
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept stop request");
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().expect("clone"))
+                    .read_line(&mut request)
+                    .expect("request line");
+                requests.push(request);
+                if attempt == 0 {
+                    stream
+                        .write_all(
+                            b"{\"id\":null,\"error\":{\"code\":\"endpoint_busy\",\"message\":\"busy\"}}\n",
+                        )
+                        .expect("busy answer");
+                } else {
+                    stream
+                        .write_all(operator_stop_ok().as_bytes())
+                        .expect("accepted answer");
+                }
+            }
+            drop(listener);
+            requests
+        });
+
+        stop_socket_with_budgets(
+            &socket_path,
+            None,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            StopOrigin::Operator,
+            None,
+        )
+        .expect("stop is retried after the busy refusal");
+        let requests = server.join().expect("server thread");
+        assert_eq!(requests.len(), 2);
+    }
+
+    #[test]
+    fn an_unreported_final_save_answer_is_seen_and_shutdown_is_waited_for() {
+        let scratch = ScratchDir::new("stop-save-unreported");
+        let socket_path = scratch.join("server.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind socket");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept stop request");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().expect("clone"))
+                .read_line(&mut request)
+                .expect("request line");
+            stream
+                .write_all(
+                    operator_stop_reply(
+                        r#""error":{"code":"server_unavailable","message":"final save not reported"}"#,
+                    )
+                    .as_bytes(),
+                )
+                .expect("unreported answer");
+            drop(listener);
+        });
+
+        let error = stop_socket_with_budgets(
+            &socket_path,
+            None,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            StopOrigin::Operator,
+            None,
+        )
+        .expect_err("an unreported final save is surfaced after shutdown");
+        server.join().expect("server thread");
+        assert!(matches!(
+            error,
+            ServerStopError::FinalSaveUnreported {
+                message,
+                stop_error: None
+            } if message == "final save not reported"
+        ));
+    }
+
+    #[test]
+    fn a_busy_status_answer_does_not_mean_the_named_boot_is_gone() {
+        let scratch = ScratchDir::new("stop-status-busy");
+        let socket_path = scratch.join("server.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind socket");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept ping");
+            let mut request = String::new();
+            BufReader::new(stream.try_clone().expect("clone"))
+                .read_line(&mut request)
+                .expect("ping request");
+            stream
+                .write_all(
+                    b"{\"id\":null,\"error\":{\"code\":\"endpoint_busy\",\"message\":\"busy\"}}\n",
+                )
+                .expect("busy answer");
+        });
+
+        let result = probe_boot(
+            &socket_path,
+            &"17-23".parse().expect("boot identity"),
+            Instant::now() + Duration::from_secs(1),
+        )
+        .expect("busy means retry status later");
+        server.join().expect("server thread");
+        assert!(matches!(result, BootProbe::Unanswered));
+    }
+
+    #[test]
     fn stop_times_out_when_socket_stays_open_without_response() {
         let (_env, paths) = isolated_config_env();
         let socket_path = paths.server_address().socket().to_path_buf();
@@ -922,11 +1177,13 @@ mod tests {
             }
         });
 
-        let err = stop_active_server_with_timeout(
-            &paths,
-            StopOrigin::Operator,
+        let err = stop_socket_with_budgets(
+            &socket_path,
             None,
             Duration::from_millis(75),
+            Duration::from_millis(75),
+            StopOrigin::Operator,
+            None,
         )
         .expect_err("silent server should fail after timeout");
 

@@ -411,28 +411,32 @@ fn is_local_entry(machine: &super::MachineConfig, local_label: &super::MachineLa
     local_label.same_name(&machine.label)
 }
 
-/// One diagnostic per machine whose label an earlier entry already uses.
-/// Labels are what the client names servers by, so they must be unique. This
-/// host's own entry (`is_local_entry`) is not a duplicate: it is skipped. Blank
-/// labels and malformed SSH targets cannot reach here, as the types refuse
-/// them.
-fn machine_label_diagnostics(
-    machines: &[super::MachineConfig],
-    local_label: Option<&super::MachineLabel>,
-) -> Vec<super::ConfigDiagnostic> {
+/// One diagnostic per machine whose label an earlier entry already uses,
+/// ignoring ASCII case, the same rule as [`super::MachineLabel::same_name`].
+/// A single entry for this host is allowed, but it still participates in
+/// duplicate detection so two local entries cannot silently choose one
+/// palette. Blank labels and malformed SSH targets cannot reach here, as the
+/// types refuse them.
+fn machine_label_diagnostics(machines: &[super::MachineConfig]) -> Vec<super::ConfigDiagnostic> {
     let label_path = |index: usize| {
         super::ConfigKeyPath::root()
             .key("machines")
             .index(index)
             .key("label")
     };
-    let mut seen = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<String, (usize, &super::MachineLabel)> =
+        std::collections::HashMap::new();
     let mut diagnostics = Vec::new();
     for (index, machine) in machines.iter().enumerate() {
-        if local_label.is_some_and(|local_label| is_local_entry(machine, local_label)) {
-            continue;
-        }
-        let first = *seen.entry(&machine.label).or_insert(index);
+        let key = machine.label.as_str().to_ascii_lowercase();
+        let previous = seen.get(&key).copied();
+        let first = match previous {
+            Some((first, label)) if label.same_name(&machine.label) => first,
+            _ => {
+                seen.insert(key, (index, &machine.label));
+                index
+            }
+        };
         if first != index {
             diagnostics.push(super::ConfigDiagnostic::validation_related(
                 label_path(index),
@@ -500,10 +504,7 @@ pub(crate) fn validate_client(
     if let Err(diagnostic) = &local_label {
         diagnostics.push(diagnostic.clone());
     }
-    diagnostics.extend(machine_label_diagnostics(
-        &config.machines,
-        local_label.as_ref().ok(),
-    ));
+    diagnostics.extend(machine_label_diagnostics(&config.machines));
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
@@ -552,7 +553,8 @@ pub struct ValidatedClientConfig {
     local_hue: shepr_term::host_tint::HostHue,
     /// The name the client shows for the local server, resolved at launch.
     local_label: super::MachineLabel,
-    /// In config order, with unique labels, this host's own entry dropped.
+    /// In config order, with labels unique ignoring ASCII case and this
+    /// host's own entry dropped.
     machines: Vec<super::MachineConfig>,
 }
 
@@ -599,8 +601,8 @@ impl ValidatedClientConfig {
         &self.local_label
     }
 
-    /// The configured machines, in config order. Labels are unique, and none
-    /// is the local server's.
+    /// The configured machines, in config order. Labels are unique ignoring
+    /// ASCII case, and none is the local server's.
     pub fn machines(&self) -> &[super::MachineConfig] {
         &self.machines
     }

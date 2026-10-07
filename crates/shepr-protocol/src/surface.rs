@@ -333,6 +333,9 @@ pub struct SurfaceUpdate {
     pub base_projection_revision: ProjectionRevision,
     pub projection_revision: ProjectionRevision,
     pub meta: Option<SurfaceMeta>,
+    // Producers collect spans through shepr-surface's `PatchSpanCollector`, which
+    // stops at this same cap, so an encode never meets it; a decode refuses a
+    // longer list before allocating it.
     #[serde(
         serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>",
         deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>"

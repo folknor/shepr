@@ -70,6 +70,26 @@ impl HostPixelExtent {
             grid_cell(y.min(height_px - 1), rows, height_px)?,
         ))
     }
+
+    /// Maps a mouse report, keeping a drag or release inside the nearest edge
+    /// cell when a terminal reports coordinates beyond its ioctl pixel extent.
+    pub fn cell_for_event(
+        self,
+        x: u32,
+        y: u32,
+        kind: crossterm::event::MouseEventKind,
+    ) -> Option<(u16, u16)> {
+        if let Some(cell) = self.cell(x, y) {
+            return Some(cell);
+        }
+        if !matches!(
+            kind,
+            crossterm::event::MouseEventKind::Drag(_) | crossterm::event::MouseEventKind::Up(_)
+        ) {
+            return None;
+        }
+        self.cell(x.clamp(1, self.width_px), y.clamp(1, self.height_px))
+    }
 }
 
 impl HostPixels {
@@ -239,5 +259,24 @@ mod tests {
         assert_eq!(geometry.cell(800, 480), Some((79, 23)));
         assert_eq!(geometry.cell(801, 1), None);
         assert_eq!(geometry.cell(0, 1), None);
+    }
+
+    #[test]
+    fn out_of_extent_mouse_drags_and_releases_clamp_to_edge_cells() {
+        let geometry = HostPixelExtent::new(80, 24, 800, 480).expect("test precondition");
+        use crossterm::event::{MouseButton, MouseEventKind};
+
+        assert_eq!(
+            geometry.cell_for_event(801, 481, MouseEventKind::Up(MouseButton::Left)),
+            Some((79, 23))
+        );
+        assert_eq!(
+            geometry.cell_for_event(0, 0, MouseEventKind::Drag(MouseButton::Left)),
+            Some((0, 0))
+        );
+        assert_eq!(
+            geometry.cell_for_event(801, 481, MouseEventKind::Down(MouseButton::Left)),
+            None
+        );
     }
 }

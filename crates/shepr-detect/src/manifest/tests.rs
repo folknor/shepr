@@ -742,6 +742,42 @@ not = [{ matcher = "a", contains = ["extra"] }]
 }
 
 #[test]
+fn rule_reference_rejects_explicit_default_region_but_accepts_omission() {
+    let source = r#"
+id = "codex"
+
+[[rules]]
+id = "source"
+state = "working"
+contains = ["source"]
+
+[[rules]]
+id = "reference"
+rule = "codex.source"
+region = "whole_recent"
+"#;
+    let error = parse_manifest(source).expect_err("an explicit region is inline input");
+    assert!(
+        error.contains("rule reference with inline matchers or a region"),
+        "{error}"
+    );
+
+    let source = r#"
+id = "codex"
+
+[[rules]]
+id = "source"
+state = "working"
+contains = ["source"]
+
+[[rules]]
+id = "reference"
+rule = "codex.source"
+"#;
+    parse_manifest(source).expect("an omitted region leaves the reference intact");
+}
+
+#[test]
 fn codex_no_match_uses_manifest_unknown_fallback() {
     let manifests = TestManifests::new(&local_manifest("working", "active-marker"));
     let explain = manifests.explain(Agent::Codex, "unmatched-marker");

@@ -627,10 +627,44 @@ fn final_save_run_loop_subprocess_entry_point() {
                 socket.try_exists().expect("stat socket"),
                 "the socket must start live"
             );
-            server.app.test_state_mut().test_set_workspaces(vec![
-                shepr_mux::workspace::Workspace::test_new("saved-by-run-loop"),
-            ]);
+            let mut workspace = shepr_mux::workspace::Workspace::test_new("saved-by-run-loop");
+            let retained_pane = workspace.tree().root();
+            let exited_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
+            server
+                .app
+                .test_state_mut()
+                .test_set_workspaces(vec![workspace]);
+            server.app.test_state_mut().seed_bookmark_index(Some(0));
+            server.app.insert_idle_test_runtime(retained_pane);
+            server.app.insert_idle_test_runtime(exited_pane);
             server.app.test_state_mut().mark_session_dirty();
+            let reported_cwd = ScratchDir::new("shutdown-cwd");
+            let cwd_report = server.app.from_pane_runtime(
+                retained_pane,
+                shepr_mux::events::RuntimeEvent::TerminalCwdReported {
+                    cwd: shepr_mux::UsableCwd::new(reported_cwd.to_path_buf())
+                        .expect("scratch cwd is usable"),
+                },
+            );
+            server
+                .outputs
+                .event_sender()
+                .try_send(cwd_report)
+                .expect("queue cwd report before stop");
+            let pane_exit = server.app.from_pane_runtime(
+                exited_pane,
+                shepr_mux::events::RuntimeEvent::PaneDied {
+                    ending: shepr_mux::pane::PaneEnding::new(
+                        shepr_mux::pane::PaneEndReason::Exited,
+                    ),
+                    ended_at: std::time::Instant::now(),
+                },
+            );
+            server
+                .outputs
+                .event_sender()
+                .try_send(pane_exit)
+                .expect("queue pane exit before stop");
             let session = shepr_mux::persist::session_path(paths.data_dir());
             assert!(
                 !session.try_exists().expect("stat session"),
@@ -650,7 +684,13 @@ fn final_save_run_loop_subprocess_entry_point() {
                 saved.contains("saved-by-run-loop"),
                 "the final save contains the mutation"
             );
-            shepr_mux::persist::schema::parse_session_file(&saved).expect("valid saved session");
+            assert!(server.app.state().pane(exited_pane).is_none());
+            let snapshot = shepr_mux::persist::schema::parse_session_file(&saved)
+                .expect("valid saved session");
+            assert_eq!(snapshot.workspaces.len(), 1);
+            let panes = snapshot.workspaces[0].layout.panes();
+            assert_eq!(panes.len(), 1, "the queued pane exit is in the final save");
+            assert_eq!(panes[0].cwd.as_path(), reported_cwd.path());
             assert!(shepr_mux::persist::DataDirLease::acquire(paths.data_dir()).is_ok());
         });
 }

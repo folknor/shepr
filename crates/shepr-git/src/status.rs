@@ -178,6 +178,7 @@ pub(crate) struct GitStatusFingerprint {
     pub(crate) head: GitHeadIdentity,
     pub(crate) upstream: Option<GitUpstreamIdentity>,
     repository_context: RepoContext,
+    reftable_dependencies: Option<Dependencies>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,7 +340,11 @@ fn git_status_snapshot(
         );
     };
     let repo_root = repository_context.info.repo_root.clone();
-    let Some(fingerprint) = fingerprint(repository_context, &mut read_errors) else {
+    let Some(fingerprint) = fingerprint(
+        repository_context,
+        cached.and_then(GitStatusCacheEntry::fingerprint),
+        &mut read_errors,
+    ) else {
         let snapshot = GitStatusSnapshot {
             branch: GitBranch::ReadFailed,
             ahead_behind: None,
@@ -411,8 +416,43 @@ fn git_status_snapshot(
 
 fn fingerprint(
     mut repo: RepoContext,
+    cached: Option<&GitStatusFingerprint>,
     read_errors: &mut Vec<GitReadError>,
 ) -> Option<GitStatusFingerprint> {
+    // Reftable replaces its tables.list atomically on ref transactions. Track
+    // both stores for linked worktrees and HEAD for symbolic-ref changes.
+    // A stable store and config reuse identities without invoking Git.
+    let reftable_dependencies = (repo.backend == RefBackend::Reftable).then(|| {
+        Dependencies::tracked(
+            [
+                repo.info.git_dir.join("HEAD"),
+                repo.info.git_dir.join("reftable/tables.list"),
+                repo.info.git_common_dir.join("reftable/tables.list"),
+            ]
+            .into_iter()
+            .map(|path| stamp(path, None))
+            .collect(),
+        )
+    });
+    if let Some(previous) = cached.filter(|previous| {
+        reftable_dependencies.as_ref().is_some_and(|deps| {
+            matches!(deps, Dependencies::Tracked(_))
+                && previous.reftable_dependencies.as_ref() == Some(deps)
+        }) && previous.repository_context.info == repo.info
+            && previous
+                .repository_context
+                .config
+                .as_ref()
+                .is_none_or(ConfigCtx::current)
+    }) {
+        repo.config = previous.repository_context.config.clone();
+        return Some(GitStatusFingerprint {
+            head: previous.head.clone(),
+            upstream: previous.upstream.clone(),
+            repository_context: repo,
+            reftable_dependencies,
+        });
+    }
     let head = read_head_identity(&repo.info, repo.backend, read_errors)?;
     let upstream = match &head {
         GitHeadIdentity::Branch { short_name, .. } => {
@@ -425,6 +465,8 @@ fn fingerprint(
         head,
         upstream,
         repository_context: repo,
+        // If refs changed during the probes, force another read next time.
+        reftable_dependencies: reftable_dependencies.filter(deps_current),
     })
 }
 
@@ -525,7 +567,7 @@ fn read_upstream(
     if repo
         .config
         .as_ref()
-        .is_none_or(|context| &context.branch != branch || !deps_current(&context.dependencies))
+        .is_none_or(|context| &context.branch != branch || !context.current())
     {
         repo.config = Some(read_config_for_status(&repo.info, branch, read_errors));
     }
@@ -596,7 +638,7 @@ impl GitStatusCache {
 #[cfg(test)]
 pub(super) fn git_status_fingerprint(cwd: &Path) -> Option<GitStatusFingerprint> {
     let mut read_errors = Vec::new();
-    fingerprint(repo_context(cwd, &mut read_errors)?, &mut read_errors)
+    fingerprint(repo_context(cwd, &mut read_errors)?, None, &mut read_errors)
 }
 
 #[cfg(test)]
@@ -610,6 +652,53 @@ mod tests {
     use super::*;
     use crate::test_support::{git_written_fixture, temp_test_dir, write_fake_tracked_repo};
     use std::time::Duration;
+
+    #[test]
+    fn stable_reftable_store_reuses_identity_without_a_git_repository() {
+        let scratch = shepr_test_support::ScratchDir::new("git-reftable-cache");
+        let info = GitWorktreeInfo {
+            repo_root: scratch.join("not-a-repository"),
+            git_dir: scratch.join("admin"),
+            git_common_dir: scratch.join("common"),
+        };
+        let dependencies = Dependencies::tracked(
+            [
+                info.git_dir.join("HEAD"),
+                info.git_dir.join("reftable/tables.list"),
+                info.git_common_dir.join("reftable/tables.list"),
+            ]
+            .into_iter()
+            .map(|path| stamp(path, None))
+            .collect(),
+        );
+        let repo = RepoContext {
+            info: info.clone(),
+            backend: RefBackend::Reftable,
+            dependencies: Dependencies::Tracked(Vec::new()),
+            config: None,
+        };
+        let cached = GitStatusFingerprint {
+            head: GitHeadIdentity::Detached {
+                oid: Oid::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("oid"),
+            },
+            upstream: None,
+            repository_context: repo.clone(),
+            reftable_dependencies: Some(dependencies),
+        };
+        let mut errors = Vec::new();
+        let next = fingerprint(repo, Some(&cached), &mut errors).expect("cached identity");
+        assert_eq!(next, cached);
+        assert!(errors.is_empty());
+        std::fs::create_dir_all(info.git_common_dir.join("reftable")).expect("store");
+        std::fs::write(
+            info.git_common_dir.join("reftable/tables.list"),
+            "new-table.ref\n",
+        )
+        .expect("new store generation");
+        assert!(!deps_current(
+            next.reftable_dependencies.as_ref().expect("tracked store")
+        ));
+    }
 
     #[test]
     fn checkout_and_outside_keys_do_not_alias() {

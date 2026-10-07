@@ -6,19 +6,18 @@ use std::time::Duration;
 /// reads so they cannot stall workspace and sidebar updates.
 pub(crate) const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How long a worker thread that owes a refresh may go without progress (a
-/// step started, a refresh computed or published) before it is abandoned. A
-/// step is one target's checkout discovery or one checkout's status: several
-/// Git probes, each bounded by [`GIT_COMMAND_TIMEOUT`], around filesystem calls
-/// that have no deadline. The bound sits well above a step whose probes all
-/// time out, so in practice only a step blocked outside its probes, as on a
-/// hung mount, reaches it.
+/// How long a worker thread that owes a refresh may go without progress
+/// before abandonment. Discovery/status boundaries and each direct filesystem
+/// access announce progress; an access replaces the nominal job paths with
+/// its physical mount paths. Git probes have their own deadlines. The bound
+/// sits well above a job whose probes all time out, so ordinary probe failures
+/// do not consume abandonment slots.
 pub(crate) const GIT_REFRESH_STALL_BOUND: Duration = GIT_COMMAND_TIMEOUT.saturating_mul(12);
 
-/// Most abandoned worker threads left alive at once. Quarantine is by nominal
-/// step paths, not mount or shared dependency, so one hung mount can exhaust
-/// this global budget. Past it a stalled refresh is waited out instead; this
-/// bounds thread growth but does not preserve status refreshes elsewhere.
+/// Most abandoned worker threads left alive at once. Filesystem accesses
+/// quarantine all mount points of their device, so a mount that stays hung
+/// holds one thread. Independent filesystem or destructor stalls can fill
+/// the global budget; past it a stalled refresh is waited out.
 pub(crate) const MAX_ABANDONED_GIT_REFRESH_THREADS: usize = 4;
 
 /// Polling interval while waiting for a Git probe and its output readers. The
@@ -53,5 +52,7 @@ pub(crate) const MAX_GIT_PIPE_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const MAX_GIT_REF_FILE_BYTES: usize = 64 * 1024;
 
 /// Retry delay after Git status refresh fails, avoiding repeated filesystem
-/// and subprocess work for a broken or unavailable checkout.
+/// and subprocess work for a broken or unavailable checkout. It is also how
+/// long a branch config whose dependencies cannot be tracked (`ConfigCtx` with
+/// `Dependencies::Uncacheable`) is reused before Git is asked again.
 pub(crate) const GIT_STATUS_RETRY_DELAY: Duration = Duration::from_secs(30);

@@ -128,9 +128,10 @@
 # rows = [["state_icon", "workspace"], []]
 
 # Machines whose shepr servers this client shows next to the local one. Each
-# entry needs a unique label (how shepr names the machine: nonblank, no control
-# characters, no leading or trailing whitespace), an ssh target (a host alias,
-# user@host or ssh:// URL, never with a password) and a palette.
+# entry needs a label unique ignoring ASCII case (how shepr names the machine:
+# nonblank, no control characters, no leading or trailing whitespace), an ssh
+# target (a host alias, user@host or ssh:// URL, never with a password) and a
+# palette.
 # Read once at launch; a duplicate label, a malformed target or a missing or
 # unknown palette fails the launch.
 # An entry whose label is the local server's label (in any case) is this host's

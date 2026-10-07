@@ -63,7 +63,7 @@ fn discover_below(cwd: &Path, ceilings: &GitCeilings) -> Discovery {
 }
 
 pub(super) fn canonicalize_best_effort_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+    crate::access::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// The common directory a Git directory shares its refs with: itself unless
@@ -72,7 +72,7 @@ pub(super) fn canonicalize_best_effort_path(path: &Path) -> PathBuf {
 /// would read linked-worktree refs from the wrong directory.
 fn git_common_dir_for_git_dir(git_dir: &Path) -> Option<PathBuf> {
     let commondir = git_dir.join("commondir");
-    let contents = match std::fs::read_to_string(&commondir) {
+    let contents = match crate::access::read_to_string(&commondir) {
         Ok(contents) => contents,
         Err(error) if is_absence(&error) => return Some(git_dir.to_path_buf()),
         Err(error) => {
@@ -119,10 +119,10 @@ pub(super) enum RefFileRead {
 }
 
 pub(super) fn read_git_ref_file_state(path: &Path) -> RefFileRead {
-    let file = match std::fs::File::open(path) {
+    let file = match crate::access::open(path) {
         Ok(file) => file,
         Err(error) if is_absence(&error) => {
-            return match std::fs::symlink_metadata(path) {
+            return match crate::access::symlink_metadata(path) {
                 Err(metadata_error) if is_absence(&metadata_error) => RefFileRead::Absent,
                 // An entry that exists has a symlink target that is missing or
                 // traverses a non-directory: Git treats the loose ref as broken
@@ -182,7 +182,7 @@ fn is_absence(error: &std::io::Error) -> bool {
 /// unreadable `.git` for a missing one would ascend past the checkout it
 /// cannot see and attribute the directory to an enclosing one.
 fn entry_type(path: &Path) -> std::io::Result<Option<std::fs::FileType>> {
-    match std::fs::metadata(path) {
+    match crate::access::metadata(path) {
         Ok(metadata) => Ok(Some(metadata.file_type())),
         Err(error) if is_absence(&error) => Ok(None),
         Err(error) => Err(error),
@@ -211,7 +211,7 @@ fn locate_git_dir(repo_root: &Path) -> Result<Option<LocatedGitDir>, GitReadErro
         Some(kind) if kind.is_file() => {
             // A regular `.git` file claims to be a gitfile. Any failure to
             // read its target is an invalid marker, not a reason to ascend.
-            let gitdir = std::fs::read_to_string(&git_path)
+            let gitdir = crate::access::read_to_string(&git_path)
                 .map_err(|error| file_read_error(&git_path, &error))?;
             let Some(relative) = gitdir
                 .trim()
@@ -270,7 +270,7 @@ fn git_head_file_is_readable(git_dir: &LocatedGitDir) -> std::io::Result<bool> {
         ));
     }
     if is_file && git_dir.from_gitfile {
-        drop(std::fs::File::open(head)?);
+        drop(crate::access::open(head)?);
     }
     Ok(is_file)
 }
@@ -477,7 +477,7 @@ impl GitCeilings {
             if !path.is_absolute() {
                 continue;
             }
-            if resolve && let Ok(real) = std::fs::canonicalize(path) {
+            if resolve && let Ok(real) = crate::access::canonicalize(path) {
                 dirs.push(real);
             }
             dirs.push(path.to_path_buf());
@@ -562,7 +562,7 @@ pub(super) fn read_ref_oid_for_full_ref(
     // instead of allocating the entire file or an unbounded malformed line.
     use std::io::BufRead;
     let packed_path = common_dir.join("packed-refs");
-    let file = match std::fs::File::open(&packed_path) {
+    let file = match crate::access::open(&packed_path) {
         Ok(file) => file,
         Err(error) if is_absence(&error) => return None,
         Err(error) => {

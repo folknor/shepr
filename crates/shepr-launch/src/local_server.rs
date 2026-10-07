@@ -174,10 +174,11 @@ pub struct ServerReady {
     /// The status of the server: the one probed, or the one launched and
     /// verified.
     pub status: RuntimeStatus,
-    /// What a server this call launched wrote to its boot log before it was
+    /// What the server this call launched wrote to its boot log before it was
     /// ready, for the operator: usually that it could not open its own log
-    /// file, so the boot log is its only record. `None` when this call
-    /// launched nothing or the boot log was empty. This crate does not print.
+    /// file, so the boot log is its only record. `None` when this call did not
+    /// launch the accepted server or the boot log was empty. This crate does
+    /// not print.
     pub boot_notice: Option<String>,
 }
 
@@ -253,16 +254,19 @@ pub fn ensure_running(
     // prevent attaching to a server that is already coming up.
     let server = server_executable().map_err(LaunchError::Executable)?;
     shepr_platform::structured_log!(INFO, event = launch.server_start, outcome = Started, server = %server.display(), "no server running, starting the server daemon");
-    let status = launch_daemon(paths, &server, timeout)?;
-    let status = accept_running(paths, status, build_check)?;
+    let launched = launch_daemon(paths, &server, timeout)?;
+    let status = accept_running(paths, launched.status, build_check)?;
     Ok(ServerReady {
         status,
-        boot_notice: ready_boot_notice(&paths.boot_log_path()),
+        boot_notice: ready_boot_notice_for_launch(
+            &paths.boot_log_path(),
+            launched.started_by_this_call,
+        ),
     })
 }
 
 /// The operator notice for a boot log a ready server left non-empty, or `None`
-/// when it is empty or absent. `launch_with` keeps the file for this.
+/// when it is empty or absent. `launch_with_outcome` keeps the file for this.
 fn ready_boot_notice(boot_log: &Path) -> Option<String> {
     std::fs::metadata(boot_log)
         .is_ok_and(|metadata| metadata.len() > 0)
@@ -271,6 +275,18 @@ fn ready_boot_notice(boot_log: &Path) -> Option<String> {
                 .unwrap_or_else(|error| format!("(unreadable: {error})"));
             crate::guidance::ready_boot_log_notice(boot_log, &tail)
         })
+}
+
+/// Only attribute boot-log output to a server whose boot identity names the
+/// daemon this launch spawned. A competing server can answer while this
+/// daemon reports `AlreadyRunning`, and its boot log may contain that failed
+/// daemon's stderr.
+fn ready_boot_notice_for_launch(boot_log: &Path, started_by_this_call: bool) -> Option<String> {
+    if started_by_this_call {
+        ready_boot_notice(boot_log)
+    } else {
+        None
+    }
 }
 
 /// What is running at the local server address, without ever starting a server:
@@ -767,11 +783,11 @@ fn launch_daemon(
     paths: &shepr_paths::AppPaths,
     server: &Path,
     timeout: Duration,
-) -> Result<RuntimeStatus, LaunchError> {
+) -> Result<LaunchOutcome, LaunchError> {
     let boot_log = paths.boot_log_path();
     let server_log = paths.server_log();
     let working_dir = server_daemon_working_dir(paths);
-    launch_with(
+    launch_with_outcome(
         &LaunchFiles {
             server,
             boot_log: &boot_log,
@@ -803,6 +819,11 @@ fn launch_daemon(
     )
 }
 
+struct LaunchOutcome {
+    status: RuntimeStatus,
+    started_by_this_call: bool,
+}
+
 /// Starts the daemon through `spawn` (handed the boot log as its stderr) and
 /// polls `probe` until the daemon answers with this build's identity.
 ///
@@ -813,21 +834,23 @@ fn launch_daemon(
 /// goes on for it until the deadline. An occupant of another build that
 /// answers is returned for the caller's build-check policy; one that answers
 /// that it is stopping is never returned, only polled past until its socket
-/// go. While nothing listens, such a daemon is started again every
+/// goes. While nothing listens, such a daemon is started again every
 /// [`DAEMON_RESTART_INTERVAL`]: the holder may be a server that is still
 /// starting before its socket bind, or one that has released its socket and
 /// still holds its lease. The launch is owed a daemon of its own once the
-/// lease is free.
+/// lease is free. The result records whether the accepted boot identity names
+/// the daemon this call spawned, so only that daemon's stderr is reported as
+/// its boot notice.
 // The injected clock and sleeper also permit deterministic daemon restart
 // pacing; real subprocess IO tests may still choose the real clock.
-fn launch_with(
+fn launch_with_outcome(
     files: &LaunchFiles<'_>,
     timeout: Duration,
     mut spawn: impl FnMut(Stdio) -> io::Result<Child>,
     mut probe: impl FnMut() -> io::Result<Probed>,
     now: &mut impl FnMut() -> Instant,
     sleep: &mut impl FnMut(Duration),
-) -> Result<RuntimeStatus, LaunchError> {
+) -> Result<LaunchOutcome, LaunchError> {
     let boot_log = shepr_platform::open_boot_log(files.boot_log).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -864,6 +887,7 @@ fn launch_with(
                 format!("failed to start {}: {error}", files.server.display()),
             )
         })?;
+        let process_id = child.id();
         shepr_platform::structured_log!(
             INFO,
             event = launch.server_spawn,
@@ -871,9 +895,9 @@ fn launch_with(
             pid = child.id(),
             "server daemon spawned"
         );
-        Ok::<_, io::Error>(SpawnedDaemon::new(child))
+        Ok::<_, io::Error>((SpawnedDaemon::new(child), process_id))
     };
-    let mut daemon = spawn_daemon(&mut spawn)?;
+    let (mut daemon, mut daemon_process_id) = spawn_daemon(&mut spawn)?;
     let mut last_spawn = now();
 
     let deadline = now() + timeout;
@@ -908,6 +932,8 @@ fn launch_with(
         let nothing_listens = matches!(probed, Probed::NoServer);
         if let Probed::Running(status) = probed {
             if status.build_id.is_this_build() {
+                let started_by_this_call =
+                    boot_id_names_process(&status.boot_id, daemon_process_id);
                 // The boot log is not emptied here: a server whose own log
                 // file could not be opened writes its ready notice saying so
                 // into it and keeps it as the only record of its later
@@ -916,9 +942,10 @@ fn launch_with(
                 // it is up and leaves nothing here; one without reports only
                 // a capped number of panics, so the file stays bounded, and
                 // the next launch empties it when it opens it.
-                if boot_log_handle
-                    .metadata()
-                    .is_ok_and(|metadata| metadata.len() > 0)
+                if started_by_this_call
+                    && boot_log_handle
+                        .metadata()
+                        .is_ok_and(|metadata| metadata.len() > 0)
                 {
                     let tail = shepr_platform::read_boot_log_tail(files.boot_log)
                         .unwrap_or_else(|error| format!("(unreadable: {error})"));
@@ -932,7 +959,10 @@ fn launch_with(
                     );
                 }
                 daemon.disarm();
-                return Ok(status);
+                return Ok(LaunchOutcome {
+                    status,
+                    started_by_this_call,
+                });
             }
             if exited.is_none() {
                 if daemon
@@ -950,7 +980,10 @@ fn launch_with(
             } else {
                 // The daemon gave way to a different build, so this is the
                 // external occupant the caller's build-check policy handles.
-                return Ok(status);
+                return Ok(LaunchOutcome {
+                    status,
+                    started_by_this_call: false,
+                });
             }
         }
         if let Some(status) = failed {
@@ -983,7 +1016,14 @@ fn launch_with(
                 outcome = Retry,
                 "the server daemon found the data directory held while nothing listens, starting it again"
             );
-            daemon = spawn_daemon(&mut spawn)?;
+            // The prior daemon exited after finding a holder. Its stderr is
+            // not evidence about the process that will answer this attempt.
+            // Truncate through the launcher's validated handle before giving
+            // a fresh clone to the next daemon.
+            truncate_boot_log_before_retry(&boot_log_handle, files.boot_log)?;
+            let (next_daemon, next_process_id) = spawn_daemon(&mut spawn)?;
+            daemon = next_daemon;
+            daemon_process_id = next_process_id;
             last_spawn = current;
             exited = None;
             continue;
@@ -996,6 +1036,25 @@ fn launch_with(
 /// is outside the valid Linux pid range.
 fn boot_id_process_id(boot_id: &shepr_protocol::BootId) -> Option<shepr_platform::Pid> {
     shepr_platform::Pid::new(boot_id.process_id())
+}
+
+fn boot_id_names_process(boot_id: &shepr_protocol::BootId, process_id: u32) -> bool {
+    boot_id.process_id() == process_id
+}
+
+fn truncate_boot_log_before_retry(
+    boot_log_handle: &std::fs::File,
+    boot_log: &Path,
+) -> io::Result<()> {
+    boot_log_handle.set_len(0).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot clear the server boot log {} before retry: {error}",
+                boot_log.display()
+            ),
+        )
+    })
 }
 
 /// The daemon exited during boot: how, and what it printed.
@@ -1093,6 +1152,71 @@ fn build_server_daemon_command(
     shepr_paths::ServerAddress::apply_to_child_command(&mut command);
 
     command
+}
+
+/// Test adapter preserving the status-only launch fixture interface.
+#[cfg(test)]
+fn launch_with(
+    files: &LaunchFiles<'_>,
+    timeout: Duration,
+    spawn: impl FnMut(Stdio) -> io::Result<Child>,
+    probe: impl FnMut() -> io::Result<Probed>,
+    now: &mut impl FnMut() -> Instant,
+    sleep: &mut impl FnMut(Duration),
+) -> Result<RuntimeStatus, LaunchError> {
+    launch_with_outcome(files, timeout, spawn, probe, now, sleep).map(|outcome| outcome.status)
+}
+
+#[cfg(test)]
+mod launch_outcome_tests {
+    use super::*;
+
+    #[test]
+    fn a_competing_servers_boot_log_is_not_reported_as_ours() {
+        let dir = shepr_test_support::ScratchDir::new("launch-external-boot-notice");
+        let boot_log = dir.join("shepr-boot.log");
+        std::fs::write(&boot_log, b"error: shepr-server is already running\n")
+            .expect("write the refused daemon's output");
+
+        assert_eq!(ready_boot_notice_for_launch(&boot_log, false), None);
+        assert!(ready_boot_notice_for_launch(&boot_log, true).is_some());
+    }
+
+    #[test]
+    fn the_boot_identity_must_name_the_daemon_this_call_spawned() {
+        let boot_id = shepr_protocol::BootId::from_process_clock(
+            41233,
+            Ok(Duration::from_secs(1_700_000_000)),
+        );
+
+        assert!(boot_id_names_process(&boot_id, 41233));
+        assert!(!boot_id_names_process(&boot_id, 41234));
+    }
+
+    #[test]
+    fn a_retry_clears_the_previous_daemons_stderr_before_the_next_one_writes() {
+        use std::io::Write as _;
+
+        let dir = shepr_test_support::ScratchDir::new("launch-retry-boot-log");
+        let boot_log = dir.join("shepr-boot.log");
+        std::fs::write(&boot_log, b"error: shepr-server is already running\n")
+            .expect("write the refused daemon's output");
+        let handle = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&boot_log)
+            .expect("open the launcher's log handle");
+
+        truncate_boot_log_before_retry(&handle, &boot_log).expect("clear the old daemon output");
+        let mut next_daemon_stderr = handle.try_clone().expect("clone the log handle");
+        next_daemon_stderr
+            .write_all(b"logs: unavailable\n")
+            .expect("write the next daemon's output");
+
+        assert_eq!(
+            std::fs::read_to_string(&boot_log).expect("read the boot log"),
+            "logs: unavailable\n"
+        );
+    }
 }
 
 #[cfg(test)]

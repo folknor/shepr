@@ -131,7 +131,8 @@ pub fn run_server(
 
         server.run().await.map_err(|error| {
             // A client-spawned server's stderr is /dev/null by now.
-            shepr_platform::structured_log!(ERROR, event = server.event_loop, outcome = Error, %error, "the server event loop failed");
+            // Run errors also cover shutdown work such as the final save.
+            shepr_platform::structured_log!(ERROR, event = server.run, outcome = Error, %error, "the server run failed");
             error
         })
     });

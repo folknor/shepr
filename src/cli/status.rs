@@ -33,12 +33,31 @@ pub(super) enum ParsedCommand {
     Client { json: bool },
 }
 
+/// The status-specific usage error when `--all` is combined with a scoped
+/// subcommand. `parse` and the CLI's typed-parser fallback share this so the
+/// deliberate refusal gets a useful operator message.
+pub(super) fn all_scope_refusal(matches: &clap::ArgMatches) -> Option<&'static str> {
+    if !super::matches::try_flag(matches, option_name_from_flag(FLAG_ALL)).ok()? {
+        return None;
+    }
+    match matches.subcommand() {
+        Some((COMMAND_SERVER, _)) => {
+            Some("status --all cannot be combined with the 'server' subcommand")
+        }
+        Some((COMMAND_CLIENT, _)) => {
+            Some("status --all cannot be combined with the 'client' subcommand")
+        }
+        Some(_) => Some("status --all cannot be used with a subcommand"),
+        None => None,
+    }
+}
+
 pub(super) fn parse(matches: &clap::ArgMatches) -> Option<ParsedCommand> {
     let root_json = super::matches::try_flag(matches, option_name_from_flag(FLAG_JSON)).ok()?;
     let all = super::matches::try_flag(matches, option_name_from_flag(FLAG_ALL)).ok()?;
     // `--all` applies only to the overview. Do not silently drop it when a
     // scoped subcommand is selected.
-    if all && matches.subcommand().is_some() {
+    if all_scope_refusal(matches).is_some() {
         return None;
     }
     match matches.subcommand() {

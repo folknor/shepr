@@ -1658,43 +1658,26 @@ fn opencode_family_plugins_keep_child_sessions_off_the_pane() {
 }
 
 #[test]
-fn pi_extension_refreshes_session_ref_before_agent_start_state() {
+fn pi_agent_start_does_not_refresh_the_session() {
     let agent_start = PI_EXTENSION_ASSET
         .find("pi.on(\"agent_start\", (_event, ctx)")
-        .expect("pi extension should receive agent_start context");
-    let handler = &PI_EXTENSION_ASSET[agent_start..];
-    let update_session = handler
-        .find("updateSessionRef(ctx);")
-        .expect("pi extension should refresh the active session on agent_start");
-    let report_session = handler
-        .find("void reportSession();")
-        .expect("pi extension should report the refreshed session before state");
-    let publish_state = handler
-        .find("publishState();")
-        .expect("pi extension should publish working state after refreshing session");
+        .expect("pi extension should register agent_start");
+    let rest = &PI_EXTENSION_ASSET[agent_start..];
+    let end = rest.find("\n\n  pi.").unwrap_or(rest.len());
+    let handler = &rest[..end];
 
-    assert!(update_session < report_session);
-    assert!(report_session < publish_state);
+    assert!(!handler.contains("reportSession"), "{handler}");
+    assert!(!handler.contains("updateSessionRef"), "{handler}");
+    assert!(handler.contains("publishState();"), "{handler}");
 }
 
 #[test]
-fn omp_extension_refreshes_session_ref_before_agent_start_state() {
-    let agent_start = OMP_EXTENSION_ASSET
-        .find("pi.on(\"agent_start\", (_event, ctx)")
-        .expect("omp extension should receive agent_start context");
-    let handler = &OMP_EXTENSION_ASSET[agent_start..];
-    let update_session = handler
-        .find("updateSessionRef(ctx);")
-        .expect("omp extension should refresh the active session on agent_start");
-    let report_session = handler
-        .find("void reportSession();")
-        .expect("omp extension should report the refreshed session before state");
-    let publish_state = handler
-        .find("publishState();")
-        .expect("omp extension should publish working state after refreshing session");
+fn omp_agent_start_does_not_refresh_the_session_for_an_active_root() {
+    let handler = omp_handler("agent_start");
 
-    assert!(update_session < report_session);
-    assert!(report_session < publish_state);
+    assert!(!handler.contains("reportSession"), "{handler}");
+    assert!(!handler.contains("updateSessionRef"), "{handler}");
+    assert!(handler.contains("publishState();"), "{handler}");
 }
 
 fn omp_handler(event: &str) -> &'static str {
@@ -1711,7 +1694,7 @@ fn omp_handler(event: &str) -> &'static str {
 #[test]
 fn omp_root_activation_requires_ui_context() {
     let activator = OMP_EXTENSION_ASSET
-        .find("function activateRootSession(ctx: any, sessionStartSource?: string): boolean")
+        .find("function activateRootSession(ctx: any, startSource?: string): boolean")
         .expect("omp extension should centralize root session activation");
     let helper = &OMP_EXTENSION_ASSET[activator..];
     let non_ui_guard = helper
@@ -1721,7 +1704,7 @@ fn omp_root_activation_requires_ui_context() {
         .find("rootSession = true;")
         .expect("omp extension activates root session after UI guard");
     let session_report = helper
-        .find("void reportSession(sessionStartSource);")
+        .find("void reportSession(startSource);")
         .expect("omp extension reports root session");
 
     assert!(non_ui_guard < root_session);
@@ -1735,24 +1718,22 @@ fn omp_session_start_and_switch_use_root_activation() {
         .expect("omp extension registers session_start handler");
     let session_start_handler = &OMP_EXTENSION_ASSET[session_start..];
     session_start_handler
-        .find("if (!activateRootSession(ctx, event?.reason || START.startup))")
+        .find("if (!activateRootSession(ctx, sessionStartSource(event?.reason, START.startup)))")
         .expect("omp session_start handler should activate root session with its reason");
 
-    // Per-turn activation must not claim a startup: only session_start and
-    // session_switch select a session.
+    // A runtime event that finds no root session recovers it as a startup.
     let agent_start = omp_handler("agent_start");
     assert!(
-        agent_start.contains("activateRootSession(ctx)"),
+        agent_start.contains("activateRootSession(ctx, START.startup)"),
         "{agent_start}"
     );
-    assert!(!agent_start.contains("START.startup"), "{agent_start}");
 
     let session_switch = OMP_EXTENSION_ASSET
         .find("pi.on(\"session_switch\", (event, ctx)")
         .expect("omp extension registers session_switch handler");
     let session_switch_handler = &OMP_EXTENSION_ASSET[session_switch..];
     session_switch_handler
-        .find("if (!activateRootSession(ctx, event?.reason || START.resume))")
+        .find("if (!activateRootSession(ctx, sessionStartSource(event?.reason, START.resume)))")
         .expect("omp session_switch handler should activate root session with switch reason");
 }
 
@@ -1801,7 +1782,7 @@ fn omp_runtime_events_can_activate_root_session_after_resume() {
     ] {
         let handler = omp_handler(event);
         handler
-            .find("!rootSession && !activateRootSession(ctx)")
+            .find("!rootSession && !activateRootSession(ctx, START.startup)")
             .unwrap_or_else(|| panic!("omp {event} handler should recover missing root session"));
     }
 }

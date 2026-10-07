@@ -162,10 +162,23 @@ impl ClientShellState {
         offset_from_bottom: usize,
         outcome: &mut ClientShellInput,
     ) {
-        if matches!(
-            self.scroll_lanes.want(&pane_id, offset_from_bottom),
-            ScrollWant::Send
-        ) {
+        let want = self.scroll_lanes.want(&pane_id, offset_from_bottom);
+        let metrics = self
+            .copy
+            .as_ref()
+            .filter(|copy| copy.pane_id == pane_id)
+            .map(|copy| copy.scroll)
+            .or_else(|| {
+                self.pane_surface()?
+                    .panes
+                    .iter()
+                    .find(|pane| pane.pane_id == pane_id)?
+                    .scroll
+            });
+        if let Some(metrics) = metrics {
+            self.scroll_lanes.requested(&pane_id, metrics);
+        }
+        if matches!(want, ScrollWant::Send) {
             self.dispatch_pane_scroll(pane_id, offset_from_bottom, outcome);
         }
     }
@@ -201,11 +214,18 @@ impl ClientShellState {
     ) -> Repaint {
         match result {
             Ok(shepr_protocol::command::PaneInfoReply { pane }) if &pane.pane_id == pane_id => {
-                if let ScrollAnswer::Next(Some(offset)) = self.scroll_lanes.answered(
-                    pane_id,
-                    flight,
-                    pane.scroll.map(|s| s.offset_from_bottom),
-                ) {
+                if let ScrollAnswer::Next(Some(offset)) =
+                    self.scroll_lanes.answered(pane_id, flight, pane.scroll)
+                {
+                    let offset = self.scroll_lanes.top(pane_id).zip(pane.scroll).map_or(
+                        offset,
+                        |(top, metrics)| {
+                            metrics.max_offset_from_bottom.saturating_sub(
+                                usize::try_from(top.0.saturating_sub(metrics.history_origin.0))
+                                    .unwrap_or(usize::MAX),
+                            )
+                        },
+                    );
                     self.dispatch_pane_scroll(*pane_id, offset, outcome);
                 }
                 Repaint::Unchanged

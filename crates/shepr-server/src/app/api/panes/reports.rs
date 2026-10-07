@@ -113,21 +113,32 @@ fn parse_origin_session_ref(
     id: Option<String>,
     path: Option<String>,
 ) -> Result<Option<shepr_agent::resume::AgentSessionRef>, shepr_api::error::ApiError> {
-    if id.is_some() && path.is_some() {
-        return failure(
-            ApiErrorCode::InvalidRequest,
-            "supply either agent_session_id or agent_session_path, not both",
-        );
-    }
-    let supplied = id.is_some() || path.is_some();
-    let session_ref = shepr_agent::resume::session_ref_for_agent_report(origin.agent(), id, path);
-    if supplied && session_ref.is_none() {
+    use shepr_agent::resume::{AgentSessionRef, session_ref_for_agent_report};
+
+    let selected = match (id, path) {
+        (None, None) => return Ok(None),
+        (Some(_), Some(_)) => {
+            return failure(
+                ApiErrorCode::InvalidRequest,
+                "supply either agent_session_id or agent_session_path, not both",
+            );
+        }
+        (Some(id), None) => AgentSessionRef::id(id),
+        (None, Some(path)) => AgentSessionRef::path(path),
+    };
+    let Some(selected) = selected else {
         return failure(
             ApiErrorCode::InvalidRequest,
             "invalid agent session reference",
         );
-    }
-    Ok(session_ref)
+    };
+    let Some(session_ref) = session_ref_for_agent_report(origin.agent(), selected) else {
+        return failure(
+            ApiErrorCode::InvalidRequest,
+            "invalid agent session reference",
+        );
+    };
+    Ok(Some(session_ref))
 }
 
 #[cfg(test)]

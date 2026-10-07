@@ -13,7 +13,9 @@ impl AgentOwnership {
     /// subsequently parked start. One detector tick stamps its process and
     /// state observations with the same instant, so only a strictly older
     /// observation is stale; an exit at the instant of the last presence
-    /// observation is a new exit.
+    /// observation is a new exit. An applied observation also advances a
+    /// start held for a relaunch (`ReplacementStart`), and admits it once the
+    /// exit and the replacement's presence confirm the relaunch.
     pub(super) fn transition_detector_observation(
         &mut self,
         agent: Option<Agent>,
@@ -33,10 +35,19 @@ impl AgentOwnership {
             return AgentOwnershipMutation::default();
         }
         let previous_session = self.current_session_identity_for_persistence();
-        let mutation =
+        // Only a held relaunch start needs the pane as it stood before this
+        // observation; every other observation skips the reads.
+        let before_held = self.replacement_start.is_some().then(|| {
+            (
+                self.effective_agent(),
+                self.state,
+                self.process_evidence.exit(),
+            )
+        });
+        let mut mutation =
             self.transition_detection(agent, fallback_state, visible_blocker, process_exited, now);
         if process_exited {
-            if let Some(identity) = previous_session
+            if let Some(identity) = previous_session.clone()
                 && self.current_session_identity_for_persistence().is_none()
             {
                 self.checkpoint_candidate = Some(CheckpointCandidate {
@@ -53,7 +64,78 @@ impl AgentOwnership {
         {
             self.checkpoint_candidate = None;
         }
+        if let Some((previous_agent, previous_state, exit_before)) = before_held
+            && let Some(held) =
+                self.advance_replacement_start(agent, process_exited, exit_before, now)
+        {
+            // Admitted as if it had arrived now that the old process is gone
+            // and its replacement present: the same arbitration, ordering and
+            // diagnostic record as any start, at the start's own clock sample.
+            let outcome = self.admit_session_start(
+                &held.origin,
+                Some(held.session.session_ref().clone()),
+                held.seq,
+                held.session_start_source,
+                held.received,
+            );
+            if matches!(outcome, HookOutcome::Applied(_)) {
+                mutation.effective_state_change =
+                    self.recompute_effective_state(previous_agent, previous_state);
+                mutation.session_ref_changed =
+                    previous_session != self.current_session_identity_for_persistence();
+            }
+        }
         mutation
+    }
+
+    /// Advances a held relaunch start (`ReplacementStart`) by the observation
+    /// just applied, returning it when the observation confirms the relaunch.
+    /// `exit_before` is the recorded exit before the observation. An
+    /// observation naming no agent neither confirms nor refutes it.
+    fn advance_replacement_start(
+        &mut self,
+        agent: Option<Agent>,
+        process_exited: bool,
+        exit_before: Option<RecentAgentProcessExit>,
+        now: Instant,
+    ) -> Option<ReplacementStart> {
+        let held = self.replacement_start.take()?;
+        let held_agent = held.origin.agent();
+        if now > held.deadline() || agent.is_some_and(|observed| observed != held_agent) {
+            return None;
+        }
+        if agent.is_none() {
+            self.replacement_start = Some(held);
+            return None;
+        }
+        if process_exited {
+            let recorded = self
+                .process_evidence
+                .exit()
+                .is_some_and(|exit| exit.agent == held_agent && exit.observed_at == now);
+            self.replacement_start = match (recorded, held.exit_observed_at) {
+                (false, _) => Some(held),
+                (true, None) => Some(ReplacementStart {
+                    exit_observed_at: Some(now),
+                    ..held
+                }),
+                // A second exit: the process the start may belong to has gone
+                // too.
+                (true, Some(_)) => None,
+            };
+            return None;
+        }
+        let replacement_present = held.exit_observed_at.is_some()
+            && exit_before.is_some_and(|exit| exit.agent == held_agent)
+            && self.process_evidence.exit().is_none()
+            && self.detected_agent == Some(held_agent);
+        if replacement_present {
+            return Some(held);
+        }
+        // Continued presence of the process the start was refused against, or
+        // presence the release refused as older than the exit: keep waiting.
+        self.replacement_start = Some(held);
+        None
     }
 
     pub(super) fn transition_detection(
@@ -248,6 +330,8 @@ impl AgentOwnership {
         let agent = self.effective_agent().or(self.detected_agent);
         // A pane's own death is never a candidate: it is resolved here.
         let candidate = self.checkpoint_candidate.take();
+        // No replacement presence can follow the pane's own ending.
+        self.replacement_start = None;
         self.pane_ended = true;
         let mut mutation = self.transition_detection(agent, AgentState::Idle, false, true, now);
         if needs_checkpoint {

@@ -1,4 +1,4 @@
-use shepr_protocol::{FrameData, PaneSurfaceFrame};
+use shepr_protocol::PaneSurfaceFrame;
 
 use shepr_protocol::{BootId, PaneSurfacePatch, ProjectionRevision};
 /// The connection generation a baseline came from.
@@ -53,9 +53,9 @@ pub(crate) enum PatchRejection {
     NoBaseline,
     /// Boot, projection, base or successor revision differs.
     DoesNotFollow,
-    /// Patched pane is absent, or its geometry, focus or pixel size changed.
+    /// Patched pane is absent, or its geometry or focus changed.
     PaneGeometry,
-    /// Empty row, outside the frame, or touching a pane the patch does not list.
+    /// Invalid or over-limit spans, or a row touching a pane the patch does not list.
     RowOutsideFrame,
 }
 impl PaneSurfaces {
@@ -234,44 +234,9 @@ impl PaneSurfaces {
         if baseline_generation != generation {
             return Err(PatchRejection::NoBaseline);
         }
-        if patch.boot_id != current.boot_id
-            || patch.projection_revision != current.projection_revision
-            || patch.base_surface_revision != current.surface_revision
-            || current.surface_revision.checked_next() != Some(patch.surface_revision)
-        {
-            return Err(PatchRejection::DoesNotFollow);
-        }
-        for updated in &patch.panes {
-            let Some(existing) = current
-                .panes
-                .iter()
-                .find(|pane| pane.pane_id == updated.pane_id)
-            else {
-                return Err(PatchRejection::PaneGeometry);
-            };
-            if !shepr_surface::decode::pane_geometry_matches(existing, updated) {
-                return Err(PatchRejection::PaneGeometry);
-            }
-        }
-        // A row may span a pane's terminal cells, its scrollbar and its chrome, or lie
-        // between panes, but every pane it touches must be listed: selection, copy mode
-        // and hits treat only listed panes as patched.
-        for row in &patch.rows {
-            if !row_fits_frame(row, &current.frame)
-                || row.cells.is_empty()
-                || current.panes.iter().any(|pane| {
-                    shepr_protocol::row_touches_rect(row, pane.rect)
-                        && !patch
-                            .panes
-                            .iter()
-                            .any(|patched| patched.pane_id == pane.pane_id)
-                })
-            {
-                return Err(PatchRejection::RowOutsideFrame);
-            }
-        }
-
-        Ok(())
+        shepr_surface::decode::SurfaceBaseline::new(current)
+            .admits(patch)
+            .map_err(patch_rejection)
     }
     /// Applies a patch `validate` accepted against this unchanged baseline, without
     /// repeating the row and pane checks. `Passed` makes the one grid copy here: the
@@ -323,11 +288,23 @@ impl PaneSurfaces {
         }
     }
 }
-fn row_fits_frame(row: &shepr_protocol::PaneSurfacePatchRow, frame: &FrameData) -> bool {
-    row.x
-        .saturating_add(u16::try_from(row.cells.len()).unwrap_or(u16::MAX))
-        <= frame.width()
-        && row.y < frame.height()
+fn patch_rejection(error: shepr_surface::decode::SurfaceDecodeError) -> PatchRejection {
+    use shepr_surface::decode::SurfaceDecodeError as DecodeError;
+
+    match error {
+        DecodeError::WithSubject { source, .. } => patch_rejection(*source),
+        DecodeError::PatchBaselineMismatch | DecodeError::BaselineMismatch => {
+            PatchRejection::DoesNotFollow
+        }
+        DecodeError::MetadataMismatch => PatchRejection::PaneGeometry,
+        DecodeError::InvalidRows(_)
+        | DecodeError::TooManySpans
+        | DecodeError::UnlistedPane
+        | DecodeError::InvalidDimensions
+        | DecodeError::InvalidCellCount
+        | DecodeError::InvalidHyperlink => PatchRejection::RowOutsideFrame,
+        _ => PatchRejection::DoesNotFollow,
+    }
 }
 
 #[cfg(test)]

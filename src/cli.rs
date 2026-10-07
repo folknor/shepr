@@ -88,6 +88,15 @@ impl CliCommand {
     }
 }
 
+fn typed_parser_mismatch_message(name: &str, matches: &ArgMatches) -> String {
+    if name == COMMAND_STATUS
+        && let Some(reason) = status::all_scope_refusal(matches)
+    {
+        return format!("error: {reason}; run with --help for usage");
+    }
+    format!("error: command '{name}' does not match a typed parser; run with --help for usage")
+}
+
 /// Parses argv. On a usage error, or when `--help` for a subcommand was asked
 /// for, clap's message has already been printed and the exit code is returned.
 pub(crate) fn parse_launch(args: &[String]) -> Result<Launch, i32> {
@@ -124,9 +133,7 @@ pub(crate) fn parse_launch(args: &[String]) -> Result<Launch, i32> {
                     // cannot refuse itself (`status --all` with a subcommand).
                     None => {
                         shepr_platform::begin_cli_output();
-                        eprintln!(
-                            "error: command '{name}' does not match a typed parser; run with --help for usage"
-                        );
+                        eprintln!("{}", typed_parser_mismatch_message(name, matches));
                         return Err(shepr_launch::process_status::ProcessStatus::Usage as i32);
                     }
                 },
@@ -506,6 +513,30 @@ mod tests {
             parse_error(&["stop", "--all", expect_boot, "4242-17"]).exit_code(),
             2
         );
+    }
+
+    #[test]
+    fn status_all_scope_refusals_name_the_conflicting_subcommand() {
+        for (scope, expected) in [
+            (
+                "server",
+                "error: status --all cannot be combined with the 'server' subcommand; run with --help for usage",
+            ),
+            (
+                "client",
+                "error: status --all cannot be combined with the 'client' subcommand; run with --help for usage",
+            ),
+        ] {
+            let matches = super::spec::command()
+                .try_get_matches_from(["shepr", "status", "--all", scope])
+                .expect("clap passes the combination to the typed parser");
+            let (_, status_matches) = matches.subcommand().expect("status command");
+
+            assert_eq!(
+                super::typed_parser_mismatch_message("status", status_matches),
+                expected
+            );
+        }
     }
 
     #[test]

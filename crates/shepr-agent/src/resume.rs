@@ -104,9 +104,9 @@ pub enum AgentSessionRef {
 ///
 /// So for Pi and OMP, whose session may be saved as an id or as a path, one
 /// session saved as the id in one pane and the path in another is two keys,
-/// and both panes resume it. That is accepted: a report prefers the path when
-/// it carries both, so the mixed pair practically never arises, and keying on
-/// the session behind both spellings would need the agent's session store.
+/// and both panes resume it. The bundled extensions report exactly one
+/// reference kind. Keying on the session behind both spellings would need the
+/// agent's session store.
 pub type AgentResumeKey = PersistedAgentSession;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,23 +351,14 @@ impl AgentResumePlan {
     }
 }
 
-/// Decode an official report after its source has been validated.
-/// The API can retain its parsed agent instead of resolving the source again.
+/// Validate one already-selected reference from an official report after its
+/// source has been parsed. The API rejects reports that supply both reference
+/// kinds before making this call.
 pub fn session_ref_for_agent_report(
     agent: Agent,
-    agent_session_id: Option<String>,
-    agent_session_path: Option<String>,
+    session_ref: AgentSessionRef,
 ) -> Option<AgentSessionRef> {
-    let policy = agent.descriptor().resume_support?.session_ref_policy;
-    match (policy, agent_session_path, agent_session_id) {
-        (SessionRefPolicy::IdOrPath, Some(path), agent_session_id) => {
-            AgentSessionRef::path(path).or_else(|| agent_session_id.and_then(AgentSessionRef::id))
-        }
-        (SessionRefPolicy::IdOrPath, None, Some(id)) | (SessionRefPolicy::Id, _, Some(id)) => {
-            AgentSessionRef::id(id)
-        }
-        _ => None,
-    }
+    session_ref.accepted_for(agent).then_some(session_ref)
 }
 
 impl AgentSessionStartSource {
@@ -455,7 +446,12 @@ mod tests {
         agent_session_path: Option<String>,
     ) -> Option<AgentSessionRef> {
         let source = AgentSource::parse(source)?;
-        session_ref_for_agent_report(source.agent(), agent_session_id, agent_session_path)
+        let session_ref = match (agent_session_id, agent_session_path) {
+            (Some(id), None) => AgentSessionRef::id(id),
+            (None, Some(path)) => AgentSessionRef::path(path),
+            _ => None,
+        }?;
+        session_ref_for_agent_report(source.agent(), session_ref)
     }
 
     fn plan_for_source(source: &str, session_ref: &AgentSessionRef) -> Option<AgentResumePlan> {
@@ -676,42 +672,49 @@ mod tests {
     }
 
     #[test]
-    fn report_ref_prefers_pi_and_omp_paths_and_validates_values() {
+    fn report_ref_validates_one_selected_kind_for_each_agent() {
         let pi_session = absolute_test_path("pi-session.jsonl");
         let omp_session = absolute_test_path("omp-session.jsonl");
         let claude_session = absolute_test_path("claude-session");
         let copilot_session = absolute_test_path("copilot-session");
-        let session_ref =
-            session_ref_from_report("shepr:pi", Some("pi-id".into()), Some(pi_session.clone()))
-                .expect("test precondition");
+        let session_ref = session_ref_from_report("shepr:pi", None, Some(pi_session.clone()))
+            .expect("test precondition");
         assert_eq!(session_ref.kind(), AgentSessionRefKind::Path);
         assert_eq!(session_ref.value_str(), pi_session);
 
+        assert!(
+            session_ref_from_report("shepr:pi", Some("pi-id".into()), Some(pi_session.clone()))
+                .is_none()
+        );
         assert!(session_ref_from_report("shepr:pi", Some("bad\nid".into()), None).is_none());
         assert!(session_ref_from_report("shepr:pi", None, Some("relative.jsonl".into())).is_none());
         assert!(session_ref_from_report("custom:pi", Some("pi-id".into()), None).is_none());
 
-        let session_ref = session_ref_from_report(
-            "shepr:omp",
-            Some("omp-id".into()),
-            Some(omp_session.clone()),
-        )
-        .expect("test precondition");
+        let session_ref = session_ref_from_report("shepr:omp", None, Some(omp_session.clone()))
+            .expect("test precondition");
         assert_eq!(session_ref.kind(), AgentSessionRefKind::Path);
         assert_eq!(session_ref.value_str(), omp_session);
+        assert!(
+            session_ref_from_report(
+                "shepr:omp",
+                Some("omp-id".into()),
+                Some(omp_session.clone())
+            )
+            .is_none()
+        );
 
         let session_ref = session_ref_from_report("shepr:omp", Some("omp-id".into()), None)
             .expect("test precondition");
         assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
         assert_eq!(session_ref.value_str(), "omp-id");
-        let session_ref = session_ref_from_report(
-            "shepr:omp",
-            Some("omp-id".into()),
-            Some("relative.jsonl".into()),
-        )
-        .expect("test precondition");
-        assert_eq!(session_ref.kind(), AgentSessionRefKind::Id);
-        assert_eq!(session_ref.value_str(), "omp-id");
+        assert!(
+            session_ref_from_report(
+                "shepr:omp",
+                Some("omp-id".into()),
+                Some("relative.jsonl".into())
+            )
+            .is_none()
+        );
         assert!(
             session_ref_from_report("shepr:omp", None, Some("relative.jsonl".into())).is_none()
         );

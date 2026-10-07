@@ -56,7 +56,9 @@ pub fn create_private_runtime_directory(path: &Path) -> io::Result<()> {
 /// planted link or foreign file in the runtime directory is never written
 /// through. It is emptied only after those checks. It is opened for append, so
 /// the launcher can empty or inspect it through its own handle while the
-/// daemon keeps writing at the end.
+/// daemon keeps writing at the end. Before retrying a daemon that gave way to
+/// a holder, the launcher truncates it through that handle so the next
+/// attempt cannot inherit the refused daemon's stderr.
 pub fn open_boot_log(path: &Path) -> io::Result<File> {
     let file = fs::OpenOptions::new()
         .append(true)

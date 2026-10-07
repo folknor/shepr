@@ -14,6 +14,8 @@ pub enum SurfaceDecodeError {
     PatchBaselineMismatch,
     MissingMetadata,
     MetadataMismatch,
+    UnlistedPane,
+    TooManySpans,
     InvalidHyperlink,
     InvalidDimensions,
     InvalidCellCount,
@@ -66,6 +68,8 @@ impl std::fmt::Display for SurfaceDecodeError {
             Self::PatchBaselineMismatch => f.write_str("surface patch does not match its baseline"),
             Self::MissingMetadata => f.write_str("surface update is missing projection metadata"),
             Self::MetadataMismatch => f.write_str("surface metadata does not match its baseline"),
+            Self::UnlistedPane => f.write_str("patch row touches a pane the patch does not list"),
+            Self::TooManySpans => f.write_str("surface patch exceeds the span limit"),
             Self::InvalidHyperlink => f.write_str("surface has an invalid hyperlink index"),
             Self::InvalidDimensions => f.write_str("pane surface dimensions exceed the limit"),
             Self::InvalidCellCount => {
@@ -89,6 +93,15 @@ impl SurfaceDecodeError {
         Self::WithSubject {
             subject: Box::new(subject),
             source: Box::new(self),
+        }
+    }
+}
+
+fn patch_span_error(error: crate::patch::PatchSpanError) -> SurfaceDecodeError {
+    match error {
+        crate::patch::PatchSpanError::LimitExceeded => SurfaceDecodeError::TooManySpans,
+        crate::patch::PatchSpanError::InvalidRows(reason) => {
+            SurfaceDecodeError::InvalidRows(reason)
         }
     }
 }
@@ -121,25 +134,63 @@ impl<'a> SurfaceBaseline<'a> {
     }
 
     pub fn admits(&self, patch: &PaneSurfacePatch) -> Result<(), SurfaceDecodeError> {
-        self.check(patch).map_err(|error| patch_error(patch, error))
-    }
-
-    fn check(&self, patch: &PaneSurfacePatch) -> Result<(), SurfaceDecodeError> {
-        if patch.projection_revision != self.revisions.projection_revision
-            || !self.revisions.accepts(&SurfaceTransition {
+        self.check(
+            &SurfaceTransition {
                 boot_id: &patch.boot_id,
                 base_surface_revision: patch.base_surface_revision,
                 surface_revision: patch.surface_revision,
                 base_projection_revision: patch.projection_revision,
                 projection_revision: patch.projection_revision,
-            })
+            },
+            &patch.rows,
+            &patch.panes,
+        )
+        .map_err(|error| patch_error(patch, error))
+    }
+
+    /// Applies the same patch rule to an update while it is still in its wire form.
+    /// Projection updates are not pane patches and are handled by their full metadata.
+    pub fn admits_update(&self, update: &SurfaceUpdate) -> Result<(), SurfaceDecodeError> {
+        let derived_panes = if update.meta.is_none() {
+            self.panes
+                .iter()
+                .filter(|pane| {
+                    update
+                        .spans
+                        .iter()
+                        .any(|span| shepr_protocol::row_touches_rect(span, pane.rect))
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        let panes = match update.meta.as_ref() {
+            Some(shepr_protocol::SurfaceMeta::Patch(meta)) => &meta.panes,
+            None => &derived_panes,
+            Some(shepr_protocol::SurfaceMeta::Projection(_)) => {
+                return Err(SurfaceDecodeError::MetadataMismatch
+                    .with_subject(SurfaceDecodeSubject::from_update(update, None)));
+            }
+        };
+        self.check(&SurfaceTransition::from(update), &update.spans, panes)
+            .map_err(|error| error.with_subject(SurfaceDecodeSubject::from_update(update, None)))
+    }
+
+    fn check(
+        &self,
+        transition: &SurfaceTransition<'_>,
+        rows: &[shepr_protocol::PaneSurfacePatchRow],
+        panes: &[shepr_protocol::PaneSurfacePane],
+    ) -> Result<(), SurfaceDecodeError> {
+        if transition.projection_revision != self.revisions.projection_revision
+            || !self.revisions.accepts(transition)
         {
             return Err(SurfaceDecodeError::PatchBaselineMismatch);
         }
         shepr_protocol::FrameGrid::new(self.cells, self.width, self.height)?;
-        // A listed pane must keep the geometry the baseline presents it with, the same
-        // rule the client applies to every patch it receives.
-        if patch.panes.iter().any(|updated| {
+        // A listed pane must keep the geometry the baseline presents it with.
+        if panes.iter().any(|updated| {
             !self
                 .panes
                 .iter()
@@ -147,9 +198,16 @@ impl<'a> SurfaceBaseline<'a> {
         }) {
             return Err(SurfaceDecodeError::MetadataMismatch);
         }
-        shepr_protocol::validate_patch_rows(self.width, self.height, &patch.rows)
-            .map_err(SurfaceDecodeError::InvalidRows)?;
-        for row in &patch.rows {
+        crate::patch::validate_spans(self.width, self.height, rows).map_err(patch_span_error)?;
+        for row in rows {
+            if self.panes.iter().any(|pane| {
+                shepr_protocol::row_touches_rect(row, pane.rect)
+                    && !panes.iter().any(|patched| patched.pane_id == pane.pane_id)
+            }) {
+                return Err(SurfaceDecodeError::UnlistedPane);
+            }
+        }
+        for row in rows {
             shepr_protocol::validate_cell_hyperlinks(&row.cells, self.hyperlinks)?;
         }
         Ok(())
@@ -554,7 +612,16 @@ impl Decoder {
                         Some(shepr_protocol::SurfaceMeta::Patch(meta)) => meta,
                         None => shepr_protocol::SurfacePatchMeta {
                             cursor: previous.frame.cursor.clone(),
-                            panes: Vec::new(),
+                            panes: previous
+                                .panes
+                                .iter()
+                                .filter(|pane| {
+                                    update.spans.iter().any(|span| {
+                                        shepr_protocol::row_touches_rect(span, pane.rect)
+                                    })
+                                })
+                                .cloned()
+                                .collect(),
                         },
                         // The compact branch excludes projection metadata. Keep
                         // the exhaustive fallback attributable if that guard changes.
@@ -684,9 +751,9 @@ impl Decoder {
                 // Validate the resulting hyperlink indices before mutating the grid.
                 // Unchanged intervals use the baseline; changed intervals use the spans.
                 // This preserves rejection atomicity without making a scratch grid.
-                shepr_protocol::validate_patch_rows(base.width, base.height, &update.spans)
-                    .map_err(|reason| {
-                        SurfaceDecodeError::InvalidRows(reason).with_subject(
+                crate::patch::validate_spans(base.width, base.height, &update.spans).map_err(
+                    |error| {
+                        patch_span_error(error).with_subject(
                             SurfaceDecodeSubject::from_update_header(
                                 &update.boot_id,
                                 update.projection_revision,
@@ -694,7 +761,8 @@ impl Decoder {
                                 &meta.panes,
                             ),
                         )
-                    })?;
+                    },
+                )?;
                 let invalid = |cells: &[CellData]| {
                     shepr_protocol::validate_cell_hyperlinks(cells, meta.frame.hyperlinks())
                         .is_err()
@@ -845,6 +913,21 @@ mod tests {
         }
     }
 
+    fn pane(rect: shepr_protocol::SurfaceRect) -> shepr_protocol::PaneSurfacePane {
+        shepr_protocol::PaneSurfacePane {
+            pane_id: "w1:p1".parse().expect("pane ID"),
+            content_revision: crate::test_counters::content(1),
+            rect,
+            content_rect: rect,
+            scrollbar_rect: None,
+            scroll: None,
+            focused: true,
+            mouse_reporting: false,
+            pixel_mouse: shepr_term::mouse::PanePixelMouse::OFF,
+            alternate_screen_active: false,
+        }
+    }
+
     #[test]
     fn client_decoder_rejects_a_second_endpoint_welcome() {
         let mut decoder = Decoder::default();
@@ -895,6 +978,107 @@ mod tests {
                 .is_err()
         );
         assert_eq!(decoder.current_surface(), Some(original));
+    }
+
+    #[test]
+    fn a_patch_must_list_every_pane_its_rows_touch() {
+        let mut baseline = surface();
+        baseline.panes.push(pane(shepr_protocol::SurfaceRect {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+        }));
+        let patch = PaneSurfacePatch {
+            boot_id: baseline.boot_id.clone(),
+            projection_revision: baseline.projection_revision,
+            base_surface_revision: baseline.surface_revision,
+            surface_revision: crate::test_counters::surface(2),
+            rows: vec![PaneSurfacePatchRow {
+                x: 0,
+                y: 0,
+                cells: vec![cell("z")],
+            }],
+            panes: Vec::new(),
+            cursor: None,
+        };
+
+        assert!(matches!(
+            SurfaceBaseline::new(&baseline).admits(&patch),
+            Err(SurfaceDecodeError::WithSubject { source, .. })
+                if matches!(source.as_ref(), SurfaceDecodeError::UnlistedPane)
+        ));
+    }
+
+    #[test]
+    fn absent_metadata_derives_panes_touched_by_spans() {
+        let mut first = surface();
+        let pane = pane(shepr_protocol::SurfaceRect {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 1,
+        });
+        first.panes.push(pane.clone());
+        let mut decoder = Decoder::default();
+        decoder
+            .decode(ServerMessage::PaneSurface(first.clone()))
+            .expect("baseline");
+        let update = SurfaceUpdate {
+            boot_id: first.boot_id.clone(),
+            base_surface_revision: first.surface_revision,
+            surface_revision: crate::test_counters::surface(2),
+            base_projection_revision: first.projection_revision,
+            projection_revision: first.projection_revision,
+            meta: None,
+            spans: vec![PaneSurfacePatchRow {
+                x: 0,
+                y: 0,
+                cells: vec![cell("z")],
+            }],
+        };
+
+        let DecodedServerMessage::PaneSurfacePatch(patch) = decoder
+            .decode(ServerMessage::SurfaceUpdate(update))
+            .expect("the compact update follows its baseline")
+        else {
+            panic!("same-projection update should use the patch path");
+        };
+        assert_eq!(patch.panes, vec![pane]);
+        assert_eq!(
+            decoder.current_surface().expect("surface").frame.cells()[0],
+            cell("z")
+        );
+    }
+
+    #[test]
+    fn patch_admission_enforces_the_shared_span_cap() {
+        let mut baseline = surface();
+        baseline.frame = FrameData::blank(200, 100).expect("test frame");
+        let rows = (0..42u16)
+            .flat_map(|y| {
+                (0..200u16).step_by(2).map(move |x| PaneSurfacePatchRow {
+                    x,
+                    y,
+                    cells: vec![cell("z")],
+                })
+            })
+            .collect();
+        let patch = PaneSurfacePatch {
+            boot_id: baseline.boot_id.clone(),
+            projection_revision: baseline.projection_revision,
+            base_surface_revision: baseline.surface_revision,
+            surface_revision: crate::test_counters::surface(2),
+            rows,
+            panes: Vec::new(),
+            cursor: None,
+        };
+
+        assert!(matches!(
+            SurfaceBaseline::new(&baseline).admits(&patch),
+            Err(SurfaceDecodeError::WithSubject { source, .. })
+                if matches!(source.as_ref(), SurfaceDecodeError::TooManySpans)
+        ));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 # `<source>:<rank>`.
 
 # Pi: a path-form new session, its settled idle state, then an agent start that
-# re-reports the same session file before its working state.
+# reports the working state without repeating the unchanged session identity.
 [[pi]]
 id = "shepr:pi:1"
 method = "pane.report_agent_session"
@@ -28,21 +28,12 @@ agent_session_path = "/nonexistent/pi-new.jsonl"
 
 [[pi]]
 id = "shepr:pi:3"
-method = "pane.report_agent_session"
-[pi.params]
-pane_id = "test:p1"
-source = "shepr:pi"
-seq = 3
-agent_session_path = "/nonexistent/pi-new.jsonl"
-
-[[pi]]
-id = "shepr:pi:4"
 method = "pane.report_agent"
 [pi.params]
 pane_id = "test:p1"
 source = "shepr:pi"
 state = "working"
-seq = 4
+seq = 3
 agent_session_path = "/nonexistent/pi-new.jsonl"
 
 # Oh My Pi: a startup session that is already working.

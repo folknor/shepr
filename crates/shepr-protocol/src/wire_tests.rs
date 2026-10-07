@@ -258,6 +258,7 @@ mod tests {
             Ok(EndpointReply::PaneCopySearch {
                 pane_id: pane,
                 search: PaneCopySearch {
+                    history_origin: Some(shepr_term::AbsRow(0)),
                     matches: vec![PaneTextRange {
                         start: point(3, 1),
                         end: point(3, 4),

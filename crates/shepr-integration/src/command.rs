@@ -5,22 +5,26 @@ use shepr_agent::IntegrationTarget as Target;
 /// Resolve the agent config root in the environment of the host running this
 /// command. Keep this aligned with the directory functions in `env.rs`.
 /// The shell that sets `hook_dir` for a registered command. It accepts a
-/// relative override, which `AgentIntegrationPaths` refuses, and resolves it
-/// from the agent's cwd. That cannot point a working registration at the
-/// wrong hook: a server that sees a relative override installs nothing, and an
-/// agent that alone sees one reads its config from a directory shepr never
-/// installed into, the environment mismatch `AgentIntegrationPaths` describes.
+/// relative override, which `AgentIntegrationPaths` refuses for every agent
+/// but OMP, and resolves it from the agent's cwd. That cannot point a working
+/// registration at the wrong hook: a server that sees a relative override
+/// installs nothing, and an agent that alone sees one reads its config from a
+/// directory shepr never installed into, the environment mismatch
+/// `AgentIntegrationPaths` describes.
 ///
 /// The Pi, OMP, OpenCode and Kilo arms only keep the match exhaustive: those
 /// targets load from a directory or their own config and register no command,
-/// which `targets_without_a_registered_command_have_no_hook_events` holds.
+/// which `targets_without_a_registered_command_have_no_hook_events` holds. The
+/// OMP arm still spells OMP's own `PI_CONFIG_DIR` rule, as `env.rs` resolves
+/// it: every value but a `~` form is joined beneath `$HOME`, one beginning
+/// with `/` included.
 fn directory_setup(target: Target) -> &'static str {
     match target {
         Target::Pi => {
             "hook_dir=\"${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}\"; hook_dir=\"$hook_dir/extensions\""
         }
         Target::Omp => {
-            "hook_dir=${PI_CONFIG_DIR:-.omp}; case \"$hook_dir\" in /*) ;; \"~\") hook_dir=\"$HOME\" ;; \"~/\"*) hook_dir=\"$HOME/${hook_dir#\\~/}\" ;; *) hook_dir=\"$HOME/$hook_dir\" ;; esac; hook_dir=\"$hook_dir/agent/extensions\""
+            "hook_dir=${PI_CONFIG_DIR:-.omp}; case \"$hook_dir\" in /*) hook_dir=\"$HOME/${hook_dir#/}\" ;; \"~\") hook_dir=\"$HOME\" ;; \"~/\"*) hook_dir=\"$HOME/${hook_dir#\\~/}\" ;; *) hook_dir=\"$HOME/$hook_dir\" ;; esac; hook_dir=\"$hook_dir/agent/extensions\""
         }
         Target::Claude => "hook_dir=\"${CLAUDE_CONFIG_DIR:-$HOME/.claude}\"",
         Target::Codex => "hook_dir=\"${CODEX_HOME:-$HOME/.codex}\"",

@@ -3,6 +3,18 @@ function agentEnabled() {
   return true;
 }
 
+function sessionStartSource(reason: unknown): string | undefined {
+  if (reason === undefined || reason === null || reason === "") {
+    return START.startup;
+  }
+  // Pi's `reload` event reinitializes extensions in the same session. It is
+  // not a new start; preserve other agent-supplied values for server handling.
+  if (reason === "reload") {
+    return undefined;
+  }
+  return typeof reason === "string" ? reason : undefined;
+}
+
 // Pi's agent_settled event supplies the state boundary, so it does not need
 // OMP's state debounce or retry grace.
 export default function (pi) {
@@ -35,7 +47,10 @@ export default function (pi) {
     }
     rootSession = true;
     updateSessionRef(ctx);
-    await reportSession(event?.reason);
+    const startSource = sessionStartSource(event?.reason);
+    if (startSource !== undefined) {
+      await reportSession(startSource);
+    }
     // A reload can replace this extension mid-run without emitting another agent_start.
     agentActive = ctx?.isIdle?.() === false;
     publishState(true);
@@ -45,8 +60,6 @@ export default function (pi) {
     if (!rootSession) {
       return;
     }
-    updateSessionRef(ctx);
-    void reportSession();
     agentActive = true;
     publishState();
   });

@@ -216,8 +216,10 @@ struct ManifestRule {
     state: AgentState,
     #[serde(default)]
     priority: i32,
-    #[serde(default = "default_region")]
-    region: String,
+    /// `None` keeps omission distinct from an explicit `whole_recent`, which
+    /// rule references may not override or silently ignore.
+    #[serde(default)]
+    region: Option<String>,
     /// `visible_idle` and `visible_blocker`: the matched screen visibly shows
     /// that state's live chrome. Validation requires the rule's `state` to be
     /// the corresponding one. Working has no such flag: nothing treats visible
@@ -922,7 +924,7 @@ fn expand_rule_gate(
             || !rule.contains.is_empty()
             || !rule.regex.is_empty()
             || !rule.line_regex.is_empty()
-            || rule.region != default_region()
+            || rule.region.is_some()
         {
             return Err(format!(
                 "rule {} combines a rule reference with inline matchers or a region",
@@ -942,7 +944,7 @@ fn expand_rule_gate(
     let root = ManifestGate {
         matcher: None,
         rule_reference: None,
-        region: Some(rule.region.clone()),
+        region: Some(rule.region.clone().unwrap_or_else(default_region)),
         all: rule.all.clone(),
         any: rule.any.clone(),
         not_gate: rule.not_gate.clone(),

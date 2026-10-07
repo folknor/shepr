@@ -580,3 +580,19 @@ fn git_status_fingerprint_honors_negative_fetch_refspec() {
         Some("2222222222222222222222222222222222222222")
     );
 }
+
+#[test]
+fn uncacheable_config_is_reused_only_until_retry_due() {
+    let mut context = super::config::ConfigCtx {
+        branch: super::identity::FullRefName::parse("refs/heads/main")
+            .expect("ref")
+            .branch_name()
+            .expect("branch"),
+        config: None,
+        dependencies: super::config::Dependencies::Uncacheable,
+        read_at: std::time::Instant::now(),
+    };
+    assert!(context.current());
+    context.read_at -= super::limits::GIT_STATUS_RETRY_DELAY;
+    assert!(!context.current());
+}

@@ -63,8 +63,10 @@ pub const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
 /// waiter that gave up sooner would fail a launch that is about to succeed.
 pub(crate) const LAUNCH_LOCK_WAIT_GRACE: Duration = Duration::from_secs(5);
 
-/// Maximum time a server stop waits for the named server to stop answering, or
-/// for the socket to disappear when the stop was not conditional.
+/// Maximum time after the stop answer for the named server to stop answering,
+/// or for the socket to disappear when the stop was not conditional. The
+/// request has its own larger budget so the server can report the final-save
+/// outcome before this shutdown wait starts.
 pub(crate) const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Maximum time a server stop waits for a data-directory lease after the
@@ -78,6 +80,11 @@ pub(crate) const STOP_LEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 /// short lets socket disappearance or a replacement boot be noticed promptly.
 /// They deliberately do not grant each poll the ordinary status request window.
 pub(crate) const STOP_STATUS_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Maximum time allowed to connect and receive the server's stop answer,
+/// including a possible final-save wait. The server-exit wait starts once the
+/// answer arrives and is counted separately below.
+pub const STOP_REQUEST_TIMEOUT: Duration = shepr_api::client::STOP_REQUEST_TIMEOUT;
 
 /// Poll interval while waiting for a server to stop answering or its socket
 /// to disappear. It bounds shutdown detection latency without rapid repeated
@@ -97,8 +104,10 @@ pub const STATUS_SUMMARY_TIMEOUT: Duration = STATUS_REQUEST_TIMEOUT;
 pub const STATUS_OVERVIEW_TIMEOUT: Duration =
     STATUS_REQUEST_TIMEOUT.saturating_add(STATUS_SUMMARY_TIMEOUT);
 
-/// Stop's socket wait, subsequent lease wait and final identity probe.
-pub const STOP_WORST_CASE: Duration = STOP_WAIT_TIMEOUT
+/// Stop's final-save answer, server-exit wait, subsequent lease wait and final
+/// identity probe. Busy stop refusals are retried within the request budget.
+pub const STOP_WORST_CASE: Duration = STOP_REQUEST_TIMEOUT
+    .saturating_add(STOP_WAIT_TIMEOUT)
     .saturating_add(STOP_LEASE_WAIT_TIMEOUT)
     .saturating_add(STOP_STATUS_PROBE_TIMEOUT);
 

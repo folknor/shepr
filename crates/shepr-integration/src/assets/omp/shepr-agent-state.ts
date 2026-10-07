@@ -250,6 +250,16 @@ function endedOnRetryableError(event: any): boolean {
   return retryableErrorPattern.test(String(assistant.errorMessage ?? ""));
 }
 
+function sessionStartSource(reason: unknown, fallback: string): string | undefined {
+  if (reason === undefined || reason === null || reason === "") {
+    return fallback;
+  }
+  if (reason === "reload") {
+    return undefined;
+  }
+  return typeof reason === "string" ? reason : undefined;
+}
+
 export default function (pi, options: { idleDebounceMs?: number; retryGraceMs?: number } = {}) {
   const idleDebounceMs = options.idleDebounceMs ?? DEFAULT_IDLE_DEBOUNCE_MS;
   const retryGraceMs = options.retryGraceMs ?? DEFAULT_RETRY_GRACE_MS;
@@ -332,13 +342,15 @@ export default function (pi, options: { idleDebounceMs?: number; retryGraceMs?: 
     retryTimer.unref?.();
   }
 
-  function activateRootSession(ctx: any, sessionStartSource?: string): boolean {
+  function activateRootSession(ctx: any, startSource?: string): boolean {
     if (ctx?.hasUI !== true) {
       return false;
     }
     rootSession = true;
     updateSessionRef(ctx);
-    void reportSession(sessionStartSource);
+    if (startSource !== undefined) {
+      void reportSession(startSource);
+    }
     return true;
   }
 
@@ -361,9 +373,10 @@ export default function (pi, options: { idleDebounceMs?: number; retryGraceMs?: 
   }
 
   pi.on("session_start", (event, ctx) => {
-    // Use Pi's reported reason when present; a bare session_start event marks
-    // the root startup needed to establish this pane's initial session.
-    if (!activateRootSession(ctx, event?.reason || START.startup)) {
+    // A bare session_start marks startup. A `reload` reinitializes extensions
+    // in the same session, so it updates state without a session report; any
+    // other agent-supplied reason is forwarded for the server to judge.
+    if (!activateRootSession(ctx, sessionStartSource(event?.reason, START.startup))) {
       return;
     }
     // A reload can replace this extension mid-run without emitting another agent_start.
@@ -373,7 +386,7 @@ export default function (pi, options: { idleDebounceMs?: number; retryGraceMs?: 
 
   pi.on("session_switch", (event, ctx) => {
     // A source-less session_switch is a resume of the selected root.
-    if (!activateRootSession(ctx, event?.reason || START.resume)) {
+    if (!activateRootSession(ctx, sessionStartSource(event?.reason, START.resume))) {
       return;
     }
     resetSessionState();
@@ -381,11 +394,9 @@ export default function (pi, options: { idleDebounceMs?: number; retryGraceMs?: 
   });
 
   pi.on("agent_start", (_event, ctx) => {
-    if (!rootSession && !activateRootSession(ctx)) {
+    if (!rootSession && !activateRootSession(ctx, START.startup)) {
       return;
     }
-    updateSessionRef(ctx);
-    void reportSession();
     clearPendingTimers();
     clearFailureState();
     agentActive = true;
@@ -393,14 +404,14 @@ export default function (pi, options: { idleDebounceMs?: number; retryGraceMs?: 
   });
 
   pi.on("tool_approval_requested", (_event, ctx) => {
-    if (!rootSession && !activateRootSession(ctx)) {
+    if (!rootSession && !activateRootSession(ctx, START.startup)) {
       return;
     }
     activateBlocked();
   });
 
   pi.on("tool_approval_resolved", (_event, ctx) => {
-    if (!rootSession && !activateRootSession(ctx)) {
+    if (!rootSession && !activateRootSession(ctx, START.startup)) {
       return;
     }
     deactivateBlocked();
@@ -410,7 +421,7 @@ export default function (pi, options: { idleDebounceMs?: number; retryGraceMs?: 
     if (event?.toolName !== "ask") {
       return;
     }
-    if (!rootSession && !activateRootSession(ctx)) {
+    if (!rootSession && !activateRootSession(ctx, START.startup)) {
       return;
     }
     activateBlocked();
@@ -420,7 +431,7 @@ export default function (pi, options: { idleDebounceMs?: number; retryGraceMs?: 
     if (event?.toolName !== "ask") {
       return;
     }
-    if (!rootSession && !activateRootSession(ctx)) {
+    if (!rootSession && !activateRootSession(ctx, START.startup)) {
       return;
     }
     deactivateBlocked();

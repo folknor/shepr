@@ -147,6 +147,10 @@ fn local_stop_error(error: ServerStopError) -> HostStop {
             message,
             stop_error: None,
         } => HostStop::Failed(format!("stopped; final save failed: {message}")),
+        ServerStopError::FinalSaveUnreported {
+            message,
+            stop_error: None,
+        } => HostStop::Failed(format!("stopped; final save unconfirmed: {message}")),
         error => HostStop::Failed(format!("stop failed: {error}")),
     }
 }

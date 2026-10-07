@@ -64,7 +64,15 @@ pub enum Liveness {
 /// is `true`, and `Unreachable` is the error: an inaccessible path never
 /// proves absence or permits a successor.
 pub fn socket_is_live(path: &Path) -> io::Result<bool> {
-    match probe(path) {
+    socket_is_live_within(path, super::limits::LOCAL_CONNECT_TIMEOUT)
+}
+
+/// Whether an `accept` answers at `path`, bounding a full-backlog connect by
+/// the lesser of the caller's remaining phase budget and the ordinary local
+/// connect cap. A timeout remains an error because it does not prove either
+/// absence or liveness.
+pub fn socket_is_live_within(path: &Path, timeout: Duration) -> io::Result<bool> {
+    match probe_within(path, timeout.min(super::limits::LOCAL_CONNECT_TIMEOUT)) {
         Liveness::Absent | Liveness::Stale => Ok(false),
         Liveness::Live => Ok(true),
         Liveness::Unreachable(error) => Err(error),
@@ -717,6 +725,10 @@ pub fn bind_local_listener(path: &Path) -> io::Result<UnixListener> {
 /// not a socket is unreachable, never stale: `connect` to a regular file also
 /// fails with `ECONNREFUSED`, and a stale path is one callers delete.
 pub fn probe(path: &Path) -> Liveness {
+    probe_within(path, super::limits::LOCAL_CONNECT_TIMEOUT)
+}
+
+fn probe_within(path: &Path, timeout: Duration) -> Liveness {
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Liveness::Absent,
         Err(error) => return Liveness::Unreachable(error),
@@ -729,7 +741,14 @@ pub fn probe(path: &Path) -> Liveness {
         Ok(_) => {}
     }
 
-    match connect_local_stream(path) {
+    if timeout.is_zero() {
+        return Liveness::Unreachable(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "liveness deadline expired before connecting",
+        ));
+    }
+
+    match connect_local_stream_within(path, timeout) {
         Ok(_) => Liveness::Live,
         Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => Liveness::Stale,
         Err(error) if error.kind() == io::ErrorKind::NotFound => match fs::symlink_metadata(path) {
@@ -1258,14 +1277,29 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("socket-liveness");
         let socket = scratch.join("server.sock");
         assert!(!socket_is_live(&socket).expect("absent"));
+        assert!(!socket_is_live_within(&socket, Duration::from_millis(10)).expect("absent within"));
         let listener = UnixListener::bind(&socket).expect("bind");
         assert!(socket_is_live(&socket).expect("live"));
+        assert!(socket_is_live_within(&socket, Duration::from_millis(10)).expect("live within"));
+        assert_eq!(
+            socket_is_live_within(&socket, Duration::ZERO)
+                .expect_err("an expired liveness budget cannot connect")
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
         drop(listener);
         assert!(!socket_is_live(&socket).expect("stale"));
+        assert!(!socket_is_live_within(&socket, Duration::from_millis(10)).expect("stale within"));
         let file = scratch.join("regular");
         fs::write(&file, b"file").expect("file");
         assert_eq!(
             socket_is_live(&file).expect_err("not a socket").kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            socket_is_live_within(&file, Duration::from_millis(10))
+                .expect_err("not a socket within")
+                .kind(),
             io::ErrorKind::AlreadyExists
         );
     }

@@ -47,40 +47,40 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
     // The first interaction claims geometry, which queues a recompute rather
     // than advancing the shared epoch, so the fixture's return is not asserted.
     server.test_handle_server_event(ServerEvent::ShellPaneInput {
-            client_id: ClientId::test_new(11),
-            pane_id,
-            events: vec![
-                shepr_protocol::ClientPaneInputEvent::Key {
-                    code: shepr_protocol::ClientKeyCode::Char('c'),
-                    modifiers: shepr_protocol::WireModifiers::CONTROL,
-                    kind: shepr_protocol::ClientKeyKind::Press,
-                    shifted_codepoint: None,
-                    generated_text: None,
-                },
-                shepr_protocol::ClientPaneInputEvent::Key {
-                    code: shepr_protocol::ClientKeyCode::Char('c'),
-                    modifiers: shepr_protocol::WireModifiers::CONTROL,
-                    kind: shepr_protocol::ClientKeyKind::Release,
-                    shifted_codepoint: None,
-                    generated_text: None,
-                },
-                shepr_protocol::ClientPaneInputEvent::Key {
-                    code: shepr_protocol::ClientKeyCode::Char('x'),
-                    modifiers: shepr_protocol::WireModifiers::ALT,
-                    kind: shepr_protocol::ClientKeyKind::Press,
-                    shifted_codepoint: None,
-                    generated_text: None,
-                },
-                shepr_protocol::ClientPaneInputEvent::Mouse {
-                    kind: shepr_protocol::ClientMouseKind::Down(
-                        shepr_protocol::ClientMouseButton::Left,
-                    ),
-                    position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
-                    modifiers: shepr_protocol::WireModifiers::NONE,
-                    lines: 3,
-                },
-            ],
-        });
+        client_id: ClientId::test_new(11),
+        pane_id,
+        events: vec![
+            shepr_protocol::ClientPaneInputEvent::Key {
+                code: shepr_protocol::ClientKeyCode::Char('c'),
+                modifiers: shepr_protocol::WireModifiers::CONTROL,
+                kind: shepr_protocol::ClientKeyKind::Press,
+                shifted_codepoint: None,
+                generated_text: None,
+            },
+            shepr_protocol::ClientPaneInputEvent::Key {
+                code: shepr_protocol::ClientKeyCode::Char('c'),
+                modifiers: shepr_protocol::WireModifiers::CONTROL,
+                kind: shepr_protocol::ClientKeyKind::Release,
+                shifted_codepoint: None,
+                generated_text: None,
+            },
+            shepr_protocol::ClientPaneInputEvent::Key {
+                code: shepr_protocol::ClientKeyCode::Char('x'),
+                modifiers: shepr_protocol::WireModifiers::ALT,
+                kind: shepr_protocol::ClientKeyKind::Press,
+                shifted_codepoint: None,
+                generated_text: None,
+            },
+            shepr_protocol::ClientPaneInputEvent::Mouse {
+                kind: shepr_protocol::ClientMouseKind::Down(
+                    shepr_protocol::ClientMouseButton::Left,
+                ),
+                position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
+                modifiers: shepr_protocol::WireModifiers::NONE,
+                lines: 3,
+            },
+        ],
+    });
     assert_eq!(
         input_rx.try_recv().expect("targeted pane interrupt"),
         Bytes::from_static(&[0x03])

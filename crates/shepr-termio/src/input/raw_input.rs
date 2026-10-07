@@ -472,6 +472,8 @@ impl RawInputByteFramer {
             "bracketed paste stalled without a terminator; delivering what arrived"
         );
         let mut paste = std::mem::take(&mut self.buffer);
+        let partial_end = partial_suffix_len(&paste, BRACKETED_PASTE_END);
+        paste.truncate(paste.len() - partial_end);
         paste.extend_from_slice(BRACKETED_PASTE_END);
         vec![paste]
     }
@@ -1635,8 +1637,8 @@ fn parse_sgr_mouse(sequence: &str) -> Option<MouseEvent> {
     let payload = &body[..body.len() - 1];
     let mut parts = payload.split(';');
     let cb = parts.next()?.parse::<u8>().ok()?;
-    let column = parts.next()?.parse::<u16>().ok()?.checked_sub(1)?;
-    let row = parts.next()?.parse::<u16>().ok()?.checked_sub(1)?;
+    let raw_column = parts.next()?.parse::<u16>().ok()?;
+    let raw_row = parts.next()?.parse::<u16>().ok()?;
     let (kind, modifiers) = parse_mouse_cb(cb)?;
 
     let kind = if final_char == 'm' {
@@ -1647,6 +1649,16 @@ fn parse_sgr_mouse(sequence: &str) -> Option<MouseEvent> {
     } else {
         kind
     };
+
+    // A zero SGR coordinate is malformed for a new click, but keep it for a
+    // drag or release so an edge report can close the gesture it belongs to.
+    if (raw_column == 0 || raw_row == 0)
+        && !matches!(kind, MouseEventKind::Drag(_) | MouseEventKind::Up(_))
+    {
+        return None;
+    }
+    let column = raw_column.saturating_sub(1);
+    let row = raw_row.saturating_sub(1);
 
     Some(MouseEvent {
         kind,
@@ -1861,6 +1873,28 @@ mod tests {
         assert_eq!(mouse.column, 19);
         assert_eq!(mouse.row, 9);
         assert_eq!(mouse.modifiers, KeyModifiers::empty());
+    }
+
+    #[test]
+    fn zero_sgr_coordinates_are_kept_for_drags_and_releases() {
+        let release_events = parse_raw_input_bytes_sync(b"\x1b[<0;0;0m");
+        let [RawInputEvent::Mouse(release)] = release_events.as_slice() else {
+            panic!("zero-coordinate release should remain a mouse event");
+        };
+        assert_eq!(release.kind, MouseEventKind::Up(MouseButton::Left));
+        assert_eq!((release.column, release.row), (0, 0));
+
+        let drag_events = parse_raw_input_bytes_sync(b"\x1b[<32;0;0M");
+        let [RawInputEvent::Mouse(drag)] = drag_events.as_slice() else {
+            panic!("zero-coordinate drag should remain a mouse event");
+        };
+        assert_eq!(drag.kind, MouseEventKind::Drag(MouseButton::Left));
+        assert_eq!((drag.column, drag.row), (0, 0));
+
+        assert!(matches!(
+            parse_raw_input_bytes_sync(b"\x1b[<0;0;0M").as_slice(),
+            [RawInputEvent::Unsupported]
+        ));
     }
 
     #[test]
@@ -3002,6 +3036,21 @@ mod tests {
         assert!(framer.has_pending_input());
 
         // Nothing more of the paste arrives; the user types a key.
+        let chunks = framer.push_at(b"x", start + PASTE_STALL_TIMEOUT);
+
+        assert_eq!(
+            chunks,
+            vec![b"\x1b[200~hello\x1b[201~".to_vec(), b"x".to_vec()]
+        );
+        assert!(!framer.has_pending_input());
+    }
+
+    #[test]
+    fn stalled_paste_drops_a_partial_terminator_before_resuming_input() {
+        let mut framer = RawInputByteFramer::for_host_input();
+        let start = std::time::Instant::now();
+
+        assert!(framer.push_at(b"\x1b[200~hello\x1b[20", start).is_empty());
         let chunks = framer.push_at(b"x", start + PASTE_STALL_TIMEOUT);
 
         assert_eq!(

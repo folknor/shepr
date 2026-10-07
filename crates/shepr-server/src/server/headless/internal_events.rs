@@ -142,9 +142,11 @@ impl HeadlessServer {
     }
 
     pub(super) fn drain_all_internal_events_with_forwarding(&mut self) -> bool {
-        // Drain the events already queued when this API request reached the
-        // loop. Producers may keep adding events while we process them, but
-        // those belong to the next loop turn so they cannot starve the request.
+        // Drain the events already queued on entry: before an API request
+        // reads pane state, and before shutdown so the final save carries
+        // them. Producers may keep adding events while we process them, but
+        // those belong to the next loop turn (or, at shutdown, to no save), so
+        // they cannot starve the caller.
         let queued_on_entry = self.outputs.queued_events();
         self.drain_internal_events_with_forwarding_up_to(queued_on_entry)
     }

@@ -3,16 +3,18 @@
 //! baseline.
 
 use shepr_protocol::{
-    CellData, MAX_SURFACE_PANES, MAX_SURFACE_PATCH_SPANS, MAX_SURFACE_SPLIT_PATH,
-    MAX_SURFACE_SPLITS, PaneSurfaceFrame, PaneSurfacePatchRow, ServerMessage,
+    CellData, MAX_SURFACE_PANES, MAX_SURFACE_SPLIT_PATH, MAX_SURFACE_SPLITS, PaneSurfaceFrame,
+    PaneSurfacePatchRow, ServerMessage,
 };
 
 use crate::decode::Baseline;
+use crate::patch::PatchSpanCollector;
 
 #[derive(Debug)]
 pub enum SurfaceDeltaError {
     InvalidGrid,
     InvalidRows(&'static str),
+    TooManySpans,
     SpanOutOfBounds,
     Encoding(shepr_protocol::codec::CodecError),
 }
@@ -22,6 +24,7 @@ impl std::fmt::Display for SurfaceDeltaError {
         match self {
             Self::InvalidGrid => f.write_str("cell grid does not match its dimensions"),
             Self::InvalidRows(reason) => f.write_str(reason),
+            Self::TooManySpans => f.write_str("surface patch exceeds the span limit"),
             Self::SpanOutOfBounds => f.write_str("patch span exceeds the cell grid"),
             Self::Encoding(error) => write!(f, "{error}"),
         }
@@ -96,8 +99,10 @@ pub(crate) fn apply_rows(
 ) -> Result<(), SurfaceDeltaError> {
     shepr_protocol::FrameGrid::new(cells, width, height)
         .map_err(|_| SurfaceDeltaError::InvalidGrid)?;
-    shepr_protocol::validate_patch_rows(width, height, rows)
-        .map_err(SurfaceDeltaError::InvalidRows)?;
+    crate::patch::validate_spans(width, height, rows).map_err(|error| match error {
+        crate::patch::PatchSpanError::LimitExceeded => SurfaceDeltaError::TooManySpans,
+        crate::patch::PatchSpanError::InvalidRows(reason) => SurfaceDeltaError::InvalidRows(reason),
+    })?;
     for row in rows {
         let start = usize::from(row.y) * usize::from(width) + usize::from(row.x);
         let end = start + row.cells.len();
@@ -120,9 +125,9 @@ fn changed_rows<'a>(
     next: &'a [CellData],
     width: u16,
 ) -> Option<Vec<CellSpan<'a>>> {
-    let mut rows = Vec::new();
+    let mut rows = PatchSpanCollector::new();
     if width == 0 {
-        return Some(rows);
+        return Some(rows.into_vec());
     }
     let mut changed_cells = 0;
     for (y, (old_row, new_row)) in last
@@ -149,13 +154,12 @@ fn changed_rows<'a>(
             changed_cells += span.cells.len();
             // Dense updates are cheaper to send whole. This is a planning
             // heuristic, not an exact encoded-size comparison.
-            if rows.len() == MAX_SURFACE_PATCH_SPANS || changed_cells > next.len() / 2 {
+            if rows.push(span).is_err() || changed_cells > next.len() / 2 {
                 return None;
             }
-            rows.push(span);
         }
     }
-    Some(rows)
+    Some(rows.into_vec())
 }
 
 fn encoded_size(message: &ServerMessage) -> Result<usize, SurfaceDeltaError> {
@@ -220,6 +224,27 @@ pub fn message(
         })
         .collect();
     let update = baseline.update(surface, spans, last);
+    match update.meta.as_ref() {
+        Some(shepr_protocol::SurfaceMeta::Projection(_)) => {
+            if crate::patch::validate_spans(
+                surface.frame.width(),
+                surface.frame.height(),
+                &update.spans,
+            )
+            .is_err()
+            {
+                return Ok(SurfaceDeltaPlan::Full);
+            }
+        }
+        Some(shepr_protocol::SurfaceMeta::Patch(_)) | None => {
+            if crate::decode::SurfaceBaseline::new(last)
+                .admits_update(&update)
+                .is_err()
+            {
+                return Ok(SurfaceDeltaPlan::Full);
+            }
+        }
+    }
     // Metadata-only updates always retain the grid. Counting potentially large
     // projection metadata cannot improve this choice.
     let metadata_only = update.spans.is_empty();
@@ -294,6 +319,24 @@ mod tests {
         for cell in next.frame.cells_mut() {
             cell.symbol = "z".into();
         }
+        assert!(matches!(
+            message(&last, &next).expect("planning"),
+            SurfaceDeltaPlan::Full
+        ));
+    }
+
+    #[test]
+    fn too_many_fragmented_spans_use_the_full_surface() {
+        let mut last = surface();
+        last.frame = shepr_protocol::FrameData::blank(200, 100).expect("test frame");
+        let mut next = last.clone();
+        next.surface_revision = crate::test_counters::surface(2);
+        for y in 0..42usize {
+            for x in (0..200usize).step_by(2) {
+                next.frame.cells_mut()[y * 200 + x].symbol = "z".into();
+            }
+        }
+
         assert!(matches!(
             message(&last, &next).expect("planning"),
             SurfaceDeltaPlan::Full

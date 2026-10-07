@@ -378,11 +378,7 @@ impl ClientShellState {
         scroll: Option<shepr_protocol::PaneSurfaceScrollMetrics>,
     ) {
         if let Some(scroll) = scroll {
-            self.scroll_lanes.shown(
-                pane,
-                scroll.offset_from_bottom,
-                scroll.max_offset_from_bottom,
-            );
+            self.scroll_lanes.shown(pane, scroll);
         }
     }
 

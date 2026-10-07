@@ -369,6 +369,7 @@ pub(in crate::shell) fn copy_search_result(
     EndpointReply::PaneCopySearch {
         pane_id: shepr_test_fixtures::id("w1:p1"),
         search: shepr_protocol::command::PaneCopySearch {
+            history_origin: Some(shepr_term::AbsRow(0)),
             total: matches.len(),
             matches,
             current: current.map(|index| shepr_protocol::command::PaneCopySearchPosition {
