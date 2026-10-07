@@ -207,6 +207,10 @@ impl DetectorState {
             shell_probe,
             suspended_agent_is_present,
         );
+        // Production probes identify agents only from a ForegroundJob, which
+        // always supplies its group, even when the PTY foreground-group read
+        // failed. A probe with no group is unidentified, not evidence of an
+        // agent relaunch. Keep the optional guards for missing snapshots.
         // Compare with the last identified agent group, not the scheduler's
         // foreground group: a suspended job yields the terminal to its shell
         // and resumes in its original group. A new group naming the same agent

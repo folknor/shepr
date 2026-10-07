@@ -263,9 +263,8 @@ pub fn no_server_at_override(address: &ServerAddress, runtime_dir: &Path) -> Str
 pub fn stop_timeout(timeout: std::time::Duration, socket: &Path) -> String {
     format!(
         "the server did not stop within {}ms; the socket at {} is still reachable. \
-         The server may still be saving its layout; wait for shutdown to finish and \
-         inspect the server log before retrying. Forcing the process to exit can lose \
-         the final save",
+         The server may still be finishing shutdown; wait for it to finish and inspect \
+         the server log before retrying or forcing it to exit",
         timeout.as_millis(),
         socket.display()
     )
@@ -671,6 +670,20 @@ mod tests {
         let address = runtime_address();
         assert_eq!(attach_command_with(&address, "shepr"), "shepr");
         assert_eq!(stop_command_with(&address, "shepr"), "shepr stop");
+    }
+
+    #[test]
+    fn stop_timeout_does_not_guess_whether_the_final_save_is_still_running() {
+        let message = stop_timeout(
+            std::time::Duration::from_millis(250),
+            Path::new("/tmp/shepr.sock"),
+        );
+        assert!(
+            message.contains("may still be finishing shutdown"),
+            "{message}"
+        );
+        assert!(!message.contains("saving its layout"), "{message}");
+        assert!(!message.contains("lose the final save"), "{message}");
     }
 
     #[test]

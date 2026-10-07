@@ -47,7 +47,7 @@ pub const BOOT_LOG_PANIC_REPORTS: usize = 8;
 /// runs to report the installed pair. It prints one line and exits, so a longer
 /// wait means a broken or hung binary; the deadline keeps a remote discovery
 /// probe from hanging on it.
-pub(crate) const SIBLING_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+pub const SIBLING_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The most of the sibling's `--version` output that is read. The real output
 /// is one short line; the cap bounds what a wrong binary can make us hold.
@@ -103,6 +103,14 @@ pub const STATUS_SUMMARY_TIMEOUT: Duration = STATUS_REQUEST_TIMEOUT;
 /// Maximum socket work performed by a status overview (ping and optional counts).
 pub const STATUS_OVERVIEW_TIMEOUT: Duration =
     STATUS_REQUEST_TIMEOUT.saturating_add(STATUS_SUMMARY_TIMEOUT);
+
+/// The slowest status command another host runs: `status --json` probes the
+/// sibling `shepr-server --version`, then reads the server overview.
+/// `status client --json` does only the first and `status server --json` only
+/// the second. A caller bounding these commands from outside (an SSH round
+/// trip) derives its budget from this.
+pub const STATUS_COMMAND_WORST_CASE: Duration =
+    SIBLING_VERSION_TIMEOUT.saturating_add(STATUS_OVERVIEW_TIMEOUT);
 
 /// Stop's final-save answer, server-exit wait, subsequent lease wait and final
 /// identity probe. Busy stop refusals are retried within the request budget.

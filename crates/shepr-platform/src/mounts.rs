@@ -78,6 +78,16 @@ impl MountTable {
     /// when mountinfo was unavailable or a caller names a synthetic step.
     pub fn is_quarantined(&self, path: &Path, roots: &[PathBuf]) -> bool {
         let mounts = self.stall_paths(path);
+        self.is_quarantined_with_stall_paths(path, roots, &mounts)
+    }
+
+    /// Reuse the aliases already computed for a progress announcement.
+    pub fn is_quarantined_with_stall_paths(
+        &self,
+        path: &Path,
+        roots: &[PathBuf],
+        mounts: &[PathBuf],
+    ) -> bool {
         roots.iter().any(|root| {
             mounts.contains(root)
                 || (!self.entries.iter().any(|(mount, _)| mount == root) && path.starts_with(root))

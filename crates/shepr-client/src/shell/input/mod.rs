@@ -133,6 +133,7 @@ fn read_clipboard_text_bounded() -> Option<String> {
     read_clipboard_text_bounded_with(
         &CLIPBOARD_READ_IN_FLIGHT,
         MODAL_PASTE_CLIPBOARD_TIMEOUT,
+        crate::clipboard_forwarding::clipboard_route(),
         shepr_platform::read_clipboard_text,
     )
 }
@@ -140,7 +141,8 @@ fn read_clipboard_text_bounded() -> Option<String> {
 fn read_clipboard_text_bounded_with(
     in_flight: &'static std::sync::atomic::AtomicBool,
     timeout: std::time::Duration,
-    read: impl FnOnce() -> Option<String> + Send + 'static,
+    route: shepr_platform::ClipboardRoute,
+    read: impl FnOnce(shepr_platform::ClipboardRoute) -> Option<String> + Send + 'static,
 ) -> Option<String> {
     use std::sync::atomic::Ordering;
 
@@ -158,7 +160,7 @@ fn read_clipboard_text_bounded_with(
         // Linux exposes at most 15 bytes through `pthread_setname_np`.
         .name("clip-read".into())
         .spawn(move || {
-            let text = read();
+            let text = read(route);
             in_flight.store(false, Ordering::Release);
             // The receiver is gone only after the wait below timed out, which already
             // logged the skipped paste; the late text is correctly dropped.
@@ -265,19 +267,16 @@ impl ClientShellState {
         )
     }
 
-    /// `host_reports_all_keys` is the host keyboard mode the input arrived
-    /// under; it decides whether text key presses can hold input leases.
     pub(crate) fn handle_host_input(
         &mut self,
         inputs: Vec<crate::events::ParsedHostInput>,
-        host_reports_all_keys: bool,
         now: std::time::Instant,
     ) -> ClientShellInput {
         self.now = now;
-        self.host_reports_all_keys = host_reports_all_keys;
         let mut outcome = ClientShellInput::default();
         let mut accounting = PaneInputBatchAccounting::default();
         for input in inputs {
+            self.host_keyboard_mode = input.keyboard_mode;
             if let Some(pixels) = input.pixel_mouse {
                 let RawInputEvent::Mouse(mut mouse) = input.event else {
                     continue;
@@ -485,9 +484,8 @@ impl ClientShellState {
             outcome.repaint = true;
         }
         let lease_key = shepr_termio::input::InputLeaseKey::new(LOCAL_INPUT_SOURCE, &key);
-        let host_reports_all_keys = self.host_reports_all_keys;
-        self.input_leases
-            .prepare_press(&lease_key, &key, host_reports_all_keys);
+        let host_keyboard_mode = self.host_keyboard_mode;
+        self.input_leases.prepare_press(&lease_key, &key);
         match key.kind {
             KeyEventKind::Press => {
                 let initial_context = self.input_context();
@@ -502,7 +500,7 @@ impl ClientShellState {
                     Some(&initial_context),
                     Some(&resulting_context),
                     target,
-                    host_reports_all_keys,
+                    host_keyboard_mode,
                 );
             }
             KeyEventKind::Repeat => {
@@ -1165,10 +1163,29 @@ mod tests {
     #[test]
     fn bounded_clipboard_read_returns_a_prompt_answer() {
         static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        let text =
-            read_clipboard_text_bounded_with(&IN_FLIGHT, std::time::Duration::from_secs(5), || {
+        let text = read_clipboard_text_bounded_with(
+            &IN_FLIGHT,
+            std::time::Duration::from_secs(5),
+            shepr_platform::ClipboardRoute::Osc52,
+            |_| Some("clip".to_owned()),
+        );
+        assert_eq!(text.as_deref(), Some("clip"));
+    }
+
+    #[test]
+    fn bounded_clipboard_read_passes_the_selected_route_to_its_worker() {
+        static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let route =
+            shepr_platform::ClipboardRoute::Helpers(shepr_platform::ClipboardSession::none());
+        let text = read_clipboard_text_bounded_with(
+            &IN_FLIGHT,
+            std::time::Duration::from_secs(5),
+            route,
+            move |selected_route| {
+                assert_eq!(selected_route, route);
                 Some("clip".to_owned())
-            });
+            },
+        );
         assert_eq!(text.as_deref(), Some("clip"));
     }
 
@@ -1178,7 +1195,7 @@ mod tests {
         let (started_sender, started_receiver) = std::sync::mpsc::channel();
         let (release_sender, release_receiver) = std::sync::mpsc::channel();
         let (finished_sender, finished_receiver) = std::sync::mpsc::channel();
-        let gated_read = move || {
+        let gated_read = move |_| {
             started_sender.send(()).expect("test receiver is waiting");
             release_receiver
                 .recv()
@@ -1187,17 +1204,23 @@ mod tests {
             Some("late".to_owned())
         };
 
-        let first =
-            read_clipboard_text_bounded_with(&IN_FLIGHT, std::time::Duration::ZERO, gated_read);
+        let first = read_clipboard_text_bounded_with(
+            &IN_FLIGHT,
+            std::time::Duration::ZERO,
+            shepr_platform::ClipboardRoute::Osc52,
+            gated_read,
+        );
         assert!(first.is_none());
         started_receiver
             .recv()
             .expect("clipboard reader starts before the retry");
         // The abandoned reader is still running: the next paste gives up at once.
-        let second =
-            read_clipboard_text_bounded_with(&IN_FLIGHT, std::time::Duration::from_secs(5), || {
-                Some("should not run".to_owned())
-            });
+        let second = read_clipboard_text_bounded_with(
+            &IN_FLIGHT,
+            std::time::Duration::from_secs(5),
+            shepr_platform::ClipboardRoute::Osc52,
+            |_| Some("should not run".to_owned()),
+        );
         assert!(second.is_none());
 
         release_sender
@@ -1210,10 +1233,12 @@ mod tests {
             std::thread::yield_now();
         }
         // Once the helper exits, reads work again.
-        let third =
-            read_clipboard_text_bounded_with(&IN_FLIGHT, std::time::Duration::from_secs(5), || {
-                Some("clip".to_owned())
-            });
+        let third = read_clipboard_text_bounded_with(
+            &IN_FLIGHT,
+            std::time::Duration::from_secs(5),
+            shepr_platform::ClipboardRoute::Osc52,
+            |_| Some("clip".to_owned()),
+        );
         assert_eq!(third.as_deref(), Some("clip"));
     }
 }

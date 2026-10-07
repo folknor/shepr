@@ -308,6 +308,7 @@ mod tests {
                 65,
             )),
             crate::HandshakeRefusal::ServerStarting,
+            crate::HandshakeRefusal::ServerStopping,
         ] {
             let msg = ServerMessage::EndpointWelcome(
                 crate::endpoint::EndpointServerWelcome::refused(reason),

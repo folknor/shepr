@@ -817,7 +817,8 @@ mod tests {
     fn branch_reads_head_from_standard_repo() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("standard-repo");
-        std::fs::create_dir_all(root.join(".git")).expect("test precondition");
+        std::fs::create_dir_all(root.join(".git/objects")).expect("test precondition");
+        std::fs::create_dir_all(root.join(".git/refs")).expect("test precondition");
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")
             .expect("test precondition");
 
@@ -857,7 +858,8 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("oversized-head");
         let git_dir = root.join(".git");
-        std::fs::create_dir_all(&git_dir).expect("test precondition");
+        std::fs::create_dir_all(git_dir.join("objects")).expect("test precondition");
+        std::fs::create_dir_all(git_dir.join("refs")).expect("test precondition");
         let head = git_dir.join("HEAD");
         std::fs::write(&head, "ref: refs/heads/main\n").expect("test precondition");
         std::fs::OpenOptions::new()
@@ -881,7 +883,8 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("worktree");
         let worktree_git_dir = root.join(".bare/worktrees/feature");
-        std::fs::create_dir_all(&worktree_git_dir).expect("test precondition");
+        std::fs::create_dir_all(worktree_git_dir.join("objects")).expect("test precondition");
+        std::fs::create_dir_all(worktree_git_dir.join("refs")).expect("test precondition");
         std::fs::write(root.join(".git"), "gitdir: .bare/worktrees/feature\n")
             .expect("test precondition");
         std::fs::write(worktree_git_dir.join("HEAD"), "ref: refs/heads/feature\n")
@@ -896,7 +899,8 @@ mod tests {
     fn detached_head_reports_no_branch() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let root = temp_test_dir("detached-head");
-        std::fs::create_dir_all(root.join(".git")).expect("test precondition");
+        std::fs::create_dir_all(root.join(".git/objects")).expect("test precondition");
+        std::fs::create_dir_all(root.join(".git/refs")).expect("test precondition");
         std::fs::write(
             root.join(".git/HEAD"),
             "3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d\n",
@@ -1186,8 +1190,10 @@ mod tests {
         let worktree_two = base.join("two");
         let git_dir_one = common_dir.join("worktrees/one");
         let git_dir_two = common_dir.join("worktrees/two");
-        std::fs::create_dir_all(&git_dir_one).expect("test precondition");
-        std::fs::create_dir_all(&git_dir_two).expect("test precondition");
+        for git_dir in [&git_dir_one, &git_dir_two] {
+            std::fs::create_dir_all(git_dir.join("objects")).expect("test precondition");
+            std::fs::create_dir_all(git_dir.join("refs")).expect("test precondition");
+        }
         std::fs::create_dir_all(&worktree_one).expect("test precondition");
         std::fs::create_dir_all(&worktree_two).expect("test precondition");
         std::fs::write(

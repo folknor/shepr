@@ -51,14 +51,15 @@ impl App {
                 // The launch cwd is only a seed. A shell can emit OSC 7
                 // before this settlement reaches the app, including a report
                 // that equals the request but differs from a fallback cwd.
-                // Keep any conflicting runtime observation, and also catch a
-                // report already applied to app state.
-                let runtime_cwd_conflicts = self
+                // Keep any conflicting OSC 7 report, and also catch a report
+                // already applied to app state. Save-time /proc observations
+                // do not establish that the child has chosen a cwd.
+                let reported_cwd_conflicts = self
                     .terminal_runtimes
                     .get(&pane_id)
-                    .and_then(shepr_mux::pane::PaneRuntime::remembered_cwd)
+                    .and_then(shepr_mux::pane::PaneRuntime::reported_cwd)
                     .is_some_and(|observed| observed.as_path() != cwd.as_path());
-                let should_seed_cwd = !runtime_cwd_conflicts
+                let should_seed_cwd = !reported_cwd_conflicts
                     && self
                         .state
                         .terminal(pane_id)
@@ -387,6 +388,50 @@ mod tests {
         assert_eq!(
             app.state.terminal(pane_id).expect("terminal").cwd(),
             reported_cwd.as_absolute(),
+        );
+    }
+
+    #[test]
+    fn a_save_observation_before_the_child_chdirs_does_not_block_launch_cwd_seed() {
+        let (mut app, pane_id) = app_with_launching_resume();
+        let requested_dir = crate::test_support::ScratchDir::new("launch-cwd-requested");
+        let requested_cwd =
+            shepr_mux::UsableCwd::new(requested_dir.to_path_buf()).expect("requested cwd");
+        app.state
+            .terminal_mut(pane_id)
+            .set_cwd(requested_cwd.clone());
+
+        // The runtime has no child, so no save observation can be made here; the
+        // mux crate tests that a save observation is not an OSC 7 report. This
+        // test pins that settlement consults only the report.
+        assert_eq!(
+            app.test_runtime(pane_id).reported_cwd(),
+            None,
+            "no OSC 7 report has arrived"
+        );
+
+        let launched_dir = crate::test_support::ScratchDir::new("launch-cwd-launched");
+        let launched_cwd =
+            shepr_mux::UsableCwd::new(launched_dir.to_path_buf()).expect("launched cwd");
+        assert!(settle_as(
+            &mut app,
+            pane_id,
+            LaunchKind::Fresh,
+            LaunchOutcome::Launched {
+                cwd: launched_cwd.clone(),
+                requested_cwd: requested_cwd.as_absolute().clone(),
+                candidate_index: 1,
+                first_candidate_error: Some(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "requested cwd unavailable",
+                )),
+            },
+        ));
+
+        assert_eq!(
+            app.state.terminal(pane_id).expect("terminal").cwd(),
+            launched_cwd.as_absolute(),
+            "the launch settlement seeds its fallback cwd when no OSC 7 report conflicts"
         );
     }
 

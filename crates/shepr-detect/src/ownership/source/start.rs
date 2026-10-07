@@ -81,6 +81,14 @@ impl AgentOwnership {
                 ));
             return HookOutcome::Parked;
         }
+        // Before first identification, a restored agent's nested startup and
+        // an early quit followed by a fresh foreground startup are identical
+        // here: neither hook supplies a process identity to match the probe.
+        // First presence therefore attributes either parked start. Rejecting
+        // a different restored path would also lose the legitimate relaunch
+        // forever (subsequent state reports cannot select its session). Closing
+        // this ambiguity requires process attribution on both inputs, rather
+        // than another timing gate or changing startup replacement policy.
         if start_route == HookStartRoute::ParkRecognizedStart {
             if !Self::session_start_source_is_recognized(session_start_source) {
                 return HookOutcome::Rejected(HookRejection::UnrecognizedStart);

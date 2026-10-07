@@ -72,7 +72,10 @@ pub(in crate::shell) struct CopySession {
     pub(in crate::shell) geometry: (u16, u16),
     alternate_screen_active: bool,
     pub(in crate::shell) cursor: shepr_protocol::command::PaneTextPoint,
-    entry_offset_from_bottom: usize,
+    /// The viewport row visible on entry, preserved across output while copy mode runs.
+    /// `None` when copy mode was entered at the live bottom, which leaving it restores
+    /// (following output) rather than the row that was then at the top.
+    entry_viewport_top: Option<shepr_term::AbsRow>,
     /// The anchor and selection shape drive the projected VT range in `MouseSelection`.
     /// They are not a duplicate range: the projection changes as the copy cursor moves.
     pub(in crate::shell) selection: Option<ClientCopySelection>,
@@ -98,11 +101,13 @@ struct CopyEntry {
 }
 
 impl CopySession {
-    /// The only constructor; the entry offset is the scroll's `offset_from_bottom`.
+    /// The only constructor; copy mode restores the row visible at entry, or the live
+    /// bottom when it was entered there.
     fn start(entry: CopyEntry) -> Self {
         Self {
             pane_id: entry.pane_id,
-            entry_offset_from_bottom: entry.scroll.offset_from_bottom,
+            entry_viewport_top: (entry.scroll.offset_from_bottom != 0)
+                .then(|| entry.scroll.viewport_top_row()),
             scroll: entry.scroll,
             geometry: entry.geometry,
             alternate_screen_active: entry.alternate_screen_active,

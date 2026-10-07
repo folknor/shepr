@@ -55,8 +55,9 @@ pub(super) fn setup_terminal(
         &mut output,
         shepr_termio::host_term::modes::ime_compatible_keyboard_enhancement_flags(),
     )?;
-    let (escape_disambiguation, buffered_host_input) =
+    let (escape_disambiguation, reports_event_types, buffered_host_input) =
         query_host_escape_disambiguation(&mut output);
+    host_modes.set_keyboard_event_types_confirmed(reports_event_types);
     host_modes.reassert_mouse(&mut output, HostCell::Unknown)?;
     host_modes.enable_bracketed_paste(&mut output)?;
     host_modes.enable_focus_change(&mut output)?;
@@ -121,14 +122,14 @@ pub(super) struct TerminalGuard {
 
 fn query_host_escape_disambiguation(
     writer: &mut impl io::Write,
-) -> (EscapeDisambiguation, Vec<u8>) {
+) -> (EscapeDisambiguation, bool, Vec<u8>) {
     let mut buffered_input = Vec::new();
     if let Err(err) = writer
         .write_all(shepr_termio::host_term::modes::HOST_KEYBOARD_QUERY_SEQUENCE)
         .and_then(|()| writer.flush())
     {
         tracing::debug!(error = %err, "host keyboard enhancement query unavailable");
-        return (EscapeDisambiguation::Inactive, buffered_input);
+        return (EscapeDisambiguation::Inactive, false, buffered_input);
     }
 
     // Bypass StdinLock's shared buffer so poll and read observe the same bytes.
@@ -177,7 +178,11 @@ fn query_host_escape_disambiguation(
     } else {
         EscapeDisambiguation::Inactive
     };
-    (escape_disambiguation, buffered_input)
+    (
+        escape_disambiguation,
+        host_keyboard_event_types_confirmed(&responses),
+        buffered_input,
+    )
 }
 
 fn host_escape_disambiguation_confirmed(
@@ -187,6 +192,15 @@ fn host_escape_disambiguation_confirmed(
         && responses
             .flags
             .is_some_and(|flags| flags.contains(shepr_protocol::KittyKeyboardFlags::DISAMBIGUATE))
+}
+
+fn host_keyboard_event_types_confirmed(
+    responses: &shepr_termio::input::raw_input::HostKeyboardProbeResponses,
+) -> bool {
+    responses.primary_device_attributes
+        && responses.flags.is_some_and(|flags| {
+            flags.contains(shepr_protocol::KittyKeyboardFlags::REPORT_EVENT_TYPES)
+        })
 }
 
 pub(super) fn write_host_color_scheme_report_mode(
@@ -389,6 +403,7 @@ impl HostRestoreMask {
 struct HostModesState {
     mouse: HostMouseMode,
     keyboard: shepr_termio::host_term::modes::HostKeyboardState,
+    keyboard_event_types_confirmed: bool,
     pane_keyboard_report_all: bool,
     keyboard_report_all_active: bool,
 }
@@ -480,6 +495,7 @@ impl HostModes {
                 state: Mutex::new(HostModesState {
                     mouse: HostMouseMode::new(mouse_capture),
                     keyboard: shepr_termio::host_term::modes::HostKeyboardState::default(),
+                    keyboard_event_types_confirmed: false,
                     pane_keyboard_report_all: false,
                     keyboard_report_all_active: false,
                 }),
@@ -596,6 +612,22 @@ impl HostModes {
         self.set_keyboard_protocol(writer, HostKeyboardUpdate::EnhancementFlags(flags))
     }
 
+    pub(super) fn set_keyboard_event_types_confirmed(&self, confirmed: bool) {
+        self.state().keyboard_event_types_confirmed = confirmed;
+    }
+
+    /// Returns the host input protocol snapshot for the reader thread. Event
+    /// types come from the startup query; report-all follows successful mode
+    /// writes and is ignored when the query did not confirm Kitty support.
+    pub(super) fn keyboard_input_mode(&self) -> shepr_termio::input::HostKeyboardInputMode {
+        let state = self.state();
+        shepr_termio::input::HostKeyboardInputMode {
+            reports_event_types: state.keyboard_event_types_confirmed,
+            reports_all_keys: state.keyboard_event_types_confirmed
+                && state.keyboard_report_all_active,
+        }
+    }
+
     pub(super) fn set_modify_other_keys(
         &self,
         writer: &mut impl io::Write,
@@ -636,12 +668,6 @@ impl HostModes {
     /// written until [`Self::sync_shell_keyboard_report_all`] applies it.
     pub(super) fn set_pane_keyboard_report_all(&self, enabled: bool) {
         self.state().pane_keyboard_report_all = enabled;
-    }
-
-    /// Whether the host was last told to report every key as an escape code,
-    /// so text keys also send their repeats and releases.
-    pub(super) fn keyboard_report_all_active(&self) -> bool {
-        self.state().keyboard_report_all_active
     }
 
     pub(super) fn sync_shell_keyboard_report_all(
@@ -931,6 +957,15 @@ impl TerminalGuard {
 }
 
 #[cfg(test)]
+impl HostModes {
+    /// Whether shepr's current mode write asks the host to report every key.
+    /// Production reads it only through [`Self::keyboard_input_mode`].
+    pub(super) fn keyboard_report_all_active(&self) -> bool {
+        self.state().keyboard_report_all_active
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1007,6 +1042,65 @@ mod tests {
         assert_eq!(responses.flags, None);
         assert!(responses.primary_device_attributes);
         assert_eq!(buffered, b"input");
+    }
+
+    #[test]
+    fn event_types_require_a_confirmed_kitty_keyboard_flag() {
+        for (flags, primary_device_attributes, expected) in [
+            (None, true, false),
+            (
+                Some(shepr_protocol::KittyKeyboardFlags::DISAMBIGUATE),
+                true,
+                false,
+            ),
+            (
+                Some(shepr_protocol::KittyKeyboardFlags::REPORT_EVENT_TYPES),
+                false,
+                false,
+            ),
+            (
+                Some(shepr_protocol::KittyKeyboardFlags::REPORT_EVENT_TYPES),
+                true,
+                true,
+            ),
+        ] {
+            let responses = shepr_termio::input::raw_input::HostKeyboardProbeResponses {
+                flags,
+                primary_device_attributes,
+            };
+            assert_eq!(host_keyboard_event_types_confirmed(&responses), expected);
+        }
+    }
+
+    #[test]
+    fn input_mode_tracks_confirmed_support_and_report_all_writes() {
+        let modes = HostModes::new(false);
+        assert_eq!(
+            modes.keyboard_input_mode(),
+            shepr_termio::input::HostKeyboardInputMode::default()
+        );
+
+        modes.set_keyboard_event_types_confirmed(true);
+        assert_eq!(
+            modes.keyboard_input_mode(),
+            shepr_termio::input::HostKeyboardInputMode {
+                reports_event_types: true,
+                reports_all_keys: false,
+            }
+        );
+
+        let mut output = Vec::new();
+        modes.set_pane_keyboard_report_all(true);
+        modes
+            .sync_shell_keyboard_report_all(&mut output, false)
+            .expect("mode write");
+        assert_eq!(
+            modes.keyboard_input_mode(),
+            shepr_termio::input::HostKeyboardInputMode {
+                reports_event_types: true,
+                reports_all_keys: true,
+            }
+        );
     }
 
     #[test]

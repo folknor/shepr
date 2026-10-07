@@ -692,10 +692,10 @@ impl App {
     }
 
     /// Starts a new checkpoint for a pane exit and returns its generation, or
-    /// `None` when the exit is already settled. Each held exit gets a
-    /// generation so a save captured before that exit cannot release it when
-    /// the save later finishes, and a later change to the session cannot hold
-    /// it again.
+    /// `None` when saves are disallowed or the current checkpoint state does
+    /// not need an exit hold. Each held exit gets a generation so a save
+    /// captured before that exit cannot release it when the save later
+    /// finishes, and a later change to the session cannot hold it again.
     pub(crate) fn request_pane_exit_checkpoint(&mut self) -> Option<CheckpointGeneration> {
         if !self.session_saver.policy.allows_saves() {
             return None;

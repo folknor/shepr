@@ -201,7 +201,7 @@ fn ssh_failure_output_wins_over_a_stdin_write_error() {
         failure,
     )
     .expect("ssh failure output is retained");
-    let error = command_failed("remote SSH connection failed", &output);
+    let error = command_failed("remote SSH connection failed", &output, false);
     assert!(
         SshFailureDiagnostic::from_error(&error).ssh_class()
             == Some(SshFailureClass::Authentication),
@@ -219,6 +219,38 @@ fn ssh_failure_output_wins_over_a_stdin_write_error() {
     )
     .expect_err("a write failure still matters after a successful ssh command");
     assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+}
+
+#[test]
+fn silent_ssh_failure_uses_link_policy_only_after_a_remote_result() {
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let output = Output {
+        status: std::process::ExitStatus::from_raw(SSH_OWN_FAILURE_EXIT_CODE << 8),
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
+    let first = command_failed("remote SSH connection failed", &output, false);
+    assert_eq!(
+        SshFailureDiagnostic::from_error(&first).ssh_class(),
+        Some(SshFailureClass::Unrecognized)
+    );
+    assert!(
+        EndpointFailure::from_error(&first)
+            .disposition()
+            .needs_attention()
+    );
+
+    let established = command_failed("remote SSH connection failed", &output, true);
+    assert_eq!(
+        SshFailureDiagnostic::from_error(&established).ssh_class(),
+        Some(SshFailureClass::Link)
+    );
+    assert_eq!(
+        EndpointFailure::from_error(&established).disposition(),
+        FailureDisposition::Offline
+    );
+    assert!(preserves_discovery(&established));
 }
 
 #[test]
@@ -509,7 +541,7 @@ fn an_attempt_deadline_shortens_and_then_refuses_commands() {
     assert_eq!(timeout.duration, Duration::from_secs(2));
     assert!(!timeout.authentication_candidate);
 
-    ssh.set_attempt_deadline(now + Duration::from_secs(25));
+    ssh.set_attempt_deadline(now + SSH_COMMAND_TIMEOUT + Duration::from_secs(5));
     let timeout = ssh.command_timeout(now).expect("a round trip fits");
     assert_eq!(timeout.duration, SSH_COMMAND_TIMEOUT);
     assert!(timeout.authentication_candidate);

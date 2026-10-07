@@ -967,9 +967,8 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "the server did not stop within 75ms; the socket at /run/test.sock is still \
-             reachable. The server may still be saving its layout; wait for shutdown to finish and \
-             inspect the server log before retrying. Forcing the process to exit can lose \
-             the final save"
+             reachable. The server may still be finishing shutdown; wait for it to finish and \
+             inspect the server log before retrying or forcing it to exit"
         );
     }
 

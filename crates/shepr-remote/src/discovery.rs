@@ -52,6 +52,7 @@ impl DiscoverySteps for SshDiscovery<'_> {
         path_lookup_result_with_rejected_candidate(
             &output,
             &mut self.rejected_shell_unsafe_candidate,
+            self.ssh.has_established_session(),
         )
     }
 
@@ -59,7 +60,11 @@ impl DiscoverySteps for SshDiscovery<'_> {
         let script = PosixScript::new(known_remote_binary_candidate_script());
         let output = self.ssh.sh_output(&script)?;
         if !output.status.success() {
-            return Err(command_failed("remote binary discovery failed", &output));
+            return Err(command_failed(
+                "remote binary discovery failed",
+                &output,
+                self.ssh.has_established_session(),
+            ));
         }
         Ok(
             remote_executables_from_path_discovery_with_rejected_candidate(
@@ -100,9 +105,10 @@ impl DiscoverySteps for SshDiscovery<'_> {
 fn path_lookup_result_with_rejected_candidate(
     output: &Output,
     rejected_candidate: &mut Option<RejectedShellUnsafeCandidate>,
+    established_session: bool,
 ) -> io::Result<Option<RemoteExecutable>> {
     if !output.status.success() {
-        let error = command_failed("remote SSH connection failed", output);
+        let error = command_failed("remote SSH connection failed", output, established_session);
         if !failure_evidence(&error).rejects_candidate() {
             return Err(error);
         }
@@ -372,7 +378,7 @@ fn remote_client_status(
         {
             return Ok(None);
         }
-        let error = remote_client_status_failure(&output);
+        let error = remote_client_status_failure(&output, ssh.has_established_session());
         return Err(error);
     }
     parse_remote_client_status_json(&String::from_utf8_lossy(&output.stdout)).map(Some)
@@ -391,13 +397,13 @@ pub(crate) fn parse_remote_client_status_json(
     })
 }
 
-fn remote_client_status_failure(output: &Output) -> io::Error {
+fn remote_client_status_failure(output: &Output, established_session: bool) -> io::Error {
     let context = if SshExit::from_code(output.status.code()) == SshExit::SshFailed {
         "remote SSH connection failed"
     } else {
         "remote client status probe failed"
     };
-    command_failed(context, output)
+    command_failed(context, output, established_session)
 }
 
 pub(crate) fn parse_client_status_json(

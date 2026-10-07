@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use crate::events::{ClientLoopEvent, ParsedHostInput};
 use crate::limits::HOST_INPUT_READ_CHUNK_BYTES;
 use crate::terminal_geometry::SharedHostGeometry;
-use crate::terminal_setup::HostMouseInputProbe;
+use crate::terminal_setup::{HostModes, HostMouseInputProbe};
 
 /// Whether a host query was written, so its reply is expected on stdin.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,6 +60,7 @@ pub(crate) fn stdin_reader_loop(
     should_quit: &Arc<AtomicBool>,
     probe: &HostInputProbe,
     host_geometry: &SharedHostGeometry,
+    host_modes: &HostModes,
     initial_host_input: &[u8],
 ) {
     let stdin = io::stdin();
@@ -80,6 +81,7 @@ pub(crate) fn stdin_reader_loop(
     }
     let mut pending_palette = Vec::new();
     let mut pending_mode = None;
+    let mut pending_keyboard_mode = None;
     let mut last_geometry = None;
 
     if !initial_host_input.is_empty() {
@@ -89,9 +91,11 @@ pub(crate) fn stdin_reader_loop(
             event_tx,
             &mut pending_palette,
             &mut pending_mode,
+            &mut pending_keyboard_mode,
             &mut last_geometry,
             &probe.mouse,
             host_geometry,
+            host_modes,
         ) {
             return;
         }
@@ -101,8 +105,10 @@ pub(crate) fn stdin_reader_loop(
             event_tx,
             &mut pending_palette,
             &mut pending_mode,
+            &mut pending_keyboard_mode,
             &probe.mouse,
             last_geometry,
+            host_modes,
         ) {
             return;
         }
@@ -124,9 +130,11 @@ pub(crate) fn stdin_reader_loop(
                     event_tx,
                     &mut pending_palette,
                     &mut pending_mode,
+                    &mut pending_keyboard_mode,
                     &mut last_geometry,
                     &probe.mouse,
                     host_geometry,
+                    host_modes,
                 ) {
                     return;
                 }
@@ -137,8 +145,10 @@ pub(crate) fn stdin_reader_loop(
                     event_tx,
                     &mut pending_palette,
                     &mut pending_mode,
+                    &mut pending_keyboard_mode,
                     &probe.mouse,
                     last_geometry,
+                    host_modes,
                 ) {
                     return;
                 }
@@ -166,10 +176,14 @@ fn consume_input_bytes(
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     pending_mode: &mut Option<bool>,
+    pending_keyboard_mode: &mut Option<shepr_termio::input::HostKeyboardInputMode>,
     last_geometry: &mut Option<shepr_termio::input::mouse::HostPixelExtent>,
     host_mouse_probe: &HostMouseInputProbe,
     host_geometry: &SharedHostGeometry,
+    host_modes: &HostModes,
 ) -> bool {
+    let keyboard_mode =
+        *pending_keyboard_mode.get_or_insert_with(|| host_modes.keyboard_input_mode());
     let sgr_pixels = *pending_mode.get_or_insert_with(|| host_mouse_probe.sgr_pixels_active());
     if sgr_pixels {
         *last_geometry = retain_geometry(*last_geometry, host_geometry.pixel_extent());
@@ -178,12 +192,16 @@ fn consume_input_bytes(
     if !framer.has_pending_input() {
         *pending_mode = None;
     }
+    if !framer.has_pending_keyboard_input() {
+        *pending_keyboard_mode = None;
+    }
     send_unix_input_chunks(
         chunks,
         event_tx,
         pending_palette,
         sgr_pixels,
         *last_geometry,
+        keyboard_mode,
     )
 }
 
@@ -193,8 +211,10 @@ fn flush_idle_input(
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     pending_mode: &mut Option<bool>,
+    pending_keyboard_mode: &mut Option<shepr_termio::input::HostKeyboardInputMode>,
     host_mouse_probe: &HostMouseInputProbe,
     geometry: Option<shepr_termio::input::mouse::HostPixelExtent>,
+    host_modes: &HostModes,
 ) -> bool {
     if !framer.has_pending_input() && pending_palette.is_empty() {
         return true;
@@ -209,11 +229,21 @@ fn flush_idle_input(
     // framer is empty.
     let has_pending_after_flush = framer.has_pending_input();
     let sgr_pixels = pending_mode.unwrap_or_else(|| host_mouse_probe.sgr_pixels_active());
+    let keyboard_mode = pending_keyboard_mode.unwrap_or_else(|| host_modes.keyboard_input_mode());
+    if !framer.has_pending_keyboard_input() {
+        *pending_keyboard_mode = None;
+    }
     if !framer.has_pending_input() {
         *pending_mode = None;
     }
-    if !send_unix_input_chunks(chunks, event_tx, pending_palette, sgr_pixels, geometry)
-        || !flush_unix_palette_input(event_tx, pending_palette)
+    if !send_unix_input_chunks(
+        chunks,
+        event_tx,
+        pending_palette,
+        sgr_pixels,
+        geometry,
+        keyboard_mode,
+    ) || !flush_unix_palette_input(event_tx, pending_palette)
     {
         return false;
     }
@@ -221,11 +251,20 @@ fn flush_idle_input(
         && stdin_read_ready(stdin_fd, framer.held_input_flush_timeout()) == StdinReadiness::TimedOut
     {
         let chunks = framer.flush_timeout_framed();
+        if !framer.has_pending_keyboard_input() {
+            *pending_keyboard_mode = None;
+        }
         if !framer.has_pending_input() {
             *pending_mode = None;
         }
-        return send_unix_input_chunks(chunks, event_tx, pending_palette, sgr_pixels, geometry)
-            && flush_unix_palette_input(event_tx, pending_palette);
+        return send_unix_input_chunks(
+            chunks,
+            event_tx,
+            pending_palette,
+            sgr_pixels,
+            geometry,
+            keyboard_mode,
+        ) && flush_unix_palette_input(event_tx, pending_palette);
     }
     true
 }
@@ -236,6 +275,7 @@ fn send_unix_input_chunks(
     pending_palette: &mut Vec<ParsedHostInput>,
     sgr_pixels: bool,
     geometry: Option<shepr_termio::input::mouse::HostPixelExtent>,
+    keyboard_mode: shepr_termio::input::HostKeyboardInputMode,
 ) -> bool {
     for chunk in chunks {
         let palette_response = matches!(
@@ -243,7 +283,7 @@ fn send_unix_input_chunks(
             shepr_termio::input::raw_input::RawInputEvent::HostPaletteColors { .. }
         );
         if palette_response {
-            if let Some(input) = classify_unix_input(chunk, sgr_pixels, geometry) {
+            if let Some(input) = classify_unix_input(chunk, sgr_pixels, geometry, keyboard_mode) {
                 pending_palette.push(input);
             }
             if pending_palette.len() == shepr_core::limits::PALETTE_COLOR_COUNT
@@ -260,7 +300,7 @@ fn send_unix_input_chunks(
         if !default_color_response && !flush_unix_palette_input(event_tx, pending_palette) {
             return false;
         }
-        let Some(input) = classify_unix_input(chunk, sgr_pixels, geometry) else {
+        let Some(input) = classify_unix_input(chunk, sgr_pixels, geometry, keyboard_mode) else {
             continue;
         };
         if event_tx
@@ -291,6 +331,7 @@ fn classify_unix_input(
     input: shepr_termio::input::raw_input::FramedRawInputEvent,
     sgr_pixels: bool,
     geometry: Option<shepr_termio::input::mouse::HostPixelExtent>,
+    keyboard_mode: shepr_termio::input::HostKeyboardInputMode,
 ) -> Option<ParsedHostInput> {
     let pixel_mouse = if sgr_pixels && input.raw.starts_with(b"\x1b[<") {
         let shepr_termio::input::raw_input::RawInputEvent::Mouse(mouse) = &input.event else {
@@ -322,6 +363,7 @@ fn classify_unix_input(
     Some(ParsedHostInput {
         event: input.event,
         pixel_mouse,
+        keyboard_mode,
     })
 }
 
@@ -396,6 +438,10 @@ mod tests {
     #[test]
     fn stdin_input_event_is_classified_from_framed_bytes() {
         let raw = vec![0x1b, b'[', b'A']; // Up arrow escape sequence
+        let mode = shepr_termio::input::HostKeyboardInputMode {
+            reports_event_types: true,
+            reports_all_keys: false,
+        };
         let inputs = framed(&raw);
         let [input] = inputs.as_slice() else {
             panic!("expected one framed input event");
@@ -404,6 +450,26 @@ mod tests {
             &input.event,
             shepr_termio::input::raw_input::RawInputEvent::Key(_)
         ));
+        let parsed =
+            classify_unix_input(framed(&raw).remove(0), false, None, mode).expect("keyboard event");
+        assert_eq!(parsed.keyboard_mode, mode);
+    }
+
+    #[test]
+    fn only_pending_keyboard_bytes_keep_their_mode_snapshot() {
+        let mut key = shepr_termio::input::raw_input::RawInputFramer::default();
+        assert!(key.push_framed(b"\x1b[1;").is_empty());
+        assert!(key.has_pending_keyboard_input());
+
+        let mut host_reply = shepr_termio::input::raw_input::RawInputFramer::default();
+        assert!(host_reply.push_framed(b"\x1b]11;rgb:").is_empty());
+        assert!(host_reply.has_pending_input());
+        assert!(!host_reply.has_pending_keyboard_input());
+
+        let mut paste = shepr_termio::input::raw_input::RawInputFramer::default();
+        assert!(paste.push_framed(b"\x1b[200~pending").is_empty());
+        assert!(paste.has_pending_input());
+        assert!(!paste.has_pending_keyboard_input());
     }
 
     #[test]
@@ -414,8 +480,13 @@ mod tests {
         let mut report_events = framed(&report);
         assert_eq!(report_events.len(), 1);
         let report_event = report_events.pop().expect("one framed mouse event");
-        let input =
-            classify_unix_input(report_event, true, Some(geometry)).expect("pixel mouse event");
+        let input = classify_unix_input(
+            report_event,
+            true,
+            Some(geometry),
+            shepr_termio::input::HostKeyboardInputMode::default(),
+        )
+        .expect("pixel mouse event");
         assert_eq!(
             input.pixel_mouse,
             Some(shepr_termio::input::mouse::HostPixels {
@@ -426,7 +497,15 @@ mod tests {
         );
         // Pixel coordinates without an extent cannot name a cell; read as
         // cells they would hit column 320, row 240.
-        assert!(classify_unix_input(framed(&report).remove(0), true, None).is_none());
+        assert!(
+            classify_unix_input(
+                framed(&report).remove(0),
+                true,
+                None,
+                shepr_termio::input::HostKeyboardInputMode::default(),
+            )
+            .is_none()
+        );
 
         for raw in [
             b"key".as_slice(),
@@ -436,8 +515,13 @@ mod tests {
             let inputs = framed(raw)
                 .into_iter()
                 .map(|event| {
-                    classify_unix_input(event, true, Some(geometry))
-                        .expect("unrelated input must remain available")
+                    classify_unix_input(
+                        event,
+                        true,
+                        Some(geometry),
+                        shepr_termio::input::HostKeyboardInputMode::default(),
+                    )
+                    .expect("unrelated input must remain available")
                 })
                 .collect::<Vec<_>>();
             assert!(!inputs.is_empty());
@@ -465,6 +549,7 @@ mod tests {
             &mut pending,
             false,
             None,
+            shepr_termio::input::HostKeyboardInputMode::default(),
         ));
         assert!(rx.try_recv().is_err());
 

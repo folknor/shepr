@@ -147,105 +147,6 @@ is a connection-scoped resource owned in one place, with an explicit `close()`
 that sets `should_stop` and is called by whoever fails the connection, rather
 than an Arc shared by reader and writer with teardown left to the last drop.
 
-## RMT-004 - Link losses that OpenSSH logs below `ERROR` read as "needs attention", most visibly for the remote wait
-
-Claim broken: AGENTS.md, Offline "(unreachable; the machine row's diagnostic
-badge carries the reason, and it is retried with the reconnect backoff)";
-`SshFailureClass::Link` doc ("The remote was never reached or the link
-dropped: a retry can clear it").
-
-Every ssh runs with `LogLevel=ERROR`. Several ways an established session ends
-are logged by OpenSSH below that level; the clearest is the keepalive timeout,
-`logit("Timeout, server %s not responding.")` followed by exit 255, which
-`ServerAliveInterval`/`ServerAliveCountMax` from the managed config will
-trigger on any dead link. The ssh then exits 255 with empty stderr. Both
-`ssh_bridge_exit_error` and `command_failed` produce messages like "remote SSH
-connection failed (exit status 255)" that match no signature in
-`classify_ssh_diagnostic`, so they are `Unrecognized`: disposition `Repair`
-(needs attention, `MachineState::Unavailable`, no action, 30 s attention
-retry) and evidence `TargetUntrusted` (discovery progress thrown away).
-
-For a connected machine the client heartbeat (15 s) usually fires before the
-ssh keepalive (60 s) and masks this. The remote wait for a server
-(`MachineSshConnector::wait_for_server`) has no heartbeat, so a NotRunning
-machine whose link drops (suspend, network change) comes back as "Unavailable,
-needs attention" instead of Offline. The same holds for a mux client whose
-control master dies under it.
-
-Direction: classify exit 255 with no recognised stderr on an established
-session (bridge, wait) as `Link`, keeping `Unrecognized` for failures before
-authentication; or raise the log level enough to see the link messages and add
-their signatures. Worth verifying against the pinned OpenSSH which messages
-each path prints under `LogLevel=ERROR`.
-
-## RMT-006 - A remembered hint that fails verification for any non-stale reason is kept forever
-
-Claim broken: `MachineProbe::resolve` comment ("Link, server and target-trust
-failures leave it as an unverified hint; a later attempt checks it again") read
-together with discovery, where the very same probe result rejects the
-candidate and moves on.
-
-`verify_remote_shepr` on a `Hint` that runs but fails (a non-zero exit from
-`status client --json`, or output that does not parse) yields `RemoteFault` or
-`InstallChanged`, neither of which `invalidates_executable`, so `resolve`
-returns the error and never falls through to discovery. In
-`DiscoveryProgress::run_remaining` the identical outcome `rejects_candidate()`
-and the next candidate is tried. The one-install-per-host rule makes this rare,
-but the two paths judge the same evidence differently; the hint path should
-treat "the candidate ran and did not answer as this build" as rejection of the
-hint, as discovery does.
-
-## RMT-007 - `SSH_COMMAND_TIMEOUT` does not cover the commands it bounds
-
-Claim broken: the const assertion comment in `shepr-remote/src/limits.rs` ("A
-cold connection and the full remote status overview must complete before SSH's
-command timeout can be mistaken for an authentication wait, with room to
-spare").
-
-`SSH_COMMAND_TIMEOUT` is `SSH_CONNECT_TIMEOUT + STATUS_OVERVIEW_TIMEOUT + 1 s`
-= 15 s, with the overview budget being ping plus summary (4 s). But the
-discovery probe is `status client --json`, which runs the sibling
-`shepr-server --version` under `SIBLING_VERSION_TIMEOUT` (5 s), and the fleet
-reads `status --json`, which does the sibling probe and the server overview
-(9 s). A cold connect near its 10 s bound plus a slow sibling therefore hits
-the command timeout; with the full budget available that is classified as
-`authentication_wait_timeout`, so startup preflight offers a foreground login
-to a machine whose real problem is its install, and `status --all` reports a
-login need. The budget should be derived from the slowest remote command it
-bounds. See also LIFE-012.
-
-## RMT-008 - A reader blocked on the full event queue can expire a healthy endpoint
-
-Claim broken: `limits.rs` `HEARTBEAT_TIMEOUT` doc and `insert_with_activity`
-comment ("Readers timestamp complete frames before queueing them, so health
-deadlines measure transport silence").
-
-All readers share one bounded queue (`CLIENT_EVENT_QUEUE_CAPACITY`, 256) and
-use `blocking_send`. When the loop stalls (a blocking host terminal write) and
-a busy endpoint fills the queue, a quiet endpoint's reader blocks on its next
-send and stops reading its socket, so its pong sits unread and unstamped. On
-resume, `wait_for_next_event` is `biased` with the timer ahead of the queue, so
-`tick_health` runs before the backlog drains and expires the quiet endpoint if
-it had a ping outstanding when the stall began. Stamping happens before the
-send, but reading does not happen while the send blocks, so the stamp measures
-queue pressure, not transport silence. Per-endpoint queues, or draining the
-event queue before the health tick, would keep the claim.
-
-## RMT-009 - Launch-fatal SSH setup is detected after preflight has already acted
-
-Claim broken: `Launched::prepare` comment ("A machine whose connector cannot be
-built fails the launch here, before the Local handshake and before the terminal
-is taken") and the principle that a config problem fails the launch with no
-side effects.
-
-`tui::launch` runs `preflight::run` first. A runtime path that can never hold
-the SSH control socket (the "shorten XDG_RUNTIME_DIR" case) makes every check
-`Failed`, prints notices, and then the local restart offer still runs and can
-stop the local server with the operator's consent. Only afterwards does
-`EndpointSupervisors::new` find `launch_fatal_setup_error` and fail the launch.
-The operator restarted a server for a launch that was never going to happen.
-The connector admission check belongs before preflight.
-
 ## RMT-013 - Small inconsistencies in remote status and the server wait
 
 Raised as smaller notes.
@@ -274,3 +175,27 @@ outside `shepr-remote` (`handshake.rs`, `connection_io.rs`). RMT-001, RMT-002's
 silent EOF and RMT-003 all come from that split. A single connection object in
 `shepr-remote` that owns the stream, the bridge and the classification of its
 end, handing the client a typed `EndpointFailure`, would remove all three.
+
+## RMT-015 - The launch connector admission check runs before client logging exists
+
+Raised as a lateral by the wave 3 reviewer.
+
+`preflight::check_connector_admission` (`src/preflight.rs`) now builds a
+`MachineSshConnector` per machine before preflight, so a launch-fatal SSH
+setup fails before anything acts. But it runs before client logging is
+initialised: each connector writes and then drops a managed SSH config
+directory, and a transient setup failure's WARN goes nowhere. Either initialise
+logging first or check admission without building and discarding connectors.
+
+## RMT-016 - "After verification" does not discriminate for the bridge and the remote wait
+
+Raised as a lateral by the wave 3 reviewer.
+
+A silent ssh exit 255 now reads as a link loss on an established session
+(`crates/shepr-remote/src/failure.rs`). For the bridge and the remote wait,
+"established" is `probe.has_verified_executable()`, which is effectively always
+true once `resolve_remote` succeeded, so every silent 255 there reads as a
+link loss, including one before authentication. Defensible, since resolution
+itself ran a remote command, but the condition is not the discriminator its
+name says. The bridge restructure planned in RMT-014 is the natural place to
+give it a real one.

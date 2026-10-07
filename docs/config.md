@@ -32,7 +32,9 @@ reload and no option to point at another file.
   starts a new server, which restores the saved layout with fresh shells and
   resumes agents (see `[session]`). For a machine reached over SSH, run
   `shepr stop` on that machine, or `shepr stop --all` to stop every host's
-  server at once. A stopped machine stays stopped: a client showing it lists
+  server at once (from a terminal outside shepr: in a pane of the local
+  server it refuses, since stopping that server would end the command). A stopped
+  machine stays stopped: a client showing it lists
   it with a Connect entry, which starts its server again when you choose it,
   and so does running `shepr` on that machine.
 

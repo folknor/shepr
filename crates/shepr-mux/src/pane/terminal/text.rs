@@ -588,6 +588,7 @@ impl MatchWindow {
                 global_index: target,
             }),
             total,
+            complete: true,
         }
     }
 }

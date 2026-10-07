@@ -67,21 +67,18 @@ pub(super) fn canonicalize_best_effort_path(path: &Path) -> PathBuf {
 }
 
 /// The common directory a Git directory shares its refs with: itself unless
-/// a `commondir` file names another. `None` when `commondir` exists but
+/// a `commondir` file names another. An error when `commondir` exists but
 /// cannot be read: taking the Git directory as its own common directory then
 /// would read linked-worktree refs from the wrong directory.
-fn git_common_dir_for_git_dir(git_dir: &Path) -> Option<PathBuf> {
+fn git_common_dir_for_git_dir(git_dir: &Path) -> io::Result<PathBuf> {
     let commondir = git_dir.join("commondir");
     let contents = match crate::access::read_to_string(&commondir) {
         Ok(contents) => contents,
-        Err(error) if is_absence(&error) => return Some(git_dir.to_path_buf()),
-        Err(error) => {
-            tracing::debug!(path = %commondir.display(), %error, "git commondir unreadable");
-            return None;
-        }
+        Err(error) if is_absence(&error) => return Ok(git_dir.to_path_buf()),
+        Err(error) => return Err(error),
     };
     let path = Path::new(contents.trim());
-    Some(if path.is_absolute() {
+    Ok(if path.is_absolute() {
         path.to_path_buf()
     } else {
         git_dir.join(path)
@@ -91,12 +88,7 @@ fn git_common_dir_for_git_dir(git_dir: &Path) -> Option<PathBuf> {
 fn git_config_info(repo_root: &Path, git_dir: &Path) -> io::Result<GitWorktreeInfo> {
     let repo_root = repo_root.to_path_buf();
     let git_dir = canonicalize_best_effort_path(git_dir);
-    let git_common_dir = git_common_dir_for_git_dir(&git_dir).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("{} has an unreadable commondir", git_dir.display()),
-        )
-    })?;
+    let git_common_dir = git_common_dir_for_git_dir(&git_dir)?;
     let git_common_dir = canonicalize_best_effort_path(&git_common_dir);
     Ok(GitWorktreeInfo {
         repo_root,
@@ -258,7 +250,7 @@ fn file_read_error(path: &Path, error: &std::io::Error) -> GitReadError {
     }
 }
 
-fn git_head_file_is_readable(git_dir: &LocatedGitDir) -> std::io::Result<bool> {
+fn git_directory_is_readable(git_dir: &LocatedGitDir) -> std::io::Result<bool> {
     let head = git_dir.path.join("HEAD");
     let is_file = is_file_entry(&head)?;
     // Git can skip a `.git` directory without HEAD, but a gitfile target must
@@ -272,7 +264,19 @@ fn git_head_file_is_readable(git_dir: &LocatedGitDir) -> std::io::Result<bool> {
     if is_file && git_dir.from_gitfile {
         drop(crate::access::open(head)?);
     }
-    Ok(is_file)
+    if !is_file {
+        return Ok(false);
+    }
+    // Linked worktrees keep objects and refs in their common directory.
+    let common = git_common_dir_for_git_dir(&git_dir.path)?;
+    let valid = is_dir_entry(&common.join("objects"))? && is_dir_entry(&common.join("refs"))?;
+    if !valid && git_dir.from_gitfile {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "gitfile target has no objects or refs directory",
+        ));
+    }
+    Ok(valid)
 }
 
 fn path_is_git_dir_layout(path: &Path) -> std::io::Result<bool> {
@@ -446,8 +450,8 @@ pub(super) fn command_failed(cwd: &Path, args: &[&str], output: &Output) -> GitR
 /// when it is a ceiling itself; only the walk upwards stops.
 #[derive(Debug, Default)]
 struct GitCeilings {
-    /// Each entry as spelled and, where resolved, as its canonical path, so a
-    /// walk from either spelling of a directory meets it.
+    /// Resolved entries also retain their spelling; entries after an empty
+    /// field must match the physical discovery path exactly as written.
     dirs: Vec<PathBuf>,
 }
 
@@ -496,9 +500,13 @@ fn git_worktree_location_below(
     start: &Path,
     ceilings: &GitCeilings,
 ) -> Result<Option<(PathBuf, LocatedGitDir)>, GitReadError> {
-    let mut current = match is_dir_entry(start) {
-        Ok(true) => start.to_path_buf(),
-        Ok(false) => match start.parent() {
+    // OSC 7 may supply a logical symlink spelling. Git changes directory
+    // before discovery and ascends physical parents, not that spelling.
+    let physical =
+        crate::access::canonicalize(start).map_err(|error| file_read_error(start, &error))?;
+    let mut current = match is_dir_entry(&physical) {
+        Ok(true) => physical.clone(),
+        Ok(false) => match physical.parent() {
             Some(parent) => parent.to_path_buf(),
             None => return Ok(None),
         },
@@ -508,7 +516,7 @@ fn git_worktree_location_below(
     loop {
         let found = match locate_git_dir(&current)? {
             Some(git_dir) => {
-                if git_head_file_is_readable(&git_dir)
+                if git_directory_is_readable(&git_dir)
                     .map_err(|error| file_read_error(&git_dir.path.join("HEAD"), &error))?
                 {
                     Some(git_dir)
@@ -927,11 +935,12 @@ mod tests {
         let outer = temp_test_dir("invalid-gitfile-enclosing-repo");
         mark_checkout(&outer);
 
-        let cases: [(&str, &[u8]); 4] = [
+        let cases: [(&str, &[u8]); 5] = [
             ("missing-target", b"gitdir: absent-admin\n"),
             ("missing-directive", b"not a gitfile\n"),
             ("non-utf8", b"\xff"),
             ("non-file-head", b"gitdir: admin\n"),
+            ("head-only", b"gitdir: admin\n"),
         ];
         for (name, contents) in cases {
             let checkout = outer.join(".worktrees").join(name);
@@ -939,6 +948,10 @@ mod tests {
             std::fs::write(checkout.join(".git"), contents).expect("test precondition");
             if name == "non-file-head" {
                 std::fs::create_dir_all(checkout.join("admin/HEAD")).expect("test precondition");
+            } else if name == "head-only" {
+                std::fs::create_dir_all(checkout.join("admin")).expect("test precondition");
+                std::fs::write(checkout.join("admin/HEAD"), "ref: refs/heads/main\n")
+                    .expect("test precondition");
             }
 
             let mut errors = Vec::new();
@@ -957,6 +970,79 @@ mod tests {
     }
 
     #[test]
+    fn logical_symlink_uses_physical_repository_and_ceiling() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let logical = temp_test_dir("logical-repo");
+        let physical = temp_test_dir("physical-repo");
+        mark_checkout(&logical);
+        mark_checkout(&physical);
+        let work = physical.join("work");
+        std::fs::create_dir_all(&work).expect("test precondition");
+        let link = logical.join("link");
+        std::os::unix::fs::symlink(&work, &link).expect("test precondition");
+        assert_eq!(
+            git_repo_root_below(&link, &GitCeilings::default()),
+            Some(physical.clone())
+        );
+        assert_eq!(
+            git_repo_root_below(&link, &ceilings(physical.to_str().expect("utf-8 scratch path"))),
+            None
+        );
+        std::fs::remove_dir_all(physical.join(".git")).expect("test precondition");
+        assert_eq!(git_repo_root(&link), None);
+    }
+
+    #[test]
+    fn incomplete_marker_is_skipped_for_an_enclosing_checkout() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let outer = temp_test_dir("head-only-marker");
+        mark_checkout(&outer);
+        for directory in ["", "objects", "refs"] {
+            let nested = outer.join(format!("nested-{directory}"));
+            std::fs::create_dir_all(nested.join(".git").join(directory))
+                .expect("test precondition");
+            std::fs::write(nested.join(".git/HEAD"), "ref: refs/heads/main\n")
+                .expect("test precondition");
+            assert_eq!(
+                git_repo_root_below(&nested, &GitCeilings::default()),
+                Some(outer.clone())
+            );
+        }
+    }
+
+    #[test]
+    fn linked_marker_validates_the_common_directory() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let base = temp_test_dir("linked-marker-validation");
+        let common = base.join("common");
+        let checkout = base.join("checkout");
+        write_git_dir(&common, "main", true);
+        add_linked_worktree(&common, "main", &checkout);
+        assert_eq!(
+            git_repo_root_below(&checkout, &GitCeilings::default()),
+            Some(checkout.clone())
+        );
+        std::fs::remove_dir_all(common.join("objects")).expect("test precondition");
+        assert!(matches!(
+            discover_below(&checkout, &GitCeilings::default()),
+            Discovery::Unreadable(_)
+        ));
+    }
+
+    #[test]
+    fn common_directory_read_preserves_filesystem_errors() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let base = temp_test_dir("common-directory-error");
+        std::os::unix::fs::symlink("commondir", base.join("commondir")).expect("test precondition");
+        assert_eq!(
+            git_common_dir_for_git_dir(&base)
+                .expect_err("symlink loop")
+                .raw_os_error(),
+            Some(libc::ELOOP)
+        );
+    }
+
+    #[test]
     fn git_directory_without_head_can_be_skipped_for_an_enclosing_checkout() {
         let outer = temp_test_dir("git-directory-without-head");
         mark_checkout(&outer);
@@ -971,7 +1057,8 @@ mod tests {
 
     /// A directory discovery recognises as a checkout root.
     fn mark_checkout(root: &Path) {
-        std::fs::create_dir_all(root.join(".git")).expect("test precondition");
+        std::fs::create_dir_all(root.join(".git/objects")).expect("test precondition");
+        std::fs::create_dir_all(root.join(".git/refs")).expect("test precondition");
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")
             .expect("test precondition");
     }

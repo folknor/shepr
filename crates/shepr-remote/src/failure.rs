@@ -146,6 +146,18 @@ impl SshFailureDiagnostic {
         }
     }
 
+    /// A silent OpenSSH exit 255 after this transport has already returned a
+    /// remote result. With `LogLevel=ERROR`, OpenSSH's keepalive-timeout log
+    /// can be suppressed, leaving the dead connection with no diagnostic.
+    /// Callers must use this only for an empty stderr and a known established
+    /// session; first-connection failures still go through `from_ssh_output`.
+    pub(crate) fn silent_established_session_link(message: &str) -> Self {
+        Self {
+            failure: EndpointFailure::ssh(SshFailureClass::Link, message),
+            origin: SshFailureOrigin::SshOutput(SshExit::SshFailed),
+        }
+    }
+
     /// Adds display context while retaining this diagnostic's structured class.
     pub(crate) fn with_context(mut self, context: impl Into<String>) -> Self {
         self.failure = self.failure.with_context(&context.into());
@@ -449,6 +461,39 @@ mod tests {
             "remote bridge failed: Permission denied (os error 13)",
         );
         assert_ne!(os_error.ssh_class(), Some(SshFailureClass::Authentication));
+    }
+
+    #[test]
+    fn only_a_silent_failure_after_a_remote_result_is_a_link_loss() {
+        let message = "remote SSH connection failed (exit status 255)";
+        let first_connection =
+            SshFailureDiagnostic::from_ssh_output(Some(SSH_OWN_FAILURE_EXIT_CODE), message);
+        assert_eq!(
+            first_connection.ssh_class(),
+            Some(SshFailureClass::Unrecognized)
+        );
+        assert_eq!(
+            first_connection.evidence(),
+            FailureEvidence::TargetUntrusted
+        );
+
+        let established = SshFailureDiagnostic::silent_established_session_link(message);
+        assert_eq!(established.ssh_class(), Some(SshFailureClass::Link));
+        assert_eq!(established.evidence(), FailureEvidence::NothingLearned);
+        assert_eq!(
+            established.failure.disposition(),
+            FailureDisposition::Offline
+        );
+
+        let diagnostic = SshFailureDiagnostic::from_ssh_output(
+            Some(SSH_OWN_FAILURE_EXIT_CODE),
+            "remote SSH connection failed: an unrecognized diagnostic",
+        );
+        assert_eq!(
+            diagnostic.ssh_class(),
+            Some(SshFailureClass::Unrecognized),
+            "an established session does not make nonempty diagnostics disappear"
+        );
     }
 
     #[test]

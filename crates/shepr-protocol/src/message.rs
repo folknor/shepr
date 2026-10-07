@@ -54,6 +54,8 @@ pub enum HandshakeRefusal {
     /// The server has bound its socket but is still restoring panes.
     /// Transient: it accepts clients once its panes are restored.
     ServerStarting,
+    /// The server has begun shutting down and no longer accepts clients.
+    ServerStopping,
 }
 
 impl std::fmt::Display for HandshakeRefusal {
@@ -64,6 +66,9 @@ impl std::fmt::Display for HandshakeRefusal {
             Self::ServerStarting => f.write_str(
                 "the server is still starting; it accepts clients once its panes are restored",
             ),
+            Self::ServerStopping => {
+                f.write_str("the server is stopping and no longer accepts clients")
+            }
             Self::ConnectionLimit(error) => write!(
                 f,
                 "the server is already serving its limit of {} client connections",

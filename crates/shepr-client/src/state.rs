@@ -1,3 +1,4 @@
+use crate::clipboard_forwarding::ClipboardWriteWorker;
 use crate::errors::LoopExit;
 use crate::limits::{
     REFUSED_OUTPUT_RETRY_GROWTH, REFUSED_OUTPUT_RETRY_MAX, REFUSED_OUTPUT_RETRY_MIN,
@@ -41,6 +42,8 @@ pub(super) struct ClientState {
     pub(super) blit_encoder: render_ansi::BlitEncoder,
     /// Host terminal output shared by frames, host modes, titles, and clipboard writes.
     pub(super) output_writer: Box<dyn io::Write + Send>,
+    /// Server-originated clipboard copies are processed away from the client loop.
+    pub(super) clipboard_write_worker: Option<ClipboardWriteWorker>,
     pub(super) host_modes: terminal_setup::HostModes,
     /// Latest physical host theme observations, retained so an endpoint selected after the
     /// observation receives the same client-owned baseline.
@@ -483,6 +486,7 @@ impl ClientState {
         Self {
             blit_encoder: render_ansi::BlitEncoder::new(),
             output_writer: Box::new(io::sink()),
+            clipboard_write_worker: None,
             host_modes: terminal_setup::HostModes::new(false),
             host_theme_updates: Vec::new(),
             settings: ClientSettings::from_config(&config),

@@ -5,6 +5,14 @@ use crossterm::event::KeyCode;
 
 use shepr_term::key::TerminalKey;
 
+/// The host keyboard protocol confirmed for the input bytes being handled.
+/// `reports_all_keys` is set only alongside confirmed Kitty event reporting.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HostKeyboardInputMode {
+    pub reports_event_types: bool,
+    pub reports_all_keys: bool,
+}
+
 /// A held key, identified by its source and key code. A Linux host terminal
 /// reports no physical key identity, so two physical keys with the same code
 /// (the two Enter keys, say) share one lease.
@@ -62,14 +70,19 @@ impl<Source, Context, Target> Default for InputLeaseTable<Source, Context, Targe
     }
 }
 
-/// Whether a press can be followed by its repeats and release, and so holds
-/// a lease. The host reports those for every key while it sends all keys as
-/// escape codes (kitty REPORT_ALL_KEYS, which the client enables only when a
-/// pane or the shell needs it, since it breaks IME and compose input).
-/// Otherwise a key that committed text gets no release event, and a lease
-/// for it would go stale.
-fn press_takes_lease(key: &TerminalKey, host_reports_all_keys: bool) -> bool {
-    key.generated_text.is_none() || host_reports_all_keys
+/// Whether the host will send this press's repeats and release. Event-types
+/// mode covers encoded key events, not text commits. Kitty also keeps
+/// unmodified Enter, Tab and Backspace in legacy form unless REPORT_ALL_KEYS
+/// is active, even when it reports event types for other keys.
+fn press_takes_lease(key: &TerminalKey, host_mode: HostKeyboardInputMode) -> bool {
+    if host_mode.reports_event_types && host_mode.reports_all_keys {
+        return true;
+    }
+    if !host_mode.reports_event_types || key.generated_text.is_some() {
+        return false;
+    }
+    !key.modifiers.is_empty()
+        || !matches!(key.code, KeyCode::Enter | KeyCode::Tab | KeyCode::Backspace)
 }
 
 impl<Source, Context, Target> InputLeaseTable<Source, Context, Target>
@@ -78,19 +91,12 @@ where
     Context: Clone + Eq,
     Target: Clone + Eq,
 {
-    /// A fresh press of a key that takes a lease (see `press_takes_lease`)
-    /// starts a new lease, dropping whatever the last press of that key left
-    /// behind. Keys are semantic, so a second press cannot be told apart from
-    /// a new one and is never turned into a repeat here.
-    pub fn prepare_press(
-        &mut self,
-        lease_key: &InputLeaseKey<Source>,
-        key: &TerminalKey,
-        host_reports_all_keys: bool,
-    ) {
-        if key.kind == crossterm::event::KeyEventKind::Press
-            && press_takes_lease(key, host_reports_all_keys)
-        {
+    /// A fresh press drops the previous lease for that semantic key. A second
+    /// press cannot be told apart from a new one and is never a repeat here.
+    pub fn prepare_press(&mut self, lease_key: &InputLeaseKey<Source>, key: &TerminalKey) {
+        if key.kind == crossterm::event::KeyEventKind::Press {
+            // Any fresh press supersedes the previous lease for this semantic
+            // key, including one begun under a mode that reported releases.
             self.leases.remove(lease_key);
         }
     }
@@ -105,9 +111,9 @@ where
         initial_context: Option<&Context>,
         resulting_context: Option<&Context>,
         target: Option<Target>,
-        host_reports_all_keys: bool,
+        host_mode: HostKeyboardInputMode,
     ) {
-        if !press_takes_lease(key, host_reports_all_keys) {
+        if !press_takes_lease(key, host_mode) {
             return;
         }
         if let Some(target) = target {
@@ -239,6 +245,15 @@ mod tests {
 
     type Leases = InputLeaseTable<u64, Context, u64>;
 
+    const KITTY_EVENT_TYPES: HostKeyboardInputMode = HostKeyboardInputMode {
+        reports_event_types: true,
+        reports_all_keys: false,
+    };
+    const KITTY_REPORT_ALL: HostKeyboardInputMode = HostKeyboardInputMode {
+        reports_event_types: true,
+        reports_all_keys: true,
+    };
+
     #[test]
     fn remove_source_returns_forwarded_and_discards_consumed_leases() {
         let key = TerminalKey::new(KeyCode::Esc, KeyModifiers::empty());
@@ -268,24 +283,24 @@ mod tests {
         let mut leases = Leases::default();
 
         leases.insert_forwarded(lease_key, 10, key.clone());
-        leases.prepare_press(&lease_key, &key, false);
+        leases.prepare_press(&lease_key, &key);
         assert!(!leases.contains(&lease_key));
 
         leases.insert_consumed(lease_key, ConsumedInputLease::SuppressRepeats);
-        leases.prepare_press(&lease_key, &key, false);
+        leases.prepare_press(&lease_key, &key);
         assert!(!leases.contains(&lease_key));
     }
 
     #[test]
-    fn a_text_press_leaves_existing_leases_alone() {
+    fn a_press_without_a_release_replaces_an_old_lease() {
         let key = TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
             .with_generated_text(Some("/".to_owned()));
         let lease_key = InputLeaseKey::new(7, &key);
         let mut leases = Leases::default();
         leases.insert_forwarded(lease_key, 10, key.clone());
 
-        leases.prepare_press(&lease_key, &key, false);
-        assert!(leases.contains(&lease_key));
+        leases.prepare_press(&lease_key, &key);
+        assert!(!leases.contains(&lease_key));
     }
 
     #[test]
@@ -301,7 +316,7 @@ mod tests {
             Some(&context),
             Some(&context),
             Some(10),
-            false,
+            KITTY_EVENT_TYPES,
         );
         assert_eq!(
             leases.plan_repeat(lease_key, Some(&context)),
@@ -324,48 +339,94 @@ mod tests {
             Some(&context),
             Some(&context),
             Some(10),
-            false,
+            HostKeyboardInputMode::default(),
         );
         assert_eq!(leases.remove_forwarded(&lease_key), None);
     }
 
     #[test]
-    fn text_presses_take_leases_only_while_the_host_reports_all_keys() {
+    fn leases_follow_only_releases_the_host_mode_will_report() {
         let key = TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
             .with_generated_text(Some("/".to_owned()));
         let lease_key = InputLeaseKey::new(7, &key);
         let context = Context::Pane;
         let mut leases = Leases::default();
 
-        // Report-all mode sends the release: the press leases its target,
-        // and the repeat and release follow it there.
-        leases.prepare_press(&lease_key, &key, true);
+        // Plain text commits have no release with event-types alone.
+        leases.prepare_press(&lease_key, &key);
         leases.complete_press(
             lease_key,
             &key,
             Some(&context),
             Some(&context),
             Some(10),
-            true,
+            KITTY_EVENT_TYPES,
+        );
+        assert!(!leases.contains(&lease_key));
+
+        // Report-all makes even a text key's release available.
+        leases.prepare_press(&lease_key, &key);
+        leases.complete_press(
+            lease_key,
+            &key,
+            Some(&context),
+            Some(&context),
+            Some(10),
+            KITTY_REPORT_ALL,
         );
         assert_eq!(
             leases.plan_repeat(lease_key, Some(&context)),
             RepeatPlan::Forwarded(10)
         );
         // A fresh text press in report-all mode replaces the old lease.
-        leases.prepare_press(&lease_key, &key, true);
+        leases.prepare_press(&lease_key, &key);
         assert!(!leases.contains(&lease_key));
 
-        // Without report-all no release follows, so no lease is taken.
+        // A fresh text press supersedes the prior report-all lease, even if
+        // the host mode now sends the commit as plain text.
         leases.complete_press(
             lease_key,
             &key,
             Some(&context),
             Some(&context),
             Some(10),
-            false,
+            KITTY_EVENT_TYPES,
         );
         assert!(!leases.contains(&lease_key));
+    }
+
+    #[test]
+    fn legacy_hosts_and_unmodified_compatibility_keys_do_not_take_leases() {
+        for key in [
+            TerminalKey::new(KeyCode::Left, KeyModifiers::empty()),
+            TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
+            TerminalKey::new(KeyCode::Tab, KeyModifiers::empty()),
+            TerminalKey::new(KeyCode::Backspace, KeyModifiers::empty()),
+        ] {
+            assert!(!press_takes_lease(&key, HostKeyboardInputMode::default()));
+        }
+
+        for code in [KeyCode::Enter, KeyCode::Tab, KeyCode::Backspace] {
+            let key = TerminalKey::new(code, KeyModifiers::empty());
+            assert!(!press_takes_lease(&key, KITTY_EVENT_TYPES));
+            assert!(press_takes_lease(&key, KITTY_REPORT_ALL));
+            assert!(!press_takes_lease(
+                &key,
+                HostKeyboardInputMode {
+                    reports_event_types: false,
+                    reports_all_keys: true,
+                }
+            ));
+        }
+
+        assert!(press_takes_lease(
+            &TerminalKey::new(KeyCode::Left, KeyModifiers::empty()),
+            KITTY_EVENT_TYPES
+        ));
+        assert!(press_takes_lease(
+            &TerminalKey::new(KeyCode::Enter, KeyModifiers::SHIFT),
+            KITTY_EVENT_TYPES
+        ));
     }
 
     #[test]
@@ -376,8 +437,15 @@ mod tests {
         let mut leases = Leases::default();
         leases.insert_consumed(lease_key, ConsumedInputLease::SuppressRepeats);
 
-        leases.prepare_press(&lease_key, &key, false);
-        leases.complete_press(lease_key, &key, Some(&context), Some(&context), None, false);
+        leases.prepare_press(&lease_key, &key);
+        leases.complete_press(
+            lease_key,
+            &key,
+            Some(&context),
+            Some(&context),
+            None,
+            KITTY_EVENT_TYPES,
+        );
         assert_eq!(
             leases.plan_repeat(lease_key, Some(&context)),
             RepeatPlan::Reprocess
@@ -396,7 +464,7 @@ mod tests {
             Some(&Context::Pane),
             Some(&Context::Pane),
             None,
-            false,
+            KITTY_EVENT_TYPES,
         );
         assert_eq!(
             leases.plan_repeat(lease_key, Some(&Context::Overlay)),
@@ -420,7 +488,7 @@ mod tests {
             Some(&Context::Pane),
             Some(&Context::Overlay),
             None,
-            false,
+            KITTY_EVENT_TYPES,
         );
         assert_eq!(
             leases.plan_repeat(lease_key, Some(&Context::Overlay)),

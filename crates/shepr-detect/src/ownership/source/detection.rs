@@ -8,7 +8,7 @@ impl AgentOwnership {
     /// checkpoint candidate (see `CheckpointCandidate`); a later genuine
     /// release replaces it. Newer accepted evidence of an agent process
     /// discards it, since that process is not the one that exited.
-    /// Older observations, and an exit repeating the recorded one, are
+    /// Older detector observations, and an exit repeating the recorded one, are
     /// ignored before touching source generations, so replay cannot consume a
     /// subsequently parked start. One detector tick stamps its process and
     /// state observations with the same instant, so only a strictly older
@@ -26,11 +26,22 @@ impl AgentOwnership {
     ) -> AgentOwnershipMutation {
         if self.pane_ended
             || self
-                .fallback_observed_at
+                .detector_observed_at
                 .is_some_and(|observed_at| now < observed_at)
             || self.process_evidence.exit().is_some_and(|exit| {
                 now < exit.observed_at || (process_exited && now == exit.observed_at)
             })
+        {
+            return AgentOwnershipMutation::default();
+        }
+        // Hooks invalidate screen evidence, not process evidence. An exit
+        // sampled before activation still releases that process; only a newer
+        // detector observation can supersede it. The mux publishes it once.
+        self.detector_observed_at = Some(now);
+        if !process_exited
+            && self
+                .fallback_observed_at
+                .is_some_and(|observed_at| now < observed_at)
         {
             return AgentOwnershipMutation::default();
         }
@@ -201,7 +212,10 @@ impl AgentOwnership {
         }
         self.fallback_state = fallback_state;
         self.fallback_visible_blocker = visible_blocker && fallback_state == AgentState::Blocked;
-        self.fallback_observed_at = Some(now);
+        // An exit may be older than the activation watermark (see
+        // `transition_detector_observation`); it must not move that watermark
+        // back and readmit screen verdicts from before the activation.
+        self.fallback_observed_at = self.fallback_observed_at.max(Some(now));
         if process_exited {
             if let Some(agent) = agent {
                 self.process_evidence = AgentProcessEvidence::Exited(RecentAgentProcessExit {

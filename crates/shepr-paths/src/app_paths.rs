@@ -11,12 +11,14 @@ use crate::{
     session_snapshot_directory, ssh_metadata_directory,
 };
 
-/// Paths and the local target resolved once at the process boundary and
-/// passed to consumers. Production constructors reject unresolved path inputs
-/// that would put files relative to the working directory.
+/// Runtime paths and the local target resolved once at the process boundary
+/// and passed to consumers. The config directory is resolved only for
+/// processes that read a config file. Production constructors reject
+/// unresolved path inputs that would put files relative to the working
+/// directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPaths {
-    config_dir: PathBuf,
+    config_dir: Option<PathBuf>,
     state_dir: PathBuf,
     data_dir: PathBuf,
     client_state_dir: PathBuf,
@@ -32,8 +34,11 @@ pub struct AppPaths {
 }
 
 impl AppPaths {
-    pub fn config_dir(&self) -> &Path {
-        &self.config_dir
+    /// The XDG config directory, resolved only for a process that reads one of
+    /// shepr's config files.
+    /// Returns `None` when this process resolved paths without reading config.
+    pub fn config_dir(&self) -> Option<&Path> {
+        self.config_dir.as_deref()
     }
 
     /// The state directory shared by every build profile. It holds the
@@ -119,12 +124,18 @@ impl AppPaths {
         &self.runtime_dir
     }
 
-    pub fn client_config_file(&self) -> PathBuf {
-        self.config_dir.join("client.toml")
+    /// The client config path, when this process resolved config paths.
+    pub fn client_config_file(&self) -> Option<PathBuf> {
+        self.config_dir
+            .as_ref()
+            .map(|path| path.join("client.toml"))
     }
 
-    pub fn server_config_file(&self) -> PathBuf {
-        self.config_dir.join("server.toml")
+    /// The server config path, when this process resolved config paths.
+    pub fn server_config_file(&self) -> Option<PathBuf> {
+        self.config_dir
+            .as_ref()
+            .map(|path| path.join("server.toml"))
     }
 
     /// `HOME`, absolute: a launch with a relative one fails where these paths
@@ -155,10 +166,18 @@ impl AppPaths {
         &self.server_address
     }
 
-    /// Resolve XDG directories and the local socket target once from the
-    /// inherited process environment, for this build's profile.
+    /// Resolve runtime and state directories and the local socket target once
+    /// from the inherited process environment, for this build's profile.
+    /// `XDG_CONFIG_HOME` is deliberately left unread.
     pub fn resolve() -> Result<Self, PathsError> {
         resolve_paths_from_env(BuildProfile::current(), CurrentDirOrigin::Process)
+    }
+
+    /// Resolve paths for a local CLI operation that reads `client.toml`.
+    /// Ordinary CLI operations use [`resolve`](Self::resolve), which does not
+    /// inspect or validate `XDG_CONFIG_HOME`.
+    pub fn resolve_with_config() -> Result<Self, PathsError> {
+        resolve_paths_with_config_from_env(BuildProfile::current(), CurrentDirOrigin::Process)
     }
 
     /// Resolve paths for a TUI or its internal client launch. A client launched
@@ -174,8 +193,14 @@ impl AppPaths {
         if marker.owner(profile) == PaneOwner::SameProfile {
             return Ok(None);
         }
-        resolve_paths_from_env_with_marker(profile, CurrentDirOrigin::Process, marker, Vec::new())
-            .map(Some)
+        resolve_paths_from_env_with_marker(
+            profile,
+            CurrentDirOrigin::Process,
+            marker,
+            Vec::new(),
+            true,
+        )
+        .map(Some)
     }
 
     /// Resolve paths for the headless server process. The server daemon runs
@@ -187,7 +212,10 @@ impl AppPaths {
     /// against. A server started without the handoff (by hand, from a shell)
     /// uses its own working directory.
     pub fn resolve_for_server() -> Result<Self, PathsError> {
-        resolve_paths_from_env(BuildProfile::current(), CurrentDirOrigin::StartupHandoff)
+        resolve_paths_with_config_from_env(
+            BuildProfile::current(),
+            CurrentDirOrigin::StartupHandoff,
+        )
     }
 
     /// Paths laid out under one directory: `config`, `state` and `runtime`
@@ -212,7 +240,7 @@ impl AppPaths {
         let home_dir = home_dir.map(absolute).transpose()?;
         let current_dir = current_dir.map(absolute).transpose()?;
         Ok(Self {
-            config_dir: root.join("config"),
+            config_dir: Some(root.join("config")),
             state_dir: root.join("state"),
             data_dir: root.join("state"),
             client_state_dir: root.join("state-client"),
@@ -294,6 +322,25 @@ fn resolve_paths_from_env(
         current_dir_origin,
         pane_marker,
         target_env_problems,
+        false,
+    )
+}
+
+fn resolve_paths_with_config_from_env(
+    profile: BuildProfile,
+    current_dir_origin: CurrentDirOrigin,
+) -> Result<AppPaths, PathsError> {
+    let mut target_env_problems = Vec::new();
+    let pane_marker = PaneMarker {
+        in_pane: false,
+        owner_profile: PaneMarker::read_profile(&mut target_env_problems),
+    };
+    resolve_paths_from_env_with_marker(
+        profile,
+        current_dir_origin,
+        pane_marker,
+        target_env_problems,
+        true,
     )
 }
 
@@ -302,6 +349,7 @@ fn resolve_paths_from_env_with_marker(
     current_dir_origin: CurrentDirOrigin,
     pane_marker: PaneMarker,
     mut target_env_problems: Vec<String>,
+    resolve_config_dir: bool,
 ) -> Result<AppPaths, PathsError> {
     let mut socket_override =
         socket_path_override(EnvVar::SheprSocketPath, &mut target_env_problems);
@@ -332,8 +380,14 @@ fn resolve_paths_from_env_with_marker(
             shepr_core::env::read_path(variable).map_err(io::Error::from)
         }
     };
-    let config_dir =
-        shepr_core::env::xdg_config_home_with(read_base).map(|path| path.join(SHARED_APP_DIR_NAME));
+    let config_dir = if resolve_config_dir {
+        Some(
+            shepr_core::env::xdg_config_home_with(read_base)
+                .map(|path| path.join(SHARED_APP_DIR_NAME)),
+        )
+    } else {
+        None
+    };
     let state_dir =
         shepr_core::env::xdg_state_home_with(read_base).map(|path| path.join(SHARED_APP_DIR_NAME));
     // A relative XDG_RUNTIME_DIR is refused by the environment policy. Unset
@@ -351,11 +405,12 @@ fn resolve_paths_from_env_with_marker(
 
     let mut problems = Vec::new();
     let config_dir = match config_dir {
-        Ok(path) => Some(path),
-        Err(error) => {
+        Some(Ok(path)) => Some(path),
+        Some(Err(error)) => {
             problems.push(format!("config directory error: {error}"));
             None
         }
+        None => None,
     };
 
     let state_dir = match state_dir {
@@ -373,10 +428,8 @@ fn resolve_paths_from_env_with_marker(
         }
     };
 
-    match (config_dir, state_dir, xdg_runtime_dir, runtime_dir) {
-        (Some(config_dir), Some(state_dir), Some(xdg_runtime_dir), Some(runtime_dir))
-            if problems.is_empty() =>
-        {
+    match (state_dir, xdg_runtime_dir, runtime_dir) {
+        (Some(state_dir), Some(xdg_runtime_dir), Some(runtime_dir)) if problems.is_empty() => {
             // Fail before socket setup when either selected endpoint is too long.
             let server_address =
                 ServerAddress::for_runtime_dir(&runtime_dir, socket_override.as_deref()).map_err(
@@ -437,10 +490,16 @@ mod tests {
     #[test]
     fn role_config_paths_use_the_xdg_config_directory() {
         let env = shepr_test_support::IsolatedEnv::new();
-        let paths = AppPaths::resolve().expect("default paths resolve");
+        let paths = AppPaths::resolve_with_config().expect("default paths resolve");
         let directory = env.home().join(".config").join(SHARED_APP_DIR_NAME);
-        assert_eq!(paths.client_config_file(), directory.join("client.toml"));
-        assert_eq!(paths.server_config_file(), directory.join("server.toml"));
+        assert_eq!(
+            paths.client_config_file(),
+            Some(directory.join("client.toml"))
+        );
+        assert_eq!(
+            paths.server_config_file(),
+            Some(directory.join("server.toml"))
+        );
     }
 
     #[test]
@@ -589,9 +648,10 @@ mod tests {
     #[test]
     fn release_profile_keeps_the_default_locations_and_dev_gets_its_own() {
         let env = shepr_test_support::IsolatedEnv::new();
-        let release = resolve_paths_from_env(BuildProfile::Release, CurrentDirOrigin::Process)
-            .expect("release paths resolve");
-        let dev = resolve_paths_from_env(BuildProfile::Dev, CurrentDirOrigin::Process)
+        let release =
+            resolve_paths_with_config_from_env(BuildProfile::Release, CurrentDirOrigin::Process)
+                .expect("release paths resolve");
+        let dev = resolve_paths_with_config_from_env(BuildProfile::Dev, CurrentDirOrigin::Process)
             .expect("dev paths resolve");
         let state = env.home().join(".local/state");
         let runtime = env.path().join("runtime");
@@ -702,9 +762,9 @@ mod tests {
     #[test]
     fn xdg_paths_use_separate_roots_ignore_empty_and_refuse_relative_base_dirs() {
         let env = shepr_test_support::IsolatedEnv::new();
-        let paths = AppPaths::resolve().expect("default paths resolve");
+        let paths = AppPaths::resolve_with_config().expect("default paths resolve");
         assert_eq!(
-            paths.config_dir(),
+            paths.config_dir().expect("config paths were resolved"),
             env.home().join(".config").join(SHARED_APP_DIR_NAME)
         );
         assert_eq!(
@@ -723,28 +783,47 @@ mod tests {
             ("XDG_CONFIG_HOME", ".config"),
             ("XDG_STATE_HOME", ".local/state"),
         ] {
+            let is_config = key == "XDG_CONFIG_HOME";
             env.set(key, "");
-            let paths = AppPaths::resolve().expect("an empty XDG base reads as unset");
+            let paths = if is_config {
+                AppPaths::resolve_with_config().expect("an empty XDG base reads as unset")
+            } else {
+                AppPaths::resolve().expect("an empty XDG base reads as unset")
+            };
             let expected = env.home().join(suffix).join(SHARED_APP_DIR_NAME);
-            let actual = if key == "XDG_CONFIG_HOME" {
-                paths.config_dir()
+            let actual = if is_config {
+                paths.config_dir().expect("config paths were resolved")
             } else {
                 paths.state_dir()
             };
             assert_eq!(actual, expected, "{key} empty");
             for refused in ["relative/path", " /padded"] {
                 env.set(key, refused);
-                let errors = AppPaths::resolve().expect_err("an invalid XDG base is refused");
+                if is_config {
+                    let ordinary_paths = AppPaths::resolve()
+                        .expect("ordinary path resolution ignores XDG_CONFIG_HOME");
+                    assert!(ordinary_paths.config_dir().is_none());
+                }
+                let errors = if is_config {
+                    AppPaths::resolve_with_config()
+                        .expect_err("a config reader refuses an invalid XDG base")
+                } else {
+                    AppPaths::resolve().expect_err("an invalid XDG base is refused")
+                };
                 assert!(
                     errors.messages().iter().any(|error| error.contains(key)),
                     "{key}={refused:?}: {errors:?}"
                 );
             }
             env.set(key, env.path().join(key));
-            let paths = AppPaths::resolve().expect("absolute XDG base is accepted");
+            let paths = if is_config {
+                AppPaths::resolve_with_config().expect("absolute XDG base is accepted")
+            } else {
+                AppPaths::resolve().expect("absolute XDG base is accepted")
+            };
             let expected = env.path().join(key).join(SHARED_APP_DIR_NAME);
-            let actual = if key == "XDG_CONFIG_HOME" {
-                paths.config_dir()
+            let actual = if is_config {
+                paths.config_dir().expect("config paths were resolved")
             } else {
                 paths.state_dir()
             };
@@ -768,6 +847,32 @@ mod tests {
         }
         env.remove("HOME");
         assert!(AppPaths::resolve().is_err());
+    }
+
+    #[test]
+    fn only_config_readers_resolve_and_validate_the_config_directory() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        env.set(EnvVar::XdgConfigHome, "relative/config");
+
+        let paths = AppPaths::resolve().expect("ordinary paths ignore XDG_CONFIG_HOME");
+        assert!(paths.config_dir().is_none());
+        assert!(paths.client_config_file().is_none());
+        assert!(paths.server_config_file().is_none());
+
+        for result in [
+            AppPaths::resolve_with_config().map(|_| ()),
+            AppPaths::resolve_for_client().map(|_| ()),
+            AppPaths::resolve_for_server().map(|_| ()),
+        ] {
+            let errors = result.expect_err("a config reader refuses a relative config directory");
+            assert!(
+                errors
+                    .messages()
+                    .iter()
+                    .any(|message| message.contains("XDG_CONFIG_HOME")),
+                "{errors:?}"
+            );
+        }
     }
 
     #[test]

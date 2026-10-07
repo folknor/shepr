@@ -139,8 +139,10 @@ impl EndpointRegistry {
     ) {
         // Every endpoint, local or SSH, keeps a heartbeat: a server that is alive but wedged
         // (stopped, or its connection stuck) leaves its socket open and silent, which no
-        // transport error reports. Readers timestamp complete frames before queueing them, so
-        // health deadlines measure transport silence.
+        // transport error reports. Readers timestamp complete frames before queueing them;
+        // the client loop handles ready queue entries (up to a bounded allowance) before an
+        // expired health deadline, so shared-queue pressure does not expire an endpoint
+        // whose reply is already waiting to be handled.
         if let Some(mut previous) = self.connections.insert(
             endpoint_id,
             EndpointConnection {

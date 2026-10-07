@@ -29,7 +29,9 @@ fn system_clock() -> std::sync::Arc<dyn Fn() -> Instant + Send + Sync> {
 /// How clipboard writes leave this host, decided once from the host's
 /// environment: through the host terminal's OSC 52, or through the display
 /// server's clipboard helpers. Remote and VS Code remote sessions route through
-/// the terminal so bytes reach the user's own machine.
+/// the terminal so bytes reach the user's own machine. Prompt reads use this
+/// same route, and return no text when it is OSC 52 because that route has no
+/// portable read operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClipboardRoute {
     /// The host terminal carries the bytes; no helper is run.
@@ -107,27 +109,36 @@ fn write_selections_until(
     (true, write(primary))
 }
 
-pub fn read_clipboard_text() -> Option<String> {
+/// Reads from the launch-selected helper route, or returns no text when the
+/// client routes clipboard writes through OSC 52.
+pub fn read_clipboard_text(route: ClipboardRoute) -> Option<String> {
     // Modal paste treats no clipboard text as no insertion. This best-effort
     // API folds an empty selection, no display backend and helper failure
     // together, so warning on `None` would report expected empty/no-display
     // cases as errors. Distinguishing them needs an outcome the client caller
     // can handle.
-    read_clipboard_text_with_clock(&system_clock())
+    read_clipboard_text_with_clock(route, &system_clock())
 }
 
 fn read_clipboard_text_with_clock(
+    route: ClipboardRoute,
     now: &std::sync::Arc<dyn Fn() -> Instant + Send + Sync>,
 ) -> Option<String> {
+    let ClipboardRoute::Helpers(session) = route else {
+        // OSC 52 is a write-only route here: terminals do not provide a
+        // portable clipboard read query. In particular, do not read an SSH
+        // host's forwarded display variable as though it were the user's clipboard.
+        return None;
+    };
     let deadline = now() + super::limits::CLIPBOARD_HELPER_TIMEOUT;
-    read_clipboard_text_commands(ClipboardSession::from_env())
+    read_clipboard_text_commands(session)
         .iter()
         .find_map(|command| read_clipboard_text_with_command_with_clock(command, deadline, now))
 }
 
-/// Which display servers the clipboard commands may talk to. Read from the
-/// environment once per call and passed in, so the command lists are pure and
-/// tests never have to mutate the process environment.
+/// Which display servers the clipboard commands may talk to. Captured from the
+/// environment when the client selects its route, so the command lists are
+/// pure and tests never have to mutate the process environment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClipboardSession {
     pub(super) wayland: bool,
@@ -497,6 +508,14 @@ mod tests {
     use super::*;
     use shepr_test_support::fixture::{self, Step};
     use std::time::Duration;
+
+    #[test]
+    fn osc52_route_does_not_read_display_clipboard_helpers() {
+        assert_eq!(
+            read_clipboard_text_with_clock(ClipboardRoute::Osc52, &system_clock()),
+            None
+        );
+    }
 
     /// Every clipboard helper has a primary selection counterpart, in the same
     /// order, and the Wayland one keeps owning the selection like its

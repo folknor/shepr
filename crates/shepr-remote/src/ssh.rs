@@ -1,7 +1,8 @@
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::bridge::discard_remote_output_preamble;
@@ -251,6 +252,10 @@ fn authentication_command_with_config(
 pub(crate) struct RemoteSsh {
     target: SshTarget,
     managed_config: ManagedSshConfig,
+    /// Whether any command through this managed control socket returned a
+    /// remote exit. A later silent ssh-owned exit 255 can then be treated as
+    /// a lost link without weakening first-connection classification.
+    established_session: AtomicBool,
     /// Bounds commands launched by `sh_output`:
     /// each gets the shorter of its own timeout and the time left, and none
     /// starts once it has passed. A machine connection attempt sets it so
@@ -275,8 +280,13 @@ impl RemoteSsh {
         Ok(Self {
             target,
             managed_config,
+            established_session: AtomicBool::new(false),
             attempt_deadline: deadline,
         })
+    }
+
+    pub(crate) fn has_established_session(&self) -> bool {
+        self.established_session.load(Ordering::Acquire)
     }
 
     pub(crate) fn set_attempt_deadline(&mut self, deadline: Instant) {
@@ -359,6 +369,13 @@ impl RemoteSsh {
         };
         let output = wait_with_output_timeout(child, timeout)
             .map_err(|error| classify_command_timeout(error, authentication_candidate))?;
+        if output
+            .status
+            .code()
+            .is_some_and(|code| code != crate::failure::SSH_OWN_FAILURE_EXIT_CODE)
+        {
+            self.established_session.store(true, Ordering::Release);
+        }
         finish_ssh_command(write_result, output)
     }
 }
@@ -576,9 +593,14 @@ fn write_managed_ssh_config_at(
 ///
 /// The captured remote stderr becomes the diagnostic. `SshFailureDiagnostic`
 /// wraps it in `RemoteText` once, so line breaks remain readable and terminal
-/// control characters cannot affect local output. `ssh_bridge_exit_error` uses
-/// the same boundary.
-pub(crate) fn command_failed(context: &str, output: &Output) -> io::Error {
+/// control characters cannot affect local output. `established_session` is
+/// evidence from an earlier remote result on this transport; it changes only
+/// an empty ssh-owned exit 255 from unrecognized to a link loss.
+pub(crate) fn command_failed(
+    context: &str,
+    output: &Output,
+    established_session: bool,
+) -> io::Error {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
     let message = if stderr.is_empty() {
@@ -586,10 +608,16 @@ pub(crate) fn command_failed(context: &str, output: &Output) -> io::Error {
     } else {
         format!("{context}: {stderr}")
     };
-    io::Error::other(SshFailureDiagnostic::from_ssh_output(
-        output.status.code(),
-        &message,
-    ))
+    let diagnostic = if established_session
+        && stderr.is_empty()
+        && crate::failure::SshExit::from_code(output.status.code())
+            == crate::failure::SshExit::SshFailed
+    {
+        SshFailureDiagnostic::silent_established_session_link(&message)
+    } else {
+        SshFailureDiagnostic::from_ssh_output(output.status.code(), &message)
+    };
+    io::Error::other(diagnostic)
 }
 
 /// The command an operator runs to check SSH access to `target` by hand, with
@@ -621,6 +649,7 @@ impl RemoteSsh {
         Self {
             target,
             managed_config,
+            established_session: AtomicBool::new(false),
             attempt_deadline: deadline,
         }
     }

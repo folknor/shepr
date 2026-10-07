@@ -10,6 +10,12 @@ pub(super) struct PaneCwdState {
 }
 
 impl PaneCwdState {
+    pub(super) fn reported_cwd(&self) -> Option<std::path::PathBuf> {
+        shepr_core::locks::lock_auxiliary(&self.reported)
+            .as_ref()
+            .map(|reported| reported.path.clone())
+    }
+
     pub(super) fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
         let reported = shepr_core::locks::lock_auxiliary(&self.reported);
         let remembered = shepr_core::locks::lock_auxiliary(&self.remembered);
@@ -207,6 +213,13 @@ impl PaneRuntime {
     /// loop and lets [`PaneCwdProbe::read`] refresh it where the save runs.
     pub fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
         self.cwd.remembered_cwd()
+    }
+
+    /// The last accepted OSC 7 cwd, excluding cwd observations made by saves.
+    /// Launch settlement uses this to preserve shell reports without letting
+    /// a save that raced the child's initial chdir block the launch cwd seed.
+    pub fn reported_cwd(&self) -> Option<std::path::PathBuf> {
+        self.cwd.reported_cwd()
     }
 
     /// What another thread needs to resolve this pane's best saved cwd (see

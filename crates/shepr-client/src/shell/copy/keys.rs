@@ -1010,11 +1010,17 @@ impl ClientShellState {
             return;
         };
         self.mouse_selection.clear();
-        self.push_pane_scroll_offset(
-            copy_mode.pane_id,
-            copy_mode.entry_offset_from_bottom,
-            outcome,
-        );
+        match copy_mode.entry_viewport_top {
+            Some(entry_top) => {
+                self.push_pane_scroll_offset(
+                    copy_mode.pane_id,
+                    copy_mode.offset_for_top(entry_top),
+                    outcome,
+                );
+                self.scroll_lanes.pin_top(&copy_mode.pane_id, entry_top);
+            }
+            None => self.push_pane_scroll_offset(copy_mode.pane_id, 0, outcome),
+        }
         self.mode.set(ClientShellMode::Terminal);
         outcome.repaint = true;
     }

@@ -298,12 +298,20 @@ mod tests {
         let env = crate::test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("broken-launch-config");
         env.set(EnvVar::XdgConfigHome, scratch.path());
-        let paths = shepr_paths::AppPaths::resolve().expect("resolve paths");
-        std::fs::create_dir_all(paths.config_dir()).expect("create config directory");
-        let config = paths.client_config_file();
+        let paths = shepr_paths::AppPaths::resolve_with_config().expect("resolve paths");
+        std::fs::create_dir_all(paths.config_dir().expect("config paths were resolved"))
+            .expect("create config directory");
+        let config = paths
+            .client_config_file()
+            .expect("config paths were resolved");
         std::fs::write(&config, "this = [not valid TOML").expect("write broken config");
-        std::fs::write(paths.server_config_file(), "this = [not valid TOML")
-            .expect("write broken server config");
+        std::fs::write(
+            paths
+                .server_config_file()
+                .expect("config paths were resolved"),
+            "this = [not valid TOML",
+        )
+        .expect("write broken server config");
         let args = ["shepr", "stop"].map(str::to_owned);
 
         let result = launch_with_args(&args);
@@ -323,10 +331,16 @@ mod tests {
             EnvVar::SheprBuildProfile,
             shepr_paths::BuildProfile::current().marker(),
         );
-        let paths = shepr_paths::AppPaths::resolve().expect("resolve paths");
-        std::fs::create_dir_all(paths.config_dir()).expect("create config directory");
-        std::fs::write(paths.client_config_file(), "this = [not valid TOML")
-            .expect("write broken client config");
+        let paths = shepr_paths::AppPaths::resolve_with_config().expect("resolve paths");
+        std::fs::create_dir_all(paths.config_dir().expect("config paths were resolved"))
+            .expect("create config directory");
+        std::fs::write(
+            paths
+                .client_config_file()
+                .expect("config paths were resolved"),
+            "this = [not valid TOML",
+        )
+        .expect("write broken client config");
 
         let result = launch_with_args(&["shepr".to_owned()]);
         assert!(

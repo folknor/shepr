@@ -498,7 +498,9 @@ impl PaneTerminal {
     }
 
     /// Chunked copy-mode search. The terminal lock is released between
-    /// chunks; rows are absolute, so output meanwhile does not move them.
+    /// chunks; rows are absolute, so output meanwhile does not move them. A
+    /// resize or screen switch between chunks (or an unreadable core) ends
+    /// the scan early, and the window then reports itself incomplete.
     pub(crate) fn search_text_window(
         &self,
         request: TerminalTextSearch<'_>,
@@ -510,6 +512,7 @@ impl PaneTerminal {
         let mut scratch = String::new();
         let mut next = None;
         let mut scan = None;
+        let mut complete = false;
         loop {
             let Ok(core) = self.core.lock() else {
                 break;
@@ -551,7 +554,11 @@ impl PaneTerminal {
                 row = row.saturating_add(1);
             }
             drop(core);
-            if row < chunk_end || row >= end {
+            if row < chunk_end {
+                break;
+            }
+            if row >= end {
+                complete = true;
                 break;
             }
             next = Some(row);
@@ -561,7 +568,9 @@ impl PaneTerminal {
         if let (Some(line), Some((cols, screen))) = (builder.trailing_line(), scan) {
             search.scan_line(line, cols, screen);
         }
-        search.finish()
+        let mut window = search.finish();
+        window.complete = complete;
+        window
     }
 
     pub(crate) fn negotiated_keyboard_protocol(&self) -> Option<shepr_term::key::KeyboardProtocol> {
@@ -653,6 +662,33 @@ impl PaneTerminal {
             return CursorRead::Deferred;
         }
         current_cursor_state(&mut core).map_or(CursorRead::Unavailable, CursorRead::Shown)
+    }
+
+    /// [`Self::cursor_read`] and the scroll metrics from one core hold. A
+    /// deferred cursor carries no metrics: its caller draws no cursor.
+    pub(crate) fn cursor_read_and_scroll_metrics(&self) -> (CursorRead, Option<ScrollMetrics>) {
+        let Ok(mut core) = self.core.lock() else {
+            return (CursorRead::Unavailable, None);
+        };
+        if core.terminal.sync_update_buffering() {
+            return (CursorRead::Deferred, None);
+        }
+        let metrics = terminal_scroll_metrics(&core.terminal);
+        let cursor =
+            current_cursor_state(&mut core).map_or(CursorRead::Unavailable, CursorRead::Shown);
+        (cursor, Some(metrics))
+    }
+
+    /// Whether the alternate screen is active, and the scroll metrics, from
+    /// one core hold.
+    pub(crate) fn alternate_screen_and_scroll_metrics(&self) -> (bool, Option<ScrollMetrics>) {
+        let Ok(core) = self.core.lock() else {
+            return (false, None);
+        };
+        (
+            core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate,
+            Some(terminal_scroll_metrics(&core.terminal)),
+        )
     }
 
     /// Whether a synchronized update is open, read from the mirror without the

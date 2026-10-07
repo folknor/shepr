@@ -89,12 +89,14 @@ pub(crate) fn compute_pane_surfaces(
         .map(|chrome| {
             let runtime = workspace_runtime(workspace, terminal_runtimes, chrome.id);
             let scrollbars = app.settings().pane_scrollbars;
-            PaneSurface::settle(
-                chrome,
-                scrollbars,
-                scrollbars && runtime.is_some_and(|rt| rt.read().alternate_screen_active()),
-                || runtime.and_then(|rt| rt.read().scroll_metrics()),
-            )
+            let (alternate_screen, metrics) = if scrollbars {
+                runtime.map_or((false, None), |runtime| {
+                    runtime.read().alternate_screen_and_scroll_metrics()
+                })
+            } else {
+                (false, None)
+            };
+            PaneSurface::settle(chrome, scrollbars, alternate_screen, || metrics)
         })
         .collect()
 }

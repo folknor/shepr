@@ -26,6 +26,22 @@ use shepr_launch::stop::ServerStopError;
 mod words;
 use words::{local_notice, local_offer, prompt_notice, result_notices};
 
+/// Checks deterministic SSH connector setup before startup preflight can prompt for
+/// authentication or offer to stop the local server. `MachineSshConnector` keeps transient
+/// setup failures retryable; only its launch-fatal classification refuses this launch.
+pub(crate) fn check_connector_admission(
+    config: &shepr_config::ValidatedClientConfig,
+    paths: &shepr_paths::AppPaths,
+) -> io::Result<()> {
+    for machine in config.machines() {
+        let connector = shepr_remote::MachineSshConnector::new(paths, &machine.label, &machine.ssh);
+        if let Some(error) = connector.launch_fatal_setup_error() {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 /// Authenticates the machines that need it, then offers to restart a running
 /// local server of another build. Every question needs a terminal; without one
 /// nothing is asked and nothing is stopped.
@@ -192,6 +208,7 @@ mod tests {
     use shepr_launch::{EndpointFailure, SshFailureClass};
     use shepr_remote::machine::MachineLabel;
     use shepr_remote::{MachineCheck, PreflightOutcome};
+    use shepr_test_fixtures::ValidatedClientConfigFixture;
 
     fn machine(label: &str) -> MachineConfig {
         MachineConfig {
@@ -200,6 +217,47 @@ mod tests {
                 .expect("test precondition"),
             palette: shepr_config::DEFAULT_LOCAL_HUE,
         }
+    }
+
+    #[test]
+    fn connector_admission_rejects_an_impossible_control_socket_path() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::PermissionsExt;
+
+        let _env = crate::test_support::IsolatedEnv::new();
+        let scratch = crate::test_support::ScratchDir::new("preflight-connector-admission");
+        // The server socket fits at the longest permitted Linux socket path, but SSH's
+        // control socket staging path needs more room below the runtime directory.
+        let server_socket_tail = "/runtime/shepr.sock";
+        let scratch_len = scratch.path().as_os_str().as_bytes().len();
+        let root_len = shepr_core::socket_path::UNIX_SOCKET_PATH_MAX - server_socket_tail.len();
+        let padding = root_len
+            .checked_sub(scratch_len + 1)
+            .filter(|padding| *padding > 0)
+            .expect("scratch directory leaves room for a root component");
+        let root = scratch.path().join("x".repeat(padding));
+        std::fs::create_dir_all(root.join("runtime")).expect("test runtime directory");
+        for directory in [root.clone(), root.join("runtime")] {
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
+                .expect("test private runtime directory");
+        }
+        let paths = shepr_paths::AppPaths::rooted_at(&root, None, None)
+            .expect("the server socket path fits");
+        let config = shepr_config::ValidatedClientConfig::test_from_config_with_paths(
+            shepr_config::ClientConfig {
+                machines: vec![machine("remote")],
+                ..Default::default()
+            },
+            None,
+            paths.clone(),
+        );
+
+        let error = check_connector_admission(&config, &paths)
+            .expect_err("the SSH control socket path cannot fit");
+        assert!(
+            error.to_string().contains("shorten XDG_RUNTIME_DIR"),
+            "{error}"
+        );
     }
 
     fn outcome(

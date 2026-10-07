@@ -63,6 +63,15 @@ impl BuildProfile {
     }
 }
 
+/// Whether this process runs in a pane of a server of its own build profile,
+/// by the same marker rule that refuses the TUI there. An unreadable or
+/// unknown marker reads as not such a pane; path resolution reports it.
+pub fn in_own_profile_pane() -> bool {
+    let mut problems = Vec::new();
+    let marker = PaneMarker::read(&mut problems);
+    problems.is_empty() && marker.owner(BuildProfile::current()) == PaneOwner::SameProfile
+}
+
 /// The relationship between this process and the server named by its pane
 /// markers. Unknown profile markers are refused while reading the marker, so
 /// a pane cannot quietly be treated as an unrelated build.

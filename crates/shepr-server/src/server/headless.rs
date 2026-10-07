@@ -385,6 +385,9 @@ impl HeadlessServer {
                 // A stop can arrive while `next_loop_event` is asleep. Its
                 // wake branch settles only the selected event, so apply the
                 // rest of the events already queued before the final save.
+                // `initiate_shutdown` only latches the phase and releases held
+                // replies; `complete_shutdown` broadcasts the notice to
+                // registered clients after this drain.
                 // Signal quits still leave pane deaths unapplied in
                 // `handle_admitted_pane_death`.
                 self.drain_all_internal_events_with_forwarding();

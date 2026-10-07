@@ -32,14 +32,21 @@ impl SshStdioBridge {
         target: SshTarget,
         remote_shepr: &RemoteExecutable,
         mode: BridgeMode,
+        established_session: bool,
         ssh_options: &ManagedSshOptions,
     ) -> io::Result<(Self, shepr_platform::ipc::LocalStream)> {
-        Self::start_command(target, remote_shepr.bridge_command(mode), ssh_options)
+        Self::start_command_with_session(
+            target,
+            remote_shepr.bridge_command(mode),
+            established_session,
+            ssh_options,
+        )
     }
 
-    pub(crate) fn start_command(
+    fn start_command_with_session(
         target: SshTarget,
         remote_command: AccountShellCommand,
+        established_session: bool,
         ssh_options: &ManagedSshOptions,
     ) -> io::Result<(Self, shepr_platform::ipc::LocalStream)> {
         let (client, stream) = shepr_platform::ipc::LocalStream::pair()?;
@@ -51,7 +58,14 @@ impl SshStdioBridge {
         let worker = thread::Builder::new()
             .name("shepr-ssh-bridge".into())
             .spawn(move || {
-                bridge_connection(stream, &target, &remote_command, &ssh_options, &thread_stop)
+                bridge_connection(
+                    stream,
+                    &target,
+                    &remote_command,
+                    established_session,
+                    &ssh_options,
+                    &thread_stop,
+                )
             })
             .map_err(|error| local_setup_error("could not start local ssh bridge worker", error))?;
         Ok((
@@ -270,6 +284,7 @@ fn bridge_connection(
     stream: shepr_platform::ipc::LocalStream,
     target: &SshTarget,
     remote_command: &AccountShellCommand,
+    established_session: bool,
     ssh_options: &ManagedSshOptions,
     bridge_stop: &Arc<AtomicBool>,
 ) -> io::Result<()> {
@@ -384,10 +399,16 @@ fn bridge_connection(
     // stderr even though OpenSSH redirects its detached master by default.
     let stderr = stderr_reader.finish(PIPE_DRAIN_GRACE)?;
     let status = status_result?;
+    let established_session = established_session
+        || matches!(&download_result, BridgeDownloadEnd::Complete(Ok(bytes)) if *bytes > 0);
 
     let stopping = bridge_stop.load(Ordering::Acquire);
     if child_exited && !status.success() && !stopping && !client_closed {
-        return Err(ssh_bridge_exit_error(status, &stderr));
+        return Err(ssh_bridge_exit_error_with_session(
+            status,
+            &stderr,
+            established_session,
+        ));
     }
     if !stopping && !client_closed {
         upload_result.map_err(|err| {
@@ -407,7 +428,11 @@ fn bridge_connection(
     if status.success() || stopping || client_closed {
         Ok(())
     } else {
-        Err(ssh_bridge_exit_error(status, &stderr))
+        Err(ssh_bridge_exit_error_with_session(
+            status,
+            &stderr,
+            established_session,
+        ))
     }
 }
 
@@ -416,6 +441,24 @@ fn bridge_connection(
 /// handed to the diagnostic constructor, which stores it as terminal-safe
 /// `RemoteText`.
 pub(crate) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io::Error {
+    ssh_bridge_exit_error_with_session(status, stderr, false)
+}
+
+/// Variant for a bridge or remote wait started after executable verification.
+/// A silent ssh-owned exit 255 can then be a keepalive failure on the previously
+/// established machine connection.
+pub(crate) fn ssh_bridge_exit_error_after_session(
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> io::Error {
+    ssh_bridge_exit_error_with_session(status, stderr, true)
+}
+
+fn ssh_bridge_exit_error_with_session(
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+    established_session: bool,
+) -> io::Error {
     let stderr = String::from_utf8_lossy(stderr);
     let stderr = stderr.trim();
     if let Some(error) = classified_remote_bridge_failure(stderr) {
@@ -449,10 +492,15 @@ pub(crate) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[
     } else {
         format!("{failure} ({exit_status}): {stderr}")
     };
-    io::Error::new(
-        io::ErrorKind::ConnectionAborted,
-        SshFailureDiagnostic::from_ssh_output(status.code(), &message),
-    )
+    let diagnostic = if established_session
+        && stderr.is_empty()
+        && SshExit::from_code(status.code()) == SshExit::SshFailed
+    {
+        SshFailureDiagnostic::silent_established_session_link(&message)
+    } else {
+        SshFailureDiagnostic::from_ssh_output(status.code(), &message)
+    };
+    io::Error::new(io::ErrorKind::ConnectionAborted, diagnostic)
 }
 
 /// Converts the classification record a remote bridge leads its failure with

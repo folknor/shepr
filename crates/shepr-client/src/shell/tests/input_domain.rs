@@ -456,6 +456,10 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
 fn pane_key_release_keeps_the_press_target() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
+    state.host_keyboard_mode = shepr_termio::input::HostKeyboardInputMode {
+        reports_event_types: true,
+        reports_all_keys: false,
+    };
 
     let press = state.handle_input_bytes(b"\x1b[99;5u");
     let release = state.handle_input_bytes(b"\x1b[99;5:3u");
@@ -491,7 +495,10 @@ fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
     let press_bytes = b"\x1b[104;1;104u";
     let release_bytes = b"\x1b[104;1:3u";
 
-    state.host_reports_all_keys = true;
+    state.host_keyboard_mode = shepr_termio::input::HostKeyboardInputMode {
+        reports_event_types: true,
+        reports_all_keys: true,
+    };
     let press = state.handle_input_bytes(press_bytes);
     assert!(matches!(
         &press.requests[..],
@@ -519,13 +526,140 @@ fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
         "the leased release goes to the pane that got the press"
     );
 
-    state.host_reports_all_keys = false;
+    state.host_keyboard_mode = shepr_termio::input::HostKeyboardInputMode {
+        reports_event_types: true,
+        reports_all_keys: false,
+    };
     let _ = state.handle_input_bytes(press_bytes);
     let release = state.handle_input_bytes(release_bytes);
     assert!(
         release.requests.is_empty(),
         "without report-all a text press holds no lease to release"
     );
+}
+
+#[test]
+fn focus_loss_only_synthesizes_releases_promised_by_the_input_mode() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use shepr_term::key::TerminalKey;
+    use shepr_termio::input::raw_input::RawInputEvent;
+
+    let cases = [
+        (
+            TerminalKey::new(KeyCode::Left, KeyModifiers::empty()),
+            shepr_termio::input::HostKeyboardInputMode::default(),
+            false,
+        ),
+        (
+            TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
+            shepr_termio::input::HostKeyboardInputMode {
+                reports_event_types: true,
+                reports_all_keys: false,
+            },
+            false,
+        ),
+        (
+            TerminalKey::new(KeyCode::Left, KeyModifiers::empty()),
+            shepr_termio::input::HostKeyboardInputMode {
+                reports_event_types: true,
+                reports_all_keys: false,
+            },
+            true,
+        ),
+        (
+            TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
+            shepr_termio::input::HostKeyboardInputMode {
+                reports_event_types: true,
+                reports_all_keys: true,
+            },
+            true,
+        ),
+    ];
+
+    for (key, keyboard_mode, expects_synthetic_release) in cases {
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        state.set_snapshot(Box::new(snapshot()));
+        let press = state.handle_host_input(
+            vec![crate::events::ParsedHostInput {
+                event: RawInputEvent::Key(key),
+                pixel_mouse: None,
+                keyboard_mode,
+            }],
+            std::time::Instant::now(),
+        );
+        assert!(matches!(
+            press.requests.as_slice(),
+            [ClientShellRequest::Shown(
+                ClientMessage::ClientShellPaneInput { .. }
+            )]
+        ));
+
+        let lost = state.handle_raw_events(vec![RawInputEvent::OuterFocusLost]);
+        let has_release = lost.requests.iter().any(|request| {
+            matches!(
+                request,
+                ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. })
+                    if events.iter().any(|event| matches!(
+                        event,
+                        ClientPaneInputEvent::Key {
+                            kind: shepr_protocol::ClientKeyKind::Release,
+                            ..
+                        }
+                    ))
+            )
+        });
+        assert_eq!(has_release, expects_synthetic_release);
+    }
+}
+
+#[test]
+fn queued_keys_use_their_captured_mode_after_report_all_changes() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use shepr_term::key::TerminalKey;
+    use shepr_termio::input::raw_input::RawInputEvent;
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    // The loop may have since enabled report-all, but these bytes were read
+    // before that mode write and carry the earlier event-types-only snapshot.
+    state.host_keyboard_mode = shepr_termio::input::HostKeyboardInputMode {
+        reports_event_types: true,
+        reports_all_keys: true,
+    };
+    let press = state.handle_host_input(
+        vec![crate::events::ParsedHostInput {
+            event: RawInputEvent::Key(
+                TerminalKey::new(KeyCode::Char('h'), KeyModifiers::empty())
+                    .with_generated_text(Some("h".to_owned())),
+            ),
+            pixel_mouse: None,
+            keyboard_mode: shepr_termio::input::HostKeyboardInputMode {
+                reports_event_types: true,
+                reports_all_keys: false,
+            },
+        }],
+        std::time::Instant::now(),
+    );
+    assert!(matches!(
+        press.requests.as_slice(),
+        [ClientShellRequest::Shown(
+            ClientMessage::ClientShellPaneInput { .. }
+        )]
+    ));
+
+    let lost = state.handle_raw_events(vec![RawInputEvent::OuterFocusLost]);
+    assert!(lost.requests.iter().all(|request| !matches!(
+        request,
+        ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. })
+            if events.iter().any(|event| matches!(
+                event,
+                ClientPaneInputEvent::Key {
+                    kind: shepr_protocol::ClientKeyKind::Release,
+                    ..
+                }
+            ))
+    )));
 }
 
 #[test]

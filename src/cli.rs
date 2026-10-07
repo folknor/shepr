@@ -198,10 +198,25 @@ pub(crate) fn print_help() {
     if !help.ends_with("\n\n") {
         println!();
     }
-    match shepr_paths::AppPaths::resolve() {
+    // Help names both config files for diagnosis without reading them. An
+    // unusable config location costs only those lines, not the log paths.
+    let paths = match shepr_paths::AppPaths::resolve_with_config() {
         Ok(paths) => {
-            println!("Client config: {}", paths.client_config_file().display());
-            println!("Server config: {}", paths.server_config_file().display());
+            if let (Some(client), Some(server)) =
+                (paths.client_config_file(), paths.server_config_file())
+            {
+                println!("Client config: {}", client.display());
+                println!("Server config: {}", server.display());
+            }
+            Ok(paths)
+        }
+        Err(error) => {
+            println!("Config:        unavailable ({error})");
+            shepr_paths::AppPaths::resolve()
+        }
+    };
+    match paths {
+        Ok(paths) => {
             println!(
                 "Logs:          {}",
                 shepr_platform::logging::help_log_paths_summary(
@@ -212,7 +227,6 @@ pub(crate) fn print_help() {
             );
         }
         Err(error) => {
-            println!("Config:        unavailable ({error})");
             println!("Logs:          unavailable ({error})");
         }
     }
@@ -234,18 +248,32 @@ pub(crate) fn run(command: &CliCommand) -> CliResult<i32> {
             Ok(0)
         }
         CliCommand::Status(command) => {
-            run_with_paths(|paths| status::run_status_command(*command, paths))
+            // Only the fleet overview reads client.toml; a local status report
+            // must remain usable when the config location is unusable.
+            let reads_config = matches!(command, status::Command::Overview { all: true, .. });
+            run_with_paths(reads_config, |paths| {
+                status::run_status_command(*command, paths)
+            })
         }
-        CliCommand::Stop(command) => run_with_paths(|paths| stop::run_stop_command(command, paths)),
-        CliCommand::Detect(command) => {
-            run_with_paths(|paths| detect::run_detect_command(command.clone(), paths))
+        CliCommand::Stop(command) => {
+            run_with_paths(command.all, |paths| stop::run_stop_command(command, paths))
         }
+        CliCommand::Detect(command) => run_with_paths(false, |paths| {
+            detect::run_detect_command(command.clone(), paths)
+        }),
         CliCommand::Man(command) => man::run(command),
     }
 }
 
-fn run_with_paths(run: impl FnOnce(&shepr_paths::AppPaths) -> CliResult<i32>) -> CliResult<i32> {
-    let paths = resolve_app_paths()?;
+fn run_with_paths(
+    reads_config: bool,
+    run: impl FnOnce(&shepr_paths::AppPaths) -> CliResult<i32>,
+) -> CliResult<i32> {
+    let paths = if reads_config {
+        shepr_paths::AppPaths::resolve_with_config().map_err(CliError::from)?
+    } else {
+        resolve_app_paths()?
+    };
     run(&paths)
 }
 
@@ -389,6 +417,7 @@ mod output_capture {
 #[cfg(test)]
 mod tests {
     use super::{CliCommand, CliError, Launch};
+    use shepr_core::env::EnvVar;
     use shepr_test_fixtures::*;
 
     pub(super) fn parse(args: &[&str]) -> Launch {
@@ -663,5 +692,51 @@ mod tests {
             &client,
         );
         assert!(matches!(mapped, CliError::Io(_)));
+    }
+
+    #[test]
+    fn local_cli_commands_ignore_an_unusable_config_directory() {
+        let env = crate::test_support::IsolatedEnv::new();
+        env.set(EnvVar::XdgConfigHome, "relative/config");
+
+        let stop = CliCommand::Stop(super::stop::Command {
+            expected_boot: None,
+            all: false,
+        });
+        let stop_result = super::run(&stop);
+        assert!(
+            matches!(&stop_result, Err(CliError::ServerStop(_))),
+            "stop should reach its socket check, not fail on XDG_CONFIG_HOME: {stop_result:?}"
+        );
+
+        let status = CliCommand::Status(super::status::Command::Server { json: true });
+        assert_eq!(
+            super::run(&status).expect("status should not read config"),
+            0
+        );
+    }
+
+    #[test]
+    fn fleet_cli_commands_still_validate_the_config_directory() {
+        let env = crate::test_support::IsolatedEnv::new();
+        env.set(EnvVar::XdgConfigHome, "relative/config");
+
+        let status = CliCommand::Status(super::status::Command::Overview {
+            json: true,
+            all: true,
+        });
+        assert!(
+            matches!(super::run(&status), Err(CliError::Paths(_))),
+            "status --all must reject an unusable config directory"
+        );
+
+        let stop = CliCommand::Stop(super::stop::Command {
+            expected_boot: None,
+            all: true,
+        });
+        assert!(
+            matches!(super::run(&stop), Err(CliError::Paths(_))),
+            "stop --all must reject an unusable config directory"
+        );
     }
 }

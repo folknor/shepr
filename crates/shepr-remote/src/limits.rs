@@ -88,11 +88,13 @@ pub(crate) const BRIDGE_IO_BUFFER_BYTES: usize = 16 * 1024;
 /// operation and leaves the bridge responsive to cancellation between chunks.
 pub(crate) const BRIDGE_WRITE_CHUNK_BYTES: usize = 4 * 1024;
 
-/// One cold SSH round trip, including a remote command or status probe: the
-/// budget of every bounded SSH command, retries and discovery alike. This
-/// bounds a slow startup without letting a hung host block the caller.
+/// One cold SSH round trip carrying the slowest remote status command: the
+/// connection window, then `status --json` (the sibling `--version` probe and
+/// the server overview, `STATUS_COMMAND_WORST_CASE`), then startup grace. It is
+/// the budget of every bounded SSH command, retries and discovery alike, so
+/// no remote status command can use it all before it would have answered.
 pub(crate) const SSH_COMMAND_TIMEOUT: Duration = SSH_CONNECT_TIMEOUT
-    .saturating_add(shepr_launch::limits::STATUS_OVERVIEW_TIMEOUT)
+    .saturating_add(shepr_launch::limits::STATUS_COMMAND_WORST_CASE)
     .saturating_add(SSH_STATUS_COMMAND_GRACE);
 
 /// OpenSSH's connection window, formatted directly into the command option.
@@ -104,8 +106,10 @@ pub(crate) const SSH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SSH_STATUS_COMMAND_GRACE: Duration = Duration::from_secs(1);
 
 /// What [`SSH_CONNECTION_ATTEMPT_BUDGET`] allows beyond one cold SSH round trip,
-/// for the remaining discovery commands, the bridge and the handshake.
-pub(crate) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
+/// for the remaining discovery commands, the bridge and the handshake. The
+/// client's retry bound caps the sum (its `ATTEMPT_BUDGET` must stay below its
+/// `MAX_RETRY_DELAY`), so this shrinks when the round trip grows.
+pub(crate) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(8);
 
 /// The longest one connection attempt to a configured machine may run: one cold
 /// SSH round trip plus [`SSH_ATTEMPT_SLACK`]. The client's per-attempt deadline
@@ -214,14 +218,14 @@ pub(crate) const SSH_KEEPALIVE: SshKeepalive = SshKeepalive {
     count_max: 4,
 };
 
-// A cold connection and the full remote status overview must complete before
+// A cold connection and the slowest remote status command must complete before
 // SSH's command timeout can be mistaken for an authentication wait, with room
 // to spare. The stop and start budgets are derived from launch's worst cases
 // above, so they need no check of their own.
 const _: () = assert!(
     SSH_COMMAND_TIMEOUT.as_millis()
         > SSH_CONNECT_TIMEOUT
-            .saturating_add(shepr_launch::limits::STATUS_OVERVIEW_TIMEOUT)
+            .saturating_add(shepr_launch::limits::STATUS_COMMAND_WORST_CASE)
             .as_millis()
 );
 

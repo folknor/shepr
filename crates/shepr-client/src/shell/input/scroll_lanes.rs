@@ -61,7 +61,8 @@ impl ScrollLanes {
         self.0.remove(pane);
     }
     /// Do not resurrect a target a surface already showed, or replace a queued target
-    /// with the intermediate offset confirmed by this answer.
+    /// with the intermediate offset confirmed by this answer. A pinned top that the
+    /// server missed because output moved the bottom gets one rebased correction.
     pub(super) fn answered(
         &mut self,
         pane: &PublicPaneId,
@@ -79,8 +80,25 @@ impl ScrollLanes {
             && lane.target.is_some()
             && let Some(confirmed) = confirmed
         {
-            lane.target = Some(confirmed.offset_from_bottom);
-            lane.top = (confirmed.offset_from_bottom != 0).then(|| confirmed.viewport_top_row());
+            if let Some(top) = lane.top {
+                let top = top.clamp(
+                    confirmed.history_origin,
+                    confirmed.with_offset(0).viewport_top_row(),
+                );
+                let offset = confirmed.max_offset_from_bottom.saturating_sub(
+                    usize::try_from(top.0.saturating_sub(confirmed.history_origin.0))
+                        .unwrap_or(usize::MAX),
+                );
+                lane.top = Some(top);
+                lane.target = Some(offset);
+                if confirmed.viewport_top_row() != top {
+                    return ScrollAnswer::Next(Some(offset));
+                }
+            } else {
+                lane.target = Some(confirmed.offset_from_bottom);
+                lane.top =
+                    (confirmed.offset_from_bottom != 0).then(|| confirmed.viewport_top_row());
+            }
         }
         if lane.target.is_none() && queued.is_none() {
             self.0.remove(pane);
@@ -124,6 +142,14 @@ impl ScrollLanes {
     /// An unanswered live-bottom request has no absolute top.
     pub(in crate::shell) fn top(&self, pane: &PublicPaneId) -> Option<shepr_term::AbsRow> {
         self.0.get(pane).and_then(|lane| lane.top)
+    }
+    /// Pins a caller's absolute destination, so an answer that output moved off it gets
+    /// a rebased correction. Copy-mode restore pins the row that was at the top when a
+    /// scrolled-back pane entered copy mode.
+    pub(in crate::shell) fn pin_top(&mut self, pane: &PublicPaneId, top: shepr_term::AbsRow) {
+        if let Some(lane) = self.0.get_mut(pane) {
+            lane.top = Some(top);
+        }
     }
     /// A surface confirms an absolute top even if output increased its bottom offset.
     pub(in crate::shell) fn shown(
@@ -295,6 +321,29 @@ mod tests {
         s.shown(&pane(), metrics(7, 14));
         assert!(s.target(&pane()).is_none());
         s.answered(&pane(), Ticket::fixture(1), Some(metrics(3, 10)));
+        assert!(s.is_idle());
+    }
+
+    #[test]
+    fn output_before_the_answer_rebases_a_stale_offset_to_the_requested_top() {
+        let mut s = ScrollLanes::default();
+        s.want(&pane(), 3);
+        s.requested(&pane(), metrics(0, 10));
+        s.sent(pane(), Ticket::fixture(1), 3);
+
+        assert_eq!(
+            s.answered(&pane(), Ticket::fixture(1), Some(metrics(3, 14))),
+            ScrollAnswer::Next(Some(7)),
+        );
+        assert_eq!(s.top(&pane()), Some(shepr_term::AbsRow(7)));
+        assert_eq!(s.target(&pane()), Some(7));
+
+        s.sent(pane(), Ticket::fixture(2), 7);
+        assert_eq!(
+            s.answered(&pane(), Ticket::fixture(2), Some(metrics(7, 14))),
+            ScrollAnswer::Next(None),
+        );
+        s.shown(&pane(), metrics(7, 14));
         assert!(s.is_idle());
     }
 

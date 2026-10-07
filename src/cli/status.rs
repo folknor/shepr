@@ -173,13 +173,13 @@ fn render_machines(
 ) -> String {
     let mut out = String::from("\n");
     if machines.is_empty() {
-        push_line(
-            &mut out,
-            &format!(
-                "machines: none configured in {}",
-                paths.client_config_file().display()
-            ),
+        // `status --all` resolves the config paths to read client.toml, so the
+        // path is always present here; without it the line names no file.
+        let line = paths.client_config_file().map_or_else(
+            || "machines: none configured".to_owned(),
+            |file| format!("machines: none configured in {}", file.display()),
         );
+        push_line(&mut out, &line);
         return out;
     }
     push_line(&mut out, "machines");

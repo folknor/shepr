@@ -118,6 +118,11 @@ pub(crate) const CLIPBOARD_RESULT_QUEUE_CAPACITY: usize = 1;
 ///
 /// The capacity absorbs short bursts without allowing unlimited event accumulation.
 pub(crate) const CLIENT_EVENT_QUEUE_CAPACITY: usize = 256;
+/// How many queue events may run ahead of an expired timer. Twice the queue's capacity
+/// covers everything that was queued when the deadline passed plus one waiting send per
+/// blocked reader, so a reply already received is handled before health judges its
+/// endpoint.
+pub(crate) const EXPIRED_TIMER_EVENT_ALLOWANCE: usize = 2 * CLIENT_EVENT_QUEUE_CAPACITY;
 /// Bound runtime shutdown so terminal restoration and process exit are not held by idle tasks.
 ///
 /// A brief drain window gives cooperative tasks time to finish without stalling exit.
@@ -188,8 +193,12 @@ pub(crate) const ENDPOINT_MOVE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Endpoint heartbeat interval, the connection-health cadence the remote
 /// host's SSH bridge expiry is checked against.
 pub(crate) const HEARTBEAT_INTERVAL: Duration = shepr_launch::limits::HEARTBEAT_INTERVAL;
-/// Expire an endpoint after this much transport silence, measured when the reader receives a
-/// complete frame rather than when the client loop processes it.
+/// Expire an endpoint after this much silence. Readers stamp each complete frame before
+/// queueing it, and the client loop handles ready queue events (up to a bounded allowance)
+/// before an expired health deadline, so a reply that a busy queue held back is stamped
+/// and seen before health judges its endpoint. A reader blocked on a full queue reads
+/// nothing meanwhile, so sustained queue pressure past the allowance still counts as
+/// silence.
 ///
 /// The timeout allows ordinary network delay before marking an endpoint offline.
 pub(crate) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);

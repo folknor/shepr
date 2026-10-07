@@ -270,6 +270,13 @@ impl RawInputFramer {
         self.byte_framer.has_pending_input()
     }
 
+    /// Whether buffered bytes may still form a keyboard input event. Known
+    /// control strings and paste bodies can stay pending without owning a key
+    /// mode snapshot.
+    pub fn has_pending_keyboard_input(&self) -> bool {
+        self.byte_framer.has_pending_keyboard_input()
+    }
+
     pub fn has_pending_lone_escape(&self) -> bool {
         self.byte_framer.has_pending_lone_escape()
     }
@@ -549,6 +556,21 @@ impl RawInputByteFramer {
 
     fn has_pending_input(&self) -> bool {
         !self.buffer.is_empty()
+    }
+
+    fn has_pending_keyboard_input(&self) -> bool {
+        !self.buffer.is_empty()
+            && matches!(
+                self.held,
+                Held::None
+                    | Held::Sequence
+                    | Held::MousePrefix
+                    | Held::DoubledEscape
+                    | Held::Utf8
+                    | Held::HostReplyPrefix
+                    | Held::EscapeReleased
+                    | Held::MouseWait { .. }
+            )
     }
 
     fn set_host_escape_disambiguation_active(&mut self, active: bool) {

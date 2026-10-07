@@ -153,8 +153,13 @@ fn in_file(diagnostics: Vec<ConfigDiagnostic>, path: &Path) -> Vec<ConfigDiagnos
 pub fn load_client_validated(
     paths: &AppPaths,
 ) -> Result<ValidatedClientConfig, Vec<ConfigDiagnostic>> {
-    let path = paths.client_config_file();
-    Document::<ClientConfig>::read(&path, &paths.server_config_file())
+    let path = paths
+        .client_config_file()
+        .ok_or_else(config_paths_unresolved)?;
+    let other_file = paths
+        .server_config_file()
+        .ok_or_else(config_paths_unresolved)?;
+    Document::<ClientConfig>::read(&path, &other_file)
         .and_then(|document| document.validate_client(paths))
         .map_err(|diagnostics| in_file(diagnostics, &path))
 }
@@ -163,10 +168,21 @@ pub fn load_client_validated(
 pub fn load_server_validated(
     paths: &AppPaths,
 ) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
-    let path = paths.server_config_file();
-    Document::<ServerConfig>::read(&path, &paths.client_config_file())
+    let path = paths
+        .server_config_file()
+        .ok_or_else(config_paths_unresolved)?;
+    let other_file = paths
+        .client_config_file()
+        .ok_or_else(config_paths_unresolved)?;
+    Document::<ServerConfig>::read(&path, &other_file)
         .and_then(|document| document.validate_server(paths))
         .map_err(|diagnostics| in_file(diagnostics, &path))
+}
+
+fn config_paths_unresolved() -> Vec<ConfigDiagnostic> {
+    vec![ConfigDiagnostic::read(
+        "the config directory was not resolved for this process",
+    )]
 }
 
 fn unknown_top_level_sections(
@@ -274,12 +290,32 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use shepr_core::env::EnvVar;
 
     use super::*;
 
+    fn client_config_file(paths: &AppPaths) -> PathBuf {
+        paths
+            .client_config_file()
+            .expect("test paths resolve the config directory")
+    }
+
+    fn server_config_file(paths: &AppPaths) -> PathBuf {
+        paths
+            .server_config_file()
+            .expect("test paths resolve the config directory")
+    }
+
+    fn config_dir(paths: &AppPaths) -> &Path {
+        paths
+            .config_dir()
+            .expect("test paths resolve the config directory")
+    }
+
     fn client_document(content: &str) -> Result<Document<ClientConfig>, Vec<ConfigDiagnostic>> {
-        Document::<ClientConfig>::parse(content, &crate::test_paths().server_config_file())
+        Document::<ClientConfig>::parse(content, &server_config_file(&crate::test_paths()))
     }
 
     fn client_from_str(content: &str) -> Result<ValidatedClientConfig, Vec<ConfigDiagnostic>> {
@@ -288,7 +324,7 @@ mod tests {
 
     fn server_from_str(content: &str) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
         let paths = crate::test_paths();
-        Document::<ServerConfig>::parse(content, &paths.client_config_file())
+        Document::<ServerConfig>::parse(content, &client_config_file(&paths))
             .and_then(|document| document.validate_server(&paths))
     }
 
@@ -313,8 +349,8 @@ mod tests {
     fn misplaced_settings_and_retired_settings_fail_only_the_owning_launch() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let paths = crate::test_paths();
-        let client_file = Some(paths.client_config_file());
-        let server_file = Some(paths.server_config_file());
+        let client_file = Some(client_config_file(&paths));
+        let server_file = Some(server_config_file(&paths));
         for source in [
             "[terminal]\ndefault_shell = '/bin/sh'\n",
             "[session]\nresume_agents_on_restore = true\n",
@@ -380,7 +416,7 @@ mod tests {
             errors.iter().map(ToString::to_string).collect::<Vec<_>>(),
             [format!(
                 "unknown config section [terminal]; it belongs in {}",
-                paths.server_config_file().display()
+                server_config_file(&paths).display()
             )]
         );
     }
@@ -391,10 +427,10 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("role-config-load");
         let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
             .expect("scratch roots fit a socket");
-        std::fs::create_dir_all(paths.config_dir()).expect("create config directory");
-        std::fs::write(paths.config_dir().join("config.toml"), "broken = [")
+        std::fs::create_dir_all(config_dir(&paths)).expect("create config directory");
+        std::fs::write(config_dir(&paths).join("config.toml"), "broken = [")
             .expect("retired file fixture");
-        std::fs::write(paths.server_config_file(), "broken = [").expect("broken server fixture");
+        std::fs::write(server_config_file(&paths), "broken = [").expect("broken server fixture");
         env.set(EnvVar::Shell, scratch.join("missing/wrapper"));
         assert!(
             load_client_validated(&paths).is_ok(),
@@ -414,11 +450,11 @@ mod tests {
                 .is_some_and(|line| line.contains("server.toml"))
         }));
         std::fs::write(
-            paths.server_config_file(),
+            server_config_file(&paths),
             "[terminal]\ndefault_shell = '/bin/sh'\n",
         )
         .expect("valid server fixture");
-        std::fs::write(paths.client_config_file(), "broken = [").expect("broken client fixture");
+        std::fs::write(client_config_file(&paths), "broken = [").expect("broken client fixture");
         assert!(
             load_server_validated(&paths).is_ok(),
             "server must not read client config"
@@ -436,7 +472,7 @@ mod tests {
                 .next()
                 .is_some_and(|line| line.contains("client.toml"))
         }));
-        std::fs::remove_file(paths.client_config_file()).expect("remove client fixture");
+        std::fs::remove_file(client_config_file(&paths)).expect("remove client fixture");
         assert!(load_client_validated(&paths).is_ok());
     }
 
@@ -716,7 +752,7 @@ palette = "purple"
             .expect_err("the server file has no local table");
         assert_eq!(
             belongs_in(&errors),
-            [Some(crate::test_paths().client_config_file())]
+            [Some(client_config_file(&crate::test_paths()))]
         );
     }
 
@@ -781,9 +817,9 @@ palette = "purple"
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("config-diagnostics");
         let paths = crate::test_paths_at(scratch.path());
-        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
+        std::fs::create_dir_all(config_dir(&paths)).expect("create config dir");
         std::fs::write(
-            paths.client_config_file(),
+            client_config_file(&paths),
             r#"
 [keys]
 prefix = "ctrl+"
@@ -814,8 +850,8 @@ sidebar_max_width = 36
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("config-load");
         let paths = crate::test_paths_at(scratch.path());
-        let path = paths.client_config_file();
-        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
+        let path = client_config_file(&paths);
+        std::fs::create_dir_all(config_dir(&paths)).expect("create config dir");
 
         std::fs::write(&path, "[ui]\nsidebar_width = 0\n").expect("write bad config fixture");
         assert!(load_client_validated(&paths).is_err());
@@ -834,8 +870,8 @@ sidebar_max_width = 36
         // when HOME is missing or relative.
         let paths = crate::test_paths_at(scratch.path());
         assert!(paths.home_dir().is_none());
-        let path = paths.server_config_file();
-        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
+        let path = server_config_file(&paths);
+        std::fs::create_dir_all(config_dir(&paths)).expect("create config dir");
         std::fs::write(&path, "[terminal]\nnew_cwd = \"home\"\n").expect("write config fixture");
 
         let errors = load_server_validated(&paths).expect_err("home cwd needs absolute HOME");
@@ -856,9 +892,9 @@ sidebar_max_width = 36
         let paths = AppPaths::resolve_for_server().expect("server paths resolve");
 
         // `current` and a relative new_cwd resolve against the launch directory.
-        std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
+        std::fs::create_dir_all(config_dir(&paths)).expect("create config dir");
         std::fs::write(
-            paths.server_config_file(),
+            server_config_file(&paths),
             "[terminal]\nnew_cwd = \"project\"\n",
         )
         .expect("write config fixture");
@@ -871,7 +907,7 @@ sidebar_max_width = 36
             )
         );
         std::fs::write(
-            paths.server_config_file(),
+            server_config_file(&paths),
             "[terminal]\nnew_cwd = \"current\"\n",
         )
         .expect("write config fixture");

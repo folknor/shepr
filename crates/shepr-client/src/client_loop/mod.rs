@@ -63,7 +63,13 @@ pub(crate) struct ClientLoop {
     signals: LoopSignals,
     events: EventQueue,
     cell: HostCellReport,
+    /// Queue events handled in a row while the timer deadline had already passed. Ready
+    /// events go first, but only for `EXPIRED_TIMER_EVENT_ALLOWANCE` of them, so an
+    /// endpoint that keeps the queue full cannot hold off the timers indefinitely.
+    events_past_deadline: usize,
 }
+
+use crate::limits::EXPIRED_TIMER_EVENT_ALLOWANCE;
 
 fn earliest_client_timer_deadline(
     deadlines: impl IntoIterator<Item = Option<std::time::Instant>>,
@@ -97,6 +103,7 @@ impl ClientLoop {
             signals,
             events,
             cell,
+            events_past_deadline: 0,
         }
     }
 
@@ -115,17 +122,33 @@ impl ClientLoop {
         if self.signals.should_quit.load(Ordering::Acquire) {
             return ClientLoopWake::Event(ClientLoopEvent::Quit);
         }
+        let deadline_passed = timer_deadline.is_some_and(|deadline| deadline <= now);
+        if !deadline_passed {
+            self.events_past_deadline = 0;
+        } else if self.events_past_deadline >= EXPIRED_TIMER_EVENT_ALLOWANCE {
+            self.events_past_deadline = 0;
+            return ClientLoopWake::Deadline;
+        }
 
-        tokio::select! {
+        let wake = tokio::select! {
             biased;
-            // Keep wake reasons distinct: a panic and a closed queue are not elapsed timers.
+            // Drain ready work before an expired health timer. Endpoint readers share this
+            // bounded queue and block while sending, so a timer must not expire a connection
+            // while its reply is waiting behind another endpoint's queued messages.
             () = self.signals.fatal.latched() => ClientLoopWake::FatalPanic,
-            _ = wait_for_client_timer(timer_deadline) => ClientLoopWake::Deadline,
             ev = self.events.rx.recv() => match ev {
                 Some(event) => ClientLoopWake::Event(event),
                 None => ClientLoopWake::QueueClosed,
             },
+            // Keep wake reasons distinct: a panic and a closed queue are not elapsed timers.
+            _ = wait_for_client_timer(timer_deadline) => ClientLoopWake::Deadline,
+        };
+        match wake {
+            ClientLoopWake::Event(_) if deadline_passed => self.events_past_deadline += 1,
+            ClientLoopWake::Deadline => self.events_past_deadline = 0,
+            _ => {}
         }
+        wake
     }
 
     pub(crate) async fn run(&mut self) -> Result<LoopEnd, LoopExit> {
@@ -287,9 +310,8 @@ impl ClientLoop {
             // may have reset it; a failure here is logged and never ends the session.
             shepr_platform::structured_log!(WARN, event = host_terminal.mouse_capture, outcome = Error, %error, "failed to re-assert host mouse capture");
         }
-        let host_reports_all_keys = state.host_modes.keyboard_report_all_active();
         let shell = &mut state.shell;
-        let outcome = shell.handle_host_input(inputs, host_reports_all_keys, now);
+        let outcome = shell.handle_host_input(inputs, now);
         if finish_client_shell_input(state, outcome, hub, now)? == ShellInputDisposition::Detach {
             return Ok(ClientLoopAction::Detach);
         }
@@ -612,6 +634,102 @@ mod client_timer_tests {
                 .len(),
             1,
             "servicing the deadline sent one health probe"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queued_events_are_serviced_before_an_expired_health_deadline() {
+        let now = tokio::time::Instant::now().into_std();
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let endpoint_id = endpoint::ClientEndpointId::Ssh(
+            shepr_config::MachineLabel::parse("queued-before-health").expect("test machine label"),
+        );
+        let mut registry = endpoint::EndpointRegistry::empty();
+        registry.insert(
+            endpoint_id,
+            TimerTransport(Arc::clone(&sent)),
+            crate::tests::test_generation(1),
+            false,
+            now,
+        );
+        let (mut client_loop, event_tx) = test_client_loop(registry);
+        let deadline = client_loop
+            .next_timer_deadline(now)
+            .expect("the SSH endpoint has a health deadline");
+        let after_deadline = deadline + Duration::from_millis(1);
+        event_tx
+            .try_send(ClientLoopEvent::Resize(
+                shepr_core::geometry::HostGeometry::new(
+                    shepr_core::geometry::GridSize::clamped(100, 30),
+                    shepr_core::geometry::HostCell::Unknown,
+                ),
+            ))
+            .expect("test event fits in the queue");
+
+        let ClientLoopWake::Event(ClientLoopEvent::Resize(_)) =
+            client_loop.wait_for_next_event(after_deadline).await
+        else {
+            panic!("the ready event queue must be drained before health runs");
+        };
+        assert!(
+            matches!(
+                client_loop.wait_for_next_event(after_deadline).await,
+                ClientLoopWake::Deadline
+            ),
+            "the expired health deadline runs once the queue is empty"
+        );
+        assert!(
+            sent.lock()
+                .expect("test precondition: lock is healthy")
+                .is_empty(),
+            "waiting for a queued event does not tick health"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_full_queue_cannot_hold_off_an_expired_deadline_indefinitely() {
+        let now = tokio::time::Instant::now().into_std();
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        let endpoint_id = endpoint::ClientEndpointId::Ssh(
+            shepr_config::MachineLabel::parse("flooded-health").expect("test machine label"),
+        );
+        let mut registry = endpoint::EndpointRegistry::empty();
+        registry.insert(
+            endpoint_id,
+            TimerTransport(Arc::clone(&sent)),
+            crate::tests::test_generation(1),
+            false,
+            now,
+        );
+        let (mut client_loop, event_tx) = test_client_loop(registry);
+        let deadline = client_loop
+            .next_timer_deadline(now)
+            .expect("the SSH endpoint has a health deadline");
+        let after_deadline = deadline + Duration::from_millis(1);
+        // The allowance of events ahead of the expired deadline is used up.
+        client_loop.events_past_deadline = EXPIRED_TIMER_EVENT_ALLOWANCE;
+        event_tx
+            .try_send(ClientLoopEvent::Resize(
+                shepr_core::geometry::HostGeometry::new(
+                    shepr_core::geometry::GridSize::clamped(100, 30),
+                    shepr_core::geometry::HostCell::Unknown,
+                ),
+            ))
+            .expect("test event fits in the queue");
+
+        assert!(
+            matches!(
+                client_loop.wait_for_next_event(after_deadline).await,
+                ClientLoopWake::Deadline
+            ),
+            "the deadline runs although an event is ready"
+        );
+        assert!(
+            matches!(
+                client_loop.wait_for_next_event(after_deadline).await,
+                ClientLoopWake::Event(ClientLoopEvent::Resize(_))
+            ),
+            "the allowance restarts after the deadline ran"
         );
     }
 

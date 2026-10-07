@@ -105,6 +105,10 @@ pub struct TerminalSearchWindow {
     /// Absent when the search found no matches; both indexes travel together.
     pub current: Option<TerminalSearchPosition>,
     pub total: usize,
+    /// Whether the scan reached the end of the text. The chunked live search
+    /// stops early when the terminal re-wraps or switches screens between
+    /// chunks, and then `total` counts only the rows it scanned.
+    pub complete: bool,
 }
 
 impl TerminalSearchWindow {
@@ -113,6 +117,7 @@ impl TerminalSearchWindow {
             matches: Vec::new(),
             current: None,
             total: 0,
+            complete: true,
         }
     }
 }

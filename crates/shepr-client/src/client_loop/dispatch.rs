@@ -1,5 +1,4 @@
 use super::{ClientLoop, ClientLoopAction};
-use crate::clipboard_forwarding::forward_clipboard;
 use crate::endpoint::{Admission, SnapshotDirty};
 use crate::errors::LoopExit;
 use crate::shell_runtime::{ShellInputDisposition, finish_client_shell_input};
@@ -116,22 +115,11 @@ impl ClientLoop {
                 }
             }
             DecodedWireServerMessage::Clipboard { data } => {
-                // write_clipboard_bytes flushes its own OSC 52 fallback, so no flush is
-                // needed here. Once per user copy, so a warn cannot flood; only the
-                // payload length is logged because the bytes are the user's selection.
-                if let Err(error) = forward_clipboard(
-                    &data,
-                    state.settings.clipboard_route(),
-                    &mut state.output_writer,
-                ) {
-                    shepr_platform::structured_log!(
-                        WARN, event = clipboard.copy, outcome = Error,
-                        endpoint = %endpoint_id,
-                        %generation,
-                        bytes = data.len(),
-                        %error,
-                        "clipboard copy from the server did not reach the host clipboard"
-                    );
+                // Pane programs can issue OSC 52 repeatedly. Keep helper waits
+                // and terminal output off this shared event loop; a newer
+                // pending copy replaces the older one in the worker.
+                if let Some(worker) = &state.clipboard_write_worker {
+                    worker.submit(data);
                 }
             }
             DecodedWireServerMessage::MouseCapture { mode } => {

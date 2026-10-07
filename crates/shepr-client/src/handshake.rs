@@ -59,9 +59,9 @@ pub(crate) fn do_handshake_for_endpoint(
     shepr_protocol::preamble::read_preamble(&mut reader).map_err(preamble_error)?;
     let welcome = shepr_protocol::read_message::<_, ServerMessage>(&mut reader)?;
 
-    // A pre-welcome shutdown notice is transient if a peer sends one. The local server closes
-    // without a welcome when stopping is observed during the handshake; if stopping races
-    // after acceptance, it sends its notice after the welcome.
+    // A pre-welcome shutdown notice is transient if a peer sends one. The server can refuse
+    // with `ServerStopping` before acceptance; if stopping races after acceptance, it sends
+    // its shutdown notice after the welcome.
     let welcome = match welcome {
         ServerMessage::ServerShutdown { reason } => {
             return Err(HandshakeError::ServerShutdown { reason });
@@ -122,6 +122,12 @@ impl HandshakeError {
             } => (
                 std::io::ErrorKind::ConnectionAborted,
                 EndpointFailure::server_starting(error.to_string()),
+            ),
+            HandshakeError::HandshakeRejected {
+                error: error @ shepr_protocol::HandshakeRefusal::ServerStopping,
+            } => (
+                std::io::ErrorKind::ConnectionAborted,
+                EndpointFailure::server_stopping(error.to_string()),
             ),
             HandshakeError::HandshakeRejected { error } => (
                 std::io::ErrorKind::Unsupported,
@@ -357,6 +363,31 @@ mod tests {
             }
             other => panic!("expected a rejection, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_stopping_refusal_classifies_as_the_stopping_endpoint_state() {
+        let welcome = ServerMessage::EndpointWelcome(EndpointServerWelcome::refused(
+            shepr_protocol::HandshakeRefusal::ServerStopping,
+        ));
+        let frames = shepr_protocol::encode_message(&welcome).expect("test precondition");
+        let HandshakeError::HandshakeRejected { error } =
+            handshake_against_welcome("stopping-welcome", frames)
+                .expect_err("a stopping refusal is not an accepted welcome")
+        else {
+            panic!("expected a handshake rejection");
+        };
+        let error = HandshakeError::HandshakeRejected { error }.class(None);
+        let failure = error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<shepr_launch::EndpointFailure>())
+            .expect("the handshake error keeps its typed endpoint failure");
+
+        assert_eq!(failure.cause(), shepr_launch::FailureCause::ServerStopping);
+        assert_eq!(
+            crate::shell::MachineState::after_failure(failure),
+            crate::shell::MachineState::Stopping
+        );
     }
 
     #[test]

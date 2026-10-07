@@ -266,6 +266,10 @@ pub struct AgentOwnership {
     fallback_state: AgentState,
     fallback_visible_blocker: bool,
     fallback_observed_at: Option<Instant>,
+    /// Orders detector events independently of hook activation, which only
+    /// invalidates screen verdicts. A hook has no process identity and cannot
+    /// make the detector's one-shot process exit stale.
+    detector_observed_at: Option<Instant>,
     // State authority and resume ownership can belong to different sources.
     // These pane-wide output slots are written by source machine effects;
     // per-source copies would create competing owners and equality invariants.

@@ -164,6 +164,7 @@ fn detect_command() -> Command {
                 )
                 .arg(
                     option("agent", "LABEL")
+                        .value_parser(manifest_label)
                         .requires("file")
                         .help("Agent manifest to evaluate the --file capture against"),
                 )
@@ -188,6 +189,28 @@ fn pane_id(value: &str) -> Result<shepr_protocol::PublicPaneId, String> {
     value
         .parse::<shepr_protocol::PublicPaneId>()
         .map_err(|_| format!("{value:?} is not a pane id (expected e.g. w1:p1)"))
+}
+
+/// Parses labels through the detector's own resolver so this list cannot
+/// drift from the manifests compiled into the binary. Known agents without a
+/// bundled screen manifest are not valid targets for `explain --file`.
+fn manifest_label(value: &str) -> Result<String, String> {
+    let explanation = shepr_detect::manifest::explain_for_label(
+        value,
+        shepr_detect::manifest::DetectionInput {
+            screen: "",
+            osc_title: None,
+            osc_progress: None,
+        },
+    );
+    match explanation.agent {
+        shepr_detect::manifest::ExplainedAgent::Known(agent)
+            if shepr_detect::manifest::bundled_manifest_source(agent).is_some() =>
+        {
+            Ok(agent.label().to_owned())
+        }
+        _ => Err(format!("{value:?} is not a bundled screen-manifest label")),
+    }
 }
 
 fn json_flag() -> Arg {
@@ -543,6 +566,24 @@ mod tests {
             &["shepr", "detect", "capture", "agent-name"][..],
             &["shepr", "detect", "explain", "not-a-pane"],
             &["shepr", "detect", "explain", "--file", "screen.txt"],
+            &[
+                "shepr",
+                "detect",
+                "explain",
+                "--file",
+                "screen.txt",
+                "--agent",
+                "claud",
+            ],
+            &[
+                "shepr",
+                "detect",
+                "explain",
+                "--file",
+                "screen.txt",
+                "--agent",
+                "omp",
+            ],
         ] {
             let error = super::command()
                 .try_get_matches_from(args)

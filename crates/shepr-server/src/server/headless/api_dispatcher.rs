@@ -9,21 +9,13 @@ impl super::HeadlessServer {
             self.reject_api_request_for_shutdown(&msg);
             return false;
         }
-        // No socket method moves focus or changes geometry; an internal event
-        // drained before the request runs can still change the session's
-        // workspaces (a pane dying), which the client locations, the geometry
-        // controllers and pane focus follow. That is a topology change: the
-        // workspaces present or their order differ from before.
-        let topology_before = self.workspace_order();
-        let mut changed = self.dispatch_api_request(msg);
-        if self.workspace_order() != topology_before {
-            changed |= self.reconcile_client_shell_locations();
-            self.reapply_controlled_shell_workspace_geometry(
-                super::client_views::PendingResumes::Defer,
-            );
-        }
-        self.sync_pane_focus();
-        changed
+        // No socket method changes topology, moves focus or changes geometry.
+        // The topology changes this path can still reach settle themselves:
+        // a pane death drained before the request runs
+        // (`handle_admitted_pane_death`) and the automatic workspace created
+        // after it (`create_automatic_workspace`) each reconcile client
+        // locations, reapply geometry and sync pane focus.
+        self.dispatch_api_request(msg)
     }
 
     pub(super) fn drain_api_requests_with_shutdown_check(&mut self) -> bool {

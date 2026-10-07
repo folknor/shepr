@@ -11,6 +11,7 @@ use std::path::{Component, Path, PathBuf};
 struct Context {
     progress: RefreshProgress,
     mounts: MountTable,
+    git_program: Option<std::ffi::OsString>,
 }
 
 thread_local! {
@@ -39,6 +40,7 @@ pub(crate) fn scoped_with_mounts<R>(
         slot.replace(Some(Context {
             progress: progress.clone(),
             mounts,
+            git_program: None,
         }))
     });
     let _restore = Restore(previous, previous_denied);
@@ -48,14 +50,18 @@ pub(crate) fn scoped_with_mounts<R>(
 fn announce(path: &Path) -> std::io::Result<()> {
     CONTEXT.with(|slot| {
         if let Some(context) = slot.borrow().as_ref() {
-            if context.progress.excludes(&context.mounts, path) {
+            let stall_paths = context.mounts.stall_paths(path);
+            if context
+                .progress
+                .excludes(&context.mounts, path, &stall_paths)
+            {
                 DENIED.with(|denied| *denied.borrow_mut() = Some(path.to_path_buf()));
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
                     "Git dependency is on a quarantined filesystem",
                 ));
             }
-            context.progress.step(context.mounts.stall_paths(path));
+            context.progress.step(stall_paths);
         }
         Ok(())
     })
@@ -164,6 +170,18 @@ pub(crate) fn git_program() -> std::io::Result<std::ffi::OsString> {
     if CONTEXT.with(|slot| slot.borrow().is_none()) {
         return Ok(std::ffi::OsString::from("git"));
     }
+    // Cache only successful resolution within this refresh, not across PATH
+    // changes or refreshes. Still announce before every exec so a newly
+    // quarantined executable mount is refused and a stalled spawn names it.
+    let cached = CONTEXT.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|context| context.git_program.clone())
+    });
+    if let Some(program) = cached {
+        announce(Path::new(&program))?;
+        return Ok(program);
+    }
     let search = shepr_core::env::read_os(shepr_core::env::EnvVar::Path)
         .map_err(std::io::Error::other)?
         .unwrap_or_else(|| std::ffi::OsString::from("/bin:/usr/bin"));
@@ -173,8 +191,16 @@ pub(crate) fn git_program() -> std::io::Result<std::ffi::OsString> {
         match resolve(&candidate, true) {
             Ok(physical) => {
                 announce(&physical)?;
-                if metadata(&physical)?.is_file() && shepr_platform::has_execute_access(&physical) {
-                    return Ok(physical.into_os_string());
+                if std::fs::metadata(&physical)?.is_file()
+                    && shepr_platform::has_execute_access(&physical)
+                {
+                    let program = physical.into_os_string();
+                    CONTEXT.with(|slot| {
+                        if let Some(context) = slot.borrow_mut().as_mut() {
+                            context.git_program = Some(program.clone());
+                        }
+                    });
+                    return Ok(program);
                 }
             }
             Err(error)
@@ -196,6 +222,35 @@ pub(crate) fn git_program() -> std::io::Result<std::ffi::OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn executable_resolution_is_cached_only_inside_the_refresh() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("git-program-cache");
+        let program = shepr_test_support::fixture::stand_in(scratch.path(), "git", &[]);
+        env.set(shepr_core::env::EnvVar::Path, scratch.path());
+        let progress = RefreshProgress::default();
+        // A synthetic single-device namespace makes exclusion independent of
+        // whether the scratch directory sits on a separate host mount.
+        let mounts = MountTable::from_mountinfo("1 0 8:1 / / rw - ext4 root rw\n");
+        scoped_with_mounts(&progress, mounts.clone(), || {
+            let first = git_program().expect("resolve executable");
+            std::fs::remove_file(&program).expect("remove fixture");
+            assert_eq!(git_program().expect("cached executable"), first);
+            progress.set_excluded(vec![PathBuf::from("/")]);
+            assert_eq!(
+                git_program().err().map(|error| error.kind()),
+                Some(std::io::ErrorKind::WouldBlock)
+            );
+        });
+        progress.set_excluded(Vec::new());
+        scoped_with_mounts(&progress, mounts, || {
+            assert_eq!(
+                git_program().err().map(|error| error.kind()),
+                Some(std::io::ErrorKind::NotFound)
+            );
+        });
+    }
 
     #[test]
     fn sibling_checkouts_and_shared_dependencies_refuse_a_stalled_mount() {

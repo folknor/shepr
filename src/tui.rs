@@ -1,6 +1,6 @@
-//! Launch flow for `shepr` with no subcommand: check the terminal, run the
-//! startup preflight, then attach to the local server, starting it as a
-//! detached daemon first when none is listening.
+//! Launch flow for `shepr` with no subcommand: check the terminal and remote
+//! connector admission, run the startup preflight, then attach to the local
+//! server, starting it as a detached daemon first when none is listening.
 
 use std::io;
 use std::time::Duration;
@@ -15,6 +15,8 @@ pub(crate) fn launch(
 ) -> CliResult<ProcessExit> {
     ensure_terminal_geometry().map_err(CliError::Terminal)?;
 
+    preflight::check_connector_admission(loaded_config, paths)
+        .map_err(|error| CliError::Client(error.into()))?;
     init_client_logging(paths)?;
     // Prompts and restart offers must run before the client takes the
     // terminal: it connects to machines with BatchMode and cannot answer one.

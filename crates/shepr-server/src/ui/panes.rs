@@ -22,12 +22,6 @@ use shepr_protocol::{CellData, ChromeRole, FrameData, WireColor};
 const PANE_BORDER_TITLE_OVERHEAD_COLS: u16 = 4;
 const MIN_PANE_WIDTH_FOR_BORDER_TITLE: u16 = PANE_BORDER_TITLE_OVERHEAD_COLS + 1;
 
-pub(super) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
-    rt.read()
-        .scroll_metrics()
-        .is_some_and(|metrics| metrics.offset_from_bottom > 0)
-}
-
 /// The unavailable-pane text: the guidance, then the error behind it on its
 /// own line. OS errors are formatted only at this presentation boundary.
 fn restore_failure_text(failure: &PaneStartFailure) -> Text<'_> {

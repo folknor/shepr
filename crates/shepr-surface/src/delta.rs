@@ -224,27 +224,12 @@ pub fn message(
         })
         .collect();
     let update = baseline.update(surface, spans, last);
-    match update.meta.as_ref() {
-        Some(shepr_protocol::SurfaceMeta::Projection(_)) => {
-            if crate::patch::validate_spans(
-                surface.frame.width(),
-                surface.frame.height(),
-                &update.spans,
-            )
-            .is_err()
-            {
-                return Ok(SurfaceDeltaPlan::Full);
-            }
-        }
-        Some(shepr_protocol::SurfaceMeta::Patch(_)) | None => {
-            if crate::decode::SurfaceBaseline::new(last)
-                .admits_update(&update)
-                .is_err()
-            {
-                return Ok(SurfaceDeltaPlan::Full);
-            }
-        }
-    }
+    // `changed_rows` walks equal-sized grids in row-major order and enforces
+    // the span cap while collecting, so its spans satisfy the patch geometry
+    // rules by construction. The update's metadata comes from `surface` and
+    // `Baseline::update`; keep full admission out of this per-client render
+    // path. Tests validate generated updates with the shared admission and
+    // span rules.
     // Metadata-only updates always retain the grid. Counting potentially large
     // projection metadata cannot improve this choice.
     let metadata_only = update.spans.is_empty();
@@ -263,6 +248,35 @@ pub fn message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_update_is_admitted(last: &PaneSurfaceFrame, update: &shepr_protocol::SurfaceUpdate) {
+        match update.meta.as_ref() {
+            Some(shepr_protocol::SurfaceMeta::Projection(_)) => {
+                crate::patch::validate_spans(
+                    last.frame.width(),
+                    last.frame.height(),
+                    &update.spans,
+                )
+                .expect("planned projection spans are valid");
+            }
+            Some(shepr_protocol::SurfaceMeta::Patch(_)) | None => {
+                crate::decode::SurfaceBaseline::new(last)
+                    .admits_update(update)
+                    .expect("planned patch is admitted");
+            }
+        }
+    }
+
+    fn assert_plan_update_is_admitted(last: &PaneSurfaceFrame, plan: &SurfaceDeltaPlan) {
+        let message = match plan {
+            SurfaceDeltaPlan::Unchanged(message) | SurfaceDeltaPlan::Compact(message) => message,
+            SurfaceDeltaPlan::Full => return,
+        };
+        let ServerMessage::SurfaceUpdate(update) = message else {
+            panic!("delta plans carry surface updates");
+        };
+        assert_update_is_admitted(last, update);
+    }
 
     fn surface() -> PaneSurfaceFrame {
         PaneSurfaceFrame {
@@ -300,6 +314,10 @@ mod tests {
             SurfaceDeltaPlan::Compact(delta) => delta,
             _ => panic!("expected compact delta"),
         };
+        let ServerMessage::SurfaceUpdate(update) = &delta else {
+            panic!("expected a surface update");
+        };
+        assert_update_is_admitted(&last, update);
         let full = ServerMessage::PaneSurface(next.clone());
         assert!(encoded_size(&delta).expect("size") < encoded_size(&full).expect("size"));
         assert!(encoded_size(&delta).expect("size") < 1024);
@@ -348,9 +366,28 @@ mod tests {
         let last = surface();
         let mut next = last.clone();
         next.surface_revision = crate::test_counters::surface(2);
+        let plan = message(&last, &next).expect("planning");
+        assert_plan_update_is_admitted(&last, &plan);
         assert!(matches!(
-            message(&last, &next).expect("planning"),
+            plan,
             SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(_))
+        ));
+    }
+
+    #[test]
+    fn projection_update_spans_satisfy_the_shared_span_rule() {
+        let last = surface();
+        let mut next = last.clone();
+        next.projection_revision = crate::test_counters::projection(2);
+        next.surface_revision = crate::test_counters::surface(2);
+        next.frame.cells_mut()[0].symbol = "z".into();
+
+        let plan = message(&last, &next).expect("planning");
+
+        assert_plan_update_is_admitted(&last, &plan);
+        assert!(matches!(
+            plan,
+            SurfaceDeltaPlan::Compact(ServerMessage::SurfaceUpdate(_))
         ));
     }
 

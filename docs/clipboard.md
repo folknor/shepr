@@ -15,7 +15,10 @@ when it runs over SSH (see below).
 - **Copy mode.** `prefix+[` selects and copies with the keyboard.
 - **Programs in panes.** A program that stores text with OSC 52 to the
   clipboard (`c`) or primary-selection (`p` or `s`) target has its text
-  forwarded through the server to the TUI, which copies it the same way.
+  forwarded through the server to the TUI, which copies it the same way. The
+  TUI stores these copies in the background, one at a time; when a program
+  copies again before the previous copy is stored, only its newest waiting copy
+  is kept.
 
 `copy_on_select` lives under `[ui]` in `client.toml`.
 
@@ -58,5 +61,8 @@ and ignore the primary one. shepr cannot observe either.
   still paste the primary selection on shift+middle-click while an application
   captures the mouse.
 - **Into shepr's own prompts.** In copy-mode search and in overlay prompts,
-  `ctrl+v` reads the clipboard through the local helpers (`wl-paste`, `xclip`,
-  `xsel`). Over SSH there is usually no display server, so it inserts nothing.
+  `ctrl+v` reads through the same clipboard route selected when shepr starts.
+  A local helper route reads with `wl-paste`, `xclip` or `xsel`. An SSH or VS
+  Code remote route writes with OSC 52, which has no portable read operation in
+  shepr; prompt paste therefore inserts nothing on that route. In particular,
+  X forwarding does not make shepr read the remote display's clipboard.

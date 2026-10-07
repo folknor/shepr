@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use shepr_launch::{EndpointFailure, FailureCause};
 
-use crate::bridge::{SshStdioBridge, ssh_bridge_exit_error};
+use crate::bridge::{SshStdioBridge, ssh_bridge_exit_error, ssh_bridge_exit_error_after_session};
 use crate::discovery::{
     DiscoveryProgress, resume_installed_remote_shepr_discovery, verify_remote_shepr,
 };
@@ -104,6 +104,10 @@ impl MachineProbe {
         )
     }
 
+    fn has_verified_executable(&self) -> bool {
+        matches!(&self.executable, ProbeExecutable::Verified(_))
+    }
+
     /// The IO seam keeps preflight resolution and server-judgment failures in one
     /// state machine, and lets tests supply remote results without SSH.
     fn advance_with(
@@ -141,10 +145,12 @@ impl MachineProbe {
                         self.executable = ProbeExecutable::Verified(cached.clone());
                         return Ok(cached);
                     }
-                    // Only evidence that this path is stale drops the hint.
-                    // Link, server and target-trust failures leave it as an
-                    // unverified hint; a later attempt checks it again.
-                    Err(error) if !failure_evidence(&error).invalidates_executable() => {
+                    // Keep the hint only when verification learned nothing
+                    // about the candidate or could not trust the target. Once
+                    // that path ran and answered with a fault or mismatch, let
+                    // discovery try the remaining candidates as it does for a
+                    // newly discovered path.
+                    Err(error) if !failure_evidence(&error).rejects_candidate() => {
                         return Err(error);
                     }
                     Ok(false) | Err(_) => self.invalidate(cache),
@@ -411,22 +417,40 @@ impl MachineSshConnector {
         let (ssh, probe) = self.transport(deadline)?;
 
         let remote = probe.resolve_remote(ssh, &metadata_cache)?;
+        let established_session = probe.has_verified_executable();
         if mode == ConnectMode::Restart {
             stop_server_of_another_build(ssh, &remote).inspect_err(|error| {
                 probe.observe_failure(&metadata_cache, error);
             })?;
         }
         let bridge_mode = mode.bridge_mode();
-        match Self::attempt(ssh, &target, &remote, bridge_mode, deadline, &mut establish) {
+        match Self::attempt(
+            ssh,
+            &target,
+            &remote,
+            bridge_mode,
+            established_session,
+            deadline,
+            &mut establish,
+        ) {
             Ok(connected) => Ok(connected),
             Err(error) if probe.observe_failure(&metadata_cache, &error) => {
                 // The remote command proved the path stale after probing. Resolve
                 // once more within the same deadline, through the same state machine.
                 let remote = probe.resolve_remote(ssh, &metadata_cache)?;
-                Self::attempt(ssh, &target, &remote, bridge_mode, deadline, &mut establish)
-                    .inspect_err(|error| {
-                        probe.observe_failure(&metadata_cache, error);
-                    })
+                let established_session = probe.has_verified_executable();
+                Self::attempt(
+                    ssh,
+                    &target,
+                    &remote,
+                    bridge_mode,
+                    established_session,
+                    deadline,
+                    &mut establish,
+                )
+                .inspect_err(|error| {
+                    probe.observe_failure(&metadata_cache, error);
+                })
             }
             Err(error) => Err(error),
         }
@@ -447,6 +471,7 @@ impl MachineSshConnector {
         let target = self.target.clone();
         let (ssh, probe) = self.transport(deadline)?;
         let remote = probe.resolve_remote(ssh, &metadata_cache)?;
+        let established_session = probe.has_verified_executable();
         let mut command = ssh_invocation(&target, ssh.options(), SshMode::Batch);
         command
             .arg(remote.wait_for_server_command().as_str())
@@ -485,7 +510,11 @@ impl MachineSshConnector {
             Some(capture) => capture.finish(PIPE_DRAIN_GRACE)?,
             None => Vec::new(),
         };
-        let error = ssh_bridge_exit_error(status, &stderr);
+        let error = if established_session {
+            ssh_bridge_exit_error_after_session(status, &stderr)
+        } else {
+            ssh_bridge_exit_error(status, &stderr)
+        };
         probe.observe_failure(&metadata_cache, &error);
         Err(error)
     }
@@ -495,6 +524,7 @@ impl MachineSshConnector {
         target: &SshTarget,
         remote_shepr: &RemoteExecutable,
         mode: BridgeMode,
+        established_session: bool,
         deadline: std::time::Instant,
         establish: &mut impl FnMut(MachineSshStream) -> io::Result<T>,
     ) -> io::Result<T> {
@@ -502,9 +532,14 @@ impl MachineSshConnector {
         if std::time::Instant::now() >= deadline {
             return Err(attempt_deadline_passed());
         }
-        let (bridge, stream) =
-            SshStdioBridge::start(target.clone(), remote_shepr, mode, ssh.options())
-                .map_err(|error| local_setup_error("could not start local SSH bridge", error))?;
+        let (bridge, stream) = SshStdioBridge::start(
+            target.clone(),
+            remote_shepr,
+            mode,
+            established_session,
+            ssh.options(),
+        )
+        .map_err(|error| local_setup_error("could not start local SSH bridge", error))?;
         // clock-io-ok: starting the bridge spent real time; establishment has its own bound.
         if std::time::Instant::now() >= deadline {
             return Err(attempt_deadline_passed());
@@ -725,14 +760,16 @@ mod tests {
         assert_eq!(found, executable("/new/shepr"));
         assert_eq!(cache.load(), Some(executable("/new/shepr")));
 
-        let error = resolve_remote_shepr(
+        // A probe that ran and answered with an untyped fault rejects the hint
+        // too: discovery tries the remaining candidates.
+        let found = resolve_remote_shepr(
             &cache,
             |_| Err(io::Error::new(io::ErrorKind::Unsupported, "another build")),
-            || panic!("untyped probe failures must not trigger discovery"),
+            || Ok(executable("/newer/shepr")),
         )
-        .expect_err("an untyped unsupported probe error is not proof of a stale executable");
-        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
-        assert_eq!(cache.load(), Some(executable("/new/shepr")));
+        .expect("an answered fault falls through to discovery");
+        assert_eq!(found, executable("/newer/shepr"));
+        assert_eq!(cache.load(), Some(executable("/newer/shepr")));
     }
 
     #[test]
@@ -839,6 +876,49 @@ mod tests {
             )
             .expect("a different installed pair triggers discovery");
         assert_eq!(cache.load(), Some(found));
+    }
+
+    #[test]
+    fn a_hint_that_ran_but_failed_verification_falls_through_to_discovery() {
+        let failures = [
+            (
+                "remote-fault",
+                io::Error::other(SshFailureDiagnostic::from_ssh_output(
+                    Some(1),
+                    "remote client status probe failed: exit status 1",
+                )),
+            ),
+            (
+                "install-changed",
+                remote_compatibility_error("remote client status returned invalid JSON"),
+            ),
+        ];
+
+        for (label, error) in failures {
+            let scratch = shepr_test_support::ScratchDir::new(label);
+            let cache = cache_in(&scratch);
+            cache
+                .store(&executable("/cached/shepr"))
+                .expect("test precondition");
+            let mut probe = MachineProbe::default();
+            let mut verification_error = Some(error);
+            let found = probe
+                .resolve(
+                    &cache,
+                    |_| {
+                        Err(verification_error
+                            .take()
+                            .expect("the cached hint is verified once"))
+                    },
+                    |_| {
+                        assert!(cache.load().is_none(), "rejected hint is invalidated first");
+                        Ok(executable("/discovered/shepr"))
+                    },
+                )
+                .expect("a failed hint verification falls through to discovery");
+            assert_eq!(found, executable("/discovered/shepr"));
+            assert_eq!(cache.load(), Some(found));
+        }
     }
 
     #[test]

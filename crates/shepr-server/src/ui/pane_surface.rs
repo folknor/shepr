@@ -143,14 +143,13 @@ impl PaneSurface {
     /// while agent identity belongs to the pane.
     pub(crate) fn cursor(&self, state: &AppState, runtime: &PaneRuntime) -> Option<CursorState> {
         let area = self.content_rect;
-        // One read decides both the cursor and whether a synchronized update
-        // holds it back.
-        let cursor = match runtime.read().cursor(area) {
+        let (cursor, metrics) = runtime.read().cursor_and_scroll_metrics(area);
+        let cursor = match cursor {
             shepr_mux::pane::CursorRead::Deferred => return None,
             shepr_mux::pane::CursorRead::Shown(cursor) => Some(cursor),
             shepr_mux::pane::CursorRead::Unavailable => None,
         };
-        let scrolled_back = super::panes::pane_is_scrolled_back(runtime);
+        let scrolled_back = metrics.is_some_and(|metrics| metrics.offset_from_bottom > 0);
         let reveal = state.settings().reveal_hidden_cursor_for_cjk_ime
             && state.settings().cjk_ime_agents.includes(
                 state

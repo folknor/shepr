@@ -1414,8 +1414,8 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
         vec![crate::events::ParsedHostInput {
             event: framed.event,
             pixel_mouse: Some(shepr_termio::input::mouse::HostPixels { x, y, geometry }),
+            keyboard_mode: shepr_termio::input::HostKeyboardInputMode::default(),
         }],
-        false,
         std::time::Instant::now(),
     );
     assert!(matches!(
@@ -1474,8 +1474,8 @@ fn pixel_mouse_down(
         vec![crate::events::ParsedHostInput {
             event: framed.event,
             pixel_mouse: Some(shepr_termio::input::mouse::HostPixels { x, y, geometry }),
+            keyboard_mode: shepr_termio::input::HostKeyboardInputMode::default(),
         }],
-        false,
         std::time::Instant::now(),
     )
 }
@@ -1512,8 +1512,8 @@ fn pixel_release_outside_ioctl_extent_is_clamped_and_ends_the_gesture() {
                 y: geometry.height_px() + 1,
                 geometry,
             }),
+            keyboard_mode: shepr_termio::input::HostKeyboardInputMode::default(),
         }],
-        false,
         Instant::now(),
     );
     assert!(outside_press.requests.is_empty());
@@ -1536,8 +1536,8 @@ fn pixel_release_outside_ioctl_extent_is_clamped_and_ends_the_gesture() {
                 y: geometry.height_px() + 1,
                 geometry,
             }),
+            keyboard_mode: shepr_termio::input::HostKeyboardInputMode::default(),
         }],
-        false,
         Instant::now(),
     );
 

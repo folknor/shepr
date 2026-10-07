@@ -4734,3 +4734,103 @@ fn the_pane_ending_discards_a_held_relaunch_start() {
     // The checkpoint keeps what the pane held when it died.
     assert_eq!(current_session_ref(&terminal), Some(old));
 }
+
+#[test]
+fn queued_process_exit_survives_full_lifecycle_activation_and_reactivation() {
+    let (agent, old, new) = relaunch_rows().remove(1);
+    let now = Instant::now();
+    let origin = ReportOrigin::official(agent).expect("official Pi");
+    for reactivate in [false, true] {
+        let mut terminal = running_agent_with_session(agent, &old, now);
+        assert!(
+            terminal
+                .set_hook_authority_at(
+                    "shepr:pi",
+                    AgentState::Working,
+                    Some(old.clone()),
+                    Some(1),
+                    now + Duration::from_millis(10),
+                )
+                .is_some()
+        );
+        let active_session = if reactivate {
+            assert!(matches!(
+                terminal.report_session_start_outcome_at(
+                    &origin,
+                    Some(new.clone()),
+                    Some(2),
+                    ReportedSessionStart::Known(AgentSessionStartSource::New),
+                    now + Duration::from_millis(20),
+                ),
+                HookOutcome::Applied(_)
+            ));
+            assert!(
+                terminal
+                    .set_hook_authority_at(
+                        "shepr:pi",
+                        AgentState::Working,
+                        Some(new.clone()),
+                        Some(3),
+                        now + Duration::from_millis(30),
+                    )
+                    .is_some()
+            );
+            new.clone()
+        } else {
+            old.clone()
+        };
+        assert_eq!(current_session_ref(&terminal), Some(active_session));
+        // The probe began before the activating report and publishes its exit
+        // only once. Its subsequent agent-less withdrawal cannot clear hooks.
+        let exit_at = now + Duration::from_millis(if reactivate { 25 } else { 5 });
+        let mutation = terminal.set_detected_state_with_screen_signals_at(
+            Some(agent),
+            AgentState::Idle,
+            false,
+            true,
+            exit_at,
+        );
+        assert!(mutation.agent_released);
+        assert!(!terminal.has_agent());
+        assert!(terminal.hook_authority().is_none());
+        assert_eq!(current_session_ref(&terminal), None);
+        terminal.set_detected_state_with_screen_signals_at(
+            None,
+            AgentState::Unknown,
+            false,
+            false,
+            now + Duration::from_millis(40),
+        );
+        assert!(!terminal.has_agent());
+    }
+}
+
+#[test]
+fn process_exit_older_than_detector_presence_cannot_release_live_authority() {
+    let (agent, old, _) = relaunch_rows().remove(1);
+    let now = Instant::now();
+    let mut terminal = running_agent_with_session(agent, &old, now);
+    terminal
+        .set_hook_authority_at(
+            "shepr:pi",
+            AgentState::Working,
+            Some(old.clone()),
+            Some(1),
+            now + Duration::from_millis(30),
+        )
+        .expect("activate authority");
+    // Even a presence whose screen verdict predates activation orders process
+    // evidence: an older exit must not withdraw this newer observation.
+    terminal.set_detected_agent_process_at(agent, now + Duration::from_millis(20));
+    let mutation = terminal.set_detected_state_with_screen_signals_at(
+        Some(agent),
+        AgentState::Idle,
+        false,
+        true,
+        now + Duration::from_millis(10),
+    );
+    assert!(!mutation.agent_released);
+    assert!(terminal.has_agent());
+    assert!(terminal.full_lifecycle_hook_authority_active());
+    assert_eq!(current_session_ref(&terminal), Some(old));
+}

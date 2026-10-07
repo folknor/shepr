@@ -34,6 +34,16 @@ pub(super) fn run_stop_command(
     paths: &shepr_paths::AppPaths,
 ) -> super::CliResult<i32> {
     if command.all {
+        // The local leg would end this pane's shell, and this command with it,
+        // before the local row and the exit status are written. The rule is the
+        // one that refuses the TUI in a pane of a server of its own profile.
+        if shepr_paths::in_own_profile_pane() {
+            return Err(super::CliError::Message(
+                "stop --all cannot run from a pane of this server because stopping it closes the command; \
+                 run it from another terminal"
+                    .to_owned(),
+            ));
+        }
         return stop_everywhere(paths);
     }
     shepr_launch::stop::stop_active_server(paths, command.expected_boot.as_ref())
@@ -158,6 +168,28 @@ fn local_stop_error(error: ServerStopError) -> HostStop {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_all_is_refused_in_a_pane_of_its_own_profile() {
+        let env = crate::test_support::IsolatedEnv::new();
+        env.set(
+            shepr_core::env::EnvVar::SheprEnv,
+            shepr_core::env::SHEPR_ENV_IN_PANE,
+        );
+        env.set(
+            shepr_core::env::EnvVar::SheprBuildProfile,
+            shepr_paths::BuildProfile::current().marker(),
+        );
+        let paths = shepr_paths::AppPaths::resolve_with_config().expect("paths resolve");
+        let command = Command {
+            expected_boot: None,
+            all: true,
+        };
+        assert!(matches!(
+            run_stop_command(&command, &paths),
+            Err(super::super::CliError::Message(message)) if message.contains("stop --all")
+        ));
+    }
 
     #[test]
     fn only_hosts_left_without_a_server_count_as_done() {

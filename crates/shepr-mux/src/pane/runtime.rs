@@ -897,6 +897,14 @@ mod tests {
     }
 
     #[test]
+    fn a_save_observation_is_remembered_but_is_not_a_report() {
+        let runtime = PaneRuntime::test_with_screen_bytes(20, 5, b"");
+        runtime.test_seed_cwd_state(None, Some("/srv/saved".into()));
+        assert_eq!(runtime.remembered_cwd(), Some("/srv/saved".into()));
+        assert_eq!(runtime.reported_cwd(), None);
+    }
+
+    #[test]
     fn reported_cwd_wins_until_the_shell_moves_without_reporting() {
         let report = |path: &str, shell: Option<&str>| ReportedCwd {
             path: path.into(),

@@ -30,6 +30,22 @@ impl PaneRead<'_> {
         self.terminal.scroll_metrics()
     }
 
+    /// Capture the active screen and its scroll metrics from one terminal-core
+    /// hold for pane-surface layout.
+    pub fn alternate_screen_and_scroll_metrics(&self) -> (bool, Option<ScrollMetrics>) {
+        self.terminal.alternate_screen_and_scroll_metrics()
+    }
+
+    /// Capture the cursor (placed in `area`, as [`Self::cursor`] places it)
+    /// and scroll metrics from one terminal-core hold for cursor presentation.
+    pub fn cursor_and_scroll_metrics(
+        &self,
+        area: Rect,
+    ) -> (crate::pane::CursorRead, Option<ScrollMetrics>) {
+        let (cursor, metrics) = self.terminal.cursor_read_and_scroll_metrics();
+        (place_cursor(cursor, area), metrics)
+    }
+
     pub fn search_text_window(
         &self,
         search: crate::pane::TerminalTextSearch<'_>,
@@ -119,20 +135,7 @@ impl PaneRead<'_> {
     /// The synchronized-output gate is decided in the same terminal-core hold
     /// as the cursor ([`CursorRead::Deferred`]).
     pub fn cursor(&self, area: Rect) -> crate::pane::CursorRead {
-        use crate::pane::CursorRead;
-
-        match self.terminal.cursor_read() {
-            CursorRead::Shown(cursor) if cursor.x >= area.width || cursor.y >= area.height => {
-                CursorRead::Unavailable
-            }
-            CursorRead::Shown(cursor) => CursorRead::Shown(TerminalCursorState {
-                x: area.x + cursor.x,
-                y: area.y + cursor.y,
-                visible: cursor.visible,
-                shape: cursor.shape,
-            }),
-            other => other,
-        }
+        place_cursor(self.terminal.cursor_read(), area)
     }
 
     /// Whether a synchronized update is open, read without the core lock.
@@ -208,5 +211,69 @@ impl PaneRead<'_> {
     /// never certify a stable surface ([`ContentRevision::certify`]).
     pub fn content_revision(&self) -> Option<super::ContentRevision> {
         self.terminal.content_revision()
+    }
+}
+
+/// A terminal cursor placed in the pane's content `area`: offset by its
+/// origin, and unavailable when it falls outside the area.
+fn place_cursor(cursor: crate::pane::CursorRead, area: Rect) -> crate::pane::CursorRead {
+    use crate::pane::CursorRead;
+
+    match cursor {
+        CursorRead::Shown(cursor) if cursor.x >= area.width || cursor.y >= area.height => {
+            CursorRead::Unavailable
+        }
+        CursorRead::Shown(cursor) => CursorRead::Shown(TerminalCursorState {
+            x: area.x + cursor.x,
+            y: area.y + cursor.y,
+            visible: cursor.visible,
+            shape: cursor.shape,
+        }),
+        other => other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pane::{CursorRead, PaneRuntime};
+
+    #[test]
+    fn alternate_screen_and_scroll_metrics_are_captured_together() {
+        let runtime = PaneRuntime::test_with_scrollback_bytes(
+            20,
+            4,
+            100_000,
+            b"one\r\ntwo\r\nthree\r\nfour\r\nfive\x1b[?1049h",
+        );
+
+        let (alternate_screen, metrics) = runtime.read().alternate_screen_and_scroll_metrics();
+
+        assert!(alternate_screen);
+        assert_eq!(metrics, runtime.read().scroll_metrics());
+    }
+
+    #[test]
+    fn cursor_and_scroll_metrics_preserve_cursor_and_sync_update_states() {
+        let runtime = PaneRuntime::test_with_scrollback_bytes(
+            20,
+            4,
+            100_000,
+            b"one\r\ntwo\r\nthree\r\nfour\r\nfive",
+        );
+        let area = Rect::new(0, 0, 20, 4);
+        let expected_cursor = runtime.read().cursor(area);
+
+        let (cursor, metrics) = runtime.read().cursor_and_scroll_metrics(area);
+
+        assert_eq!(cursor, expected_cursor);
+        assert!(matches!(cursor, CursorRead::Shown(_)));
+        assert_eq!(metrics, runtime.read().scroll_metrics());
+
+        runtime.test_process_pty_bytes(b"\x1b[?2026h");
+        assert_eq!(
+            runtime.read().cursor_and_scroll_metrics(area),
+            (CursorRead::Deferred, None)
+        );
     }
 }

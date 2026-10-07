@@ -89,7 +89,9 @@ whatever its build, and a note when the server is not the build installed
 there (a restart brings the installed one up) or the install is not this
 build. `stop --all` stops every configured machine's server concurrently,
 each by the boot its status named, then the local one, prints a line per
-host, and exits 0 only when every host ended with no server. A machine that
+host, and exits 0 only when every host ended with no server. Run from a pane
+of a server of its own build profile it refuses before stopping anything, as
+stopping that server would end the command before it reports. A machine that
 needs an SSH login, is unreachable or has no `shepr` gets a line saying so;
 nothing prompts.
 

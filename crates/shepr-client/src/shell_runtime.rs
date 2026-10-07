@@ -93,8 +93,8 @@ pub(super) fn finish_client_shell_input(
     sync_client_shell_keyboard_report_all(state)?;
     let dispatched = hub.dispatch(&mut state.shell, outcome.actions, now);
     for bytes in dispatched.clipboard {
-        // Once per user copy, so a warn cannot flood; only the length is
-        // logged because the bytes are the user's selection.
+        // User copies stay synchronous. The helper route has its own deadline;
+        // diagnostics include only the byte count and error.
         if let Err(error) = shepr_termio::host_term::title::write_clipboard_bytes(
             &bytes,
             state.settings.clipboard_route(),

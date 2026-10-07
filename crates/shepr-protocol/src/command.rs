@@ -201,8 +201,10 @@ pub struct PaneCopySearchPosition {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneCopySearch {
-    /// History origin observed before the search. Counts become stale if older
-    /// rows are evicted, including matches outside the returned window.
+    /// Stable history origin observed across the search. `None` means the
+    /// terminal could not certify one coherent scan, so the global count is
+    /// unknown. Counts also become stale if older rows are later evicted,
+    /// including matches outside the returned window.
     pub history_origin: Option<shepr_term::AbsRow>,
     pub matches: Vec<PaneTextRange>,
     pub total: usize,

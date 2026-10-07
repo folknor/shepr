@@ -153,7 +153,11 @@ fn overview_of(ssh: &RemoteSsh, candidate: &RemoteExecutable) -> io::Result<Stat
         } else {
             "remote shepr status failed"
         };
-        return Err(command_failed(context, &output));
+        return Err(command_failed(
+            context,
+            &output,
+            ssh.has_established_session(),
+        ));
     }
     parse_overview(&String::from_utf8_lossy(&output.stdout))
 }

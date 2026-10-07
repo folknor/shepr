@@ -29,7 +29,11 @@ pub(crate) fn remote_server_status(
     let script = remote_shepr.command(&args);
     let output = ssh.sh_output(&script)?;
     if !output.status.success() {
-        return Err(command_failed("remote server status failed", &output));
+        return Err(command_failed(
+            "remote server status failed",
+            &output,
+            ssh.has_established_session(),
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -159,7 +163,11 @@ pub(crate) fn stop_remote_server_with_ssh(
         }
         None => {}
     }
-    Err(command_failed("remote server stop failed", &output))
+    Err(command_failed(
+        "remote server stop failed",
+        &output,
+        ssh.has_established_session(),
+    ))
 }
 
 #[cfg(test)]

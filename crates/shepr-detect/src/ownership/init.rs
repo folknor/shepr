@@ -7,6 +7,7 @@ impl AgentOwnership {
             fallback_state: AgentState::Unknown,
             fallback_visible_blocker: false,
             fallback_observed_at: None,
+            detector_observed_at: None,
             hook_authority: None,
             persisted_agent_session: None,
             hook_sources: HashMap::new(),

@@ -26,7 +26,7 @@ pub use self::layout::{
     server_log_path, server_socket_path, session_backup_directory, session_file_path,
     session_snapshot_directory, socket_startup_lock_path, ssh_metadata_directory,
 };
-pub use self::profile::BuildProfile;
+pub use self::profile::{BuildProfile, in_own_profile_pane};
 
 /// The integration installer lock directory beneath the XDG state home.
 /// Agent config is shared by build profiles, so this root is shared too.

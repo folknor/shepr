@@ -1,7 +1,7 @@
 use super::*;
 use crate::host::classified_bridge_failure;
 use crate::ssh::normalize_remote_stdout;
-use shepr_launch::{EndpointFailure, FailureCause, FailureDisposition};
+use shepr_launch::{EndpointFailure, FailureCause, FailureDisposition, SshFailureClass};
 use std::io::Read as _;
 use std::time::Duration;
 
@@ -334,9 +334,10 @@ fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
     )
     .expect("managed ssh options");
 
-    let (bridge, mut stream) = SshStdioBridge::start_command(
+    let (bridge, mut stream) = SshStdioBridge::start_command_with_session(
         SshTarget::parse("example").expect("target"),
         AccountShellCommand::from_account_shell_text("unused"),
+        false,
         &ssh_options,
     )
     .expect("socket pair bridge");
@@ -360,9 +361,10 @@ fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
     drop(bridge);
     // Dropping a live bridge stops its one worker while the endpoint is still
     // open.
-    let (idle_bridge, idle_stream) = SshStdioBridge::start_command(
+    let (idle_bridge, idle_stream) = SshStdioBridge::start_command_with_session(
         SshTarget::parse("example").expect("target"),
         AccountShellCommand::from_account_shell_text("unused"),
+        false,
         &ssh_options,
     )
     .expect("idle socket pair bridge");
@@ -374,9 +376,10 @@ fn socket_pair_bridge_relays_the_one_connection_and_returns_ssh_diagnostics() {
     // The next connection fails without a client close. Its own worker must
     // return the typed SSH diagnostic after EOF.
     env.set("PATH", &failing_dir);
-    let (bridge, mut stream) = SshStdioBridge::start_command(
+    let (bridge, mut stream) = SshStdioBridge::start_command_with_session(
         SshTarget::parse("example").expect("target"),
         AccountShellCommand::from_account_shell_text("unused"),
+        false,
         &ssh_options,
     )
     .expect("second socket pair bridge");
@@ -463,6 +466,46 @@ fn only_ssh_own_exit_code_counts_as_failing_before_a_remote_result() {
         io::ErrorKind::UnexpectedEof,
         "closed before welcome"
     )));
+}
+
+#[test]
+fn silent_bridge_exit_after_verified_remote_session_is_a_link_loss() {
+    let silent = ssh_bridge_exit_error(exit_status(SSH_OWN_FAILURE_EXIT_CODE), b"");
+    assert_eq!(
+        EndpointFailure::from_error(&silent).cause(),
+        FailureCause::Ssh(SshFailureClass::Unrecognized)
+    );
+    assert!(!preserves_discovery(&silent));
+
+    let link = ssh_bridge_exit_error_after_session(exit_status(SSH_OWN_FAILURE_EXIT_CODE), b"");
+    assert_eq!(
+        EndpointFailure::from_error(&link).cause(),
+        FailureCause::Ssh(SshFailureClass::Link)
+    );
+    assert_eq!(
+        EndpointFailure::from_error(&link).disposition(),
+        FailureDisposition::Offline
+    );
+    assert!(preserves_discovery(&link));
+
+    let diagnostic = ssh_bridge_exit_error_after_session(
+        exit_status(SSH_OWN_FAILURE_EXIT_CODE),
+        b"ssh: an unrecognized failure",
+    );
+    assert_eq!(
+        EndpointFailure::from_error(&diagnostic).cause(),
+        FailureCause::Ssh(SshFailureClass::Unrecognized),
+        "nonempty diagnostics retain their normal classification"
+    );
+
+    let refused = ssh_bridge_exit_error_after_session(
+        exit_status(SSH_OWN_FAILURE_EXIT_CODE),
+        b"user@host: Permission denied (publickey)",
+    );
+    assert_eq!(
+        EndpointFailure::from_error(&refused).cause(),
+        FailureCause::Ssh(SshFailureClass::Authentication)
+    );
 }
 
 #[test]

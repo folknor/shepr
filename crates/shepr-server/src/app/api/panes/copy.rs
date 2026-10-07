@@ -2,6 +2,22 @@ use super::*;
 use crate::limits::{MAX_QUERY_BYTES, MAX_RETURNED_MATCHES};
 use shepr_protocol::command::EndpointError;
 
+/// The history origin a search certifies its global count against: the one
+/// observed before the scan, when the scan reached the end of the text and no
+/// row was evicted while it ran. Output that only rewrites rows keeps the
+/// count, as it would right after the search; eviction or an early stop (a
+/// re-wrap or screen switch between chunks) leaves the count unknown.
+fn stable_search_history_origin(
+    complete: bool,
+    origin_before: Option<shepr_term::AbsRow>,
+    origin_after: Option<shepr_term::AbsRow>,
+) -> Option<shepr_term::AbsRow> {
+    match (origin_before, origin_after) {
+        (Some(origin), Some(after_origin)) if complete && origin == after_origin => Some(origin),
+        _ => None,
+    }
+}
+
 impl App {
     pub(crate) fn handle_pane_clear(&mut self, target: &PaneTarget) -> HandlerResult {
         let (_, pane_id) = self.endpoint_pane(&target.pane_id)?;
@@ -116,9 +132,10 @@ impl App {
                 end: previous.end,
             });
         let direction = params.direction;
-        // Observe before scanning: if output evicts rows between these separate
-        // terminal reads, the client conservatively treats the counts as stale.
-        let history_origin = runtime
+        // The chunked terminal search releases its core lock between reads and
+        // stops early if the screen shape or active screen changes. Only certify
+        // the count when the scan completed under one history origin.
+        let origin_before = runtime
             .read()
             .scroll_metrics()
             .map(|scroll| scroll.history_origin);
@@ -132,6 +149,14 @@ impl App {
                 previous,
                 limit: shepr_mux::pane::TerminalSearchLimit::new(MAX_RETURNED_MATCHES),
             });
+        let history_origin = stable_search_history_origin(
+            result.complete,
+            origin_before,
+            runtime
+                .read()
+                .scroll_metrics()
+                .map(|scroll| scroll.history_origin),
+        );
         let matches = result
             .matches
             .into_iter()
@@ -154,5 +179,30 @@ impl App {
                 }),
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stable_search_history_origin;
+
+    #[test]
+    fn search_origin_requires_a_complete_scan_under_one_origin() {
+        let origin = shepr_term::AbsRow(7);
+        assert_eq!(
+            stable_search_history_origin(true, Some(origin), Some(origin)),
+            Some(origin)
+        );
+        // An early stop counted only part of the text.
+        assert_eq!(
+            stable_search_history_origin(false, Some(origin), Some(origin)),
+            None
+        );
+        // Rows were evicted while the scan ran.
+        assert_eq!(
+            stable_search_history_origin(true, Some(origin), Some(shepr_term::AbsRow(8))),
+            None
+        );
+        assert_eq!(stable_search_history_origin(true, None, Some(origin)), None);
     }
 }

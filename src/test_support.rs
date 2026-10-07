@@ -16,8 +16,14 @@ mod tests {
         let env = IsolatedEnv::new();
         assert_eq!(env.get(EnvVar::Home), Some(env.home().into_os_string()));
         assert!(env.get(EnvVar::XdgConfigHome).is_none());
-        let paths = shepr_paths::AppPaths::resolve().expect("isolated directories resolve");
-        assert!(paths.config_dir().starts_with(env.path()));
+        let paths = shepr_paths::AppPaths::resolve_with_config()
+            .expect("isolated config and directories resolve");
+        assert!(
+            paths
+                .config_dir()
+                .expect("config paths were resolved")
+                .starts_with(env.path())
+        );
         assert!(paths.state_dir().starts_with(env.path()));
         assert!(paths.runtime_dir().starts_with(env.path()));
         env.set(PROBE, "set");

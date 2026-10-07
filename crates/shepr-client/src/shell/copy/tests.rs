@@ -136,6 +136,40 @@ fn search_counts_become_unknown_when_eviction_is_outside_the_returned_window() {
 }
 
 #[test]
+fn a_search_without_a_stable_history_origin_shows_an_unknown_count() {
+    let mut state = copy_shell();
+    let id = copy_search(&mut state);
+    let found = shepr_protocol::command::PaneTextRange {
+        start: shepr_term::Point::new(shepr_term::AbsRow(10), 2),
+        end: shepr_term::Point::new(shepr_term::AbsRow(10), 5),
+    };
+    let reply = EndpointReply::PaneCopySearch {
+        pane_id: test_pane_id("w1:p1"),
+        search: shepr_protocol::command::PaneCopySearch {
+            history_origin: None,
+            matches: vec![found],
+            total: 1,
+            current: Some(shepr_protocol::command::PaneCopySearchPosition {
+                window_index: 0,
+                global_index: 0,
+            }),
+        },
+    };
+    answer(&mut state, &id, Ok(reply));
+
+    let results = &state
+        .copy
+        .as_ref()
+        .expect("copy session")
+        .search
+        .as_ref()
+        .expect("search session")
+        .results;
+    assert_eq!(results.matches, vec![found]);
+    assert_eq!(results.total, None);
+}
+
+#[test]
 fn ending_a_session_discards_its_queue() {
     let mut state = copy_shell();
     // A word motion goes to the server, and `j` typed behind it waits for its answer.
@@ -684,6 +718,167 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
                     if params.offset_from_bottom == 0
             )
     )));
+}
+
+#[test]
+fn copy_mode_restores_the_entry_row_after_new_output() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        5,
+        20,
+        2,
+        shepr_term::AbsRow(0),
+    ));
+    state.receive_pane_surface_from(
+        pane_surface.clone(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.compose(106, 20).expect("composed frame");
+
+    let mut enter = ClientShellInput::default();
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
+    assert_eq!(
+        state.copy.as_ref().map(|copy| copy.entry_viewport_top),
+        Some(Some(shepr_term::AbsRow(15)))
+    );
+
+    pane_surface.surface_revision = pane_surface
+        .surface_revision
+        .checked_next()
+        .expect("test precondition");
+    pane_surface.panes[0].content_revision.advance();
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        5,
+        30,
+        2,
+        shepr_term::AbsRow(0),
+    ));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+
+    let exit = state.handle_input_bytes(b"\x1b");
+    assert!(matches!(
+        &exit.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.command,
+                EndpointCommand::PaneScroll(params) if params.offset_from_bottom == 15
+            )
+    ));
+}
+
+#[test]
+fn copy_mode_pins_an_entry_row_when_output_arrives_before_the_scroll_answer() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        5,
+        20,
+        2,
+        shepr_term::AbsRow(0),
+    ));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.compose(106, 20).expect("composed frame");
+
+    let mut enter = ClientShellInput::default();
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
+    let exit = state.handle_input_bytes(b"\x1b");
+    let restore_id = request_id(&exit.actions).to_owned();
+    assert!(matches!(
+        &exit.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.command,
+                EndpointCommand::PaneScroll(params) if params.offset_from_bottom == 5
+            )
+    ));
+
+    // Five rows of output landed before the server applied the offset, so it shows
+    // row 20 instead of the entry row 15: the client corrects to the pinned row.
+    let (_, actions) = state
+        .handle_endpoint_result(
+            &crate::tests::test_boot_id("boot-1"),
+            &restore_id,
+            Ok(pane_scroll_result(5, 25, 2)),
+        )
+        .into_parts();
+    assert!(matches!(
+        &actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.command,
+                EndpointCommand::PaneScroll(params) if params.offset_from_bottom == 10
+            )
+    ));
+}
+
+#[test]
+fn copy_mode_entered_at_the_live_bottom_returns_to_following_output() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let mut pane_surface = surface();
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        20,
+        2,
+        shepr_term::AbsRow(0),
+    ));
+    state.receive_pane_surface_from(
+        pane_surface,
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.compose(106, 20).expect("composed frame");
+
+    let mut enter = ClientShellInput::default();
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
+    assert_eq!(
+        state.copy.as_ref().map(|copy| copy.entry_viewport_top),
+        Some(None)
+    );
+    let exit = state.handle_input_bytes(b"\x1b");
+    let restore_id = request_id(&exit.actions).to_owned();
+    assert!(matches!(
+        &exit.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.command,
+                EndpointCommand::PaneScroll(params) if params.offset_from_bottom == 0
+            )
+    ));
+
+    // Output that arrived meanwhile does not pull the pane back to the entry row.
+    let (_, actions) = state
+        .handle_endpoint_result(
+            &crate::tests::test_boot_id("boot-1"),
+            &restore_id,
+            Ok(pane_scroll_result(0, 25, 2)),
+        )
+        .into_parts();
+    assert!(actions.is_empty());
 }
 
 #[test]
@@ -1556,6 +1751,12 @@ fn retained_selection_copy_suppresses_key_repeats() {
     );
     assert!(selection.finish());
     state.mouse_selection.selection = Some(selection);
+    // Repeats and releases only exist when the host reports event types, which
+    // is also what makes the press take a lease.
+    state.host_keyboard_mode = shepr_termio::input::HostKeyboardInputMode {
+        reports_event_types: true,
+        reports_all_keys: false,
+    };
 
     let key = shepr_term::key::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     let press = state.handle_raw_events(vec![RawInputEvent::Key(key.clone())]);
@@ -2159,8 +2360,9 @@ fn reentering_copy_mode_on_the_same_pane_is_a_no_op() {
         state
             .copy
             .as_ref()
-            .map(|copy_mode| copy_mode.entry_offset_from_bottom),
-        Some(0)
+            .map(|copy_mode| copy_mode.entry_viewport_top),
+        Some(None),
+        "re-entering keeps the live-bottom entry"
     );
 }
 

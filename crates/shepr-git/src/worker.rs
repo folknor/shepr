@@ -92,8 +92,10 @@ impl RefreshProgress {
         &self,
         mounts: &shepr_platform::mounts::MountTable,
         path: &std::path::Path,
+        stall_paths: &[PathBuf],
     ) -> bool {
-        self.is_cancelled() || mounts.is_quarantined(path, &lock(&self.excluded))
+        self.is_cancelled()
+            || mounts.is_quarantined_with_stall_paths(path, &lock(&self.excluded), stall_paths)
     }
 
     /// Records progress outside any step.

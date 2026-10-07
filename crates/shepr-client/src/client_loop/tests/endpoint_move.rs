@@ -623,6 +623,7 @@ fn the_detach_key_ends_the_loop_as_a_detach() {
         .map(|event| ParsedHostInput {
             event,
             pixel_mouse: None,
+            keyboard_mode: shepr_termio::input::HostKeyboardInputMode::default(),
         })
         .collect();
     let action = f
@@ -760,6 +761,7 @@ fn host_focus_changes_only_reach_the_shown_endpoint_until_commit() {
             ClientLoopEvent::StdinInput(vec![ParsedHostInput {
                 event: shepr_termio::input::raw_input::RawInputEvent::OuterFocusLost,
                 pixel_mouse: None,
+                keyboard_mode: shepr_termio::input::HostKeyboardInputMode::default(),
             }]),
             f.now,
         )

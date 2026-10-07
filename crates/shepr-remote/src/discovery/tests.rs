@@ -14,7 +14,7 @@ fn is_remote_candidate_mismatch(error: &io::Error) -> bool {
 
 fn path_lookup_result(output: &Output) -> io::Result<Option<RemoteExecutable>> {
     let mut rejected_candidate = None;
-    path_lookup_result_with_rejected_candidate(output, &mut rejected_candidate)
+    path_lookup_result_with_rejected_candidate(output, &mut rejected_candidate, false)
 }
 
 fn remote_executables_from_path_discovery(stdout: &str) -> Vec<RemoteExecutable> {
@@ -315,13 +315,18 @@ fn ssh_exit_255_from_a_discovery_command_has_no_remote_result() {
     let lost = command_failed(
         "remote SSH connection failed",
         &ssh_output(255, "Connection reset by peer"),
+        false,
     );
     assert!(failure_evidence(&lost).preserves_discovery());
     assert_eq!(
         lost.to_string(),
         "remote SSH connection failed: Connection reset by peer"
     );
-    let remote = command_failed("remote binary discovery failed", &ssh_output(1, "boom"));
+    let remote = command_failed(
+        "remote binary discovery failed",
+        &ssh_output(1, "boom"),
+        false,
+    );
     assert!(!failure_evidence(&remote).preserves_discovery());
     assert_eq!(remote.to_string(), "remote binary discovery failed: boom");
     // A `command -v` lookup whose ssh failed is not "no shepr on PATH".
@@ -345,6 +350,7 @@ fn ssh_exit_255_from_a_discovery_command_has_no_remote_result() {
                 return Err(command_failed(
                     "remote SSH connection failed",
                     &ssh_output(255, "Broken pipe"),
+                    true,
                 ));
             }
             self.0.matches(candidate)
@@ -370,13 +376,14 @@ fn ssh_exit_255_from_a_discovery_command_has_no_remote_result() {
 
 #[test]
 fn status_probe_diagnostic_distinguishes_ssh_failure_from_remote_failure() {
-    let ssh_failure = remote_client_status_failure(&ssh_output(255, "Connection refused"));
+    let ssh_failure = remote_client_status_failure(&ssh_output(255, "Connection refused"), false);
     assert_eq!(
         ssh_failure.to_string(),
         "remote SSH connection failed: Connection refused"
     );
 
-    let remote_failure = remote_client_status_failure(&ssh_output(2, "status command failed"));
+    let remote_failure =
+        remote_client_status_failure(&ssh_output(2, "status command failed"), false);
     assert_eq!(
         remote_failure.to_string(),
         "remote client status probe failed: status command failed"
@@ -388,6 +395,7 @@ fn command_remote_stderr_is_filtered_before_error_output() {
     let error = command_failed(
         "remote binary discovery failed",
         &ssh_output(1, "Connection refused\x1b[2J"),
+        false,
     );
     assert!(!error.to_string().contains('\x1b'));
     assert!(error.to_string().contains("Connection refused?[2J"));
@@ -395,6 +403,7 @@ fn command_remote_stderr_is_filtered_before_error_output() {
     let authentication = command_failed(
         "remote SSH connection failed",
         &ssh_output(255, "Permission denied (publickey)\x1b[2J"),
+        true,
     );
     assert_eq!(
         SshFailureDiagnostic::from_error(&authentication).ssh_class(),

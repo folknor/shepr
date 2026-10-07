@@ -225,9 +225,9 @@ pub(crate) struct ClientShellState {
     /// Stored copy cursor state can survive while the Copy input mode is parked.
     pub(in crate::shell) copy: Option<CopySession>,
     pub(in crate::shell) input_leases: ClientInputLeases,
-    /// Whether the host sends every key, text keys included, as an escape
-    /// code with its release (kitty REPORT_ALL_KEYS). Set per host input batch.
-    pub(in crate::shell) host_reports_all_keys: bool,
+    /// Keyboard protocol confirmed for the current host input event. The
+    /// reader stamps each event before it enters the client loop queue.
+    pub(in crate::shell) host_keyboard_mode: shepr_termio::input::HostKeyboardInputMode,
     pub(in crate::shell) notices: crate::shell::notices::Notices,
     pub(in crate::shell) outer_focused: Option<bool>,
     /// The host terminal's default and ANSI colours as last reported, which
@@ -292,7 +292,7 @@ impl ClientShellState {
             overlay,
             copy: None,
             input_leases: ClientInputLeases::default(),
-            host_reports_all_keys: false,
+            host_keyboard_mode: shepr_termio::input::HostKeyboardInputMode::default(),
             notices: Default::default(),
             outer_focused: None,
             host_theme,

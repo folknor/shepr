@@ -179,9 +179,10 @@ fn pane_input_event_limit(events: &[ClientPaneInputEvent]) -> InputEventLimit {
 ///
 /// Reads the client's opening through the listener's shared handshake rule.
 /// A client of another build is answered with this build's preamble and closed
-/// without decoding its hello. A same-build client then has its endpoint hello
-/// and surface geometry validated, and is sent the welcome accepting the
-/// connection; its messages are then forwarded to the server event channel.
+/// without decoding its hello. A same-build client's endpoint hello and
+/// surface geometry are validated, then it is accepted or refused in the
+/// endpoint welcome; accepted messages are forwarded to the server event
+/// channel.
 /// `deadline` bounds reading the preamble and hello together and is counted
 /// from accept, so classification time is part of the handshake budget.
 /// `wake` is the server loop's outbox wake, raised when this connection's
@@ -195,10 +196,6 @@ fn handle_client_handshake(
     stop_signal: &Arc<shepr_api::ServerStopSignal>,
     wake: Arc<tokio::sync::Notify>,
 ) -> io::Result<()> {
-    if stop_signal.is_requested() {
-        return Ok(());
-    }
-
     // Accepted streams start blocking (classification peeks without changing
     // the mode). The shared reader answers the preamble before reading the
     // hello and leaves the stream in nonblocking mode for deadline reads.
@@ -277,6 +274,11 @@ fn handle_client_handshake(
     };
 
     if stop_signal.is_requested() {
+        write_endpoint_rejection(
+            &mut stream,
+            client_id,
+            shepr_protocol::HandshakeRefusal::ServerStopping,
+        );
         return Ok(());
     }
 
@@ -998,6 +1000,39 @@ mod tests {
             );
         }
         assert!(rest.is_empty(), "no welcome after a foreign preamble");
+        handle
+            .join()
+            .expect("handshake thread join")
+            .expect("handshake thread result");
+        assert!(server_event_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_stopping_server_answers_the_preamble_and_refuses_the_client() {
+        let (mut client_stream, server_stream, _path) =
+            local_stream_pair("client-handshake-stopping");
+        let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
+        let stop_signal = Arc::new(shepr_api::ServerStopSignal::default());
+        stop_signal.request();
+        let handshake_stop_signal = Arc::clone(&stop_signal);
+        let handle = std::thread::spawn(move || {
+            handle_client_handshake(
+                server_stream,
+                ClientId::test_new(46),
+                Instant::now() + HANDSHAKE_TIMEOUT,
+                &server_event_tx,
+                &handshake_stop_signal,
+                Arc::new(tokio::sync::Notify::new()),
+            )
+        });
+
+        open_as_client(&mut client_stream, &endpoint_hello(80, 24));
+        let welcome: ServerMessage =
+            shepr_protocol::read_message(&mut client_stream).expect("read refusal");
+        assert_eq!(
+            endpoint_welcome(welcome),
+            EndpointServerWelcome::Refused(shepr_protocol::HandshakeRefusal::ServerStopping)
+        );
         handle
             .join()
             .expect("handshake thread join")

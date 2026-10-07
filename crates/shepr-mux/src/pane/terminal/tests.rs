@@ -4553,6 +4553,7 @@ fn match_window_agrees_with_the_complete_match_list() {
                 global_index: target,
             }),
             total,
+            complete: true,
         }
     };
     for direction in [

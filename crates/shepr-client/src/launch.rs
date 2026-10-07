@@ -1,4 +1,5 @@
 use crate::client_loop::{ClientLoop, EventQueue, HostCellReport, LoopSignals};
+use crate::clipboard_forwarding::{ClipboardWriteWorker, SharedHostWriter};
 use crate::endpoint::connection_io::{
     EndpointConnectionIo, LocalAttachFailure, attach_local_endpoint,
 };
@@ -290,9 +291,27 @@ impl Launched {
         let host_geometry = SharedHostGeometry::new(initial_host_geometry);
 
         let host_modes = terminal_guard.host_modes();
+        let clipboard_route = settings.clipboard_route();
+        crate::clipboard_forwarding::set_clipboard_route(clipboard_route);
+        let shared_output_writer = SharedHostWriter::new(output_writer);
+        let clipboard_write_worker =
+            match ClipboardWriteWorker::new(clipboard_route, shared_output_writer.clone()) {
+                Ok(worker) => Some(worker),
+                Err(error) => {
+                    shepr_platform::structured_log!(
+                        WARN,
+                        event = clipboard.worker,
+                        outcome = Error,
+                        error_kind = ?error.kind(),
+                        "could not start the server clipboard writer; server copies will be skipped"
+                    );
+                    None
+                }
+            };
         let mut state = ClientState {
             blit_encoder: render_ansi::BlitEncoder::new(),
-            output_writer: Box::new(output_writer),
+            output_writer: Box::new(shared_output_writer),
+            clipboard_write_worker,
             host_modes,
             host_theme_updates: Vec::new(),
             reported_geometry: initial_geometry,
@@ -348,6 +367,7 @@ impl Launched {
             should_quit: Arc::clone(&should_quit),
             probe,
             host_geometry,
+            host_modes: state.host_modes.clone(),
             initial_host_input: terminal_guard.take_buffered_host_input(),
             initial_host_geometry,
             reported_cell_size: Arc::clone(&reported_cell_size),
@@ -462,6 +482,7 @@ struct HostHelpers {
     should_quit: Arc<AtomicBool>,
     probe: input::HostInputProbe,
     host_geometry: SharedHostGeometry,
+    host_modes: terminal_setup::HostModes,
     /// Host input the keyboard probe read during terminal setup, replayed first.
     initial_host_input: Vec<u8>,
     /// The geometry the handshake sent, the resize poller's baseline.
@@ -479,6 +500,7 @@ impl HostHelpers {
             should_quit,
             probe,
             host_geometry,
+            host_modes,
             initial_host_input,
             initial_host_geometry,
             reported_cell_size,
@@ -487,12 +509,14 @@ impl HostHelpers {
         let stdin_tx = event_tx.clone();
         let stdin_quit = Arc::clone(&should_quit);
         let stdin_host_geometry = host_geometry.clone();
+        let stdin_host_modes = host_modes;
         std::thread::spawn(move || {
             input::stdin_reader_loop(
                 &stdin_tx,
                 &stdin_quit,
                 &probe,
                 &stdin_host_geometry,
+                &stdin_host_modes,
                 &initial_host_input,
             );
         });
