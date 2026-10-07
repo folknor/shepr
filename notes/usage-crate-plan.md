@@ -8,8 +8,9 @@ display come later. notes/usage.md holds the research digest it started from.
 
 - **shepr-usage:**
   - linked only by shepr-server, through a dependency rule
-  - allowed dependencies: serde, serde_json, sha2, base64, shepr-core,
-    shepr-platform, tracing
+  - allowed dependencies: serde (typed credential parsing, so refresh tokens
+    are skipped unallocated), serde_json, sha2, base64, shepr-platform,
+    tracing
   - knows nothing of panes, workspaces or clients
   - receives resolved sources and the active flag, and publishes snapshots
   - modules: model, source, credentials, reader, transport, claude, codex,

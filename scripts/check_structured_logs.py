@@ -59,6 +59,7 @@ SUBSYSTEMS = {
     'server': 'the server process: startup, shutdown, event loop, pane teardown',
     'shutdown': 'the logind host shutdown warning and freeze',
     'surface': 'pane surface projection, encoding, patches and receipt',
+    'usage': 'subscription usage tracking: credentials, requests, remembered sources',
     'terminal': 'a pane terminal core: its state, cwd and theme',
     'workspace': 'workspace create, focus, close, rename, move and startup',
 }

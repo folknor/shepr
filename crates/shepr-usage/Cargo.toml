@@ -1,0 +1,23 @@
+[package]
+name = "shepr-usage"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+base64 = { workspace = true }
+# Credential files parse into typed structs, so fields not named (refresh
+# tokens) are skipped without being allocated.
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+shepr-platform = { path = "../shepr-platform" }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The reader test makes a FIFO where a credentials file should be.
+libc = { workspace = true }
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true

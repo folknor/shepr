@@ -1643,6 +1643,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "shepr-usage"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shepr-platform",
+ "shepr-test-support",
+ "tracing",
+]
+
+[[package]]
 name = "shepr-vt"
 version = "0.1.0"
 dependencies = [

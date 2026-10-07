@@ -134,8 +134,8 @@ pub struct SupervisedRun {
 /// numbers are known.
 pub struct PreparedChild {
     pub command: Command,
-    /// Bytes written to the child's stdin, which is then closed. `None` gives
-    /// the child `/dev/null`.
+    /// Bytes written to the child's stdin, which is then closed; the buffer
+    /// is wiped however the run ends. `None` gives the child `/dev/null`.
     pub stdin: Option<Vec<u8>>,
 }
 
@@ -286,6 +286,9 @@ fn supervise_run(
 ) -> ChildReport {
     let stream_count = run.streams.len();
     let PreparedChild { mut command, stdin } = prepared;
+    // Wiped on every path from here: spawn failure, a passed deadline, a
+    // writer that cannot start, or the writer finishing.
+    let stdin = stdin.map(WipedBytes);
     let wants = |stream: ChildStream| run.streams.iter().any(|spec| spec.stream == stream);
     command
         .stdin(if stdin.is_some() {
@@ -638,9 +641,22 @@ fn drain(source: OwnedFd, spec: StreamSpec, deadline: Instant, flags: &RunFlags)
     }
 }
 
+/// Stdin bytes, wiped when dropped on whatever path drops them: callers pass
+/// secrets through stdin (a request config with a bearer token).
+struct WipedBytes(Vec<u8>);
+
+impl Drop for WipedBytes {
+    fn drop(&mut self) {
+        for byte in &mut self.0 {
+            // SAFETY: `byte` is a valid, exclusive reference into the buffer.
+            unsafe { std::ptr::write_volatile(byte, 0) };
+        }
+    }
+}
+
 fn spawn_writer(
     pipe: ChildStdin,
-    bytes: Vec<u8>,
+    bytes: WipedBytes,
     deadline: Instant,
     flags: &Arc<RunFlags>,
 ) -> io::Result<JoinHandle<Option<io::ErrorKind>>> {
@@ -652,7 +668,8 @@ fn spawn_writer(
                 flags: &flags,
                 armed: true,
             };
-            let error = write_input(pipe, &bytes, deadline, &flags);
+            let error = write_input(pipe, &bytes.0, deadline, &flags);
+            drop(bytes);
             // Input cut short by the run ending is not a failure of its own.
             guard.armed = error.is_some() && !flags.cancel.load(Ordering::SeqCst);
             error

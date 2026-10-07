@@ -861,6 +861,7 @@ packages = [
     "shepr-test-support",
     "shepr-term",
     "shepr-termio",
+    "shepr-usage",
     "shepr-vt",
 ]
 # The fixture program tests spawn instead of host programs
@@ -1105,6 +1106,23 @@ name = "shepr-git-layer"
 from = "shepr-git"
 allow = ["shepr-core", "shepr-platform", "tracing"]
 kinds = ["normal"]
+
+# Subscription usage of the host's Claude and Codex accounts: credential
+# reads, the curl transport, scheduling and the worker. It knows nothing of
+# panes, workspaces or clients, and compiles in no TLS.
+[[dependency_rule]]
+name = "shepr-usage-layer"
+from = "shepr-usage"
+allow = ["base64", "serde", "serde_json", "sha2", "shepr-platform", "tracing"]
+kinds = ["normal"]
+
+# Only the server reads agent credentials and asks the usage endpoints; the
+# client binary and every crate it links stay out of it.
+[[dependency_rule]]
+name = "usage-only-in-server"
+from = "*"
+forbid = "shepr-usage"
+except = ["shepr-server"]
 
 [[dependency_rule]]
 name = "shepr-mux-layer"
