@@ -6,6 +6,7 @@ use crate::worker::RefreshProgress;
 use shepr_platform::mounts::{MountTable, PathWalkFailure};
 use std::cell::RefCell;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone)]
 struct Context {
@@ -19,8 +20,57 @@ thread_local! {
     static DENIED: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
+/// Whether the last mount table read failed, so an outage is logged when it
+/// starts and when it ends rather than on every refresh.
+static MOUNT_TABLE_UNREADABLE: AtomicBool = AtomicBool::new(false);
+
+/// Reads this process's mount namespace, logging only a change between
+/// readable and unreadable.
+pub(crate) fn read_mount_table() -> std::io::Result<MountTable> {
+    match MountTable::read() {
+        Ok(mounts) => {
+            if MOUNT_TABLE_UNREADABLE.swap(false, Ordering::Relaxed) {
+                shepr_platform::structured_log!(
+                    INFO,
+                    event = git.mount_table,
+                    outcome = Recovered,
+                    "mount table is readable again; Git discovery stops at filesystem boundaries"
+                );
+            }
+            Ok(mounts)
+        }
+        Err(error) => {
+            if !MOUNT_TABLE_UNREADABLE.swap(true, Ordering::Relaxed) {
+                shepr_platform::structured_log!(
+                    WARN,
+                    event = git.mount_table,
+                    outcome = Fallback,
+                    %error,
+                    "failed to read mount table; until it is readable, Git discovery does not \
+                     stop at filesystem boundaries and a stalled Git access quarantines every path"
+                );
+            }
+            Err(error)
+        }
+    }
+}
+
+/// The mount snapshot a refresh or an unscoped discovery works from. When
+/// mountinfo cannot be read this is the empty table, a degraded mode that keeps
+/// Git status computed: no filesystem boundary is known, so discovery may
+/// ascend across one, and the quarantine stays sound by being coarse. An
+/// empty table maps every path to the stall path `/`, so while mountinfo stays
+/// unreadable a stalled access quarantines every path until its thread
+/// finishes (once it is readable, `/` names only the root mount's device
+/// again), and stuck paths recorded
+/// from an earlier readable snapshot (which list every alias mount point of the
+/// stalled device) are matched by path prefix.
+fn mount_snapshot() -> MountTable {
+    read_mount_table().unwrap_or_default()
+}
+
 pub(crate) fn scoped<R>(progress: &RefreshProgress, work: impl FnOnce() -> R) -> R {
-    scoped_with_mounts(progress, MountTable::read().unwrap_or_default(), work)
+    scoped_with_mounts(progress, mount_snapshot(), work)
 }
 
 pub(crate) fn scoped_with_mounts<R>(
@@ -47,14 +97,12 @@ pub(crate) fn scoped_with_mounts<R>(
     work()
 }
 
-pub(crate) fn mount_table() -> std::io::Result<MountTable> {
-    if let Some(mounts) =
-        CONTEXT.with(|slot| slot.borrow().as_ref().map(|context| context.mounts.clone()))
-    {
-        Ok(mounts)
-    } else {
-        MountTable::read()
-    }
+/// The refresh's mount snapshot, or a fresh one outside a refresh; see
+/// [`mount_snapshot`] for what an unreadable mountinfo leaves.
+pub(crate) fn mount_table() -> MountTable {
+    CONTEXT
+        .with(|slot| slot.borrow().as_ref().map(|context| context.mounts.clone()))
+        .unwrap_or_else(mount_snapshot)
 }
 
 fn announce(path: &Path) -> std::io::Result<()> {
@@ -245,6 +293,32 @@ pub(crate) fn git_program() -> std::io::Result<std::ffi::OsString> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unreadable_mount_table_keeps_access_and_quarantines_coarsely() {
+        // The empty table is what a refresh runs with when mountinfo cannot
+        // be read: access stays available, a path under a stuck root is still
+        // refused, and a step names `/` so that a stall in it quarantines
+        // every path.
+        let progress = RefreshProgress::default();
+        progress.set_excluded(vec![PathBuf::from("/net")]);
+        scoped_with_mounts(&progress, MountTable::default(), || {
+            start_job();
+            assert_eq!(
+                metadata("/net/a")
+                    .expect_err("a stuck root is refused without mount data")
+                    .kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+            start_job();
+            announce(Path::new("/srv/b")).expect("other paths stay available");
+        });
+        assert_eq!(
+            progress
+                .stalled_paths(std::time::Instant::now() + crate::limits::GIT_REFRESH_STALL_BOUND),
+            Some(vec![PathBuf::from("/")])
+        );
+    }
 
     #[test]
     fn executable_resolution_is_cached_only_inside_the_refresh() {

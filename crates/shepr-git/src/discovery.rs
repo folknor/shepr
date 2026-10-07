@@ -254,7 +254,13 @@ fn file_read_error(path: &Path, error: &std::io::Error) -> GitReadError {
 
 fn git_directory_is_readable(git_dir: &LocatedGitDir) -> std::io::Result<bool> {
     let head = git_dir.path.join("HEAD");
-    let head_is_valid = validate_git_head(&head)?;
+    let head_is_valid = if git_dir.from_gitfile {
+        // A gitfile names one specific target, so preserve its original I/O
+        // error instead of changing it to synthetic invalid data.
+        validate_git_head(&head)?
+    } else {
+        validate_plain_git_head(&head)?
+    };
     // A plain .git directory with an invalid HEAD can be skipped in favour of
     // an enclosing checkout. A .git file claims a specific target, so a bad
     // target must stop discovery rather than silently changing repositories.
@@ -286,20 +292,21 @@ fn git_directory_is_readable(git_dir: &LocatedGitDir) -> std::io::Result<bool> {
 /// setup.c's `validate_headref`: accept a symbolic link whose target begins
 /// with refs/, or else (following any link, as Git's open does) a `ref:` file
 /// whose target begins with refs/, or a hexadecimal object id at the start of
-/// the file. Ordinary missing, unreadable and malformed HEADs are not a valid
-/// repository marker, so the walk ascends past them as Git does; WouldBlock is
-/// retained for the Git worker's mount guard.
+/// the file. Missing and malformed HEADs are not a valid repository marker.
+/// Other I/O failures retain their errno so a gitfile target does not turn an
+/// unreadable HEAD into a synthetic invalid-data error; callers decide whether
+/// an unreadable plain marker should be skipped.
 fn validate_git_head(path: &Path) -> io::Result<bool> {
     let metadata = match crate::access::symlink_metadata(path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
-        Err(_) => return Ok(false),
+        Err(error) if is_absence(&error) => return Ok(false),
+        Err(error) => return Err(error),
     };
     if metadata.file_type().is_symlink() {
         let target = match crate::access::read_link(path) {
             Ok(target) => target,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
-            Err(_) => return Ok(false),
+            Err(error) if is_absence(&error) => return Ok(false),
+            Err(error) => return Err(error),
         };
         if target.as_os_str().as_bytes().starts_with(b"refs/") {
             return Ok(true);
@@ -308,8 +315,8 @@ fn validate_git_head(path: &Path) -> io::Result<bool> {
     let metadata = if metadata.file_type().is_symlink() {
         match crate::access::metadata(path) {
             Ok(metadata) => metadata,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
-            Err(_) => return Ok(false),
+            Err(error) if is_absence(&error) => return Ok(false),
+            Err(error) => return Err(error),
         }
     } else {
         metadata
@@ -322,19 +329,12 @@ fn validate_git_head(path: &Path) -> io::Result<bool> {
 
     let file = match crate::access::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Err(error),
-        Err(_) => return Ok(false),
+        Err(error) if is_absence(&error) => return Ok(false),
+        Err(error) => return Err(error),
     };
     let mut contents = Vec::new();
-    if let Err(error) = file
-        .take(crate::limits::MAX_GIT_HEAD_VALIDATION_BYTES)
-        .read_to_end(&mut contents)
-    {
-        if error.kind() == io::ErrorKind::WouldBlock {
-            return Err(error);
-        }
-        return Ok(false);
-    }
+    file.take(crate::limits::MAX_GIT_HEAD_VALIDATION_BYTES)
+        .read_to_end(&mut contents)?;
 
     let contents = contents.split(|byte| *byte == 0).next().unwrap_or_default();
     if let Some(reference) = contents.strip_prefix(b"ref:") {
@@ -350,8 +350,18 @@ fn validate_git_head(path: &Path) -> io::Result<bool> {
     }))
 }
 
+/// A plain marker does not claim a specific repository target. Keep Git's
+/// discovery behavior by skipping it on ordinary I/O errors, while retaining
+/// WouldBlock so the worker's quarantine refusal is not mistaken for absence.
+fn validate_plain_git_head(path: &Path) -> io::Result<bool> {
+    match validate_git_head(path) {
+        Err(error) if error.kind() != io::ErrorKind::WouldBlock => Ok(false),
+        result => result,
+    }
+}
+
 fn path_is_git_dir_layout(path: &Path) -> std::io::Result<bool> {
-    if !validate_git_head(&path.join("HEAD"))? {
+    if !validate_plain_git_head(&path.join("HEAD"))? {
         return Ok(false);
     }
     let common = git_common_dir_for_git_dir(path)?;
@@ -575,13 +585,10 @@ fn git_worktree_location_below(
     ceilings: &GitCeilings,
 ) -> Result<Option<(PathBuf, LocatedGitDir)>, GitReadError> {
     let across_filesystems = discovery_across_filesystems_from_env();
-    let mounts = match crate::access::mount_table() {
-        Ok(mounts) => mounts,
-        Err(error) => {
-            shepr_platform::structured_log!(WARN, event = git.mount_table, outcome = Error, %error, "failed to read mount table for Git discovery");
-            shepr_platform::mounts::MountTable::default()
-        }
-    };
+    // An unreadable mountinfo yields the empty table, which knows no boundary:
+    // discovery then ascends across filesystems rather than leaving every
+    // workspace without Git status. `access::read_mount_table` logs that.
+    let mounts = crate::access::mount_table();
     git_worktree_location_below_with(start, ceilings, across_filesystems, &mounts)
 }
 
@@ -1096,6 +1103,47 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_gitfile_head_preserves_errno_but_plain_marker_can_be_skipped() {
+        use std::os::unix::fs::symlink;
+
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let outer = temp_test_dir("unreadable-head-enclosing-repo");
+        mark_checkout(&outer);
+
+        let plain = outer.join("plain-marker");
+        std::fs::create_dir_all(plain.join(".git")).expect("test precondition");
+        // A symlink loop supplies a deterministic filesystem error even when
+        // the test process can bypass mode-bit permission checks.
+        symlink("HEAD", plain.join(".git/HEAD")).expect("test precondition");
+        assert_eq!(
+            git_repo_root_below_with_errors(&plain, &GitCeilings::default(), &mut Vec::new()),
+            Some(outer.clone()),
+            "an unreadable plain .git marker is skipped for an enclosing checkout"
+        );
+
+        let checkout = outer.join(".worktrees/gitfile-unreadable-head");
+        let git_dir = checkout.join("admin");
+        std::fs::create_dir_all(git_dir.join("objects")).expect("test precondition");
+        std::fs::create_dir_all(git_dir.join("refs")).expect("test precondition");
+        std::fs::create_dir_all(&checkout).expect("test precondition");
+        std::fs::write(checkout.join(".git"), "gitdir: admin\n").expect("test precondition");
+        symlink("HEAD", git_dir.join("HEAD")).expect("test precondition");
+
+        let mut errors = Vec::new();
+        assert_eq!(
+            git_repo_root_below_with_errors(&checkout, &GitCeilings::default(), &mut errors),
+            None,
+            "a gitfile with an unreadable target HEAD must stop discovery"
+        );
+        assert!(matches!(
+            errors.as_slice(),
+            [GitReadError::FileRead { path, reason: FileReadReason::Io(reason) }]
+                if path == &git_dir.join("HEAD")
+                    && reason.to_string() == io::Error::from_raw_os_error(libc::ELOOP).to_string()
+        ));
+    }
+
+    #[test]
     fn logical_symlink_uses_physical_repository_and_ceiling() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let logical = temp_test_dir("logical-repo");
@@ -1297,6 +1345,29 @@ mod tests {
             ),
             Some(outer)
         );
+    }
+
+    #[test]
+    fn unreadable_mount_table_still_finds_the_enclosing_checkout() {
+        // A refresh whose mountinfo read failed runs with the empty table:
+        // discovery degrades to ignoring filesystem boundaries instead of
+        // reporting no checkout.
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let outer = temp_test_dir("mount-table-unreadable");
+        mark_checkout(&outer);
+        let nested = outer.join("nested");
+        std::fs::create_dir_all(&nested).expect("test precondition");
+        let progress = crate::worker::RefreshProgress::default();
+        let mut errors = Vec::new();
+
+        let found = crate::access::scoped_with_mounts(
+            &progress,
+            shepr_platform::mounts::MountTable::default(),
+            || git_repo_root_below_with_errors(&nested, &GitCeilings::default(), &mut errors),
+        );
+
+        assert_eq!(found, Some(outer));
+        assert!(errors.is_empty(), "{errors:?}");
     }
 
     #[test]

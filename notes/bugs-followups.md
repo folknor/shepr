@@ -11,30 +11,14 @@
 
 Laterals raised while resolving the defect hunt filed in commit 21dfcea4.
 
-## FUP-001 - A failed mountinfo read makes Git discovery cross filesystems silently
+## FUP-004 - A stall recorded while mountinfo was unreadable stops being quarantined once it is readable again
 
-`access::scoped` (`crates/shepr-git/src/access.rs`) gives an empty
-`MountTable` when `/proc/self/mountinfo` cannot be read. The boundary check
-then returns `None`, so discovery crosses filesystems without saying so, and
-the stall quarantine loses its mount mapping too. Only the non-worker path logs
-the read failure.
+Raised as a lateral by the wave 6 reviewer.
 
-## FUP-002 - An unreadable HEAD loses its errno in Git discovery
-
-`validate_git_head` (`crates/shepr-git/src/discovery.rs`) maps every error but
-`WouldBlock` to "invalid". A gitfile target whose HEAD cannot be read (EACCES)
-now reports "gitfile target has no valid HEAD" (`InvalidData`) and loses the
-errno it used to carry. A plain `.git` with an unreadable HEAD now ascends to
-an enclosing checkout, as Git does; that half is intended.
-
-## FUP-003 - An operator Connect against a hung host can show Starting... for minutes
-
-`SSH_START_ATTEMPT_BUDGET` (`crates/shepr-remote/src/limits.rs`) now covers
-executable re-verification and up to three discovery candidates, six SSH
-command timeouts plus the bridge phase, so a Connect against a host that hangs
-at every step shows Starting... for several minutes before it fails. After a
-bridge attempt fails on a stale path, `MachineSshConnector::connect` also
-resolves again and runs a second bridge, which neither operator budget counts
-(it is deadline-bound, so it fails as a deadline pass rather than overrunning).
-Decide whether the operator budgets should be shorter, or the Starting entry
-should show progress.
+With `/proc/self/mountinfo` unreadable, Git access falls back to an empty mount
+table (`crates/shepr-git/src/access.rs`), and a stall is recorded as stuck on
+`/`. Once mountinfo is readable again, `/` names only the root mount's device,
+so a hung non-root mount stops being quarantined and a replacement refresh
+thread can block on it again. Bounded by `MAX_ABANDONED_GIT_REFRESH_THREADS`.
+A fix would record an "unknown mount" stall that stays global until its thread
+finishes, rather than `/`.

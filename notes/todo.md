@@ -79,6 +79,16 @@ clean. shepr would need to track OSC 133 marks per pane in shepr-vt and clear
 the marked prompt region on a width change, and the user's shell would need the
 integration that emits the marks.
 
+## Show progress while a machine starts
+
+An operator Connect or Restart re-verifies the remote executable, may fall
+back to discovery, and then launches the server, so against a slow or hung host
+the machine row can sit on Starting... (or Stopping...) for minutes; the
+budgets in `crates/shepr-remote/src/limits.rs` are each exactly the work they
+bound. The entry could say which phase it is in (checking the install,
+discovering, starting the server) so a long wait reads as progress rather than
+a hang.
+
 ## Faster startup with unreachable machines
 
 Preflight blocks the TUI until every check of a round finishes, up to

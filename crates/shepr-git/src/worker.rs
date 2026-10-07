@@ -286,16 +286,16 @@ impl<T: Send + 'static> GitStatusWorker<T> {
     ///
     /// A target whose cwd or known checkout lies under a path an abandoned
     /// thread is still stuck on is left out, and the outcome carries no
-    /// status for it.
+    /// status for it. Every target is left out while such a thread lives and
+    /// mountinfo cannot be read.
     pub fn refresh(&mut self, mut targets: Vec<RefreshTarget<T>>) -> std::io::Result<()> {
         self.reap_abandoned();
         let requested = targets.len();
-        let mounts = if self.abandoned.is_empty() {
-            shepr_platform::mounts::MountTable::default()
-        } else {
-            shepr_platform::mounts::MountTable::read().unwrap_or_default()
-        };
-        targets.retain(|target| !self.is_stuck(target, &mounts));
+        if self.has_stuck_paths() {
+            // `read_mount_table` logs an unreadable mountinfo once per outage.
+            let mounts = crate::access::read_mount_table().ok();
+            self.exclude_abandoned_targets(&mut targets, mounts.as_ref());
+        }
         if targets.len() < requested {
             tracing::debug!(
                 skipped = requested - targets.len(),
@@ -511,6 +511,33 @@ impl<T: Send + 'static> GitStatusWorker<T> {
         })
     }
 
+    /// Whether an abandoned thread names paths to leave out. One abandoned
+    /// with no step running names none and excludes nothing.
+    fn has_stuck_paths(&self) -> bool {
+        self.abandoned.iter().any(|thread| !thread.stuck.is_empty())
+    }
+
+    fn exclude_abandoned_targets(
+        &self,
+        targets: &mut Vec<RefreshTarget<T>>,
+        mounts: Option<&shepr_platform::mounts::MountTable>,
+    ) {
+        if !self.has_stuck_paths() {
+            return;
+        }
+        let Some(mounts) = mounts else {
+            // Without a map, a target cannot be shown to be off the stalled
+            // device (a bind mount made since the stall is an alias no stuck
+            // path names), so no target is admitted while a thread is stuck.
+            // The refresh thread itself degrades instead (see
+            // `access::mount_snapshot`); this holds only until the stuck
+            // thread finishes or mountinfo is readable again.
+            targets.clear();
+            return;
+        };
+        targets.retain(|target| !self.is_stuck(target, mounts));
+    }
+
     /// Drops every cached miss once the commands sent before it have run.
     pub fn invalidate(&mut self) {
         if self.cache_may_hold_entries {
@@ -643,6 +670,40 @@ mod tests {
             cwd: cwd.to_path_buf(),
             known_key: Some(GitStatusKey::Outside(cwd.to_path_buf())),
         }
+    }
+
+    #[test]
+    fn unavailable_mount_table_skips_targets_while_a_worker_is_abandoned() {
+        let mut worker = GitStatusWorker::with_refresh(|_| {}, |targets, _| answer_all(targets));
+        worker.abandoned.push(AbandonedThread {
+            handle: std::thread::spawn(|| {}),
+            stuck: vec![PathBuf::from("/net")],
+        });
+        let mut targets = vec![
+            target(1, std::path::Path::new("/tmp/healthy")),
+            target(2, std::path::Path::new("/net/stalled")),
+        ];
+
+        worker.exclude_abandoned_targets(&mut targets, None);
+
+        assert!(
+            targets.is_empty(),
+            "unknown mount aliases require fail-closed filtering"
+        );
+    }
+
+    #[test]
+    fn abandoned_thread_with_no_stuck_paths_excludes_nothing_without_a_mount_table() {
+        let mut worker = GitStatusWorker::with_refresh(|_| {}, |targets, _| answer_all(targets));
+        worker.abandoned.push(AbandonedThread {
+            handle: std::thread::spawn(|| {}),
+            stuck: Vec::new(),
+        });
+        let mut targets = vec![target(1, std::path::Path::new("/srv/healthy"))];
+
+        worker.exclude_abandoned_targets(&mut targets, None);
+
+        assert_eq!(targets.len(), 1);
     }
 
     fn wait_for_lost_refresh<T: Send + 'static>(worker: &mut GitStatusWorker<T>) {

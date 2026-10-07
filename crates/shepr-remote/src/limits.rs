@@ -142,7 +142,16 @@ pub const SSH_START_BRIDGE_BUDGET: Duration =
 
 /// An operator's Connect allows executable verification (including full
 /// discovery when a cached path is rejected), then the remote launch to finish
-/// before the bridge relays the handshake. Automatic attaches never start a daemon.
+/// before the bridge relays the handshake. This budgets one complete resolution
+/// and one Start bridge, each step at its own full bound, so a host that hangs
+/// at every step holds Starting... for minutes; a shorter budget would instead
+/// fail a slow but working host part way through. If that bridge proves its executable path stale,
+/// `MachineSshConnector` retries discovery and the bridge under the same
+/// deadline; the failed invocation exits before it can spend the server launch
+/// allowance. The retry is best-effort and may run out of the deadline after a
+/// slow resolution. Reserving another full resolution and launch for this rare
+/// install race would lengthen every Connect and Restart. Automatic attaches
+/// never start a daemon.
 pub const SSH_START_ATTEMPT_BUDGET: Duration = SSH_COMMAND_TIMEOUT
     .saturating_mul(SSH_OPERATOR_MAX_RESOLUTION_COMMANDS)
     .saturating_add(SSH_START_BRIDGE_BUDGET);
