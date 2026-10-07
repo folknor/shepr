@@ -14,7 +14,7 @@ its list of areas checked and found consistent, is in commit 6dc81572
 (`notes/hunt-client-presentation.md`). The hunter's labels: "confirmed" means
 read end to end in code; "likely" means the code path is certain but one
 external behaviour (terminal or emulator) was taken from memory rather than a
-test. The patch fast path's uncoloured chrome roles are filed as SURF-001.
+test.
 
 ## CUI-001 - Copy mode loses track of the viewport on a pane that keeps printing
 
@@ -211,19 +211,6 @@ terminator.
 Related documented behaviour worth a second look (not a defect, the limits doc
 says it): the stall check only runs when input next arrives, so an
 unterminated paste stays invisible until the user presses another key.
-
-## CUI-009 - Frame write failure can leave the blitter's cursor-shape cache wrong
-
-Hunter's label: confirmed, very low.
-
-`write_frame` in `crates/shepr-client/src/state.rs` commits the encoder (and
-its `last_cursor_shape`) only after the whole write succeeds. A write that
-fails part way can still have delivered the `CSI Ps SP q` shape change. The
-retry repaints every cell (`repaint_pending`), but `write_host_cursor_state`
-emits the shape only when it differs from the cached value, so if the next
-frame wants the old shape back the host keeps the shape the failed write set. A
-forced repaint should also re-emit the cursor shape (and visibility), i.e.
-reset `last_cursor_shape` to an "unknown" value on a refused frame.
 
 ## CUI-013 - The clipboard read path does not follow the write route over SSH
 

@@ -9,46 +9,16 @@
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-Filed from the mux and Git hunt, plus one lateral from the terminal core hunt
-(MUX-010). The raw reports are in commit 6dc81572 (`notes/hunt-mux-git.md`,
-`notes/hunt-terminal-core.md`). The mux hunt's stale comment on
-`GIT_REMOTE_STATUS_REFRESH_INTERVAL` is filed with the server's Git refresh
-gate as SRV-001, because the two reports read that code differently.
-
-## MUX-001 - A pane whose child wait failed is removed without a checkpoint, losing its agent session
-
-Claim broken: `PaneEnding::needs_checkpoint`
-(`crates/shepr-mux/src/pane/exit_arbiter.rs`) documents that a checkpoint is
-taken for "every ending the user did not ask for (a signal, a reader panic or
-IO failure, a closed terminal), so its agent session is kept for resume".
-AGENTS.md repeats that `needs_checkpoint()` is "the one answer to whether the
-exit gets a final session checkpoint".
-
-What the code does: `PaneEndReason::WaitFailed` returns `false`. The child
-watcher (`pane/child_watcher.rs`, the `Err` arm of the spawned task) records
-`WaitFailed` with `child_exit_confirmed: false` when `try_wait`/`waitid` fails,
-i.e. exactly when the child may still be alive. The user did not ask for that
-ending. On the server side `App::decide_pane_exit`
-(`crates/shepr-server/src/app/events.rs`) then takes
-`CheckpointDecision::Unchecked`, and
-`transition_pane_exit(needs_checkpoint = false)` in
-`crates/shepr-detect/src/ownership/source/detection.rs` skips the branch that
-writes the session identity back. The pane is removed, its runtime dropped
-(teardown kills the possibly-live agent) and the next save omits it, so a
-running agent's resume identity is lost with no durable record.
-
-Which side is wrong: the code. `WaitFailed` is an involuntary ending of a pane
-whose child may be alive; it belongs with `ReaderIoFailed` in the checkpointed
-set. The `checkpoint_follows_the_reason` test pins the current (wrong) value
-and would change with it.
+Filed from the mux and Git hunt. The raw reports are in commit 6dc81572
+(`notes/hunt-mux-git.md`, `notes/hunt-terminal-core.md`).
 
 ## MUX-002 - A hung mount holds one abandoned Git worker thread per distinct cwd or checkout, not one per mount, and four of them stop Git status everywhere
 
-Claim broken: the `crates/shepr-git/src/worker.rs` module doc: "the paths its
-stalled step reads are left out of later refreshes until it finishes, so a
-mount that stays hung holds one thread, not one per refresh". Also
-`MAX_ABANDONED_GIT_REFRESH_THREADS` ("bounds the threads a hung mount can hold;
-past it a stalled refresh is waited out").
+The comments in `crates/shepr-git/src/worker.rs`, `limits.rs` and
+`config.rs::stamp` now describe this behaviour instead of claiming one thread
+per hung mount. The behaviour itself is unchanged; fixing it needs per-access
+path tracking in `shepr-git` and a mount or filesystem-device lookup in
+`shepr-platform`, so a fixer should own both crates.
 
 What the code does: the stuck-path list is what the step itself names, not
 the path that hung. A discovery step records `[target.cwd]`
@@ -113,34 +83,6 @@ Which side is wrong: the code. Discovery should start from the canonical
 logical path can still be kept for display and for the per-cwd admission in
 `Workspace::apply_git_status`.
 
-## MUX-004 - A launch settlement overwrites a cwd the shell already reported
-
-`App::handle_pane_launch_settled` (`crates/shepr-server/src/app/pane_launch.rs`)
-applies `StateEvent::TerminalCwdReported { cwd: <launch candidate> }` when a
-launch settles `Launched`. The coordinator (`launch_status::coordinate`)
-publishes that settlement with an awaited send after reading the status
-socket's EOF; the PTY reader publishes the shell's own OSC 7 with `try_send`
-from `publish_reported_cwd`. Nothing orders the two (the only ordering the code
-promises, in `events.rs`, is settlement before `PaneDied`). If the shell's
-first prompt OSC 7 (after an rc-file `cd`) is admitted first, the settlement
-replaces the stored terminal cwd with the launch directory, and the runtime's
-dedupe slot (`PaneCwdState::reported`) then suppresses the same OSC 7 path on
-every later prompt, so the stored cwd stays wrong until the shell changes
-directory. Impact is limited because `terminal_cwd` prefers the runtime's live
-observation, but the stored cwd is what saves and identity fall back to once
-the runtime has no observation. The settlement should only seed the stored cwd
-when no report has been accepted for that runtime yet.
-
-## MUX-006 - `ResumeFailed` renders two guidance sentences and two `Error:` prefixes
-
-`PaneStartFailure::cause` for `ResumeFailed` formats the inner failure with
-`Display` (`"{failure} Agent: ..."`), and the inner `Display` already writes its
-own guidance and `" Error: ..."`. The outer `Display` then writes the outer
-guidance, `" Error: "`, and that whole string, so the pane placeholder reads
-"Could not resume the saved agent. ... Error: Could not start the pane shell.
-Check ... Error: <errno> Agent: ...". `cause()` should use the inner failure's
-own `cause()` (and, if wanted, its guidance once).
-
 ## MUX-007 - Reftable checkouts spawn Git on every refresh
 
 Raised as a lateral observation.
@@ -148,12 +90,11 @@ Raised as a lateral observation.
 `read_head_identity_from_git` runs `git symbolic-ref` and
 `git rev-parse --verify`, and `read_upstream` another `rev-parse`, inside
 `fingerprint`, which runs on every refresh of a cached hit. With
-`GIT_REMOTE_STATUS_REFRESH_INTERVAL` at 1.5 s and no client gating, that is
-three Git processes per reftable checkout every 1.5 s for the server's
-lifetime, where a files-backend checkout costs only a few stats. A stamp of the
-reftable directory (`reftable/tables.list`) as a fingerprint dependency would
-let the hit path skip the probes. (SRV-001 reports that refresh is in fact
-gated on a presenting client; the cost applies while one is.)
+`GIT_REMOTE_STATUS_REFRESH_INTERVAL` at 1.5 s, and refresh no longer gated on
+a presenting client, that is three Git processes per reftable checkout every
+1.5 s for the server's lifetime, where a files-backend checkout costs only a
+few stats. A stamp of the reftable directory (`reftable/tables.list`) as a
+fingerprint dependency would let the hit path skip the probes.
 
 ## MUX-008 - An uncacheable `ConfigCtx` is rebuilt on every refresh
 
@@ -164,43 +105,15 @@ config environment variable, a config that changed between the two
 `config --list` runs) is rebuilt on every refresh: two `git config --list` runs
 and a `for-each-ref` per checkout every 1.5 s, indefinitely.
 
-## MUX-009 - `run_git`'s pipe readers have no byte cap
+## MUX-014 - A save before a fresh launch settles can stop the settlement seeding its cwd
 
-Raised as a lateral observation.
+Raised as a lateral by the wave reviewer.
 
-`runner::read_until` has no byte cap; every current probe is small, but
-`config --includes --show-origin --list` is user-controlled in size and read
-into memory whole, twice per rebuild.
-
-## MUX-010 - Git helpers spawned by std inherit every server fd until they exec, including the data-directory lease
-
-Raised as a lateral finding by the terminal core hunt.
-
-Where: `crates/shepr-git/src/runner.rs`, `run_git_with_program_and_clock`,
-built from `shepr_platform::child_command(program, cwd)`
-(`crates/shepr-platform/src/host.rs`), which sets `current_dir(cwd)`. The cwd
-is a workspace directory, which can be on a hung network mount.
-
-std performs that chdir in the forked (or `posix_spawn`ed) child before
-`execve`. Until exec, the child holds a copy of every fd the server has: all
-PTY masters (O_CLOEXEC only helps at exec), the server socket and the
-data-directory lease, which is an `flock` (`acquire_flock_lock` in
-`crates/shepr-platform/src/data_directory_lease.rs`) and so stays held while
-any duplicate of its open file description is open. A git child stuck in
-uninterruptible chdir therefore:
-
-- keeps the lease locked after the server exits, so no successor server can
-  start until the mount recovers (AGENTS.md: "the lease decides which
-  contender owns the data directory");
-- keeps closed panes' PTY masters open, so their sessions never get the
-  master-close hangup (teardown's signals still apply, which softens this).
-
-`crates/shepr-pty/src/launch.rs` already names this hazard ("every fd the
-server owns is inherited by whatever it forks, including helpers std spawns,
-and a helper hung in its own chdir would keep a parent-made pipe open
-indefinitely") and the pane fork path avoids it by closing fds before chdir;
-the git runner does not. Direction: run git with `-C <dir>` (or open the
-directory with `O_PATH` in a short-lived thread and use `fchdir` in a
-`pre_exec` after `close_range`), so no inherited fd outlives a hung chdir; or
-spawn helpers from a small fork-server process that holds none of the server's
-fds.
+`App::handle_pane_launch_settled` (`crates/shepr-server/src/app/pane_launch.rs`)
+seeds the stored cwd on `LaunchOutcome::Launched` only when the runtime holds
+no conflicting cwd observation, so a shell's own OSC 7 is not overwritten. But
+`runtime.remembered_cwd()` also returns the `/proc` observation a save takes.
+A save that runs between the fork and the settlement, before the child has
+done its chdir, remembers the server's own cwd; that reads as a conflict and a
+fallback launch cwd is then not seeded. The window is tiny. Consulting only the
+OSC 7 `reported` slot would close it.

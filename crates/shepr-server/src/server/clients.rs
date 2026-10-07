@@ -295,6 +295,10 @@ impl Index<&ClientId> for ClientRegistry {
 }
 
 impl ClientRegistry {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.connections.is_empty()
+    }
+
     pub(crate) fn contains_key(&self, client_id: &ClientId) -> bool {
         self.connections.contains_key(client_id)
     }

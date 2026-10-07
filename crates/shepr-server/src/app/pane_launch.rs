@@ -48,11 +48,28 @@ impl App {
                         "pane launched in fallback working directory"
                     );
                 }
-                self.state
-                    .handle_state_event(super::events::StateEvent::TerminalCwdReported {
-                        pane_id,
-                        cwd,
-                    });
+                // The launch cwd is only a seed. A shell can emit OSC 7
+                // before this settlement reaches the app, including a report
+                // that equals the request but differs from a fallback cwd.
+                // Keep any conflicting runtime observation, and also catch a
+                // report already applied to app state.
+                let runtime_cwd_conflicts = self
+                    .terminal_runtimes
+                    .get(&pane_id)
+                    .and_then(shepr_mux::pane::PaneRuntime::remembered_cwd)
+                    .is_some_and(|observed| observed.as_path() != cwd.as_path());
+                let should_seed_cwd = !runtime_cwd_conflicts
+                    && self
+                        .state
+                        .terminal(pane_id)
+                        .is_some_and(|terminal| terminal.cwd() == &requested_cwd);
+                if should_seed_cwd {
+                    self.state
+                        .handle_state_event(super::events::StateEvent::TerminalCwdReported {
+                            pane_id,
+                            cwd,
+                        });
+                }
                 let command = (kind == LaunchKind::AgentResume)
                     .then(|| self.state.take_agent_resume_command(pane_id))
                     .flatten();
@@ -103,14 +120,14 @@ impl App {
             // The child may be alive, but with its status unreadable it never
             // opens observation: no liveness, no detection, no exit to wait
             // for. Retiring the runtime ends it, and the pane stays as a
-            // placeholder saying why, as for a launch that failed. The
-            // coordinator already logged the error.
+            // placeholder saying why, as for a launch that failed. Preserve
+            // the channel error in the resume-specific failure record too.
             LaunchOutcome::StatusUnavailable(error) => {
                 if kind == LaunchKind::AgentResume {
                     self.fail_agent_resume(
                         pane_id,
-                        ResumeUnavailableReason::ShellLaunchUnconfirmed,
-                        None,
+                        ResumeUnavailableReason::LaunchStatusUnavailable,
+                        Some(&error),
                     );
                     return true;
                 }
@@ -131,7 +148,8 @@ impl App {
     /// own, and its PTY patches would repaint any notice laid over them.
     ///
     /// The one log line for the failure: `detail` carries the cause a caller
-    /// observed (a send error), so the caller does not log it again.
+    /// observed (a send or launch-status error), so the caller does not log it
+    /// again.
     fn fail_agent_resume(
         &mut self,
         pane_id: PaneId,
@@ -241,6 +259,7 @@ mod tests {
         let (mut app, pane_id) = app_with_launching_resume();
         let scratch = crate::test_support::ScratchDir::new("launch-cwd-projection");
         let cwd = shepr_mux::UsableCwd::new(scratch.to_path_buf()).expect("usable cwd");
+        let requested_cwd = app.state.terminal(pane_id).expect("pane").cwd().clone();
         let before = app.state.shell_projection_revision();
         app.state.test_clear_session_dirty();
 
@@ -250,9 +269,12 @@ mod tests {
             LaunchKind::Fresh,
             LaunchOutcome::Launched {
                 cwd: cwd.clone(),
-                requested_cwd: cwd.as_absolute().clone(),
-                candidate_index: 0,
-                first_candidate_error: None,
+                requested_cwd: requested_cwd.clone(),
+                candidate_index: 1,
+                first_candidate_error: Some(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "requested cwd unavailable",
+                )),
             },
         ));
         assert_eq!(
@@ -270,9 +292,12 @@ mod tests {
             LaunchKind::Fresh,
             LaunchOutcome::Launched {
                 cwd: cwd.clone(),
-                requested_cwd: cwd.as_absolute().clone(),
-                candidate_index: 0,
-                first_candidate_error: None,
+                requested_cwd,
+                candidate_index: 1,
+                first_candidate_error: Some(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "requested cwd unavailable",
+                )),
             },
         ));
         assert_eq!(app.state.shell_projection_revision(), before);
@@ -315,8 +340,54 @@ mod tests {
             Some(shepr_mux::terminal::PaneStartFailure::ResumeFailed { .. })
         ));
         assert!(terminal.ownership().persisted_agent_session().is_some());
+        assert!(
+            terminal
+                .start_failure()
+                .expect("failure")
+                .to_string()
+                .contains(ResumeUnavailableReason::LaunchStatusUnavailable.as_str())
+        );
         assert!(!app.has_pending_agent_resumes());
         assert!(app.terminal_runtimes.get(&pane_id).is_none());
+    }
+
+    #[test]
+    fn a_launch_settlement_does_not_overwrite_a_cwd_reported_first() {
+        let (mut app, pane_id) = app_with_launching_resume();
+        let requested_dir = crate::test_support::ScratchDir::new("launch-requested-before-report");
+        let requested_cwd =
+            shepr_mux::UsableCwd::new(requested_dir.to_path_buf()).expect("requested cwd");
+        app.state
+            .terminal_mut(pane_id)
+            .set_cwd(requested_cwd.clone());
+        let reported_dir =
+            crate::test_support::ScratchDir::new("reported-before-launch-settlement");
+        let reported_cwd =
+            shepr_mux::UsableCwd::new(reported_dir.to_path_buf()).expect("reported cwd");
+        let report = app.from_pane_runtime(
+            pane_id,
+            RuntimeEvent::TerminalCwdReported {
+                cwd: reported_cwd.clone(),
+            },
+        );
+        assert!(app.handle_internal_event_with_view_change(report));
+
+        assert!(settle_as(
+            &mut app,
+            pane_id,
+            LaunchKind::Fresh,
+            LaunchOutcome::Launched {
+                cwd: requested_cwd.clone(),
+                requested_cwd: requested_cwd.as_absolute().clone(),
+                candidate_index: 0,
+                first_candidate_error: None,
+            },
+        ));
+
+        assert_eq!(
+            app.state.terminal(pane_id).expect("terminal").cwd(),
+            reported_cwd.as_absolute(),
+        );
     }
 
     #[test]

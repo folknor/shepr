@@ -89,7 +89,8 @@ pub enum PaneStartFailure {
     /// The launch's status channel failed while its child lived, so the
     /// child could not be observed and was ended.
     LaunchUnobservable { error: std::io::Error },
-    /// The shell launch was unconfirmed or its resume command could not be sent.
+    /// A resume launch was unconfirmed, its status was unavailable, or its
+    /// command could not be sent.
     ResumeUnavailable { reason: ResumeUnavailableReason },
     /// A failed resume retains the validated plan for manual recovery.
     ResumeFailed {
@@ -102,6 +103,7 @@ pub enum PaneStartFailure {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResumeUnavailableReason {
     ShellLaunchUnconfirmed,
+    LaunchStatusUnavailable,
     CommandSendFailed,
 }
 
@@ -111,6 +113,7 @@ impl ResumeUnavailableReason {
             Self::ShellLaunchUnconfirmed => {
                 "the shell for the resume did not confirm that it started"
             }
+            Self::LaunchStatusUnavailable => "the shell launch status could not be read",
             Self::CommandSendFailed => "the resume command could not be sent to the shell",
         }
     }
@@ -180,15 +183,30 @@ impl PaneStartFailure {
                 error,
             } => Some(format!("{}: {error}", program.display()).into()),
             Self::ResumeUnavailable { reason } => Some(reason.as_str().into()),
-            Self::ResumeFailed { plan, failure } => Some(
-                format!(
-                    "{failure} Agent: {}. Session: {}. Manual resume: {}",
-                    plan.agent().label(),
-                    plan.key().session_ref().value_str(),
-                    plan.to_shell_command(),
+            Self::ResumeFailed { plan, failure } => {
+                // The outer Display supplies this resume failure's guidance
+                // and its single `Error:` label. Use the nested cause only;
+                // formatting the nested failure here would repeat both.
+                let failure_cause = failure
+                    .cause()
+                    .map_or_else(|| failure.guidance().to_owned(), std::borrow::Cow::into_owned);
+                let failure_cause = match failure.as_ref() {
+                    Self::DirectoryUnavailable { path, .. }
+                    | Self::DirectoryUnreadable { path, .. } => {
+                        format!("{failure_cause} Directory: {}.", path.display())
+                    }
+                    _ => failure_cause,
+                };
+                Some(
+                    format!(
+                        "{failure_cause} Agent: {}. Session: {}. Manual resume: {}",
+                        plan.agent().label(),
+                        plan.key().session_ref().value_str(),
+                        plan.to_shell_command(),
+                    )
+                    .into(),
                 )
-                .into(),
-            ),
+            }
         }
     }
 }
@@ -333,5 +351,32 @@ mod start_failure_tests {
         assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
         assert_eq!(error.raw_os_error(), None);
         assert_eq!(error.to_string(), "preparation denied");
+    }
+
+    #[test]
+    fn resume_failure_shows_one_guidance_sentence_and_one_error_prefix() {
+        let session = shepr_agent::resume::PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse("shepr:codex").expect("bundled source"),
+            shepr_agent::resume::AgentSessionRef::id("resume-failure").expect("valid session"),
+        )
+        .expect("valid persisted session");
+        let failure = PaneStartFailure::ResumeFailed {
+            plan: session.resume_plan(),
+            failure: Box::new(PaneStartFailure::shell_start_failed(
+                &std::io::Error::from_raw_os_error(libc::ENOENT),
+            )),
+        };
+
+        let rendered = failure.to_string();
+        assert_eq!(
+            rendered
+                .matches("Could not resume the saved agent.")
+                .count(),
+            1
+        );
+        assert_eq!(rendered.matches(" Error: ").count(), 1);
+        assert!(!rendered.contains("Could not start the pane shell."));
+        assert!(rendered.contains("No such file or directory"));
+        assert!(rendered.contains("Manual resume: codex resume resume-failure"));
     }
 }

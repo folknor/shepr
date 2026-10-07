@@ -225,20 +225,22 @@ impl AppState {
     pub(crate) fn sync_terminal_titles(
         &mut self,
         observations: impl IntoIterator<Item = (shepr_core::layout::PaneId, Option<String>)>,
-    ) -> shepr_mux::terminal::state::TerminalTitleChange {
-        let mut changes = shepr_mux::terminal::state::TerminalTitleChange::default();
+    ) -> bool {
+        let mut projection_changed = false;
         for (pane_id, title) in observations {
             let Some(record) = self.workspaces.pane_mut(pane_id) else {
                 continue;
             };
-            let change = record.terminal_mut().set_terminal_title(title);
-            changes.raw_changed |= change.raw_changed;
-            changes.stripped_changed |= change.stripped_changed;
+            let terminal = record.terminal_mut();
+            let has_effective_agent = terminal.ownership().effective_agent().is_some();
+            let change = terminal.set_terminal_title(title);
+            projection_changed |=
+                has_effective_agent && (change.raw_changed || change.stripped_changed);
         }
-        if changes.raw_changed || changes.stripped_changed {
+        if projection_changed {
             self.mark_shell_projection_dirty();
         }
-        changes
+        projection_changed
     }
 
     /// The session's workspaces, their order, IDs and bookmark.

@@ -1312,9 +1312,10 @@ impl AgentOwnership {
         session_start_source: ReportedSessionStart,
     ) -> Option<shepr_agent::resume::AgentSessionRef> {
         let current = self.current_session_identity_for_persistence()?;
+        // Paths identify sessions just as IDs do. Without live hook authority,
+        // a persisted path still anchors this owner; a stray startup or refresh
+        // must not select another conversation without a permitted replacement.
         (origin.owns(&current)
-            && current.session_ref().is_id()
-            && session_ref.is_id()
             && current.session_ref() != session_ref
             && !origin.allows_session_replacement(session_start_source))
         .then(|| current.session_ref().clone())

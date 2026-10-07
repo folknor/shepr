@@ -41,6 +41,9 @@ use shepr_protocol::{
     WireStyleFlags,
 };
 
+// CursorShapeParam uses 0 through 6, leaving this value as an invalidated cache marker.
+const UNKNOWN_CURSOR_SHAPE: u8 = u8::MAX;
+
 /// Bytes produced by a [`BlitEncoder`] for one terminal frame.
 pub struct EncodedBlit {
     /// Terminal escape bytes ready to write to the host terminal.
@@ -54,13 +57,19 @@ pub struct EncodedBlit {
 pub struct BlitEncoder {
     last_frame: Option<FrameData>,
     last_visible_cursor: Option<(u16, u16)>,
-    /// Numeric CSI parameter cache; setup establishes the default value zero.
+    /// Numeric CSI parameter cache; 255 means a refused write made it unknown.
     last_cursor_shape: u8,
 }
 
 impl BlitEncoder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A refused write may have delivered its cursor-shape sequence before it failed.
+    /// The next successful frame must therefore reassert its desired shape.
+    pub fn invalidate_cursor_shape(&mut self) {
+        self.last_cursor_shape = UNKNOWN_CURSOR_SHAPE;
     }
 
     pub fn encode(&self, frame: &FrameData, repaint: bool) -> EncodedBlit {

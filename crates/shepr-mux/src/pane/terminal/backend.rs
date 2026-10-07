@@ -9,6 +9,31 @@ use crate::workspace::SurfaceChange;
 use shepr_protocol::MAX_SURFACE_HYPERLINKS;
 
 impl PaneTerminal {
+    fn report_oversized_clipboard_store_effect(
+        &self,
+        pane_id: PaneId,
+        size: shepr_vt::ClipboardStoreSize,
+    ) {
+        match size {
+            shepr_vt::ClipboardStoreSize::Exact(bytes) => {
+                self.report_oversized_clipboard_store(pane_id, bytes);
+            }
+            shepr_vt::ClipboardStoreSize::AtLeast(minimum_bytes) => {
+                if !self
+                    .oversized_clipboard_reported
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    shepr_platform::structured_log!(
+                        WARN, event = clipboard.osc_store, outcome = Oversized,
+                        pane = %pane_id,
+                        minimum_bytes,
+                        "dropped oversized OSC 52 clipboard store; decoded size is at least this many bytes"
+                    );
+                }
+            }
+        }
+    }
+
     /// Construct a terminal that belongs to no pane: for tests, and for the
     /// `PaneRuntime::with_child_io` seam, whose runtime has no real pane.
     /// A spawned pane uses [`Self::new_with_pane_id`].
@@ -251,11 +276,11 @@ impl PaneTerminal {
                     )
                 })
         };
-        let dropped_clipboard_store_bytes = effects.dropped_clipboard_store_bytes.first().copied();
+        let dropped_clipboard_store_size = effects.dropped_clipboard_store_sizes.first().copied();
         drop(core);
         osc_debug::log(pane_id, &effects.osc_debug);
-        if let Some(bytes) = dropped_clipboard_store_bytes {
-            self.report_oversized_clipboard_store(pane_id, bytes);
+        if let Some(size) = dropped_clipboard_store_size {
+            self.report_oversized_clipboard_store_effect(pane_id, size);
         }
         Ok(ProcessBytesEffects {
             render_request,
@@ -320,11 +345,11 @@ impl PaneTerminal {
         }
         // A synchronized update parses its buffered bytes when it flushes, so
         // an oversized OSC 52 store inside one surfaces here, not on a read.
-        if let (Some(pane_id), Some(bytes)) = (
+        if let (Some(pane_id), Some(size)) = (
             self.pane_id,
-            effects.dropped_clipboard_store_bytes.first().copied(),
+            effects.dropped_clipboard_store_sizes.first().copied(),
         ) {
-            self.report_oversized_clipboard_store(pane_id, bytes);
+            self.report_oversized_clipboard_store_effect(pane_id, size);
         }
         Ok(ProcessBytesEffects {
             render_request: if flushed {

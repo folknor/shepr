@@ -17,6 +17,17 @@ use shepr_core::locks::lock_auxiliary;
 use crate::limits::MAX_CLIPBOARD_BYTES;
 use crate::{ColorQuery, Progress, WorkingDirectoryReport};
 
+/// How many decoded bytes an OSC 52 clipboard store contained or was known to
+/// contain before the parser cut it off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClipboardStoreSize {
+    /// Alacritty decoded the complete payload.
+    Exact(usize),
+    /// The scanner cut the payload before decoding; this is a conservative
+    /// lower bound derived from the complete base64 groups it had received.
+    AtLeast(usize),
+}
+
 /// A reply the terminal wants written back to the child, in byte order.
 #[derive(Debug)]
 pub enum PtyResponse {
@@ -41,8 +52,9 @@ pub struct TerminalEffects {
     pub pwd_changes: Vec<WorkingDirectoryReport>,
     /// Clipboard stores requested by the child.
     pub clipboard_writes: Vec<Vec<u8>>,
-    /// Sizes of clipboard stores dropped for exceeding the configured limit.
-    pub dropped_clipboard_store_bytes: Vec<usize>,
+    /// Decoded sizes of clipboard stores dropped for exceeding the configured
+    /// limit, exact when decoded and a lower bound when cut off by the scanner.
+    pub dropped_clipboard_store_sizes: Vec<ClipboardStoreSize>,
     /// The latest uncollected window-title change.
     pub title_update: Option<TitleUpdate>,
     /// The latest uncollected OSC 9;4 progress report.
@@ -92,7 +104,7 @@ pub(super) struct Effects {
     responses: Vec<PtyResponse>,
     pwd_changes: Vec<WorkingDirectoryReport>,
     clipboard_writes: Vec<Vec<u8>>,
-    dropped_clipboard_store_bytes: Vec<usize>,
+    dropped_clipboard_store_sizes: Vec<ClipboardStoreSize>,
     /// The latest title change not yet collected.
     title_update: Option<TitleUpdate>,
     /// The latest OSC 9;4 progress report not yet collected.
@@ -110,7 +122,7 @@ impl Effects {
             responses: Vec::new(),
             pwd_changes: Vec::new(),
             clipboard_writes: Vec::new(),
-            dropped_clipboard_store_bytes: Vec::new(),
+            dropped_clipboard_store_sizes: Vec::new(),
             title_update: None,
             progress_update: None,
             osc_bodies: Vec::new(),
@@ -162,6 +174,11 @@ impl Effects {
         self.osc_bodies.push(body);
     }
 
+    pub(super) fn note_cut_oversized_clipboard_store(&mut self, minimum_bytes: usize) {
+        self.dropped_clipboard_store_sizes
+            .push(ClipboardStoreSize::AtLeast(minimum_bytes));
+    }
+
     pub(super) fn note_default_color_set(&mut self) {
         self.default_color_set = true;
     }
@@ -178,20 +195,24 @@ impl Effects {
                 TerminalEvent::ColorQuery(query) => {
                     self.responses.push(PtyResponse::ColorQuery(query));
                 }
-                // Clipboard effects carry only non-empty clipboard-target
-                // payloads; empty and selection-target stores are ignored.
-                TerminalEvent::ClipboardStore(ClipboardType::Clipboard, text)
-                    if !text.is_empty() && text.len() <= MAX_CLIPBOARD_BYTES =>
-                {
+                // Every nonempty accepted OSC 52 store is surfaced as a copy,
+                // which the TUI sends to both clipboard and primary selection.
+                // Alacritty reports OSC targets `p` and `s` as Selection.
+                TerminalEvent::ClipboardStore(
+                    ClipboardType::Clipboard | ClipboardType::Selection,
+                    text,
+                ) if !text.is_empty() && text.len() <= MAX_CLIPBOARD_BYTES => {
                     self.clipboard_writes.push(text.into_bytes());
                 }
-                TerminalEvent::ClipboardStore(ClipboardType::Clipboard, text)
-                    if text.len() > MAX_CLIPBOARD_BYTES =>
-                {
+                TerminalEvent::ClipboardStore(
+                    ClipboardType::Clipboard | ClipboardType::Selection,
+                    text,
+                ) if text.len() > MAX_CLIPBOARD_BYTES => {
                     // `text` is already decoded valid UTF-8, so `len()` is
                     // the decoded OSC 52 store size in bytes. Keep only that
                     // count for the pane's diagnostic; never retain the text.
-                    self.dropped_clipboard_store_bytes.push(text.len());
+                    self.dropped_clipboard_store_sizes
+                        .push(ClipboardStoreSize::Exact(text.len()));
                 }
                 TerminalEvent::Title(title) => self.title_update = Some(TitleUpdate::Set(title)),
                 TerminalEvent::ResetTitle => self.title_update = Some(TitleUpdate::Reset),
@@ -210,7 +231,7 @@ impl Effects {
             pty_responses: mem::take(&mut self.responses),
             pwd_changes: mem::take(&mut self.pwd_changes),
             clipboard_writes: mem::take(&mut self.clipboard_writes),
-            dropped_clipboard_store_bytes: mem::take(&mut self.dropped_clipboard_store_bytes),
+            dropped_clipboard_store_sizes: mem::take(&mut self.dropped_clipboard_store_sizes),
             title_update: self.title_update.take(),
             progress_update: self.progress_update.take(),
             osc_bodies: mem::take(&mut self.osc_bodies),

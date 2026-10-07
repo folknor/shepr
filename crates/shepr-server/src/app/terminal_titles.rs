@@ -2,19 +2,15 @@ use std::collections::HashSet;
 
 use super::App;
 use shepr_core::layout::PaneId;
-use shepr_mux::terminal::state::TerminalTitleChange;
 
 impl App {
     /// Pulls the titles of `sources` from their runtimes. Any changed title
-    /// also changes the shell agent metadata, so it marks the shell projection
-    /// dirty here; callers fold the returned changes into their own view
-    /// change.
-    pub(crate) fn sync_terminal_titles(
-        &mut self,
-        sources: &HashSet<PaneId>,
-    ) -> TerminalTitleChange {
+    /// for a pane with an effective agent changes shell agent metadata and
+    /// marks the shared projection dirty. Titles are still stored for every
+    /// pane so a later agent detection sees the current title immediately.
+    pub(crate) fn sync_terminal_titles(&mut self, sources: &HashSet<PaneId>) -> bool {
         if sources.is_empty() {
-            return TerminalTitleChange::default();
+            return false;
         }
 
         let mut observations = Vec::with_capacity(sources.len());
@@ -38,7 +34,7 @@ mod tests {
     use shepr_mux::workspace::Workspace;
 
     #[tokio::test]
-    async fn sync_keeps_latest_raw_title_and_reports_stripped_changes() {
+    async fn sync_keeps_latest_raw_and_stripped_agent_titles() {
         let mut app = App::new(&ServerConfig::default());
         app.state
             .test_set_workspaces(vec![Workspace::test_new("one")]);
@@ -58,13 +54,7 @@ mod tests {
         app.terminal_runtimes.insert(pane_id, runtime);
         let sources = HashSet::from([pane_id]);
 
-        assert_eq!(
-            app.sync_terminal_titles(&sources),
-            TerminalTitleChange {
-                raw_changed: true,
-                stripped_changed: true,
-            }
-        );
+        assert!(app.sync_terminal_titles(&sources));
         let agent = app.collect_agent_infos().pop().expect("test precondition");
         assert_eq!(agent.agent_status, shepr_api::schema::AgentStatus::Working);
         assert_eq!(agent.terminal_title.as_deref(), Some("⠋ 修复\u{1F642}标题"));
@@ -77,13 +67,7 @@ mod tests {
             .get(&pane_id)
             .expect("test precondition")
             .test_process_pty_bytes("\x1b]2;⠙ 修复\u{1F642}标题\x1b\\".as_bytes());
-        assert_eq!(
-            app.sync_terminal_titles(&sources),
-            TerminalTitleChange {
-                raw_changed: true,
-                stripped_changed: false,
-            }
-        );
+        assert!(app.sync_terminal_titles(&sources));
         let agent = app.collect_agent_infos().pop().expect("test precondition");
         assert_eq!(agent.terminal_title.as_deref(), Some("⠙ 修复\u{1F642}标题"));
         assert_eq!(
@@ -95,20 +79,20 @@ mod tests {
             .get(&pane_id)
             .expect("test precondition")
             .test_process_pty_bytes(b"\x1b]0;Done reviewing\x07");
-        assert!(app.sync_terminal_titles(&sources).stripped_changed);
+        assert!(app.sync_terminal_titles(&sources));
 
         app.terminal_runtimes
             .get(&pane_id)
             .expect("test precondition")
             .test_process_pty_bytes(b"\x1b]0;\x07");
-        assert!(app.sync_terminal_titles(&sources).stripped_changed);
+        assert!(app.sync_terminal_titles(&sources));
         let agent = app.collect_agent_infos().pop().expect("test precondition");
         assert_eq!(agent.terminal_title, None);
         assert_eq!(agent.terminal_title_stripped, None);
     }
 
     #[tokio::test]
-    async fn title_sync_moves_the_shell_projection() {
+    async fn a_plain_shell_title_is_stored_without_moving_the_shell_projection() {
         let mut app = App::new(&ServerConfig::default());
         app.state
             .test_set_workspaces(vec![Workspace::test_new("one")]);
@@ -118,9 +102,34 @@ mod tests {
         app.terminal_runtimes.insert(pane_id, runtime);
         let revision = app.state.shell_projection_revision();
 
-        let changes = app.sync_terminal_titles(&HashSet::from([pane_id]));
+        let changed = app.sync_terminal_titles(&HashSet::from([pane_id]));
 
-        assert!(changes.stripped_changed);
-        assert_ne!(app.state.shell_projection_revision(), revision);
+        assert!(!changed);
+        assert_eq!(app.state.shell_projection_revision(), revision);
+        assert_eq!(
+            app.state
+                .terminal(pane_id)
+                .and_then(|terminal| terminal.terminal_title()),
+            Some("building")
+        );
+
+        app.state
+            .terminal_mut(pane_id)
+            .ownership_mut()
+            .set_detected_state_with_screen_signals_at(
+                Some(Agent::Claude),
+                AgentState::Working,
+                false,
+                false,
+                std::time::Instant::now(),
+            );
+        assert_eq!(
+            app.collect_agent_infos()
+                .pop()
+                .expect("detected agent")
+                .terminal_title
+                .as_deref(),
+            Some("building")
+        );
     }
 }

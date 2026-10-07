@@ -51,9 +51,10 @@ counter!(ConnectionGeneration);
 /// owner-held value is always even. A full surface spans several core holds,
 /// so a revision sent for one is certified by [`Self::certify`], which makes it
 /// odd when the cells it describes may be torn; a retained patch reads its
-/// cells and revision under one hold and needs no certificate. A receiver only
-/// compares revisions for equality, and an odd one never names a stable
-/// surface ([`Self::is_stable`]).
+/// cells and revision under one hold and needs no certificate. A receiver
+/// compares stable revisions for equality; an odd revision never certifies
+/// content and must be treated as changed even when its value is unchanged
+/// ([`Self::is_stable`]).
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
 )]
@@ -67,9 +68,9 @@ impl ContentRevision {
         self.0 = self.0.wrapping_add(2);
     }
 
-    /// Whether the content changed between `earlier` and this revision.
+    /// Whether content changed since `earlier`, or this revision is uncertified.
     pub fn changed_since(self, earlier: Self) -> bool {
-        self != earlier
+        !self.is_stable() || self != earlier
     }
 
     /// Whether the revision certifies the cells it was sent with.
@@ -134,6 +135,9 @@ mod tests {
             revision
         );
         assert!(!ContentRevision::certify(None, Some(revision)).is_stable());
+        let torn = ContentRevision::certify(None, Some(revision));
+        assert!(torn.changed_since(torn));
+        assert!(!revision.changed_since(revision));
         let mut moved = revision;
         moved.advance();
         assert!(!ContentRevision::certify(Some(revision), Some(moved)).is_stable());

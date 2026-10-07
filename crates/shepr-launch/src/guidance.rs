@@ -45,12 +45,20 @@ pub fn detach_guidance(address: &ServerAddress, machines_configured: bool) -> St
     detach_guidance_with(address, &operator_entrypoint(), machines_configured)
 }
 
-/// What to tell an operator whose command found no server listening at
-/// `socket_path`, with the command that starts or attaches to it.
-pub fn server_not_running(socket_path: &Path, attach_command: &str) -> String {
+/// What to tell an operator whose command found no server at the selected
+/// address. A socket override can attach to or stop a server, but cannot start
+/// one, so it gets the override-specific guidance.
+pub fn server_not_running(
+    address: &ServerAddress,
+    runtime_dir: &Path,
+    attach_command: &str,
+) -> String {
+    if !address.is_runtime_address() {
+        return no_server_at_override(address, runtime_dir);
+    }
     format!(
         "no shepr server is running at {}; run `{attach_command}` to start or attach it",
-        socket_path.display()
+        address.socket().display()
     )
 }
 
@@ -204,8 +212,13 @@ pub fn cli_build_mismatch(
     address: &ServerAddress,
     build_id: shepr_protocol::BuildIdentity,
 ) -> String {
+    let next_step = if address.is_runtime_address() {
+        "restart the server with this build before using this command"
+    } else {
+        "this client cannot use the running server at the selected socket override"
+    };
     format!(
-        "this shepr client (build {}) differs from the running server (build {build_id}); restart the server with this build before using this command. {}",
+        "this shepr client (build {}) differs from the running server (build {build_id}); {next_step}. {}",
         shepr_protocol::BUILD_ID,
         build_mismatch_guidance(address)
     )
@@ -401,7 +414,9 @@ pub fn ssh_prompt_notice(
 
 /// Preflight decisions retain their typed cause until this wording boundary.
 pub enum MachinePreflightNotice<'a> {
-    AuthenticationFailed(&'a dyn std::fmt::Display),
+    /// The foreground ssh failed; the disposition is the pre-prompt check's,
+    /// which decides whether the client retries the machine by itself.
+    AuthenticationFailed(&'a dyn std::fmt::Display, crate::FailureDisposition),
     NoTerminal,
     AuthenticationRefused(&'a crate::EndpointFailure),
     HostKey(&'a crate::EndpointFailure),
@@ -418,15 +433,24 @@ pub fn machine_preflight_notice(
     notice: MachinePreflightNotice<'_>,
 ) -> String {
     match notice {
-        MachinePreflightNotice::AuthenticationFailed(error) => format!(
-            "shepr: authentication for machine {label} failed: {error}. The client keeps retrying it."
+        MachinePreflightNotice::AuthenticationFailed(
+            error,
+            crate::FailureDisposition::Authentication,
+        ) => format!(
+            "shepr: authentication for machine {label} failed: {error}. The client will not retry it automatically; after fixing SSH access, select its login entry to try again or restart shepr to authenticate again."
+        ),
+        // A check that only timed out (a possible interactive wait) is retried
+        // by the client, so the notice must not promise otherwise.
+        MachinePreflightNotice::AuthenticationFailed(error, disposition) => format!(
+            "shepr: authentication for machine {label} failed: {error}. {}",
+            failure_client_action(disposition)
         ),
         MachinePreflightNotice::NoTerminal => format!(
             "shepr: machine {label} needs authentication, but there is no terminal to prompt on; run `{}` from an interactive terminal.",
             operator_entrypoint()
         ),
         MachinePreflightNotice::AuthenticationRefused(failure) => format!(
-            "shepr: machine {label} still refuses the client's connection after ssh authenticated: {failure}. The client keeps retrying it."
+            "shepr: machine {label} still refuses the client's connection after ssh authenticated: {failure}. After fixing SSH access, select its login entry to retry; the client will not retry it automatically."
         ),
         MachinePreflightNotice::HostKey(failure) => format!("shepr: machine {label}: {failure}"),
         MachinePreflightNotice::Incompatible(failure) => format!(
@@ -461,10 +485,14 @@ pub fn machine_failure_hints(
 }
 
 pub fn failure_client_action(disposition: crate::FailureDisposition) -> &'static str {
-    if disposition.needs_attention() {
-        "The client shows it as unavailable and needs attention; it keeps retrying it."
-    } else {
-        "The client keeps retrying it."
+    match disposition {
+        crate::FailureDisposition::Authentication => {
+            "After access is fixed, select the machine's login entry to retry it; the client does not retry automatically."
+        }
+        disposition if disposition.needs_attention() => {
+            "The client shows it as unavailable and needs attention; it keeps retrying it."
+        }
+        _ => "The client keeps retrying it.",
     }
 }
 
@@ -753,8 +781,94 @@ mod tests {
     #[test]
     fn a_missing_server_names_its_socket_and_the_attach_command() {
         assert_eq!(
-            server_not_running(Path::new("/run/user/1/shepr/shepr.sock"), "shepr"),
+            server_not_running(&runtime_address(), Path::new("/run/user/1/shepr"), "shepr"),
             "no shepr server is running at /run/user/1/shepr/shepr.sock; run `shepr` to start or attach it"
+        );
+    }
+
+    #[test]
+    fn a_missing_server_at_an_override_does_not_suggest_starting_it() {
+        assert_eq!(
+            server_not_running(
+                &overridden_address("/x/a.sock"),
+                Path::new("/run/user/1/shepr"),
+                "SHEPR_SOCKET_PATH=/x/a.sock shepr"
+            ),
+            "no shepr server is running at /x/a.sock, which SHEPR_SOCKET_PATH selects. A client starts a server only for its own runtime address (/run/user/1/shepr); a socket override names a server that is already running."
+        );
+    }
+
+    #[test]
+    fn cli_build_mismatch_guidance_matches_the_selected_address() {
+        let runtime = cli_build_mismatch(
+            &runtime_address(),
+            shepr_protocol::BuildIdentity::Unidentifiable,
+        );
+        assert!(
+            runtime.contains("restart the server with this build before using this command"),
+            "{runtime}"
+        );
+
+        let overridden = cli_build_mismatch(
+            &overridden_address("/x/a.sock"),
+            shepr_protocol::BuildIdentity::Unidentifiable,
+        );
+        assert!(
+            overridden.contains("cannot use the running server at the selected socket override"),
+            "{overridden}"
+        );
+        assert!(
+            !overridden.contains("restart the server with this build before using this command"),
+            "{overridden}"
+        );
+    }
+
+    #[test]
+    fn refused_authentication_guidance_waits_for_an_operator_retry() {
+        let error = "Permission denied (publickey).";
+        let failed = machine_preflight_notice(
+            &"build",
+            MachinePreflightNotice::AuthenticationFailed(
+                &error,
+                crate::FailureDisposition::Authentication,
+            ),
+        );
+        assert!(
+            failed.contains("will not retry it automatically"),
+            "{failed}"
+        );
+        let waited = machine_preflight_notice(
+            &"build",
+            MachinePreflightNotice::AuthenticationFailed(
+                &error,
+                crate::FailureDisposition::PossibleAuthentication,
+            ),
+        );
+        assert!(
+            waited.ends_with("The client keeps retrying it."),
+            "{waited}"
+        );
+
+        let failure = crate::EndpointFailure::ssh(crate::SshFailureClass::Authentication, error);
+        let refused = machine_preflight_notice(
+            &"build",
+            MachinePreflightNotice::AuthenticationRefused(&failure),
+        );
+        assert!(
+            refused.contains("select its login entry to retry"),
+            "{refused}"
+        );
+        assert!(
+            refused.contains("will not retry it automatically"),
+            "{refused}"
+        );
+        assert!(
+            failure_client_action(crate::FailureDisposition::Authentication)
+                .contains("does not retry automatically")
+        );
+        assert_eq!(
+            failure_client_action(crate::FailureDisposition::PossibleAuthentication),
+            "The client keeps retrying it."
         );
     }
 }

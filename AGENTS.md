@@ -131,9 +131,11 @@ runs and renders into pane cells: shell and working directory, session,
 scrollbars, whether split panes share a divider or draw adjacent borders, and
 the cursor it reveals for CJK input methods. Pane borders are always drawn.
 `server.toml` holds those `[ui]` settings, `[terminal]`, `[session]`,
-`[server]`, `[advanced]` and `[experimental]`. A server always
-computes a workspace's Git branch and ahead/behind, whatever any sidebar
-shows.
+`[server]`, `[advanced]` and `[experimental]`. While any client is
+attached, presenting a surface or only listing the machine in its sidebar, a
+server computes every workspace's Git branch and ahead/behind, whatever any
+sidebar shows; with no client attached it pauses, and the first attach
+refreshes it at once.
 
 Agent states are Working, Blocked and Idle. Unknown presents as Idle.
 

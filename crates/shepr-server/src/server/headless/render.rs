@@ -132,7 +132,11 @@ enum ClientPassOutcome {
 
 impl HeadlessServer {
     pub(super) fn shell_cwd_refresh_deadline(&self) -> Option<Instant> {
-        self.clients.latest_shell_client()?;
+        // Inactive shells still receive control projections. Keep their cwd
+        // snapshots current for as long as a shell connection is attached.
+        if !self.has_connection() {
+            return None;
+        }
         self.shell_session_cache
             .as_ref()
             .map(|cache| cache.built_at + SHELL_CWD_REFRESH_INTERVAL)

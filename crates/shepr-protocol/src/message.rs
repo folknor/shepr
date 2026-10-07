@@ -231,7 +231,7 @@ impl std::fmt::Display for NoticeKind {
                 let unit = if *events == 1 { "event" } else { "events" };
                 write!(
                     f,
-                    "Input to pane {pane_id} dropped ({events} {unit}): the pane is not reading its input"
+                    "Input to pane {pane_id} dropped ({events} {unit}): the pane has not yet read its earlier input"
                 )
             }
             Self::LimitExceeded(error) => match error.limit.kind() {

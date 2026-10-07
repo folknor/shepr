@@ -12,66 +12,29 @@
 Filed from the lifecycle, config and CLI hunt. The raw report is in commit
 6dc81572 (`notes/hunt-lifecycle-cli.md`).
 
-## LIFE-001 - `stop --all` run from a pane of the local server loses its own report and exit status
+## LIFE-001 - `stop --all` run from a pane of the local server loses its local row and exit status
 
-Where: `src/cli/stop.rs`, `stop_everywhere` and `local_stop`.
+Residue. `src/cli/stop.rs` now prints the remote rows before the local stop
+starts, so remote results survive. Run from a shell inside a pane of the local
+server, the local stop still ends that shell and the `shepr stop --all`
+process itself (the PTY closes, the group gets SIGHUP) before the local row is
+written, so the local row and the exit status (AGENTS.md: "exits 0 only when
+every host ended with no server") are lost.
 
-Claim broken: the `stop_everywhere` doc comment says "The local one stops last,
-so a TUI attached to it is still up while the machines report", and AGENTS.md
-says `stop --all` "prints a line per host, and exits 0 only when every host
-ended with no server".
+Direction: refuse `stop --all` from a pane of the local server, or detach the
+local leg (ignore SIGHUP and report to something that outlives the pane).
 
-What the code does: every row, the remote ones included, is printed only after
-`local_stop` has returned. Nothing reports "while the machines report"; the
-order buys nothing for an attached TUI. Worse, the natural place to run
-`shepr stop --all` is a shell inside a shepr pane. The local stop ends every
-pane process of that server, including the shell and the `shepr stop --all`
-process itself (the PTY closes and the process group gets SIGHUP), before a
-single row is written. The operator sees nothing and the exit status is lost,
-for every host, not just the local one. Same for `shepr stop` in a pane, but
-there the outcome is self-evident; for `--all` the remote results are the
-point.
+## LIFE-021 - `status --all server` and `status --all client` are refused with a generic parser message
 
-Also: the local leg of `stop --all` is unconditional
-(`stop_active_server(paths, None)`), which matches "whatever answers", but
-because remote rows are not printed first, a hung local stop (up to 15 s plus
-10 s lease wait) also delays every remote result.
+Raised as a lateral finding while closing the silent drop of `--all`.
 
-Fix direction: print each remote row as soon as the remote leg finishes (or at
-least print all remote rows before starting the local stop), and either refuse
-`stop --all` from a pane of the local server or detach the local leg (ignore
-SIGHUP, write the summary before the local stop). The doc comment is wrong as
-written either way.
-
-## LIFE-002 - Preflight notices tell the operator a refused login "keeps retrying"; it never does
-
-Where: `crates/shepr-launch/src/guidance.rs`, `machine_preflight_notice`
-(`AuthenticationFailed`, `AuthenticationRefused`) and
-`failure_client_action`; used by `src/preflight/words.rs`, `result_notices`.
-
-Claim broken: AGENTS.md ("after startup a refusal is never retried by itself,
-since repeated refused logins can get the client's address banned"),
-docs/config.md ("Needs SSH login ... The client does not retry by itself"), and
-the client's own behaviour (`shepr-client/src/endpoint/supervisor.rs`,
-`record_failure`, clears `next_attempt` for
-`FailureDisposition::Authentication`).
-
-What the code says:
-
-- `AuthenticationRefused`: "machine X still refuses the client's connection
-  after ssh authenticated: ... The client keeps retrying it." This is exactly
-  the Authentication disposition the supervisor stops retrying.
-- `AuthenticationFailed`: "authentication for machine X failed: ... The client
-  keeps retrying it." When the check was a refusal (not a timeout), the client
-  will show a login entry and wait for the operator.
-- `failure_client_action(FailureDisposition::Authentication)` (reachable as
-  `FailureDisposition::client_action`) returns "... it keeps retrying it",
-  which is false for that disposition.
-
-The guidance is the side that is wrong. The text should depend on the
-disposition: Authentication says "choose the machine's login entry once access
-is fixed", PossibleAuthentication may say it is retried. See also RMT-005,
-where some refusals are in fact retried because they are not recognised.
+`status::parse` (`src/cli/status.rs`) now refuses `--all` together with the
+`server` or `client` subcommand, and the exit is a usage error as it should
+be. But the refusal surfaces through the typed-parser fallback in `src/cli.rs`,
+so the operator reads the generic "does not match a typed parser" message
+rather than one saying that `--all` cannot be combined with a subcommand.
+Making it a clap conflict, or giving that refusal its own message, would fix
+it.
 
 ## LIFE-003 - A launch that ends on another server prints a false "the local server started, but reported this" notice
 
@@ -142,35 +105,6 @@ What happens: a typo (`--agent claud`) is not a usage error; it prints
 which reads like a real verdict over the capture. Give `--agent` a value parser
 over the known manifest labels.
 
-## LIFE-007 - `status --all server` and `status --all client` silently drop `--all`
-
-Where: `src/cli/status.rs`, `parse`.
-
-`--all` is declared on the `status` root, so clap accepts
-`shepr status --all server`. `parse` reads `all` and then, for the `server` and
-`client` subcommands, builds `Command::Server { json }` /
-`ParsedCommand::Client` without it: the flag the operator typed is ignored.
-Every other unknown or misplaced flag is a usage error
-(`unknown_commands_flags_and_arguments_are_rejected`). Make `--all` conflict
-with the subcommands, or move it so clap rejects the combination.
-
-## LIFE-011 - Operator guidance that is wrong for a socket override
-
-Where: `crates/shepr-launch/src/guidance.rs`, `server_not_running`,
-`cli_build_mismatch`; callers in `src/cli.rs`
-(`map_server_not_running_or_io`, `ensure_server_build_matches`).
-
-- `server_not_running`: "run `SHEPR_SOCKET_PATH=... shepr` to start or attach
-  it". AGENTS.md: a socket override "names an existing server: the TUI
-  attaches to it but never starts a server there". For an override the advice
-  cannot start anything; `no_server_at_override` already has the right
-  wording.
-- `cli_build_mismatch`: "restart the server with this build before using this
-  command", followed by `build_mismatch_guidance`, which for an override says
-  "This shepr cannot start a server at the selected socket override, so it
-  cannot restart this address". The two sentences contradict each other in one
-  message.
-
 ## LIFE-012 - Launch and stop worst-case budgets leave out the liveness connect timeout
 
 Where: `crates/shepr-launch/src/limits.rs` (`START_WORST_CASE`,
@@ -204,14 +138,3 @@ resolved" before it reaches the socket. `stop_does_not_load_a_broken_config`
 covers a broken file but not a broken config location. Stopping a server is the
 recovery path and should not depend on a directory it does not use; resolve
 the config directory lazily or only where it is read.
-
-## LIFE-015 - `stop --all` labels a stopped local server whose final save failed as "stop failed"
-
-Where: `src/cli/stop.rs`, `local_stop`.
-
-`ServerStopError::FinalSaveFailed { stop_error: None }` means the server
-stopped and its layout save failed. `local_stop` turns every non-NotRunning
-error into `HostStop::Failed(format!("stop failed: {error}"))`. The host did
-end with no server; the row should say "stopped; final save failed: ...", as
-`guidance::local_notice` already does for the restart path. Exit status 1 is
-defensible, the wording is not.

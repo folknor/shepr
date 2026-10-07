@@ -37,10 +37,10 @@ pub(crate) const MAX_CLIPBOARD_BYTES: usize = 192 * KIBIBYTE_BYTES;
 
 /// Maximum bytes vte may retain in an OSC raw payload before the adapter ends
 /// the sequence early. Parameter separators are excluded because vte stores
-/// them as boundaries, not payload bytes. Twice the base64 length of the
-/// largest accepted clipboard store: every store shepr accepts reaches the
-/// parser whole, and an OSC 52 cut at this bound still decodes to more than
-/// `MAX_CLIPBOARD_BYTES`, so it is dropped by size instead of stored truncated.
+/// them as boundaries, not payload bytes. The bound lets every accepted OSC 52
+/// store reach the parser whole; when a supported OSC 52 store is cut here,
+/// the scanner reports a decoded-size lower bound above `MAX_CLIPBOARD_BYTES`
+/// even when the truncated base64 cannot be decoded.
 pub(crate) const MAX_OSC_RAW_BYTES: usize = 2 * 4 * MAX_CLIPBOARD_BYTES.div_ceil(3);
 
 /// Maximum bytes of a window title handed to alacritty. Its `Term` keeps the

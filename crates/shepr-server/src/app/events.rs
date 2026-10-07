@@ -153,6 +153,9 @@ enum CheckpointDecision {
     /// Checkpointed, and the checkpoint is already settled: removal can
     /// follow at once.
     Settled,
+    /// The ending needed a checkpoint, but the save policy released it while
+    /// persistence was frozen or unavailable.
+    Released,
     /// Checkpointed, and held until the checkpoint of this generation is
     /// durable.
     Held(CheckpointGeneration),
@@ -183,7 +186,9 @@ impl PreparedPaneExit {
     pub(crate) fn held_generation(&self) -> Option<CheckpointGeneration> {
         match self.decision {
             CheckpointDecision::Held(generation) => Some(generation),
-            CheckpointDecision::Unchecked | CheckpointDecision::Settled => None,
+            CheckpointDecision::Unchecked
+            | CheckpointDecision::Settled
+            | CheckpointDecision::Released => None,
         }
     }
 
@@ -193,7 +198,10 @@ impl PreparedPaneExit {
     }
 
     fn checkpointed(&self) -> bool {
-        !matches!(self.decision, CheckpointDecision::Unchecked)
+        matches!(
+            self.decision,
+            CheckpointDecision::Settled | CheckpointDecision::Held(_)
+        )
     }
 }
 
@@ -320,8 +328,12 @@ impl App {
         // when the event is applied, since a held exit can outlive
         // intervening workspace changes.
         let decision = if ending.needs_checkpoint() && self.state.pane(pane_id).is_some() {
-            self.request_pane_exit_checkpoint()
-                .map_or(CheckpointDecision::Settled, CheckpointDecision::Held)
+            if !self.session_saves_allowed() {
+                CheckpointDecision::Released
+            } else {
+                self.request_pane_exit_checkpoint()
+                    .map_or(CheckpointDecision::Settled, CheckpointDecision::Held)
+            }
         } else {
             CheckpointDecision::Unchecked
         };
@@ -527,6 +539,11 @@ impl PreparedPaneExit {
     /// settled when it was prepared.
     pub(crate) fn is_settled(&self) -> bool {
         self.decision == CheckpointDecision::Settled
+    }
+
+    /// Whether save policy released this exit without a checkpoint.
+    pub(crate) fn is_released(&self) -> bool {
+        self.decision == CheckpointDecision::Released
     }
 }
 

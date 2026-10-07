@@ -108,6 +108,7 @@ impl ClientShellState {
         // any `Rows` result and composes the current shell before writing it.
         let fast_path_blocker = fast_path_blocker(self, patch, area);
         let fast_path_area = (!fast_path_blocker).then_some(area);
+        let chrome = crate::shell::view::chrome_palette(self);
         let composed_patch = fast_path_area.map(|area| ClientComposedSurfacePatch {
             rows: patch
                 .rows
@@ -115,7 +116,16 @@ impl ClientShellState {
                 .map(|row| shepr_protocol::PaneSurfacePatchRow {
                     x: area.x.saturating_add(row.x),
                     y: area.y.saturating_add(row.y),
-                    cells: row.cells.clone(),
+                    cells: row
+                        .cells
+                        .iter()
+                        .cloned()
+                        .map(|mut cell| {
+                            cell.fg = chrome.resolve(cell.fg);
+                            cell.bg = chrome.resolve(cell.bg);
+                            cell
+                        })
+                        .collect(),
                 })
                 .collect(),
             cursor: patch

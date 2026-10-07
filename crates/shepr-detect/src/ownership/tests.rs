@@ -593,7 +593,7 @@ fn pi_resume_reactivates_a_previously_stale_session() {
 }
 
 #[test]
-fn pi_startup_adopts_persisted_session_without_live_authority() {
+fn pi_startup_preserves_persisted_session_without_live_authority() {
     let mut terminal = test_terminal();
     let old_session = test_session_path("pi-startup-old.jsonl");
     let new_session = test_session_path("pi-startup-new.jsonl");
@@ -601,7 +601,7 @@ fn pi_startup_adopts_persisted_session_without_live_authority() {
     terminal.set_persisted_agent_session(
         shepr_agent::resume::PersistedAgentSession::new(
             bundled_source("shepr:pi"),
-            shepr_agent::resume::AgentSessionRef::path(old_session)
+            shepr_agent::resume::AgentSessionRef::path(old_session.clone())
                 .expect("test session path should be valid"),
         )
         .expect("test session should be valid"),
@@ -609,19 +609,19 @@ fn pi_startup_adopts_persisted_session_without_live_authority() {
 
     let startup = terminal.set_agent_session_ref_for_session_start(
         "shepr:pi",
-        shepr_agent::resume::AgentSessionRef::path(new_session.clone()),
+        shepr_agent::resume::AgentSessionRef::path(new_session),
         Some(11),
         Some("startup"),
         Instant::now(),
     );
 
-    assert!(startup.is_some());
+    assert!(startup.is_none());
     assert_eq!(
         terminal.current_session_identity_for_persistence(),
         Some(
             shepr_agent::resume::PersistedAgentSession::new(
                 shepr_agent::AgentSource::parse("shepr:pi").expect("bundled test source"),
-                shepr_agent::resume::AgentSessionRef::path(new_session)
+                shepr_agent::resume::AgentSessionRef::path(old_session)
                     .expect("test session path should be valid"),
             )
             .expect("test session identity should be valid")
@@ -4285,4 +4285,74 @@ fn repeated_full_lifecycle_reports_preserve_activation_watermark() {
     assert!(matches!(outcome, HookOutcome::Applied(_)), "{outcome:?}");
     assert!(!terminal.full_lifecycle_hook_authority_active());
     assert_eq!(terminal.state, AgentState::Unknown);
+}
+
+#[test]
+fn partial_state_reports_resume_after_same_agent_replacement_presence() {
+    let mut terminal = test_terminal();
+    let now = Instant::now();
+    terminal.set_detected_agent_process_at(Agent::Codex, now);
+    terminal.set_detected_state_with_screen_signals_at(
+        Some(Agent::Codex),
+        AgentState::Idle,
+        false,
+        true,
+        now + Duration::from_millis(1),
+    );
+    let session =
+        shepr_agent::resume::AgentSessionRef::id("replacement-codex").expect("test session");
+    assert_eq!(
+        terminal.report_hook_outcome_at(
+            codex_origin(),
+            AgentState::Working,
+            Some(session.clone()),
+            None,
+            HookClockSample::from(now + Duration::from_millis(2)),
+        ),
+        HookOutcome::Rejected(HookRejection::ProcessExited)
+    );
+    terminal.set_detected_agent_process_at(Agent::Codex, now + Duration::from_millis(3));
+    assert!(matches!(
+        terminal.report_hook_outcome_at(
+            codex_origin(),
+            AgentState::Working,
+            Some(session),
+            None,
+            HookClockSample::from(now + Duration::from_millis(4)),
+        ),
+        HookOutcome::Applied(_)
+    ));
+    assert_eq!(terminal.state, AgentState::Working);
+}
+
+#[test]
+fn persisted_paths_reject_unrecognized_same_owner_replacements() {
+    for (agent, source) in [(Agent::Pi, "shepr:pi"), (Agent::Omp, "shepr:omp")] {
+        for reason in [None, Some("reload")] {
+            let mut terminal = test_terminal();
+            let now = Instant::now();
+            terminal.set_detected_agent_process_at(agent, now);
+            let old =
+                shepr_agent::resume::AgentSessionRef::path(test_session_path("anchored.jsonl"))
+                    .expect("test path");
+            terminal.set_persisted_agent_session(
+                PersistedAgentSession::new(bundled_source(source), old.clone())
+                    .expect("test session"),
+            );
+            let replacement = terminal.set_agent_session_ref_for_session_start(
+                source,
+                shepr_agent::resume::AgentSessionRef::path(test_session_path("stray.jsonl")),
+                Some(1),
+                reason,
+                now + Duration::from_millis(1),
+            );
+            assert!(replacement.is_none());
+            assert_eq!(
+                terminal
+                    .persisted_agent_session()
+                    .map(PersistedAgentSession::session_ref),
+                Some(&old)
+            );
+        }
+    }
 }

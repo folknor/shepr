@@ -7,16 +7,16 @@ use shepr_term::key::TerminalKey;
 
 /// Why one piece of pane input did not reach the PTY.
 ///
-/// Input is handed to the PTY actor with a non-blocking send. The actor's
-/// inbox holds up to 256 KiB (and a thousand items) of unwritten input and
-/// replies, so it is only full when the child has stopped reading its
-/// terminal (suspended, wedged, or flooded). Waiting for room is not an option: the server event loop is
-/// shared by every pane and client, and blocking it on one stuck child would
-/// freeze all of them. Queuing elsewhere would only grow an unbounded backlog
-/// for a process that is not consuming it, and would have to preserve order
-/// against later sends. So a full queue drops the input and reports it as
-/// `Backpressure`; shell callers surface that to the user rather than only
-/// logging it.
+/// Input is handed to the PTY actor with a non-blocking send. The actor bounds
+/// ordinary user input and terminal replies separately, and gives one larger
+/// input its own slot while it drains. A full input budget means the unwritten
+/// backlog reached its limit; it does not prove that the child stopped
+/// reading. Waiting for room is not an option: the server event loop is shared
+/// by every pane and client, and blocking it on one stuck child would freeze
+/// all of them. Queuing elsewhere would only grow an unbounded backlog and
+/// would have to preserve order against later sends. So a full queue drops the
+/// input and reports it as `Backpressure`; shell callers surface that to the
+/// user rather than only logging it.
 ///
 /// Callers log these errors, so they must never carry what was typed or
 /// pasted: every variant holds a static label or a message that names only the

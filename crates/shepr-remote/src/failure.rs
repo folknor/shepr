@@ -234,10 +234,9 @@ fn classify_ssh_diagnostic(message: &str) -> SshFailureClass {
     {
         return SshFailureClass::HostKey;
     }
-    if (message.contains("permission denied")
-        && ["(publickey", "(keyboard-interactive", "(password"]
-            .iter()
-            .any(|method| message.contains(method)))
+    // sshd lists the methods that may continue, in its own order, so any
+    // method list is a refusal. A Rust io error's "(os error N)" is not one.
+    if (message.contains("permission denied (") && !message.contains("permission denied (os error"))
         || message.contains("too many authentication failures")
         || (message.contains("signing failed")
             && (message.contains("sign_and_send_pubkey") || message.contains("agent")))
@@ -422,6 +421,34 @@ mod tests {
             diagnostic.ssh_class(),
             Some(SshFailureClass::Authentication)
         );
+    }
+
+    #[test]
+    fn remote_auth_error_matches_refusals_for_any_offered_method() {
+        for message in [
+            "user@host: Permission denied (gssapi-with-mic).",
+            "user@host: Permission denied (hostbased).",
+            "user@host: Permission denied (gssapi-with-mic,password).",
+            "user@host: Permission denied (",
+        ] {
+            let diagnostic =
+                SshFailureDiagnostic::from_ssh_output(Some(SSH_OWN_FAILURE_EXIT_CODE), message);
+            assert_eq!(
+                diagnostic.ssh_class(),
+                Some(SshFailureClass::Authentication),
+                "{message}"
+            );
+            assert_eq!(
+                diagnostic.failure.disposition(),
+                FailureDisposition::Authentication,
+                "{message}"
+            );
+        }
+        let os_error = SshFailureDiagnostic::from_ssh_output(
+            Some(SSH_OWN_FAILURE_EXIT_CODE),
+            "remote bridge failed: Permission denied (os error 13)",
+        );
+        assert_ne!(os_error.ssh_class(), Some(SshFailureClass::Authentication));
     }
 
     #[test]

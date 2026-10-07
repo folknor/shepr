@@ -56,15 +56,21 @@ pub(crate) const ACTOR_IDLE_POLL: std::time::Duration = std::time::Duration::fro
 /// actor's `poll` into a busy loop, so a shorter request is raised to this.
 pub(crate) const ACTOR_IDLE_POLL_MIN: std::time::Duration = std::time::Duration::from_millis(1);
 
-/// Total queued PTY input and terminal-reply bytes allowed while other items
-/// are outstanding. A lone oversized item is admitted by the inbox; this
-/// budget bounds accumulation without rejecting one paste when the queue is
-/// empty.
+/// Ordinary queued PTY user-input bytes. One larger input item is admitted
+/// separately when no user input is outstanding, so a paste can be delivered
+/// without consuming this budget while it drains.
 pub(crate) const ACTOR_INBOX_MAX_BYTES: usize = 256 * KIBIBYTE_BYTES;
 
-/// Maximum queued PTY inbox items. This separately bounds per-item bookkeeping
-/// when many small writes consume little of the byte budget.
+/// Maximum queued PTY user-input items. This separately bounds per-item
+/// bookkeeping when many small writes consume little of the byte budget.
 pub(crate) const ACTOR_INBOX_MAX_ITEMS: usize = 1_024;
+
+/// Terminal replies have a separate byte budget so a paste or user-input burst
+/// cannot keep a child from receiving answers to terminal queries.
+pub(crate) const ACTOR_REPLY_INBOX_MAX_BYTES: usize = 64 * KIBIBYTE_BYTES;
+
+/// Maximum queued terminal-reply items, independently bounded from user input.
+pub(crate) const ACTOR_REPLY_INBOX_MAX_ITEMS: usize = 1_024;
 
 /// Maximum write operations one actor pump performs before polling again. The
 /// cap prevents continuous input from starving reads of child output.

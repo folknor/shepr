@@ -43,7 +43,7 @@ async fn a_failed_health_pong_leaves_no_ghost_client() {
     assert!(!server.clients.contains_key(&client_id));
     assert_eq!(server.clients.foreground_client_id(), None);
     assert_eq!(server.clients.geometry_controller(&workspace_id), None);
-    assert_eq!(server.app_client_count(), 0);
+    assert_eq!(server.clients.app_client_count(), 0);
 }
 
 #[test]

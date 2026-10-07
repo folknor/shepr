@@ -1,5 +1,32 @@
 use super::*;
 
+/// Whether the client's settle point is stale or a recompute is queued for
+/// it: a scrollback reset or a geometry claim does this per client without
+/// advancing the shared view epoch.
+fn client_owes_a_surface(server: &HeadlessServer, client_id: u64) -> bool {
+    let render_state = &server.clients[&ClientId::test_new(client_id)].render_state;
+    !render_state.is_settled_at(server.view_epoch) || render_state.requires_recompute()
+}
+
+/// Whether the client's settle point is stale, which is what a scrollback
+/// reset does to the pane's viewers.
+fn client_is_unsettled(server: &HeadlessServer, client_id: u64) -> bool {
+    !server.clients[&ClientId::test_new(client_id)]
+        .render_state
+        .is_settled_at(server.view_epoch)
+}
+
+/// Marks the client as having been served the current epoch.
+fn settle_test_client(server: &mut HeadlessServer, client_id: u64) {
+    let epoch = server.view_epoch;
+    server
+        .clients
+        .get_mut(&ClientId::test_new(client_id))
+        .expect("client")
+        .render_state
+        .settle(epoch);
+}
+
 #[tokio::test]
 async fn client_shell_input_targets_runtime_without_server_shell_classification() {
     let mut server = test_headless_server();
@@ -17,8 +44,9 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
     );
     let _writer_lanes = attach_test_writer(&mut server, 11);
 
-    assert!(
-        server.test_handle_server_event(ServerEvent::ShellPaneInput {
+    // The first interaction claims geometry, which queues a recompute rather
+    // than advancing the shared epoch, so the fixture's return is not asserted.
+    server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id,
             events: vec![
@@ -52,8 +80,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
                     lines: 3,
                 },
             ],
-        })
-    );
+        });
     assert_eq!(
         input_rx.try_recv().expect("targeted pane interrupt"),
         Bytes::from_static(&[0x03])
@@ -200,7 +227,32 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(11)));
 
-    let render_impact = server.test_handle_server_event(ServerEvent::ShellPaneInput {
+    // Own the geometry and settle the client first, so the input's own effect
+    // is what the client's settle point shows: a geometry claim would
+    // otherwise be the reason it is owed a surface.
+    assert!(server.claim_unowned_shell_workspace_geometry(
+        ClientId::test_new(11),
+        client_views::PendingResumes::Defer
+    ));
+    // The claim resized the pane to the client's grid, which dropped the
+    // scrolled-back position; give it history and scroll back again.
+    {
+        let runtime = server.app.pane_runtime(pane_id).expect("pane runtime");
+        runtime.test_process_pty_bytes("line\r\n".repeat(60).as_bytes());
+        runtime.scroll_up(1);
+    }
+    settle_test_client(&mut server, 11);
+    assert!(!client_is_unsettled(&server, 11));
+    assert!(
+        server
+            .app
+            .pane_runtime(pane_id)
+            .and_then(|runtime| runtime.read().scroll_metrics())
+            .is_some_and(|metrics| metrics.offset_from_bottom > 0),
+        "the pane is still scrolled back when the input arrives"
+    );
+
+    server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
         pane_id: public_pane_id,
         events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
@@ -208,7 +260,8 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         )],
     });
 
-    assert!(render_impact);
+    assert!(client_is_unsettled(&server, 11));
+    settle_test_client(&mut server, 11);
     assert_eq!(
         input_rx.try_recv().expect("text must reach the PTY"),
         Bytes::from_static(b"x")
@@ -222,14 +275,17 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         Some(0)
     );
 
-    let render_impact = server.test_handle_server_event(ServerEvent::ShellPaneInput {
+    server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
         pane_id: public_pane_id,
         events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
             "y".to_owned(),
         )],
     });
-    assert!(!render_impact);
+    assert!(
+        !client_is_unsettled(&server, 11),
+        "text with no scrollback to reset owes nothing"
+    );
     assert_eq!(
         input_rx.try_recv().expect("second text must reach the PTY"),
         Bytes::from_static(b"y")
@@ -297,7 +353,12 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
     );
     let _writer_lanes = attach_test_writer(&mut server, 11);
 
-    let render_impact = server.test_handle_server_event(ServerEvent::ShellPaneInput {
+    // The first interaction claims the unowned workspace's geometry, which
+    // owes the client a surface without advancing the shared epoch.
+    settle_test_client(&mut server, 11);
+    assert!(!client_owes_a_surface(&server, 11));
+
+    server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
         pane_id,
         events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
@@ -308,7 +369,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
         }],
     });
 
-    assert!(render_impact);
+    assert!(client_owes_a_surface(&server, 11));
     assert_eq!(
         server.clients.foreground_client_id(),
         Some(ClientId::test_new(11))
@@ -866,13 +927,14 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
         generated_text: None,
     };
 
-    assert!(
-        server.test_handle_server_event(ServerEvent::ShellPaneInput {
-            client_id: ClientId::test_new(1),
-            pane_id,
-            events: vec![key(shepr_protocol::ClientKeyKind::Press)],
-        })
-    );
+    // The first press claims the workspace's geometry, which queues the
+    // recompute for its viewers instead of advancing the shared epoch, so the
+    // fixture's return does not report it.
+    server.test_handle_server_event(ServerEvent::ShellPaneInput {
+        client_id: ClientId::test_new(1),
+        pane_id,
+        events: vec![key(shepr_protocol::ClientKeyKind::Press)],
+    });
     assert!(!input_rx.recv().await.expect("encoded press").is_empty());
     assert!(server.promote_client_to_foreground(ClientId::test_new(2)));
 

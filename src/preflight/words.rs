@@ -31,9 +31,16 @@ pub(super) fn result_notices(outcomes: &[PreflightOutcome], can_prompt: bool) ->
     for outcome in outcomes {
         let machine = &outcome.machine;
         if let Some(Err(error)) = &outcome.authentication {
+            // A prompt runs only after a check that needs authentication, and
+            // a failed prompt keeps that check: its disposition says whether
+            // the client retries the machine by itself.
+            let disposition = match &outcome.check {
+                MachineCheck::NeedsAuthentication(failure) => failure.disposition(),
+                _ => shepr_launch::FailureDisposition::Authentication,
+            };
             notices.push(machine_preflight_notice(
                 &machine.label,
-                MachinePreflightNotice::AuthenticationFailed(error),
+                MachinePreflightNotice::AuthenticationFailed(error, disposition),
             ));
         }
         match (&outcome.check, &outcome.authentication) {

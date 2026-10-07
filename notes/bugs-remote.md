@@ -178,24 +178,6 @@ authentication; or raise the log level enough to see the link messages and add
 their signatures. Worth verifying against the pinned OpenSSH which messages
 each path prints under `LogLevel=ERROR`.
 
-## RMT-005 - Authentication refusals outside a narrow signature set are retried automatically
-
-Claim broken: AGENTS.md ("after startup a refusal is never retried by itself,
-since repeated refused logins can get the client's address banned");
-`record_failure` comment.
-
-`classify_ssh_diagnostic` recognises a refusal only as "permission denied"
-followed by `(publickey`, `(keyboard-interactive` or `(password`, or "too many
-authentication failures", or an agent signing failure. sshd lists the methods
-that can continue in its own order, so a host whose only methods are, for
-example, `gssapi-with-mic` or `hostbased` prints
-`Permission denied (gssapi-with-mic).` That is `Unrecognized` -> `Repair` ->
-attention retry every `ATTENTION_RETRY_DELAY`, i.e. one refused login every
-30 s, exactly what the no-retry rule exists to prevent. A bare
-`permission denied (` from ssh's own exit 255 is already enough evidence of a
-refusal. See also LIFE-002, where the preflight guidance claims the opposite
-retry behaviour.
-
 ## RMT-006 - A remembered hint that fails verification for any non-stale reason is kept forever
 
 Claim broken: `MachineProbe::resolve` comment ("Link, server and target-trust

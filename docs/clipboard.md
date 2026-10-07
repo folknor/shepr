@@ -13,9 +13,9 @@ when it runs over SSH (see below).
   is released, and the highlight is cleared. With `copy_on_select = false` the
   selection stays until `ctrl+c` copies and clears it.
 - **Copy mode.** `prefix+[` selects and copies with the keyboard.
-- **Programs in panes.** A program that copies with OSC 52 (an editor's yank
-  to the system clipboard, for example) has its text forwarded through the server
-  to the TUI, which copies it the same way.
+- **Programs in panes.** A program that stores text with OSC 52 to the
+  clipboard (`c`) or primary-selection (`p` or `s`) target has its text
+  forwarded through the server to the TUI, which copies it the same way.
 
 `copy_on_select` lives under `[ui]` in `client.toml`.
 

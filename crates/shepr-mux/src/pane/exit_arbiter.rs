@@ -62,10 +62,13 @@ impl PaneEnding {
         self.reason
     }
 
-    /// Whether the exit needs a final session checkpoint before pane removal:
-    /// every ending the user did not ask for (a signal, a reader panic or IO
-    /// failure, a closed terminal), so its agent session is kept for resume.
-    /// A checkpoint reads layout, labels, the cwd and agent identity, none of
+    /// Whether the exit needs a final session checkpoint before pane removal.
+    /// A signal, failed child wait, reader failure or terminal close can retire
+    /// a pane while its agent session remains resumable, so its identity must
+    /// be kept. A normally exited child has finished and needs no resume
+    /// checkpoint. A failed wait can leave the child alive, but the pane is
+    /// still retired and needs its session identity saved first. A checkpoint
+    /// reads layout, labels, the cwd and agent identity, none of
     /// them from the terminal core, so a core a panic broke does not exempt
     /// the pane. shepr-generated teardown signals follow pane removal, or
     /// happen during startup failure before any pane exit event, so they
@@ -74,6 +77,7 @@ impl PaneEnding {
         matches!(
             self.reason,
             PaneEndReason::Signalled
+                | PaneEndReason::WaitFailed
                 | PaneEndReason::ReaderPanicked
                 | PaneEndReason::ReaderIoFailed
                 | PaneEndReason::TerminalClosed
@@ -208,7 +212,7 @@ mod tests {
         for (reason, expected) in [
             (Exited, false),
             (Signalled, true),
-            (WaitFailed, false),
+            (WaitFailed, true),
             (ReaderPanicked, true),
             (ReaderIoFailed, true),
             (TerminalClosed, true),

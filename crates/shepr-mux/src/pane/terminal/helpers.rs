@@ -6,7 +6,7 @@ use shepr_protocol::CompactString;
 pub(super) struct CoreEffects {
     pub(super) terminal_title_changed: bool,
     pub(super) clipboard_writes: Vec<Vec<u8>>,
-    pub(super) dropped_clipboard_store_bytes: Vec<usize>,
+    pub(super) dropped_clipboard_store_sizes: Vec<shepr_vt::ClipboardStoreSize>,
     pub(super) reported_cwd: Option<std::path::PathBuf>,
     /// The OSC debug log's events, empty unless that log is on.
     pub(super) osc_debug: Vec<OscDebugEvent>,
@@ -27,7 +27,7 @@ pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
         .apply_terminal_updates(&mut terminal_effects);
     let terminal_responses = drain_terminal_responses(terminal_effects.pty_responses);
     let clipboard_writes = terminal_effects.clipboard_writes;
-    let dropped_clipboard_store_bytes = terminal_effects.dropped_clipboard_store_bytes;
+    let dropped_clipboard_store_sizes = terminal_effects.dropped_clipboard_store_sizes;
     let local_host = core.local_host.as_deref();
     let reported_cwd = terminal_effects
         .pwd_changes
@@ -40,7 +40,7 @@ pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
     CoreEffects {
         terminal_title_changed,
         clipboard_writes,
-        dropped_clipboard_store_bytes,
+        dropped_clipboard_store_sizes,
         reported_cwd,
         osc_debug,
         terminal_responses,

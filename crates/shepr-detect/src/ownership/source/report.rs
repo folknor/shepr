@@ -43,6 +43,11 @@ impl AgentOwnership {
         {
             return HookOutcome::Rejected(HookRejection::ReplacedSession);
         }
+        // Partial-state hooks have no process identity: after an exit a late
+        // turn report from the old process is indistinguishable from an early
+        // report by its successor. Keep the exit guard until detector presence
+        // confirms the replacement. Process-group tracking closes the missed
+        // relaunch case, but cannot replay a report already refused here.
         if !origin.is_full_lifecycle()
             && self
                 .process_evidence

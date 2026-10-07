@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::path::Path;
-use std::process::{Child, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -74,8 +74,7 @@ fn run_git_with_program_and_clock(
     timeout: Duration,
     now: &dyn Fn() -> Instant,
 ) -> Result<Output, GitCommandError> {
-    // host-program-ok: production asks Git about the repository it inspects
-    let mut command = shepr_platform::child_command(program, cwd);
+    let mut command = git_command(program, cwd).map_err(GitCommandError::Spawn)?;
     command
         .args(["-c", "core.fsmonitor=false"])
         .args(args)
@@ -136,10 +135,28 @@ fn run_git_with_program_and_clock(
 
 type Drain = Result<std::thread::JoinHandle<io::Result<Vec<u8>>>, io::Error>;
 
+/// Exec from the local root, then let Git change directory. A pre-exec chdir
+/// into a hung workspace would retain every inherited server fd (including
+/// the data-directory flock and PTY masters) until that mount recovers.
+/// The close-on-exec flag closes those descriptors before Git evaluates `-C`, and the
+/// resulting hang is covered by the ordinary child deadline.
+fn git_command(program: &OsStr, cwd: &Path) -> io::Result<Command> {
+    let cwd = if cwd.is_absolute() {
+        cwd.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(cwd)
+    };
+    // host-program-ok: production asks Git about the repository it inspects
+    let mut command = shepr_platform::child_command(program, Path::new("/"));
+    command.arg("-C").arg(cwd);
+    Ok(command)
+}
+
 /// Reads `pipe` to its end on its own thread, or until `deadline` passes,
 /// which fails the read with [`io::ErrorKind::TimedOut`]. The thread waits for
 /// readiness with a timeout, so a descendant that keeps the pipe's write end
-/// open after Git is gone cannot hold it past the deadline.
+/// open after Git is gone cannot hold it past the deadline. Output beyond the
+/// per-stream byte budget fails with [`io::ErrorKind::InvalidData`].
 fn drain_pipe<R: Read + AsRawFd + Send + 'static>(mut pipe: R, deadline: Instant) -> Drain {
     std::thread::Builder::new()
         .name("shepr-git-pipe".into())
@@ -163,7 +180,15 @@ fn read_until(pipe: &mut (impl Read + AsRawFd), deadline: Instant) -> io::Result
         // Readable, or hung up: the read returns data or the end at once.
         match pipe.read(&mut chunk) {
             Ok(0) => return Ok(bytes),
-            Ok(count) => bytes.extend_from_slice(&chunk[..count]),
+            Ok(count) => {
+                if count > crate::limits::MAX_GIT_PIPE_BYTES - bytes.len() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "git output exceeds the per-stream byte limit",
+                    ));
+                }
+                bytes.extend_from_slice(&chunk[..count]);
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error),
         }
@@ -311,6 +336,90 @@ fn reap_until_empty() {
 mod tests {
     use super::*;
     use shepr_test_support::fixture::{Step, stand_in};
+
+    #[test]
+    fn git_changes_directory_only_after_exec() {
+        use std::os::unix::ffi::OsStrExt;
+        let cwd = Path::new(OsStr::from_bytes(b"/unavailable/worktree-\xff"));
+        let command = git_command(OsStr::new("git"), cwd).expect("command");
+        assert_eq!(command.get_current_dir(), Some(Path::new("/")));
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [OsStr::new("-C"), cwd.as_os_str()]
+        );
+    }
+
+    #[test]
+    fn git_spawn_does_not_touch_the_workspace_directory() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let root = shepr_test_support::ScratchDir::new("git-spawn-cwd");
+        let fake_git = stand_in(root.path(), "fake-git", &[Step::Cat]);
+        // The fixture ignores -C. Spawn must succeed even when the workspace
+        // cannot be entered; real Git reports that failure after exec.
+        let output = run_git_with_program(
+            fake_git.as_os_str(),
+            &root.path().join("missing-workspace"),
+            &[],
+            Duration::from_secs(5),
+        )
+        .expect("spawn does not chdir into the workspace");
+        assert!(output.status.success());
+    }
+
+    #[test]
+    fn pipe_output_limit_accepts_the_boundary_and_refuses_overflow() {
+        for extra in [0, 1] {
+            let (mut reader, mut writer) =
+                std::os::unix::net::UnixStream::pair().expect("socket pair");
+            let writing = std::thread::spawn(move || {
+                use std::io::Write;
+                let chunk = [b'x'; crate::limits::GIT_PIPE_READ_CHUNK_BYTES];
+                for _ in 0..crate::limits::MAX_GIT_PIPE_BYTES / chunk.len() {
+                    writer.write_all(&chunk).expect("write up to limit");
+                }
+                if extra > 0 {
+                    writer.write_all(b"x").expect("write overflow byte");
+                }
+            });
+            let result = read_until(&mut reader, Instant::now() + Duration::from_secs(30));
+            writing.join().expect("writer finished");
+            if extra == 0 {
+                assert_eq!(
+                    result.expect("output at limit").len(),
+                    crate::limits::MAX_GIT_PIPE_BYTES
+                );
+            } else {
+                assert_eq!(
+                    result.expect_err("oversized output").kind(),
+                    io::ErrorKind::InvalidData
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn git_runner_refuses_oversized_output_instead_of_returning_a_prefix() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let root = shepr_test_support::ScratchDir::new("git-runner-output-limit");
+        let fake_git = stand_in(
+            root.path(),
+            "fake-git",
+            &[Step::Fill {
+                byte: b'x',
+                count: crate::limits::MAX_GIT_PIPE_BYTES + 1,
+            }],
+        );
+        let result = run_git_with_program(
+            fake_git.as_os_str(),
+            root.path(),
+            &[],
+            Duration::from_secs(30),
+        );
+        assert!(matches!(
+            result,
+            Err(GitCommandError::Process(error)) if error.kind() == io::ErrorKind::InvalidData
+        ));
+    }
 
     #[test]
     fn git_runner_samples_deadline_even_when_spawn_fails() {
@@ -512,10 +621,11 @@ mod tests {
         }
     }
 
-    /// The child already starts in `cwd`. Passing it again as `-C <cwd>`
-    /// would resolve a relative `cwd` a second time, from inside itself.
+    /// The child starts in `/` and names `cwd` once, as an absolute `-C`
+    /// operand ahead of every other option, so Git resolves it exactly once.
     #[test]
-    fn git_runner_sets_cwd_once_and_passes_no_directory_option() {
+    fn git_runner_names_cwd_once_as_the_leading_directory_option() {
+        use std::os::unix::ffi::OsStrExt;
         let _env = shepr_test_support::IsolatedEnv::new();
         let root = shepr_test_support::ScratchDir::new("git-runner-cwd");
         let fake_git = stand_in(root.path(), "fake-git", &[Step::PrintArgs]);
@@ -527,9 +637,9 @@ mod tests {
         )
         .expect("fake git should finish");
 
-        assert_eq!(
-            output.stdout,
-            b"-c\ncore.fsmonitor=false\nrev-parse\n--show-prefix\n"
-        );
+        let mut expected = b"-C\n".to_vec();
+        expected.extend_from_slice(root.path().as_os_str().as_bytes());
+        expected.extend_from_slice(b"\n-c\ncore.fsmonitor=false\nrev-parse\n--show-prefix\n");
+        assert_eq!(output.stdout, expected);
     }
 }

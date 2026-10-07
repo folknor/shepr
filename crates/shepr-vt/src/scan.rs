@@ -6,6 +6,8 @@
 //! used), CSI ? 996 n, CSI 16 t, XTGETTCAP
 //! (`ESC P + q`), `CSI ? 3 J`, and the modifyOtherKeys spellings vte drops
 //! (`CSI > m`, `CSI > 4 n`, `CSI > 4 ; Pv m` with Pv above 2).
+//! The scanner also recognizes an OSC 52 store when its payload hits the
+//! parser bound, so truncated base64 still gets a size diagnostic.
 //!
 //! Everything vte does dispatch (private modes, DECRQM, RIS, the vte-parsed
 //! modifyOtherKeys forms, printed characters) is handled by the parser's
@@ -30,14 +32,18 @@
 //! callers can keep parser input and scanner effects in byte order.
 
 use crate::limits::{
-    MAX_CSI_BYTES, MAX_DCS_INTRO_BYTES, MAX_OSC_BYTES, MAX_OSC_RAW_BYTES, MAX_U16_DECIMAL_DIGITS,
-    MAX_XTGETTCAP_BYTES, XTGETTCAP_REPLY_OVERHEAD_BYTES,
+    MAX_CLIPBOARD_BYTES, MAX_CSI_BYTES, MAX_DCS_INTRO_BYTES, MAX_OSC_BYTES, MAX_OSC_RAW_BYTES,
+    MAX_U16_DECIMAL_DIGITS, MAX_XTGETTCAP_BYTES, XTGETTCAP_REPLY_OVERHEAD_BYTES,
 };
 use memchr::memchr;
 
 const XTGETTCAP_RGB_BITS_PER_CHANNEL: &[u8] = b"8";
 const XTGETTCAP_SETRGBF: &[u8] = b"\\E[38:2:%p1%d:%p2%d:%p3%dm";
 const XTGETTCAP_SETRGBB: &[u8] = b"\\E[48:2:%p1%d:%p2%d:%p3%dm";
+
+fn is_base64_byte(byte: u8) -> bool {
+    matches!(byte, b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/')
+}
 
 /// Raw OSC working-directory report. OSC 7 carries a URI; the other supported
 /// reports carry paths. Parsing belongs to the pane after the scanner frames it.
@@ -123,8 +129,12 @@ impl std::fmt::Display for Progress {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ScanEvent {
     /// An OSC exceeded the adapter's payload bound. The parser must be ended
-    /// here, and its input skipped until the scanner reaches the real end.
-    AbortOversizedOsc,
+    /// here, and its input skipped until the scanner reaches the real end. A
+    /// recognized OSC 52 clipboard store also carries a decoded-size lower
+    /// bound so it can be diagnosed even when the cut base64 cannot decode.
+    AbortOversizedOsc {
+        clipboard_store_bytes_at_least: Option<usize>,
+    },
     /// The real terminator of an OSC that the parser was forced to end early.
     ResumeAfterOversizedOsc,
     /// CSI ? 996 n (color scheme DSR).
@@ -175,6 +185,13 @@ pub(super) struct Scanner {
     overflow: bool,
     /// Bytes stored in vte's current OSC raw payload, excluding `;` separators.
     osc_raw_bytes: usize,
+    /// Separators observed in the current OSC. OSC 52's supported store form
+    /// has exactly two before its base64 payload.
+    osc_separators: usize,
+    /// Whether the current OSC has the `52;c;`, `52;p;` or `52;s;` store
+    /// prefix, and whether every payload byte so far could be base64.
+    osc52_store_payload: bool,
+    osc52_payload_is_base64: bool,
     /// The current OSC passed `MAX_OSC_RAW_BYTES` and the parser was ended.
     osc_cut: bool,
     /// Emit every complete OSC body as [`ScanEvent::OscBody`].
@@ -278,12 +295,31 @@ impl Scanner {
                             // Stop before the first byte past the parser's
                             // bound.
                             end: index,
-                            event: ScanEvent::AbortOversizedOsc,
+                            event: ScanEvent::AbortOversizedOsc {
+                                clipboard_store_bytes_at_least: self
+                                    .cut_clipboard_store_size_lower_bound(byte),
+                            },
                         });
                         self.osc_cut = true;
                         return;
                     }
-                    if byte != b';' {
+                    if byte == b';' {
+                        if self.osc_separators == 1 {
+                            let prefix = self.buffer.as_slice();
+                            self.osc52_store_payload =
+                                prefix == b"52;c" || prefix == b"52;p" || prefix == b"52;s";
+                            self.osc52_payload_is_base64 = true;
+                        }
+                        self.osc_separators = self.osc_separators.saturating_add(1);
+                    } else {
+                        if self.osc52_store_payload && self.osc_separators == 2 {
+                            // Padding is only valid at the end of a complete
+                            // base64 payload. A store still has bytes past
+                            // this cut, so an earlier `=` cannot decode.
+                            if !is_base64_byte(byte) || byte == b'=' {
+                                self.osc52_payload_is_base64 = false;
+                            }
+                        }
                         self.osc_raw_bytes += 1;
                     }
                     if self.buffer.len() >= MAX_OSC_BYTES {
@@ -370,7 +406,28 @@ impl Scanner {
         self.buffer.clear();
         self.overflow = false;
         self.osc_raw_bytes = 0;
+        self.osc_separators = 0;
+        self.osc52_store_payload = false;
+        self.osc52_payload_is_base64 = false;
         self.osc_cut = false;
+    }
+
+    fn cut_clipboard_store_size_lower_bound(&self, next_byte: u8) -> Option<usize> {
+        if self.osc_separators != 2
+            || !self.osc52_store_payload
+            || !self.osc52_payload_is_base64
+            || !is_base64_byte(next_byte)
+        {
+            return None;
+        }
+
+        // A supported target contributes three non-separator bytes (`52`
+        // and `c`, `p` or `s`). Count only complete base64 quartets so the
+        // result remains a lower bound even though the original terminator
+        // and any remaining payload have not arrived yet.
+        let encoded_bytes = self.osc_raw_bytes.checked_sub(3)?;
+        let decoded_lower_bound = encoded_bytes / 4 * 3;
+        (decoded_lower_bound > MAX_CLIPBOARD_BYTES).then_some(decoded_lower_bound)
     }
 
     fn dispatch_csi(&mut self, final_byte: u8, index: usize, events: &mut Vec<ScannedEvent>) {
@@ -690,7 +747,9 @@ mod tests {
             events,
             vec![ScannedEvent {
                 end: 0,
-                event: ScanEvent::AbortOversizedOsc,
+                event: ScanEvent::AbortOversizedOsc {
+                    clipboard_store_bytes_at_least: None,
+                },
             }]
         );
 
@@ -721,7 +780,9 @@ mod tests {
             vec![
                 ScannedEvent {
                     end: MAX_OSC_RAW_BYTES,
-                    event: ScanEvent::AbortOversizedOsc,
+                    event: ScanEvent::AbortOversizedOsc {
+                        clipboard_store_bytes_at_least: None,
+                    },
                 },
                 ScannedEvent {
                     end: 1,

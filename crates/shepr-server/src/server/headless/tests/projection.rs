@@ -335,8 +335,22 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
     let mut server = test_headless_server();
     let _input = install_focused_test_runtime(&mut server, b"BASE");
     let pane_id = server.app.state().ws(0).tree().root();
-    let (control, _render) = connect_matching_test_shell(&mut server, 7);
+    let (writer, control, _render) = test_client_writer();
+    assert!(
+        server.test_handle_server_event(ServerEvent::ShellConnected {
+            client_id: ClientId::test_new(7),
+            geometry: shepr_core::geometry::HostGeometry::new(
+                shepr_core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::HostCell::Unknown,
+            ),
+            mouse_capture: false,
+            surface_active: false,
+            outbox: writer,
+        })
+    );
     let _ = client_shell_snapshot(&control);
+    assert!(!server.has_app_client());
+    assert!(server.shell_cwd_refresh_deadline().is_some());
     server.render_now();
     assert!(control.try_recv().is_err());
 
@@ -787,6 +801,42 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
 
     assert!(!changed);
     assert!(!server.app.git_refresh_in_flight());
+}
+
+#[tokio::test]
+async fn git_status_refresh_runs_for_an_attached_client_that_presents_no_surface() {
+    let mut server = test_headless_server();
+    let scratch = ScratchDir::new("headless-git-no-client");
+    server.app.test_state_mut().test_set_workspaces(vec![
+        shepr_mux::workspace::Workspace::test_at(None, scratch.path()),
+    ]);
+
+    // Nobody attached reads the status, so a due refresh waits.
+    let now = server.app.clock().now;
+    server.handle_scheduled_tasks_headless(now);
+    assert!(!server.app.git_refresh_in_flight());
+
+    // A connection that only shows this machine in its sidebar still needs
+    // the status, and its attach makes the refresh due at once.
+    let (writer, control, _render) = test_client_writer();
+    server.test_handle_server_event(ServerEvent::ShellConnected {
+        client_id: ClientId::test_new(7),
+        geometry: shepr_core::geometry::HostGeometry::new(
+            shepr_core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::HostCell::Unknown,
+        ),
+        mouse_capture: false,
+        surface_active: false,
+        outbox: writer,
+    });
+    let _ = client_shell_snapshot(&control);
+    assert!(!server.has_app_client());
+    assert!(server.has_connection());
+
+    let now = server.app.clock().now;
+    server.handle_scheduled_tasks_headless(now);
+
+    assert!(server.app.git_refresh_in_flight());
 }
 
 #[test]

@@ -904,7 +904,7 @@ fn clipboard_queries_never_disclose_contents_and_split_writes_complete_once() {
             let effects = terminal.take_effects();
             assert_eq!(effects.clipboard_writes, vec![b"a\0b".to_vec()]);
             assert!(effects.pty_responses.is_empty());
-            terminal.write(b"\x1b]52;c;?\x07\x1b]52;p;YQBi\x07");
+            terminal.write(b"\x1b]52;c;?\x07\x1b]52;p;?\x07");
             let effects = terminal.take_effects();
             assert!(effects.clipboard_writes.is_empty());
             assert!(effects.pty_responses.is_empty());
@@ -913,7 +913,23 @@ fn clipboard_queries_never_disclose_contents_and_split_writes_complete_once() {
 }
 
 #[test]
-fn oversized_osc52_clipboard_store_reports_only_its_byte_count() {
+fn osc52_clipboard_and_selection_stores_are_forwarded_as_copies() {
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+
+    for target in ["c", "p", "s"] {
+        terminal.write(format!("\x1b]52;{target};Y2xpcA==\x07").as_bytes());
+        assert_eq!(
+            terminal.take_effects().clipboard_writes,
+            vec![b"clip".to_vec()]
+        );
+    }
+}
+
+#[test]
+fn oversized_decoded_osc52_clipboard_store_reports_its_exact_size() {
     let mut terminal = Terminal::new(
         shepr_core::geometry::PaneGeometry::cells_only(10, 3),
         shepr_core::scrollback::ScrollbackBudget::new(0),
@@ -926,12 +942,35 @@ fn oversized_osc52_clipboard_store_reports_only_its_byte_count() {
 
     let effects = terminal.take_effects();
     assert!(effects.clipboard_writes.is_empty());
-    assert_eq!(effects.dropped_clipboard_store_bytes, vec![decoded_bytes]);
+    assert_eq!(
+        effects.dropped_clipboard_store_sizes,
+        vec![ClipboardStoreSize::Exact(decoded_bytes)]
+    );
     assert!(
         terminal
             .take_effects()
-            .dropped_clipboard_store_bytes
+            .dropped_clipboard_store_sizes
             .is_empty()
+    );
+}
+
+#[test]
+fn oversized_osc52_cut_reports_a_decoded_size_lower_bound() {
+    let mut terminal = Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        shepr_core::scrollback::ScrollbackBudget::new(0),
+    );
+    // A's truncated base64 length is 1 mod 4, so Alacritty cannot decode it.
+    let encoded_payload = "A".repeat(MAX_OSC_RAW_BYTES + 8);
+    terminal.write(format!("\x1b]52;c;{encoded_payload}\x07").as_bytes());
+
+    let effects = terminal.take_effects();
+    assert!(effects.clipboard_writes.is_empty());
+    let minimum_bytes = (MAX_OSC_RAW_BYTES - 3) / 4 * 3;
+    assert!(minimum_bytes > MAX_CLIPBOARD_BYTES);
+    assert_eq!(
+        effects.dropped_clipboard_store_sizes,
+        vec![ClipboardStoreSize::AtLeast(minimum_bytes)]
     );
 }
 
@@ -955,6 +994,7 @@ fn oversized_osc_body_is_skipped_and_parser_recovers_at_its_terminator() {
 
     let effects = terminal.take_effects();
     assert!(effects.pwd_changes.is_empty());
+    assert!(effects.dropped_clipboard_store_sizes.is_empty());
     let replies: Vec<_> = effects
         .pty_responses
         .into_iter()

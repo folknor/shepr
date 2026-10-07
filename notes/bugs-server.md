@@ -9,61 +9,11 @@
    page - before the entry is removed, so the finding is not hunted again.
 4. Once all findings are resolved, the file gets deleted.
 
-Filed from the server app and render hunt and the server serving and API hunt,
-with one entry (SRV-001) shared with the mux and Git hunt. The raw reports,
+Filed from the server app and render hunt and the server serving and API hunt.
+The raw reports,
 including each one's list of areas checked and found sound, are in commit
 6dc81572 (`notes/hunt-server-app.md`, `notes/hunt-server-serving.md`,
 `notes/hunt-mux-git.md`).
-
-## SRV-001 - Git status and the `/proc` projection refresh stop on every host whose only client is not presenting, so non-shown machines in the sidebar go stale
-
-Surfaced by two scopes, which read the code differently; both readings are
-kept.
-
-Serving hunt's reading. Claim broken: AGENTS.md, "A server always computes a
-workspace's Git branch and ahead/behind, whatever any sidebar shows", together
-with "The sidebar lists every machine expanded ... with its workspaces while it
-is connected" and the kept feature "Git status in the sidebar (branch,
-ahead/behind)". The `ClientShellWorkspace` the server projects to every client
-carries `branch` and `git_ahead_behind`, and inactive shells "still receive
-control projections" (`render_targets` doc in `server/clients.rs`).
-
-What the code does: `HeadlessServer::handle_scheduled_tasks_headless` only
-calls `App::start_git_status_refresh_if_due` when `has_app_client()`, and the
-loop's wake deadline only includes the Git deadline under the same test
-(`self.app.next_deadline(self.has_app_client())`). `has_app_client` counts
-presenting connections (`ClientRegistry::app_client_count` =
-`presenting().count()`). The client turns off the surface of every connection
-it is not showing (`release_unwanted_views` in
-`shepr-client/src/endpoint/view.rs` sends
-`client_shell.surface.set {active: false}`). So on every machine the user is
-not currently looking at, the server's only client is non-presenting and Git
-refresh never runs: a commit, branch switch or push by an agent on that machine
-leaves the sidebar's branch and ahead/behind frozen until the user switches to
-it. A `TerminalCwdReported` calls `request_git_launch_refresh`, which only
-marks it due; nothing starts it.
-
-The same gate hits the 1 s `/proc` projection timer:
-`shell_cwd_refresh_deadline` returns `None` unless `latest_shell_client()`
-(presenting) exists, so `refresh_shell_projection_sources` never runs for a
-host shown only in the sidebar. Its doc says the timer "also bounds how long
-any missed invalidation can leave a client stale"; for these clients nothing
-bounds it.
-
-Which side is wrong (serving hunt): the code. The gate should be "any connected
-shell" (every connection receives projections), not "a presenting shell". If
-the intent is to save work while nobody is attached at all, the right predicate
-is `!self.clients.is_empty()`. `first_app_client` in the `ShellConnected` arm
-has the same presenting/connected confusion in the other direction (it counts
-presenting clients before the insert, whatever the new client's activity).
-
-Mux and Git hunt's reading. `GIT_REMOTE_STATUS_REFRESH_INTERVAL` in
-`crates/shepr-server/src/limits.rs` says "Refresh Git ahead/behind status
-periodically while clients are connected". That hunter read
-`GitRefreshScheduler::deadline` as keying only on `has_workspaces`, and, with
-AGENTS.md's "A server always computes a workspace's Git branch and
-ahead/behind, whatever any sidebar shows", judged the comment the wrong side:
-it should drop the client condition.
 
 ## SRV-002 - A stop that wakes an idle loop skips the pre-shutdown drain, so the final save misses queued pane events
 
@@ -167,56 +117,6 @@ Which side is wrong: the code. Answer the preamble always, then refuse with a
 typed reason (a `ServerStopping` refusal, or the shutdown notice in all three
 places) so the client can show Stopping rather than a transient retry.
 
-## SRV-010 - Title changes on panes with no agent bump the shared projection and the server-wide view epoch
-
-The server app hunt filed this as F1 and the two stale comments as a separate
-F6; they are one entry here.
-
-Where: `AppState::sync_terminal_titles` (`app/state.rs`),
-`App::sync_terminal_titles` (`app/terminal_titles.rs`), and its callers in
-`server/headless.rs` (the render loop's `sync_terminal_title_sources` followed
-by `mark_view_changed`, and `sync_pending_terminal_titles` in
-`dispatch_api_request` and in `endpoint_requests.rs`).
-
-What happens: `AppState::sync_terminal_titles` stores the new title for every
-pane the PTY parser reported. When any raw or stripped title changed, it calls
-`mark_shell_projection_dirty()`, whatever the pane is. The only titles that
-reach a client are in `ClientShellAgent` (`shepr-protocol/src/projection.rs`),
-which `App::agent_info` builds only for panes with an `effective_agent()`.
-`ClientShellPane` and `ClientShellWorkspace` carry no title, and the outer
-window title is the client's own `shepr: <label>`. So a title change on a plain
-shell pane changes nothing any client can see. It still:
-
-- advances `shell_projection_revision`, which makes
-  `refresh_stale_shell_session_cache` rebuild `projection_input()`. That
-  rebuild runs `snapshot_pane` for every pane of every workspace, including the
-  `foreground_cwd_for_pane` `/proc` reads, and advances the session generation;
-- returns `true` to the render loop, which calls `mark_view_changed()`. That
-  moves the server-wide view epoch and sends every client through a full
-  planning pass.
-
-Claims broken:
-
-- The comment on `App::sync_terminal_titles` says "Any changed title also
-  changes the shell agent metadata". That is false for panes with no agent. The
-  same claim appears on `HeadlessServer::sync_terminal_title_sources` ("a
-  changed title updates the shell agent metadata, so it requires a
-  projection").
-- AGENTS.md, under "Presentation is per client", promises "a server-wide view
-  epoch only for changes every client depends on".
-- The "Hot paths multiply" principle. A shell whose prompt or preexec hook sets
-  the title with OSC 0 or 2 (common in zsh and bash setups, and in vim and
-  htop) sets this off on every command, in every pane, for every client.
-
-Fix direction: only mark the projection dirty when a changed title belongs to a
-pane that has an effective agent. Keep storing the title for every pane, so an
-agent detected later has its title at once; the state change that makes the
-agent effective already bumps the revision. The server's
-`sync_terminal_title_sources` should then call `mark_view_changed` only when
-the projection moved. The simplest way is to return
-`observe_projection_change` instead of the raw `TerminalTitleChange` flags. Fix
-both comments together with it.
-
 ## SRV-011 - The final save under stopped or blocked persistence is reported as an error, and the documented `stopped` / `blocked_on_backup` outcomes are never logged
 
 Where: `App::save_session_before_teardown_async` (`app/session.rs`) and the
@@ -276,30 +176,6 @@ becomes the existing placeholder, "Pane directory is unavailable"), or report
 the fallback to the requester. The workspace name should follow the cwd the
 launch settled in, or the refusal.
 
-## SRV-014 - An agent resume whose launch status became unreadable is recorded and logged as "shell launch unconfirmed", without its cause
-
-Where: `App::handle_pane_launch_settled`, the
-`LaunchOutcome::StatusUnavailable(error)` arm with
-`kind == LaunchKind::AgentResume` (`app/pane_launch.rs`).
-
-What happens: it calls
-`fail_agent_resume(pane_id, ResumeUnavailableReason::ShellLaunchUnconfirmed, None)`.
-The same arm for a non-resume pane records
-`PaneStartFailure::launch_unobservable(&error)`, which keeps the cause.
-
-- The resume placeholder tells the user the launch was "unconfirmed", which is
-  the reason for the timeout case (`Unconfirmed`). Here the real cause was the
-  status channel failing.
-- The `error` is dropped from the `fail_agent_resume` log line, which its own
-  doc comment calls "the one log line for the failure". The mux coordinator did
-  log the channel error, but as a separate error-level line under another event.
-
-Claim broken: the `fail_agent_resume` doc ("`detail` carries the cause a caller
-observed ... so the caller does not log it again"), and the distinction
-`ResumeUnavailableReason` exists to draw.
-
-Severity: low (a diagnostic only).
-
 ## SRV-015 - `run_server` logs a final-save failure as "the server event loop failed"
 
 Raised as a lower-severity observation by the serving hunt.
@@ -307,20 +183,6 @@ Raised as a lower-severity observation by the serving hunt.
 `run_server` (`bootstrap.rs`): `run` returns `RunServerError::Runtime(final save
 error)`, which is already logged at error level as `persist.save` and is not a
 loop failure. The label misleads whoever reads the log.
-
-## SRV-016 - Geometry claims on focus gain, interaction and connect advance every client's view epoch
-
-Raised as a lower-severity observation by the serving hunt.
-
-Geometry claims on outer focus gain, pane interaction and connect call
-`mark_view_changed()`, which sends every client (including inactive shells and
-viewers of other workspaces) through a full pass. `apply_shell_geometry`
-already requests recompute of the affected workspace's viewers, and the
-`ShellResize` arm says "a resize must not advance unrelated clients' epoch".
-AGENTS.md's "one client's slow link, resize or scroll never moves another
-client's render path" lists only those three, but the same reasoning covers
-these claims; the epoch bump is wasted work (a re-render and diff per client
-that ends `Unchanged`).
 
 ## SRV-017 - `handle_api_request_with_shutdown_check` re-runs reconcile, geometry and focus on every request
 
@@ -345,14 +207,11 @@ pane (alternate-screen state, then scroll metrics). These are per pane, per
 client, per pass. One read returning both would follow "keep terminal-core
 locks short".
 
-## SRV-026 - A released pane exit during a host-shutdown freeze is recorded as `CheckpointDecision::Settled`
+## SRV-027 - `request_pane_exit_checkpoint`'s doc says `None` means the exit is settled
 
-Raised as a lateral observation by the server app hunt.
+Raised as a lateral by the wave reviewer.
 
-When saves are frozen or stopped, `request_pane_exit_checkpoint` returns `None`
-and `decide_pane_exit` records the decision as `CheckpointDecision::Settled`
-("checkpointed, and the checkpoint is already settled"). Nothing was
-checkpointed. The removal behaves correctly, because `preserved()` decides what
-`finish_checkpointed_pane_exit_after_event` does. Still, the name says
-something false, and a future reader of `checkpointed()` could act on it. A
-distinct `Released` decision would keep it honest.
+Its doc says `None` means "the exit is already settled". It also returns
+`None` when the save policy disallows saves, a case `decide_pane_exit`
+(`crates/shepr-server/src/app/events.rs`) now checks first and records as
+`CheckpointDecision::Released`. Reword the doc so `None` covers both.

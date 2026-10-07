@@ -15,9 +15,10 @@ pub(crate) const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 /// hung mount, reaches it.
 pub(crate) const GIT_REFRESH_STALL_BOUND: Duration = GIT_COMMAND_TIMEOUT.saturating_mul(12);
 
-/// Most abandoned worker threads left alive at once. Each is blocked for good
-/// on a path no later refresh visits while it lives, so this bounds the threads
-/// a hung mount can hold; past it a stalled refresh is waited out instead.
+/// Most abandoned worker threads left alive at once. Quarantine is by nominal
+/// step paths, not mount or shared dependency, so one hung mount can exhaust
+/// this global budget. Past it a stalled refresh is waited out instead; this
+/// bounds thread growth but does not preserve status refreshes elsewhere.
 pub(crate) const MAX_ABANDONED_GIT_REFRESH_THREADS: usize = 4;
 
 /// Polling interval while waiting for a Git probe and its output readers. The
@@ -41,6 +42,11 @@ pub(crate) const UNREAPED_GIT_CHILD_POLL_INTERVAL: Duration = Duration::from_mil
 /// Bytes read from a Git probe's output pipe per read call. Large enough that
 /// typical status output drains in a few reads.
 pub(crate) const GIT_PIPE_READ_CHUNK_BYTES: usize = 8192;
+
+/// Maximum retained bytes from each Git output stream. Config listings are
+/// user-controlled; exceeding this budget fails the probe instead of returning
+/// a truncated listing that could hide dependencies from the cache.
+pub(crate) const MAX_GIT_PIPE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Maximum bytes read from one loose Git ref file; far above any real ref,
 /// it bounds the read of a corrupt or hostile file.

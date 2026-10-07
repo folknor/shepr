@@ -59,8 +59,9 @@ pub(crate) const API_REQUEST_DRAIN_LIMIT: usize = 64;
 pub(crate) const MIN_RENDER_INTERVAL: Duration = Duration::from_millis(16);
 /// Refresh shell cwd projections periodically when no OSC 7 report arrives.
 pub(crate) const SHELL_CWD_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
-/// Refresh Git ahead/behind status periodically while clients are connected,
-/// keeping it fresh without probing on every render.
+/// Refresh Git ahead/behind status periodically while any shell connection is
+/// attached, presenting a surface or not, keeping it fresh without probing on
+/// every render.
 pub(crate) const GIT_REMOTE_STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 /// Check an in-flight refresh for lost completion or stalled progress.
 pub(crate) const GIT_LOST_REFRESH_CHECK_INTERVAL: Duration = Duration::from_millis(1500);

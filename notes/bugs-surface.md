@@ -14,58 +14,6 @@ areas checked and found sound, is in commit 6dc81572
 (`notes/hunt-wire-surface.md`). That hunter only outlined
 `shepr-core/src/env.rs`; it did not audit it.
 
-## SURF-001 - The client's patch fast path writes server chrome roles to the host uncoloured
-
-Claim broken: AGENTS.md says the pane chrome a server draws "names each cell's
-role (`shepr_protocol::ChromeRole`) instead of a colour, and the client colours
-the roles as it composes the surface". `WireColor::Chrome` says "no role
-reaches a host terminal". `blit.rs` `sgr_color` says "Composition resolves
-every chrome role; one that slipped through draws in the terminal's default
-rather than a guessed colour".
-
-What happens: a `PaneSurfacePatch` that takes the fast path
-(`ClientShellState::apply_pane_surface_patch_from` in
-`crates/shepr-client/src/shell/presentation/surface_patch.rs`, which returns
-`PatchPresentation::Rows`) copies `row.cells` unchanged into
-`ClientComposedSurfacePatch`. `ClientState::present_surface_patch`
-(`crates/shepr-client/src/state.rs`) hands them to `BlitEncoder::encode_patch`,
-and from there they go straight to the host. `Canvas::compose_pane` is never
-called, and neither is `ChromePalette::resolve`. Any cell carrying
-`WireColor::Chrome(_)` is therefore written with SGR 39/49, the terminal's
-default colour.
-
-Patch rows carry chrome cells routinely:
-
-- `retained_scrollbar_patch`
-  (`crates/shepr-server/src/server/headless/retained_surface.rs`) emits
-  scrollbar track and thumb cells built by `visit_scrollbar_track`
-  (`crates/shepr-server/src/ui/scrollbar.rs`), all `fg: WireColor::Chrome(..)`.
-  That happens whenever a scrolled pane's metrics move while output arrives.
-  This is the common case for an agent pane with scrollback.
-- The delta planner's Patch-meta updates (`Baseline::update` in
-  `crates/shepr-surface/src/decode.rs`) can carry spans over border cells
-  (border titles, strokes). The decoder forwards them as the same
-  `PaneSurfacePatch`.
-
-`fast_path_blocker` checks occlusion, overflow, selection, copy mode and
-unknown panes, but nothing about chrome colours. `commit_patch` then stores the
-unresolved cells in the encoder's `last_frame`. The next full composition
-differs from them and repaints the cells correctly, so the wrong colour lasts
-until something forces a full compose. With an idle sidebar that may be a long
-time. While it lasts, the focused and unfocused scrollbar look the same, and so
-do the focused border's host accent and the plain border.
-
-Client tests never send `WireColor::Chrome` through a patch.
-
-Fix direction: resolve the roles when building the fast-path rows. That means
-the same `ChromePalette` that `draw_frame` builds (`chrome_palette` in
-`shell/view/draw.rs`) applied per cell, or `compose_pane`'s per-cell step
-factored out and shared. Do not count on full composition. A bigger, cleaner
-version: make the fast path and `compose_pane` one function over a row span,
-so there is one place that turns pane cells into canvas cells. Today there are
-two, and they have drifted (colour roles, hyperlink remapping, cursor
-clipping).
-
 ## SURF-002 - The retained patch path does not respect `MAX_SURFACE_PATCH_SPANS`, and treats hitting it as an encode failure
 
 Claim broken: the protocol caps a `SurfaceUpdate` at `MAX_SURFACE_PATCH_SPANS`
@@ -143,26 +91,3 @@ at the last stage, as a connection failure.
 Fix direction: move the listing rule into `SurfaceBaseline::check`. Producer,
 reader and shell would then refuse the same patches, and the server would catch
 its own bug before sending. Fix the dispatch comment either way.
-
-## SURF-005 - Odd `ContentRevision`s are compared for equality as if they certified content
-
-Claim broken: the `ContentRevision` doc in
-`crates/shepr-protocol/src/revision.rs` says "an odd one never names a stable
-surface ([`Self::is_stable`])".
-
-What happens: the only client reader, `surface_presented` in
-`crates/shepr-client/src/shell/input/selection.rs`, decides whether a word
-gesture's content moved with
-`previous.content_revision != next.content_revision`. It never consults
-`is_stable()`. Two torn draws certified to the same odd value compare equal,
-and the gesture survives. For example, a draw whose `before` read failed
-(`certify(None, Some(r))`) followed by another torn draw ending at the same
-`r`.
-
-The window is narrow: revisions are monotone, so it needs an unreadable
-`before`. But the type's documented meaning is that odd means "not certified",
-and the one consumer treats odd values as certifying equality.
-
-Fix direction: give `changed_since` the parity rule
-(`!self.is_stable() || self != earlier`) and use it at the call site.
-`changed_since` exists for this and is currently unused there.

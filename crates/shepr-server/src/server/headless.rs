@@ -510,7 +510,9 @@ impl HeadlessServer {
                 now,
                 WakeInputs {
                     render_owed: plan.has_full() || render_signal_pending,
-                    app: self.app.next_deadline(self.has_app_client()),
+                    // Git status is computed for every attached connection's
+                    // sidebar, presenting a surface or not.
+                    app: self.app.next_deadline(self.has_connection()),
                     shell_cwd: self.shell_cwd_refresh_deadline(),
                 },
             );
@@ -787,12 +789,13 @@ impl HeadlessServer {
         changed
     }
 
-    fn app_client_count(&self) -> usize {
-        self.clients.app_client_count()
+    fn has_app_client(&self) -> bool {
+        self.clients.app_client_count() > 0
     }
 
-    fn has_app_client(&self) -> bool {
-        self.app_client_count() > 0
+    /// Whether any shell connection is attached, presenting a surface or not.
+    fn has_connection(&self) -> bool {
+        !self.clients.is_empty()
     }
 
     fn remove_client(&mut self, client_id: ClientId) -> bool {
@@ -1011,23 +1014,20 @@ impl HeadlessServer {
 
     /// Pulls the titles of the panes the render signal still holds as dirty,
     /// without taking the request, so an API request or endpoint command reads
-    /// current agent metadata. Returns whether any title changed (the shell
-    /// projection is then dirty); the caller folds that into its own change.
+    /// current agent metadata. Returns whether a projected agent title changed.
     fn sync_pending_terminal_titles(&mut self) -> bool {
         let sources = self.outputs.render().pending_terminal_title_sources();
-        let changes = self.app.sync_terminal_titles(&sources);
-        changes.raw_changed || changes.stripped_changed
+        self.app.sync_terminal_titles(&sources)
     }
 
     /// Pulls only titles reported dirty by the PTY parser. Returns whether any
-    /// title changed: a changed title updates the shell agent metadata, so it
-    /// requires a projection.
+    /// title used by an effective agent changed, so the shared projection
+    /// requires a new snapshot.
     fn sync_terminal_title_sources(
         &mut self,
         sources: &HashSet<shepr_core::layout::PaneId>,
     ) -> bool {
-        let changes = self.app.sync_terminal_titles(sources);
-        changes.raw_changed || changes.stripped_changed
+        self.app.sync_terminal_titles(sources)
     }
 
     /// Sends a message to all connected clients.
@@ -1143,7 +1143,7 @@ impl HeadlessServer {
                     surface_active,
                     "client connected"
                 );
-                let first_app_client = self.app_client_count() == 0;
+                let first_connection = self.clients.is_empty();
                 let last_activity = self.clients.allocate_activity_stamp();
                 let mut connection = ClientConnection::with_shell(
                     ClientShellState::with_surface_active(surface_active),
@@ -1159,6 +1159,13 @@ impl HeadlessServer {
                 // new client starts where the session's bookmark is.
                 shell.location = self.initial_client_location();
                 self.clients.insert(client_id, connection);
+                // Git status is refreshed only while a connection is attached,
+                // so the status of an unattended server has aged; the first
+                // attach asks for a refresh now instead of at the old
+                // deadline.
+                if first_connection {
+                    self.app.mark_git_status_refresh_due(self.app.clock().now);
+                }
                 // A known connection with an empty session can create the
                 // workspace it will view. Either way the locations are settled
                 // once more: a bookmark-less session leaves the new client
@@ -1210,18 +1217,13 @@ impl HeadlessServer {
                     self.clients.promote_to_foreground(client_id);
                     self.sync_host_theme_from_foreground();
                 }
-                if first_app_client {
-                    self.app.mark_git_status_refresh_due(self.app.clock().now);
-                }
                 // A second surface takes only workspaces nobody else
                 // views: a workspace with a controller keeps it, and one an
                 // earlier surface merely sized for itself, without viewing
                 // it, has no controller and goes to the newcomer that views
-                // it.
-                if self.claim_client_geometry(client_id, client_views::GeometryClaimReason::Connect)
-                {
-                    self.mark_view_changed();
-                }
+                // it. Geometry queues recomputes for affected viewers; this
+                // new connection already owes its initial surface.
+                self.claim_client_geometry(client_id, client_views::GeometryClaimReason::Connect);
             }
             ServerEvent::PasteRejected { client_id, size } => {
                 // Every rejection is a separate user action, so each one is
@@ -1312,11 +1314,9 @@ impl HeadlessServer {
                     crate::server::clients::OuterFocus::reported(focused);
                 if focused {
                     self.promote_client_to_foreground(client_id);
-                    if self
-                        .claim_client_geometry(client_id, client_views::GeometryClaimReason::Focus)
-                    {
-                        self.mark_view_changed();
-                    }
+                    // Geometry settlement queues recomputes for this
+                    // workspace's viewers directly.
+                    self.claim_client_geometry(client_id, client_views::GeometryClaimReason::Focus);
                 }
             }
             ServerEvent::ShellReplayHostEffects { client_id } => {
@@ -1402,14 +1402,12 @@ impl HeadlessServer {
                 }
                 if interaction {
                     self.promote_client_to_foreground(client_id);
-                }
-                let geometry_changed = interaction
-                    && self.claim_client_geometry(
+                    // Geometry settlement queues recomputes for this
+                    // workspace's viewers directly.
+                    self.claim_client_geometry(
                         client_id,
                         client_views::GeometryClaimReason::Interaction,
                     );
-                if geometry_changed {
-                    self.mark_view_changed();
                 }
                 let Some(runtime) = self.app.pane_runtime(runtime_pane_id) else {
                     return;
@@ -1481,7 +1479,10 @@ impl HeadlessServer {
     fn handle_scheduled_tasks_headless(&mut self, now: Instant) -> bool {
         let mut changed = false;
 
-        if self.has_app_client() {
+        // Every attached connection draws every workspace's Git status in its
+        // sidebar, whether or not it presents a surface; with nobody attached
+        // nobody reads it, and the first attach marks it due again.
+        if self.has_connection() {
             self.app.start_git_status_refresh_if_due(now);
         }
 

@@ -69,7 +69,7 @@ pub const PANE_TERM: &str = "xterm-256color";
 pub const PANE_COLORTERM: &str = "truecolor";
 
 pub use color::ColorQuery;
-pub use effects::{PtyResponse, TerminalEffects, TitleUpdate};
+pub use effects::{ClipboardStoreSize, PtyResponse, TerminalEffects, TitleUpdate};
 pub use render::{CursorVisualStyle, Dirty, RenderState};
 pub use scan::{Progress, ProgressState, WorkingDirectoryReport};
 
@@ -350,11 +350,17 @@ impl Terminal {
                 written = end;
             }
             match scanned.event {
-                ScanEvent::AbortOversizedOsc => {
+                ScanEvent::AbortOversizedOsc {
+                    clipboard_store_bytes_at_least,
+                } => {
                     // vte's std parser retains OSC bodies without a size cap.
                     // End it at our bound, then omit the remainder until the
                     // scanner sees the original terminator.
                     self.advance(b"\x18", now);
+                    if let Some(minimum_bytes) = clipboard_store_bytes_at_least {
+                        self.effects
+                            .note_cut_oversized_clipboard_store(minimum_bytes);
+                    }
                     skipping_oversized_osc = true;
                 }
                 ScanEvent::ResumeAfterOversizedOsc => skipping_oversized_osc = false,
@@ -473,7 +479,7 @@ impl Terminal {
     fn apply_scan_event(&mut self, event: ScanEvent, now: Instant) {
         match event {
             // `write_at` consumes these boundaries while slicing parser input.
-            ScanEvent::AbortOversizedOsc | ScanEvent::ResumeAfterOversizedOsc => {}
+            ScanEvent::AbortOversizedOsc { .. } | ScanEvent::ResumeAfterOversizedOsc => {}
             ScanEvent::ColorSchemeQuery => {
                 if let Some(scheme) = self.host.color_scheme() {
                     self.effects.push_bytes(scheme.report().to_vec());

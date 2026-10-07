@@ -17,59 +17,65 @@ and resume on restore (`shepr-mux/src/persist/restore.rs`,
 areas checked and found sound, is in commit 6dc81572
 (`notes/hunt-agents-detection.md`).
 
-## AGT-001 - A same-agent relaunch between two probes is never seen as a new process
+## AGT-001 - A relaunched agent's startup hook can still beat the probe that sees the new process
 
-Hunter's severity: medium.
+Residue of a larger entry. The detector now remembers the identified agent's
+process group (`AgentDetectionPresence::identified_group` in
+`crates/shepr-mux/src/pane/detect/probe.rs`), and a probe that finds the same
+agent in a new group publishes an exit, then the replacement presence. So
+`claude; claude` and `pi; pi` are now seen as a new process.
 
-Claim broken: `HookSessionPolicy::CLAUDE` in `crates/shepr-agent/src/lib.rs`:
-"`startup` reports a new process, which has no live session in this pane to
-replace." The same reasoning holds up every policy that leaves `Startup` out of
-`replacement_starts` (Claude, Pi, Grok, OpenCode, and `DEFAULT` for Copilot,
-Cursor, Devin, Droid): it only works if the old process's exit always reaches
-ownership before the new process's start does.
+What is left is ordering. A probe runs at most every
+`PROCESS_RECHECK_ACTIVE_AGENT` (300 ms), and a new agent's startup hook can
+arrive sooner. For policies that leave `Startup` out of `replacement_starts`
+(Claude, Pi, Grok, OpenCode, and `DEFAULT` for Copilot, Cursor, Devin, Droid),
+that early start still meets the old session, and ownership refuses it as
+`ReplacedSession` (`crates/shepr-detect/src/ownership/source/start.rs`,
+`transition_start`). The `HookSessionPolicy::CLAUDE` comment now says this
+openly ("Hooks arriving before that process evidence may still be refused").
 
-What the code does. The detector has no process identity. It only knows "agent
-X is in the foreground".
+What happens then, as a reviewer traced it:
 
-- `DetectorState::observe_process_probe` (`shepr-mux/src/pane/detect/probe.rs`)
-  reports an exit only when a probe finds the pane shell in the foreground
-  (`ForegroundShellAgentAction::ReportProcessExit`).
-- A tick runs every `PROCESS_RECHECK_ACTIVE_AGENT` (300 ms). A foreground-group
-  change triggers a probe, but if that probe already finds the next process of
-  the same agent, `AgentDetectionPresence::observe_process_probe(Some(same))`
-  returns "unchanged". No exit and no replacement are published, even though
-  `tick.group_changed` is set in that same tick.
-- `claude; claude`, `pi; pi`, a relaunch loop, or a wrapper script that runs
-  the agent twice all hit this reliably. The shell holds the foreground for
-  milliseconds only.
+- Claude, Copilot, Cursor, Droid, Grok (screen-owned session, `SessionStart`
+  their only session hook). The refused start is the only report carrying the
+  new session. The probe's exit clears the persisted session and the
+  replacement presence discards the checkpoint candidate, so the pane ends up
+  with no session: restore resumes nothing rather than the wrong
+  conversation. A save or pane death inside the one-probe window still holds
+  the old session.
+- Pi (full lifecycle, `Startup` not a replacement). After the exit the source
+  sits in `AwaitingProcess` with no pending start, and `observe_process` needs
+  one to reopen the generation. Every later Pi report carries the new path and
+  parks as `Pending`, waiting for a start that never comes. The session is
+  never established and hook state is ignored for the life of the process;
+  screen detection governs until `/new`, `/resume` or `/fork`.
+- Devin recovers on its next `UserPromptSubmit`. Codex, OMP, Kimi, MastraCode
+  and Kilo list `Startup` as a replacement and are unaffected.
 
-Consequences in ownership (`crates/shepr-detect/src/ownership/source/start.rs`,
-`transition_start`):
+Options, for an adjudicator:
 
-- Claude, Copilot, Cursor, Devin, Droid. `conflicting_same_owner_session_ref`
-  refuses the new process's `startup` (or omitted) start as `ReplacedSession`.
-  The pane keeps the old process's session, saves it, and on restore resumes
-  the wrong conversation.
-- Pi with live full-lifecycle authority. It is worse. The new process reports a
-  path, which `conflicting_same_owner_session_ref` ignores (it only compares
-  ids). But `same_owner_full_lifecycle_hook_authority_session_ref` returns the
-  old path, and `Startup` is not in `HookSessionPolicy::PI`, so the start is
-  refused as `ReplacedSession`. Every state report of the new process then
-  routes through `HookSourceState::report_route`. There
-  `authority_session_ref != incoming`, so it is refused as `CrossTalk`. The
-  authority still governs (`effective_row`: the detected agent is still Pi,
-  with no exit recorded), so screen detection stays paused. The pane shows the
-  dead process's last state for the whole life of the new one.
-- OMP. OMP has `Startup` in its list, so it recovers. Codex does too, and also
-  has `CODEX_THREAD_ID` guards.
+1. Park a `ReplacedSession`-refused `startup` from the same agent as a pending
+   start and let the exit-then-presence path promote it. Caveat:
+   `HookSourceState::process_exited` consumes a start parked before the exit
+   (it takes that start's process to be the one that exited), so the parked
+   start must be marked as awaiting a group-change exit.
+2. Carry the pgid on presence and let `transition_start` treat a `startup`
+   from an agent whose identified group changed within a short window as a
+   replacement. Still loses when the hook beats the probe.
+3. Accept the residue (the session is lost, never wrong), document it at the
+   code sites and close.
 
-Direction. The detector already sees the evidence: the foreground pgid changed
-while the identified agent stayed the same. Treat a pgid change under an
-unchanged identified agent as `ReportReplacementProcess` (publish the exit,
-then the replacement). A smaller fix is to carry the pgid in
-`AgentProcessDetected` / `StateChanged` and let ownership treat a new pgid as
-an exit plus a new presence. Either way, the policies' comments then become
-true by construction rather than by timing. The same fix would close AGT-007.
+## AGT-013 - A stray Pi `startup` never replaces a persisted path, even with no live process authority
+
+Raised as a lateral by the wave reviewer.
+
+`pi_startup_preserves_persisted_session_without_live_authority`
+(`crates/shepr-detect/src/ownership/tests.rs`) now pins that a Pi `startup`
+with a different path never replaces a persisted path. Restore after a server
+restart resumes Pi with the same path, so that is unaffected. But a user who
+quits a restored Pi before the detector has identified it, and starts a fresh
+`pi`, relies on the exit being observed first; otherwise the fresh session is
+refused and the pane keeps the restored path.
 
 ## AGT-002 - OMP's `PI_CONFIG_DIR` is refused when relative, which is the form OMP and shepr's own hook command treat as home-relative
 
@@ -210,29 +216,6 @@ Direction. The hunter thinks the API is right and the agent crate should match
 it. Make `session_ref_for_agent_report` take one already-chosen reference, and
 reword the `AgentResumeKey` doc to say the bundled extensions send exactly one
 kind.
-
-## AGT-007 - Codex and other partial-state reports are lost after an exit
-
-Raised as a lateral observation.
-
-`transition_report` refuses a partial-state report with `ProcessExited` while
-the recorded exit is that agent's. A new Codex started in the same pane is
-refused until the detector identifies it as a replacement process. A
-`UserPromptSubmit` sent in that window is lost, and the pane then shows Idle
-while Codex works. That lasts until the next report or a visible screen signal.
-Codex's screen manifest has a working fallback, but authority wins over screen
-Working. Narrow race; the same pgid-based replacement detection suggested in
-AGT-001 would close it.
-
-## AGT-008 - `conflicting_same_owner_session_ref` only guards id references
-
-Raised as a lateral observation.
-
-Path references (Pi, OMP) skip it entirely
-(`current.session_ref().is_id() && session_ref.is_id()`). For Pi, the
-`replaced_hook_session` check covers it while authority is live. With only a
-persisted path and no authority, any same-owner start replaces the session,
-whatever its source.
 
 ## AGT-010 - A rule reference with an explicit `region = "whole_recent"` passes silently
 

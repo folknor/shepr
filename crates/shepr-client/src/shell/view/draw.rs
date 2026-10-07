@@ -28,7 +28,7 @@ use crate::shell::view::{DrawnFrame, PaneHit, ShellView};
 /// The colours of the pane chrome a server draws, which names each cell's role and
 /// leaves the colour to the client. The focused pane's border is in the presented
 /// machine's own accent, the one its sidebar entries carry.
-fn chrome_palette(state: &ClientShellState) -> ChromePalette {
+pub(in crate::shell) fn chrome_palette(state: &ClientShellState) -> ChromePalette {
     let palette = &state.palette;
     let color = WireColor::from_ratatui;
     let host_accent = state

@@ -77,6 +77,9 @@ pub(super) struct ConfigCtx {
 }
 
 pub(super) fn stamp(path: PathBuf, canonical_target: Option<PathBuf>) -> FileDependency {
+    // This may block on a shared user config or include outside the checkout
+    // paths the worker records. Mount isolation needs this actual dependency
+    // tracked before metadata, not just the refresh job's cwd and key.
     let stamp = match std::fs::metadata(&path) {
         Ok(metadata) => DependencyStamp::Present {
             file: shepr_platform::FileStamp::from_metadata(&metadata),

@@ -1,4 +1,7 @@
+use std::io::Write;
+
 use shepr_launch::invocation::{FLAG_ALL, FLAG_EXPECT_BOOT, option_name_from_flag};
+use shepr_launch::stop::ServerStopError;
 use shepr_remote::fleet::MachineStop;
 
 /// `shepr stop`: stops the server. With `expected_boot` (the hidden
@@ -60,17 +63,18 @@ impl HostStop {
         }
     }
 
-    /// Whether the host ended with no server, what `stop --all` is for.
-    fn ended_without_a_server(&self) -> bool {
+    /// Whether stopping this host completed without an outstanding problem.
+    fn completed_cleanly(&self) -> bool {
         matches!(self, Self::Stopped | Self::NotRunning)
     }
 }
 
 /// `stop --all`: every configured machine's server, all at once, then this
-/// host's. The local one stops last, so a TUI attached to it is still up
-/// while the machines report. Each remote stop names the boot its status
-/// reported, so a server that replaced it is left running. Exits 0 only when
-/// every host ended with no server.
+/// host's. Remote results are flushed before stopping the local server because
+/// that stop can close the pane running this command. Each remote stop names
+/// the boot its status reported, so a server that replaced it is left running.
+/// The local result follows if this process survives its server's shutdown.
+/// Exits 0 only when every stop completed cleanly with no server left.
 fn stop_everywhere(paths: &shepr_paths::AppPaths) -> super::CliResult<i32> {
     let fleet = super::fleet::load(paths)?;
     let remote = shepr_remote::fleet::on_every_machine(&fleet.machines, |machine| {
@@ -81,29 +85,69 @@ fn stop_everywhere(paths: &shepr_paths::AppPaths) -> super::CliResult<i32> {
             Err(error) => HostStop::Failed(super::fleet::failure_label(&error)),
         }
     });
-    let local = local_stop(paths);
 
-    let mut rows = fleet
+    let local_label = super::fleet::local_row_label(&fleet);
+    let label_width = fleet
+        .machines
+        .iter()
+        .map(|machine| machine.label.as_str().chars().count())
+        .chain(std::iter::once(local_label.chars().count()))
+        .max()
+        .unwrap_or(0);
+    let remote_rows = fleet
         .machines
         .iter()
         .zip(&remote)
         .map(|(machine, stop)| (machine.label.to_string(), stop.label()))
         .collect::<Vec<_>>();
-    rows.push((super::fleet::local_row_label(&fleet), local.label()));
-    print!("{}", super::fleet::render_rows(&rows));
+    // A stdout that cannot take the rows does not cancel the local stop the
+    // operator asked for; the write error is returned once it has run.
+    let remote_written = write_rows(&super::fleet::render_rows_with_width(
+        &remote_rows,
+        label_width,
+    ));
+
+    let local = local_stop(paths);
+    remote_written?;
+    let local_row = [(local_label, local.label())];
+    write_rows(&super::fleet::render_rows_with_width(
+        &local_row,
+        label_width,
+    ))?;
 
     let clean = remote
         .iter()
         .chain(std::iter::once(&local))
-        .all(HostStop::ended_without_a_server);
+        .all(HostStop::completed_cleanly);
     Ok(if clean { 0 } else { 1 })
+}
+
+fn write_rows(rows: &str) -> super::CliResult<()> {
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    stdout
+        .write_all(rows.as_bytes())
+        .map_err(super::CliError::Io)?;
+    stdout.flush().map_err(super::CliError::Io)
 }
 
 fn local_stop(paths: &shepr_paths::AppPaths) -> HostStop {
     match shepr_launch::stop::stop_active_server(paths, None) {
         Ok(_) => HostStop::Stopped,
-        Err(error) if error.is_not_running() => HostStop::NotRunning,
-        Err(error) => HostStop::Failed(format!("stop failed: {error}")),
+        Err(error) => local_stop_error(error),
+    }
+}
+
+fn local_stop_error(error: ServerStopError) -> HostStop {
+    if error.is_not_running() {
+        return HostStop::NotRunning;
+    }
+    match error {
+        ServerStopError::FinalSaveFailed {
+            message,
+            stop_error: None,
+        } => HostStop::Failed(format!("stopped; final save failed: {message}")),
+        error => HostStop::Failed(format!("stop failed: {error}")),
     }
 }
 
@@ -113,10 +157,34 @@ mod tests {
 
     #[test]
     fn only_hosts_left_without_a_server_count_as_done() {
-        assert!(HostStop::Stopped.ended_without_a_server());
-        assert!(HostStop::NotRunning.ended_without_a_server());
-        assert!(!HostStop::Replaced.ended_without_a_server());
-        assert!(!HostStop::Failed("unreachable: timed out".into()).ended_without_a_server());
+        assert!(HostStop::Stopped.completed_cleanly());
+        assert!(HostStop::NotRunning.completed_cleanly());
+        assert!(!HostStop::Replaced.completed_cleanly());
+        assert!(!HostStop::Failed("unreachable: timed out".into()).completed_cleanly());
         assert_eq!(HostStop::NotRunning.label(), "not running");
+    }
+
+    #[test]
+    fn a_failed_final_save_reports_that_the_local_server_stopped() {
+        let stop = local_stop_error(ServerStopError::FinalSaveFailed {
+            message: "disk full".into(),
+            stop_error: None,
+        });
+
+        assert_eq!(stop.label(), "stopped; final save failed: disk full");
+        assert!(!stop.completed_cleanly());
+    }
+
+    #[test]
+    fn an_unconfirmed_stop_after_a_failed_save_is_still_reported_as_failed() {
+        let stop = local_stop_error(ServerStopError::FinalSaveFailed {
+            message: "disk full".into(),
+            stop_error: Some(Box::new(ServerStopError::Protocol(
+                "still answering".into(),
+            ))),
+        });
+
+        assert!(stop.label().starts_with("stop failed: "));
+        assert!(!stop.completed_cleanly());
     }
 }

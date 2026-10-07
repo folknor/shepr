@@ -14,6 +14,7 @@ use shepr_platform::Pgid;
 pub(super) struct AgentDetectionPresence {
     current_agent: Option<Agent>,
     consecutive_misses: u8,
+    identified_group: Option<Pgid>,
 }
 
 impl AgentDetectionPresence {
@@ -21,6 +22,7 @@ impl AgentDetectionPresence {
         Self {
             current_agent,
             consecutive_misses: 0,
+            identified_group: None,
         }
     }
 
@@ -34,6 +36,7 @@ impl AgentDetectionPresence {
             return false;
         }
         self.current_agent = None;
+        self.identified_group = None;
         self.consecutive_misses = 0;
         true
     }
@@ -58,6 +61,7 @@ impl AgentDetectionPresence {
                     return false;
                 }
                 self.current_agent = None;
+                self.identified_group = None;
                 self.consecutive_misses = 0;
                 true
             }
@@ -179,10 +183,23 @@ impl DetectorState {
         };
         let suspended_agent_is_present = foreground_is_pane_shell
             && previous_agent.is_some_and(|agent| probe.suspended_agents.contains(&agent));
-        let action = foreground_shell_agent_action_with_suspended_agent(
+        let mut action = foreground_shell_agent_action_with_suspended_agent(
             shell_probe,
             suspended_agent_is_present,
         );
+        // Compare with the last identified agent group, not the scheduler's
+        // foreground group: a suspended job yields the terminal to its shell
+        // and resumes in its original group. A new group naming the same agent
+        // is a new process even when the shell ran between probes unseen.
+        if action == ForegroundShellAgentAction::ObserveProbe
+            && identified_agent.is_some()
+            && identified_agent == previous_agent
+            && self.agent_presence.identified_group.is_some()
+            && process_group_id.is_some()
+            && self.agent_presence.identified_group != process_group_id
+        {
+            action = ForegroundShellAgentAction::ReportProcessExit;
+        }
         let agent_changed = match action {
             ForegroundShellAgentAction::ReportReplacementProcess => {
                 self.exit_phase = AgentExitPhase::Observing;
@@ -232,6 +249,16 @@ impl DetectorState {
                 false
             }
         };
+        if identified_agent.is_some()
+            && matches!(
+                action,
+                ForegroundShellAgentAction::ObserveProbe
+                    | ForegroundShellAgentAction::ReportReplacementProcess
+            )
+            && (process_group_id.is_some() || agent_changed)
+        {
+            self.agent_presence.identified_group = process_group_id;
+        }
         let agent = self.current_agent();
         self.scheduler.probe_completed(
             tick,
@@ -515,10 +542,60 @@ mod tests {
     }
 
     #[test]
+    fn same_agent_in_new_group_reports_exit_then_replacement() {
+        for agent in [Agent::Claude, Agent::Pi, Agent::Codex] {
+            let now = Instant::now();
+            let mut detector = DetectorState::new(now, LaunchKind::Fresh);
+            let probe = |group| {
+                probe_result(
+                    group,
+                    false,
+                    Vec::new(),
+                    ProcessProbeIdentity::Agent {
+                        agent,
+                        process_name: agent.label().to_string(),
+                    },
+                )
+            };
+            detector.observe_process_probe(&tick(now, 25), &probe(25), probe_decision(true));
+            let unchanged = detector.observe_process_probe(
+                &tick(now + Duration::from_millis(1), 25),
+                &probe(25),
+                probe_decision(false),
+            );
+            assert!(!unchanged.agent_changed);
+            let exited_at = now + Duration::from_millis(2);
+            let exit = detector.observe_process_probe(
+                &tick(exited_at, 26),
+                &probe(26),
+                probe_decision(true),
+            );
+            assert_eq!(exit.process_detected, None);
+            assert!(detector.process_exited());
+            let update = detector
+                .complete_screen(&tick(exited_at, 26), &Default::default())
+                .expect("replacement owes an exit before presence");
+            assert_eq!(update.agent, Some(agent));
+            assert!(update.process_exited);
+            let replacement_at = exited_at + Duration::from_millis(1);
+            let replacement = detector.observe_process_probe(
+                &tick(replacement_at, 26),
+                &probe(26),
+                probe_decision(false),
+            );
+            assert_eq!(replacement.process_detected, Some(agent));
+            assert!(replacement.agent_changed);
+            assert!(replacement.should_clear_osc_evidence);
+            assert!(!detector.process_exited());
+        }
+    }
+
+    #[test]
     fn suspended_agent_is_not_reported_as_a_process_exit_or_replacement() {
         let now = Instant::now();
         let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Claude));
+        detector.agent_presence.identified_group = Some(pgid(27));
         let suspended_probe = probe_result(
             25,
             true,

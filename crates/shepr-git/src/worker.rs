@@ -9,10 +9,15 @@
 //! [`GitStatusWorker::abandon_stalled`] gives up on one that owes a refresh and
 //! has made none for [`GIT_REFRESH_STALL_BOUND`]. An abandoned thread is left
 //! detached and joined only once it has finished; it publishes nothing more,
-//! and the paths its stalled step reads are left out of later refreshes until
-//! it finishes, so a mount that stays hung holds one thread, not one per
-//! refresh. A thread stalled with no step running (blocked in a destructor,
-//! say) is abandoned too, since the handle is wedged behind it, but it has no
+//! and the paths its stalled step names are left out of later refreshes until
+//! it finishes. These are nominal cwd/checkout paths, not the actual blocking
+//! dependency or its mount: sibling checkouts on one hung mount can each
+//! consume a slot, as can checkouts sharing a hung user config outside those
+//! paths. Quarantining a mount requires observing each filesystem access and
+//! resolving its mount without statting the hung filesystem. Prefix filtering
+//! of targets alone cannot provide that isolation. A thread stalled with no
+//! step running (blocked in a destructor, say) is abandoned too, since the
+//! handle is wedged behind it, but it has no
 //! paths to keep out; a recurring one holds an abandonment slot each time
 //! until it finishes. At most [`MAX_ABANDONED_GIT_REFRESH_THREADS`] are left
 //! alive at once, and past that a stall is waited out.
@@ -462,6 +467,11 @@ impl<T: Send + 'static> GitStatusWorker<T> {
     }
 
     fn is_stuck(&self, target: &RefreshTarget<T>) -> bool {
+        // This only matches nominal step inputs. It cannot match a sibling
+        // checkout on the same mount, or a user config/include/common dir
+        // outside those inputs. Expanding prefixes to parents would suppress
+        // unrelated healthy checkouts too; mount identity must come from a
+        // platform lookup that does not touch the potentially hung mount.
         self.abandoned
             .iter()
             .flat_map(|thread| &thread.stuck)

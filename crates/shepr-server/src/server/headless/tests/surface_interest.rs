@@ -23,6 +23,114 @@ fn request_active_surface(server: &mut HeadlessServer, client_id: u64) {
 }
 
 #[tokio::test]
+async fn geometry_claims_recompute_their_viewers_without_advancing_the_shared_epoch() {
+    let mut server = test_headless_server();
+    let mut input_rx = install_focused_test_runtime(&mut server, b"");
+    let first_pane = server.app.state().ws(0).tree().root();
+    let second_workspace = shepr_mux::workspace::Workspace::test_new("other");
+    let second_pane = second_workspace.tree().root();
+    server
+        .app
+        .test_state_mut()
+        .test_push_workspace(second_workspace);
+    server.app.insert_test_runtime(
+        second_pane,
+        shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"OTHER"),
+    );
+    server.app.test_state_mut().mark_shell_projection_dirty();
+    server.app.test_state_mut().seed_bookmark_index(Some(0));
+
+    let (control7, render7) = connect_test_shell(&mut server, 7, 100, 35);
+    let _ = client_shell_snapshot(&control7);
+    let (control8, render8) = connect_test_shell(&mut server, 8, 80, 24);
+    let _ = client_shell_snapshot(&control8);
+    server.render_now();
+    while render7.try_recv().is_ok() {}
+    while render8.try_recv().is_ok() {}
+
+    // Make the next connection start on a different, still unowned workspace.
+    server.app.test_state_mut().seed_bookmark_index(Some(1));
+    server.app.test_state_mut().mark_shell_projection_dirty();
+    server.render_now();
+    while control7.try_recv().is_ok() {}
+    while control8.try_recv().is_ok() {}
+    while render7.try_recv().is_ok() {}
+    while render8.try_recv().is_ok() {}
+
+    let epoch = server.view_epoch;
+    let (control9, render9) = connect_test_shell(&mut server, 9, 60, 18);
+    let _ = client_shell_snapshot(&control9);
+    assert_eq!(server.view_epoch, epoch);
+    let plan = server.render_plan(false);
+    let report = server.render_pass(&plan, &HashSet::new());
+    assert_eq!(report.full, vec![ClientId::test_new(9)]);
+    let _ = render9.recv().expect("new client's initial surface");
+    assert!(render7.try_recv().is_err());
+    assert!(render8.try_recv().is_err());
+
+    // Client 8 takes the first workspace's geometry, then focus returns it to
+    // client 7. Each change owes only the viewers of that workspace.
+    assert!(server.claim_shell_workspace_geometry(
+        ClientId::test_new(8),
+        client_views::PendingResumes::Defer,
+    ));
+    let plan = server.render_plan(false);
+    let report = server.render_pass(&plan, &HashSet::new());
+    assert_eq!(
+        report.full,
+        vec![ClientId::test_new(7), ClientId::test_new(8)]
+    );
+    while render7.try_recv().is_ok() {}
+    while render8.try_recv().is_ok() {}
+
+    let epoch = server.view_epoch;
+    assert!(server.test_handle_server_event(ServerEvent::ShellFocus {
+        client_id: ClientId::test_new(7),
+        focused: true,
+    }));
+    assert_eq!(server.view_epoch, epoch);
+    let plan = server.render_plan(false);
+    let report = server.render_pass(&plan, &HashSet::new());
+    assert_eq!(
+        report.full,
+        vec![ClientId::test_new(7), ClientId::test_new(8)]
+    );
+    assert!(render9.try_recv().is_err());
+    while render7.try_recv().is_ok() {}
+    while render8.try_recv().is_ok() {}
+
+    let pane_id = server
+        .app
+        .state()
+        .pane(first_pane)
+        .expect("first pane")
+        .public_id();
+    let epoch = server.view_epoch;
+    // The fixture's return reports an epoch, client count or per-client view
+    // key change; an interaction claim moves none of them, so it is not asserted.
+    server.test_handle_server_event(ServerEvent::ShellPaneInput {
+        client_id: ClientId::test_new(8),
+        pane_id,
+        events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
+            "interaction".into(),
+        )],
+    });
+    assert_eq!(server.view_epoch, epoch);
+    assert_eq!(
+        input_rx.try_recv().expect("pane input").as_ref(),
+        &b"interaction"[..]
+    );
+    let plan = server.render_plan(false);
+    let report = server.render_pass(&plan, &HashSet::new());
+    assert_eq!(
+        report.full,
+        vec![ClientId::test_new(7), ClientId::test_new(8)]
+    );
+    assert!(render9.try_recv().is_err());
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
 async fn metadata_only_shell_is_isolated_until_surface_activation() {
     let mut server = test_headless_server();
     let mut input_rx = install_focused_test_runtime(&mut server, b"");

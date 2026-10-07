@@ -147,6 +147,45 @@ fn a_patch_after_the_snapshot_passed_the_surface_advances_the_baseline() {
     );
     assert!(s.presentation.surfaces.is_paired());
 }
+
+#[test]
+fn fast_path_patches_resolve_pane_chrome_roles_before_blitting() {
+    let mut s = state();
+    s.compose(106, 20).expect("terminal frame");
+    let surface = s.presentation.surfaces.baseline().expect("baseline");
+    let mut p = changed_patch(surface, "X");
+    p.rows[0].cells[0].fg =
+        shepr_protocol::WireColor::Chrome(shepr_protocol::ChromeRole::BorderFocused);
+    p.rows[0].cells[0].bg =
+        shepr_protocol::WireColor::Chrome(shepr_protocol::ChromeRole::ScrollThumbFocused);
+    let chrome = crate::shell::view::chrome_palette(&s);
+
+    let ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Rows(composed)) = s
+        .apply_pane_surface_patch_from(
+            &p,
+            s.endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        )
+    else {
+        panic!("unoccluded patch should use the row fast path")
+    };
+
+    assert_eq!(
+        composed.rows[0].cells[0].fg,
+        chrome.resolve(shepr_protocol::WireColor::Chrome(
+            shepr_protocol::ChromeRole::BorderFocused,
+        ))
+    );
+    assert_eq!(
+        composed.rows[0].cells[0].bg,
+        chrome.resolve(shepr_protocol::WireColor::Chrome(
+            shepr_protocol::ChromeRole::ScrollThumbFocused,
+        ))
+    );
+}
+
 #[test]
 fn a_new_generation_loses_the_baseline_but_keeps_the_held_pair() {
     let mut s = state();

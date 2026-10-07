@@ -11,6 +11,7 @@ __pycache__
 .brokkr
 .local
 .reports
+reports/
 research/
 
 # Credential directory mounted read-only by the workspace sandbox.

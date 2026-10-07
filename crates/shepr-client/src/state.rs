@@ -125,6 +125,9 @@ impl ClientState {
     /// Records that the host refused a frame or patch: the next frame repaints
     /// in full, and the loop wakes for it on its own.
     fn note_refused_output(&mut self) {
+        // The failed write may have delivered DECSCUSR before the host refused the rest.
+        // Cursor visibility is emitted with every frame; force the shape to be reasserted.
+        self.blit_encoder.invalidate_cursor_shape();
         self.request_repaint();
         self.refused_output_retry.arm(self.shell.now);
     }
@@ -560,6 +563,32 @@ mod tests {
         }
     }
 
+    /// Delivers a prefix, then refuses the next write so a complete escape sequence can
+    /// reach the test terminal before the frame write fails.
+    struct PrefixThenBrokenHost {
+        output: Arc<Mutex<Vec<u8>>>,
+        remaining: usize,
+    }
+
+    impl io::Write for PrefixThenBrokenHost {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(io::Error::from(io::ErrorKind::BrokenPipe));
+            }
+            let written = self.remaining.min(bytes.len());
+            self.output
+                .lock()
+                .map_err(|_| io::Error::other("test output lock poisoned"))?
+                .extend_from_slice(&bytes[..written]);
+            self.remaining -= written;
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn a_frame_the_host_refused_starts_no_notice_lifetime() {
         let mut state = ClientState::test_new_with_writer(BrokenHost);
@@ -585,6 +614,63 @@ mod tests {
         assert!(
             state.shell.next_timer_deadline().is_some(),
             "the frame that reached the host starts the notice's lifetime"
+        );
+    }
+
+    #[test]
+    fn a_refused_frame_reasserts_cursor_shape_and_visibility_on_repaint() {
+        let mut state = ClientState::test_new();
+        let frame = |text: &str, shape: shepr_protocol::CursorShapeParam| {
+            shepr_protocol::FrameData::from_ratatui_buffer_with_hyperlinks(
+                &Buffer::with_lines([text]),
+                Some(shepr_protocol::CursorState {
+                    x: 0,
+                    y: 0,
+                    visible: true,
+                    shape,
+                }),
+                &[],
+            )
+            .expect("test buffer is a valid frame")
+        };
+        let shown_block = frame("a", shepr_protocol::CursorShapeParam::SteadyBlock);
+        let attempted_bar = frame("b", shepr_protocol::CursorShapeParam::SteadyBar);
+        assert!(state.write_frame(shown_block.clone()));
+
+        let attempted_bytes = state.blit_encoder.encode(&attempted_bar, false).bytes;
+        let attempted_shape = b"\x1b[6 q";
+        let delivered_prefix = attempted_bytes
+            .windows(attempted_shape.len())
+            .position(|window| window == attempted_shape)
+            .expect("changed cursor shape is encoded")
+            + attempted_shape.len();
+        let failed_output = Arc::new(Mutex::new(Vec::new()));
+        state.output_writer = Box::new(PrefixThenBrokenHost {
+            output: Arc::clone(&failed_output),
+            remaining: delivered_prefix,
+        });
+        assert!(!state.write_frame(attempted_bar));
+        assert!(
+            failed_output
+                .lock()
+                .expect("test output lock")
+                .windows(attempted_shape.len())
+                .any(|window| window == attempted_shape)
+        );
+
+        let retry_output = Arc::new(Mutex::new(Vec::new()));
+        state.output_writer = Box::new(SharedWriter(Arc::clone(&retry_output)));
+        assert!(state.write_frame(shown_block));
+        let retry = retry_output.lock().expect("test output lock");
+        assert!(
+            retry
+                .windows(b"\x1b[2 q".len())
+                .any(|window| window == b"\x1b[2 q")
+        );
+        assert!(
+            retry
+                .windows(b"\x1b[?25h".len())
+                .any(|window| window == b"\x1b[?25h")
         );
     }
 

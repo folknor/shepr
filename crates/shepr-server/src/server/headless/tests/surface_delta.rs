@@ -646,6 +646,14 @@ async fn exhausted_surface_revisions_close_the_client() {
 #[tokio::test]
 async fn scrolling_preserves_concurrent_shared_projection_changes() {
     let mut pair = Pair::new();
+    // Only an agent's title is projected, so the pane needs an agent for the
+    // title change to be a shared projection change.
+    pair.server
+        .app
+        .test_state_mut()
+        .terminal_mut(pair.pane)
+        .ownership_mut()
+        .set_detected_agent_process_at(shepr_agent::Agent::Claude, std::time::Instant::now());
     pair.damage(b"\x1b]0;shared title\x07");
     pair.server
         .outputs

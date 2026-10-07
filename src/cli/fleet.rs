@@ -41,11 +41,18 @@ pub(super) fn failure_label(error: &std::io::Error) -> String {
 /// `rows` as lines of a label column padded to the widest label, then the
 /// text.
 pub(super) fn render_rows(rows: &[(String, String)]) -> String {
+    render_rows_with_width(rows, 0)
+}
+
+/// Renders a partial set of rows using at least the given label width, so
+/// reports written in stages keep the same columns as one complete report.
+pub(super) fn render_rows_with_width(rows: &[(String, String)], min_width: usize) -> String {
     let width = rows
         .iter()
         .map(|(label, _)| label.chars().count())
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(min_width);
     let mut out = String::new();
     for (label, text) in rows {
         let padding = width.saturating_sub(label.chars().count());
@@ -72,6 +79,18 @@ mod tests {
         assert_eq!(
             render_rows(&rows),
             "  bygg (local)  stopped\n  dm6           not running\n"
+        );
+    }
+
+    #[test]
+    fn partial_rows_keep_the_complete_report_width() {
+        let row = [("dm6".to_owned(), "stopped".to_owned())];
+        assert_eq!(
+            render_rows_with_width(&row, "bygg (local)".chars().count()),
+            format!(
+                "  dm6{}  stopped\n",
+                " ".repeat("bygg (local)".chars().count() - 3)
+            )
         );
     }
 

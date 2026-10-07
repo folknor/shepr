@@ -274,8 +274,11 @@ impl HookSessionPolicy {
     // integration's hook matcher is built from it (shepr-integration's
     // `registration`), so the
     // sources Claude reports and the sources that replace stay one list.
-    // `startup` reports a new process, which has no live session in this pane
-    // to replace. Every other source puts a different session id in the pane's
+    // `startup` reports a new process. The detector releases the previous
+    // session on exit or a changed identified process group before accepting
+    // replacement presence; startup itself cannot replace a live session.
+    // Hooks arriving before that process evidence may still be refused. Every
+    // other source puts a different session id in the pane's
     // own process: `--fork-session` and `/branch` switch the pane into the
     // fork (Claude Code reported these as `resume` before it added `fork`).
     // The payload does not say which kind of fork it is: a `/fork` background

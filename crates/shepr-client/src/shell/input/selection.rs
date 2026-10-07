@@ -191,7 +191,9 @@ impl MouseSelection {
                     // Ordinary selections are live buffer ranges. Only word gestures
                     // cache content-dependent boundaries that output can invalidate.
                     || (self.word_gesture.is_some()
-                        && previous.content_revision != next.content_revision)
+                        && next
+                            .content_revision
+                            .changed_since(previous.content_revision))
             }
             _ => false,
         };

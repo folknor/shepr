@@ -120,6 +120,8 @@ pub(crate) fn parse_launch(args: &[String]) -> Result<Launch, i32> {
                     Some(command) => Launch::Cli(Box::new(command)),
                     // The CLI spec and typed parsers are checked together in
                     // tests; retain a clear error in release builds if they diverge.
+                    // A typed parser also lands here for a combination clap
+                    // cannot refuse itself (`status --all` with a subcommand).
                     None => {
                         shepr_platform::begin_cli_output();
                         eprintln!(
@@ -297,10 +299,12 @@ fn map_server_not_running_or_io(
     if let ApiClientError::Io(original) = &err {
         match shepr_platform::ipc::socket_is_live(&client.socket_path()).map(|live| !live) {
             Ok(true) => {
-                let socket_path = client.socket_path();
                 let attach_command = shepr_launch::guidance::attach_command(paths.server_address());
-                let message =
-                    shepr_launch::guidance::server_not_running(&socket_path, &attach_command);
+                let message = shepr_launch::guidance::server_not_running(
+                    paths.server_address(),
+                    paths.runtime_dir(),
+                    &attach_command,
+                );
                 return CliError::Message(message);
             }
             Ok(false) => {}

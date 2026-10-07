@@ -14,8 +14,9 @@ use crate::{
     child_io::ChildIoSendError,
     fd,
     limits::{
-        ACTOR_IDLE_POLL, ACTOR_INBOX_MAX_BYTES, ACTOR_INBOX_MAX_ITEMS,
-        MAX_WRITE_FAILURE_DRAIN_CHUNKS, MAX_WRITE_STEPS_PER_PUMP, PTY_READ_BUFFER_BYTES,
+        ACTOR_IDLE_POLL, ACTOR_INBOX_MAX_BYTES, ACTOR_INBOX_MAX_ITEMS, ACTOR_REPLY_INBOX_MAX_BYTES,
+        ACTOR_REPLY_INBOX_MAX_ITEMS, MAX_WRITE_FAILURE_DRAIN_CHUNKS, MAX_WRITE_STEPS_PER_PUMP,
+        PTY_READ_BUFFER_BYTES,
     },
 };
 
@@ -152,8 +153,15 @@ pub struct PtyIoActorHandle {
 #[derive(Default)]
 struct PtyIoInbox {
     entries: VecDeque<PtyIoInboxEntry>,
-    pending_bytes: usize,
-    pending_items: usize,
+    /// Unwritten ordinary user input. A single larger input has separate
+    /// accounting so it cannot consume room for later keystrokes or replies.
+    pending_user_bytes: usize,
+    pending_oversized_user_bytes: usize,
+    pending_user_items: usize,
+    /// Terminal replies have their own bounded budget: a paste or a burst of
+    /// user input must not suppress answers the child needs to keep working.
+    pending_response_bytes: usize,
+    pending_response_items: usize,
     next_order: u64,
     next_entry_id: u64,
     latest_resize: Option<QueuedResize>,
@@ -197,40 +205,82 @@ impl PtyIoInbox {
         id
     }
 
-    /// Admit work while the outstanding total stays within the caps. One item
-    /// larger than the byte cap is admitted when no bytes are outstanding, so
-    /// a big paste or prompt still reaches a pane that is reading instead of
-    /// being refused forever; the bound is then that single item, which the
-    /// caller already held in memory.
-    fn reserve(&mut self, bytes: usize, items: usize) -> bool {
-        let Some(pending_items) = self.pending_items.checked_add(items) else {
+    /// Admit input into its bounded backlog. One oversized input is permitted
+    /// when no other user input is outstanding; it is accounted separately
+    /// from the ordinary input budget until the actor writes it.
+    fn reserve_user_input(&mut self, bytes: usize, oversized: bool) -> bool {
+        let Some(pending_items) = self.pending_user_items.checked_add(1) else {
             return false;
         };
         if pending_items > ACTOR_INBOX_MAX_ITEMS {
             return false;
         }
-        let pending_bytes = match self.pending_bytes.checked_add(bytes) {
-            Some(total) if total <= ACTOR_INBOX_MAX_BYTES || self.pending_bytes == 0 => total,
-            _ => return false,
-        };
-        self.pending_bytes = pending_bytes;
-        self.pending_items = pending_items;
+        if oversized {
+            if self.pending_user_bytes != 0 || self.pending_oversized_user_bytes != 0 {
+                return false;
+            }
+            self.pending_oversized_user_bytes = bytes;
+        } else {
+            let Some(pending_bytes) = self.pending_user_bytes.checked_add(bytes) else {
+                return false;
+            };
+            if pending_bytes > ACTOR_INBOX_MAX_BYTES {
+                return false;
+            }
+            self.pending_user_bytes = pending_bytes;
+        }
+        self.pending_user_items = pending_items;
         true
     }
 
-    fn release_bytes(&mut self, bytes: usize) {
-        self.pending_bytes = self.pending_bytes.saturating_sub(bytes);
+    /// Terminal replies use a separate budget because dropping one can leave
+    /// a child waiting for an answer to a query it just sent.
+    fn reserve_terminal_response(&mut self, bytes: usize) -> bool {
+        let Some(pending_items) = self.pending_response_items.checked_add(1) else {
+            return false;
+        };
+        if pending_items > ACTOR_REPLY_INBOX_MAX_ITEMS {
+            return false;
+        }
+        let Some(pending_bytes) = self.pending_response_bytes.checked_add(bytes) else {
+            return false;
+        };
+        if pending_bytes > ACTOR_REPLY_INBOX_MAX_BYTES && self.pending_response_bytes != 0 {
+            return false;
+        }
+        self.pending_response_bytes = pending_bytes;
+        self.pending_response_items = pending_items;
+        true
     }
 
-    fn release_item(&mut self) {
-        self.pending_items = self.pending_items.saturating_sub(1);
+    fn release_entry_bytes(&mut self, index: usize, bytes: usize) {
+        let Some(class) = self.entries.get(index).map(|entry| match &entry.write {
+            PendingWrite::User(_) => PendingWriteClass::User,
+            PendingWrite::OversizedUser(_) => PendingWriteClass::OversizedUser,
+            PendingWrite::TerminalResponse(_) => PendingWriteClass::TerminalResponse,
+        }) else {
+            return;
+        };
+        match class {
+            PendingWriteClass::User => {
+                self.pending_user_bytes = self.pending_user_bytes.saturating_sub(bytes);
+            }
+            PendingWriteClass::OversizedUser => {
+                self.pending_oversized_user_bytes =
+                    self.pending_oversized_user_bytes.saturating_sub(bytes);
+            }
+            PendingWriteClass::TerminalResponse => {
+                self.pending_response_bytes = self.pending_response_bytes.saturating_sub(bytes);
+            }
+        }
     }
 
     fn push_user_input(&mut self, bytes: Bytes) -> Result<(), Bytes> {
         if bytes.is_empty() {
             return Ok(());
         }
-        if !self.reserve(bytes.len(), 1) {
+        let oversized = bytes.len() > ACTOR_INBOX_MAX_BYTES;
+        if !self.reserve_user_input(bytes.len(), oversized) {
             return Err(bytes);
         }
         let order = self.next_order();
@@ -238,7 +288,11 @@ impl PtyIoInbox {
         self.entries.push_back(PtyIoInboxEntry {
             id,
             order,
-            write: PendingWrite::User(bytes),
+            write: if oversized {
+                PendingWrite::OversizedUser(bytes)
+            } else {
+                PendingWrite::User(bytes)
+            },
         });
         Ok(())
     }
@@ -247,13 +301,11 @@ impl PtyIoInbox {
         if bytes.is_empty() {
             return ResponsePush::Queued;
         }
-        // Only a child that has stopped reading fills the inbox, and a reply
-        // it will read late is worth little, so an overflowing reply is
-        // dropped; user input instead gets Full. The replies already queued
-        // keep their order, and a later reply that fits still goes out (a
-        // DA1 sentinel behind a dropped answer tells the child the answer is
-        // not coming rather than leaving it waiting).
-        if !self.reserve(bytes.len(), 1) {
+        // The reply budget is independent of user input, including a single
+        // oversized paste. Replies in this queue retain their order; a reply
+        // that exceeds the bounded response backlog is still dropped rather
+        // than growing memory without limit.
+        if !self.reserve_terminal_response(bytes.len()) {
             return ResponsePush::Dropped {
                 first: self.note_terminal_response_drop(),
             };
@@ -292,8 +344,9 @@ impl PtyIoInbox {
     ) -> Option<u64> {
         if let Some(previous) = self.latest_resize.take() {
             for bytes in previous.terminal_responses {
-                self.release_bytes(bytes.len());
-                self.release_item();
+                self.pending_response_bytes =
+                    self.pending_response_bytes.saturating_sub(bytes.len());
+                self.pending_response_items = self.pending_response_items.saturating_sub(1);
             }
         }
 
@@ -303,7 +356,7 @@ impl PtyIoInbox {
             if bytes.is_empty() {
                 continue;
             }
-            if self.reserve(bytes.len(), 1) {
+            if self.reserve_terminal_response(bytes.len()) {
                 accepted_responses.push(bytes);
             } else if self.note_terminal_response_drop() {
                 should_report_drop = true;
@@ -349,9 +402,26 @@ impl PtyIoInbox {
     /// were already released as they were written.
     fn remove_entry(&mut self, index: usize, written: usize) -> Option<PendingWrite> {
         let entry = self.entries.remove(index)?;
-        let (PendingWrite::User(bytes) | PendingWrite::TerminalResponse(bytes)) = &entry.write;
-        self.release_bytes(bytes.len().saturating_sub(written));
-        self.release_item();
+        match &entry.write {
+            PendingWrite::User(bytes) => {
+                self.pending_user_bytes = self
+                    .pending_user_bytes
+                    .saturating_sub(bytes.len().saturating_sub(written));
+                self.pending_user_items = self.pending_user_items.saturating_sub(1);
+            }
+            PendingWrite::OversizedUser(bytes) => {
+                self.pending_oversized_user_bytes = self
+                    .pending_oversized_user_bytes
+                    .saturating_sub(bytes.len().saturating_sub(written));
+                self.pending_user_items = self.pending_user_items.saturating_sub(1);
+            }
+            PendingWrite::TerminalResponse(bytes) => {
+                self.pending_response_bytes = self
+                    .pending_response_bytes
+                    .saturating_sub(bytes.len().saturating_sub(written));
+                self.pending_response_items = self.pending_response_items.saturating_sub(1);
+            }
+        }
         Some(entry.write)
     }
 
@@ -625,7 +695,15 @@ enum WriteStep {
 #[derive(Debug, PartialEq, Eq)]
 enum PendingWrite {
     User(Bytes),
+    OversizedUser(Bytes),
     TerminalResponse(Bytes),
+}
+
+#[derive(Clone, Copy)]
+enum PendingWriteClass {
+    User,
+    OversizedUser,
+    TerminalResponse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -984,8 +1062,11 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
         inbox.shutdown = true;
         inbox.entries.clear();
         inbox.latest_resize = None;
-        inbox.pending_bytes = 0;
-        inbox.pending_items = 0;
+        inbox.pending_user_bytes = 0;
+        inbox.pending_oversized_user_bytes = 0;
+        inbox.pending_user_items = 0;
+        inbox.pending_response_bytes = 0;
+        inbox.pending_response_items = 0;
         // The first overflow is reported immediately; include later drops
         // in one final total when the actor stops.
         inbox.mark_terminal_response_drops_reported()
@@ -1003,7 +1084,11 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
             let Some(entry) = inbox.entries.get(index) else {
                 return Ok(WriteStep::Idle);
             };
-            let (PendingWrite::User(bytes) | PendingWrite::TerminalResponse(bytes)) = &entry.write;
+            let bytes = match &entry.write {
+                PendingWrite::User(bytes)
+                | PendingWrite::OversizedUser(bytes)
+                | PendingWrite::TerminalResponse(bytes) => bytes,
+            };
             (index, entry.id, bytes.clone())
         };
         let offset = self.current_write_offset;
@@ -1017,7 +1102,7 @@ impl<I: PtyIo> PtyIoActorRunner<I> {
             Ok(written) => {
                 let offset = offset.saturating_add(written);
                 if offset < bytes.len() {
-                    crate::locks::lock_auxiliary(&self.inbox).release_bytes(written);
+                    crate::locks::lock_auxiliary(&self.inbox).release_entry_bytes(index, written);
                     self.current_write_id = Some(id);
                     self.current_write_offset = offset;
                     return Ok(WriteStep::Progress);
@@ -1358,18 +1443,68 @@ mod tests {
 
         assert_eq!(rejected, Some(chunk));
         let inbox = crate::locks::lock_auxiliary(&handle.inbox);
-        assert!(inbox.pending_bytes <= ACTOR_INBOX_MAX_BYTES);
-        assert!(inbox.pending_bytes > 0, "unread input remains queued");
-        assert!(inbox.pending_items <= ACTOR_INBOX_MAX_ITEMS);
+        assert!(inbox.pending_user_bytes <= ACTOR_INBOX_MAX_BYTES);
+        assert!(inbox.pending_user_bytes > 0, "unread input remains queued");
+        assert!(inbox.pending_user_items <= ACTOR_INBOX_MAX_ITEMS);
         drop(inbox);
         handle.shutdown();
+    }
+
+    #[test]
+    fn oversized_input_does_not_consume_regular_input_or_reply_budgets() {
+        let mut inbox = PtyIoInbox::default();
+        let large = Bytes::from(vec![b'p'; ACTOR_INBOX_MAX_BYTES + 1]);
+        inbox
+            .push_user_input(large)
+            .expect("one oversized paste has its own slot");
+        inbox
+            .push_user_input(Bytes::from_static(b"key"))
+            .expect("ordinary input keeps its budget while the paste drains");
+        assert_eq!(
+            inbox.push_terminal_response(Bytes::from_static(b"answer")),
+            ResponsePush::Queued,
+            "terminal replies keep their budget while a paste drains"
+        );
+
+        assert_eq!(
+            inbox.pending_oversized_user_bytes,
+            ACTOR_INBOX_MAX_BYTES + 1
+        );
+        assert_eq!(inbox.pending_user_bytes, 3);
+        assert_eq!(inbox.pending_response_bytes, 6);
+        assert_eq!(inbox.entries.len(), 3);
+        assert!(matches!(
+            &inbox.entries[0].write,
+            PendingWrite::OversizedUser(_)
+        ));
+        assert!(matches!(&inbox.entries[1].write, PendingWrite::User(_)));
+        assert!(matches!(
+            &inbox.entries[2].write,
+            PendingWrite::TerminalResponse(_)
+        ));
+    }
+
+    #[test]
+    fn partial_oversized_input_writes_release_their_separate_budget() {
+        let mut inbox = PtyIoInbox::default();
+        let input_len = ACTOR_INBOX_MAX_BYTES + 1;
+        inbox
+            .push_user_input(Bytes::from(vec![b'p'; input_len]))
+            .expect("one oversized paste has its own slot");
+
+        let written = 4 * 1024;
+        inbox.release_entry_bytes(0, written);
+        assert_eq!(inbox.pending_oversized_user_bytes, input_len - written);
+        assert!(inbox.remove_entry(0, written).is_some());
+        assert_eq!(inbox.pending_oversized_user_bytes, 0);
+        assert_eq!(inbox.pending_user_items, 0);
     }
 
     #[test]
     fn actor_ignores_empty_user_input_write() {
         let (runner, _peer) = actor_runner_for_unit_test();
         let inbox = crate::locks::lock_auxiliary(&runner.inbox);
-        assert_eq!(inbox.pending_bytes, 0);
+        assert_eq!(inbox.pending_user_bytes, 0);
         drop(inbox);
         let result = crate::locks::lock_auxiliary(&runner.inbox).push_user_input(Bytes::new());
         assert!(result.is_ok());
@@ -1933,7 +2068,10 @@ mod tests {
     #[test]
     fn terminal_reply_overflow_is_counted_and_reported_once() {
         let mut inbox = PtyIoInbox::default();
-        assert!(inbox.reserve(ACTOR_INBOX_MAX_BYTES, 0));
+        assert_eq!(
+            inbox.push_terminal_response(Bytes::from(vec![b'x'; ACTOR_REPLY_INBOX_MAX_BYTES])),
+            ResponsePush::Queued
+        );
 
         assert_eq!(
             inbox.push_terminal_response(Bytes::from_static(b"first")),
@@ -1999,7 +2137,7 @@ mod tests {
             .iter()
             .filter_map(|entry| match &entry.write {
                 PendingWrite::TerminalResponse(bytes) => Some(bytes.as_ref()),
-                PendingWrite::User(_) => None,
+                PendingWrite::User(_) | PendingWrite::OversizedUser(_) => None,
             })
             .collect();
         assert_eq!(responses, [b"before".as_slice(), b"middle".as_slice()]);
@@ -2047,7 +2185,7 @@ mod tests {
             .iter()
             .filter_map(|entry| match &entry.write {
                 PendingWrite::TerminalResponse(bytes) => Some(bytes.as_ref()),
-                PendingWrite::User(_) => None,
+                PendingWrite::User(_) | PendingWrite::OversizedUser(_) => None,
             })
             .collect();
         assert_eq!(
@@ -2160,7 +2298,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_input_is_admitted_only_into_an_empty_inbox() {
+    fn a_second_oversized_input_is_refused_while_the_first_drains() {
         let (wake, _wake_read_fd) = test_wake_pair();
         let handle = PtyIoActorHandle {
             pane_id: test_pane_id(),
@@ -2172,10 +2310,10 @@ mod tests {
         handle
             .try_write_user_input(paste.clone())
             .expect("a large paste reaches an idle pane");
-        match handle.try_write_user_input(Bytes::from_static(b"k")) {
-            Err(ChildIoSendError::Full(bytes)) => assert_eq!(bytes, "k"),
-            other => panic!("expected a full queue, got {other:?}"),
-        }
+        // The paste has its own slot, so ordinary input is still admitted.
+        handle
+            .try_write_user_input(Bytes::from_static(b"k"))
+            .expect("ordinary input keeps its budget while the paste drains");
         match handle.try_write_user_input(paste) {
             Err(ChildIoSendError::Full(bytes)) => {
                 assert_eq!(bytes.len(), ACTOR_INBOX_MAX_BYTES * 2);
@@ -2232,23 +2370,23 @@ mod tests {
         query_writer.join().expect("query writer joins");
 
         let inbox = crate::locks::lock_auxiliary(&handle.inbox);
-        assert!(inbox.pending_bytes <= ACTOR_INBOX_MAX_BYTES);
-        assert!(inbox.pending_items <= ACTOR_INBOX_MAX_ITEMS);
+        assert!(inbox.pending_response_bytes <= ACTOR_REPLY_INBOX_MAX_BYTES);
+        assert!(inbox.pending_response_items <= ACTOR_REPLY_INBOX_MAX_ITEMS);
         let queued: usize = inbox
             .entries
             .iter()
             .map(|entry| match &entry.write {
                 PendingWrite::TerminalResponse(bytes) => bytes.len(),
-                PendingWrite::User(_) => 0,
+                PendingWrite::User(_) | PendingWrite::OversizedUser(_) => 0,
             })
             .sum();
         assert!(
-            queued <= ACTOR_INBOX_MAX_BYTES,
+            queued <= ACTOR_REPLY_INBOX_MAX_BYTES,
             "queued {queued} reply bytes"
         );
         assert!(
-            queued > ACTOR_INBOX_MAX_BYTES - 2 * REPLY_LEN,
-            "replies fill the inbox up to its bound"
+            queued > ACTOR_REPLY_INBOX_MAX_BYTES - 2 * REPLY_LEN,
+            "replies fill their inbox up to its bound"
         );
         drop(inbox);
         handle.shutdown();
@@ -2266,7 +2404,11 @@ mod tests {
         peer.read_exact(&mut written).expect("peer receives input");
         assert_eq!(&written, b"again\r");
         let inbox = crate::locks::lock_auxiliary(&runner.inbox);
-        assert_eq!((inbox.pending_bytes, inbox.pending_items), (0, 0));
+        assert_eq!(
+            (inbox.pending_user_bytes, inbox.pending_oversized_user_bytes),
+            (0, 0)
+        );
+        assert_eq!(inbox.pending_user_items, 0);
         assert!(inbox.entries.is_empty());
     }
 }

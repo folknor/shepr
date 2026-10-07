@@ -686,6 +686,11 @@ impl App {
         self.session_saver.in_flight = Some(InFlightSave { pending, kind });
     }
 
+    /// Whether the current policy allows a pane exit checkpoint to start.
+    pub(crate) fn session_saves_allowed(&self) -> bool {
+        self.session_saver.policy.allows_saves()
+    }
+
     /// Starts a new checkpoint for a pane exit and returns its generation, or
     /// `None` when the exit is already settled. Each held exit gets a
     /// generation so a save captured before that exit cannot release it when
@@ -1203,6 +1208,21 @@ mod tests {
         );
         assert!(!app.preserves_pane_exit_checkpoint());
         assert_eq!(saved_pane_counts(&app), vec![2]);
+    }
+
+    #[test]
+    fn a_pane_exit_during_a_save_freeze_is_released_without_claiming_a_checkpoint() {
+        let (mut app, exiting, _) = two_pane_app("frozen-exit");
+        app.freeze_session_saves();
+
+        let death = interrupted_death(&app, exiting);
+        let prepared = app.prepare_pane_exit(death).prepared;
+        assert!(prepared.is_released());
+        assert!(!prepared.is_settled());
+        assert_eq!(prepared.held_generation(), None);
+        assert!(app.handle_prepared_pane_exit(&prepared));
+        assert!(app.state.pane(exiting).is_none());
+        assert!(!app.preserves_pane_exit_checkpoint());
     }
 
     #[test]

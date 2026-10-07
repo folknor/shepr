@@ -36,6 +36,11 @@ pub(super) enum ParsedCommand {
 pub(super) fn parse(matches: &clap::ArgMatches) -> Option<ParsedCommand> {
     let root_json = super::matches::try_flag(matches, option_name_from_flag(FLAG_JSON)).ok()?;
     let all = super::matches::try_flag(matches, option_name_from_flag(FLAG_ALL)).ok()?;
+    // `--all` applies only to the overview. Do not silently drop it when a
+    // scoped subcommand is selected.
+    if all && matches.subcommand().is_some() {
+        return None;
+    }
     match matches.subcommand() {
         None => Some(ParsedCommand::Local(Command::Overview {
             json: root_json,
@@ -1094,5 +1099,46 @@ mod tests {
             )),
             Some(false)
         );
+    }
+
+    #[test]
+    fn all_is_rejected_with_scoped_status_subcommands() {
+        for args in [
+            ["shepr", "status", "--all", "server"],
+            ["shepr", "status", "--all", "client"],
+        ] {
+            let matches = super::super::spec::command()
+                .try_get_matches_from(args)
+                .expect("clap hands this combination to the typed status parser");
+            let (_, status_matches) = matches.subcommand().expect("status subcommand");
+            assert!(parse(status_matches).is_none(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn root_json_remains_available_with_a_scoped_status_command() {
+        let matches = super::super::spec::command()
+            .try_get_matches_from(["shepr", "status", "--json", "server"])
+            .expect("root JSON may scope status to the server");
+        let (_, status_matches) = matches.subcommand().expect("status subcommand");
+
+        assert!(matches!(
+            parse(status_matches),
+            Some(ParsedCommand::Local(Command::Server { json: true }))
+        ));
+    }
+
+    #[test]
+    fn all_with_a_scoped_status_command_is_a_usage_error() {
+        for args in [
+            ["shepr", "status", "--all", "server"],
+            ["shepr", "status", "--all", "client"],
+        ] {
+            let argv = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+            assert!(
+                matches!(crate::cli::parse_launch(&argv), Err(2)),
+                "{args:?}"
+            );
+        }
     }
 }

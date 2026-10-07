@@ -5,6 +5,7 @@
 //! commit runs only after the host terminal took the frame.
 
 mod draw;
+pub(in crate::shell) use draw::chrome_palette;
 pub(in crate::shell) mod list;
 pub(in crate::shell) mod resolve;
 
