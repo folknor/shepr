@@ -440,6 +440,12 @@ define_endpoint_commands! {
             changes_topology: false,
             claims_shell_geometry: true,
         };
+        // Evens out every split of the workspace's tiled layout in one edit.
+        LayoutEqualize(WorkspaceTarget) => "layout.equalize" {
+            changes_focus: false,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
         PaneFocusDirection(PaneFocusDirectionParams) => "pane.focus_direction" {
             changes_focus: true,
             changes_topology: false,
@@ -622,6 +628,7 @@ impl CommandKind {
             | Self::PaneSwap
             | Self::PaneZoom
             | Self::LayoutSetSplitRatio
+            | Self::LayoutEqualize
             | Self::PaneFocusDirection
             | Self::PaneResize
             | Self::PaneClear

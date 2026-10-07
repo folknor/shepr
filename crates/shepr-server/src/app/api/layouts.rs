@@ -1,5 +1,5 @@
 use crate::app::App;
-use shepr_protocol::command::LayoutSetSplitRatioParams;
+use shepr_protocol::command::{LayoutSetSplitRatioParams, WorkspaceTarget};
 
 use super::endpoint::{Handled, HandlerResult};
 
@@ -28,6 +28,19 @@ impl App {
             });
         let effects = outcome.into();
         Handled::done_with_effects(effects)
+    }
+}
+
+impl App {
+    /// Evens out every split of the workspace's tiled layout in one edit,
+    /// zoomed or not, so every client sees one geometry change. Moves
+    /// nobody. A layout already even is a successful no-op.
+    pub(super) fn handle_layout_equalize(&mut self, target: &WorkspaceTarget) -> HandlerResult {
+        let workspace_id = self.endpoint_workspace(&target.workspace_id)?;
+        let outcome = self
+            .state
+            .edit_workspace_geometry(&workspace_id, shepr_mux::workspace::Workspace::equalize);
+        Handled::done_with_effects(outcome.into())
     }
 }
 
@@ -80,6 +93,52 @@ mod tests {
         assert_eq!(splits.len(), 1);
         assert!((splits[0].ratio.get() - 0.72).abs() < f32::EPSILON);
         assert_eq!(app.state.ws(0).tree().focused(), root);
+    }
+
+    #[test]
+    fn layout_equalize_evens_the_splits_and_a_second_run_changes_nothing() {
+        let mut app = app_with_workspace();
+        app.state.test_split_workspace(0, Direction::Horizontal);
+        app.state.test_split_workspace(0, Direction::Horizontal);
+        let workspace_id = app.state.ws(0).id();
+        let focused = app.state.ws(0).tree().focused();
+        let area = shepr_core::geometry::Rect::new(0, 0, 90, 20);
+        let ratios = |app: &crate::app::TestApp| {
+            app.state
+                .ws(0)
+                .tree()
+                .layout()
+                .splits(area)
+                .iter()
+                .map(|split| split.ratio.get())
+                .collect::<Vec<_>>()
+        };
+        let target = WorkspaceTarget { workspace_id };
+
+        let handled = app
+            .handle_layout_equalize(&target)
+            .expect("the workspace exists");
+
+        assert_eq!(handled.navigate, None);
+        assert_eq!(app.state.ws(0).tree().focused(), focused);
+        let evened = ratios(&app);
+        assert_eq!(evened.len(), 2);
+        assert!(evened.iter().any(|ratio| (ratio - 1.0 / 3.0).abs() < 1e-6));
+        app.handle_layout_equalize(&target)
+            .expect("an even layout is a no-op");
+        assert_eq!(ratios(&app), evened);
+    }
+
+    #[test]
+    fn layout_equalize_of_a_gone_workspace_is_refused() {
+        let mut app = app_with_workspace();
+        let gone = app.state.ws(0).id();
+        app.state.test_set_workspaces(Vec::new());
+
+        assert!(
+            app.handle_layout_equalize(&WorkspaceTarget { workspace_id: gone })
+                .is_err()
+        );
     }
 
     #[test]

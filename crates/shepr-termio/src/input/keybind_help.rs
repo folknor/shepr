@@ -253,6 +253,7 @@ mod tests {
                     ("unset", "resize pane down"),
                     ("unset", "resize pane up"),
                     ("unset", "resize pane right"),
+                    ("unset", "equalize panes"),
                     ("prefix+b", "toggle sidebar"),
                     ("prefix+h", "focus pane left"),
                     ("prefix+j", "focus pane down"),

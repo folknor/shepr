@@ -432,6 +432,12 @@ impl PaneTree {
         self.layout.set_ratio_at(path, ratio)
     }
 
+    /// Ratios only: no split appears or goes, so split paths stay valid and
+    /// the layout epoch does not advance, as for `set_split_ratio`.
+    pub(super) fn equalize(&mut self) -> bool {
+        self.layout.equalize()
+    }
+
     /// Zooming a one-pane tree is refused; unzooming always succeeds.
     pub(super) fn set_zoomed(&mut self, zoomed: bool) -> bool {
         if zoomed && self.is_lone() {
@@ -806,6 +812,21 @@ mod tests {
 
         ws.remove_pane(second).expect("a second pane goes");
         assert_ne!(ws.tree().layout_epoch(), swapped);
+    }
+
+    #[test]
+    fn equalizing_changes_ratios_without_advancing_the_epoch_or_unzooming() {
+        let mut ws = Workspace::test_new("equalize");
+        ws.test_split(Direction::Horizontal);
+        ws.test_split(Direction::Horizontal);
+        assert!(ws.set_zoomed(true));
+        let epoch = ws.tree().layout_epoch();
+
+        assert!(ws.equalize());
+        assert!(!ws.equalize());
+
+        assert_eq!(ws.tree().layout_epoch(), epoch);
+        assert!(ws.tree().zoomed());
     }
 
     #[test]

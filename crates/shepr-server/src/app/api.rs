@@ -176,6 +176,7 @@ impl App {
             EndpointAppCommand::LayoutSetSplitRatio(params) => {
                 self.handle_layout_set_split_ratio(&params)
             }
+            EndpointAppCommand::LayoutEqualize(target) => self.handle_layout_equalize(&target),
             EndpointAppCommand::PaneFocusDirection(params) => {
                 self.handle_pane_focus_direction(&params)
             }

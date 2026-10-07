@@ -597,6 +597,7 @@ mod tests {
             (&keys.resize_pane_down, ""),
             (&keys.resize_pane_up, ""),
             (&keys.resize_pane_right, ""),
+            (&keys.equalize_panes, ""),
             (&keys.toggle_sidebar, "prefix+b"),
             (&keys.navigate_back, "esc"),
             (&keys.navigate_up, "up"),

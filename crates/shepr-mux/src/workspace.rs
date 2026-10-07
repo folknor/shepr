@@ -282,6 +282,12 @@ impl Workspace {
         self.tree.set_split_ratio(path, ratio)
     }
 
+    /// Gives the tiled layout equal pane shares (see `TileLayout::equalize`),
+    /// whether or not the workspace is zoomed. True only when a ratio changed.
+    pub fn equalize(&mut self) -> bool {
+        self.tree.equalize()
+    }
+
     /// Zooms or unzooms the workspace. A zoom needs a second pane to hide:
     /// `false`, with the workspace unchanged, when asked to zoom a workspace
     /// of one pane. Unzooming always succeeds.

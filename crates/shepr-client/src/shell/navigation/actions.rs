@@ -554,6 +554,18 @@ impl ClientShellState {
                     direction: direction(action)?,
                 }))
             }
+            KeybindAction::EqualizePanes => {
+                // A workspace of one pane has no split to even out.
+                let workspace_id = *focused_workspace?;
+                let panes_in_workspace = snapshot
+                    .panes
+                    .iter()
+                    .filter(|pane| pane.pane_id.workspace_id() == &workspace_id)
+                    .count();
+                (panes_in_workspace > 1).then_some(EndpointCommand::LayoutEqualize(
+                    WorkspaceTarget { workspace_id },
+                ))
+            }
             _ => None,
         }
     }

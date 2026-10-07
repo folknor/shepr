@@ -65,6 +65,7 @@
 # resize_pane_down = ""   # optional, e.g. "ctrl+shift+alt+down"
 # resize_pane_up = ""     # optional, e.g. "ctrl+shift+alt+up"
 # resize_pane_right = ""  # optional, e.g. "ctrl+shift+alt+right"
+# equalize_panes = ""     # optional, e.g. "prefix+shift+e"; evens out every split of the workspace once, never automatically
 # toggle_sidebar = "prefix+b"
 
 # Navigate mode (entered with workspace_picker). These are its only keys: every

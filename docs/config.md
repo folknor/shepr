@@ -322,6 +322,7 @@ Validation refuses:
 | `zoom` | `prefix+z` | toggle zoom of the focused pane |
 | `resize_mode` | `prefix+r` | enter pane resize mode |
 | `resize_pane_left`, `resize_pane_down`, `resize_pane_up`, `resize_pane_right` | unbound | resize the focused pane without entering resize mode, for example `ctrl+shift+alt+left` |
+| `equalize_panes` | unbound | give every pane of the workspace an equal share of the space, once per press (never automatically); a line of more than ten panes cannot be exactly equal, as split ratios stay between 0.1 and 0.9 |
 | `toggle_sidebar` | `prefix+b` | collapse or expand the sidebar |
 | `focus_pane_left`, `focus_pane_down`, `focus_pane_up`, `focus_pane_right` | `prefix+h`, `prefix+j`, `prefix+k`, `prefix+l` | focus the neighbouring pane |
 | `swap_pane_left`, `swap_pane_down`, `swap_pane_up`, `swap_pane_right` | `prefix+shift+h`, `prefix+shift+j`, `prefix+shift+k`, `prefix+shift+l` | swap the focused pane with its neighbour |

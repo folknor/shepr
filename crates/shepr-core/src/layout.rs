@@ -425,6 +425,21 @@ impl TileLayout {
         set_ratio_at(&mut self.root, path.branches(), ratio)
     }
 
+    /// Gives every pane an equal share along each split's axis, in one edit
+    /// of the tree. Each split's ratio becomes the first child's share of
+    /// the panes that subtree and its sibling lay out along the split's axis:
+    /// a split on that axis counts the sum of its children, a split across
+    /// it counts its larger child, so columns (or rows) line up across a
+    /// perpendicular split. Shapes, focus and its history are untouched.
+    ///
+    /// Ratios stay within the layout bounds (`MIN_SPLIT_RATIO` to
+    /// `MAX_SPLIT_RATIO`), so a share outside them is clamped: 11 or more
+    /// panes in a line cannot all be equal, the outermost ones staying
+    /// larger than the rest. True only when a ratio changed.
+    pub fn equalize(&mut self) -> bool {
+        equalize_node(&mut self.root)
+    }
+
     /// Moves the split nearest `pane`'s edge in `nav` by `delta`: positive
     /// grows the pane, negative shrinks it. Focus and its history are
     /// untouched. True only when a ratio changed.
@@ -825,6 +840,52 @@ fn set_ratio_at(node: &mut Node, path: &[SplitBranch], new_ratio: SplitRatio) ->
     }
 }
 
+/// Sets every split under `node` to its equal share. True when any changed.
+fn equalize_node(node: &mut Node) -> bool {
+    let Node::Split {
+        direction,
+        ratio,
+        first,
+        second,
+    } = node
+    else {
+        return false;
+    };
+    let first_span = axis_span(first, *direction);
+    let second_span = axis_span(second, *direction);
+    let share = SplitRatio::clamped(
+        f32::from(first_span) / f32::from(first_span.saturating_add(second_span)),
+    );
+    let mut changed = *ratio != share;
+    *ratio = share;
+    // `|=` evaluates both sides, so the whole tree is always visited.
+    changed |= equalize_node(first);
+    changed |= equalize_node(second);
+    changed
+}
+
+/// Panes `node` lays out along `axis`: a leaf is one, a split on the axis
+/// adds its children, a split across it takes the larger child.
+fn axis_span(node: &Node, axis: Direction) -> u16 {
+    match node {
+        Node::Pane(_) => 1,
+        Node::Split {
+            direction,
+            first,
+            second,
+            ..
+        } => {
+            let first = axis_span(first, axis);
+            let second = axis_span(second, axis);
+            if *direction == axis {
+                first.saturating_add(second)
+            } else {
+                first.max(second)
+            }
+        }
+    }
+}
+
 fn split_rect(area: Rect, direction: Direction, ratio: SplitRatio) -> (Rect, Rect) {
     match direction {
         Direction::Horizontal => {
@@ -1047,6 +1108,127 @@ mod tests {
         assert!((split.1 - 0.35).abs() < f32::EPSILON);
         assert!(layout.close_focused());
         assert_eq!(layout.focused(), pane(2), "history still names pane 2");
+    }
+
+    fn close_to(actual: f32, expected: f32) -> bool {
+        (actual - expected).abs() < 1e-6
+    }
+
+    #[test]
+    fn equalize_counts_panes_along_each_axis_and_lines_up_across_perpendicular_splits() {
+        // H(1, V(2, H(3, 4))): the vertical split is perpendicular to the root's
+        // axis, so its side counts its widest row (two panes), not three panes.
+        let mut layout = sample_layout();
+        layout.focus_pane(pane(4));
+        let focus = layout.focused();
+
+        assert!(layout.equalize());
+
+        let splits = split_snapshot(&layout);
+        assert!(close_to(splits[0].1, 1.0 / 3.0), "{splits:?}");
+        assert!(close_to(splits[1].1, 0.5), "{splits:?}");
+        assert!(close_to(splits[2].1, 0.5), "{splits:?}");
+        assert_eq!(layout.focused(), focus);
+        assert_eq!(layout.pane_count(), 4);
+        let width = |id| pane_rect(&layout, id).width;
+        assert!(width(pane(2)).abs_diff(width(pane(3)) + width(pane(4))) <= 1);
+        assert!(width(pane(1)).abs_diff(width(pane(3))) <= 1);
+        assert!(width(pane(3)).abs_diff(width(pane(4))) <= 1);
+    }
+
+    #[test]
+    fn equalize_gives_a_nested_chain_equal_shares() {
+        // H(1, H(2, H(3, 4))) is 1/4 : 1/3 : 1/2 down the chain.
+        let (mut layout, root) = TileLayout::new();
+        let mut last = root;
+        for _ in 0..3 {
+            let next = PaneId::alloc();
+            assert!(layout.split_pane(last, Direction::Horizontal, SplitRatio::EVEN, next));
+            last = next;
+        }
+
+        assert!(layout.equalize());
+
+        let splits = split_snapshot(&layout);
+        assert!(close_to(splits[0].1, 0.25), "{splits:?}");
+        assert!(close_to(splits[1].1, 1.0 / 3.0), "{splits:?}");
+        assert!(close_to(splits[2].1, 0.5), "{splits:?}");
+    }
+
+    #[test]
+    fn equalize_takes_the_larger_side_of_a_perpendicular_split_on_both_sides() {
+        // V(H(1, 2), H(3, H(4, 5))): the rows of the stack are 2 and 3 wide,
+        // so the vertical split itself is even (one pane tall each side).
+        let layout_root = Node::Split {
+            direction: Direction::Vertical,
+            ratio: SplitRatio::clamped(0.2),
+            first: Box::new(Node::Split {
+                direction: Direction::Horizontal,
+                ratio: SplitRatio::clamped(0.8),
+                first: Box::new(Node::Pane(pane(1))),
+                second: Box::new(Node::Pane(pane(2))),
+            }),
+            second: Box::new(Node::Split {
+                direction: Direction::Horizontal,
+                ratio: SplitRatio::clamped(0.8),
+                first: Box::new(Node::Pane(pane(3))),
+                second: Box::new(Node::Split {
+                    direction: Direction::Horizontal,
+                    ratio: SplitRatio::clamped(0.8),
+                    first: Box::new(Node::Pane(pane(4))),
+                    second: Box::new(Node::Pane(pane(5))),
+                }),
+            }),
+        };
+        let mut layout = saved_layout(layout_root, pane(1));
+
+        assert!(layout.equalize());
+
+        let splits = split_snapshot(&layout);
+        assert!(close_to(splits[0].1, 0.5), "{splits:?}");
+        assert!(close_to(splits[1].1, 0.5), "{splits:?}");
+        assert!(close_to(splits[2].1, 1.0 / 3.0), "{splits:?}");
+        assert!(close_to(splits[3].1, 0.5), "{splits:?}");
+    }
+
+    #[test]
+    fn equalize_reports_no_change_when_already_equal_and_ignores_a_single_pane() {
+        let (mut single, _) = TileLayout::new();
+        assert!(!single.equalize());
+
+        let mut layout = sample_layout();
+        assert!(layout.equalize());
+        let equalized = split_snapshot(&layout);
+        assert!(!layout.equalize());
+        assert_eq!(split_snapshot(&layout), equalized);
+    }
+
+    #[test]
+    fn equalize_clamps_to_the_ratio_bounds_for_long_lines_of_panes() {
+        // Twelve panes in a row: the shares 1/12 and 1/11 of the first two
+        // splits are below the minimum ratio and are clamped to it.
+        let (mut layout, root) = TileLayout::new();
+        let mut last = root;
+        for _ in 0..11 {
+            let next = PaneId::alloc();
+            assert!(layout.split_pane(last, Direction::Horizontal, SplitRatio::EVEN, next));
+            last = next;
+        }
+
+        assert!(layout.equalize());
+
+        let splits = split_snapshot(&layout);
+        assert_eq!(splits.len(), 11);
+        assert_eq!(splits[0].1, MIN_SPLIT_RATIO);
+        assert_eq!(splits[1].1, MIN_SPLIT_RATIO);
+        // 1/10 is the first share within the bounds.
+        assert!(close_to(splits[2].1, 0.1), "{splits:?}");
+        assert!(close_to(splits[3].1, 1.0 / 9.0), "{splits:?}");
+        assert!(
+            splits
+                .iter()
+                .all(|(_, ratio)| { (MIN_SPLIT_RATIO..=MAX_SPLIT_RATIO).contains(ratio) })
+        );
     }
 
     #[test]

@@ -236,6 +236,7 @@ macro_rules! keybinding_table {
                 (resize_pane_down, ResizePaneDown, "", Panes, "resize pane down", "Resize the focused pane downward."),
                 (resize_pane_up, ResizePaneUp, "", Panes, "resize pane up", "Resize the focused pane upward."),
                 (resize_pane_right, ResizePaneRight, "", Panes, "resize pane right", "Resize the focused pane toward the right."),
+                (equalize_panes, EqualizePanes, "", Panes, "equalize panes", "Give every pane of the workspace an equal share of the space."),
                 (toggle_sidebar, ToggleSidebar, "prefix+b", Panes, "toggle sidebar", "Toggle sidebar collapse."),
                 (focus_pane_left, FocusPaneLeft, "prefix+h", Panes, "focus pane left", "Focus the pane to the left."),
                 (focus_pane_down, FocusPaneDown, "prefix+j", Panes, "focus pane down", "Focus the pane below."),

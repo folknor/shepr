@@ -330,6 +330,7 @@ fn client_shell_commands_are_not_api_methods() {
         "pane.swap",
         "pane.zoom",
         "layout.set_split_ratio",
+        "layout.equalize",
         "pane.focus_direction",
         "pane.resize",
         "pane.scroll",
