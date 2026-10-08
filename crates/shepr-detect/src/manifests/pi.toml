@@ -5,11 +5,17 @@ id = "working_literal"
 state = "working"
 priority = 100
 region = "whole_recent"
-contains = ["Working..."]
+any = [
+  { contains = ["Working..."] },
+  { line_regex = ['^{dots_spinner} Working$'] },
+]
 
 [[rules]]
 id = "working_border"
 state = "working"
 priority = 100
 region = "bottom_non_empty_lines(12)"
-line_regex = ['^── {dots_spinner} Working ─+$']
+any = [
+  { line_regex = ['^── {dots_spinner} Working ─+$'] },
+  { line_regex = ['^{dots_spinner} Working$'] },
+]

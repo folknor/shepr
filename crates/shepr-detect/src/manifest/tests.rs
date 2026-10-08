@@ -500,6 +500,80 @@ fn claude_title_spinner_stands_down_while_a_permission_dialog_is_live() {
 }
 
 #[test]
+fn codex_title_idle_needs_a_title_without_spinner_or_action_required() {
+    let codex = bundled_loaded(Agent::Codex);
+    for (title, state, rule) in [
+        ("shepr", AgentState::Idle, Some("osc_title_idle")),
+        (
+            "\u{280b} shepr",
+            AgentState::Working,
+            Some("osc_title_working"),
+        ),
+        (
+            "Action Required",
+            AgentState::Blocked,
+            Some("osc_title_blocked"),
+        ),
+    ] {
+        let input = DetectionInput {
+            screen: "ordinary prompt text\n",
+            osc_title: Some(title),
+            osc_progress: None,
+        };
+        let result = explain_loaded_manifest(Agent::Codex, input, &codex);
+        assert_eq!(result.verdict.state(), state, "{title}: {result:?}");
+        assert_eq!(
+            result.matched_rule.map(|matched| matched.id).as_deref(),
+            rule,
+            "{title}"
+        );
+    }
+    let no_title = explain_loaded_manifest(Agent::Codex, screen_input("ordinary\n"), &codex);
+    assert!(no_title.matched_rule.is_none(), "{no_title:?}");
+}
+
+#[test]
+fn codex_trust_dialog_matches_old_and_new_wording() {
+    let codex = bundled_loaded(Agent::Codex);
+    for screen in [
+        "> You are in /home/me/project\n\n  Do you trust the contents of this directory?\n",
+        "Folder access\n\nTrust this folder?\nCodex can read, edit, and run files here\n\n  Trust and continue\n",
+        "Folder access\n\nTrust this folder?\nCodex can read, edit, and run files here\n\n  enter continue\n",
+    ] {
+        let result = explain_loaded_manifest(Agent::Codex, screen_input(screen), &codex);
+        assert_eq!(result.verdict.state(), AgentState::Blocked, "{screen}");
+        assert_eq!(
+            result.matched_rule.map(|matched| matched.id).as_deref(),
+            Some("trust_directory"),
+            "{screen}"
+        );
+    }
+    let missing_controls = explain_loaded_manifest(
+        Agent::Codex,
+        screen_input(
+            "Folder access\n\nTrust this folder?\nCodex can read, edit, and run files here\n",
+        ),
+        &codex,
+    );
+    assert_ne!(missing_controls.verdict.state(), AgentState::Blocked);
+}
+
+#[test]
+fn pi_spinner_only_working_line_is_working() {
+    let pi = bundled_loaded(Agent::Pi);
+    for screen in [
+        "output\n\u{280b} Working\n",
+        "output\n\u{280b} Working\n> \n",
+        "Working...\n",
+    ] {
+        let result = explain_loaded_manifest(Agent::Pi, screen_input(screen), &pi);
+        assert_eq!(result.verdict.state(), AgentState::Working, "{screen}");
+    }
+    let plain = explain_loaded_manifest(Agent::Pi, screen_input("output\nWorking\n"), &pi);
+    assert_ne!(plain.verdict.state(), AgentState::Working);
+}
+
+#[test]
 fn opencode_permission_header_needs_live_dialog_controls() {
     for agent in [Agent::OpenCode, Agent::Kilo] {
         let loaded = bundled_loaded(agent);
