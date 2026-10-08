@@ -1,9 +1,10 @@
 use crate::host_term::theme::{parse_default_color_response, parse_palette_color_response};
 use crate::input::parse_terminal_key_sequence;
 use crate::limits::{
-    DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT, MAX_DISCARDED_CONTROL_TAIL_BYTES,
-    MAX_HOST_COLOR_QUERY_REPLIES, MAX_INCOMPLETE_CSI_BYTES, MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES,
-    MAX_PENDING_PASTE_BYTES, PASTE_STALL_TIMEOUT, RAW_INPUT_IDLE_FLUSH_TIMEOUT,
+    DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT, HOST_COLOR_REPLY_IDLE_LIMIT,
+    MAX_DISCARDED_CONTROL_TAIL_BYTES, MAX_HOST_COLOR_QUERY_REPLIES, MAX_INCOMPLETE_CSI_BYTES,
+    MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES, MAX_PENDING_PASTE_BYTES, PASTE_STALL_TIMEOUT,
+    RAW_INPUT_IDLE_FLUSH_TIMEOUT,
 };
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use shepr_term::KittyKeyboardFlags;
@@ -401,10 +402,15 @@ enum Held {
     /// Ordinary tails also end on an implausible idle flush. Host CSI tails
     /// ignore idle by design but retain their cumulative byte bound.
     /// `charged` counts bytes still in the buffer already charged to `bytes`.
+    /// `idle_since` is set only for an OSC reply cut short by an idle flush: the
+    /// last time it received bytes (or the flush that began it). Once
+    /// HOST_COLOR_REPLY_IDLE_LIMIT passes without progress, the next input
+    /// drops the tail and is framed as input, not discarded as its remainder.
     ControlTail {
         family: ControlStringFamily,
         bytes: usize,
         charged: usize,
+        idle_since: Option<std::time::Instant>,
     },
 }
 
@@ -432,6 +438,9 @@ impl RawInputByteFramer {
 
     fn push_at(&mut self, data: &[u8], now: std::time::Instant) -> Vec<Vec<u8>> {
         let mut chunks = self.give_up_stalled_paste(now);
+        if !data.is_empty() {
+            self.drop_abandoned_osc_tail(now);
+        }
         self.buffer.extend_from_slice(data);
         if let Held::MouseWait { prefix_len } = self.held {
             self.held = Held::Sequence;
@@ -446,9 +455,38 @@ impl RawInputByteFramer {
             {
                 *last_progress = now;
             }
+            Held::ControlTail {
+                idle_since: Some(at),
+                ..
+            } if !data.is_empty() => {
+                *at = now;
+            }
             _ => {}
         }
         chunks
+    }
+
+    /// Ends a discard of an OSC reply that an idle flush cut short, when it has
+    /// received nothing for HOST_COLOR_REPLY_IDLE_LIMIT: the host will not
+    /// finish that reply, so bytes arriving now are input. The buffer holds at
+    /// most a retained split string terminator, which goes with the reply.
+    fn drop_abandoned_osc_tail(&mut self, now: std::time::Instant) {
+        let Held::ControlTail {
+            idle_since: Some(at),
+            ..
+        } = self.held
+        else {
+            return;
+        };
+        if now.saturating_duration_since(at) < HOST_COLOR_REPLY_IDLE_LIMIT {
+            return;
+        }
+        tracing::debug!(
+            len = self.buffer.len(),
+            "dropping unfinished host control reply before new input"
+        );
+        self.buffer.clear();
+        self.held = Held::None;
     }
 
     fn give_up_stalled_paste(&mut self, now: std::time::Instant) -> Vec<Vec<u8>> {
@@ -599,6 +637,10 @@ impl RawInputByteFramer {
     }
 
     fn flush_timeout(&mut self) -> Vec<Vec<u8>> {
+        self.flush_timeout_at(std::time::Instant::now())
+    }
+
+    fn flush_timeout_at(&mut self, now: std::time::Instant) -> Vec<Vec<u8>> {
         let mut chunks = self.drain_available_chunks();
 
         if matches!(self.held, Held::PasteTail { .. }) {
@@ -609,7 +651,13 @@ impl RawInputByteFramer {
             return chunks;
         }
 
-        if let Held::ControlTail { family, bytes, .. } = self.held {
+        if let Held::ControlTail {
+            family,
+            bytes,
+            idle_since,
+            ..
+        } = self.held
+        {
             if family == ControlStringFamily::HostReplyCsi {
                 return chunks;
             }
@@ -625,6 +673,7 @@ impl RawInputByteFramer {
                     family,
                     bytes,
                     charged: self.buffer.len(),
+                    idle_since,
                 };
             }
             return chunks;
@@ -713,7 +762,7 @@ impl RawInputByteFramer {
                 "discarding incomplete host cell size report after input timeout"
             );
             self.host_replies.clear_cell_size();
-            self.begin_control_tail(ControlStringFamily::HostReplyCsi);
+            self.begin_control_tail(ControlStringFamily::HostReplyCsi, None);
             return chunks;
         }
 
@@ -733,7 +782,7 @@ impl RawInputByteFramer {
                 "discarding incomplete host color scheme report after input timeout"
             );
             self.host_replies.clear_appearance();
-            self.begin_control_tail(ControlStringFamily::HostReplyCsi);
+            self.begin_control_tail(ControlStringFamily::HostReplyCsi, None);
             return chunks;
         }
 
@@ -744,7 +793,7 @@ impl RawInputByteFramer {
             );
             // This intentionally gives host control replies precedence over legacy
             // Alt forms like Alt+] after timeout, so later reply tails cannot leak.
-            self.begin_control_tail(family);
+            self.begin_control_tail(family, (family == ControlStringFamily::Osc).then_some(now));
             return chunks;
         }
 
@@ -811,7 +860,11 @@ impl RawInputByteFramer {
         chunks
     }
 
-    fn begin_control_tail(&mut self, family: ControlStringFamily) {
+    fn begin_control_tail(
+        &mut self,
+        family: ControlStringFamily,
+        idle_since: Option<std::time::Instant>,
+    ) {
         let keep_st =
             family != ControlStringFamily::HostReplyCsi && self.buffer.last() == Some(&ESC);
         self.buffer.clear();
@@ -822,6 +875,7 @@ impl RawInputByteFramer {
             family,
             bytes: 0,
             charged: self.buffer.len(),
+            idle_since,
         };
     }
 
@@ -831,7 +885,7 @@ impl RawInputByteFramer {
             max = MAX_INCOMPLETE_CSI_BYTES,
             "discarding oversized incomplete CSI sequence and its bounded tail"
         );
-        self.begin_control_tail(ControlStringFamily::HostReplyCsi);
+        self.begin_control_tail(ControlStringFamily::HostReplyCsi, None);
     }
 
     fn retain_timed_out_mouse_prefix(&mut self, prefix: Vec<u8>) {
@@ -886,6 +940,7 @@ impl RawInputByteFramer {
                 family,
                 bytes,
                 charged,
+                ..
             } = &mut self.held
             {
                 if *family == ControlStringFamily::HostReplyCsi {
@@ -962,6 +1017,7 @@ impl RawInputByteFramer {
                             family,
                             bytes: 0,
                             charged: usize::from(keep_st),
+                            idle_since: None,
                         };
                         continue;
                     }
@@ -996,8 +1052,9 @@ impl RawInputByteFramer {
 
 fn plausible_control_string_tail(family: ControlStringFamily, buffer: &[u8]) -> bool {
     match family {
+        // Colour values are hex, so a reply's tail holds a-f as well as digits.
         ControlStringFamily::Osc => buffer.iter().all(|byte| {
-            byte.is_ascii_digit()
+            byte.is_ascii_hexdigit()
                 || matches!(
                     *byte,
                     b';' | b':'
@@ -3082,6 +3139,73 @@ mod tests {
         assert!(!framer.has_pending_input());
     }
 
+    /// Pushes an OSC 11 reply cut short by the link and flushes it idle, so the
+    /// framer is discarding its remainder as of `start`.
+    fn framer_with_truncated_color_reply(
+        head: &[u8],
+        start: std::time::Instant,
+    ) -> RawInputByteFramer {
+        let mut framer = RawInputByteFramer::default();
+        framer.host_color_query_sent();
+        assert!(framer.push_at(head, start).is_empty());
+        assert!(framer.flush_timeout_at(start).is_empty());
+        assert!(matches!(
+            framer.held,
+            Held::ControlTail {
+                idle_since: Some(_),
+                ..
+            }
+        ));
+        framer
+    }
+
+    #[test]
+    fn input_after_a_dropped_host_color_reply_is_intact_at_every_split() {
+        let start = std::time::Instant::now();
+        let later = start + HOST_COLOR_REPLY_IDLE_LIMIT;
+        let follow_ups: [&[u8]; 3] = [b"echo ok\r", b"\x1b[A", b"\x1b[200~hello\x1b[201~"];
+        for head in [
+            b"\x1b]11;rgb:1e1e/1e".as_slice(),
+            b"\x1b]11;rgb:1e1e/1e1e/2e2e\x1b",
+        ] {
+            for follow in follow_ups {
+                for cut in 0..follow.len() {
+                    let mut framer = framer_with_truncated_color_reply(head, start);
+                    let mut chunks = framer.push_at(&follow[..cut], later);
+                    chunks.extend(framer.push_at(&follow[cut..], later));
+                    for _ in 0..3 {
+                        chunks.extend(framer.flush_timeout_at(later));
+                    }
+                    assert_eq!(
+                        chunks.concat(),
+                        follow,
+                        "head {head:?} follow {follow:?} cut {cut}"
+                    );
+                    assert!(!framer.has_pending_input());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn host_color_reply_continuation_within_the_limit_is_still_discarded() {
+        let start = std::time::Instant::now();
+        let mut framer = framer_with_truncated_color_reply(b"\x1b]11;rgb:1e1e/1e", start);
+
+        let mid = start + HOST_COLOR_REPLY_IDLE_LIMIT / 2;
+        // Hex letters are part of a colour value, so an idle flush keeps the
+        // tail going.
+        assert!(framer.push_at(b"1e/fa", mid).is_empty());
+        assert!(framer.flush_timeout_at(mid).is_empty());
+
+        // Progress restarts the quiet period, so a long reply is not cut at
+        // the limit measured from its first fragment.
+        let end = mid + HOST_COLOR_REPLY_IDLE_LIMIT / 2 + HOST_COLOR_REPLY_IDLE_LIMIT / 4;
+        assert_eq!(framer.push_at(b"22\x07x", end), vec![b"x".to_vec()]);
+        assert!(matches!(framer.held, Held::None));
+        assert!(!framer.has_pending_input());
+    }
+
     #[test]
     fn slow_paste_that_keeps_arriving_is_not_cut() {
         let mut framer = RawInputByteFramer::for_host_input();
@@ -3555,7 +3679,7 @@ mod tests {
             let mut framer = RawInputByteFramer::default();
             assert!(framer.push(prefix).is_empty());
             assert!(framer.flush_timeout().is_empty());
-            assert!(framer.push(b"a").is_empty());
+            assert!(framer.push(b"z").is_empty());
             assert!(framer.flush_timeout().is_empty());
             assert!(matches!(framer.held, Held::None));
             assert_eq!(framer.push(b"x"), vec![b"x".to_vec()]);
@@ -3719,7 +3843,7 @@ mod tests {
 
         assert!(framer.push(b"\x1b]").is_empty());
         assert!(framer.flush_timeout().is_empty());
-        assert!(framer.push(b"a").is_empty());
+        assert!(framer.push(b"z").is_empty());
         assert!(framer.flush_timeout().is_empty());
         assert_eq!(framer.push(b"b"), vec![b"b".to_vec()]);
     }

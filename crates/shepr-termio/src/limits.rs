@@ -40,6 +40,13 @@ pub(crate) const MAX_PENDING_PASTE_BYTES: usize = 16 * 1024 * 1024;
 /// normally.
 pub(crate) const PASTE_STALL_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// How long an OSC host reply that an idle flush found unfinished may go
+/// without a byte before the framer stops discarding its remainder. Far above
+/// the tens of milliseconds seen between fragments over SSH and tmux, yet short
+/// enough that a reply the link cut off cannot swallow what the user types next.
+/// The check runs when input next arrives: that input is framed normally.
+pub(crate) const HOST_COLOR_REPLY_IDLE_LIMIT: Duration = Duration::from_secs(1);
+
 /// Number of color-query replies expected from the full host theme query.
 ///
 /// The count includes every indexed palette entry plus foreground and
