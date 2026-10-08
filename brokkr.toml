@@ -325,7 +325,9 @@ message = "a print macro panics on a closed pipe and reaches no log file; log th
 
 # The same rule for the stderr handle, which `writeln!` or `write!` reach
 # without a print macro: operator text belongs to the CLI in `src/`, and the
-# daemon's stderr reaches nobody. `io::stderr()`, `std::io::stderr()` and an
+# daemon's stderr reaches nobody once it is serving. The daemon's own `main`
+# is exempt: its startup errors are operator text, written without a panic on
+# a dead stderr. `io::stderr()`, `std::io::stderr()` and an
 # imported bare `stderr()` all match; a `.stderr(..)` builder method does not.
 # A live stream relay (SSH prompts copied to the terminal while ssh runs, as
 # in `remote/process.rs`) is not operator text and carries the marker.
@@ -333,7 +335,7 @@ message = "a print macro panics on a closed pipe and reaches no log file; log th
 name = "library-crates-do-not-write-stderr"
 pattern = '(?:^|[^.\w])(?:(?:std::)?io::)?stderr\s*\(\s*\)'
 paths = ["crates/*/src/**/*.rs"]
-exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**"]
+exclude = ["**/tests/**", "**/tests.rs", "**/*_tests.rs", "crates/shepr-test-support/**", "crates/shepr-daemon/**"]
 skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "stderr-relay-ok"
@@ -1159,7 +1161,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-server-layer"
 from = "shepr-server"
-allow = ["base64", "bytes", "crossterm", "ctrlc", "futures-util", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-detect", "shepr-git", "shepr-integration", "shepr-mux", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-surface", "shepr-term", "shepr-usage", "shepr-vt", "tokio", "tracing", "unicode-width", "zbus"]
+allow = ["base64", "bytes", "crossterm", "futures-util", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-detect", "shepr-git", "shepr-integration", "shepr-mux", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-surface", "shepr-term", "shepr-usage", "shepr-vt", "tokio", "tracing", "unicode-width", "zbus"]
 kinds = ["normal"]
 
 # Arbitration consumes observations; screen evaluation stays outside ownership.

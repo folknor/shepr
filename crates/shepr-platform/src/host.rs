@@ -62,6 +62,29 @@ pub fn begin_cli_output() {
     set_sigpipe_disposition(libc::SIG_DFL);
 }
 
+extern "C" fn discard_signal(_signal: libc::c_int) {}
+
+/// Makes the server survive the hangup of the terminal or shell that launched
+/// it. The daemon calls this first thing in `main`, so a SIGHUP cannot stop it
+/// before the server's own signal task exists (which then logs and ignores it).
+///
+/// A no-op handler, not `SIG_IGN`: an ignored disposition survives `exec`, so
+/// pane children would inherit it, while a handled one resets to the default.
+pub fn ignore_server_hangup() {
+    // SAFETY: sigaction is a plain C struct; all-zero is a valid value.
+    let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
+    let handler: extern "C" fn(libc::c_int) = discard_signal;
+    action.sa_sigaction = handler as libc::sighandler_t;
+    action.sa_flags = libc::SA_RESTART;
+    // SAFETY: `action` is a live local that sigaction only reads, the old
+    // action pointer is null, and the handler does nothing, so it is trivially
+    // async-signal-safe. Failure leaves the default disposition.
+    unsafe {
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGHUP, &action, std::ptr::null_mut());
+    }
+}
+
 /// A child process command that runs in `cwd` rather than inheriting this
 /// process's working directory. A long-lived child that inherits it pins that
 /// directory (an unmount fails with EBUSY, a deleted one stays referenced) and

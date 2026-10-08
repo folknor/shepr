@@ -17,7 +17,23 @@ use shepr_launch::limits::BOOT_LOG_PANIC_REPORTS;
 use shepr_launch::process_status::ProcessStatus;
 use shepr_server::{RunServerError, ServerReady, run_server};
 
+/// Shadows std's `eprintln!` for this file. The std macro panics when the
+/// write fails, and the server's stderr can be a terminal that is gone (EIO
+/// after a hangup) or a closed pipe (EPIPE): a daemon that outlives its
+/// launcher must not panic, or exit 101, over a message nobody can read.
+macro_rules! eprintln {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        // A failed write has nowhere to be reported.
+        writeln!(std::io::stderr(), $($arg)*).ok();
+    }};
+}
+
 fn main() -> ExitCode {
+    // First, before anything can take long: the server outlives the terminal
+    // or shell that launched it, so a hangup must not reach its default action
+    // before the signal task that logs and ignores it exists.
+    shepr_platform::ignore_server_hangup();
     let args: Vec<String> = match std::env::args_os()
         .skip(1)
         .map(std::ffi::OsString::into_string)

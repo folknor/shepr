@@ -1550,7 +1550,6 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "crossterm",
- "ctrlc",
  "futures-util",
  "libc",
  "ratatui",

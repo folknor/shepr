@@ -334,6 +334,36 @@ fn proc_stat_parsing_keeps_group_leader_inputs_live() {
     );
 }
 
+/// A stat record for `pid` in `state`, process group `pgrp`, session `session`,
+/// naming `tpgid` as its terminal's foreground group.
+fn stat_record(pid: u32, state: char, pgrp: u32, session: u32, tpgid: u32) -> ProcStat {
+    ProcStat::parse(&format!(
+        "{pid} (cmd) {state} 1 {pgrp} {session} 34816 {tpgid} 0 0 0 0 0 0 0 0 0 0 0 0 0 99 0"
+    ))
+    .expect("stat record")
+}
+
+#[test]
+fn background_means_same_session_outside_the_shell_and_foreground_groups() {
+    // The shell leads group 10 in session 10; the terminal's foreground is 30.
+    let shell = stat_record(10, 'S', 10, 10, 30);
+
+    // A job stopped by Ctrl-Z and one running in the background both count.
+    assert!(is_background_of(&shell, &stat_record(20, 'T', 20, 10, 30)));
+    assert!(is_background_of(&shell, &stat_record(21, 't', 21, 10, 30)));
+    assert!(is_background_of(&shell, &stat_record(22, 'S', 22, 10, 30)));
+    assert!(is_background_of(&shell, &stat_record(23, 'R', 23, 10, 30)));
+
+    // The shell's own group, the foreground job and exited processes do not.
+    assert!(!is_background_of(&shell, &stat_record(11, 'S', 10, 10, 30)));
+    assert!(!is_background_of(&shell, &stat_record(30, 'S', 30, 10, 30)));
+    assert!(!is_background_of(&shell, &stat_record(31, 'S', 30, 10, 30)));
+    assert!(!is_background_of(&shell, &stat_record(24, 'Z', 24, 10, 30)));
+
+    // A process that left the shell's session is not the shell's job.
+    assert!(!is_background_of(&shell, &stat_record(25, 'S', 25, 25, 30)));
+}
+
 #[test]
 fn foreground_job_does_not_read_remote_memory_for_uninterruptible_members() {
     let argv_reads = RefCell::new(Vec::new());

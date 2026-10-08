@@ -14,6 +14,7 @@ use tokio::sync::Notify;
 #[derive(Debug, Default)]
 pub struct ServerStopSignal {
     requested: AtomicBool,
+    reason: Mutex<Option<StopReason>>,
     wake: Notify,
     final_save: Mutex<FinalSaveCompletion>,
     final_save_ready: Condvar,
@@ -28,11 +29,64 @@ struct FinalSaveCompletion {
     unanswered: usize,
 }
 
+/// Why the server is stopping, recorded by the first request and logged once
+/// when shutdown begins.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    /// SIGINT or SIGTERM, by name.
+    Signal(&'static str),
+    /// A `server.stop` or `server.stop_if_boot` request; `caller` describes
+    /// the connecting process (pid and name) when it could be resolved.
+    ApiStop { caller: Option<String> },
+    /// The host announced a shutdown.
+    HostShutdown,
+    /// The socket listener failed or ended while the server ran.
+    ListenerFailed,
+    /// The server loop lost every API sender.
+    ApiChannelClosed,
+    /// The loop began shutting down with no request recorded.
+    EventLoopExit,
+}
+
+impl std::fmt::Display for StopReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Signal(name) => f.write_str(name),
+            Self::ApiStop {
+                caller: Some(caller),
+            } => write!(f, "server stop request from {caller}"),
+            Self::ApiStop { caller: None } => f.write_str("server stop request"),
+            Self::HostShutdown => f.write_str("host shutdown"),
+            Self::ListenerFailed => f.write_str("socket listener failed"),
+            Self::ApiChannelClosed => f.write_str("API request channel closed"),
+            Self::EventLoopExit => f.write_str("event loop exit"),
+        }
+    }
+}
+
 impl ServerStopSignal {
-    /// Latches the stop and wakes the server loop.
-    pub fn request(&self) {
+    /// Latches the stop and wakes the server loop. The first `reason` is kept;
+    /// later requests do not replace it. The reason is recorded before the
+    /// latch is set, so anything that sees the latch also sees a reason.
+    pub fn request(&self, reason: StopReason) {
+        match self.reason.lock() {
+            Ok(mut recorded) => {
+                recorded.get_or_insert(reason);
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().get_or_insert(reason);
+            }
+        }
         self.requested.store(true, Ordering::Release);
         self.wake.notify_one();
+    }
+
+    /// The reason of the first stop request, if one was made.
+    pub fn reason(&self) -> Option<StopReason> {
+        match self.reason.lock() {
+            Ok(recorded) => recorded.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
     }
 
     pub fn is_requested(&self) -> bool {
@@ -148,14 +202,32 @@ impl ServerStopSignal {
 
 #[cfg(test)]
 mod tests {
-    use super::ServerStopSignal;
+    use super::{ServerStopSignal, StopReason};
+
+    #[test]
+    fn the_first_stop_reason_wins() {
+        let signal = ServerStopSignal::default();
+        assert_eq!(signal.reason(), None);
+
+        signal.request(StopReason::Signal("SIGTERM"));
+        signal.request(StopReason::ApiStop { caller: None });
+
+        assert_eq!(signal.reason(), Some(StopReason::Signal("SIGTERM")));
+        assert_eq!(
+            StopReason::ApiStop {
+                caller: Some("pid 42 (shepr)".to_owned())
+            }
+            .to_string(),
+            "server stop request from pid 42 (shepr)"
+        );
+    }
 
     #[tokio::test]
     async fn a_request_before_the_wait_still_wakes_it() {
         let signal = ServerStopSignal::default();
         assert!(!signal.is_requested());
 
-        signal.request();
+        signal.request(StopReason::EventLoopExit);
 
         assert!(signal.is_requested());
         tokio::time::timeout(std::time::Duration::from_secs(5), signal.notified())
@@ -168,7 +240,7 @@ mod tests {
         let signal = ServerStopSignal::default();
         assert!(signal.wait_for_stop_answers(std::time::Duration::ZERO));
 
-        signal.request();
+        signal.request(StopReason::EventLoopExit);
         signal.complete_final_save(Some("disk full".to_owned()));
         assert_eq!(
             signal.wait_for_final_save(std::time::Duration::ZERO),
@@ -186,7 +258,7 @@ mod tests {
     #[test]
     fn a_wait_with_no_result_in_time_gives_up_and_owes_no_answer() {
         let signal = ServerStopSignal::default();
-        signal.request();
+        signal.request(StopReason::EventLoopExit);
         assert_eq!(signal.wait_for_final_save(std::time::Duration::ZERO), None);
         assert!(signal.wait_for_stop_answers(std::time::Duration::ZERO));
     }

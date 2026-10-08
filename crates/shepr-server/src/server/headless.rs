@@ -371,10 +371,10 @@ impl HeadlessServer {
         // so nothing has changed since bootstrap left the session on disk.
         // Every failure inside the loop goes through `initiate_shutdown` and
         // the save after it.
-        // Register SIGINT handler for graceful shutdown.
+        // SIGINT and SIGTERM stop the server gracefully; SIGHUP is ignored.
         let stop_signal = Arc::clone(self.lifecycle.stop_signal());
         let signal_quit = Arc::clone(self.lifecycle.signal_quit_request_flag());
-        ctrlc_handler(stop_signal, signal_quit).map_err(RunServerError::SignalInstall)?;
+        spawn_signal_task(stop_signal, signal_quit).map_err(RunServerError::SignalInstall)?;
         self.lifecycle
             .start_host_shutdown_monitor(&self.outbox_wake);
 
@@ -604,8 +604,8 @@ impl HeadlessServer {
         // and the next bind reclaims it, and saves publish atomically, so the
         // last autosave survives whole and is what the next start restores. A
         // deadline would only add the risk of cutting short a slow but healthy
-        // final save. SIGINT, SIGTERM and SIGHUP only latch the stop (see
-        // `ctrlc_handler`); SIGKILL is the escape hatch.
+        // final save. SIGINT and SIGTERM only latch the stop (see
+        // `spawn_signal_task`; SIGHUP is ignored); SIGKILL is the escape hatch.
         //
         // Save session on exit. During a host shutdown saving is frozen, so
         // this writes nothing and the checkpoint taken on the warning stands;
@@ -729,7 +729,7 @@ impl HeadlessServer {
                 Some(msg) => LoopEvent::Api(Box::new(msg)),
                 None => {
                     self.api_request_open = false;
-                    stop_signal.request();
+                    stop_signal.request(shepr_api::StopReason::ApiChannelClosed);
                     shepr_platform::structured_log!(
                         ERROR, event = api.channel, outcome = Disconnected,
                         "API request channel closed; stopping server"
@@ -1570,27 +1570,58 @@ impl Drop for HeadlessServer {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Installs the SIGINT/SIGTERM/SIGHUP handler (ctrlc's `termination`
-/// feature). It marks the quit as signal-driven and requests the stop, which
-/// also wakes the event loop.
+/// Spawns the task that routes SIGINT and SIGTERM to the stop and logs SIGHUP
+/// without stopping: the server outlives the terminal or shell that launched
+/// it, like tmux. A quit marks itself signal-driven and requests the stop with
+/// the signal's name as the reason, which also wakes the event loop.
 ///
-/// Failing to install it is an error: without it a signal kills the server
-/// without the shutdown sequence that saves the session.
-fn ctrlc_handler(
+/// Failing to register a signal is an error: without it that signal kills the
+/// server without the shutdown sequence that saves the session. Must run
+/// inside the tokio runtime.
+fn spawn_signal_task(
     stop_signal: Arc<shepr_api::ServerStopSignal>,
     signal_quit: Arc<std::sync::OnceLock<std::time::Instant>>,
 ) -> io::Result<()> {
-    ctrlc::set_handler(move || {
-        // Before the stop request, so the loop never sees the quit without it.
-        // The first signal's own time: the final save compares agent exits
-        // with it, and the loop may notice the signal much later. ctrlc runs
-        // this on its own thread, not in signal context.
-        // headless-clock-sample-ok: the moment the signal arrived, on the
-        // handler's thread, not a loop iteration's sample.
-        signal_quit.set(Instant::now()).ok();
-        stop_signal.request();
-    })
-    .map_err(|err| io::Error::other(format!("installing the termination signal handler: {err}")))
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let install = |kind, name: &str| {
+        signal(kind)
+            .map_err(|err| io::Error::other(format!("installing the {name} signal handler: {err}")))
+    };
+    let mut interrupt = install(SignalKind::interrupt(), "SIGINT")?;
+    let mut terminate = install(SignalKind::terminate(), "SIGTERM")?;
+    let mut hangup = install(SignalKind::hangup(), "SIGHUP")?;
+    tokio::spawn(async move {
+        loop {
+            let name = tokio::select! {
+                received = interrupt.recv() => received.map(|()| "SIGINT"),
+                received = terminate.recv() => received.map(|()| "SIGTERM"),
+                received = hangup.recv() => {
+                    if received.is_some() {
+                        shepr_platform::structured_log!(
+                            INFO, event = server.signal, outcome = Skipped,
+                            signal = "SIGHUP",
+                            "ignoring SIGHUP; the server keeps running"
+                        );
+                        continue;
+                    }
+                    None
+                }
+            };
+            let Some(name) = name else {
+                // The runtime is shutting down.
+                break;
+            };
+            // Before the stop request, so the loop never sees the quit without
+            // it. The first signal's own time: the final save compares agent
+            // exits with it, and the loop may notice the signal much later.
+            // headless-clock-sample-ok: the moment the signal arrived, on the
+            // signal task, not a loop iteration's sample.
+            signal_quit.set(Instant::now()).ok();
+            stop_signal.request(shepr_api::StopReason::Signal(name));
+        }
+    });
+    Ok(())
 }
 
 /// Sleep until a deadline, or return pending if none.

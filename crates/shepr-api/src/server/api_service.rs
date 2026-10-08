@@ -150,7 +150,8 @@ pub(super) fn handle_connection(
     let method_traits = request.method.traits();
     crate::logging::api_request_started(&request_id, method_traits);
 
-    let response = match route_request(request, server_stop, boot_id, gate) {
+    let peer = || shepr_platform::ipc::peer_description(&stream);
+    let response = match route_request(request, server_stop, boot_id, gate, &peer) {
         Route::Immediate(response) => response,
         Route::StopAnswer(response) => {
             let written = finish_api_response(&mut stream, &request_id, method_traits, &response);
@@ -229,6 +230,7 @@ fn route_request(
     server_stop: &crate::ServerStopSignal,
     boot_id: &shepr_protocol::BootId,
     gate: &ClientGate,
+    peer: &dyn Fn() -> Option<String>,
 ) -> Route {
     let Request { id, method } = request;
     let method = match method.into_route() {
@@ -250,10 +252,16 @@ fn route_request(
             ));
         }
         MethodRoute::Socket(SocketMethod::ServerStop(_)) => {
-            return stop_server(&id, None, boot_id, server_stop);
+            return stop_server(&id, None, boot_id, server_stop, peer);
         }
         MethodRoute::Socket(SocketMethod::ServerStopIfBoot(params)) => {
-            return stop_server(&id, Some(&params.expected_boot_id), boot_id, server_stop);
+            return stop_server(
+                &id,
+                Some(&params.expected_boot_id),
+                boot_id,
+                server_stop,
+                peer,
+            );
         }
         MethodRoute::App(method) => method,
     };
@@ -274,6 +282,7 @@ fn stop_server(
     expected_boot_id: Option<&shepr_protocol::BootId>,
     actual: &shepr_protocol::BootId,
     server_stop: &crate::ServerStopSignal,
+    peer: &dyn Fn() -> Option<String>,
 ) -> Route {
     // The conditional operation has its own method name because this request
     // crosses builds. A server that predates it rejects the method instead of
@@ -297,7 +306,7 @@ fn stop_server(
         }
     }
     shepr_platform::structured_log!(INFO, event = server.stop, outcome = Accepted, request_id = id, boot_id = %actual, expected_boot_id = ?expected_boot_id, "server stop accepted");
-    server_stop.request();
+    server_stop.request(crate::StopReason::ApiStop { caller: peer() });
     // The answer waits for the final save so it can carry its result. The
     // server keeps its socket through that save, so the client would wait
     // that long for the socket to go anyway; its stop deadline covers both.
@@ -526,7 +535,7 @@ mod tests {
         server_stop: &crate::ServerStopSignal,
         gate: &ClientGate,
     ) -> crate::error::EncodedApiResponse {
-        match route_request(request, server_stop, &this_boot(), gate) {
+        match route_request(request, server_stop, &this_boot(), gate, &|| None) {
             Route::Immediate(response) => response,
             Route::StopAnswer(response) => {
                 server_stop.stop_answered();
@@ -852,7 +861,7 @@ mod tests {
         // the pong is how a launcher tells it apart from one it can attach to.
         let (tx, _rx) = mpsc::channel(1);
         let stop = running();
-        stop.request();
+        stop.request(crate::StopReason::EventLoopExit);
         let response = handle_request(
             Request {
                 id: "req_1".into(),

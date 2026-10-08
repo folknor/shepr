@@ -53,8 +53,8 @@ pub use executable::{
 pub use file_stamp::FileStamp;
 pub use host::{
     HostNames, begin_cli_output, child_command, detach_server_daemon_command, effective_uid,
-    host_names, launch_executable, take_terminal_resize_signal, terminal_grid_size,
-    watch_terminal_resize_signal,
+    host_names, ignore_server_hangup, launch_executable, take_terminal_resize_signal,
+    terminal_grid_size, watch_terminal_resize_signal,
 };
 pub use owned_runtime::{
     DirectoryKind, RuntimeCreateError, create_owned_directory, release_owned_directory,
@@ -65,8 +65,8 @@ pub use private_file::{
 };
 pub use proc_environ::{EnvironRefusal, ProcessInstance, read_allowlisted_environ};
 pub use proc_tree::{
-    ForegroundJob, ForegroundProcess, foreground_group_leader_job, foreground_job,
-    foreground_process_group_id, process_cwd, process_facts, suspended_processes,
+    ForegroundJob, ForegroundProcess, background_processes, foreground_group_leader_job,
+    foreground_job, foreground_process_group_id, process_cwd, process_facts,
 };
 pub use process::{
     Pgid, Pid, ProcStat, ProcState, ProcessHandle, SessionId, Signal, reap_pidfd, session_members,

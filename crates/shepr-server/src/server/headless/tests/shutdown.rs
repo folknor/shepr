@@ -12,7 +12,10 @@ fn server_stop_interrupts_server_event_backlog() {
             .expect("test precondition");
     }
 
-    server.lifecycle.stop_signal().request();
+    server
+        .lifecycle
+        .stop_signal()
+        .request(shepr_api::StopReason::EventLoopExit);
 
     assert!(!server.test_drain_server_events());
     assert!(server.server_event_rx.try_recv().is_ok());
@@ -444,7 +447,10 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
         .signal_quit_request_flag()
         .set(std::time::Instant::now())
         .expect("the first signal");
-    server.lifecycle.stop_signal().request();
+    server
+        .lifecycle
+        .stop_signal()
+        .request(shepr_api::StopReason::EventLoopExit);
 
     // The quit-path drain still consumes the queue ...
     server.drain_all_internal_events_with_forwarding();
@@ -555,7 +561,7 @@ fn idle_host_checkpoint_subprocess_entry_point() {
                     .changed()
                     .await
                     .expect("checkpoint acknowledgement");
-                stop.request();
+                stop.request(shepr_api::StopReason::EventLoopExit);
             };
             tokio::time::timeout(Duration::from_secs(5), async {
                 let (result, ()) = tokio::join!(server.run(), observe);

@@ -4,7 +4,8 @@
 
 use crate::UsableCwd;
 use shepr_agent::Agent;
-use shepr_platform::{Pgid, Pid};
+use shepr_detect::BackgroundAgent;
+use shepr_platform::{Pgid, Pid, ProcessInstance};
 
 /// Event-loop reads never stat: a hung mount must not stall other panes.
 pub(super) fn readlink_process_cwd(pid: Pid) -> Option<std::path::PathBuf> {
@@ -67,13 +68,21 @@ pub(super) fn foreground_member_cwd_different_from_shell(
 pub(super) struct ProcessProbeResult {
     pub(super) process_group_id: Option<Pgid>,
     pub(super) foreground_is_pane_shell: bool,
-    pub(super) suspended_agents: Vec<Agent>,
+    /// The agent process the detector held an identity for, found outside the
+    /// terminal's foreground (stopped or running in the background). Only
+    /// looked for when an agent was identified before and none is now.
+    pub(super) background_agents: Vec<BackgroundAgent>,
     pub(super) identity: ProcessProbeIdentity,
 }
 
 #[derive(Debug, Clone)]
 pub(super) enum ProcessProbeIdentity {
-    Agent { agent: Agent, process_name: String },
+    /// `process` is the incarnation the agent was recognized from.
+    Agent {
+        agent: Agent,
+        process_name: String,
+        process: ProcessInstance,
+    },
     Unidentified,
 }
 
@@ -99,22 +108,37 @@ impl ProcessProbeResult {
             ProcessProbeIdentity::Unidentified => None,
         }
     }
+
+    /// The incarnation the foreground agent was recognized from.
+    pub(super) fn agent_process(&self) -> Option<ProcessInstance> {
+        match &self.identity {
+            ProcessProbeIdentity::Agent { process, .. } => Some(*process),
+            ProcessProbeIdentity::Unidentified => None,
+        }
+    }
+}
+
+fn agent_identity(job: &shepr_platform::ForegroundJob) -> ProcessProbeIdentity {
+    shepr_detect::select_agent_process_in_job(job).map_or(
+        ProcessProbeIdentity::Unidentified,
+        |selected| ProcessProbeIdentity::Agent {
+            agent: selected.agent,
+            process_name: selected.display_name,
+            process: selected.process.instance(),
+        },
+    )
 }
 
 fn process_probe_result(
     job: &shepr_platform::ForegroundJob,
     pid: Pid,
-    agent: Agent,
-    process_name: String,
+    identity: ProcessProbeIdentity,
 ) -> ProcessProbeResult {
     ProcessProbeResult {
         process_group_id: Some(job.process_group_id),
         foreground_is_pane_shell: Foreground::from_job(Some(job), pid).is_shell(),
-        suspended_agents: Vec::new(),
-        identity: ProcessProbeIdentity::Agent {
-            agent,
-            process_name,
-        },
+        background_agents: Vec::new(),
+        identity,
     }
 }
 
@@ -124,40 +148,35 @@ pub(super) fn probe_foreground_process_from_jobs(
     leader_job: Option<&shepr_platform::ForegroundJob>,
     foreground_job: impl FnOnce() -> Option<shepr_platform::ForegroundJob>,
 ) -> ProcessProbeResult {
-    if let Some(job) = leader_job
-        && let Some((agent, process_name)) = shepr_detect::identify_agent_in_job(job)
-    {
-        return process_probe_result(job, pid, agent, process_name);
+    if let Some(job) = leader_job {
+        let identity = agent_identity(job);
+        if !matches!(identity, ProcessProbeIdentity::Unidentified) {
+            return process_probe_result(job, pid, identity);
+        }
     }
 
     let foreground_job = foreground_job();
     if let Some(job) = foreground_job.as_ref() {
-        let identified = shepr_detect::identify_agent_in_job(job);
-        return ProcessProbeResult {
-            process_group_id: Some(job.process_group_id),
-            foreground_is_pane_shell: Foreground::from_job(Some(job), pid).is_shell(),
-            suspended_agents: Vec::new(),
-            identity: identified.map_or(
-                ProcessProbeIdentity::Unidentified,
-                |(agent, process_name)| ProcessProbeIdentity::Agent {
-                    agent,
-                    process_name,
-                },
-            ),
-        };
+        return process_probe_result(job, pid, agent_identity(job));
     }
 
     ProcessProbeResult {
         process_group_id: foreground_pgid,
         foreground_is_pane_shell: false,
-        suspended_agents: Vec::new(),
+        background_agents: Vec::new(),
         identity: ProcessProbeIdentity::Unidentified,
     }
 }
 
+/// Probes the pane's foreground for an agent. `held` is the incarnation the
+/// detector last identified an agent from. Only when it is set and the
+/// foreground now holds no agent does the probe look for that process outside
+/// the foreground: a pane with no agent, or one whose agent is in front, never
+/// pays for the scan.
 pub(super) fn probe_foreground_process(
     pid: Pid,
     foreground_pgid: Option<Pgid>,
+    held: Option<ProcessInstance>,
 ) -> ProcessProbeResult {
     let mut probe = probe_foreground_process_from_jobs(
         pid,
@@ -167,8 +186,10 @@ pub(super) fn probe_foreground_process(
             .as_ref(),
         || shepr_platform::foreground_job(pid),
     );
-    if probe.foreground_is_pane_shell() {
-        probe.suspended_agents = shepr_detect::suspended_agent_processes(pid);
+    if let Some(held) = held
+        && probe.agent().is_none()
+    {
+        probe.background_agents = shepr_detect::background_agent_processes(pid, held);
     }
     probe
 }
@@ -211,6 +232,13 @@ mod tests {
 
         assert_eq!(result.agent(), Some(Agent::Codex));
         assert_eq!(result.process_name(), Some("codex"));
+        assert_eq!(
+            result.agent_process(),
+            Some(ProcessInstance {
+                pid: test_pid(99),
+                start_ticks: 0
+            })
+        );
     }
 
     #[test]
@@ -243,7 +271,7 @@ mod tests {
         let result = ProcessProbeResult {
             process_group_id: Pgid::new(17),
             foreground_is_pane_shell: false,
-            suspended_agents: Vec::new(),
+            background_agents: Vec::new(),
             identity: ProcessProbeIdentity::Unidentified,
         };
         assert_eq!(result.agent(), None);

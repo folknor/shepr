@@ -197,12 +197,14 @@ impl ShutdownLifecycle {
         }
     }
 
-    pub(super) fn begin_stopping(&mut self) -> bool {
+    /// Enters the terminal phase. `fallback` is the reason recorded when no
+    /// stop request named one first; the first recorded reason always wins.
+    pub(super) fn begin_stopping(&mut self, fallback: shepr_api::StopReason) -> bool {
         if self.phase == ShutdownPhase::Stopping {
             return false;
         }
         self.phase = ShutdownPhase::Stopping;
-        self.stop_signal.request();
+        self.stop_signal.request(fallback);
         true
     }
 
@@ -349,21 +351,26 @@ impl ShutdownLifecycle {
 impl HeadlessServer {
     /// Marks terminal server shutdown from any quit source.
     pub(super) fn initiate_shutdown(&mut self) {
-        let cause = if self.lifecycle.signal_quit_requested() {
-            "termination_signal"
-        } else if self.lifecycle.stop_signal().is_requested() {
-            "stop_request"
+        // A request that named its reason wins; otherwise a host shutdown
+        // explains the stop, and anything else is the loop ending on its own.
+        let fallback = if self.lifecycle.host_shutdown_requested() {
+            shepr_api::StopReason::HostShutdown
         } else {
-            "event_loop_exit"
+            shepr_api::StopReason::EventLoopExit
         };
-        if !self.lifecycle.begin_stopping() {
+        if !self.lifecycle.begin_stopping(fallback) {
             return;
         }
+        let reason = self
+            .lifecycle
+            .stop_signal()
+            .reason()
+            .unwrap_or(shepr_api::StopReason::EventLoopExit);
         shepr_platform::structured_log!(
             INFO,
             event = server.shutdown,
             outcome = Started,
-            cause,
+            cause = %reason,
             "server shutdown initiated"
         );
 
@@ -585,7 +592,7 @@ mod phase_tests {
     fn shutdown_refusal_is_safe_to_construct_before_the_stopping_transition() {
         let mut lifecycle = ShutdownLifecycle::new(Arc::default());
         let before = lifecycle.shutdown_error();
-        assert!(lifecycle.begin_stopping());
+        assert!(lifecycle.begin_stopping(shepr_api::StopReason::EventLoopExit));
         assert_eq!(before, lifecycle.shutdown_error());
     }
 

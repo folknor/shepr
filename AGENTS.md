@@ -422,6 +422,12 @@ every agent integration reports through it.
   successor once the socket is gone. Socket absence only permits a launch
   attempt: the lease decides which contender owns the data directory, even
   before the socket exists.
+- The server outlives the terminal or shell that launched it: SIGHUP is
+  ignored from the start of `shepr-server`'s `main` (a no-op handler, so
+  pane children still get the default) and logged once the signal task runs.
+  SIGINT, SIGTERM and `server.stop` stop it, and the first reason to arrive
+  (`shepr_api::StopReason`: the signal, or the stop caller's pid and name from
+  `SO_PEERCRED`) is what `server shutdown initiated` logs.
 
 ## Principles
 

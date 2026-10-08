@@ -300,6 +300,13 @@ impl DetectorState {
             .or_else(|| self.agent_presence.current_agent())
     }
 
+    /// The process incarnation the current agent identity was last recognized
+    /// from, which a probe looks for outside the foreground once the
+    /// foreground no longer shows an agent.
+    pub(in crate::pane) fn identified_process(&self) -> Option<shepr_platform::ProcessInstance> {
+        self.agent_presence.identified_process()
+    }
+
     pub(super) fn process_exited(&self) -> bool {
         matches!(self.exit_phase, AgentExitPhase::ReportOwed { .. })
     }
@@ -348,7 +355,7 @@ impl DetectorState {
         // probe of a shell foreground report the same disappearance again.
         // The scheduler is reset only so the process is rechecked promptly.
         // This makes reset itself replay-free, not every exit delivery
-        // idempotent: the suspended-presence path in `observe_process_probe`
+        // idempotent: the background-hold path in `observe_process_probe`
         // clears the exit bookkeeping without publishing a presence event, so
         // the same agent can be reported gone again later.
         self.last_published = Some(Detection::Unknown);
@@ -385,11 +392,15 @@ mod tests {
         ProcessProbeResult {
             process_group_id: Pgid::new(25),
             foreground_is_pane_shell: false,
-            suspended_agents: Vec::new(),
+            background_agents: Vec::new(),
             identity: agent.map_or(ProcessProbeIdentity::Unidentified, |agent| {
                 ProcessProbeIdentity::Agent {
                     agent,
                     process_name: "agent".into(),
+                    process: shepr_platform::ProcessInstance {
+                        pid: shepr_platform::Pid::new(100).expect("test pid"),
+                        start_ticks: 1,
+                    },
                 }
             }),
         }

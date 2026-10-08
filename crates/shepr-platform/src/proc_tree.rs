@@ -112,31 +112,62 @@ pub fn foreground_job(child_pid: Pid) -> Option<ForegroundJob> {
     foreground_job_from_members(process_group_id, members, process_argv)
 }
 
-/// Find job-control-stopped descendants of the pane shell. Once Ctrl-Z returns
-/// the terminal to the shell, the stopped job is no longer in the foreground
-/// process group, but its descendants remain in the shell's process tree.
-/// A stop under a tracer reads `t` instead of `T` (a traced process that is
-/// sent SIGTSTP enters a tracing stop), so both count as stopped.
-pub fn suspended_processes(child_pid: Pid) -> Vec<ForegroundProcess> {
+/// Find live descendants of the pane shell that are in its session but in
+/// neither the shell's own process group nor the terminal's foreground group:
+/// jobs stopped by Ctrl-Z (a stop under a tracer reads `t` instead of `T`, and
+/// both are live here) and jobs running in the background. The terminal went
+/// to the shell or to another job, but these stay in the shell's process tree.
+///
+/// `want` is asked about each such process by its incarnation (pid and start
+/// time) before its argv is read, so a caller looking for one process does not
+/// pay a `/proc/<pid>/cmdline` read for every other background job.
+pub fn background_processes(
+    child_pid: Pid,
+    mut want: impl FnMut(crate::ProcessInstance) -> bool,
+) -> Vec<ForegroundProcess> {
+    let Ok(shell) = ProcStat::read(child_pid) else {
+        return Vec::new();
+    };
     process_tree_pids([child_pid], process_task_ids, process_task_children)
         .into_iter()
         .filter_map(|pid| {
-            let (_, name, state, start_ticks) = process_pgrp_comm_and_state(pid)?;
-            if pid == child_pid || !state.is_stopped() {
+            if pid == child_pid {
                 return None;
             }
-            let argv = state
+            let stat = ProcStat::read(pid).ok()?;
+            if !is_background_of(&shell, &stat) {
+                return None;
+            }
+            let instance = crate::ProcessInstance {
+                pid,
+                start_ticks: stat.start_ticks,
+            };
+            if !want(instance) {
+                return None;
+            }
+            let argv = stat
+                .state
                 .allows_remote_memory_read()
                 .then(|| process_argv(pid))
                 .flatten();
             Some(ForegroundProcess {
                 pid,
-                name,
+                name: stat.comm,
                 argv,
-                start_ticks,
+                start_ticks: stat.start_ticks,
             })
         })
         .collect()
+}
+
+/// Whether `process` is a live job of the pane shell's session that neither
+/// the shell nor the terminal's foreground group holds. The foreground group
+/// is the one the shell's terminal names, read in the same stat as the shell.
+fn is_background_of(shell: &ProcStat, process: &ProcStat) -> bool {
+    !process.state.is_finished()
+        && process.session == shell.session
+        && process.process_group != shell.process_group
+        && shell.foreground_group != Some(process.process_group)
 }
 
 fn foreground_job_from_members(

@@ -234,7 +234,11 @@ impl DetectionTask {
             Tick::Done(output) => Step::Done(output),
             Tick::NeedsScreen(screen) => Step::NeedsScreen(screen),
             Tick::NeedsProbe(probe_tick) => {
-                let probe = probe_foreground_process(pid, foreground_pgid);
+                let probe = probe_foreground_process(
+                    pid,
+                    foreground_pgid,
+                    self.detector.identified_process(),
+                );
                 if !self.live(pid) {
                     return None;
                 }

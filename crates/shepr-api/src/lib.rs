@@ -12,7 +12,7 @@ pub use server::{
     ClientGate, ClientHandshakeOutcome, ClientHandshakeSilence, ClientProtocolHandler,
     ConnectionSlot, ServerHandle, read_client_handshake,
 };
-pub use stop::ServerStopSignal;
+pub use stop::{ServerStopSignal, StopReason};
 
 use tokio::sync::mpsc;
 

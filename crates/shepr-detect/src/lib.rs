@@ -158,19 +158,33 @@ pub fn identify_agent_process(process: &ForegroundProcess) -> Option<Agent> {
     identify_process(process).map(|identified| identified.agent)
 }
 
-/// Blocking: scans descendants of the pane shell for job-control-stopped
-/// processes that still identify as agents. Call from a blocking context.
-pub fn suspended_agent_processes(child_pid: Pid) -> Vec<Agent> {
-    let mut agents = Vec::new();
-    for process in shepr_platform::suspended_processes(child_pid) {
-        let Some(identified) = identify_process(&process) else {
-            continue;
-        };
-        if !agents.contains(&identified.agent) {
-            agents.push(identified.agent);
-        }
-    }
-    agents
+/// An agent process outside the terminal's foreground: stopped by job control
+/// or running in the background of the pane shell's session. `process` is the
+/// incarnation (pid and start time) it was recognized from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackgroundAgent {
+    pub agent: Agent,
+    pub process: shepr_platform::ProcessInstance,
+}
+
+/// Blocking: the background processes of the pane shell's session (see
+/// `shepr_platform::background_processes`) that are `held`, the incarnation an
+/// agent was identified from earlier, and still identify as an agent. Only
+/// `held` is read beyond its stat, which keeps the scan cheap while a pane
+/// holds an agent in the background. Call from a blocking context.
+pub fn background_agent_processes(
+    child_pid: Pid,
+    held: shepr_platform::ProcessInstance,
+) -> Vec<BackgroundAgent> {
+    shepr_platform::background_processes(child_pid, |candidate| candidate == held)
+        .into_iter()
+        .filter_map(|process| {
+            identify_process(&process).map(|identified| BackgroundAgent {
+                agent: identified.agent,
+                process: process.instance(),
+            })
+        })
+        .collect()
 }
 
 /// Detect state using screen content plus the OSC title and progress evidence,

@@ -935,6 +935,30 @@ fn peer_uid_is_same_effective_user(peer_uid: libc::uid_t, own_uid: libc::uid_t) 
     peer_uid == own_uid
 }
 
+/// Describes the process on the other end of a local socket for logs: its pid
+/// from `SO_PEERCRED` and, when `/proc` still has it, its command name, as
+/// `pid 42 (shepr)`. `None` when the credentials cannot be read.
+pub fn peer_description(stream: &LocalStream) -> Option<String> {
+    use std::os::fd::AsRawFd;
+    let pid = peer_credentials(stream.as_raw_fd()).ok()?.pid;
+    if pid <= 0 {
+        return None;
+    }
+    match process_comm(pid) {
+        Some(name) => Some(format!("pid {pid} ({name})")),
+        None => Some(format!("pid {pid}")),
+    }
+}
+
+/// The command name in `/proc/<pid>/stat`: the text between the first `(` and
+/// the last `)`, since the name itself may contain parentheses.
+fn process_comm(pid: libc::pid_t) -> Option<String> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+    stat.get(open + 1..close).map(str::to_owned)
+}
+
 fn peer_uid(stream: &LocalStream) -> io::Result<libc::uid_t> {
     use std::os::fd::AsRawFd;
     Ok(peer_credentials(stream.as_raw_fd())?.uid)
@@ -1550,6 +1574,16 @@ mod tests {
         let (client, server) = connected_pair("peercred");
         assert!(peer_is_same_effective_user(&server).expect("SO_PEERCRED"));
         assert!(peer_is_same_effective_user(&client).expect("SO_PEERCRED"));
+    }
+
+    #[test]
+    fn peer_description_names_the_connecting_process() {
+        let (client, server) = connected_pair("peerdesc");
+        let prefix = format!("pid {} (", std::process::id());
+        let described = peer_description(&server).expect("SO_PEERCRED");
+        assert!(described.starts_with(&prefix), "{described}");
+        assert!(described.ends_with(')'), "{described}");
+        assert!(peer_description(&client).is_some());
     }
 
     #[test]

@@ -1013,7 +1013,7 @@ mod tests {
             local_stream_pair("client-handshake-stopping");
         let (server_event_tx, mut server_event_rx) = mpsc::channel(4);
         let stop_signal = Arc::new(shepr_api::ServerStopSignal::default());
-        stop_signal.request();
+        stop_signal.request(shepr_api::StopReason::EventLoopExit);
         let handshake_stop_signal = Arc::clone(&stop_signal);
         let handle = std::thread::spawn(move || {
             handle_client_handshake(
@@ -1088,7 +1088,7 @@ mod tests {
         }
 
         drop(client_stream);
-        stop_signal.request();
+        stop_signal.request(shepr_api::StopReason::EventLoopExit);
         handle
             .join()
             .expect("handshake thread join")
@@ -1348,7 +1348,7 @@ mod tests {
         ));
 
         drop(client_stream);
-        stop_signal.request();
+        stop_signal.request(shepr_api::StopReason::EventLoopExit);
         handle
             .join()
             .expect("read thread join")

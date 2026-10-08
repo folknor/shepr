@@ -251,7 +251,7 @@ struct ListenerExit {
 impl Drop for ListenerExit {
     fn drop(&mut self) {
         if self.running.load(Ordering::Acquire) {
-            self.stop.request();
+            self.stop.request(crate::StopReason::ListenerFailed);
         }
     }
 }
@@ -297,7 +297,7 @@ fn start_listener_with_overflow_observer(
                     }
                     Accepted::Fatal(error) => {
                         shepr_platform::structured_log!(ERROR, event = ipc.accept, outcome = Stopped, %error, "server listener cannot accept connections; stopping server");
-                        dispatch.stop.request();
+                        dispatch.stop.request(crate::StopReason::ListenerFailed);
                         break;
                     }
                 };

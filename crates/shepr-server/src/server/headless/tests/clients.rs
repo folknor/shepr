@@ -127,7 +127,9 @@ fn a_stopping_server_reaps_closed_clients_without_reapplying_geometry() {
         1,
         ClientConnection::new((80, 24), shepr_core::geometry::HostCell::Unknown, 1, outbox),
     );
-    server.lifecycle.begin_stopping();
+    server
+        .lifecycle
+        .begin_stopping(shepr_api::StopReason::EventLoopExit);
     server.clients[&ClientId::test_new(1)].outbox.close();
     assert!(server.reap_closed_clients());
     assert_eq!(
