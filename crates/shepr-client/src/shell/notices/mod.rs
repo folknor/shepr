@@ -19,6 +19,7 @@ pub(in crate::shell) enum ClientEndpointNoticeKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::shell) enum NoticeCode {
     SelectionEmpty,
+    ClipboardHelperMissing,
     PasteRejected,
     Server,
     Cancelled,

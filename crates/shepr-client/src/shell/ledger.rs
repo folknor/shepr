@@ -252,7 +252,25 @@ impl Work {
                     outcome
                         .actions
                         .push(ClientShellAction::ClipboardWrite(text.into_bytes()));
-                    Repaint::Unchanged
+                    // Without a helper the copy goes out as OSC 52, which some
+                    // terminals drop without a trace; say so instead.
+                    let missing =
+                        crate::clipboard_forwarding::clipboard_route().missing_helper_package();
+                    if let Some(package) = missing
+                        && shell.push_endpoint_notice(
+                            ClientEndpointNoticeKind::Unavailable,
+                            NoticeCode::ClipboardHelperMissing,
+                            "Clipboard helper missing",
+                            format!(
+                                "Install {package} to copy to the clipboard. The copy was sent \
+                                 to the terminal as OSC 52, which this terminal may ignore."
+                            ),
+                        )
+                    {
+                        Repaint::Needed
+                    } else {
+                        Repaint::Unchanged
+                    }
                 }
                 Ok(PaneSelectionReply { .. }) => {
                     if shell.push_endpoint_notice(

@@ -64,6 +64,40 @@ impl ClipboardRoute {
             ),
         }
     }
+
+    /// The package that provides this route's clipboard helpers, when the
+    /// route expects helpers for a display session and none of them is on
+    /// the search path. Copies then fall back to OSC 52, which some terminals
+    /// (Gnome Terminal and other VTE-based ones among them) silently ignore.
+    pub fn missing_helper_package(self) -> Option<&'static str> {
+        let Self::Helpers(session) = self else {
+            return None;
+        };
+        let path = shepr_core::env::read_os(shepr_core::env::EnvVar::Path)
+            .ok()
+            .flatten()?;
+        missing_helper_package_with(session, |program| {
+            std::env::split_paths(&path).any(|dir| {
+                crate::classify_executable(&dir.join(program))
+                    == crate::ExecutableStatus::Executable
+            })
+        })
+    }
+}
+
+fn missing_helper_package_with(
+    session: ClipboardSession,
+    installed: impl Fn(&str) -> bool,
+) -> Option<&'static str> {
+    let commands = clipboard_commands(session);
+    if commands.is_empty() || commands.iter().any(|command| installed(command.program)) {
+        return None;
+    }
+    Some(if session.wayland {
+        "wl-clipboard"
+    } else {
+        "xclip or xsel"
+    })
 }
 
 /// Hands `bytes` to the first of `clipboard` that takes them, then to the first
@@ -508,6 +542,35 @@ mod tests {
     use super::*;
     use shepr_test_support::fixture::{self, Step};
     use std::time::Duration;
+
+    #[test]
+    fn missing_helper_package_names_the_session_package_only_when_none_is_installed() {
+        let wayland = ClipboardSession {
+            wayland: true,
+            x11: true,
+        };
+        let x11 = ClipboardSession {
+            wayland: false,
+            x11: true,
+        };
+        assert_eq!(
+            missing_helper_package_with(wayland, |_| false),
+            Some("wl-clipboard")
+        );
+        assert_eq!(
+            missing_helper_package_with(x11, |_| false),
+            Some("xclip or xsel")
+        );
+        assert_eq!(
+            missing_helper_package_with(wayland, |program| program == "xsel"),
+            None
+        );
+        assert_eq!(
+            missing_helper_package_with(ClipboardSession::none(), |_| false),
+            None
+        );
+        assert_eq!(ClipboardRoute::Osc52.missing_helper_package(), None);
+    }
 
     #[test]
     fn osc52_route_does_not_read_display_clipboard_helpers() {
