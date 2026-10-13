@@ -100,4 +100,25 @@ impl App {
             outcome.into(),
         )
     }
+
+    pub(crate) fn handle_pane_show(&mut self, target: &PaneTarget) -> HandlerResult {
+        let (_, pane_id) = self.endpoint_pane(&target.pane_id)?;
+        let Some(outcome) = self.state.show_pane(pane_id) else {
+            return Err(pane_missing(&target.pane_id).into());
+        };
+        let effects = outcome.into();
+        let Some(pane) = self.pane_info(pane_id) else {
+            return Err(HandlerError {
+                error: pane_missing(&target.pane_id),
+                effects,
+            });
+        };
+        Handled::navigating_with_effects(
+            EndpointReply::PaneInfo {
+                pane: Box::new(pane),
+            },
+            *target.pane_id.workspace_id(),
+            effects,
+        )
+    }
 }

@@ -209,7 +209,7 @@ mod tests {
             (
                 "global",
                 vec![
-                    ("ctrl+b", "prefix mode"),
+                    ("ctrl+a", "prefix mode"),
                     ("prefix+?", "keybinds"),
                     ("prefix+q", "detach"),
                 ],

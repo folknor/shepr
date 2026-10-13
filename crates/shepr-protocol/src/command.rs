@@ -486,6 +486,13 @@ define_endpoint_commands! {
             changes_topology: false,
             claims_shell_geometry: true,
         };
+        // Focuses the pane and zooms its workspace on it, never toggling an
+        // existing zoom off.
+        PaneShow(PaneTarget) => "pane.show" {
+            changes_focus: true,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
         PaneInputSet(PaneInputSetParams) => "pane.input.set" {
             changes_focus: false,
             changes_topology: false,
@@ -616,7 +623,11 @@ impl CommandKind {
             Self::WorkspaceFocus | Self::WorkspaceRename => {
                 matches!(reply, EndpointReply::WorkspaceInfo { .. })
             }
-            Self::PaneSplit | Self::PaneFocus | Self::PaneRename | Self::PaneScroll => {
+            Self::PaneSplit
+            | Self::PaneFocus
+            | Self::PaneShow
+            | Self::PaneRename
+            | Self::PaneScroll => {
                 matches!(reply, EndpointReply::PaneInfo { .. })
             }
             Self::PaneSelectionRead => matches!(reply, EndpointReply::PaneSelection { .. }),

@@ -312,7 +312,7 @@ fn navigate_mode_ignores_every_key_but_its_own() {
         b"?",
         b"q",
         // The prefix, then a prefix binding (prefix+w enters navigate mode).
-        &[0x02],
+        &[0x01],
         b"w",
     ];
     let (mut state, remote) = navigation_state(
@@ -957,7 +957,7 @@ fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
             let mut state = local_navigation_state(false);
             let pending_request = request_local_navigation(&mut state, 2);
             assert_local_highlight(&mut state, "w3");
-            preview_key(&mut state, &[0x02]);
+            preview_key(&mut state, &[0x01]);
             let outcome = state.handle_input_bytes(&[key]);
             let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
                 panic!("expected a directional pane focus request");
@@ -1250,12 +1250,12 @@ fn enter_on_an_agent_focuses_its_pane_on_its_machine_and_workspace() {
         assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
         assert!(state.mode.preview().is_none());
         // The runtime focuses a presented machine's pick the way it does a click's: the
-        // pane focus moves its server to the pane's workspace.
+        // pane show moves its server to the pane's workspace and zooms it there.
         if agent.endpoint == ClientEndpointId::Local {
             let actions = state.focus_endpoint_target(agent.target);
             assert!(
                 matches!(actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
-                    if matches!(&request.command, EndpointCommand::PaneFocus(target)
+                    if matches!(&request.command, EndpointCommand::PaneShow(target)
                         if target.pane_id == crate::tests::test_pane_id("w2:p1")))
             );
         }

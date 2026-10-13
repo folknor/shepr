@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn built_in_keymap_defaults_are_pinned() {
         let keys = KeysConfig::default();
-        assert_eq!(keys.prefix, "ctrl+b");
+        assert_eq!(keys.prefix, "ctrl+a");
         for (binding, expected) in [
             (&keys.help, "prefix+?"),
             (&keys.detach, "prefix+q"),
@@ -635,7 +635,7 @@ mod tests {
 
     #[test]
     fn keybind_parser_returns_only_complete_values() {
-        for profile in ["", "[keys]\nprefix = \"ctrl+a\"\n"] {
+        for profile in ["", "[keys]\nprefix = \"f12\"\n"] {
             let config: ClientConfig = toml::from_str(profile).expect("test precondition");
             let validation = config.compute_keybind_validation(|_| false);
             let live = validation

@@ -618,7 +618,7 @@ fn an_interactive_detach_goes_to_the_shown_endpoint() {
 #[test]
 fn the_detach_key_ends_the_loop_as_a_detach() {
     let mut f = Fixture::new();
-    let inputs = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x02q")
+    let inputs = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x01q")
         .into_iter()
         .map(|event| ParsedHostInput {
             event,

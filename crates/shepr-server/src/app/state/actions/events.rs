@@ -344,18 +344,33 @@ impl AppState {
     where
         F: FnOnce(&mut shepr_mux::terminal::TerminalState) -> Option<AgentOwnershipMutation>,
     {
-        let (mutation, unchanged_change) = {
+        let (mutation, unchanged_change, named) = {
             let Some(record) = self.workspaces.pane_mut(pane_id) else {
                 return StateUpdate::Unchanged;
             };
             let terminal = record.terminal_mut();
+            let had_agent = terminal.ownership().effective_agent().is_some();
             let mutation = update(terminal);
             let unchanged_change = mutation
                 .as_ref()
                 .is_some_and(|mutation| mutation.agent_released)
                 .then(|| terminal.ownership().unchanged_effective_state_change());
-            (mutation, unchanged_change)
+            // An agent arriving in an unnamed pane names it after its working
+            // directory; a name the user gave or cleared since stays theirs
+            // until the next agent arrives.
+            let named = !had_agent
+                && terminal.ownership().effective_agent().is_some()
+                && terminal.manual_label_value().is_none();
+            if named {
+                let label = shepr_mux::Label::for_directory(terminal.cwd().as_path());
+                terminal.set_manual_label(label);
+            }
+            (mutation, unchanged_change, named)
         };
+        if named {
+            self.mark_session_dirty();
+            self.mark_shell_projection_dirty();
+        }
         // Every update that ran re-syncs the runtime's detector pause, whatever
         // it returned. Relying on the mutation to report authority changes
         // would lose one made by an update that returns `None` or reports no

@@ -189,6 +189,7 @@ impl App {
             EndpointAppCommand::PaneCopyMotion(params) => self.handle_pane_copy_motion(params),
             EndpointAppCommand::PaneCopySearch(params) => self.handle_pane_copy_search(&params),
             EndpointAppCommand::PaneFocus(target) => self.handle_pane_focus(&target),
+            EndpointAppCommand::PaneShow(target) => self.handle_pane_show(&target),
             EndpointAppCommand::PaneInputSet(params) => self.handle_pane_input_set(&params),
             EndpointAppCommand::PaneRename(params) => self.handle_pane_rename(params),
             EndpointAppCommand::PaneClose(target) => self.handle_pane_close(&target),

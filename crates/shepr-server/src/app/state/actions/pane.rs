@@ -109,4 +109,28 @@ impl AppState {
             focus_changed,
         })
     }
+
+    /// Focuses `pane_id` and zooms its workspace on it, leaving a zoom already
+    /// there in place: the pane fills the workspace whatever it was showing.
+    /// A workspace of one pane is only focused. `None` when no workspace holds
+    /// the pane.
+    pub(crate) fn show_pane(&mut self, pane_id: PaneId) -> Option<PaneZoomOutcome> {
+        let lone = self.workspaces.pane(pane_id)?.workspace().tree().is_lone();
+        let public_id = self.workspaces.pane(pane_id)?.public_id();
+        let focus_changed = self.focus_pane(pane_id).changed();
+        let workspace = self.workspace_of_mut(pane_id)?;
+        if lone || workspace.tree().zoomed() || !workspace.set_zoomed(true) {
+            return Some(PaneZoomOutcome {
+                changed: false,
+                focus_changed,
+            });
+        }
+        self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
+        crate::logging::pane_zoomed(public_id, true);
+        Some(PaneZoomOutcome {
+            changed: true,
+            focus_changed,
+        })
+    }
 }

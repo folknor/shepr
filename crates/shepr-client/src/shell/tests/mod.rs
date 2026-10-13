@@ -340,7 +340,7 @@ pub(in crate::shell) fn ignored_navigate_key(state: &mut ClientShellState, bytes
 
 /// Enters navigate mode with the default prefix and `w`.
 pub(in crate::shell) fn enter_navigation(state: &mut ClientShellState) {
-    preview_key(state, &[0x02]);
+    preview_key(state, &[0x01]);
     preview_key(state, b"w");
     assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
 }

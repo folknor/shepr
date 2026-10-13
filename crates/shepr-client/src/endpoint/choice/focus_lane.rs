@@ -35,8 +35,10 @@ impl FocusLane {
         }
         let target = self.desired;
         let command = match &target {
+            // Picking a pane by location (an agent, a navigator row) shows
+            // it filling its workspace.
             LocationTarget::Pane(pane_id) => {
-                EndpointCommand::PaneFocus(PaneTarget { pane_id: *pane_id })
+                EndpointCommand::PaneShow(PaneTarget { pane_id: *pane_id })
             }
             LocationTarget::Workspace(workspace_id) => {
                 EndpointCommand::WorkspaceFocus(WorkspaceTarget {

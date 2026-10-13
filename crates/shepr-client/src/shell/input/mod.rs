@@ -138,6 +138,17 @@ fn read_clipboard_text_bounded() -> Option<String> {
     )
 }
 
+/// Reads the primary selection for a middle-click paste, bounded the same way
+/// as [`read_clipboard_text_bounded`] and sharing its in-flight guard.
+pub(in crate::shell) fn read_primary_text_bounded() -> Option<String> {
+    read_clipboard_text_bounded_with(
+        &CLIPBOARD_READ_IN_FLIGHT,
+        MODAL_PASTE_CLIPBOARD_TIMEOUT,
+        crate::clipboard_forwarding::clipboard_route(),
+        shepr_platform::read_primary_text,
+    )
+}
+
 fn read_clipboard_text_bounded_with(
     in_flight: &'static std::sync::atomic::AtomicBool,
     timeout: std::time::Duration,
@@ -831,6 +842,19 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
         accounting: &mut PaneInputBatchAccounting,
     ) {
+        let Some(pane_id) = self.focused_pane_id() else {
+            return;
+        };
+        self.push_paste_to(pane_id, text, outcome, accounting);
+    }
+
+    pub(in crate::shell) fn push_paste_to(
+        &mut self,
+        pane_id: shepr_protocol::PublicPaneId,
+        text: String,
+        outcome: &mut ClientShellInput,
+        accounting: &mut PaneInputBatchAccounting,
+    ) {
         let event = ClientPaneInputEvent::Paste(text);
         let charge = shepr_protocol::InputBatchCharge::of(&event);
         if !charge.fits() {
@@ -840,9 +864,6 @@ impl ClientShellState {
             ));
             return;
         }
-        let Some(pane_id) = self.focused_pane_id() else {
-            return;
-        };
         crate::shell::input::events::push_target_event(pane_id, event, outcome, accounting);
     }
 }
@@ -1021,17 +1042,19 @@ mod tests {
     fn copy_search_owns_prefix_but_parked_prompt_does_not_steal_input() {
         let mut state = prompt_shell(5);
         fill_prompt(&mut state, "ab");
-        press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
+        // The prefix key edits the search (start of line) instead of entering
+        // prefix mode.
+        press(&mut state, KeyCode::Char('a'), KeyModifiers::CONTROL);
         assert_eq!(state.mode.kind(), ClientShellMode::Copy);
         state.handle_raw_events(vec![RawInputEvent::Paste("X".into())]);
-        assert_eq!(prompt_text(&state).as_str(), "aXb");
+        assert_eq!(prompt_text(&state).as_str(), "Xab");
         state.open_rename_pane_overlay();
         assert!(state.modal_paste_target_active());
         state.handle_raw_events(vec![RawInputEvent::Paste("name".into())]);
         assert_eq!(prompt_text(&state).as_str(), "name");
         // Escape closes the name prompt; the copy search parked behind it is untouched.
         press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(prompt_text(&state).as_str(), "aXb");
+        assert_eq!(prompt_text(&state).as_str(), "Xab");
         // Focus moving to another pane parks the session with its prompt, and a paste
         // goes to that pane.
         let copy_pane = crate::tests::test_pane_id("w1:p1");
@@ -1048,13 +1071,13 @@ mod tests {
         assert!(
             matches!(&input.requests[..], [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })] if *pane_id == other_pane && matches!(&events[..], [ClientPaneInputEvent::Paste(text)] if text == "terminal"))
         );
-        assert_eq!(prompt_text(&state).as_str(), "aXb");
+        assert_eq!(prompt_text(&state).as_str(), "Xab");
         // Focus coming back resumes the session.
         two_panes.focused_pane_id = Some(copy_pane);
         state.set_snapshot(Box::new(two_panes));
         assert_eq!(state.mode.kind(), ClientShellMode::Copy);
         press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
-        press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
+        press(&mut state, KeyCode::Char('a'), KeyModifiers::CONTROL);
         assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
     }
 

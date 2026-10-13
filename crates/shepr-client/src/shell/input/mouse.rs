@@ -1580,6 +1580,19 @@ impl ClientShellState {
                         button: MouseButton::Middle,
                         last_event: mouse,
                     });
+                } else if let Some(hit) = self
+                    .presentation
+                    .pane_hits()
+                    .iter()
+                    .find(|hit| crate::shell::input::hit_test::contains(hit.content_rect, point))
+                    .cloned()
+                {
+                    // shepr holds the mouse, so the host terminal never sees
+                    // this click: paste the primary selection into the pane
+                    // ourselves, as the terminal would have.
+                    if let Some(text) = crate::shell::input::read_primary_text_bounded() {
+                        self.push_paste_to(hit.pane_id, text, outcome, accounting);
+                    }
                 }
             }
             MouseEventKind::Moved => {

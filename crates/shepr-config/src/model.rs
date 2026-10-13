@@ -139,7 +139,7 @@ crate::keybinding_rows! {
         #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
         #[serde(default)]
         pub struct KeysConfig {
-            /// Prefix key to enter prefix mode (for example, `ctrl+b` or `f12`).
+            /// Prefix key to enter prefix mode (for example, `ctrl+a` or `f12`).
             pub prefix: String,
             $(#[doc = $action_doc] pub $action_field: BindingConfig,)*
             $(#[doc = $indexed_doc] pub $indexed_field: BindingConfig,)*
@@ -149,7 +149,7 @@ crate::keybinding_rows! {
         impl Default for KeysConfig {
             fn default() -> Self {
                 Self {
-                    prefix: "ctrl+b".into(),
+                    prefix: "ctrl+a".into(),
                     $($action_field: BindingConfig::one($action_default),)*
                     $($indexed_field: BindingConfig::one($indexed_default),)*
                     $($navigate_config_field: BindingConfig::one($navigate_default),)*

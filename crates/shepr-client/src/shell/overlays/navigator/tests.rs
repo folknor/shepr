@@ -1008,7 +1008,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     };
     assert!(matches!(
         &request.command,
-        EndpointCommand::PaneFocus(target) if target.pane_id == crate::tests::test_pane_id("w1:p1")
+        EndpointCommand::PaneShow(target) if target.pane_id == crate::tests::test_pane_id("w1:p1")
     ));
     assert!(state.overlay.is_none());
 }

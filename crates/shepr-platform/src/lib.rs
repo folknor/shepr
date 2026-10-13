@@ -38,7 +38,7 @@ pub use child_io::{
     set_fd_nonblocking, set_nonblocking,
 };
 pub use client_stream::{ClientStreamReader, wait_client_stream_readable, write_client_stream};
-pub use clipboard::{ClipboardRoute, ClipboardSession, read_clipboard_text};
+pub use clipboard::{ClipboardRoute, ClipboardSession, read_clipboard_text, read_primary_text};
 pub use config_file::config_file_link_count;
 pub use daemon::{
     SpawnedDaemon, create_private_directory_all, create_private_runtime_directory, open_boot_log,

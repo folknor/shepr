@@ -151,11 +151,18 @@ pub fn read_clipboard_text(route: ClipboardRoute) -> Option<String> {
     // together, so warning on `None` would report expected empty/no-display
     // cases as errors. Distinguishing them needs an outcome the client caller
     // can handle.
-    read_clipboard_text_with_clock(route, &system_clock())
+    read_selection_text_with_clock(route, read_clipboard_text_commands, &system_clock())
 }
 
-fn read_clipboard_text_with_clock(
+/// Reads the primary selection, the one middle-click pastes, from the same
+/// route and under the same rules as [`read_clipboard_text`].
+pub fn read_primary_text(route: ClipboardRoute) -> Option<String> {
+    read_selection_text_with_clock(route, read_primary_text_commands, &system_clock())
+}
+
+fn read_selection_text_with_clock(
     route: ClipboardRoute,
+    commands: fn(ClipboardSession) -> Vec<ClipboardCommand>,
     now: &std::sync::Arc<dyn Fn() -> Instant + Send + Sync>,
 ) -> Option<String> {
     let ClipboardRoute::Helpers(session) = route else {
@@ -165,7 +172,7 @@ fn read_clipboard_text_with_clock(
         return None;
     };
     let deadline = now() + super::limits::CLIPBOARD_HELPER_TIMEOUT;
-    read_clipboard_text_commands(session)
+    commands(session)
         .iter()
         .find_map(|command| read_clipboard_text_with_command_with_clock(command, deadline, now))
 }
@@ -280,6 +287,44 @@ pub(super) fn read_clipboard_text_commands(session: ClipboardSession) -> Vec<Cli
         commands.push(ClipboardCommand {
             program: "xsel",
             args: &["--clipboard", "--output"],
+            owns_selection_after_exit: false,
+        });
+    }
+
+    commands
+}
+
+/// The primary selection counterparts of [`read_clipboard_text_commands`].
+pub(super) fn read_primary_text_commands(session: ClipboardSession) -> Vec<ClipboardCommand> {
+    let mut commands = Vec::new();
+
+    if session.wayland {
+        commands.push(ClipboardCommand {
+            program: "wl-paste",
+            args: &[
+                "--primary",
+                "--no-newline",
+                "--type",
+                "text/plain;charset=utf-8",
+            ],
+            owns_selection_after_exit: false,
+        });
+        commands.push(ClipboardCommand {
+            program: "wl-paste",
+            args: &["--primary", "--no-newline", "--type", "text/plain"],
+            owns_selection_after_exit: false,
+        });
+    }
+
+    if session.x11 {
+        commands.push(ClipboardCommand {
+            program: "xclip",
+            args: &["-selection", "primary", "-out"],
+            owns_selection_after_exit: false,
+        });
+        commands.push(ClipboardCommand {
+            program: "xsel",
+            args: &["--primary", "--output"],
             owns_selection_after_exit: false,
         });
     }
@@ -575,7 +620,11 @@ mod tests {
     #[test]
     fn osc52_route_does_not_read_display_clipboard_helpers() {
         assert_eq!(
-            read_clipboard_text_with_clock(ClipboardRoute::Osc52, &system_clock()),
+            read_selection_text_with_clock(
+                ClipboardRoute::Osc52,
+                read_clipboard_text_commands,
+                &system_clock()
+            ),
             None
         );
     }

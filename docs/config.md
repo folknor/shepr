@@ -271,7 +271,7 @@ reach shepr can depend on your terminal and on tmux.
 
 ### The prefix
 
-`prefix` (default `ctrl+b`) is the key that enters prefix mode. A binding
+`prefix` (default `ctrl+a`) is the key that enters prefix mode. A binding
 written `prefix+<key>` fires when you press the prefix and then the key. A
 binding without `prefix+` is a direct shortcut that fires in normal use.
 
@@ -361,7 +361,7 @@ configurable.
 
 ```toml
 [keys]
-prefix = "ctrl+a"
+prefix = "f12"
 split_vertical = ["prefix+v", "prefix+|"]
 split_horizontal = "prefix+minus"
 focus_agent = "prefix+alt+1..9"

@@ -446,7 +446,7 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
             ..
         }] if *modifiers == shepr_protocol::WireModifiers::ALT
     ));
-    assert!(!state.handle_input_bytes(&[0x02]).detach);
+    assert!(!state.handle_input_bytes(&[0x01]).detach);
     let detach = state.handle_input_bytes(b"q");
     assert!(detach.detach);
     assert!(detach.requests.is_empty());

@@ -338,8 +338,10 @@ impl ClientShellState {
                     workspace_id,
                 })
             }
+            // Picking a pane by location (an agent, a navigator row) shows
+            // it filling its workspace.
             LocationTarget::Pane(pane_id) => {
-                EndpointCommand::PaneFocus(shepr_protocol::command::PaneTarget { pane_id })
+                EndpointCommand::PaneShow(shepr_protocol::command::PaneTarget { pane_id })
             }
             // The endpoint itself has no navigation to carry out.
             LocationTarget::Machine => return Vec::new(),

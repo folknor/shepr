@@ -619,7 +619,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     assert!(enter.actions.is_empty());
 
     state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
-        KeyCode::Char('b'),
+        KeyCode::Char('a'),
         KeyModifiers::CONTROL,
     ))]);
     assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
@@ -904,7 +904,7 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
                 .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
         );
         state.compose(106, 20).expect("composed frame");
-        state.handle_input_bytes(b"\x02[");
+        state.handle_input_bytes(b"\x01[");
         state.handle_input_bytes(selection_key);
         state.handle_input_bytes(b"k");
         let range = state
@@ -992,7 +992,7 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
             .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
     state.compose(106, 20).expect("composed frame");
-    state.handle_input_bytes(b"\x02[");
+    state.handle_input_bytes(b"\x01[");
     let search = state.handle_input_bytes(b"/LIVE\r");
     let [ClientShellAction::Endpoint { request, .. }] = &search.actions[..] else {
         panic!("search request");
@@ -1053,7 +1053,7 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
                 .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
         );
         state.compose(106, 20).expect("composed frame");
-        state.handle_input_bytes(b"\x02[");
+        state.handle_input_bytes(b"\x01[");
         state.handle_input_bytes(b"vk");
         assert!(state.mouse_selection.selection.is_some());
         pane_surface.surface_revision = pane_surface

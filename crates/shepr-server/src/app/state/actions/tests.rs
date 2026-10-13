@@ -704,6 +704,24 @@ fn toggle_zoom_works() {
 }
 
 #[test]
+fn show_pane_focuses_and_zooms_without_toggling_off() {
+    let mut state = app_with_workspaces(&["test"]);
+    let root = state.ws(0).tree().root();
+    let right = state.test_split_workspace(0, Direction::Horizontal);
+    state.ws_mut(0).focus_pane(right);
+
+    let outcome = state.show_pane(root).expect("a pane of the workspace");
+    assert!(outcome.changed && outcome.focus_changed);
+    assert!(state.ws(0).tree().zoomed());
+    assert_eq!(state.ws(0).tree().focused(), root);
+
+    let outcome = state.show_pane(right).expect("a pane of the workspace");
+    assert!(!outcome.changed && outcome.focus_changed);
+    assert!(state.ws(0).tree().zoomed(), "a second show keeps the zoom");
+    assert_eq!(state.ws(0).tree().focused(), right);
+}
+
+#[test]
 fn toggle_zoom_single_pane_noop() {
     let mut state = app_with_workspaces(&["test"]);
     let pane_id = state.ws(0).tree().focused();
