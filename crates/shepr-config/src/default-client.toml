@@ -109,14 +109,16 @@
 # copy_on_select = true
 
 # Expanded agent rows. Built-ins are state_icon, state_text, machine, workspace,
-# pane, agent, terminal_title, and terminal_title_stripped.
+# pane, cwd, agent, terminal_title, and terminal_title_stripped. cwd is the
+# directory the pane's foreground process runs in, relative to that host's home
+# when inside it.
 # Each layout accepts up to 16 rows, 16 tokens per row, and 16 rules per styled token.
 # A token occurrence may be styled with { token = "workspace", fg = "#89b4fa", bold = true, dim = false }.
 # Omitted style fields preserve the contextual default.
 # [ui.sidebar.agents]
 # Blank rows between agent entries.
 # row_gap = 0
-# rows = [["state_icon", "machine", "workspace"], ["agent"]]
+# rows = [["state_icon", "machine", "cwd"], ["terminal_title_stripped"]]
 # Optional canonical agent IDs replace the default rows for matching agents.
 # [ui.sidebar.agents.rows_by_agent]
 # claude = [["state_icon", "machine", "workspace"], ["terminal_title_stripped"], ["agent"]]

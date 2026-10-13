@@ -339,6 +339,7 @@ mod tests {
             revision: shepr_test_fixtures::counter_at(revision),
             restore_notice: None,
             session_save_status: shepr_protocol::SessionSaveStatus::Ready,
+            home_dir: None,
             focused_workspace_id: None,
             focused_pane_id: None,
             workspaces: vec![],

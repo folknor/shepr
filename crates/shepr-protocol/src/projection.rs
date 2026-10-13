@@ -17,6 +17,9 @@ pub struct ClientShellSnapshot {
     /// Whether session saves are ready, stopped, or blocked on a recovery
     /// backup. Repeated on every projection.
     pub session_save_status: SessionSaveStatus,
+    /// The endpoint host's home directory, against which the client shortens
+    /// the paths it shows.
+    pub home_dir: Option<RemotePath>,
     pub focused_workspace_id: Option<WorkspaceId>,
     pub focused_pane_id: Option<PublicPaneId>,
     /// Ordered workspaces. The client derives one-based display positions

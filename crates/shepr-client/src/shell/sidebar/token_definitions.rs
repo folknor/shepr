@@ -16,6 +16,7 @@ pub(in crate::shell::sidebar) enum ResolvedTokenKind {
     Machine(String),
     Workspace(String),
     Pane(String),
+    Cwd(String),
     Agent(String),
     TerminalTitle(String),
     Branch(String),
@@ -29,6 +30,7 @@ impl ResolvedTokenKind {
             | Self::Machine(value)
             | Self::Workspace(value)
             | Self::Pane(value)
+            | Self::Cwd(value)
             | Self::Agent(value)
             | Self::TerminalTitle(value)
             | Self::Branch(value) => Some(value),
@@ -47,6 +49,8 @@ pub(in crate::shell::sidebar) struct AgentTokenContext<'a> {
     pub(in crate::shell::sidebar) machine: Option<&'a str>,
     pub(in crate::shell::sidebar) workspace: &'a str,
     pub(in crate::shell::sidebar) pane: Option<&'a str>,
+    /// The pane's working directory as shown, already shortened against home.
+    pub(in crate::shell::sidebar) cwd: Option<&'a str>,
     pub(in crate::shell::sidebar) agent_label: Option<&'a str>,
     pub(in crate::shell::sidebar) terminal_title: Option<&'a str>,
     pub(in crate::shell::sidebar) terminal_title_stripped: Option<&'a str>,
@@ -80,6 +84,9 @@ pub(in crate::shell::sidebar) fn agent_rows(
                         AgentSidebarTokenKind::Pane => context
                             .pane
                             .map(|value| ResolvedTokenKind::Pane(value.to_string())),
+                        AgentSidebarTokenKind::Cwd => context
+                            .cwd
+                            .map(|value| ResolvedTokenKind::Cwd(value.to_string())),
                         AgentSidebarTokenKind::Agent => context
                             .agent_label
                             .map(|value| ResolvedTokenKind::Agent(value.to_string())),
@@ -216,6 +223,7 @@ mod tests {
             machine: None,
             workspace: &entry.workspace,
             pane: entry.pane.as_deref(),
+            cwd: None,
             agent_label: entry.agent_label.as_deref(),
             terminal_title: entry.terminal_title.as_deref(),
             terminal_title_stripped: entry.terminal_title_stripped.as_deref(),

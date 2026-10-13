@@ -37,6 +37,7 @@ pub(in crate::shell) fn snapshot() -> ClientShellSnapshot {
         boot_id: crate::tests::test_boot_id("boot-1"),
         restore_notice: None,
         session_save_status: shepr_protocol::SessionSaveStatus::Ready,
+        home_dir: None,
         revision: shepr_protocol::ProjectionRevision::FIRST,
         focused_workspace_id: Some(test_workspace_id("w1")),
         focused_pane_id: Some(test_pane_id("w1:p1")),
@@ -481,8 +482,8 @@ pub(in crate::shell) fn agent(
     ClientShellAgent {
         pane_id: "w1:p1".parse().expect("test precondition"),
         agent: shepr_config::ConfigAgent::Pi,
-        terminal_title: None,
-        terminal_title_stripped: None,
+        terminal_title: Some("pi".to_owned()),
+        terminal_title_stripped: Some("pi".to_owned()),
         agent_status: status,
         state_change_seq: shepr_test_fixtures::counter_at(state_change_seq),
     }

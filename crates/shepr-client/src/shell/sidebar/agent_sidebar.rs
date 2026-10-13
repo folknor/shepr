@@ -103,6 +103,17 @@ struct AgentRowIndex<'a> {
     workspaces: HashMap<shepr_protocol::WorkspaceId, &'a ClientShellWorkspace>,
     panes: HashMap<PublicPaneId, &'a ClientShellPane>,
     focused_pane_id: Option<&'a PublicPaneId>,
+    home_dir: Option<&'a std::path::Path>,
+}
+
+/// How the sidebar shows a pane's working directory: relative to the pane
+/// host's home when inside it (`~` for home itself), otherwise absolute.
+fn shown_cwd(cwd: &std::path::Path, home: Option<&std::path::Path>) -> String {
+    match home.and_then(|home| cwd.strip_prefix(home).ok()) {
+        Some(relative) if relative.as_os_str().is_empty() => "~".to_owned(),
+        Some(relative) => relative.to_string_lossy().into_owned(),
+        None => cwd.to_string_lossy().into_owned(),
+    }
 }
 
 impl<'a> AgentRowIndex<'a> {
@@ -122,6 +133,10 @@ impl<'a> AgentRowIndex<'a> {
             workspaces,
             panes,
             focused_pane_id: snapshot.focused_pane_id.as_ref(),
+            home_dir: snapshot
+                .home_dir
+                .as_ref()
+                .map(shepr_protocol::RemotePath::as_path),
         }
     }
 
@@ -147,12 +162,16 @@ impl<'a> AgentRowIndex<'a> {
         let agent_label = Some(shepr_config::ConfigAgent::label(agent.agent));
         let state_text = status_text(agent.agent_status);
         let canonical_agent = Some(agent.agent);
+        let cwd = pane
+            .and_then(|pane| pane.foreground_cwd.as_ref().or(pane.cwd.as_ref()))
+            .map(|cwd| shown_cwd(cwd.as_path(), self.home_dir));
         let rows = sidebar_agent_rows(
             &config.agents,
             &AgentTokenContext {
                 machine,
                 workspace: &workspace.label,
                 pane: pane.and_then(|pane| pane.label.as_deref()),
+                cwd: cwd.as_deref(),
                 agent_label,
                 terminal_title: agent.terminal_title.as_deref(),
                 terminal_title_stripped: agent.terminal_title_stripped.as_deref(),
@@ -288,6 +307,20 @@ mod tests {
     use ratatui::style::Style;
 
     use crate::shell::presentation::text::{display_width, put_text};
+
+    #[test]
+    fn shown_cwd_is_relative_to_home_without_tilde_prefix() {
+        use std::path::Path;
+        let home = Some(Path::new("/home/u"));
+        assert_eq!(super::shown_cwd(Path::new("/home/u/src/x"), home), "src/x");
+        assert_eq!(super::shown_cwd(Path::new("/home/u"), home), "~");
+        assert_eq!(
+            super::shown_cwd(Path::new("/home/uu/x"), home),
+            "/home/uu/x"
+        );
+        assert_eq!(super::shown_cwd(Path::new("/srv"), home), "/srv");
+        assert_eq!(super::shown_cwd(Path::new("/home/u/a"), None), "/home/u/a");
+    }
 
     #[test]
     fn put_text_advances_by_display_width_and_clips_wide_characters() {

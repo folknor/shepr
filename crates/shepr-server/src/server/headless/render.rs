@@ -902,6 +902,9 @@ impl HeadlessServer {
             revision,
             restore_notice: app.restore_notice().cloned(),
             session_save_status: app.session_save_status(),
+            home_dir: app
+                .home_dir()
+                .map(|home| shepr_protocol::RemotePath::from(home.as_path())),
             focused_workspace_id,
             focused_pane_id,
             workspaces,

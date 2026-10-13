@@ -164,6 +164,7 @@ define_sidebar_token!(
         Machine => "machine",
         Workspace => "workspace",
         Pane => "pane",
+        Cwd => "cwd",
         Agent => "agent",
         TerminalTitle => "terminal_title",
         TerminalTitleStripped => "terminal_title_stripped",
@@ -191,6 +192,7 @@ impl AgentSidebarTokenKind {
             | Self::Machine
             | Self::Workspace
             | Self::Pane
+            | Self::Cwd
             | Self::Agent
             | Self::TerminalTitle
             | Self::TerminalTitleStripped => true,
@@ -222,6 +224,7 @@ impl AgentSidebarToken {
                 SidebarTokenStyle::default(),
             ),
             Self::Pane => (AgentSidebarTokenKind::Pane, SidebarTokenStyle::default()),
+            Self::Cwd => (AgentSidebarTokenKind::Cwd, SidebarTokenStyle::default()),
             Self::Agent => (AgentSidebarTokenKind::Agent, SidebarTokenStyle::default()),
             Self::TerminalTitle => (
                 AgentSidebarTokenKind::TerminalTitle,
@@ -475,9 +478,9 @@ impl Default for AgentsSidebarConfig {
                 vec![
                     AgentSidebarToken::StateIcon,
                     AgentSidebarToken::Machine,
-                    AgentSidebarToken::Workspace,
+                    AgentSidebarToken::Cwd,
                 ],
-                vec![AgentSidebarToken::Agent],
+                vec![AgentSidebarToken::TerminalTitleStripped],
             ],
             rows_by_agent: HashMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
@@ -540,9 +543,9 @@ mod tests {
                 vec![
                     AgentSidebarToken::StateIcon,
                     AgentSidebarToken::Machine,
-                    AgentSidebarToken::Workspace,
+                    AgentSidebarToken::Cwd,
                 ],
-                vec![AgentSidebarToken::Agent],
+                vec![AgentSidebarToken::TerminalTitleStripped],
             ]
         );
         assert!(

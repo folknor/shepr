@@ -40,6 +40,19 @@ test against.
 Proposals that arrived as defects but would widen what shepr claims. None is
 promised anywhere; each waits for the owner to want it.
 
+## Idle timer token for agent rows
+
+An agent sidebar token (say `idle_time`) that counts up from when an agent last
+became idle, usable in `[ui.sidebar.agents]` rows like any other text token
+("4m", "1h12m"), and absent while the agent is working or blocked. The
+projection carries only a `state_change_seq` order today, no time, so the server
+would record when each agent entered Idle and send it. An elapsed duration at
+projection time is safer than a wall-clock instant, since machines' clocks
+differ; the client then ticks it forward locally. The sidebar needs a repaint
+cadence for it (once a minute is enough at minute granularity), which nothing
+schedules now. Open: whether Unknown, which presents as Idle, starts the timer,
+and whether a server restart resets it.
+
 ## Survive Kimi rewriting its own config.toml
 
 `build_kimi_config_with_hooks` refuses a config with a top-level `hooks = []` or

@@ -52,6 +52,11 @@ impl App {
         self.launch_cwd_for_pane(pane_id)
     }
 
+    /// This host's home directory, which clients shorten the paths they show against.
+    pub(crate) fn home_dir(&self) -> Option<&AbsolutePath> {
+        self.paths.home_dir()
+    }
+
     pub(super) fn resolve_new_terminal_cwd(
         &self,
         follow_cwd: Option<AbsolutePath>,

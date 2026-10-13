@@ -267,6 +267,7 @@ pub(in crate::shell::sidebar) fn resolved_token_spans(
                 apply_token_style(styles.machine, token.style),
             )),
             ResolvedTokenKind::Pane(text)
+            | ResolvedTokenKind::Cwd(text)
             | ResolvedTokenKind::Agent(text)
             | ResolvedTokenKind::Branch(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),

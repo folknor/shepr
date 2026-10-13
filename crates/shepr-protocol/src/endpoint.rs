@@ -47,6 +47,7 @@ mod tests {
             boot_id: "1-1".into(),
             restore_notice: None,
             session_save_status: crate::SessionSaveStatus::Ready,
+            home_dir: None,
             revision: crate::revision::at(1),
             focused_workspace_id: None,
             focused_pane_id: None,

@@ -163,6 +163,7 @@ mod tests {
                 backup_dir: "/state/session-backups".into(),
             }),
             session_save_status: shepr_protocol::SessionSaveStatus::Ready,
+            home_dir: None,
             focused_workspace_id: None,
             focused_pane_id: None,
             workspaces: vec![],
