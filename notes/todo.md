@@ -89,87 +89,93 @@ bound. The entry could say which phase it is in (checking the install,
 discovering, starting the server) so a long wait reads as progress rather than
 a hang.
 
-## Home view of every pane, or collapsible panes
+## Overview of every agent across machines
 
-The aim: one place to keep an eye on every pane without stepping through the
-workspaces. There are two candidate shapes. Pick one, or neither, before
-designing.
+Still being designed; nothing here is decided until the owner says so.
 
-### Option 1: a Home (or All) entry
+### The problem
 
-A synthetic entry at the top of the sidebar's workspace list. Selecting it
-shows every pane from every workspace at once.
+The owner runs 3 to 6 agents at a time, spread over several machines, often
+only one or two per machine. Workspaces with splits work fine for one machine.
+What is missing is one place to watch all of them. A terminal cannot shrink one
+pane's font, so a grid of six panes gives each one 60 to 90 columns, and diffs
+and agent output wrap until they are unreadable. Width is what matters; height
+matters much less, because agent TUIs draw their useful content (prompt,
+latest hunk, status) at the bottom of the screen.
 
-It is not a real workspace, so no pane can be opened in it. New-pane and split
-are refused there with a short hint, or they open a picker that asks where the
-pane should go. A picker cannot stop at a host, because a pane has to live in a
-workspace, so it would really be a host-then-workspace picker. I lean toward
-refusing, since switching to the workspace already does the job.
+Replacing the TUI with a desktop GUI was considered and dropped: running in a
+terminal is fine, the problem is the layout.
 
-The layout is presumably an automatic grid, grouped by workspace with a small
-header per group, in sidebar order. It would be computed, not saved, and not
-editable: no splits, no resizing, no equalize.
+### The shape so far
 
-Questions:
+- An **Overview** entry in the sidebar, above the machines list, showing the
+  panes of every connected machine at once.
+- It uses an **accordion** layout: panes stacked top to bottom, each at the
+  full width of the content area. A collapsed pane is a one-row bar (title,
+  agent, state, perhaps the last meaningful line). Expanded panes share the
+  remaining height. Expanding changes only height, never width.
+- A possible **peek** state between collapsed and expanded: the bottom N rows
+  of the pane's real grid. Several agents can then be watched at once, full
+  width.
+- The Overview never resizes a PTY. It shows the pane's real grid,
+  bottom-anchored and clipped to the rows it has, padded if the pane is
+  narrower than the content area (it can never be wider, since a workspace and
+  the Overview share the same content area). Agents are never disturbed.
+- Collapse state is shared by every client.
+- Accordion mode might also become a workspace layout mode beside today's
+  split layout ("Split" rather than "Pane mode", since every layout holds
+  panes). The owner's workspaces hold one or two panes each, so this is
+  optional; with client-side rendering (below) it would cost little, as it is
+  just another client layout.
 
-- **Which machines does it cover?**
-  - One Home per machine is the cheaper version: the server can build the view
-    itself.
-  - One global Home across every connected host means the client composites
-    panes from several servers into one frame. Today it draws one server's
-    surface at a time.
-- **What size does each terminal get?**
-  - A pane has exactly one terminal size, taken from its own workspace's
-    layout, and a Home tile is much smaller. There are three options:
-    - Resize the terminals while Home is shown. Agents redraw small, and
-      redraw again on the way back.
-    - Keep the real size and show a clipped or downscaled view. This is
-      enough to see state.
-    - Make Home a list of pane cards (title, agent, state, the last few lines)
-      instead of live terminals.
-  - I lean toward keeping the real size, because it never disturbs the agents.
-  - Wanting to type into panes from Home would change that.
-- **Watching only, or working too?**
-  - If you can focus a pane and type in Home, it needs focus, navigation and a
-    zoom.
-  - If it is only for watching, Enter on a pane jumps to that pane in its real
-    workspace. That is simpler and fits "oversee, not drive".
-- **Smaller questions:**
-  - Does it show shell-only panes, or only agent panes?
-  - Does closing a pane from Home close it in its workspace?
-  - Is "Home is selected" remembered across restarts?
+### Client-side rendering
 
-### Option 2: collapsible panes
+The Overview needs panes from several servers in one frame, and today each
+server composes one workspace into a cell surface per client
+(`compute_surface_for`, the server's `ui/` drawing, `ChromeRole` chrome), so
+no single server can compose it. The owner's direction: the client owns
+rendering.
 
-The alternative is to keep the workspaces and let a pane collapse inside its
-layout. A collapsed pane is a one-row bar showing its title, agent and state,
-and its siblings take the freed space. Many agents then fit in one workspace,
-and the panes that matter stay full size.
+- **The server keeps** PTYs, emulators, detection, git, usage, persistence,
+  workspace layout as data (split tree and ratios, saved and shared), PTY size
+  arbitration, and streaming per-pane grid deltas (cells, cursor, scroll,
+  modes, title).
+- **The client takes** laying out the workspace tree, the accordion and the
+  Overview; all chrome (borders, titles, scrollbars, bars, dividers);
+  composing cells from any number of servers into one frame; hit testing and
+  mouse mapping into pane coordinates. Selection and copy mode probably move
+  too.
+- **Goes away:** server-side surface composition and drawing, `ChromeRole`,
+  composed-surface baselines. The per-client `render_plan` shrinks to which
+  panes a client is subscribed to and at what baseline.
+- **Config moves:** scrollbars, divider style and the CJK cursor setting move
+  from `server.toml` to `client.toml`, which fits "a setting belongs to whoever
+  draws it" better than today.
 
-This is only a sketch so far. The owner named the idea but not its details.
+Before writing a plan, inventory every server-side module that composes or
+draws and what each becomes.
 
-Questions:
+### Open questions
 
-- **What does a collapsed pane look like?**
-  - A one-row bar in place, the same as a minimized split.
-  - Or does it leave the layout entirely and live in a strip or the sidebar?
-- **Terminal size:**
-  - Does the collapsed pane keep its PTY size while it is hidden, as a zoomed
-    workspace's other panes do?
-  - Or is it resized to the bar? I'd keep the size, since a 1-row resize would
-    make every agent redraw.
-- **Expanding:**
-  - Expanding could be a key, a click on the bar, or automatic when the agent
-    turns Blocked.
-  - Should a Blocked agent's bar draw attention, as the sidebar does?
-- **Split geometry:**
-  - The split ratio has to give the bar exactly one row.
-  - A collapse that empties one side of a split collapses that whole side.
-- **Scope and state:**
-  - Is collapse state saved with the session layout?
-  - Is it shared by every client, as layout is, or per client, as focus is?
-    Layout is per workspace and shared, so a per-client collapse would be a new
-    kind of state.
+- **Size arbitration:** the client reports the size it shows each pane at, the
+  server picks one size per PTY (today's `workspace_geometry_source` policy,
+  fed per pane). Does the Overview only subscribe and never request a size?
+- **Scrollback:** does a client scrolling a pane fetch history rows on demand?
+- **Subscription granularity:** full grid, or bottom-N rows for collapsed and
+  peeking panes, to keep them cheap over SSH.
+- **Which panes appear:** agent panes only, or shells too? Grouped per machine
+  in sidebar order, with the machine's hue on each bar?
+- **Expanded state:** one expanded pane, several, or all peeking with
+  automatic expansion on Blocked? Does a Blocked bar draw attention, as the
+  sidebar does?
+- **Interaction:** watch only, with Enter jumping to the pane in its
+  workspace, or focus and type in place (input routed to the right server)?
+- **Where shared collapse state lives:** the Overview belongs to no server.
+  Per pane on its server (every client's Overview moves together), or client
+  state (the client saves nothing today)?
+- **Disconnected machines:** their panes disappear, or stay as dimmed bars?
+- **Toggle on the Overview:** a split mode there means auto-tiling everything,
+  the layout being escaped, so probably accordion only.
 
 ## Faster startup with unreachable machines
 
