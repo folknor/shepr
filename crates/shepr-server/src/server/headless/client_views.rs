@@ -113,8 +113,12 @@ pub(super) enum GeometrySource {
 ///   lowest-id outer-focused viewer wins, then the lowest-id current viewer.
 ///   With several clients presenting and no viewer, the workspace keeps its
 ///   size: `None`.
-/// - With no client presenting surfaces, every workspace is sized for the
-///   configured headless size.
+/// - With clients attached but none presenting a surface here (each presents
+///   another machine), every workspace keeps its size: `None`. Shrinking it
+///   to the headless size would rewrap every full-width line its panes drew
+///   while the client looks elsewhere.
+/// - With no client attached, every workspace is sized for the configured
+///   headless size.
 fn workspace_geometry_source(
     clients: &crate::server::clients::ClientRegistry,
     workspace_id: &shepr_protocol::WorkspaceId,
@@ -152,7 +156,7 @@ fn workspace_geometry_source(
         if let Some(sole) = sole_presenter {
             return Some(GeometrySource::Client(sole));
         }
-        return Some(GeometrySource::Headless);
+        return clients.is_empty().then_some(GeometrySource::Headless);
     }
     if let Some(controller) = current_controller {
         return Some(GeometrySource::Client(controller));
@@ -939,8 +943,13 @@ mod tests {
             Some(GeometrySource::Client(first))
         );
 
-        // A metadata-only connection never sizes anything.
+        // A metadata-only connection (a client presenting another machine)
+        // never sizes anything, and the workspace keeps the size it has.
         assert!(clients.remove_client(first).is_some());
+        assert_eq!(workspace_geometry_source(&clients, &workspace_id), None);
+
+        // With no client attached at all, the headless size applies.
+        assert!(clients.remove_client(second).is_some());
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
             Some(GeometrySource::Headless)
