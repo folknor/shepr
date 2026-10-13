@@ -855,7 +855,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
             < text.find("Build · pi").expect("remote agent")
     );
 
-    remote.agents = vec![agent(AgentStatus::Working, 2)];
+    remote.agents = vec![agent(AgentStatus::Blocked, 2)];
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
     let text = frame_text(&mut state);
     assert!(

@@ -38,8 +38,17 @@ pub(in crate::shell) fn status_glyph(
     }
 }
 
+/// How much an agent needs the operator, for the agent panel's priority sort:
+/// a blocked agent stopped mid-task for them, an idle one waits for its next
+/// instruction, and a working one needs nothing. This is not
+/// `attention_rank`, which ranks Working above Idle so that a workspace with
+/// anything still running reads as working.
 pub(in crate::shell) fn status_priority(status: shepr_protocol::AgentStatus) -> u8 {
-    status.attention_rank()
+    match status {
+        shepr_protocol::AgentStatus::Working => 0,
+        shepr_protocol::AgentStatus::Idle => 1,
+        shepr_protocol::AgentStatus::Blocked => 2,
+    }
 }
 
 pub(in crate::shell) fn status_text(status: shepr_protocol::AgentStatus) -> &'static str {
