@@ -47,6 +47,7 @@ on a comment that restates a refused spelling.
 from __future__ import annotations
 
 import fnmatch
+import functools
 import re
 import sys
 import tomllib
@@ -172,6 +173,11 @@ def glob_matches(path: str, pattern: str) -> bool:
     """brokkr-style glob, globset's defaults: `**/` spans zero or more
     directories, and `*` and `?` cross `/` too (brokkr builds its matchers
     without `literal_separator`)."""
+    return glob_regex(pattern).fullmatch(path) is not None
+
+
+@functools.cache
+def glob_regex(pattern: str) -> re.Pattern[str]:
     regex = ""
     index = 0
     while index < len(pattern):
@@ -190,7 +196,7 @@ def glob_matches(path: str, pattern: str) -> bool:
         else:
             regex += re.escape(pattern[index])
             index += 1
-    return re.fullmatch(regex, path) is not None
+    return re.compile(regex)
 
 
 def code_mask(text: str) -> list[str]:
@@ -244,6 +250,9 @@ def code_mask(text: str) -> list[str]:
         out.append("".join(result))
     return out
 
+
+RAW_STRING_OPEN = re.compile(r'b?r(#*)"')
+CHAR_LITERAL = re.compile(r"'(?:\\.[^']*|[^'\\])'")
 
 CONTAINER = re.compile(r"^(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?(?:impl|mod|trait)\b")
 
@@ -343,19 +352,19 @@ def item_spans(lines: list[str], start_line: int, stop_line: int) -> list[tuple[
                 in_block += 1
                 index += 2
                 continue
-            raw = re.match(r'b?r(#*)"', line[index:])
+            raw = RAW_STRING_OPEN.match(line, index) if char in "br" else None
             if raw and (index == 0 or not (line[index - 1].isalnum() or line[index - 1] == "_")):
                 raw_hashes = len(raw.group(1))
-                index += raw.end()
+                index = raw.end()
                 continue
             if char == '"':
                 in_string = True
                 index += 1
                 continue
             if char == "'":
-                literal = re.match(r"'(?:\\.[^']*|[^'\\])'", line[index:])
+                literal = CHAR_LITERAL.match(line, index)
                 if literal:
-                    index += literal.end()
+                    index = literal.end()
                     continue
                 index += 1
                 continue
@@ -401,6 +410,42 @@ def resolved(rule: dict, presets: dict) -> dict:
     return merged
 
 
+@functools.cache
+def file_lines(relative: str) -> tuple[list[str], list[str]]:
+    """A source file's lines and their comment-masked form, read once."""
+    text = (ROOT / relative).read_text()
+    return text.splitlines(), code_mask(text)
+
+
+@functools.cache
+def production_lines(relative: str) -> list[int]:
+    """Every line of a file that belongs to no test-gated item.
+
+    Parses the whole file so an indented marker inside an impl or module does
+    not make the remaining lines look like top-level items.
+    """
+    lines, _ = file_lines(relative)
+    return ungated_lines(lines, 0, len(lines))
+
+
+@functools.cache
+def released_scan(
+    relative: str, skip_after: str
+) -> tuple[list[str], list[str], int, list[int]] | None:
+    """The production lines a `skip_after` pattern releases in one file, with
+    the file's lines, masked lines and the first marker line; `None` when no
+    line matches. Rules share most patterns, so each file is read, masked and
+    parsed once, not once per rule. Brokkr exempts by line, so every
+    production item after the first marker is inspected."""
+    lines, masked = file_lines(relative)
+    marker = re.compile(skip_after)
+    first = next((number for number, line in enumerate(lines) if marker.search(line)), None)
+    if first is None:
+        return None
+    released = [number for number in production_lines(relative) if number > first]
+    return lines, masked, first, released
+
+
 def main() -> int:
     with (ROOT / "brokkr.toml").open("rb") as stream:
         config = tomllib.load(stream)
@@ -429,18 +474,11 @@ def main() -> int:
                 continue
             if any(glob_matches(relative, glob) for glob in excludes):
                 continue
-            text = (ROOT / relative).read_text()
-            lines = text.splitlines()
-            first = next((number for number, line in enumerate(lines) if skip_after.search(line)), None)
-            if first is None:
+            scan = released_scan(relative, skip_after.pattern)
+            if scan is None:
                 continue
             files_walked += 1
-            masked = code_mask(text)
-            # Parse the whole file so an indented marker inside an impl or
-            # module does not make the remaining lines look like top-level
-            # items. Brokkr exempts by line, so inspect every production item
-            # that appears after its first matching marker.
-            released = [number for number in ungated_lines(lines, 0, len(lines)) if number > first]
+            lines, masked, first, released = scan
             # The shape itself is refused too, not only a violation it hides
             # today: a later edit to the released lines would otherwise pass
             # every skip_after rule unseen until someone runs this witness on

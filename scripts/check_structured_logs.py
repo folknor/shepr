@@ -25,6 +25,7 @@ not by this script.
 """
 from __future__ import annotations
 
+import functools
 import re
 import sys
 
@@ -81,12 +82,23 @@ RAW_STRING = re.compile(r'(?:br|cr|r)(#*)"')
 CHAR = re.compile(r"'(?:\\(?:u\{[0-9a-fA-F_]+\}|x[0-9a-fA-F]{2}|.)|[^'\\\n])'")
 
 
+# Where a comment or literal can start; everything between is code and kept.
+MASK_START = re.compile(r'//|/\*|(?:br|cr|r)#*"|"|\'')
+STRING_BODY = re.compile(r'(?:\\.|[^"\\])*"', re.S)
+NOT_NEWLINE = re.compile(r'[^\n]')
+
+
+@functools.cache
 def code_mask(source: str) -> str:
     """Blank comments and literals, retaining offsets and line breaks."""
-    result = list(source)
+    result = []
+    kept = 0
     index = 0
     while index < len(source):
-        start = index
+        found = MASK_START.search(source, index)
+        if found is None:
+            break
+        index = start = found.start()
         if source.startswith('//', index):
             end = source.find('\n', index)
             index = len(source) if end < 0 else end
@@ -109,23 +121,18 @@ def code_mask(source: str) -> str:
                 end = source.find(closing, raw.end())
                 index = len(source) if end < 0 else end + len(closing)
             elif source[index] == '"':
-                index += 1
-                while index < len(source):
-                    if source[index] == '\\':
-                        index += 2
-                    elif source[index] == '"':
-                        index += 1
-                        break
-                    else:
-                        index += 1
+                body = STRING_BODY.match(source, index + 1)
+                index = len(source) if body is None else body.end()
             elif source[index] == "'" and (char := CHAR.match(source, index)):
                 index = char.end()
             else:
                 index += 1
                 continue
-        for offset in range(start, min(index, len(source))):
-            if result[offset] != '\n':
-                result[offset] = ' '
+        end = min(index, len(source))
+        result.append(source[kept:start])
+        result.append(NOT_NEWLINE.sub(' ', source[start:end]))
+        kept = end
+    result.append(source[kept:])
     return ''.join(result)
 
 
@@ -261,12 +268,14 @@ def main() -> int:
     self_check()
     failures = []
     for path in repository_sources({'.rs'}):
-        for line in direct_calls(path.read_text()):
+        # One read, so both passes share the cached mask.
+        source = path.read_text()
+        for line in direct_calls(source):
             failures.append(
                 f'{path.relative_to(ROOT)}:{line}: log info, warn and error events '
                 'through shepr_platform::structured_log!'
             )
-        for line, problem in vocabulary_problems(path.read_text()):
+        for line, problem in vocabulary_problems(source):
             failures.append(f'{path.relative_to(ROOT)}:{line}: {problem}')
     if failures:
         print('\n'.join(failures), file=sys.stderr)
