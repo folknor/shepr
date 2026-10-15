@@ -422,8 +422,10 @@ its workspaces or agents:
 | Unavailable | The machine answered but cannot be used until it is fixed there. The badge on its row shows why. |
 
 Choose an entry with a click, or in navigate mode (`prefix+w`) by moving onto
-it and pressing Enter. In the collapsed sidebar a glyph on the machine's row
-shows its state, and clicking the row acts as its entry does.
+it and pressing Enter. In the expanded sidebar a machine's row carries a glyph
+only as the badge of a reason to show. In the collapsed sidebar, which has no
+room for entries, a glyph on the machine's row shows its state, and clicking
+the row acts as its entry does.
 
 The private control socket has to fit Linux's limit on Unix socket path
 length. If `XDG_RUNTIME_DIR` is so long that it leaves no room for shepr's
@@ -485,8 +487,8 @@ reports, so they fit whatever theme your terminal uses:
 - the entry gets a tinted background, stronger on the focused entry;
 - the first line is drawn in a main text colour and later lines in a dimmer
   one, each kept readable against the tint;
-- an accent colour marks the workspace number and the machine name in agent
-  entries, and every host's accent is equally bright.
+- an accent colour marks the machine name in agent entries, and every host's
+  accent is equally bright.
 
 Where your terminal reports its own colour of that name, its hue is used.
 If the terminal reports no background, there is no tint: the accent is the

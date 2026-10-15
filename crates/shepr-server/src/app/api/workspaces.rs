@@ -57,6 +57,27 @@ impl App {
         )
     }
 
+    /// Moves the requester onto the workspace and unzooms it, so it shows its
+    /// whole layout.
+    pub(super) fn handle_workspace_show(&mut self, target: &WorkspaceTarget) -> HandlerResult {
+        let id = self.endpoint_workspace(&target.workspace_id)?;
+        let Some(outcome) = self.state.show_workspace(&id) else {
+            return Err(workspace_missing(&target.workspace_id).into());
+        };
+        let effects = outcome.into();
+        let Some(workspace) = self.workspace_info(&id) else {
+            return Err(HandlerError {
+                error: workspace_missing(&target.workspace_id),
+                effects,
+            });
+        };
+        Handled::navigating_with_effects(
+            EndpointReply::WorkspaceInfo { workspace },
+            target.workspace_id,
+            effects,
+        )
+    }
+
     pub(super) fn handle_workspace_rename(
         &mut self,
         params: WorkspaceRenameParams,

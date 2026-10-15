@@ -404,6 +404,12 @@ define_endpoint_commands! {
             changes_topology: false,
             claims_shell_geometry: true,
         };
+        // Focuses the workspace and unzooms it, so it shows its whole layout.
+        WorkspaceShow(WorkspaceTarget) => "workspace.show" {
+            changes_focus: true,
+            changes_topology: false,
+            claims_shell_geometry: true,
+        };
         WorkspaceRename(WorkspaceRenameParams) => "workspace.rename" {
             changes_focus: false,
             changes_topology: false,
@@ -620,7 +626,7 @@ impl CommandKind {
             Self::ClientShellSurfaceSet => {
                 matches!(reply, EndpointReply::ClientShellSurfaceSet { .. })
             }
-            Self::WorkspaceFocus | Self::WorkspaceRename => {
+            Self::WorkspaceFocus | Self::WorkspaceShow | Self::WorkspaceRename => {
                 matches!(reply, EndpointReply::WorkspaceInfo { .. })
             }
             Self::PaneSplit

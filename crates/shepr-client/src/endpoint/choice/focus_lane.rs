@@ -40,8 +40,9 @@ impl FocusLane {
             LocationTarget::Pane(pane_id) => {
                 EndpointCommand::PaneShow(PaneTarget { pane_id: *pane_id })
             }
+            // and picking a workspace shows its whole layout.
             LocationTarget::Workspace(workspace_id) => {
-                EndpointCommand::WorkspaceFocus(WorkspaceTarget {
+                EndpointCommand::WorkspaceShow(WorkspaceTarget {
                     workspace_id: *workspace_id,
                 })
             }
@@ -106,7 +107,7 @@ mod tests {
         let next = request(&mut lane).expect("latest focus");
         assert_ne!(first, next);
         assert!(
-            matches!(next, ClientMessage::ClientShellEndpointRequest { command: EndpointCommand::WorkspaceFocus(WorkspaceTarget { workspace_id }), .. } if workspace_id == crate::tests::test_workspace_id("w2"))
+            matches!(next, ClientMessage::ClientShellEndpointRequest { command: EndpointCommand::WorkspaceShow(WorkspaceTarget { workspace_id }), .. } if workspace_id == crate::tests::test_workspace_id("w2"))
         );
         lane.receive(&reply("w2")).expect("latest reply");
         assert!(lane.settled());

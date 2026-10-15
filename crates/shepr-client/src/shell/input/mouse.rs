@@ -1563,16 +1563,27 @@ impl ClientShellState {
                 }
             }
             MouseEventKind::Down(MouseButton::Middle) => {
-                if let Some(hit) = self
+                let Some(hit) = self
                     .presentation
                     .pane_hits()
                     .iter()
-                    .find(|hit| {
-                        crate::shell::input::hit_test::contains(hit.content_rect, point)
-                            && hit.mouse_reporting
-                    })
+                    .find(|hit| crate::shell::input::hit_test::contains(hit.content_rect, point))
                     .cloned()
-                {
+                else {
+                    return;
+                };
+                // A middle click focuses its pane, as a left click does.
+                if self.focused_pane_id().as_ref() != Some(&hit.pane_id) {
+                    self.push_endpoint_command(
+                        shepr_protocol::command::EndpointCommand::PaneFocus(
+                            shepr_protocol::command::PaneTarget {
+                                pane_id: hit.pane_id,
+                            },
+                        ),
+                        outcome,
+                    );
+                }
+                if hit.mouse_reporting {
                     self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome, accounting);
                     self.pointer.pane_mouse_gesture = Some(ClientPaneMouseGesture {
                         last_position: self.pane_mouse_position(&hit, mouse),
@@ -1580,13 +1591,7 @@ impl ClientShellState {
                         button: MouseButton::Middle,
                         last_event: mouse,
                     });
-                } else if let Some(hit) = self
-                    .presentation
-                    .pane_hits()
-                    .iter()
-                    .find(|hit| crate::shell::input::hit_test::contains(hit.content_rect, point))
-                    .cloned()
-                {
+                } else {
                     // shepr holds the mouse, so the host terminal never sees
                     // this click: paste the primary selection into the pane
                     // ourselves, as the terminal would have.

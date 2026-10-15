@@ -610,7 +610,13 @@ fn workspace_numbers_and_switching_follow_list_position_not_the_id() {
         state.set_snapshot(Box::new(projected.clone()));
         let frame = state.compose(100, 28).expect("test precondition");
         let rows = super::frame_rows(&frame);
-        for (workspace, number) in [("w5", "1"), ("w2", "2")] {
+        // Only the collapsed strip numbers its workspaces.
+        let numbered = if compact {
+            [("w5", "1"), ("w2", "2")].as_slice()
+        } else {
+            &[]
+        };
+        for &(workspace, number) in numbered {
             let rect = workspace_rect(&state, &ClientEndpointId::Local, workspace);
             let text = rows[usize::from(rect.y)]
                 .chars()
@@ -690,10 +696,7 @@ fn request_local_navigation(
     let [ClientShellAction::Endpoint { request, .. }] = actions.as_slice() else {
         panic!("expected a local workspace focus request");
     };
-    assert!(matches!(
-        request.command,
-        EndpointCommand::WorkspaceFocus(_)
-    ));
+    assert!(matches!(request.command, EndpointCommand::WorkspaceShow(_)));
     request.id.clone()
 }
 

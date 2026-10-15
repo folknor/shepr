@@ -439,9 +439,8 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
     assert!(text.contains(shepr_test_fixtures::FIXTURE_LOCAL_LABEL));
     assert!(!text.contains("Local"));
     assert!(text.contains("Build"));
-    // The server's workspace number takes the leading column, so the name is
-    // clipped at this sidebar width.
-    assert!(text.contains("1  ○ remote-workspa"), "{text}");
+    // An expanded workspace entry carries no number.
+    assert!(text.contains(" ○ remote-workspace"), "{text}");
     let local = state
         .drawn()
         .machines()
@@ -454,14 +453,11 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
         .find(|hit| !hit.location.endpoint.is_local())
         .expect("remote machine row")
         .rect;
+    // An online machine's expanded row carries no signal.
     assert_ne!(frame_cell(&frame, (local.right() - 1, local.y)).symbol, "●");
-    assert_eq!(
+    assert_ne!(
         frame_cell(&frame, (remote.right() - 1, remote.y)).symbol,
         "●"
-    );
-    assert_eq!(
-        cell_fg(&frame, (remote.right() - 1, remote.y)),
-        state.palette.green
     );
 
     state.chrome.set_collapsed(true);
@@ -507,8 +503,9 @@ fn local_and_ssh_sidebars_derive_workspace_positions_from_list_order() {
     remote.workspaces[0].workspace_id = test_workspace_id("w1A");
     state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
 
-    for collapsed in [false, true] {
-        state.chrome.set_collapsed(collapsed);
+    // Only the collapsed strip numbers its workspaces.
+    {
+        state.chrome.set_collapsed(true);
         let frame = state.compose(100, 28).expect("workspace sidebar");
         let text = frame
             .cells()

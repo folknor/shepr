@@ -110,6 +110,31 @@ impl AppState {
         })
     }
 
+    /// Unzooms workspace `id`, so it shows its whole layout. `None` when the
+    /// workspace is gone.
+    pub(crate) fn show_workspace(
+        &mut self,
+        id: &shepr_protocol::WorkspaceId,
+    ) -> Option<PaneZoomOutcome> {
+        let workspace = self.workspaces.get_mut(id)?;
+        if !workspace.tree().zoomed() {
+            return Some(PaneZoomOutcome {
+                changed: false,
+                focus_changed: false,
+            });
+        }
+        let focused = workspace.tree().focused();
+        workspace.set_zoomed(false);
+        let public_id = self.workspaces.pane(focused)?.public_id();
+        self.mark_session_dirty();
+        self.mark_shell_projection_dirty();
+        crate::logging::pane_zoomed(public_id, false);
+        Some(PaneZoomOutcome {
+            changed: true,
+            focus_changed: false,
+        })
+    }
+
     /// Focuses `pane_id` and zooms its workspace on it, leaving a zoom already
     /// there in place: the pane fills the workspace whatever it was showing.
     /// A workspace of one pane is only focused. `None` when no workspace holds

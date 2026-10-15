@@ -178,13 +178,18 @@ pub(super) fn agent_sort_label(
 }
 
 /// The text and color of an expanded machine row's status signal. A configured
-/// machine shows its glyph alone: its entry below the row says the rest.
+/// machine's state is said by its workspaces or by its entry below the row, so
+/// it shows its glyph only as the badge of a diagnostic, which a click reopens.
 pub(super) fn endpoint_signal(
     endpoint: &ClientShellEndpoint,
+    diagnostics: &MachineDiagnostics,
     palette: &Palette,
 ) -> (String, ratatui::style::Color) {
     if !endpoint.endpoint_id.is_local() {
         let (glyph, color) = endpoint.row_glyph(palette);
+        if !diagnostics.has(&endpoint.endpoint_id) {
+            return (String::new(), color);
+        }
         return (glyph.to_owned(), color);
     }
     let (glyph, state, color) = endpoint_status_presentation(endpoint.state.status(), palette);
@@ -569,7 +574,8 @@ fn resolve_expanded(
                     }
                     let endpoint = &inputs.endpoints[endpoint_index];
                     let rect = Rect::new(body.x, y, content_width, 1);
-                    let (signal, _) = endpoint_signal(endpoint, inputs.palette);
+                    let (signal, _) =
+                        endpoint_signal(endpoint, inputs.machine_diagnostics, inputs.palette);
                     let signal_width = display_width(&signal).min(rect.width);
                     slots.push(ExpandedSlot::Machine {
                         hit: MachineHit {

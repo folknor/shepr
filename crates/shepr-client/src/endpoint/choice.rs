@@ -490,7 +490,7 @@ mod tests {
         assert!(matches!(
             request,
             shepr_protocol::ClientMessage::ClientShellEndpointRequest {
-                command: shepr_protocol::command::EndpointCommand::WorkspaceFocus(_),
+                command: shepr_protocol::command::EndpointCommand::WorkspaceShow(_),
                 ..
             }
         ));

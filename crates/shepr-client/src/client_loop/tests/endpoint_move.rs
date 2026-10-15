@@ -122,7 +122,7 @@ fn a_failed_move_releases_the_target() {
                     .find_map(|m| match m {
                         ClientMessage::ClientShellEndpointRequest {
                             request_id,
-                            command: EndpointCommand::WorkspaceFocus(_),
+                            command: EndpointCommand::WorkspaceShow(_),
                             ..
                         } => Some(request_id.clone()),
                         _ => None,
@@ -432,7 +432,7 @@ fn pane_input_and_commands_go_only_to_the_shown_endpoint() {
     assert!(source.iter().any(|m| matches!(
         m,
         ClientMessage::ClientShellEndpointRequest {
-            command: EndpointCommand::WorkspaceFocus(_),
+            command: EndpointCommand::WorkspaceShow(_),
             ..
         }
     )));
@@ -814,7 +814,7 @@ fn navigation_is_acknowledged_and_in_the_first_committed_projection() {
         .find_map(|message| match message {
             ClientMessage::ClientShellEndpointRequest {
                 request_id,
-                command: EndpointCommand::WorkspaceFocus(_),
+                command: EndpointCommand::WorkspaceShow(_),
                 ..
             } => Some(request_id.clone()),
             _ => None,

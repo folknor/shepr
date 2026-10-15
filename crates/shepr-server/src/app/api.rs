@@ -167,6 +167,7 @@ impl App {
                 self.handle_workspace_create(params, ctx)
             }
             EndpointAppCommand::WorkspaceFocus(target) => self.handle_workspace_focus(&target),
+            EndpointAppCommand::WorkspaceShow(target) => self.handle_workspace_show(&target),
             EndpointAppCommand::WorkspaceRename(params) => self.handle_workspace_rename(params),
             EndpointAppCommand::WorkspaceMove(params) => self.handle_workspace_move(&params),
             EndpointAppCommand::WorkspaceClose(params) => self.handle_workspace_close(&params),

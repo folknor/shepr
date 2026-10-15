@@ -15,7 +15,6 @@ use shepr_protocol::ClientShellWorkspace;
 
 use crate::limits::MIN_COLLAPSED_SIDEBAR_SPLIT_ROWS;
 use crate::shell::palette::Palette;
-use crate::shell::presentation::text::{display_width, put_text};
 use crate::shell::sidebar::sidebar_tokens::{
     ResolvedToken, SpaceTokenContext, TokenStyles, resolved_token_spans, sidebar_space_rows,
 };
@@ -92,7 +91,6 @@ pub(in crate::shell::sidebar) struct WorkspaceEntryState {
 pub(in crate::shell::sidebar) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
-    workspace_number: usize,
     status: shepr_protocol::AgentStatus,
     rows: &[Vec<ResolvedToken>],
     state: WorkspaceEntryState,
@@ -114,26 +112,13 @@ pub(in crate::shell::sidebar) fn render_workspace_rows(
     if let Some(tint) = tint {
         buffer.set_style(area, Style::default().bg(tint));
     }
-    let number = format!("{workspace_number:<2} ");
-    let number_width = display_width(&number);
     for row_index in 0..rows.len().max(1) {
         let y = area.y + u16::try_from(row_index).unwrap_or(u16::MAX);
         if y >= area.bottom() {
             break;
         }
         let indent = if row_index == 0 { 1 } else { 3 };
-        let x = area.x.saturating_add(indent).saturating_add(number_width);
-        if row_index == 0 {
-            let number_x = area.x.saturating_add(indent);
-            put_text(
-                buffer,
-                number_x,
-                y,
-                area.right().saturating_sub(number_x),
-                &number,
-                Style::default().fg(look.map_or(palette.overlay0, host_colors::PillLook::accent)),
-            );
-        }
+        let x = area.x.saturating_add(indent);
         let highlighted = focused || dragged;
         let workspace_style = Style::default()
             .fg(if highlighted {

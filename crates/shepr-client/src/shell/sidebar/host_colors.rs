@@ -408,7 +408,6 @@ mod tests {
         crate::shell::sidebar::render_workspace_rows(
             &mut buffer,
             area,
-            1,
             shepr_protocol::AgentStatus::Idle,
             &[Vec::new(), Vec::new()],
             crate::shell::sidebar::WorkspaceEntryState {
@@ -424,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tinted_workspace_entry_fills_its_area_and_numbers_in_the_accent() {
+    fn a_tinted_workspace_entry_fills_its_area() {
         let colors = HostPillColors {
             tint: shepr_term::RgbColor { r: 1, g: 2, b: 3 },
             tint_focused: shepr_term::RgbColor { r: 4, g: 5, b: 6 },
@@ -446,7 +445,6 @@ mod tests {
         for cell in &plain.content {
             assert_eq!(cell.bg, rgb(colors.tint));
         }
-        assert_eq!(plain[(1, 0)].fg, rgb(colors.accent));
 
         let focused = draw_workspace_entry(look, true, false);
         for cell in &focused.content {
@@ -464,6 +462,5 @@ mod tests {
         let indexed = draw_workspace_entry(Some(PillLook::Indexed { accent: 2 }), true, false);
         let plain = draw_workspace_entry(None, true, false);
         assert_eq!(indexed[(5, 0)].bg, plain[(5, 0)].bg);
-        assert_eq!(indexed[(1, 0)].fg, Color::Indexed(2));
     }
 }

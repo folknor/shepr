@@ -722,6 +722,22 @@ fn show_pane_focuses_and_zooms_without_toggling_off() {
 }
 
 #[test]
+fn show_workspace_unzooms_and_keeps_focus() {
+    let mut state = app_with_workspaces(&["test"]);
+    let right = state.test_split_workspace(0, Direction::Horizontal);
+    state.show_pane(right).expect("a pane of the workspace");
+    let id = state.ws(0).id();
+
+    let outcome = state.show_workspace(&id).expect("the workspace");
+    assert!(outcome.changed && !outcome.focus_changed);
+    assert!(!state.ws(0).tree().zoomed());
+    assert_eq!(state.ws(0).tree().focused(), right);
+
+    let outcome = state.show_workspace(&id).expect("the workspace");
+    assert!(!outcome.changed, "an unzoomed workspace stays as it is");
+}
+
+#[test]
 fn toggle_zoom_single_pane_noop() {
     let mut state = app_with_workspaces(&["test"]);
     let pane_id = state.ws(0).tree().focused();

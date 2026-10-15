@@ -233,7 +233,6 @@ pub(in crate::shell) fn draw_expanded(
                 crate::shell::sidebar::render_workspace_rows(
                     buffer,
                     *nested,
-                    *entry + 1,
                     status,
                     &tokens,
                     crate::shell::sidebar::WorkspaceEntryState {
@@ -397,7 +396,7 @@ fn draw_endpoint_row(
     diagnostics: &MachineDiagnostics,
     palette: &Palette,
 ) {
-    let (signal, color) = endpoint_signal(endpoint, palette);
+    let (signal, color) = endpoint_signal(endpoint, diagnostics, palette);
     let signal_width = display_width(&signal).min(rect.width);
     put_text(
         buffer,

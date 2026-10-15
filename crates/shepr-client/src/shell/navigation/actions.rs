@@ -333,8 +333,10 @@ impl ClientShellState {
             LocationTarget::Pane(_) | LocationTarget::Machine => None,
         };
         let command = match target {
+            // Picking a workspace by location (a sidebar row, a navigator
+            // row) shows its whole layout, unzoomed.
             LocationTarget::Workspace(workspace_id) => {
-                EndpointCommand::WorkspaceFocus(shepr_protocol::command::WorkspaceTarget {
+                EndpointCommand::WorkspaceShow(shepr_protocol::command::WorkspaceTarget {
                     workspace_id,
                 })
             }

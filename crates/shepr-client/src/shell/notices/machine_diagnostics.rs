@@ -168,7 +168,6 @@ impl ClientShellState {
     }
 }
 
-#[cfg(test)]
 impl MachineDiagnostics {
     /// Whether `id` has a diagnostic to show.
     pub(in crate::shell) fn has(&self, id: &ClientEndpointId) -> bool {
