@@ -344,7 +344,7 @@ impl AppState {
     where
         F: FnOnce(&mut shepr_mux::terminal::TerminalState) -> Option<AgentOwnershipMutation>,
     {
-        let (mutation, unchanged_change, named) = {
+        let (mutation, unchanged_change, arrived, left) = {
             let Some(record) = self.workspaces.pane_mut(pane_id) else {
                 return StateUpdate::Unchanged;
             };
@@ -355,20 +355,17 @@ impl AppState {
                 .as_ref()
                 .is_some_and(|mutation| mutation.agent_released)
                 .then(|| terminal.ownership().unchanged_effective_state_change());
-            // An agent arriving in an unnamed pane names it after its working
-            // directory; a name the user gave or cleared since stays theirs
-            // until the next agent arrives.
-            let named = !had_agent
-                && terminal.ownership().effective_agent().is_some()
-                && terminal.manual_label_value().is_none();
-            if named {
-                let label = shepr_mux::Label::for_directory(terminal.cwd().as_path());
-                terminal.set_manual_label(label);
-            }
-            (mutation, unchanged_change, named)
+            let has_agent = terminal.ownership().effective_agent().is_some();
+            let left = had_agent && !has_agent && terminal.set_agent_label(None);
+            (mutation, unchanged_change, !had_agent && has_agent, left)
         };
-        if named {
-            self.mark_session_dirty();
+        // An arriving agent's name is the directory it runs in, which only
+        // the App can observe: see `label_pane_agent`.
+        if arrived {
+            self.agent_arrivals.insert(pane_id);
+        }
+        if left {
+            self.agent_arrivals.remove(&pane_id);
             self.mark_shell_projection_dirty();
         }
         // Every update that ran re-syncs the runtime's detector pause, whatever

@@ -692,6 +692,73 @@ fn cwd_report_for_missing_pane_is_ignored() {
 }
 
 #[test]
+fn an_arriving_agent_is_labelled_after_its_directory_beside_the_given_name() {
+    let mut state = app_with_workspaces(&["pane"]);
+    let pane_id = state.ws(0).tree().root();
+    let detect = |state: &mut AppState, agent| {
+        state.handle_state_event(StateEvent::StateChanged {
+            pane_id,
+            agent,
+            detection: shepr_detect::Detection::new(AgentState::Working, false),
+            process_exited: false,
+            observed_at: Instant::now(),
+        });
+    };
+    let shown = |state: &AppState| {
+        state
+            .terminal(pane_id)
+            .expect("terminal")
+            .display_label()
+            .map(std::borrow::Cow::into_owned)
+    };
+
+    detect(&mut state, Some(Agent::Claude));
+    assert_eq!(
+        shown(&state),
+        None,
+        "labelling waits for the App's observation"
+    );
+    assert_eq!(state.drain_agent_arrivals(), vec![pane_id]);
+    state.session_dirty = false;
+    // The agent's directory, not the stored cwd the pane was launched in.
+    assert!(state.label_pane_agent(pane_id, Some(std::path::Path::new("/src/pbfhogg"))));
+    assert_eq!(shown(&state).as_deref(), Some("pbfhogg"));
+    assert!(!state.session_dirty, "the agent's label is never saved");
+    assert_eq!(
+        state.terminal(pane_id).expect("terminal").manual_label(),
+        None
+    );
+
+    // A given name leads, and a staying agent is no new arrival.
+    state
+        .rename_pane(pane_id, shepr_mux::Label::new("review"))
+        .expect("pane");
+    detect(&mut state, Some(Agent::Claude));
+    assert!(state.drain_agent_arrivals().is_empty());
+    assert_eq!(shown(&state).as_deref(), Some("review (pbfhogg)"));
+
+    // The label leaves with the agent; the given name stays.
+    detect(&mut state, None);
+    assert_eq!(shown(&state).as_deref(), Some("review"));
+    assert!(!state.label_pane_agent(pane_id, Some(std::path::Path::new("/src/other"))));
+
+    // With no observation the next agent falls back to the stored cwd.
+    state.rename_pane(pane_id, None).expect("pane");
+    detect(&mut state, Some(Agent::Claude));
+    assert_eq!(state.drain_agent_arrivals(), vec![pane_id]);
+    let stored = state
+        .terminal(pane_id)
+        .expect("terminal")
+        .cwd()
+        .to_path_buf();
+    assert!(state.label_pane_agent(pane_id, None));
+    assert_eq!(
+        shown(&state),
+        Some(shepr_mux::Label::for_directory(&stored).as_str().to_owned())
+    );
+}
+
+#[test]
 fn toggle_zoom_works() {
     let mut state = app_with_workspaces(&["test"]);
     state.test_split_workspace(0, Direction::Horizontal);

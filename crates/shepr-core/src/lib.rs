@@ -6,6 +6,7 @@ pub mod geometry;
 pub mod layout;
 pub mod limits;
 pub mod locks;
+pub mod pane_label;
 pub mod pathutil;
 pub mod scrollback;
 pub mod shell;

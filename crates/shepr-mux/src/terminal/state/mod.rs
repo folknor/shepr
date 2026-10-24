@@ -250,6 +250,9 @@ pub struct TerminalState {
     cwd: shepr_core::absolute_path::AbsolutePath,
     terminal_title: Option<String>,
     manual_label: Option<Label>,
+    /// The name of the directory the pane's current agent runs in, set when
+    /// the agent arrives and cleared when it leaves. Derived, so never saved.
+    agent_label: Option<Label>,
     ownership: AgentOwnership,
     agent_resume: AgentResumeState,
     start_failure: Option<PaneStartFailure>,
@@ -270,6 +273,13 @@ impl TerminalState {
     }
     pub fn manual_label_value(&self) -> Option<&Label> {
         self.manual_label.as_ref()
+    }
+    pub fn agent_label(&self) -> Option<&str> {
+        self.agent_label.as_ref().map(Label::as_str)
+    }
+    /// The name the pane is shown under (`pane_display_label`).
+    pub fn display_label(&self) -> Option<std::borrow::Cow<'_, str>> {
+        shepr_core::pane_label::pane_display_label(self.manual_label(), self.agent_label())
     }
     pub fn agent_resume(&self) -> &AgentResumeState {
         &self.agent_resume

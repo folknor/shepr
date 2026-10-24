@@ -878,6 +878,7 @@ impl HeadlessServer {
                 shepr_protocol::ClientShellPane {
                     pane_id: pane.pane_id,
                     label: pane.label.clone(),
+                    agent_label: pane.agent_label.clone(),
                     cwd: pane.cwd.clone(),
                     foreground_cwd: pane.foreground_cwd.clone(),
                     right_click_passthrough,

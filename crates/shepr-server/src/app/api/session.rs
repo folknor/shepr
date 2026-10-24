@@ -20,6 +20,7 @@ pub(crate) struct SnapshotPane {
     pub(crate) pane_id: PublicPaneId,
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) label: Option<String>,
+    pub(crate) agent_label: Option<String>,
     pub(crate) cwd: Option<shepr_protocol::RemotePath>,
     pub(crate) foreground_cwd: Option<shepr_protocol::RemotePath>,
 }
@@ -71,6 +72,7 @@ impl App {
             pane_id: pane.public_id(),
             workspace_id: ws.id(),
             label: terminal.manual_label().map(str::to_owned),
+            agent_label: terminal.agent_label().map(str::to_owned),
             cwd: ws
                 .cwd_for_pane(pane_id, &self.terminal_runtimes)
                 .map(|cwd| shepr_protocol::RemotePath::from(cwd.into_path_buf())),

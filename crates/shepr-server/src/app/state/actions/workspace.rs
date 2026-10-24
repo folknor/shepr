@@ -82,11 +82,12 @@ impl AppState {
     }
 
     /// The panes that just left their workspace. Their pending authority syncs
-    /// go too: a pane that is gone has no runtime to sync.
+    /// and agent labels go too: a pane that is gone has no runtime to read.
     fn forget_removed_panes(&mut self, removed: impl Iterator<Item = PaneId>) -> Vec<PaneId> {
         removed
             .inspect(|pane| {
                 self.lifecycle_authority_dirty.remove(pane);
+                self.agent_arrivals.remove(pane);
             })
             .collect()
     }

@@ -11,6 +11,7 @@ impl TerminalState {
             cwd,
             terminal_title: None,
             manual_label: None,
+            agent_label: None,
             ownership: AgentOwnership::new(),
             agent_resume: AgentResumeState::None,
             start_failure: None,

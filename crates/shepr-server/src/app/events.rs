@@ -291,6 +291,7 @@ impl App {
             let changed =
                 app.state.handle_state_event(report.0) != super::actions::StateUpdate::Unchanged;
             app.apply_lifecycle_authority_changes();
+            app.label_arrived_agents();
             changed
         });
         changed || projection_changed
@@ -419,6 +420,7 @@ impl App {
         let state_changed =
             self.state.handle_state_event(event) != super::actions::StateUpdate::Unchanged;
         self.apply_lifecycle_authority_changes();
+        self.label_arrived_agents();
         let cwd_moved =
             terminal_cwd_reported && !self.state.shell_projection_is_current(projection_before);
         if cwd_moved {
@@ -476,6 +478,22 @@ impl App {
                     terminal.ownership().full_lifecycle_hook_authority_active(),
                 );
             }
+        }
+    }
+
+    /// Labels the agent of each pane one just arrived in after the directory
+    /// it runs in: the foreground job's cwd, else the shell's live one. The
+    /// pane's stored cwd is only the last resort, as it follows the shell's
+    /// OSC 7 reports alone: under a shell that sends none it stays the
+    /// directory the pane was launched in (inherited from the pane it was
+    /// split from, or saved with the session), wherever the agent was started.
+    pub(super) fn label_arrived_agents(&mut self) {
+        for pane_id in self.state.drain_agent_arrivals() {
+            let agent_cwd = self
+                .terminal_runtimes
+                .get(&pane_id)
+                .and_then(|runtime| runtime.foreground_cwd().or_else(|| runtime.cwd()));
+            self.state.label_pane_agent(pane_id, agent_cwd.as_deref());
         }
     }
 

@@ -53,6 +53,7 @@ pub(in crate::shell) fn snapshot() -> ClientShellSnapshot {
         panes: vec![ClientShellPane {
             pane_id: test_pane_id("w1:p1"),
             label: None,
+            agent_label: None,
             cwd: Some("/repo".into()),
             foreground_cwd: Some("/repo".into()),
             right_click_passthrough: false,

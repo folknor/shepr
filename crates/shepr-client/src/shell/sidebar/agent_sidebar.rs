@@ -165,12 +165,13 @@ impl<'a> AgentRowIndex<'a> {
         let cwd = pane
             .and_then(|pane| pane.foreground_cwd.as_ref().or(pane.cwd.as_ref()))
             .map(|cwd| shown_cwd(cwd.as_path(), self.home_dir));
+        let pane_label = pane.and_then(ClientShellPane::display_label);
         let rows = sidebar_agent_rows(
             &config.agents,
             &AgentTokenContext {
                 machine,
                 workspace: &workspace.label,
-                pane: pane.and_then(|pane| pane.label.as_deref()),
+                pane: pane_label.as_deref(),
                 cwd: cwd.as_deref(),
                 agent_label,
                 terminal_title: agent.terminal_title.as_deref(),

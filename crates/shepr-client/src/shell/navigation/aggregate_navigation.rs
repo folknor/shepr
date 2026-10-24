@@ -206,15 +206,15 @@ impl NavigatorIndex {
                         .as_ref()
                         .or(pane.cwd.as_ref())
                         .map_or_default(shepr_protocol::RemotePath::display_text);
+                    let pane_label = pane.display_label();
                     let label = if workspace_panes.len() == 1 {
-                        pane.label
+                        pane_label
                             .as_deref()
                             .or(title)
                             .unwrap_or(workspace.label.as_str())
                             .to_owned()
                     } else {
-                        let pane_name = pane
-                            .label
+                        let pane_name = pane_label
                             .as_deref()
                             .or(title)
                             .or(agent_kind.map(shepr_config::ConfigAgent::label))

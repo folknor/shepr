@@ -92,6 +92,7 @@ pub(crate) fn snapshot(id: &ClientEndpointId, revision: u64) -> Box<ClientShellS
         panes: vec![shepr_protocol::ClientShellPane {
             pane_id: test_pane_id("w1:p1"),
             label: None,
+            agent_label: None,
             cwd: Some("/repo".into()),
             foreground_cwd: None,
             right_click_passthrough: false,

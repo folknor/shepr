@@ -38,7 +38,7 @@ impl HostAppearanceReport {
 
 /// The session's data: its workspaces (with their panes and terminals) and
 /// the presentation facts every client shares, plus the bookkeeping the App
-/// drains (`lifecycle_authority_dirty`, `session_dirty`). Live runtimes are
+/// drains (`lifecycle_authority_dirty`, `agent_arrivals`, `session_dirty`). Live runtimes are
 /// the App's (`terminal_runtimes`, `pane_launcher`); reducers here take
 /// runtime observations as arguments instead of probing processes or the
 /// filesystem, so the state is testable without PTYs or a tokio runtime.
@@ -65,6 +65,9 @@ pub(crate) struct AppState {
     /// reported is still delivered. A set, so it stays bounded by the pane
     /// count when no `App` drains it. `App` looks the runtime up by the pane.
     lifecycle_authority_dirty: std::collections::HashSet<shepr_core::layout::PaneId>,
+    /// Panes an agent arrived in since `App` last labelled their agents after
+    /// the directory each runs in, which it reads from their runtimes.
+    agent_arrivals: std::collections::HashSet<shepr_core::layout::PaneId>,
     /// Last known foreground host terminal appearance and how it was learned.
     host_terminal_appearance: HostAppearanceReport,
     /// Resolved host terminal default colors for theming embedded panes.
@@ -174,6 +177,7 @@ impl AppState {
             settings,
             next_agent_state_change_seq: shepr_agent::StateChangeSeq::NEVER,
             lifecycle_authority_dirty: std::collections::HashSet::new(),
+            agent_arrivals: std::collections::HashSet::new(),
             host_terminal_appearance: HostAppearanceReport::Unknown,
             host_terminal_theme: host_theme,
             session_dirty: false,
@@ -322,6 +326,37 @@ impl AppState {
     /// App mirrors their lifecycle authority into their runtimes.
     pub(crate) fn drain_lifecycle_authority_dirty(&mut self) -> Vec<shepr_core::layout::PaneId> {
         self.lifecycle_authority_dirty.drain().collect()
+    }
+
+    /// The panes an agent arrived in since the last drain; the App labels
+    /// each with `label_pane_agent`.
+    pub(crate) fn drain_agent_arrivals(&mut self) -> Vec<shepr_core::layout::PaneId> {
+        self.agent_arrivals.drain().collect()
+    }
+
+    /// Labels the agent of `pane_id` after `agent_cwd`, the directory it runs
+    /// in, or the pane's stored cwd when that could not be observed. The
+    /// label is shown beside any name the user gave the pane, lasts while the
+    /// agent does and is never saved. A pane whose agent has gone again is
+    /// left alone. True when the label changed.
+    pub(crate) fn label_pane_agent(
+        &mut self,
+        pane_id: shepr_core::layout::PaneId,
+        agent_cwd: Option<&std::path::Path>,
+    ) -> bool {
+        let Some(record) = self.workspaces.pane_mut(pane_id) else {
+            return false;
+        };
+        let terminal = record.terminal_mut();
+        if terminal.ownership().effective_agent().is_none() {
+            return false;
+        }
+        let cwd = agent_cwd.unwrap_or_else(|| terminal.cwd().as_path());
+        let changed = terminal.set_agent_label(Some(shepr_mux::Label::for_directory(cwd)));
+        if changed {
+            self.mark_shell_projection_dirty();
+        }
+        changed
     }
 
     /// The current position of the bookmarked workspace, if it is still there.

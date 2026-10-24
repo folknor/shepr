@@ -1557,6 +1557,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     unfocused.panes.push(ClientShellPane {
         pane_id: test_pane_id("w1:p2"),
         label: None,
+        agent_label: None,
         cwd: Some("/repo".into()),
         foreground_cwd: Some("/repo".into()),
         right_click_passthrough: false,
@@ -2297,6 +2298,7 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
     unfocused.panes.push(ClientShellPane {
         pane_id: test_pane_id("w1:p2"),
         label: None,
+        agent_label: None,
         cwd: Some("/repo".into()),
         foreground_cwd: Some("/repo".into()),
         right_click_passthrough: false,

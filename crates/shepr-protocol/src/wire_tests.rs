@@ -484,6 +484,7 @@ mod tests {
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),
                 label: None,
+                agent_label: None,
                 cwd: Some("/repo".into()),
                 foreground_cwd: Some("/repo".into()),
                 right_click_passthrough: false,

@@ -60,10 +60,24 @@ pub struct ClientShellWorkspace {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellPane {
     pub pane_id: PublicPaneId,
+    /// The name the user gave the pane, the one rename edits.
     pub label: Option<String>,
+    /// The name of the directory the pane's current agent runs in.
+    pub agent_label: Option<String>,
     pub cwd: Option<RemotePath>,
     pub foreground_cwd: Option<RemotePath>,
     pub right_click_passthrough: bool,
+}
+
+impl ClientShellPane {
+    /// The name the pane is shown under
+    /// (`shepr_core::pane_label::pane_display_label`).
+    pub fn display_label(&self) -> Option<std::borrow::Cow<'_, str>> {
+        shepr_core::pane_label::pane_display_label(
+            self.label.as_deref(),
+            self.agent_label.as_deref(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
