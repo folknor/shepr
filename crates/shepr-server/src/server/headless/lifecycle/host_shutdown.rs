@@ -239,7 +239,7 @@ async fn watch_shutdown(
     watch_connection(connection, shared, checkpoints, refresh_pending_warning).await
 }
 
-async fn take_inhibitor(manager: &zbus::Proxy<'_>) -> zbus::Result<zbus::zvariant::OwnedFd> {
+async fn take_inhibitor(manager: &zbus::Proxy<'_>) -> zbus::Result<zbus::OwnedFd> {
     manager
         .call(
             "Inhibit",
@@ -255,7 +255,7 @@ async fn take_inhibitor(manager: &zbus::Proxy<'_>) -> zbus::Result<zbus::zvarian
 async fn take_inhibitor_if_idle(
     manager: &zbus::Proxy<'_>,
     preparing: &mut bool,
-) -> zbus::Result<Option<zbus::zvariant::OwnedFd>> {
+) -> zbus::Result<Option<zbus::OwnedFd>> {
     if *preparing {
         return Ok(None);
     }
@@ -524,7 +524,7 @@ mod tests {
             _who: &str,
             _why: &str,
             mode: &str,
-        ) -> Result<zbus::zvariant::OwnedFd, LoginManagerError> {
+        ) -> Result<zbus::OwnedFd, LoginManagerError> {
             assert_eq!((what, mode), ("shutdown", "delay"));
             if self.preparing.load(Ordering::Acquire)
                 || self
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[tokio::test]
-    // zbus 5.19 accepts UnixStream, but its server/peer setup is behind `p2p`,
+    // zbus accepts a UnixStream, but its server/peer setup is behind `p2p`,
     // disabled by this workspace. A peer pair also lacks the bus-generated
     // NameOwnerChanged signals this watch consumes; this test's `false`
     // argument also leaves the reconnect-only warning refresh untested.
@@ -611,9 +611,7 @@ mod tests {
             let peers = Arc::new(Mutex::new(Vec::new()));
             let preparing = Arc::new(AtomicBool::new(already_preparing));
             let service = zbus::connection::Builder::address(address.trim())
-                .expect("test precondition")
                 .name("org.freedesktop.login1")
-                .expect("test precondition")
                 .serve_at(
                     "/org/freedesktop/login1",
                     LoginManager {
@@ -622,12 +620,10 @@ mod tests {
                         peers: Arc::clone(&peers),
                     },
                 )
-                .expect("test precondition")
                 .build()
                 .await
                 .expect("test precondition");
             let client = zbus::connection::Builder::address(address.trim())
-                .expect("test precondition")
                 .build()
                 .await
                 .expect("test precondition");

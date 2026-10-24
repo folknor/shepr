@@ -323,9 +323,12 @@ async fn settle(
             }
         }
     };
-    let channel = match AsyncFd::new(channel) {
+    // SAFETY: the `OwnedFd` keeps its one descriptor open, and `as_raw_fd`
+    // returns it, until the `AsyncFd` drops it.
+    let channel = match unsafe { AsyncFd::register(channel) } {
         Ok(channel) => channel,
         Err(error) => {
+            let error = std::io::Error::from(error);
             shepr_platform::structured_log!(WARN, event = pane.launch_watch, outcome = Error, %error, "could not watch a pane launch status channel");
             return status_unavailable(error, child_liveness);
         }

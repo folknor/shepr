@@ -142,7 +142,9 @@ async fn wait_for_child_exit(
     let Some(pidfd) = pidfd else {
         return wait_for_child_exit_by_polling(child).await;
     };
-    let async_pidfd = match tokio::io::unix::AsyncFd::new(pidfd) {
+    // SAFETY: the `OwnedFd` keeps its one descriptor open, and `as_raw_fd`
+    // returns it, until the `AsyncFd` drops it.
+    let async_pidfd = match unsafe { tokio::io::unix::AsyncFd::register(pidfd) } {
         Ok(async_pidfd) => async_pidfd,
         Err(err) => {
             tracing::debug!(

@@ -38,6 +38,8 @@ zbus = { workspace = true }
 shepr-test-fixtures = { path = "../shepr-test-fixtures" }
 shepr-test-support = { path = "../shepr-test-support" }
 toml = { workspace = true }
+# The host shutdown test serves a fake logind, which needs zbus's service side.
+zbus = { workspace = true, features = ["service"] }
 
 [lints]
 workspace = true
