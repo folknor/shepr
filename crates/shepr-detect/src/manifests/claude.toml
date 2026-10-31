@@ -42,6 +42,30 @@ priority = 965
 region = "claude_last_non_empty_above_prompt_box"
 line_regex = ['^\s*{claude_background_glyph}\s+Waiting for [1-9]\d* background agents? to finish\s*$']
 
+# Background subagents still running after the main turn ended. Recent Claude
+# lists them under the footer below the prompt box, one `◯ <type>  <description>`
+# row each, beside a `● main` or `⏺ main` row, and drops the list when the last
+# one finishes. Without this the pane reads idle through live_prompt_box
+# whenever the title spinner is down. The footer around the list has changed
+# between releases (`↓ to manage` comes and goes) while the row has not, so the
+# row is the signal. Background shells alone have no row and stay idle: the
+# session waits only on its own command and takes input. The guards keep a
+# dialog drawn with the list blocked.
+[[rules]]
+id = "background_agent_list_working"
+state = "working"
+priority = 966
+region = "after_last_horizontal_rule"
+line_regex = ['^\s{0,4}◯\s+[\w.:-]+\s{2,}\S']
+not = [
+  { contains = ["do you want to proceed?"] },
+  { contains = ["esc to cancel"] },
+  { contains = ["waiting for permission"] },
+  { contains = ["do you want to allow this connection?"] },
+  { contains = ["tab to amend"] },
+  { contains = ["ctrl+e to explain"] },
+]
+
 [[rules]]
 id = "background_mcp_task_working"
 state = "working"

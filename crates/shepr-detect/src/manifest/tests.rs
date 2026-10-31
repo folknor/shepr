@@ -625,6 +625,94 @@ fn claude_blocked_form_above_a_named_session_divider_is_blocked() {
     }
 }
 
+// The bottom of a live Claude pane whose main turn has ended while one
+// background subagent runs, as captured; the transcript line above the prompt
+// box is the history of launching it.
+const CLAUDE_BACKGROUND_AGENT_RUNNING: &str = "\
+● Agent(Scout the flaky tests) Sonnet 5.5
+  ⎿  Backgrounded agent (↓ to manage · ctrl+o to expand)
+
+● The SHEPR_PANE_ID for this session is w3:pY.
+
+──────────────────────────────────────────────────────────────────────────────────────────
+\u{276f}
+──────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on · 1 shell · ↓ to manage
+
+  ● main
+  ◯ general-purpose  Scout the flaky tests                      34s · ↓ 70.4k tokens
+";
+
+// The same pane once the subagent finished, with an unsent draft in the
+// prompt box; the background shell is still counted in the footer.
+const CLAUDE_BACKGROUND_AGENT_DONE: &str = "\
+● Agent \"Scout the flaky tests\" finished · 5m 26s
+
+● The scout for the flaky tests has finished.
+
+──────────────────────────────────────────────────────────────────────────────────────────
+\u{276f} oh we're still far away from 21:30. You can resume work now, I am done: go.
+──────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ don't ask on · 1 shell
+";
+
+#[test]
+fn claude_background_agent_list_keeps_the_pane_working_without_a_title_spinner() {
+    let claude = bundled_loaded(Agent::Claude);
+    // The spinner shows while the subagent generates and wins on its own.
+    for (title, rule) in [
+        ("\u{25d1} Open bz tickets review", "osc_title_working"),
+        (
+            "\u{2733} Open bz tickets review",
+            "background_agent_list_working",
+        ),
+    ] {
+        let input = DetectionInput {
+            screen: CLAUDE_BACKGROUND_AGENT_RUNNING,
+            osc_title: Some(title),
+            osc_progress: None,
+        };
+        let result = explain_loaded_manifest(Agent::Claude, input, &claude);
+        assert_eq!(result.verdict.state(), AgentState::Working, "{title}");
+        assert_eq!(
+            result.matched_rule.map(|matched| matched.id).as_deref(),
+            Some(rule),
+            "{title}"
+        );
+    }
+
+    let done = DetectionInput {
+        screen: CLAUDE_BACKGROUND_AGENT_DONE,
+        osc_title: Some("\u{2733} Open bz tickets review"),
+        osc_progress: None,
+    };
+    let result = explain_loaded_manifest(Agent::Claude, done, &claude);
+    assert_eq!(result.verdict.state(), AgentState::Idle, "{result:?}");
+    assert_eq!(
+        result.matched_rule.map(|matched| matched.id).as_deref(),
+        Some("live_prompt_box")
+    );
+
+    // A newer Claude draws the main row as a record glyph; the subagent row
+    // still decides.
+    let record_main = CLAUDE_BACKGROUND_AGENT_RUNNING.replace("  ● main", "  \u{23fa} main");
+    let result = explain_loaded_manifest(Agent::Claude, screen_input(&record_main), &claude);
+    assert_eq!(result.verdict.state(), AgentState::Working, "{result:?}");
+
+    // A subagent row above the prompt box is transcript, not the live list.
+    let transcript_row = "  ◯ general-purpose  Scout the flaky tests\n\
+        ────────────────────\n\u{276f}\n────────────────────\n  ⏵⏵ don't ask on · 1 shell\n";
+    let result = explain_loaded_manifest(Agent::Claude, screen_input(transcript_row), &claude);
+    assert_eq!(result.verdict.state(), AgentState::Idle, "{result:?}");
+
+    // A permission dialog drawn with the list stays blocked.
+    let dialog = "────────────────────\n Bash command\n  rm -rf build\n\
+        Do you want to proceed?\n \u{276f} 1. Yes\n   2. No\n\n Esc to cancel\n\n\
+          ● main\n  ◯ general-purpose  Scout the flaky tests   34s\n";
+    let result = explain_loaded_manifest(Agent::Claude, screen_input(dialog), &claude);
+    assert_eq!(result.verdict.state(), AgentState::Blocked, "{result:?}");
+}
+
 #[test]
 fn pi_spinner_only_working_line_is_working() {
     let pi = bundled_loaded(Agent::Pi);
