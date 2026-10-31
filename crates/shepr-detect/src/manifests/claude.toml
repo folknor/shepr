@@ -102,6 +102,19 @@ any = [
   ] },
 ]
 
+# A named session draws its name in a divider below the form, so the form is
+# not after the last horizontal rule. Bind every control to the same footer,
+# allowing wrapping between words. After the name divider, accept only a
+# counted task panel with marked rows and optional pending overflow:
+# free-form activity there can be newer output.
+[[rules]]
+id = "live_blocked_form_named_session"
+state = "blocked"
+priority = 980
+region = "whole_recent"
+visible_blocker = true
+regex = ['(?i)(?:^|\n)[ \t]*enter\s+to\s+(?:confirm|select\s+·\s+(?:(?:tab/arrow|arrow)\s+keys|arrows|↑/↓|↑↓)\s+to\s+navigate)\s+·\s+esc\s+to\s+cancel[ \t]*\n(?:[ \t]*\n)*[ \t]*─{3,}[^\n]*(?:\n(?:[ \t]*\n)*[ \t]+\d+ tasks? \(\d+ done, (?:\d+ in progress, )?\d+ open\)(?:\n[ \t]+[◻◼✔][ \t]+[^\n]+)+(?:\n[ \t]+…[ \t]+\+\d+[ \t]+pending)?)?(?:\n[ \t]*)*\z']
+
 [[rules]]
 id = "dynamic_workflow_prompt"
 state = "blocked"

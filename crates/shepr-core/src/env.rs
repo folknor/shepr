@@ -216,6 +216,8 @@ env_vocabulary! {
         AntigravityCliConfigDir => "ANTIGRAVITY_CLI_CONFIG_DIR", PaneEnvPolicy::Allowed,
         /// `GROK_HOME`: the grok CLI's config home override.
         GrokHome => "GROK_HOME", PaneEnvPolicy::Allowed,
+        /// `OPENCODE_CONFIG_DIR`: opencode's config directory override.
+        OpencodeConfigDir => "OPENCODE_CONFIG_DIR", PaneEnvPolicy::Allowed,
         /// `GIT_CEILING_DIRECTORIES`: Git's byte-preserving, colon-separated
         /// list of absolute directories repository discovery does not ascend
         /// into. Git children read it themselves too.
@@ -451,7 +453,8 @@ impl EnvVar {
             | Self::QwenHome
             | Self::CursorConfigDir
             | Self::AntigravityCliConfigDir
-            | Self::GrokHome => EnvKind::Path,
+            | Self::GrokHome
+            | Self::OpencodeConfigDir => EnvKind::Path,
             Self::Home | Self::XdgConfigHome | Self::XdgStateHome | Self::XdgRuntimeDir => {
                 EnvKind::AbsolutePath
             }
@@ -951,6 +954,7 @@ mod tests {
                 Path,
             ),
             (EnvVar::GrokHome, "GROK_HOME", Path),
+            (EnvVar::OpencodeConfigDir, "OPENCODE_CONFIG_DIR", Path),
             (
                 EnvVar::GitCeilingDirectories,
                 "GIT_CEILING_DIRECTORIES",

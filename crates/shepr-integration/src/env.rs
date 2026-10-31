@@ -250,6 +250,11 @@ fn config_dir_from_env_or_home(
 }
 
 pub(super) fn opencode_dir(environment: &IntegrationEnvironment) -> InstallResult<PathBuf> {
+    // opencode reads its global config, plugins included, from
+    // OPENCODE_CONFIG_DIR when it is set.
+    if let Some(value) = agent_config_override(environment, Agent::OpenCode)? {
+        return Ok(value);
+    }
     Ok(
         shepr_core::env::xdg_config_home_with(|variable| environment.path(variable))?
             .join("opencode"),
@@ -486,6 +491,32 @@ mod tests {
         assert_eq!(
             directory(&env, IntegrationTarget::Kilo).expect("absolute XDG path"),
             PathBuf::from(xdg).join("kilo")
+        );
+    }
+
+    #[test]
+    fn opencode_dir_prefers_opencode_config_dir_over_xdg_config_home() {
+        let env = paths_with(&[
+            (EnvVar::Home, "/test/home"),
+            (EnvVar::XdgConfigHome, "/test/config"),
+            (EnvVar::OpencodeConfigDir, "~/opencode-work"),
+        ]);
+        assert_eq!(
+            directory(&env, IntegrationTarget::Opencode).expect("override"),
+            PathBuf::from("/test/home/opencode-work")
+        );
+        // The override is opencode's own; kilo keeps the XDG location.
+        assert_eq!(
+            directory(&env, IntegrationTarget::Kilo).expect("XDG path"),
+            PathBuf::from("/test/config/kilo")
+        );
+        let env = paths_with(&[
+            (EnvVar::Home, "/test/home"),
+            (EnvVar::OpencodeConfigDir, ""),
+        ]);
+        assert_eq!(
+            directory(&env, IntegrationTarget::Opencode).expect("empty is unset"),
+            PathBuf::from("/test/home/.config/opencode")
         );
     }
 

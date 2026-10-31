@@ -559,6 +559,73 @@ fn codex_trust_dialog_matches_old_and_new_wording() {
 }
 
 #[test]
+fn codex_update_prompt_matches_legacy_dialog_and_shared_picker() {
+    let codex = bundled_loaded(Agent::Codex);
+    for screen in [
+        "  Update available! 0.150.0 -> 0.151.0\n\n  1. Update now\n  2. Skip\n  3. Skip until next version\n\n  Press enter to continue\n",
+        "  Update available · 0.158.0 -> 0.159.0\n\n  › Update now\n    Skip\n\n  enter continue · esc skip\n",
+        // The choices scrolled out of a short viewport; both gates remain.
+        "  Update available · 0.158.0 -> 0.159.0\n  enter continue · esc skip\n",
+    ] {
+        let result = explain_loaded_manifest(Agent::Codex, screen_input(screen), &codex);
+        assert_eq!(result.verdict.state(), AgentState::Blocked, "{screen}");
+        assert_eq!(
+            result.matched_rule.map(|matched| matched.id).as_deref(),
+            Some("startup_update"),
+            "{screen}"
+        );
+    }
+    for screen in [
+        // A gate of one form with the other form's footer.
+        "  Update available! 0.150.0 -> 0.151.0\n  Update now\n  enter continue · esc skip\n",
+        // The picker's footer alone, its heading alone, or newer output below.
+        "  enter continue · esc skip\n",
+        "  Update available · 0.158.0 -> 0.159.0\n",
+        "  Update available · 0.158.0 -> 0.159.0\n  enter continue · esc skip\n  newer output\n",
+    ] {
+        let result = explain_loaded_manifest(Agent::Codex, screen_input(screen), &codex);
+        assert_ne!(
+            result.matched_rule.map(|matched| matched.id).as_deref(),
+            Some("startup_update"),
+            "{screen}"
+        );
+    }
+}
+
+#[test]
+fn claude_blocked_form_above_a_named_session_divider_is_blocked() {
+    let claude = bundled_loaded(Agent::Claude);
+    let form = "Which approach?\n  1. Rewrite\n  2. Patch\n\nEnter to select · ↑/↓ to navigate · Esc to cancel\n";
+    for tail in [
+        "──────── my-session ──\n",
+        "──────── my-session ──\n  3 tasks (1 done, 1 in progress, 1 open)\n  ◼ Port rules\n  ◻ Write tests\n  \u{2714} Read diff\n",
+        "──────── my-session ──\n  5 tasks (1 done, 4 open)\n  ◻ One\n  \u{2714} Two\n  … +3 pending\n",
+    ] {
+        let screen = format!("older output\n{form}{tail}");
+        let result = explain_loaded_manifest(Agent::Claude, screen_input(&screen), &claude);
+        assert_eq!(result.verdict.state(), AgentState::Blocked, "{screen}");
+        assert_eq!(
+            result.matched_rule.map(|matched| matched.id).as_deref(),
+            Some("live_blocked_form_named_session"),
+            "{screen}"
+        );
+    }
+    for later in [
+        "──────── my-session ──\nnewer output\n",
+        "──────── my-session ──\n  3 tasks (1 done, 1 in progress, 1 open)\n  ◼ Port rules\n  working on it…\n",
+        "──────── my-session ──\n  … +2 pending\n",
+    ] {
+        let screen = format!("older output\n{form}{later}");
+        let result = explain_loaded_manifest(Agent::Claude, screen_input(&screen), &claude);
+        assert_ne!(
+            result.matched_rule.map(|matched| matched.id).as_deref(),
+            Some("live_blocked_form_named_session"),
+            "{screen}"
+        );
+    }
+}
+
+#[test]
 fn pi_spinner_only_working_line_is_working() {
     let pi = bundled_loaded(Agent::Pi);
     for screen in [

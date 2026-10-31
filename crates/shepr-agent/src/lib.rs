@@ -575,7 +575,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::OpenCode,
-        config_dir_override: None,
+        config_dir_override: Some(shepr_core::env::EnvVar::OpencodeConfigDir),
         session_markers: &[],
         label: "opencode",
         aliases: &["opencode2", "open-code"],
