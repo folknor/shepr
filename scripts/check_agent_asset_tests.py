@@ -17,6 +17,7 @@ that found nothing to test, or silently skipped a file, is not a pass.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
@@ -44,12 +45,17 @@ def main() -> int:
     problems = []
     outputs = []
     total_passed = 0
+    # The developer's BUN_OPTIONS (a global --preload, say) must not reach the
+    # tests: bun splices it into the argument list, and since 1.4 that makes it
+    # read `test` as a package.json script name instead of the subcommand.
+    env = {key: value for key, value in os.environ.items() if key != "BUN_OPTIONS"}
     for test_file in test_files:
         # A leading `./` makes bun take the argument as this file's path rather
         # than as a name filter that could match other test files.
         run = subprocess.run(
             [bun, "test", f"./{test_file.relative_to(ROOT)}"],
             cwd=ROOT,
+            env=env,
             capture_output=True,
             text=True,
             check=False,

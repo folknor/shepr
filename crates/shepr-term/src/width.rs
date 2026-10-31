@@ -7,8 +7,8 @@ pub fn is_halfwidth_voiced_mark(character: char) -> bool {
     matches!(character, '\u{ff9e}' | '\u{ff9f}')
 }
 
-/// U+FF9E/U+FF9F on their own. unicode-width measures them as zero-width, but
-/// the terminal core gives them a cell (as wcwidth does).
+/// U+FF9E/U+FF9F on their own, which the terminal core gives a cell (as
+/// wcwidth does).
 pub fn is_halfwidth_katakana_voiced_mark(symbol: &str) -> bool {
     let mut characters = symbol.chars();
     let Some(mark) = characters.next() else {
@@ -18,7 +18,7 @@ pub fn is_halfwidth_katakana_voiced_mark(symbol: &str) -> bool {
 }
 
 /// A halfwidth katakana letter followed by its voiced mark: two columns in the
-/// terminal core, although unicode-width measures the pair as one.
+/// terminal core.
 pub fn is_halfwidth_katakana_voiced_grapheme(symbol: &str) -> bool {
     let mut characters = symbol.chars();
     let Some(base) = characters.next() else {
@@ -52,14 +52,11 @@ pub fn unicode_text_width(text: &str) -> usize {
     })
 }
 
-/// Grapheme width with a column for each halfwidth voiced mark.
+/// Grapheme width, a column for each halfwidth voiced mark included (which
+/// unicode-width gives them since 0.2.3).
 /// Grid text instead sums individual codepoints with [`unicode_text_width`].
 pub fn unicode_grapheme_width(text: &str) -> usize {
-    standard_grapheme_width(text).saturating_add(
-        text.chars()
-            .filter(|character| is_halfwidth_voiced_mark(*character))
-            .count(),
-    )
+    standard_grapheme_width(text)
 }
 
 /// Terminal column width of text under Ratatui's grapheme width rule, including the
