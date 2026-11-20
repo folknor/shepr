@@ -12,6 +12,38 @@ lines: parsing and validation in `shepr-config` (`sidebar.rs`,
 `token_definitions.rs`). Deferred while other settings were removed; decide
 whether any of it stays configurable.
 
+# Defects
+
+## Copy and middle-click paste do not reach shepr in mouse-reporting panes
+
+In a pane whose child has mouse reporting on, such as Claude Code in fullscreen
+mode (which the owner has to use, since its scrollback does not work outside
+that mode), the client forwards every left press, drag and middle click to the
+child (`crates/shepr-client/src/shell/input/mouse.rs`, the `hit.mouse_reporting`
+branches). shepr's own selection and primary-selection paste never run there:
+
+- A left drag starts no shepr selection. Claude Code selects and builds the text
+  itself, says "sent X chars via OSC 52", and shepr forwards that store to the
+  host clipboard and primary selection (`crates/shepr-vt/src/effects.rs`). The
+  text Claude Code builds is mangled: a line shown whole on screen, "Survey: it
+  should happen before format 1 freezes, since it's what checks the
+  vocabulary", was copied as "Survey: it should happen before fort checks the
+  vocabulary", a 29-character span missing from the middle. shepr's own copy
+  path (the server's grid read in `crates/shepr-vt/src/format.rs`, then the
+  clipboard helpers) was traced and is not where the text is lost. Not yet
+  confirmed: that the "X chars" Claude Code reports matches the mangled length,
+  which would prove the text was already wrong when it reached shepr.
+- A middle click is sent to the child as a mouse event, so shepr never pastes
+  the primary selection there.
+
+The owner expects shepr's selection and middle-click paste to work in these
+panes as they do in plain ones. A Shift modifier to override the child's mouse
+reporting (the xterm, kitty and tmux convention) was proposed and rejected. The
+other option raised: shepr always owns left drag and middle click and forwards
+only the wheel and other clicks to the child. That costs every mouse-reporting
+child (vim, htop and the like, not only Claude Code) its own drag and
+middle-click handling. Undecided.
+
 # Gaps and smells
 
 Not defects: paths with no test, and code that works but reads worse than it
