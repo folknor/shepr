@@ -923,10 +923,9 @@ fn launch_with_outcome(
         let probed = match probe() {
             Ok(probed) => probed,
             Err(error) => {
-                return Err(failed.map_or_else(
-                    || LaunchError::Io(error),
-                    |status| boot_failure(files, status),
-                ));
+                return Err(
+                    failed.map_or(LaunchError::Io(error), |status| boot_failure(files, status))
+                );
             }
         };
         let nothing_listens = matches!(probed, Probed::NoServer);
